@@ -121,8 +121,52 @@
   .meta b.warn{color:var(--model)}
   .meta b.bad{color:var(--danger)}
   .btns{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+  #searchToggle.on{border-color:var(--model);color:var(--model);background:#2b2618}
   #kill{background:#34191b;border-color:#7d3136;color:#ffd7da;font-weight:700}
   #kill:hover{background:#4a2024;border-color:var(--danger)}
+
+  #searchPanel{
+    display:none;
+    align-items:center;
+    gap:10px;
+    padding:8px 16px;
+    background:rgba(16,20,26,.96);
+    border-bottom:1px solid var(--border);
+    backdrop-filter:blur(14px);
+    z-index:2;
+  }
+  #searchPanel.open{display:flex}
+  .search-wrap{
+    min-width:160px;
+    flex:1;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:7px 10px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:#0b0f15;
+  }
+  .search-wrap span{color:var(--muted)}
+  #searchInput{
+    width:100%;
+    min-width:0;
+    border:0;
+    outline:0;
+    background:transparent;
+    color:var(--txt);
+    font:inherit;
+    font-size:13px;
+  }
+  #searchInput::placeholder{color:#667184}
+  #searchCount{
+    min-width:86px;
+    color:var(--muted);
+    font-size:12px;
+    text-align:center;
+    white-space:nowrap;
+  }
+  .search-tools{display:flex;gap:7px;align-items:center}
 
   #log{
     position:relative;
@@ -195,6 +239,8 @@
     transition:opacity .14s;
   }
   .msg:hover .msg-actions,.msg:focus-within .msg-actions{opacity:1;pointer-events:auto}
+  .msg.search-hit .bubble{border-color:rgba(255,209,102,.58);box-shadow:0 0 0 1px rgba(255,209,102,.16),0 10px 30px rgba(0,0,0,.16)}
+  .msg.search-current .bubble{border-color:var(--model);box-shadow:0 0 0 2px rgba(255,209,102,.28),0 16px 38px rgba(0,0,0,.24)}
   .mini-btn{
     height:24px;
     min-width:30px;
@@ -485,6 +531,10 @@
     .chips{gap:6px}
     .chip{padding:5px 8px;font-size:11px}
     .btns button:not(.icon){flex:1}
+    #searchPanel{padding:8px 10px;flex-wrap:wrap}
+    .search-wrap{flex-basis:100%}
+    #searchCount{text-align:left;min-width:auto}
+    .search-tools{margin-left:auto}
     #log{padding:14px 10px 18px;gap:11px}
     .msg,.from-user{max-width:100%;grid-template-columns:30px minmax(0,1fr);gap:8px}
     .from-user{grid-template-columns:minmax(0,1fr) 30px}
@@ -524,11 +574,25 @@
     </div>
   </div>
   <div class="btns">
+    <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
     <button type="button" onclick="ctl('pause')" title="Пауза">⏸ Пауза</button>
     <button type="button" onclick="ctl('resume')" title="Продолжить">▶ Продолжить</button>
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
   </div>
 </header>
+
+<div id="searchPanel" aria-label="Поиск по истории">
+  <label class="search-wrap">
+    <span aria-hidden="true">⌕</span>
+    <input id="searchInput" type="search" placeholder="Поиск по сообщениям, ролям и вложениям" autocomplete="off">
+  </label>
+  <span id="searchCount">поиск</span>
+  <div class="search-tools">
+    <button id="searchPrev" class="icon" type="button" title="Предыдущее совпадение">↑</button>
+    <button id="searchNext" class="icon" type="button" title="Следующее совпадение">↓</button>
+    <button id="searchClose" class="icon" type="button" title="Закрыть поиск">×</button>
+  </div>
+</div>
 
 <main id="log" aria-live="polite">
   <div id="working" class="">
@@ -557,6 +621,8 @@ let lastSeq = 0;
 let firstLoad = true;
 let stickToBottom = true;
 let unseenCount = 0;
+let searchMatches = [];
+let searchIndex = -1;
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -565,6 +631,13 @@ const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
 const lightbox = document.getElementById('lightbox');
 const newCount = document.getElementById('newCount');
+const searchToggle = document.getElementById('searchToggle');
+const searchPanel = document.getElementById('searchPanel');
+const searchInput = document.getElementById('searchInput');
+const searchCount = document.getElementById('searchCount');
+const searchPrev = document.getElementById('searchPrev');
+const searchNext = document.getElementById('searchNext');
+const searchClose = document.getElementById('searchClose');
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -770,11 +843,83 @@ function renderAttachments(m){
     '</a>';
   }).join('') + '</div>';
 }
+function normalizeSearch(s){
+  return String(s || '').toLocaleLowerCase('ru-RU');
+}
+function clearSearchMarks(){
+  document.querySelectorAll('.msg.search-hit,.msg.search-current').forEach(n => {
+    n.classList.remove('search-hit','search-current');
+  });
+}
+function updateSearchCount(){
+  if(!searchInput.value.trim()){
+    searchCount.textContent = 'поиск';
+  } else if(!searchMatches.length){
+    searchCount.textContent = 'нет совпадений';
+  } else {
+    searchCount.textContent = (searchIndex + 1) + ' / ' + searchMatches.length;
+  }
+}
+function setCurrentSearch(scrollCurrent){
+  document.querySelectorAll('.msg.search-current').forEach(n => n.classList.remove('search-current'));
+  if(searchIndex >= 0 && searchMatches[searchIndex]){
+    const current = searchMatches[searchIndex];
+    current.classList.add('search-current');
+    if(scrollCurrent !== false) current.scrollIntoView({behavior:'smooth', block:'center'});
+  }
+  updateSearchCount();
+}
+function updateSearch(scrollCurrent){
+  const q = normalizeSearch(searchInput.value.trim());
+  searchMatches = [];
+  clearSearchMarks();
+  if(!q){
+    searchIndex = -1;
+    updateSearchCount();
+    return;
+  }
+  document.querySelectorAll('.msg').forEach(msg => {
+    if(normalizeSearch(msg.dataset.searchText).includes(q)){
+      msg.classList.add('search-hit');
+      searchMatches.push(msg);
+    }
+  });
+  if(searchMatches.length){
+    if(searchIndex < 0 || searchIndex >= searchMatches.length) searchIndex = 0;
+    setCurrentSearch(scrollCurrent);
+  } else {
+    searchIndex = -1;
+    updateSearchCount();
+  }
+}
+function stepSearch(delta){
+  if(!searchMatches.length) return;
+  searchIndex = (searchIndex + delta + searchMatches.length) % searchMatches.length;
+  setCurrentSearch(true);
+}
+function openSearch(){
+  searchPanel.classList.add('open');
+  searchToggle.classList.add('on');
+  searchToggle.setAttribute('aria-pressed','true');
+  updateSearch(false);
+  setTimeout(() => {
+    searchInput.focus();
+    searchInput.select();
+  }, 0);
+}
+function closeSearch(){
+  searchPanel.classList.remove('open');
+  searchToggle.classList.remove('on');
+  searchToggle.setAttribute('aria-pressed','false');
+  clearSearchMarks();
+}
 function addMsg(m){
   const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
+  const atts = msgAttachments(m);
   const div = document.createElement('article');
   div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'');
   div.dataset.rawText = m.text || '';
+  div.dataset.searchText = [role.name, m.from || '', m.text || '', ...atts.map(a => a.name || '')].join(' ');
   div.innerHTML =
     '<div class="avatar" aria-hidden="true">' + esc(role.short) + '</div>' +
     '<div class="bubble">' +
@@ -805,6 +950,7 @@ async function poll(){
       lastSeq = Math.max(lastSeq, Number(m.seq) || 0);
     }
     if(data.length){
+      if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
       if(beforeBottom || firstLoad){
         scrollToBottom(firstLoad ? 'auto' : 'smooth');
         firstLoad = false;
@@ -996,6 +1142,26 @@ input.addEventListener('input', () => {
 });
 log.addEventListener('scroll', updateBottomButton);
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
+searchToggle.addEventListener('click', () => {
+  if(searchPanel.classList.contains('open')) closeSearch();
+  else openSearch();
+});
+searchClose.addEventListener('click', closeSearch);
+searchPrev.addEventListener('click', () => stepSearch(-1));
+searchNext.addEventListener('click', () => stepSearch(1));
+searchInput.addEventListener('input', () => {
+  searchIndex = 0;
+  updateSearch(false);
+});
+searchInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    stepSearch(e.shiftKey ? -1 : 1);
+  } else if(e.key === 'Escape'){
+    e.preventDefault();
+    closeSearch();
+  }
+});
 document.addEventListener('click', e => {
   const codeBtn = e.target.closest('.copy-code');
   if(codeBtn){
@@ -1025,6 +1191,15 @@ lightbox.addEventListener('click', e => {
   }
 });
 window.addEventListener('keydown', e => {
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'){
+    e.preventDefault();
+    openSearch();
+    return;
+  }
+  if(e.key === 'Escape' && searchPanel.classList.contains('open')){
+    closeSearch();
+    return;
+  }
   if(e.key === 'Escape' && lightbox.classList.contains('open')){
     lightbox.classList.remove('open');
     lightbox.setAttribute('aria-hidden','true');
