@@ -3,7 +3,7 @@
   "codexExe": "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
   "claudeGlob": "C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe",
   "loopDelaySeconds": 2,
-  "maxTurns": 12,
+  "maxTurns": 150,
   "leaseTimeoutSeconds": 300,
   "mode": "interactive",
   "planner": "claude",
