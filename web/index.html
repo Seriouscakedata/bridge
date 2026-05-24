@@ -318,7 +318,7 @@
     color:#788496;
     font-size:11px;
     font-weight:700;
-    letter-spacing:.02em;
+    letter-spacing:0;
     text-transform:uppercase;
     margin:4px 0;
   }
@@ -376,7 +376,7 @@
     color:var(--muted);
     font-size:11px;
   }
-  .codebar .lang{font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+  .codebar .lang{font-weight:700;text-transform:uppercase;letter-spacing:0}
   .copy-code{margin-left:auto}
   .md pre{
     margin:0;
@@ -424,14 +424,17 @@
     box-shadow:0 12px 34px rgba(0,0,0,.22);
   }
   .att-name{
-    display:block;
+    display:flex;
+    gap:8px;
+    align-items:center;
     margin-top:5px;
     font-size:12px;
     color:var(--muted);
     overflow:hidden;
-    text-overflow:ellipsis;
     white-space:nowrap;
   }
+  .att-name .name{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .att-name .size{flex:none;color:#6f7b8d}
   .att-file{
     display:flex;
     align-items:center;
@@ -598,8 +601,21 @@
     background:rgba(0,0,0,.82);
   }
   #lightbox.open{display:flex}
-  #lightbox img{max-width:96vw;max-height:90vh;border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow)}
+  .lightbox-frame{max-width:96vw;max-height:94vh;display:flex;flex-direction:column;gap:8px;align-items:center}
+  #lightbox img{max-width:96vw;max-height:86vh;border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow)}
   #lightbox button{position:absolute;top:18px;right:18px}
+  .lightbox-caption{
+    max-width:min(760px,96vw);
+    display:flex;
+    gap:12px;
+    align-items:center;
+    justify-content:center;
+    color:var(--muted);
+    font-size:12px;
+  }
+  .lightbox-caption span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lightbox-caption a{flex:none;color:#92c7ff;text-decoration:none;border-bottom:1px solid rgba(146,199,255,.34)}
+  .lightbox-caption a:hover{border-bottom-color:#92c7ff}
 
   @media (max-width:900px){
     header{grid-template-columns:1fr;gap:9px;align-items:start}
@@ -660,6 +676,7 @@
       <div class="meta-line"><span>сейчас:</span><b id="st">ожидание</b></div>
       <div class="meta-line"><span>задача:</span><b id="task">нет активной задачи</b></div>
       <div class="meta-line"><span>активность:</span><b id="beat">обновляется</b></div>
+      <div class="meta-line"><span>сеанс:</span><b id="sessionStats">загрузка</b></div>
     </div>
   </div>
   <div class="btns">
@@ -712,7 +729,13 @@
 
 <div id="lightbox" aria-hidden="true">
   <button type="button" class="icon" title="Закрыть">×</button>
-  <img alt="">
+  <div class="lightbox-frame">
+    <img alt="">
+    <div class="lightbox-caption">
+      <span id="lightboxName"></span>
+      <a id="lightboxOpen" href="#" target="_blank" rel="noopener">Открыть оригинал</a>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -735,6 +758,8 @@ const composerStatus = document.getElementById('composerStatus');
 const draftState = document.getElementById('draftState');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
+const lightboxName = document.getElementById('lightboxName');
+const lightboxOpen = document.getElementById('lightboxOpen');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
 const searchPanel = document.getElementById('searchPanel');
@@ -1067,12 +1092,15 @@ function renderAttachments(m){
   if(!atts.length) return '';
   return '<div class="attachments">' + atts.map(a => {
     const url = escAttr(a.url || '#');
-    const name = esc(a.name || 'file');
+    const rawName = String(a.name || 'file');
+    const name = esc(rawName);
+    const nameAttr = escAttr(rawName);
+    const size = fmtSize(a.size);
     const mime = String(a.mime || '');
     if(a.kind === 'image' || mime.startsWith('image/')){
-      return '<a class="att-img" href="' + url + '" target="_blank" rel="noopener" data-lightbox="' + url + '">' +
+      return '<a class="att-img" href="' + url + '" target="_blank" rel="noopener" data-lightbox="' + url + '" data-name="' + nameAttr + '" data-size="' + escAttr(size) + '">' +
         '<img src="' + url + '" alt="' + name + '" loading="lazy">' +
-        '<span class="att-name">' + name + '</span>' +
+        '<span class="att-name"><span class="name">' + name + '</span>' + (size ? '<span class="size">' + esc(size) + '</span>' : '') + '</span>' +
       '</a>';
     }
     return '<a class="att-file" href="' + url + '" download>' +
@@ -1272,6 +1300,13 @@ async function status(){
     const taskText = s.current_task ? String(s.current_task) : 'нет активной задачи';
     taskEl.textContent = taskText.length > 62 ? taskText.slice(0, 62) + '...' : taskText;
     taskEl.title = taskText;
+
+    const sessionEl = document.getElementById('sessionStats');
+    const mode = s.task_mode && s.task_mode !== 'normal' ? String(s.task_mode) : 'normal';
+    const turn = Number(s.turn || s.task_turn || 0);
+    const seq = Number(s.lastSeq || lastSeq || 0);
+    sessionEl.textContent = 'ход ' + turn + ' · #' + seq + ' · ' + mode;
+    sessionEl.title = 'turn=' + turn + ', lastSeq=' + seq + ', mode=' + mode;
 
     setChip('chipClaude', act === 'claude');
     setChip('chipCodex', act === 'codex');
@@ -1546,7 +1581,12 @@ document.addEventListener('click', e => {
   const imgLink = e.target.closest('[data-lightbox]');
   if(imgLink){
     e.preventDefault();
-    lightbox.querySelector('img').src = imgLink.getAttribute('href');
+    const href = imgLink.getAttribute('href');
+    const img = lightbox.querySelector('img');
+    img.src = href;
+    img.alt = imgLink.dataset.name || '';
+    lightboxName.textContent = [imgLink.dataset.name || 'изображение', imgLink.dataset.size || ''].filter(Boolean).join(' · ');
+    lightboxOpen.href = href;
     lightbox.classList.add('open');
     lightbox.setAttribute('aria-hidden','false');
   }
@@ -1556,6 +1596,8 @@ lightbox.addEventListener('click', e => {
     lightbox.classList.remove('open');
     lightbox.setAttribute('aria-hidden','true');
     lightbox.querySelector('img').src = '';
+    lightboxOpen.href = '#';
+    lightboxName.textContent = '';
   }
 });
 window.addEventListener('keydown', e => {
