@@ -568,7 +568,7 @@
       <span id="chipModel" class="chip model"><span class="dot"></span><span class="lbl">модель</span></span>
     </div>
     <div class="meta">
-      <div class="meta-line"><span>статус:</span><b id="st">ожидание</b></div>
+      <div class="meta-line"><span>сейчас:</span><b id="st">ожидание</b></div>
       <div class="meta-line"><span>задача:</span><b id="task">нет активной задачи</b></div>
       <div class="meta-line"><span>активность:</span><b id="beat">обновляется</b></div>
     </div>
@@ -989,7 +989,12 @@ async function status(){
     const act = s.active_agent;
     const mdl = modelLabel(s.active_model);
     const readableStatus = s.status || 'idle';
-    document.getElementById('st').textContent = readableStatus;
+    const statusText = (act === 'claude' || act === 'codex' || s.paused)
+      ? (s.status_text || fallbackStatus(s, mdl))
+      : readableStatus;
+    const statusEl = document.getElementById('st');
+    statusEl.textContent = statusText;
+    statusEl.title = statusText === readableStatus ? '' : readableStatus;
 
     const beatEl = document.getElementById('beat');
     const beat = activityInfo(s);
@@ -1007,10 +1012,10 @@ async function status(){
     setChip('chipModel', Boolean(act && mdl));
     document.querySelector('#chipClaude .lbl').textContent = 'Claude';
     document.querySelector('#chipCodex .lbl').textContent = 'Codex';
-    document.querySelector('#chipModel .lbl').textContent = mdl || 'модель';
+    document.querySelector('#chipModel .lbl').textContent = mdl ? 'модель: ' + mdl : 'модель';
 
     if(act === 'claude' || act === 'codex'){
-      const text = s.status_text || fallbackStatus(s, mdl);
+      const text = statusText;
       working.className = act;
       working.querySelector('.work-dot').textContent = act === 'claude' ? 'C' : 'X';
       working.querySelector('.lbl').textContent = mdl ? text + ' (' + mdl + ')' : text;
