@@ -271,25 +271,43 @@
   .from-system{
     align-self:center;
     max-width:min(900px,92%);
-    grid-template-columns:24px minmax(0,1fr);
-    gap:8px;
+    grid-template-columns:minmax(0,1fr);
+    gap:0;
   }
   .from-system .avatar{
-    width:24px;height:24px;border-radius:8px;
-    background:var(--system-bg);
-    color:var(--system);
-    font-size:11px;
-    box-shadow:none;
+    display:none;
   }
   .from-system .bubble{
-    padding:7px 10px;
+    padding:6px 10px;
     border-style:dashed;
-    background:rgba(20,23,29,.72);
+    border-color:rgba(140,150,165,.24);
+    background:rgba(20,23,29,.56);
     box-shadow:none;
     color:#b0bac8;
   }
+  .from-system .msg-head{margin-bottom:3px}
+  .from-system .msg-actions{display:none}
   .from-system .who{color:var(--system)}
   .from-system .md{font-size:12px}
+  .day-sep{
+    align-self:center;
+    width:min(760px,92%);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    color:#788496;
+    font-size:11px;
+    font-weight:700;
+    letter-spacing:.02em;
+    text-transform:uppercase;
+    margin:4px 0;
+  }
+  .day-sep:before,.day-sep:after{
+    content:"";
+    height:1px;
+    flex:1;
+    background:linear-gradient(90deg, transparent, rgba(120,132,150,.42), transparent);
+  }
 
   .md{font-size:14px;line-height:1.56;color:var(--txt);overflow-wrap:anywhere}
   .md p{margin:.45em 0}
@@ -623,6 +641,7 @@ let stickToBottom = true;
 let unseenCount = 0;
 let searchMatches = [];
 let searchIndex = -1;
+let lastRenderedDay = '';
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -674,6 +693,21 @@ function fullTime(ts){
   const d = new Date(ts);
   if(Number.isNaN(d.getTime())) return '';
   return d.toLocaleString('ru-RU', {dateStyle:'short', timeStyle:'medium'});
+}
+function dayKey(ts){
+  const d = new Date(ts);
+  if(Number.isNaN(d.getTime())) return '';
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function dayLabel(ts){
+  const d = new Date(ts);
+  if(Number.isNaN(d.getTime())) return '';
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if(dayKey(ts) === dayKey(today)) return 'Сегодня';
+  if(dayKey(ts) === dayKey(yesterday)) return 'Вчера';
+  return d.toLocaleDateString('ru-RU', {day:'numeric', month:'long', weekday:'long'});
 }
 function relativeTime(ts){
   const d = new Date(ts);
@@ -914,6 +948,14 @@ function closeSearch(){
   clearSearchMarks();
 }
 function addMsg(m){
+  const key = dayKey(m.ts);
+  if(key && key !== lastRenderedDay){
+    const sep = document.createElement('div');
+    sep.className = 'day-sep';
+    sep.textContent = dayLabel(m.ts);
+    log.insertBefore(sep, working);
+    lastRenderedDay = key;
+  }
   const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
   const atts = msgAttachments(m);
   const div = document.createElement('article');
@@ -981,8 +1023,9 @@ async function status(){
     const r = await fetch('/api/status');
     const s = await r.json();
     if(typeof s.lastSeq === 'number' && s.lastSeq < lastSeq){
-      [...log.querySelectorAll('.msg')].forEach(n => n.remove());
+      [...log.querySelectorAll('.msg,.day-sep')].forEach(n => n.remove());
       lastSeq = 0;
+      lastRenderedDay = '';
       firstLoad = true;
     }
 
