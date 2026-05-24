@@ -117,6 +117,9 @@
   }
   .meta-line{display:flex;gap:6px;align-items:center;min-width:0}
   .meta b{color:var(--soft);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .meta b.ok{color:var(--codex)}
+  .meta b.warn{color:var(--model)}
+  .meta b.bad{color:var(--danger)}
   .btns{display:flex;gap:8px;align-items:center;justify-content:flex-end}
   #kill{background:#34191b;border-color:#7d3136;color:#ffd7da;font-weight:700}
   #kill:hover{background:#4a2024;border-color:var(--danger)}
@@ -393,6 +396,24 @@
     background:#252c38;
   }
   #toBottom.show{display:grid}
+  #toBottom .new-count{
+    position:absolute;
+    top:-7px;
+    right:-7px;
+    min-width:20px;
+    height:20px;
+    padding:0 5px;
+    border-radius:999px;
+    display:none;
+    place-items:center;
+    background:var(--user);
+    color:#06182d;
+    border:1px solid rgba(255,255,255,.22);
+    font-size:11px;
+    font-weight:800;
+    line-height:1;
+  }
+  #toBottom.has-new .new-count{display:grid}
   footer{
     padding:12px 16px;
     background:rgba(23,26,33,.94);
@@ -499,6 +520,7 @@
     <div class="meta">
       <div class="meta-line"><span>статус:</span><b id="st">ожидание</b></div>
       <div class="meta-line"><span>задача:</span><b id="task">нет активной задачи</b></div>
+      <div class="meta-line"><span>связь:</span><b id="beat">обновляется</b></div>
     </div>
   </div>
   <div class="btns">
@@ -516,7 +538,7 @@
   </div>
 </main>
 
-<button id="toBottom" type="button" title="Прокрутить вниз">↓</button>
+<button id="toBottom" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
 
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
@@ -534,6 +556,7 @@
 let lastSeq = 0;
 let firstLoad = true;
 let stickToBottom = true;
+let unseenCount = 0;
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -541,6 +564,7 @@ const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
 const lightbox = document.getElementById('lightbox');
+const newCount = document.getElementById('newCount');
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -603,11 +627,28 @@ function isNearBottom(){
 }
 function updateBottomButton(){
   stickToBottom = isNearBottom();
+  if(stickToBottom) unseenCount = 0;
   toBottom.classList.toggle('show', !stickToBottom);
+  toBottom.classList.toggle('has-new', unseenCount > 0);
+  newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
+  toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
 }
 function scrollToBottom(behavior){
+  unseenCount = 0;
   log.scrollTo({top:log.scrollHeight, behavior:behavior || 'smooth'});
   requestAnimationFrame(updateBottomButton);
+}
+function heartbeatInfo(ts){
+  const d = new Date(ts);
+  if(Number.isNaN(d.getTime())) return {label:'нет данных', level:'bad', title:''};
+  const diff = Math.max(0, Date.now() - d.getTime());
+  const sec = Math.floor(diff / 1000);
+  if(sec < 45) return {label:'сейчас', level:'ok', title:fullTime(ts)};
+  const min = Math.floor(sec / 60);
+  if(min < 2) return {label:sec + ' сек назад', level:'warn', title:fullTime(ts)};
+  if(min < 60) return {label:min + ' мин назад', level:min >= 5 ? 'bad' : 'warn', title:fullTime(ts)};
+  const hr = Math.floor(min / 60);
+  return {label:hr + ' ч назад', level:'bad', title:fullTime(ts)};
 }
 
 function renderMd(src){
@@ -735,9 +776,13 @@ async function poll(){
       addMsg(m);
       lastSeq = Math.max(lastSeq, Number(m.seq) || 0);
     }
-    if(data.length && (beforeBottom || firstLoad)){
-      scrollToBottom(firstLoad ? 'auto' : 'smooth');
-      firstLoad = false;
+    if(data.length){
+      if(beforeBottom || firstLoad){
+        scrollToBottom(firstLoad ? 'auto' : 'smooth');
+        firstLoad = false;
+      } else {
+        unseenCount += data.length;
+      }
     }
     updateBottomButton();
   }catch(e){}
@@ -771,6 +816,12 @@ async function status(){
     const mdl = modelLabel(s.active_model);
     const readableStatus = s.status || 'idle';
     document.getElementById('st').textContent = readableStatus;
+
+    const beatEl = document.getElementById('beat');
+    const beat = heartbeatInfo(s.heartbeat || s.driver_started);
+    beatEl.textContent = beat.label;
+    beatEl.className = beat.level;
+    beatEl.title = beat.title;
 
     const taskEl = document.getElementById('task');
     const taskText = s.current_task ? String(s.current_task) : 'нет активной задачи';
