@@ -780,8 +780,8 @@ function applyViewPrefs(){
   compactToggle.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
   compactToggle.textContent = compactMode ? 'Комфортно' : 'Сжато';
   compactToggle.title = compactMode ? 'Вернуть комфортную ленту' : 'Сжать ленту';
-  systemToggle.classList.toggle('on', showSystem);
-  systemToggle.setAttribute('aria-pressed', showSystem ? 'true' : 'false');
+  systemToggle.classList.toggle('on', !showSystem);
+  systemToggle.setAttribute('aria-pressed', !showSystem ? 'true' : 'false');
   systemToggle.textContent = showSystem ? 'События' : 'Без событий';
   systemToggle.title = showSystem ? 'Скрыть системные события' : 'Показать системные события';
   if(stickToBottom) requestAnimationFrame(() => scrollToBottom('auto'));
