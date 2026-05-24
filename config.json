@@ -1,0 +1,18 @@
+{
+  "port": 8787,
+  "codexExe": "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
+  "claudeGlob": "C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe",
+  "loopDelaySeconds": 2,
+  "maxTurns": 12,
+  "leaseTimeoutSeconds": 300,
+  "mode": "interactive",
+  "planner": "claude",
+  "coder": "codex",
+  "workRoot": "C:/Users/rafie",
+  "idlePollSeconds": 1,
+  "fullContextCount": 20,
+  "summarizeBatch": 15,
+  "triageModel": "sonnet",
+  "deepModel": "opus",
+  "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
+}

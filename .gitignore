@@ -1,0 +1,13 @@
+# Runtime/state and secrets -- NOT tracked, so rollback never wipes them.
+state.json
+conversation.jsonl
+summary.txt
+auth.json
+control/
+files/
+runtime/
+decisions/
+sandbox/
+*.log
+*.tmp.*
+.git/
