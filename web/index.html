@@ -1204,11 +1204,30 @@ async function poll(){
       }
     }
     updateBottomButton();
-  }catch(e){}
+  }catch(e){
+    showConnectionProblem('messages', e);
+  }
 }
 function setChip(id,on){
   const c = document.getElementById(id);
   c.classList.toggle('on', Boolean(on));
+}
+function showConnectionProblem(source, err){
+  const detail = err && err.message ? err.message : String(err || source || '');
+  const text = 'Нет связи с мостом. Повторяю...';
+  const statusEl = document.getElementById('st');
+  const beatEl = document.getElementById('beat');
+  statusEl.textContent = text;
+  statusEl.title = detail;
+  statusEl.className = 'bad';
+  beatEl.textContent = 'нет связи';
+  beatEl.title = detail;
+  beatEl.className = 'bad';
+  setChip('chipClaude', false);
+  setChip('chipCodex', false);
+  setChip('chipModel', false);
+  working.style.display = 'none';
+  updateBottomButton();
 }
 function fallbackStatus(s, mdl){
   const act = s.active_agent;
@@ -1241,6 +1260,7 @@ async function status(){
     const statusEl = document.getElementById('st');
     statusEl.textContent = statusText;
     statusEl.title = statusText === readableStatus ? '' : readableStatus;
+    statusEl.className = '';
 
     const beatEl = document.getElementById('beat');
     const beat = activityInfo(s);
@@ -1271,7 +1291,9 @@ async function status(){
       working.style.display = 'none';
     }
     updateBottomButton();
-  }catch(e){}
+  }catch(e){
+    showConnectionProblem('status', e);
+  }
 }
 function resizeInput(){
   input.style.height = 'auto';
