@@ -320,7 +320,15 @@
   .md h4{font-size:1em}
   .md ul,.md ol{margin:.45em 0;padding-left:1.35em}
   .md li{margin:.22em 0}
+  .md li.task{list-style:none;margin-left:-1.35em;display:flex;gap:8px;align-items:flex-start}
+  .md li.task input{margin-top:.28em;accent-color:var(--codex)}
   .md blockquote{margin:.55em 0;padding:.1em .9em;border-left:3px solid var(--border);color:var(--soft)}
+  .md .table-wrap{max-width:100%;overflow:auto;margin:.65em 0;border:1px solid var(--border);border-radius:10px;background:#0b0f15}
+  .md table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px}
+  .md th,.md td{padding:8px 10px;border-bottom:1px solid var(--border-soft);vertical-align:top;text-align:left}
+  .md th{background:#111720;color:#fff;font-weight:700;white-space:nowrap}
+  .md tr:last-child td{border-bottom:0}
+  .md tbody tr:hover{background:rgba(255,255,255,.025)}
   .md code{
     background:#0c1016;
     border:1px solid var(--border-soft);
@@ -806,6 +814,29 @@ function renderMd(src){
   const out = [];
   let inList = false;
   let listType = '';
+  const isTableSep = line => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim());
+  const tableCells = line => {
+    let s = line.trim();
+    if(s.startsWith('|')) s = s.slice(1);
+    if(s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  };
+  const renderListItem = body => {
+    const task = body.match(/^\[(x|X| )\]\s+(.*)$/);
+    if(task){
+      const checked = task[1].toLowerCase() === 'x' ? ' checked' : '';
+      return '<li class="task"><input type="checkbox" disabled' + checked + '><span>' + task[2] + '</span></li>';
+    }
+    return '<li>' + body + '</li>';
+  };
+  const renderTable = (headers, rows) => {
+    const head = '<thead><tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr></thead>';
+    const body = '<tbody>' + rows.map(row => {
+      const cells = headers.map((_, i) => '<td>' + (row[i] || '') + '</td>').join('');
+      return '<tr>' + cells + '</tr>';
+    }).join('') + '</tbody>';
+    return '<div class="table-wrap"><table>' + head + body + '</table></div>';
+  };
   const closeList = () => {
     if(inList){
       out.push('</' + listType + '>');
@@ -814,7 +845,8 @@ function renderMd(src){
     }
   };
 
-  for(const line of lines){
+  for(let i = 0; i < lines.length; i++){
+    const line = lines[i];
     const trimmed = line.trim();
     if(/^@@CODE_BLOCK_\d+@@$/.test(trimmed)){
       closeList();
@@ -825,15 +857,26 @@ function renderMd(src){
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
     const ol = line.match(/^\s*\d+\.\s+(.*)$/);
     const quote = line.match(/^\s*&gt;\s?(.*)$/);
-    if(h){
+    if(trimmed.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])){
+      closeList();
+      const headers = tableCells(line);
+      const rows = [];
+      i += 2;
+      while(i < lines.length && lines[i].trim() && lines[i].includes('|') && !/^@@CODE_BLOCK_\d+@@$/.test(lines[i].trim())){
+        rows.push(tableCells(lines[i]));
+        i++;
+      }
+      i--;
+      out.push(renderTable(headers, rows));
+    } else if(h){
       closeList();
       out.push('<h' + h[1].length + '>' + h[2] + '</h' + h[1].length + '>');
     } else if(ul){
       if(!inList || listType !== 'ul'){ closeList(); inList = true; listType = 'ul'; out.push('<ul>'); }
-      out.push('<li>' + ul[1] + '</li>');
+      out.push(renderListItem(ul[1]));
     } else if(ol){
       if(!inList || listType !== 'ol'){ closeList(); inList = true; listType = 'ol'; out.push('<ol>'); }
-      out.push('<li>' + ol[1] + '</li>');
+      out.push(renderListItem(ol[1]));
     } else if(quote){
       closeList();
       out.push('<blockquote>' + quote[1] + '</blockquote>');
