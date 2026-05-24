@@ -393,6 +393,13 @@
     line-height:1.5;
     white-space:pre;
   }
+  .tok.kw{color:#c792ea;font-weight:700}
+  .tok.str{color:#c3e88d}
+  .tok.com{color:#69758a;font-style:italic}
+  .tok.num{color:#f78c6c}
+  .tok.var{color:#82aaff}
+  .tok.tag{color:#ffcb6b}
+  .tok.attr{color:#89ddff}
   .md strong{color:#fff}
   .md a{color:#92c7ff;text-decoration:none;border-bottom:1px solid rgba(146,199,255,.34)}
   .md a:hover{border-bottom-color:#92c7ff}
@@ -834,6 +841,50 @@ function activityInfo(s){
   return heartbeatInfo(s.heartbeat || s.driver_started);
 }
 
+function syntaxTokenKey(n){
+  let out = '';
+  do {
+    out = String.fromCharCode(65 + (n % 26)) + out;
+    n = Math.floor(n / 26) - 1;
+  } while(n >= 0);
+  return out;
+}
+function highlightCode(raw, lang){
+  const l = String(lang || '').toLowerCase();
+  let html = esc(raw);
+  const saved = [];
+  const save = (txt, cls) => {
+    const token = '\uE000' + syntaxTokenKey(saved.length) + '\uE001';
+    saved.push({token, html:'<span class="tok ' + cls + '">' + txt + '</span>'});
+    return token;
+  };
+  const stash = (re, cls) => { html = html.replace(re, m => save(m, cls)); };
+
+  if(l.includes('html') || l.includes('xml')){
+    stash(/&lt;!--[\s\S]*?--&gt;/g, 'com');
+  }
+  stash(/(&quot;(?:\\.|(?!&quot;)[\s\S])*?&quot;|&#39;(?:\\.|(?!&#39;)[\s\S])*?&#39;)/g, 'str');
+
+  if(l.includes('ps') || l.includes('powershell')){
+    html = html.replace(/(^|[\s;(])(#.*)$/gm, (m, lead, body) => lead + save(body, 'com'));
+    html = html.replace(/\$[A-Za-z_][\w:]*/g, m => '<span class="tok var">' + m + '</span>');
+    html = html.replace(/\b(function|param|process|begin|end|if|elseif|else|foreach|for|while|switch|try|catch|finally|return|throw|break|continue|true|false|null)\b/gi, '<span class="tok kw">$1</span>');
+  } else if(l.includes('js') || l.includes('ts') || l.includes('json') || l.includes('css')){
+    stash(/\/\*[\s\S]*?\*\//g, 'com');
+    html = html.replace(/(^|[\s;{}])((?:\/\/).*)$/gm, (m, lead, body) => lead + save(body, 'com'));
+    html = html.replace(/\b(async|await|const|let|var|function|return|if|else|for|while|switch|case|break|continue|try|catch|finally|class|new|import|export|from|true|false|null|undefined)\b/g, '<span class="tok kw">$1</span>');
+  } else if(l.includes('html') || l.includes('xml')){
+    html = html.replace(/(&lt;\/?)([A-Za-z][\w:-]*)/g, '$1<span class="tok tag">$2</span>');
+    html = html.replace(/\s([A-Za-z_:][-A-Za-z0-9_:.]*)(=)/g, ' <span class="tok attr">$1</span>$2');
+  }
+
+  html = html.replace(/\b(-?\d+(?:\.\d+)?)\b/g, '<span class="tok num">$1</span>');
+  for(const item of saved){
+    html = html.split(item.token).join(item.html);
+  }
+  return html;
+}
+
 function renderMd(src){
   src = String(src || '').replace(/\r\n/g,'\n');
   const blocks = [];
@@ -932,7 +983,7 @@ function renderMd(src){
     const codeHtml =
       '<div class="codebox">' +
         '<div class="codebar"><span class="lang">' + esc(block.lang) + '</span><button type="button" class="mini-btn copy-code">copy</button></div>' +
-        '<pre><code>' + esc(block.code) + '</code></pre>' +
+        '<pre><code>' + highlightCode(block.code, block.lang) + '</code></pre>' +
       '</div>';
     html = html.replace(block.token, codeHtml);
   }
