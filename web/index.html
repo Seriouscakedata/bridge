@@ -681,6 +681,7 @@
   </div>
   <div class="btns">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
+    <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
     <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
     <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
     <button type="button" onclick="ctl('pause')" title="Пауза">⏸ Пауза</button>
@@ -762,6 +763,7 @@ const lightboxName = document.getElementById('lightboxName');
 const lightboxOpen = document.getElementById('lightboxOpen');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
+const exportChatBtn = document.getElementById('exportChat');
 const searchPanel = document.getElementById('searchPanel');
 const searchInput = document.getElementById('searchInput');
 const searchCount = document.getElementById('searchCount');
@@ -1343,6 +1345,43 @@ function clearComposerStatusSoon(text){
     if(composerStatus.textContent === text) setComposerStatus('');
   }, 1600);
 }
+function downloadText(filename, text, type){
+  const blob = new Blob([text], {type:type || 'text/plain;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function stampForFile(){
+  const d = new Date();
+  return d.getFullYear() +
+    String(d.getMonth() + 1).padStart(2,'0') +
+    String(d.getDate()).padStart(2,'0') + '-' +
+    String(d.getHours()).padStart(2,'0') +
+    String(d.getMinutes()).padStart(2,'0') +
+    String(d.getSeconds()).padStart(2,'0');
+}
+async function exportChat(){
+  exportChatBtn.disabled = true;
+  setComposerStatus('Экспорт истории...');
+  try{
+    const r = await fetch('/api/messages?since=0');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    downloadText('bridge-history-' + stampForFile() + '.json', JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
+    const okText = 'История экспортирована: ' + data.length + ' ' + pluralRu(data.length, 'сообщение', 'сообщения', 'сообщений');
+    setComposerStatus(okText, 'ok');
+    clearComposerStatusSoon(okText);
+  }catch(e){
+    setComposerStatus('Экспорт не удался: ' + (e.message || e), 'bad');
+  }finally{
+    exportChatBtn.disabled = false;
+  }
+}
 function updateSendState(){
   sendBtn.disabled = sending || uploading || !input.value.trim();
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
@@ -1539,6 +1578,7 @@ searchToggle.addEventListener('click', () => {
   if(searchPanel.classList.contains('open')) closeSearch();
   else openSearch();
 });
+exportChatBtn.addEventListener('click', exportChat);
 compactToggle.addEventListener('click', () => {
   compactMode = !compactMode;
   localStorage.setItem('bridgeCompact', compactMode ? '1' : '0');
