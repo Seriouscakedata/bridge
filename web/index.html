@@ -1310,7 +1310,9 @@ function clearComposerStatusSoon(text){
 }
 function updateSendState(){
   sendBtn.disabled = sending || uploading || !input.value.trim();
+  sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
   attachBtn.disabled = uploading;
+  attachBtn.setAttribute('aria-busy', uploading ? 'true' : 'false');
 }
 async function copyText(text, btn){
   try{
