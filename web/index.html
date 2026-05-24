@@ -556,6 +556,21 @@
   .composer-status.show{display:block}
   .composer-status.ok{color:var(--codex)}
   .composer-status.bad{color:var(--danger)}
+  .composer-meta{
+    min-height:15px;
+    padding-left:2px;
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    color:#6f7b8d;
+    font-size:11px;
+    line-height:1.25;
+  }
+  .composer-meta span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .composer-meta .draft-state{flex:1}
+  .composer-meta .char-count{flex:none}
+  .composer-meta .char-count.warn{color:var(--model)}
+  .composer-meta .char-count.bad{color:var(--danger)}
   #attach{font-size:18px}
   #fileInput{display:none}
   body.dragover:after{
@@ -616,6 +631,7 @@
     body.compact-mode #log{padding:10px 8px 14px}
     body.compact-mode .msg,body.compact-mode .from-user{max-width:100%}
     footer{padding:10px;gap:8px}
+    .composer-meta{font-size:10.5px}
     #attach{width:38px}
     #send{padding:0 12px}
     #toBottom{right:12px;bottom:78px}
@@ -686,6 +702,10 @@
   <div class="compose-main">
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
     <div id="composerStatus" class="composer-status" role="status" aria-live="polite"></div>
+    <div id="composerMeta" class="composer-meta" aria-live="polite">
+      <span id="draftState" class="draft-state"></span>
+      <span id="charCount" class="char-count"></span>
+    </div>
   </div>
   <button id="send" class="primary" type="button" onclick="send()">Отправить</button>
 </footer>
@@ -712,6 +732,8 @@ const fileInput = document.getElementById('fileInput');
 const attachBtn = document.getElementById('attach');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
+const draftState = document.getElementById('draftState');
+const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
@@ -798,6 +820,24 @@ function fmtSize(n){
   if(n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
   if(n >= 1024) return (n / 1024).toFixed(1) + ' KB';
   return n + ' B';
+}
+function pluralRu(n, one, few, many){
+  n = Math.abs(Number(n) || 0);
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if(mod10 === 1 && mod100 !== 11) return one;
+  if(mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+function updateComposerMeta(){
+  const text = input.value || '';
+  const chars = [...text].length;
+  const lines = text ? text.split(/\r\n|\r|\n/).length : 1;
+  const charLabel = chars + ' ' + pluralRu(chars, 'символ', 'символа', 'символов');
+  const lineLabel = lines > 1 ? ' · ' + lines + ' ' + pluralRu(lines, 'строка', 'строки', 'строк') : '';
+  charCount.textContent = charLabel + lineLabel;
+  charCount.className = 'char-count' + (chars > 12000 ? ' bad' : chars > 6000 ? ' warn' : '');
+  draftState.textContent = text.trim() ? 'черновик сохранен' : 'готово к вводу';
 }
 function isNearBottom(){
   return log.scrollHeight - log.scrollTop - log.clientHeight < 120;
@@ -1302,6 +1342,7 @@ async function send(){
   input.value = '';
   localStorage.removeItem('bridgeDraft');
   resizeInput();
+  updateComposerMeta();
   updateSendState();
   setComposerStatus('Отправка...');
   try{
@@ -1314,6 +1355,7 @@ async function send(){
     input.value = draft;
     localStorage.setItem('bridgeDraft', draft);
     resizeInput();
+    updateComposerMeta();
     setComposerStatus('Не отправлено: ' + (e.message || e), 'bad');
   }finally{
     sending = false;
@@ -1356,6 +1398,7 @@ async function uploadFiles(files){
     input.value = '';
     localStorage.removeItem('bridgeDraft');
     resizeInput();
+    updateComposerMeta();
   }
   updateSendState();
   try{
@@ -1381,6 +1424,7 @@ async function uploadFiles(files){
       input.value = draft;
       localStorage.setItem('bridgeDraft', draft);
       resizeInput();
+      updateComposerMeta();
     }
     setComposerStatus('Загрузка не удалась: ' + (e.message || e), 'bad');
   }finally{
@@ -1427,6 +1471,7 @@ input.addEventListener('keydown', e => {
 input.addEventListener('input', () => {
   localStorage.setItem('bridgeDraft', input.value);
   resizeInput();
+  updateComposerMeta();
   updateSendState();
 });
 log.addEventListener('scroll', updateBottomButton);
@@ -1509,6 +1554,7 @@ window.addEventListener('keydown', e => {
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
 resizeInput();
+updateComposerMeta();
 updateSendState();
 poll();
 status();
