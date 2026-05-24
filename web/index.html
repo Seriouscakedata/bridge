@@ -253,6 +253,8 @@
     font-size:11px;
   }
   .mini-btn:hover{color:var(--txt)}
+  .mini-btn.copied{color:var(--codex);border-color:rgba(104,211,145,.55);background:rgba(104,211,145,.1)}
+  .mini-btn.bad{color:var(--danger);border-color:rgba(255,107,107,.56);background:rgba(255,107,107,.1)}
   .from-claude .avatar,.from-claude .bubble{border-color:rgba(184,140,255,.28)}
   .from-claude .avatar{background:var(--claude-bg);color:var(--claude)}
   .from-claude .bubble{background:linear-gradient(180deg, rgba(35,26,50,.92), rgba(25,25,34,.96))}
@@ -1009,7 +1011,7 @@ function renderMd(src){
   for(const block of blocks){
     const codeHtml =
       '<div class="codebox">' +
-        '<div class="codebar"><span class="lang">' + esc(block.lang) + '</span><button type="button" class="mini-btn copy-code">copy</button></div>' +
+        '<div class="codebar"><span class="lang">' + esc(block.lang) + '</span><button type="button" class="mini-btn copy-code" title="Скопировать код" aria-label="Скопировать код">&#x2398;</button></div>' +
         '<pre><code>' + highlightCode(block.code, block.lang) + '</code></pre>' +
       '</div>';
     html = html.replace(block.token, codeHtml);
@@ -1129,7 +1131,7 @@ function addMsg(m){
       '<div class="msg-head">' +
         '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
-        '<div class="msg-actions"><button type="button" class="mini-btn copy-msg" title="Копировать сообщение">copy</button></div>' +
+        '<div class="msg-actions"><button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
       '<div class="md">' + renderMd(m.text) + '</div>' +
       renderAttachments(m) +
@@ -1264,12 +1266,32 @@ async function copyText(text, btn){
       t.remove();
     }
     if(btn){
-      const old = btn.textContent;
-      btn.textContent = 'ok';
-      setTimeout(() => { btn.textContent = old; }, 900);
+      const old = btn.innerHTML;
+      const oldLabel = btn.getAttribute('aria-label');
+      btn.classList.remove('bad');
+      btn.classList.add('copied');
+      btn.innerHTML = '&check;';
+      btn.setAttribute('aria-label','Скопировано');
+      setTimeout(() => {
+        btn.innerHTML = old;
+        btn.classList.remove('copied');
+        if(oldLabel) btn.setAttribute('aria-label', oldLabel);
+      }, 900);
     }
   }catch(e){
-    if(btn) btn.textContent = 'err';
+    if(btn){
+      const old = btn.innerHTML;
+      const oldLabel = btn.getAttribute('aria-label');
+      btn.classList.remove('copied');
+      btn.classList.add('bad');
+      btn.innerHTML = '!';
+      btn.setAttribute('aria-label','Не скопировано');
+      setTimeout(() => {
+        btn.innerHTML = old;
+        btn.classList.remove('bad');
+        if(oldLabel) btn.setAttribute('aria-label', oldLabel);
+      }, 1200);
+    }
   }
 }
 async function send(){
