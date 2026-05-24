@@ -56,6 +56,7 @@
   }
   button:hover{background:#252b36;border-color:#465061}
   button:active{transform:translateY(1px)}
+  button:disabled{opacity:.55;cursor:not-allowed;transform:none}
   button.icon{width:38px;height:34px;display:grid;place-items:center;padding:0}
   button.primary{background:var(--user);border-color:var(--user);color:#06182d;font-weight:700}
   button.primary:hover{background:#8ac4ff;border-color:#8ac4ff}
@@ -520,8 +521,15 @@
     backdrop-filter:blur(14px);
     z-index:4;
   }
-  #inp{
+  .compose-main{
     flex:1;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+  }
+  #inp{
+    width:100%;
     min-height:44px;
     max-height:170px;
     background:#0b0f15;
@@ -535,6 +543,17 @@
     outline:none;
   }
   #inp:focus{border-color:rgba(114,183,255,.72);box-shadow:0 0 0 3px rgba(114,183,255,.12)}
+  .composer-status{
+    min-height:16px;
+    padding-left:2px;
+    color:var(--muted);
+    font-size:12px;
+    line-height:1.25;
+    display:none;
+  }
+  .composer-status.show{display:block}
+  .composer-status.ok{color:var(--codex)}
+  .composer-status.bad{color:var(--danger)}
   #attach{font-size:18px}
   #fileInput{display:none}
   body.dragover:after{
@@ -662,7 +681,10 @@
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
   <input id="fileInput" type="file" multiple>
-  <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
+  <div class="compose-main">
+    <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
+    <div id="composerStatus" class="composer-status" role="status" aria-live="polite"></div>
+  </div>
   <button id="send" class="primary" type="button" onclick="send()">Отправить</button>
 </footer>
 
@@ -685,6 +707,9 @@ const working = document.getElementById('working');
 const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
+const attachBtn = document.getElementById('attach');
+const sendBtn = document.getElementById('send');
+const composerStatus = document.getElementById('composerStatus');
 const lightbox = document.getElementById('lightbox');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
@@ -715,6 +740,8 @@ const modelNames = {
 };
 let compactMode = localStorage.getItem('bridgeCompact') === '1';
 let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
+let sending = false;
+let uploading = false;
 
 function esc(s){
   return String(s ?? '')
@@ -1208,6 +1235,19 @@ function resizeInput(){
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 170) + 'px';
 }
+function setComposerStatus(text, tone){
+  composerStatus.textContent = text || '';
+  composerStatus.className = 'composer-status' + (text ? ' show' : '') + (tone ? ' ' + tone : '');
+}
+function clearComposerStatusSoon(text){
+  setTimeout(() => {
+    if(composerStatus.textContent === text) setComposerStatus('');
+  }, 1600);
+}
+function updateSendState(){
+  sendBtn.disabled = sending || uploading || !input.value.trim();
+  attachBtn.disabled = uploading;
+}
 async function copyText(text, btn){
   try{
     if(navigator.clipboard && window.isSecureContext){
@@ -1234,12 +1274,29 @@ async function copyText(text, btn){
 }
 async function send(){
   const text = input.value.trim();
-  if(!text) return;
+  if(!text || sending || uploading) return;
+  const draft = input.value;
+  sending = true;
   input.value = '';
   localStorage.removeItem('bridgeDraft');
   resizeInput();
-  await fetch('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
-  poll();
+  updateSendState();
+  setComposerStatus('Отправка...');
+  try{
+    const r = await fetch('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    setComposerStatus('Отправлено', 'ok');
+    clearComposerStatusSoon('Отправлено');
+    poll();
+  }catch(e){
+    input.value = draft;
+    localStorage.setItem('bridgeDraft', draft);
+    resizeInput();
+    setComposerStatus('Не отправлено: ' + (e.message || e), 'bad');
+  }finally{
+    sending = false;
+    updateSendState();
+  }
 }
 async function ctl(action){
   await fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})});
@@ -1263,31 +1320,54 @@ function readDataUrl(file){
 }
 async function uploadFiles(files){
   files = [...files].filter(Boolean);
-  if(!files.length) return;
+  if(!files.length || uploading) return;
+  const tooBig = files.find(f => Number(f.size) > 25 * 1024 * 1024);
+  if(tooBig){
+    setComposerStatus('Файл больше 25 MB: ' + (tooBig.name || 'file'), 'bad');
+    return;
+  }
+  uploading = true;
   const caption = input.value.trim();
+  const draft = input.value;
+  let uploaded = 0;
   if(caption){
     input.value = '';
     localStorage.removeItem('bridgeDraft');
     resizeInput();
   }
-  for(let i = 0; i < files.length; i++){
-    const file = files[i];
-    const dataB64 = await readDataUrl(file);
-    const text = i === 0 ? caption : '';
-    const r = await fetch('/api/upload', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name:file.name || 'clipboard.png', mime:file.type || '', dataB64, text})
-    });
-    if(!r.ok){
-      alert('Upload failed: ' + r.status);
-      break;
+  updateSendState();
+  try{
+    for(let i = 0; i < files.length; i++){
+      const file = files[i];
+      setComposerStatus('Загрузка ' + (i + 1) + '/' + files.length + ': ' + (file.name || 'clipboard.png'));
+      const dataB64 = await readDataUrl(file);
+      const text = i === 0 ? caption : '';
+      const r = await fetch('/api/upload', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:file.name || 'clipboard.png', mime:file.type || '', dataB64, text})
+      });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      uploaded++;
     }
+    const okText = files.length === 1 ? 'Файл прикреплён' : 'Файлы прикреплены: ' + files.length;
+    setComposerStatus(okText, 'ok');
+    clearComposerStatusSoon(okText);
+    poll();
+  }catch(e){
+    if(caption && uploaded === 0){
+      input.value = draft;
+      localStorage.setItem('bridgeDraft', draft);
+      resizeInput();
+    }
+    setComposerStatus('Загрузка не удалась: ' + (e.message || e), 'bad');
+  }finally{
+    uploading = false;
+    updateSendState();
   }
-  poll();
 }
 
-document.getElementById('attach').addEventListener('click', () => fileInput.click());
+attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => {
   uploadFiles(e.target.files);
   fileInput.value = '';
@@ -1325,6 +1405,7 @@ input.addEventListener('keydown', e => {
 input.addEventListener('input', () => {
   localStorage.setItem('bridgeDraft', input.value);
   resizeInput();
+  updateSendState();
 });
 log.addEventListener('scroll', updateBottomButton);
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
@@ -1406,6 +1487,7 @@ window.addEventListener('keydown', e => {
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
 resizeInput();
+updateSendState();
 poll();
 status();
 setInterval(poll, 1500);
