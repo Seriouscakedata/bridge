@@ -624,6 +624,7 @@
     <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
     <button type="button" onclick="ctl('pause')" title="Пауза">⏸ Пауза</button>
     <button type="button" onclick="ctl('resume')" title="Продолжить">▶ Продолжить</button>
+    <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻</button>
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
   </div>
 </header>
@@ -1196,6 +1197,10 @@ async function ctl(action){
 async function killSwitch(){
   if(!confirm('Стоп-кран: прервать текущую задачу и остановить процесс агента?')) return;
   await ctl('kill');
+}
+async function restartBridge(){
+  if(!confirm('Перезапустить мост через supervisor? Текущая задача будет возобновлена после рестарта.')) return;
+  await ctl('restart');
 }
 function readDataUrl(file){
   return new Promise((resolve,reject) => {
