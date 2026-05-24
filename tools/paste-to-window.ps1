@@ -1,4 +1,4 @@
-# paste-to-window.ps1 -- reliably paste text into another app's focused input.
+﻿# paste-to-window.ps1 -- reliably paste text into another app's focused input.
 # Targets by PROCESS NAME (window title is unreliable -- e.g. Claude Code shows the
 # chat name). Puts text on the clipboard, activates the app's window, sends Ctrl+V.
 #   -ProcessName  e.g. 'claude' (Claude Code), 'Codex'

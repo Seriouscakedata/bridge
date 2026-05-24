@@ -1,4 +1,4 @@
-# screenshot.ps1 -- capture the whole (virtual) screen to a PNG, print its path.
+﻿# screenshot.ps1 -- capture the whole (virtual) screen to a PNG, print its path.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $b = [System.Windows.Forms.SystemInformation]::VirtualScreen

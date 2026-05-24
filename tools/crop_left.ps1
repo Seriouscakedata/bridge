@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.Drawing
+﻿Add-Type -AssemblyName System.Drawing
 $src = 'C:\Users\rafie\AppData\Local\Temp\bridge_shot_20260525_013802.png'
 $orig = [System.Drawing.Image]::FromFile($src)
 $hw = [int]($orig.Width / 2)
