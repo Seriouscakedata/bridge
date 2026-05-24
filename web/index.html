@@ -328,6 +328,23 @@
     flex:1;
     background:linear-gradient(90deg, transparent, rgba(120,132,150,.42), transparent);
   }
+  .unread-sep{
+    align-self:center;
+    width:min(680px,90%);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    color:var(--model);
+    font-size:11px;
+    font-weight:800;
+    margin:2px 0;
+  }
+  .unread-sep:before,.unread-sep:after{
+    content:"";
+    height:1px;
+    flex:1;
+    background:linear-gradient(90deg, transparent, rgba(255,209,102,.55), transparent);
+  }
 
   .md{font-size:14px;line-height:1.56;color:var(--txt);overflow-wrap:anywhere}
   .md p{margin:.45em 0}
@@ -747,6 +764,7 @@ let unseenCount = 0;
 let searchMatches = [];
 let searchIndex = -1;
 let lastRenderedDay = '';
+let unreadMarker = null;
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -871,7 +889,10 @@ function isNearBottom(){
 }
 function updateBottomButton(){
   stickToBottom = isNearBottom();
-  if(stickToBottom) unseenCount = 0;
+  if(stickToBottom){
+    unseenCount = 0;
+    clearUnreadMarker();
+  }
   toBottom.classList.toggle('show', !stickToBottom);
   toBottom.classList.toggle('has-new', unseenCount > 0);
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
@@ -893,8 +914,20 @@ function applyViewPrefs(){
 }
 function scrollToBottom(behavior){
   unseenCount = 0;
+  clearUnreadMarker();
   log.scrollTo({top:log.scrollHeight, behavior:behavior || 'smooth'});
   requestAnimationFrame(updateBottomButton);
+}
+function ensureUnreadMarker(){
+  if(unreadMarker && unreadMarker.isConnected) return;
+  unreadMarker = document.createElement('div');
+  unreadMarker.className = 'unread-sep';
+  unreadMarker.textContent = 'Новые сообщения';
+  log.insertBefore(unreadMarker, working);
+}
+function clearUnreadMarker(){
+  if(unreadMarker && unreadMarker.isConnected) unreadMarker.remove();
+  unreadMarker = null;
 }
 function heartbeatInfo(ts){
   const d = new Date(ts);
@@ -1220,6 +1253,7 @@ async function poll(){
     const beforeBottom = isNearBottom();
     const r = await fetch('/api/messages?since=' + lastSeq);
     const data = await r.json();
+    if(data.length && !beforeBottom && !firstLoad) ensureUnreadMarker();
     for(const m of data){
       addMsg(m);
       lastSeq = Math.max(lastSeq, Number(m.seq) || 0);
