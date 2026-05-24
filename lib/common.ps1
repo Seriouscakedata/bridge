@@ -279,6 +279,7 @@ function Initialize-Bridge {
       abort          = $false
       active_agent   = $null
       active_model   = $null
+      status_text    = $null
       agent_pid      = $null
       current_task   = $null
       task_turn      = 0
@@ -295,7 +296,7 @@ function Initialize-Bridge {
     Write-State -State $state
   } else {
     # migrate older state.json: add any fields introduced later
-    $defaults = @{ abort=$false; agent_pid=$null; active_model=$null; current_task=$null; task_turn=0; task_mode='normal'; task_start_seq=0; last_user_seq=0; summarized_seq=0 }
+    $defaults = @{ abort=$false; agent_pid=$null; active_model=$null; status_text=$null; current_task=$null; task_turn=0; task_mode='normal'; task_start_seq=0; last_user_seq=0; summarized_seq=0 }
     $changed = $false
     foreach ($k in $defaults.Keys) {
       if (-not ($state.PSObject.Properties.Name -contains $k)) {

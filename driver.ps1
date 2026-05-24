@@ -220,6 +220,15 @@ function Next-Speaker {
   return 'claude'
 }
 
+function Get-AgentStatusText {
+  param([string]$Speaker, [string]$Mode)
+  if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет следующий шаг.' }
+  if ($Speaker -eq 'claude') { return 'Claude анализирует задачу и выбирает следующий шаг.' }
+  if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex оценивает план, риски и варианты без изменения файлов.' }
+  if ($Speaker -eq 'codex') { return 'Codex выполняет правку и проверяет результат.' }
+  return $null
+}
+
 # ---------- startup ----------
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
 # summary and decisions are file-based and already survive. We keep current_task /
@@ -231,7 +240,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='working'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.agent_pid=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." -Kind event | Out-Null
@@ -239,7 +248,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.agent_pid=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
     $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
@@ -251,14 +260,14 @@ while ($true) {
  try {
   $state = Read-State
 
-  if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null } | Out-Null; break }
+  if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
-  if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
+  if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
 
   $maxUser = Get-MaxUserSeq
 
@@ -269,7 +278,7 @@ while ($true) {
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
-      Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       Start-Sleep -Seconds $idlePoll; continue
     }
   } else {
@@ -282,7 +291,8 @@ while ($true) {
   $speaker = if ($tt -eq 0) { 'claude' } else { Next-Speaker }
   $plannerModel = if ($mode -eq 'discuss') { $deepModel } else { $triageModel }
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
-  Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+  $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode
+  Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 
   Update-ContextSummary   # compress old history if it grew beyond the hot window
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
@@ -312,7 +322,7 @@ while ($true) {
   if ([string]::IsNullOrWhiteSpace($visibleReply) -and $attachmentMetas.Count -eq 0) { $visibleReply = "(нет ответа от $speaker)" }
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
-  Update-State { param($s) $s.task_turn=[int]$s.task_turn+1; $s.turn=[int]$s.turn+1; $s.active_agent=$null; $s.active_model=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+  Update-State { param($s) $s.task_turn=[int]$s.task_turn+1; $s.turn=[int]$s.turn+1; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
 
   $plannerStatus = 'CONTINUE'
   if ($speaker -eq 'claude') {
@@ -323,7 +333,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
@@ -336,18 +346,18 @@ while ($true) {
       } catch {}
     }
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
  } catch {
   try { Add-Message -From system -Text ("Ошибка драйвера: " + $_.Exception.Message + " -- продолжаю.") -Kind event | Out-Null } catch {}
-  try { Update-State { param($s) $s.active_agent=$null; $s.agent_pid=$null } | Out-Null } catch {}
+  try { Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null } | Out-Null } catch {}
   Start-Sleep -Seconds $loopDelay
  }
 }
