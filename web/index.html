@@ -81,7 +81,7 @@
     background:rgba(23,26,33,.92);
     border-bottom:1px solid var(--border);
     display:grid;
-    grid-template-columns:minmax(0,auto) minmax(220px,1fr) minmax(0,auto);
+    grid-template-columns:minmax(0,auto) minmax(220px,1fr) minmax(0,auto) auto;
     gap:14px;
     align-items:center;
     backdrop-filter:blur(14px);
@@ -142,6 +142,12 @@
   .btns{min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
+  .header-toggle-btn{
+    justify-self:end;
+    align-self:center;
+    font-size:18px;
+    transition:transform .2s;
+  }
   #kill{background:#34191b;border-color:#7d3136;color:#ffd7da;font-weight:700}
   #kill:hover{background:#4a2024;border-color:var(--danger)}
   #exportMarkdown{font-size:10px;font-weight:800;letter-spacing:0}
@@ -1031,6 +1037,42 @@
   .composer-status.show{display:block}
   .composer-status.ok{color:var(--codex)}
   .composer-status.bad{color:var(--danger)}
+  .staged-files{
+    display:none;
+    flex-wrap:wrap;
+    gap:6px;
+    padding:2px 0;
+  }
+  .staged-files.show{display:flex}
+  .staged-pill{
+    max-width:min(280px,100%);
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:4px 8px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    background:var(--panel-2);
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.2;
+  }
+  .staged-pill .s-ico{flex:none;color:var(--muted)}
+  .staged-pill .s-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .staged-pill .rm{
+    width:auto;
+    height:auto;
+    min-width:14px;
+    padding:0;
+    border:0;
+    border-radius:0;
+    background:transparent;
+    color:var(--muted);
+    font-size:15px;
+    line-height:1;
+    cursor:pointer;
+  }
+  .staged-pill .rm:hover{background:transparent;color:var(--txt)}
   .upload-queue{
     display:none;
     gap:6px;
@@ -1171,10 +1213,12 @@
   .lightbox-caption a:hover{border-bottom-color:#92c7ff}
 
   @media (max-width:900px){
-    header{grid-template-columns:1fr;gap:9px;align-items:start}
-    .centerbar{flex-direction:column;align-items:stretch;gap:8px}
+    header{grid-template-columns:minmax(0,1fr) auto;gap:9px;align-items:start}
+    .brand{grid-column:1;grid-row:1}
+    .header-toggle-btn{grid-column:2;grid-row:1}
+    .centerbar{grid-column:1 / -1;flex-direction:column;align-items:stretch;gap:8px}
     .meta{gap:3px}
-    .btns{justify-content:flex-start;flex-wrap:wrap}
+    .btns{grid-column:1 / -1;justify-content:flex-start;flex-wrap:wrap}
   }
   @media (max-width:1180px){
     body.overview-open #log{padding-right:var(--content-pad)}
@@ -1274,6 +1318,25 @@
     #send{grid-column:4;grid-row:2;width:100%;min-height:38px}
     .composer-meta{gap:6px}
   }
+  header.collapsed{
+    min-height:unset;
+    padding:4px 12px;
+    display:flex;
+    justify-content:flex-end;
+    align-items:center;
+    gap:0;
+  }
+  header.collapsed .brand,
+  header.collapsed .centerbar,
+  header.collapsed .btns{display:none}
+  header.collapsed .header-toggle-btn{transform:rotate(180deg)}
+  body.header-collapsed #scrollProgress{top:48px}
+  body.header-collapsed.has-health-banner #scrollProgress{top:92px}
+  @media (max-width:640px){
+    header.collapsed{padding:4px 10px}
+    body.header-collapsed #scrollProgress{top:42px}
+    body.header-collapsed.has-health-banner #scrollProgress{top:86px}
+  }
   @media (prefers-reduced-motion:reduce){
     *,#log{scroll-behavior:auto!important;animation:none!important;transition:none!important}
   }
@@ -1313,6 +1376,7 @@
     <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻</button>
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
   </div>
+  <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
 </header>
 
 <div id="filterBar" class="filterbar" aria-label="Фильтр ленты">
@@ -1400,6 +1464,7 @@
   <button id="voice" class="icon" title="Голосовой ввод в черновик" type="button">🎙</button>
   <input id="fileInput" type="file" multiple>
   <div class="compose-main">
+    <div id="stagedFiles" class="staged-files" aria-live="polite"></div>
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
     <div id="composerStatus" class="composer-status" role="status" aria-live="polite"></div>
     <div id="uploadQueue" class="upload-queue" aria-live="polite"></div>
@@ -1442,6 +1507,8 @@ let activeAgentLabel = '';
 let systemGroupsExpanded = new Set();
 
 const log = document.getElementById('log');
+const headerEl = document.querySelector('header');
+const headerToggle = document.getElementById('headerToggle');
 const working = document.getElementById('working');
 const emptyState = document.getElementById('emptyState');
 const scrollProgress = document.getElementById('scrollProgress');
@@ -1455,6 +1522,7 @@ const screenBtn = document.getElementById('screen');
 const voiceBtn = document.getElementById('voice');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
+const stagedFilesEl = document.getElementById('stagedFiles');
 const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
 const enterModeBtn = document.getElementById('enterMode');
@@ -1503,6 +1571,7 @@ const DRAFT_KEY = 'bridgeDraft';
 const DRAFT_TS_KEY = 'bridgeDraftSavedAt';
 const LAST_SENT_KEY = 'bridgeLastSentDraft';
 const LAST_SENT_AT_KEY = 'bridgeLastSentAt';
+const HEADER_KEY = 'bridgeHeaderCollapsed';
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -1531,12 +1600,14 @@ let overviewOpen = localStorage.getItem('bridgeOverview') === null
   ? window.innerWidth >= 1360
   : localStorage.getItem('bridgeOverview') !== '0';
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
+let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
 if(enterMode !== 'send' && enterMode !== 'multiline') enterMode = 'send';
 let favoriteSeqs = loadFavoriteSeqs();
 let sending = false;
 let uploading = false;
 let screenshotting = false;
+let pendingFiles = [];
 let speechRec = null;
 let voiceListening = false;
 let voiceBaseText = '';
@@ -1787,6 +1858,17 @@ function applyComposerExpanded(){
     composerExpandBtn.setAttribute('aria-pressed', composerExpanded ? 'true' : 'false');
   }
   resizeInput();
+  requestAnimationFrame(updateBottomButton);
+}
+function applyHeaderCollapsed(){
+  if(!headerEl) return;
+  headerEl.classList.toggle('collapsed', Boolean(headerCollapsed));
+  document.body.classList.toggle('header-collapsed', Boolean(headerCollapsed));
+  if(headerToggle){
+    headerToggle.setAttribute('aria-pressed', headerCollapsed ? 'true' : 'false');
+    headerToggle.title = headerCollapsed ? 'Показать панель' : 'Скрыть панель';
+    headerToggle.setAttribute('aria-label', headerToggle.title);
+  }
   requestAnimationFrame(updateBottomButton);
 }
 function updateDocumentTitle(){
@@ -2751,7 +2833,8 @@ async function exportMarkdown(){
   }
 }
 function updateSendState(){
-  sendBtn.disabled = sending || uploading || screenshotting || !input.value.trim();
+  const hasSendable = pendingFiles.length > 0 || Boolean(input.value.trim());
+  sendBtn.disabled = sending || uploading || screenshotting || !hasSendable;
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
   attachBtn.disabled = sending || uploading || screenshotting;
   screenBtn.disabled = sending || uploading || screenshotting;
@@ -2807,7 +2890,15 @@ async function copyText(text, btn){
 async function send(){
   if(voiceListening && speechRec) speechRec.stop();
   const text = input.value.trim();
-  if(!text || sending || uploading || screenshotting) return;
+  if(sending || uploading || screenshotting) return;
+  if(pendingFiles.length){
+    const filesToSend = [...pendingFiles];
+    pendingFiles = [];
+    renderStagedFiles();
+    await uploadFiles(filesToSend);
+    return;
+  }
+  if(!text) return;
   const draft = input.value;
   sending = true;
   input.value = '';
@@ -3044,6 +3135,64 @@ function readDataUrl(file){
     fr.readAsDataURL(file);
   });
 }
+function renderStagedFiles(){
+  if(!stagedFilesEl) return;
+  stagedFilesEl.innerHTML = '';
+  stagedFilesEl.classList.toggle('show', pendingFiles.length > 0);
+  pendingFiles.forEach((file, i) => {
+    const pill = document.createElement('span');
+    pill.className = 'staged-pill';
+    pill.title = uploadName(file);
+
+    const icon = document.createElement('span');
+    icon.className = 's-ico';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = uploadIcon(file);
+
+    const name = document.createElement('span');
+    name.className = 's-name';
+    name.textContent = uploadName(file);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'rm';
+    remove.title = 'Убрать';
+    remove.setAttribute('aria-label', 'Убрать ' + uploadName(file));
+    remove.dataset.i = String(i);
+    remove.textContent = '×';
+
+    pill.appendChild(icon);
+    pill.appendChild(name);
+    pill.appendChild(remove);
+    stagedFilesEl.appendChild(pill);
+  });
+  stagedFilesEl.querySelectorAll('.rm').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pendingFiles.splice(Number(btn.dataset.i), 1);
+      renderStagedFiles();
+      updateSendState();
+      input.focus();
+    });
+  });
+  updateSendState();
+}
+function stageFiles(files){
+  const arr = [...files].filter(Boolean);
+  if(!arr.length) return;
+  const tooBig = arr.find(f => Number(f.size) > 25 * 1024 * 1024);
+  if(tooBig){
+    setComposerStatus('Файл больше 25 MB: ' + uploadName(tooBig), 'bad');
+    return;
+  }
+  pendingFiles.push(...arr);
+  renderStagedFiles();
+  const okText = pendingFiles.length === 1
+    ? 'Файл добавлен. Напишите текст и нажмите Отправить'
+    : 'Добавлено файлов: ' + pendingFiles.length;
+  setComposerStatus(okText, 'ok');
+  clearComposerStatusSoon(okText);
+  input.focus();
+}
 async function uploadFiles(files){
   files = [...files].filter(Boolean);
   if(!files.length || uploading) return;
@@ -3108,6 +3257,13 @@ screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
 clearDraftBtn.addEventListener('click', clearDraft);
 restoreLastBtn.addEventListener('click', restoreLastSent);
+if(headerToggle){
+  headerToggle.addEventListener('click', () => {
+    headerCollapsed = !headerCollapsed;
+    localStorage.setItem(HEADER_KEY, headerCollapsed ? '1' : '0');
+    applyHeaderCollapsed();
+  });
+}
 enterModeBtn.addEventListener('click', () => {
   enterMode = enterMode === 'send' ? 'multiline' : 'send';
   localStorage.setItem('bridgeEnterMode', enterMode);
@@ -3125,7 +3281,7 @@ healthRetry.addEventListener('click', () => {
   poll();
 });
 fileInput.addEventListener('change', e => {
-  uploadFiles(e.target.files);
+  stageFiles(e.target.files);
   fileInput.value = '';
 });
 window.addEventListener('paste', e => {
@@ -3139,7 +3295,7 @@ window.addEventListener('paste', e => {
   const files = pastedFiles.length ? pastedFiles : itemFiles;
   if(files.length){
     e.preventDefault();
-    uploadFiles(files);
+    stageFiles(files);
   }
 });
 window.addEventListener('dragenter', e => {
@@ -3160,7 +3316,7 @@ window.addEventListener('drop', e => {
   dragDepth = 0;
   document.body.classList.remove('dragover');
   const files = e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files : [];
-  uploadFiles(files);
+  stageFiles(files);
 });
 input.addEventListener('keydown', e => {
   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !input.value && localStorage.getItem(LAST_SENT_KEY)){
@@ -3364,6 +3520,7 @@ scrubCredentialedUrl();
 input.value = localStorage.getItem(DRAFT_KEY) || '';
 applyViewPrefs();
 applyOverviewState();
+applyHeaderCollapsed();
 applyComposerExpanded();
 applyMessageFilter();
 updateEnterMode();
