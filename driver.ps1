@@ -63,6 +63,22 @@ function Get-MessageAttachmentPaths {
   return $paths
 }
 
+function Get-DecisionsRecall {
+  $dp = Join-Path $bridgeRoot 'decisions'
+  if (-not (Test-Path $dp)) { return '' }
+  $files = @(Get-ChildItem $dp -Filter '*.md' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+  if ($files.Count -eq 0) { return '' }
+  $blocks = foreach ($f in $files) {
+    $raw = Get-Content $f.FullName -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+    $trimmed = $raw.Trim()
+    $snippet = if ($trimmed.Length -gt 400) { $trimmed.Substring(0,400) + '...' } else { $trimmed }
+    "[$($f.BaseName)]`n$snippet"
+  }
+  if (-not $blocks) { return '' }
+  return "=== НЕДАВНИЕ ЗАМЕТКИ (decisions/) ===`n" + ($blocks -join "`n---`n")
+}
+
 function Format-Transcript {
   # Compressed context: a rolling summary of older messages + the hot window (full).
   $labels = @{ claude='[PLANNER/Claude]'; codex='[CODER/Codex]'; user='[USER]'; system='[SYSTEM]' }
@@ -75,10 +91,12 @@ function Format-Transcript {
   }
   $body = ($lines -join "`n`n")
   $summary = Read-Summary
+  $decSect = Get-DecisionsRecall
+  $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $decAppend)
   }
-  return $body
+  return $body + $decAppend
 }
 
 function Build-Prompt {
@@ -125,6 +143,8 @@ $transcript
 - STATUS: CHAT -- только ответить/спросить пользователя, без действий и без Codex (вопрос, объяснение, уточнение).
 - STATUS: CONTINUE -- СЛОЖНОЕ -> Codex: написание/правка кода, многошаговое, сборка фич, итерации с тестами, рефакторинг, рискованное/необратимое в больших масштабах. Дай Codex конкретную инструкцию (что, где, критерий готовности).
 - STATUS: DISCUSS -- разобрать ИДЕЮ вместе с Codex (без правок): поставь ему тезис/вопрос.
+
+ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать в ответе результат проверки: вывод команды, git diff, содержимое файла или тест. Без явной проверки STATUS: DONE запрещён -- используй STATUS: CONTINUE и попроси Codex проверить, или проверь сам через Bash.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 "@
@@ -319,7 +339,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -334,7 +354,7 @@ while ($true) {
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -344,7 +364,7 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
-      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.task_start_seq=$maxUser; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
@@ -373,6 +393,25 @@ while ($true) {
   else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
+
+  # Handle agent timeouts as retryable errors, not normal replies.
+  if ($reply -eq '(coder timeout)' -or $reply -eq '(planner timeout)') {
+    $who = if ($reply -eq '(coder timeout)') { 'Codex' } else { 'Claude' }
+    $trc = [int](Read-State).timeout_retry_count
+    if ($trc -lt 1) {
+      Add-Message -From system -Text "⏱ Таймаут $who — повторяю попытку..." -Kind event | Out-Null
+      $newTrc = $trc + 1
+      $mutTrc = { param($s) $s.timeout_retry_count = $newTrc; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()
+      Update-State $mutTrc | Out-Null
+      continue
+    } else {
+      Add-Message -From system -Text "⏱ Таймаут $who повторился. Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      continue
+    }
+  }
+  Update-State { param($s) $s.timeout_retry_count=0 } | Out-Null
+
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post' -TaskText $task)
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
   $attachmentMetas = @()
@@ -407,6 +446,25 @@ while ($true) {
   if ([string]::IsNullOrWhiteSpace($visibleReply) -and $attachmentMetas.Count -eq 0) { $visibleReply = "(нет ответа от $speaker)" }
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
+
+  # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
+  if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
+    $gitDiffOut = & git -C $bridgeRoot diff --stat HEAD 2>&1
+    $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
+    $npc = [int](Read-State).no_progress_count
+    if ($hasChanges) {
+      Update-State { param($s) $s.no_progress_count=0 } | Out-Null
+    } else {
+      $newNpc = $npc + 1
+      $mutNpc = { param($s) $s.no_progress_count = $newNpc }.GetNewClosure()
+      Update-State $mutNpc | Out-Null
+      if ($newNpc -ge 4) {
+        Add-Message -From system -Text "⚠ Нет изменений файлов $newNpc ходов подряд. Codex — объясни, что блокирует выполнение, или предложи иной подход." -Kind event | Out-Null
+        Update-State { param($s) $s.no_progress_count=0 } | Out-Null
+      }
+    }
+  }
+
   Update-State { param($s) $s.task_turn=[int]$s.task_turn+1; $s.turn=[int]$s.turn+1; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
 
   $plannerStatus = 'CONTINUE'
@@ -418,7 +476,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
@@ -431,12 +489,12 @@ while ($true) {
       } catch {}
     }
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
