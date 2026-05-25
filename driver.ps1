@@ -65,14 +65,48 @@ function Get-MessageAttachmentPaths {
   return $paths
 }
 
+function Get-RecallKeywords {
+  param([string]$TaskText = '')
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
+  return @([regex]::Matches([string]$TaskText, '[\p{L}\p{N}_]{3,}') | ForEach-Object { $_.Value.ToLowerInvariant() } | Select-Object -Unique)
+}
+
+function Get-KeywordScore {
+  param([string]$Text = '', [object[]]$Keywords = @())
+  if ([string]::IsNullOrWhiteSpace($Text) -or -not $Keywords -or $Keywords.Count -eq 0) { return 0 }
+  $score = 0
+  foreach ($kw in $Keywords) {
+    if ($Text -imatch [regex]::Escape([string]$kw)) { $score++ }
+  }
+  return $score
+}
+
 function Get-DecisionsRecall {
+  param([string]$TaskText = '')
   $dp = Join-Path $bridgeRoot 'decisions'
   if (-not (Test-Path $dp)) { return '' }
-  $files = @(Get-ChildItem $dp -Filter '*.md' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+  $keywords = @(Get-RecallKeywords -TaskText $TaskText)
+  $take = if ($keywords.Count -gt 0) { 10 } else { 5 }
+  $files = @(Get-ChildItem $dp -Filter '*.md' -File | Sort-Object LastWriteTime -Descending | Select-Object -First $take)
   if ($files.Count -eq 0) { return '' }
-  $blocks = foreach ($f in $files) {
-    $raw = Get-Content $f.FullName -Raw -Encoding UTF8
+  $items = foreach ($f in $files) {
+    try { $raw = Get-Content $f.FullName -Raw -Encoding UTF8 } catch { continue }
     if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+    [pscustomobject]@{
+      File  = $f
+      Raw   = $raw
+      Score = Get-KeywordScore -Text $raw -Keywords $keywords
+    }
+  }
+  if (-not $items) { return '' }
+  if ($keywords.Count -gt 0) {
+    $items = @($items | Sort-Object @{Expression='Score';Descending=$true}, @{Expression={$_.File.LastWriteTime};Descending=$true} | Select-Object -First 5)
+  } else {
+    $items = @($items | Select-Object -First 5)
+  }
+  $blocks = foreach ($item in $items) {
+    $f = $item.File
+    $raw = [string]$item.Raw
     $trimmed = $raw.Trim()
     $snippet = if ($trimmed.Length -gt 400) { $trimmed.Substring(0,400) + '...' } else { $trimmed }
     "[$($f.BaseName)]`n$snippet"
@@ -81,7 +115,38 @@ function Get-DecisionsRecall {
   return "=== НЕДАВНИЕ ЗАМЕТКИ (decisions/) ===`n" + ($blocks -join "`n---`n")
 }
 
+function Get-EvidenceRecall {
+  param([string]$TaskText = '')
+  $ep = Join-Path $bridgeRoot 'evidence.jsonl'
+  if (-not (Test-Path $ep)) { return '' }
+  $keywords = @(Get-RecallKeywords -TaskText $TaskText)
+  if ($keywords.Count -eq 0) { return '' }
+  try { $lines = @(Get-Content -LiteralPath $ep -Encoding UTF8 -Tail 50) } catch { return '' }
+  if ($lines.Count -eq 0) { return '' }
+  $items = foreach ($line in $lines) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $rec = $line | ConvertFrom-Json } catch { continue }
+    $haystack = @([string]$rec.source, [string]$rec.summary, [string]$rec.task) -join "`n"
+    $score = Get-KeywordScore -Text $haystack -Keywords $keywords
+    if ($score -le 0) { continue }
+    [pscustomobject]@{
+      Score      = $score
+      Source     = [string]$rec.source
+      Summary    = [string]$rec.summary
+      Confidence = [string]$rec.confidence
+      Agent      = [string]$rec.agent
+    }
+  }
+  $items = @($items | Sort-Object @{Expression='Score';Descending=$true} | Select-Object -First 5)
+  if ($items.Count -eq 0) { return '' }
+  $blocks = foreach ($item in $items) {
+    "[$($item.Source)] $($item.Summary) (conf: $($item.Confidence), агент: $($item.Agent))"
+  }
+  return "=== РЕЛЕВАНТНЫЕ EVIDENCE ===`n" + ($blocks -join "`n")
+}
+
 function Format-Transcript {
+  param([string]$TaskText = '')
   # Compressed context: a rolling summary of older messages + the hot window (full).
   $labels = @{ claude='[PLANNER/Claude]'; codex='[CODER/Codex]'; user='[USER]'; system='[SYSTEM]' }
   $summarizedSeq = [int](Read-State).summarized_seq
@@ -93,12 +158,17 @@ function Format-Transcript {
   }
   $body = ($lines -join "`n`n")
   $summary = Read-Summary
-  $decSect = Get-DecisionsRecall
-  $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
-  if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $decAppend)
+  if ([string]::IsNullOrWhiteSpace($TaskText)) {
+    try { $TaskText = [string](Read-State).current_task } catch { $TaskText = '' }
   }
-  return $body + $decAppend
+  $decSect = Get-DecisionsRecall -TaskText $TaskText
+  $evSect = Get-EvidenceRecall -TaskText $TaskText
+  $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
+  $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
+  if (-not [string]::IsNullOrWhiteSpace($summary)) {
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $decAppend + $evAppend)
+  }
+  return $body + $decAppend + $evAppend
 }
 
 function Build-Prompt {
