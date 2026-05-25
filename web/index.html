@@ -43,6 +43,8 @@
     overflow:hidden;
   }
   body > *{min-width:0}
+  body.offline header{border-bottom-color:rgba(255,107,107,.55)}
+  body.offline .mark{box-shadow:0 0 0 3px rgba(255,107,107,.12)}
   button,textarea{font:inherit}
   button{
     background:var(--panel-2);
@@ -937,6 +939,10 @@ let searchMatches = [];
 let searchIndex = -1;
 let lastRenderedDay = '';
 let unreadMarker = null;
+let pollInFlight = false;
+let statusInFlight = false;
+let connectionFailures = 0;
+let activeAgentLabel = '';
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -965,6 +971,7 @@ const searchClose = document.getElementById('searchClose');
 const compactToggle = document.getElementById('compactToggle');
 const systemToggle = document.getElementById('systemToggle');
 const filterButtons = [...document.querySelectorAll('.filter-btn')];
+const baseTitle = document.title;
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -1062,6 +1069,15 @@ function updateComposerMeta(){
   charCount.className = 'char-count' + (chars > 12000 ? ' bad' : chars > 6000 ? ' warn' : '');
   draftState.textContent = text.trim() ? 'черновик сохранен' : 'готово к вводу';
 }
+function updateDocumentTitle(){
+  const unread = unseenCount > 0 ? '(' + (unseenCount > 99 ? '99+' : unseenCount) + ') ' : '';
+  const active = activeAgentLabel ? activeAgentLabel + ' · ' : '';
+  document.title = unread + active + baseTitle;
+}
+function noteConnectionOk(){
+  connectionFailures = 0;
+  document.body.classList.remove('offline');
+}
 function isNearBottom(){
   return log.scrollHeight - log.scrollTop - log.clientHeight < 120;
 }
@@ -1075,6 +1091,7 @@ function updateBottomButton(){
   toBottom.classList.toggle('has-new', unseenCount > 0);
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
+  updateDocumentTitle();
 }
 function isVisibleByPrefs(msg){
   if(!msg || msg.classList.contains('filtered-out')) return false;
@@ -1529,9 +1546,12 @@ function refreshTimes(){
 }
 
 async function poll(){
+  if(pollInFlight) return;
+  pollInFlight = true;
   try{
     const beforeBottom = isNearBottom();
     const data = await fetchJson('/api/messages?since=' + lastSeq);
+    noteConnectionOk();
     if(data.length && !beforeBottom && !firstLoad) ensureUnreadMarker();
     for(const m of data){
       addMsg(m);
@@ -1550,6 +1570,8 @@ async function poll(){
     updateBottomButton();
   }catch(e){
     showConnectionProblem('messages', e);
+  }finally{
+    pollInFlight = false;
   }
 }
 function setChip(id,on){
@@ -1557,20 +1579,24 @@ function setChip(id,on){
   c.classList.toggle('on', Boolean(on));
 }
 function showConnectionProblem(source, err){
+  connectionFailures++;
+  document.body.classList.add('offline');
+  activeAgentLabel = 'offline';
   const detail = err && err.message ? err.message : String(err || source || '');
   const text = 'Нет связи с мостом. Повторяю...';
   const statusEl = document.getElementById('st');
   const beatEl = document.getElementById('beat');
   statusEl.textContent = text;
-  statusEl.title = detail;
+  statusEl.title = source + ': ' + detail + ' (#' + connectionFailures + ')';
   statusEl.className = 'bad';
   beatEl.textContent = 'нет связи';
-  beatEl.title = detail;
+  beatEl.title = statusEl.title;
   beatEl.className = 'bad';
   setChip('chipClaude', false);
   setChip('chipCodex', false);
   setChip('chipModel', false);
   working.style.display = 'none';
+  updateDocumentTitle();
   updateBottomButton();
 }
 function fallbackStatus(s, mdl){
@@ -1585,8 +1611,11 @@ function fallbackStatus(s, mdl){
   return s.status || 'Ожидание';
 }
 async function status(){
+  if(statusInFlight) return;
+  statusInFlight = true;
   try{
     const s = await fetchJson('/api/status');
+    noteConnectionOk();
     if(typeof s.lastSeq === 'number' && s.lastSeq < lastSeq){
       [...log.querySelectorAll('.msg,.day-sep')].forEach(n => n.remove());
       lastSeq = 0;
@@ -1596,6 +1625,7 @@ async function status(){
 
     const act = s.active_agent;
     const mdl = modelLabel(s.active_model);
+    activeAgentLabel = act === 'claude' ? 'Claude' : act === 'codex' ? 'Codex' : '';
     const readableStatus = s.status || 'idle';
     const statusText = (act === 'claude' || act === 'codex' || s.paused)
       ? (s.status_text || fallbackStatus(s, mdl))
@@ -1643,6 +1673,8 @@ async function status(){
     updateBottomButton();
   }catch(e){
     showConnectionProblem('status', e);
+  }finally{
+    statusInFlight = false;
   }
 }
 function resizeInput(){
@@ -1708,10 +1740,25 @@ function stampForFile(){
     String(d.getMinutes()).padStart(2,'0') +
     String(d.getSeconds()).padStart(2,'0');
 }
-async function requestOk(url, options){
-  const r = await fetch(url, options);
-  if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
-  return r;
+async function requestOk(url, options, timeoutMs){
+  const opts = options ? Object.assign({}, options) : {};
+  let timer = null;
+  let ctrl = null;
+  if(typeof AbortController !== 'undefined' && !opts.signal){
+    ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs || 12000);
+  }
+  try{
+    const r = await fetch(url, opts);
+    if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
+    return r;
+  }catch(e){
+    if(e && e.name === 'AbortError') throw new Error('timeout');
+    throw e;
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
 }
 async function fetchJson(url, options){
   const r = await requestOk(url, options);
