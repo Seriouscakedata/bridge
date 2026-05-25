@@ -1096,7 +1096,7 @@
     border-color:rgba(114,183,255,.55);
     background:rgba(114,183,255,.1);
   }
-  .composer-clear{
+  .composer-clear,.composer-restore{
     display:none;
     flex:none;
     height:20px;
@@ -1106,8 +1106,9 @@
     font-size:12px;
     opacity:.78;
   }
-  .composer-clear.show{display:inline-flex;align-items:center;justify-content:center}
-  .composer-clear:hover{opacity:1}
+  .composer-clear.show,.composer-restore.show{display:inline-flex;align-items:center;justify-content:center}
+  .composer-restore.show{color:#d9ecff;border-color:rgba(114,183,255,.42);background:rgba(114,183,255,.08)}
+  .composer-clear:hover,.composer-restore:hover{opacity:1}
   body.composer-expanded #inp{
     min-height:min(220px,38vh);
     max-height:min(520px,46vh);
@@ -1391,6 +1392,7 @@
       <button id="enterMode" class="mini-btn composer-mode" type="button" title="Enter отправляет. Нажмите, чтобы Enter добавлял новую строку." aria-label="Режим Enter">↵</button>
       <button id="composerExpand" class="mini-btn composer-expand" type="button" title="Расширить поле ввода" aria-label="Расширить поле ввода" aria-pressed="false">⇵</button>
       <button id="clearDraft" class="mini-btn composer-clear" type="button" title="Очистить черновик" aria-label="Очистить черновик">×</button>
+      <button id="restoreLast" class="mini-btn composer-restore" type="button" title="Вернуть последнее отправленное сообщение" aria-label="Вернуть последнее отправленное сообщение">↺</button>
       <span id="charCount" class="char-count"></span>
     </div>
   </div>
@@ -1442,6 +1444,7 @@ const draftState = document.getElementById('draftState');
 const enterModeBtn = document.getElementById('enterMode');
 const composerExpandBtn = document.getElementById('composerExpand');
 const clearDraftBtn = document.getElementById('clearDraft');
+const restoreLastBtn = document.getElementById('restoreLast');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
 const lightboxName = document.getElementById('lightboxName');
@@ -1479,6 +1482,10 @@ if(codeFilterBtn && !document.querySelector('.filter-btn[data-filter="favorites"
 const filterButtons = [...document.querySelectorAll('.filter-btn')];
 const baseTitle = document.title;
 const FAVORITE_KEY = 'bridgeFavorites';
+const DRAFT_KEY = 'bridgeDraft';
+const DRAFT_TS_KEY = 'bridgeDraftSavedAt';
+const LAST_SENT_KEY = 'bridgeLastSentDraft';
+const LAST_SENT_AT_KEY = 'bridgeLastSentAt';
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -1545,6 +1552,12 @@ function fullTime(ts){
   const d = new Date(ts);
   if(Number.isNaN(d.getTime())) return '';
   return d.toLocaleString('ru-RU', {dateStyle:'short', timeStyle:'medium'});
+}
+function shortClock(ts){
+  if(!ts) return '';
+  const d = new Date(ts);
+  if(Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
 }
 function dayKey(ts){
   const d = new Date(ts);
@@ -1696,6 +1709,12 @@ function updateOverview(){
     '</button>';
   }).join('');
 }
+function rememberLastSent(text){
+  const value = String(text || '').trim();
+  if(!value) return;
+  localStorage.setItem(LAST_SENT_KEY, text);
+  localStorage.setItem(LAST_SENT_AT_KEY, new Date().toISOString());
+}
 function updateComposerMeta(){
   const text = input.value || '';
   const chars = [...text].length;
@@ -1704,8 +1723,17 @@ function updateComposerMeta(){
   const lineLabel = lines > 1 ? ' · ' + lines + ' ' + pluralRu(lines, 'строка', 'строки', 'строк') : '';
   charCount.textContent = charLabel + lineLabel;
   charCount.className = 'char-count' + (chars > 12000 ? ' bad' : chars > 6000 ? ' warn' : '');
-  draftState.textContent = text.trim() ? 'черновик сохранен' : 'готово к вводу';
+  if(text.trim()){
+    const savedAt = shortClock(localStorage.getItem(DRAFT_TS_KEY)) || 'сейчас';
+    draftState.textContent = 'черновик сохранен ' + savedAt;
+  } else {
+    const lastSentAt = shortClock(localStorage.getItem(LAST_SENT_AT_KEY));
+    draftState.textContent = localStorage.getItem(LAST_SENT_KEY)
+      ? 'готово · можно вернуть последнее' + (lastSentAt ? ' (' + lastSentAt + ')' : '')
+      : 'готово к вводу';
+  }
   clearDraftBtn.classList.toggle('show', Boolean(text));
+  restoreLastBtn.classList.toggle('show', !text && Boolean(localStorage.getItem(LAST_SENT_KEY)));
 }
 function updateEnterMode(){
   const multiline = enterMode === 'multiline';
@@ -2704,19 +2732,22 @@ async function send(){
   const draft = input.value;
   sending = true;
   input.value = '';
-  localStorage.removeItem('bridgeDraft');
+  localStorage.removeItem(DRAFT_KEY);
+  localStorage.removeItem(DRAFT_TS_KEY);
   resizeInput();
   updateComposerMeta();
   updateSendState();
   setComposerStatus('Отправка...');
   try{
     await requestOk('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+    rememberLastSent(draft);
     setComposerStatus('Отправлено', 'ok');
     clearComposerStatusSoon('Отправлено');
     poll();
   }catch(e){
     input.value = draft;
-    localStorage.setItem('bridgeDraft', draft);
+    localStorage.setItem(DRAFT_KEY, draft);
+    localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
     resizeInput();
     updateComposerMeta();
     setComposerStatus('Не отправлено: ' + (e.message || e), 'bad');
@@ -2742,9 +2773,11 @@ async function takeScreenshot(){
     });
     if(caption){
       input.value = '';
-      localStorage.removeItem('bridgeDraft');
+      localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(DRAFT_TS_KEY);
       resizeInput();
       updateComposerMeta();
+      rememberLastSent(draft);
     }
     const okText = data && data.attachment ? 'Снимок экрана добавлен в ленту' : 'Снимок экрана сделан';
     setComposerStatus(okText, 'ok');
@@ -2752,7 +2785,10 @@ async function takeScreenshot(){
     poll();
   }catch(e){
     input.value = draft;
-    if(draft) localStorage.setItem('bridgeDraft', draft);
+    if(draft){
+      localStorage.setItem(DRAFT_KEY, draft);
+      localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
+    }
     resizeInput();
     updateComposerMeta();
     setComposerStatus('Снимок не удался: ' + (e.message || e), 'bad');
@@ -2765,7 +2801,13 @@ function speechSupported(){
   return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 function persistInput(){
-  localStorage.setItem('bridgeDraft', input.value);
+  if(input.value){
+    localStorage.setItem(DRAFT_KEY, input.value);
+    localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
+  } else {
+    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(DRAFT_TS_KEY);
+  }
   resizeInput();
   updateComposerMeta();
   updateSendState();
@@ -2773,13 +2815,25 @@ function persistInput(){
 function clearDraft(){
   if(voiceListening && speechRec) speechRec.stop();
   input.value = '';
-  localStorage.removeItem('bridgeDraft');
+  localStorage.removeItem(DRAFT_KEY);
+  localStorage.removeItem(DRAFT_TS_KEY);
   resizeInput();
   updateComposerMeta();
   updateSendState();
   input.focus();
   setComposerStatus('Черновик очищен', 'ok');
   clearComposerStatusSoon('Черновик очищен');
+}
+function restoreLastSent(){
+  const last = localStorage.getItem(LAST_SENT_KEY) || '';
+  if(!last) return;
+  if(voiceListening && speechRec) speechRec.stop();
+  input.value = last;
+  persistInput();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  setComposerStatus('Последнее сообщение восстановлено', 'ok');
+  clearComposerStatusSoon('Последнее сообщение восстановлено');
 }
 function appendToComposer(snippet){
   const current = input.value.trimEnd();
@@ -2926,7 +2980,8 @@ async function uploadFiles(files){
   let uploaded = 0;
   if(caption){
     input.value = '';
-    localStorage.removeItem('bridgeDraft');
+    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(DRAFT_TS_KEY);
     resizeInput();
     updateComposerMeta();
   }
@@ -2948,6 +3003,7 @@ async function uploadFiles(files){
       renderUploadQueue(files, i + 1, -1);
     }
     const okText = files.length === 1 ? 'Файл прикреплён' : 'Файлы прикреплены: ' + files.length;
+    if(caption) rememberLastSent(draft);
     setComposerStatus(okText, 'ok');
     clearComposerStatusSoon(okText);
     clearUploadQueueSoon();
@@ -2956,7 +3012,8 @@ async function uploadFiles(files){
     renderUploadQueue(files, uploaded, uploaded);
     if(caption && uploaded === 0){
       input.value = draft;
-      localStorage.setItem('bridgeDraft', draft);
+      localStorage.setItem(DRAFT_KEY, draft);
+      localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
       resizeInput();
       updateComposerMeta();
     }
@@ -2971,6 +3028,7 @@ attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
 clearDraftBtn.addEventListener('click', clearDraft);
+restoreLastBtn.addEventListener('click', restoreLastSent);
 enterModeBtn.addEventListener('click', () => {
   enterMode = enterMode === 'send' ? 'multiline' : 'send';
   localStorage.setItem('bridgeEnterMode', enterMode);
@@ -3026,6 +3084,11 @@ window.addEventListener('drop', e => {
   uploadFiles(files);
 });
 input.addEventListener('keydown', e => {
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !input.value && localStorage.getItem(LAST_SENT_KEY)){
+    e.preventDefault();
+    restoreLastSent();
+    return;
+  }
   if(e.key !== 'Enter') return;
   const sendByEnter = enterMode === 'send' && !e.shiftKey;
   const sendByShortcut = enterMode === 'multiline' && (e.ctrlKey || e.metaKey);
@@ -3219,7 +3282,7 @@ window.addEventListener('resize', () => {
 });
 
 scrubCredentialedUrl();
-input.value = localStorage.getItem('bridgeDraft') || '';
+input.value = localStorage.getItem(DRAFT_KEY) || '';
 applyViewPrefs();
 applyOverviewState();
 applyComposerExpanded();
