@@ -324,6 +324,20 @@
   }
   .msg:hover .msg-actions,.msg:focus-within .msg-actions{opacity:1;pointer-events:auto}
   .long-msg .msg-actions{opacity:1;pointer-events:auto}
+  .msg.favorite .bubble{
+    border-color:rgba(255,209,102,.56);
+    box-shadow:0 0 0 1px rgba(255,209,102,.1),0 12px 34px rgba(0,0,0,.2);
+  }
+  .msg.favorite .bubble:before{
+    content:"";
+    position:absolute;
+    top:-1px;
+    left:14px;
+    width:42px;
+    height:2px;
+    border-radius:999px;
+    background:linear-gradient(90deg, rgba(255,209,102,.92), rgba(255,209,102,0));
+  }
   .msg.search-hit .bubble{border-color:rgba(255,209,102,.58);box-shadow:0 0 0 1px rgba(255,209,102,.16),0 10px 30px rgba(0,0,0,.16)}
   .msg.search-current .bubble{border-color:var(--model);box-shadow:0 0 0 2px rgba(255,209,102,.28),0 16px 38px rgba(0,0,0,.24)}
   .msg:target .bubble,.msg.target-flash .bubble{border-color:rgba(114,183,255,.78);box-shadow:0 0 0 2px rgba(114,183,255,.22),0 16px 38px rgba(0,0,0,.24)}
@@ -338,6 +352,17 @@
     font-size:11px;
   }
   .mini-btn:hover{color:var(--txt)}
+  .mini-btn.favorite-msg{
+    min-width:28px;
+    padding:0 7px;
+    color:#748196;
+    font-size:14px;
+  }
+  .mini-btn.favorite-msg.on{
+    color:var(--model);
+    border-color:rgba(255,209,102,.52);
+    background:rgba(255,209,102,.1);
+  }
   .mini-btn.expand-msg{font-weight:800}
   .msg.expanded .mini-btn.expand-msg{color:var(--model);border-color:rgba(255,209,102,.48);background:rgba(255,209,102,.1)}
   .mini-btn.copied{color:var(--codex);border-color:rgba(104,211,145,.55);background:rgba(104,211,145,.1)}
@@ -1039,8 +1064,19 @@ const searchNext = document.getElementById('searchNext');
 const searchClose = document.getElementById('searchClose');
 const compactToggle = document.getElementById('compactToggle');
 const systemToggle = document.getElementById('systemToggle');
+const codeFilterBtn = document.querySelector('.filter-btn[data-filter="code"]');
+if(codeFilterBtn && !document.querySelector('.filter-btn[data-filter="favorites"]')){
+  const favoriteFilterBtn = document.createElement('button');
+  favoriteFilterBtn.className = 'filter-btn';
+  favoriteFilterBtn.type = 'button';
+  favoriteFilterBtn.dataset.filter = 'favorites';
+  favoriteFilterBtn.setAttribute('aria-pressed','false');
+  favoriteFilterBtn.innerHTML = 'Важное <span class="count">0</span>';
+  codeFilterBtn.parentNode.insertBefore(favoriteFilterBtn, codeFilterBtn);
+}
 const filterButtons = [...document.querySelectorAll('.filter-btn')];
 const baseTitle = document.title;
+const FAVORITE_KEY = 'bridgeFavorites';
 
 const roleInfo = {
   claude:{name:'Claude · планировщик', short:'C'},
@@ -1062,6 +1098,7 @@ let compactMode = localStorage.getItem('bridgeCompact') === '1';
 let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
 let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
+let favoriteSeqs = loadFavoriteSeqs();
 let sending = false;
 let uploading = false;
 let screenshotting = false;
@@ -1132,6 +1169,45 @@ function pluralRu(n, one, few, many){
   if(mod10 === 1 && mod100 !== 11) return one;
   if(mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
   return many;
+}
+function loadFavoriteSeqs(){
+  try{
+    const raw = JSON.parse(localStorage.getItem(FAVORITE_KEY) || '[]');
+    if(!Array.isArray(raw)) return new Set();
+    return new Set(raw.map(v => String(v)).filter(v => /^\d+$/.test(v)));
+  }catch(e){
+    return new Set();
+  }
+}
+function saveFavoriteSeqs(){
+  localStorage.setItem(FAVORITE_KEY, JSON.stringify([...favoriteSeqs]));
+}
+function isFavoriteSeq(seq){
+  return Boolean(seq) && favoriteSeqs.has(String(seq));
+}
+function favoriteTitle(on){
+  return on ? 'Убрать из важного' : 'Отметить как важное';
+}
+function updateFavoriteButton(btn, on){
+  if(!btn) return;
+  btn.classList.toggle('on', Boolean(on));
+  btn.innerHTML = on ? '&#9733;' : '&#9734;';
+  btn.title = favoriteTitle(on);
+  btn.setAttribute('aria-label', favoriteTitle(on));
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+function setMessageFavorite(msg, on, btn){
+  if(!msg) return;
+  const seq = msg.dataset.seq;
+  if(!seq) return;
+  if(on) favoriteSeqs.add(seq);
+  else favoriteSeqs.delete(seq);
+  saveFavoriteSeqs();
+  msg.dataset.favorite = on ? '1' : '0';
+  msg.classList.toggle('favorite', Boolean(on));
+  updateFavoriteButton(btn || msg.querySelector('.favorite-msg'), on);
+  updateFilterCounts();
+  if(activeFilter === 'favorites') applyMessageFilter();
 }
 function updateComposerMeta(){
   const text = input.value || '';
@@ -1263,10 +1339,11 @@ function messageMatchesFilter(msg){
   if(activeFilter === 'all') return true;
   if(activeFilter === 'files') return msg.dataset.hasAttachments === '1';
   if(activeFilter === 'code') return msg.dataset.hasCode === '1';
+  if(activeFilter === 'favorites') return msg.dataset.favorite === '1';
   return msg.dataset.role === activeFilter;
 }
 function updateFilterCounts(){
-  const counts = {all:0, claude:0, codex:0, user:0, files:0, code:0};
+  const counts = {all:0, claude:0, codex:0, user:0, files:0, code:0, favorites:0};
   document.querySelectorAll('.msg').forEach(msg => {
     if(!showSystem && msg.classList.contains('from-system')) return;
     const role = msg.dataset.role;
@@ -1274,6 +1351,7 @@ function updateFilterCounts(){
     if(counts[role] !== undefined) counts[role]++;
     if(msg.dataset.hasAttachments === '1') counts.files++;
     if(msg.dataset.hasCode === '1') counts.code++;
+    if(msg.dataset.favorite === '1') counts.favorites++;
   });
   filterButtons.forEach(btn => {
     const count = btn.querySelector('.count');
@@ -1659,6 +1737,7 @@ function addMsg(m){
   const rawText = String(m.text || '');
   const seq = Number(m.seq) || 0;
   const seqLabel = seq ? '#' + seq : '';
+  const isFavorite = isFavoriteSeq(seq);
   const copyParts = [rawText, ...atts.map(a => {
     const name = String(a.name || 'file');
     const url = String(a.url || '');
@@ -1666,6 +1745,9 @@ function addMsg(m){
   })].filter(Boolean);
   const lineCount = rawText ? rawText.split(/\r\n|\r|\n/).length : 0;
   const isLong = m.from !== 'system' && (rawText.length > 2200 || lineCount > 42);
+  const favoriteButton = seq
+    ? '<button type="button" class="mini-btn favorite-msg' + (isFavorite ? ' on' : '') + '" title="' + escAttr(favoriteTitle(isFavorite)) + '" aria-label="' + escAttr(favoriteTitle(isFavorite)) + '" aria-pressed="' + (isFavorite ? 'true' : 'false') + '">' + (isFavorite ? '&#9733;' : '&#9734;') + '</button>'
+    : '';
   const expandButton = isLong
     ? '<button type="button" class="mini-btn expand-msg" title="Развернуть длинное сообщение" aria-label="Развернуть длинное сообщение">↓</button>'
     : '';
@@ -1673,7 +1755,7 @@ function addMsg(m){
     ? '<button type="button" class="mini-btn link-msg" title="Скопировать ссылку на это сообщение" aria-label="Скопировать ссылку на это сообщение">#</button>'
     : '';
   const div = document.createElement('article');
-  div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '');
+  div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '') + (isFavorite ? ' favorite' : '');
   if(seq) div.id = 'm-' + seq;
   div.dataset.role = String(m.from || 'system');
   div.dataset.seq = seq ? String(seq) : '';
@@ -1682,6 +1764,7 @@ function addMsg(m){
   div.dataset.searchText = [seqLabel, role.name, m.from || '', rawText, ...atts.map(a => a.name || '')].join(' ');
   div.dataset.hasAttachments = atts.length ? '1' : '0';
   div.dataset.hasCode = /```/.test(rawText) ? '1' : '0';
+  div.dataset.favorite = isFavorite ? '1' : '0';
   div.innerHTML =
     '<div class="avatar" aria-hidden="true">' + esc(role.short) + '</div>' +
     '<div class="bubble' + (isLong ? ' long' : '') + '">' +
@@ -1689,7 +1772,7 @@ function addMsg(m){
         '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
         (seqLabel ? '<span class="seq" title="Номер сообщения">' + esc(seqLabel) + '</span>' : '') +
-        '<div class="msg-actions">' + expandButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
+        '<div class="msg-actions">' + favoriteButton + expandButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
       '<div class="md">' + renderMd(rawText) + '</div>' +
       renderAttachments(m) +
@@ -2330,6 +2413,12 @@ document.addEventListener('click', e => {
   if(codeBtn){
     const code = codeBtn.closest('.codebox')?.querySelector('code')?.textContent || '';
     copyText(code, codeBtn);
+    return;
+  }
+  const favoriteBtn = e.target.closest('.favorite-msg');
+  if(favoriteBtn){
+    const msg = favoriteBtn.closest('.msg');
+    setMessageFavorite(msg, !(msg && msg.dataset.favorite === '1'), favoriteBtn);
     return;
   }
   const msgBtn = e.target.closest('.copy-msg');
