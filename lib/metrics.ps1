@@ -168,3 +168,38 @@ function Invoke-MetricsReflection {
     } catch {}
   }
 }
+
+function Invoke-PostMortem {
+  # Cheap DeepSeek post-mortem on timeout/safety/rollback. Saves lesson to memory + optional idea.
+  param([string]$FailureType, [string]$Task = '', [string]$Context = '')
+  if ([string]::IsNullOrWhiteSpace($Task)) { return }
+  $shortTask = if ($Task.Length -gt 120) { $Task.Substring(0, 120) + '...' } else { $Task }
+  $prompt = @"
+Ты анализируешь сбой задачи в системе AI-агентов (мост Claude+Codex).
+Тип сбоя: $FailureType
+Задача: $shortTask
+Контекст: $Context
+
+Ответь ТОЛЬКО в таком формате (без пояснений):
+УРОК: <одно-два предложения — почему упало и что делать иначе в будущем>
+ИДЕЯ: <одна строка — конкретная идея в бэклог для устранения причины, или NONE>
+"@
+  $raw = try { Invoke-LLM -Purpose 'postmortem' -Prompt $prompt -TimeoutSec 45 -Temperature 0.3 } catch { $null }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return }
+
+  $lessonM = [regex]::Match($raw, '(?im)^УРОК:\s*(.+)$')
+  $ideaM   = [regex]::Match($raw, '(?im)^ИДЕЯ:\s*(.+)$')
+
+  if ($lessonM.Success) {
+    $lesson  = $lessonM.Groups[1].Value.Trim()
+    $memText = "[$FailureType] Задача: $shortTask — Урок: $lesson"
+    try { Add-Memory -Text $memText -Tags @('lesson', $FailureType) -Source 'postmortem' -Importance 0.7 | Out-Null } catch {}
+    try { Add-Message -From system -Text "🧠 Post-mortem ($FailureType): $lesson" -Kind event | Out-Null } catch {}
+  }
+  if ($ideaM.Success) {
+    $ideaText = $ideaM.Groups[1].Value.Trim()
+    if ($ideaText -and $ideaText -notmatch '(?i)^none$') {
+      try { Add-Idea -Text $ideaText -From 'postmortem' -Tags @('lesson','postmortem') -Status 'new' | Out-Null } catch {}
+    }
+  }
+}

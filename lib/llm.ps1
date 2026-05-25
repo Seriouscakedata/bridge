@@ -12,6 +12,7 @@ function Get-LLMConfig {
     gate      = 'deepseek-v4-flash'
     librarian = 'deepseek-v4-flash'
     reflect   = 'deepseek-v4-flash'
+    postmortem = 'deepseek-v4-flash'
     deep      = 'deepseek-v4-pro'
     fallback  = 'gemini-2.5-flash'
   }
