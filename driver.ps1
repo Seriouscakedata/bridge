@@ -364,6 +364,32 @@ function Write-TurnLog {
   } catch {}
 }
 
+function Write-EvidenceLog {
+  param(
+    [string]$Agent,
+    [string]$Task,
+    [string]$Source,
+    [string]$Summary,
+    [string]$Confidence
+  )
+  try {
+    $taskSnippet = ([string]$Task).Trim()
+    if ($taskSnippet.Length -gt 100) { $taskSnippet = $taskSnippet.Substring(0, 100) }
+    $entry = [ordered]@{
+      ts         = [DateTime]::UtcNow.ToString('o')
+      agent      = $Agent
+      task       = $taskSnippet
+      source     = $Source
+      summary    = $Summary
+      confidence = $Confidence
+    }
+    Add-Content -LiteralPath (Join-Path $bridgeRoot 'evidence.jsonl') -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 # ---------- startup ----------
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
 # summary and decisions are file-based and already survive. We keep current_task /
@@ -501,8 +527,21 @@ while ($true) {
     $st = $m.Groups[1].Value.Trim(); $sc = $m.Groups[2].Value.Trim()
     if ($sc) { $savedPaths += (Save-Decision -Title $st -Content $sc) }
   }
+  $evidencePattern = '(?m)^\s*\[\[EVIDENCE:\s*(.+?)\s*\]\]\s*$'
+  $evidenceSources = @()
+  foreach ($m in [regex]::Matches($reply, $evidencePattern)) {
+    $parts = @($m.Groups[1].Value -split '\|', 3)
+    $source = if ($parts.Count -ge 1) { $parts[0].Trim() } else { '' }
+    $summary = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
+    $confidence = if ($parts.Count -ge 3) { $parts[2].Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($source)) { continue }
+    if (Write-EvidenceLog -Agent $speaker -Task $task -Source $source -Summary $summary -Confidence $confidence) {
+      $evidenceSources += $source
+    }
+  }
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
@@ -514,6 +553,7 @@ while ($true) {
   if ([string]::IsNullOrWhiteSpace($visibleReply) -and $attachmentMetas.Count -eq 0) { $visibleReply = "(нет ответа от $speaker)" }
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
+  foreach ($source in $evidenceSources) { Add-Message -From system -Text "📊 Evidence записан: $source" -Kind event | Out-Null }
 
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
