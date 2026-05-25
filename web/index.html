@@ -1073,6 +1073,20 @@
     border-color:rgba(255,209,102,.52);
     background:rgba(255,209,102,.1);
   }
+  .composer-expand{
+    flex:none;
+    height:20px;
+    min-width:24px;
+    padding:0 7px;
+    border-radius:6px;
+    font-size:12px;
+    opacity:.82;
+  }
+  .composer-expand.on{
+    color:var(--user);
+    border-color:rgba(114,183,255,.55);
+    background:rgba(114,183,255,.1);
+  }
   .composer-clear{
     display:none;
     flex:none;
@@ -1085,6 +1099,10 @@
   }
   .composer-clear.show{display:inline-flex;align-items:center;justify-content:center}
   .composer-clear:hover{opacity:1}
+  body.composer-expanded #inp{
+    min-height:min(220px,38vh);
+    max-height:min(520px,46vh);
+  }
   #attach{font-size:18px}
   #screen{font-size:16px}
   #voice{font-size:16px}
@@ -1343,6 +1361,7 @@
     <div id="composerMeta" class="composer-meta" aria-live="polite">
       <span id="draftState" class="draft-state"></span>
       <button id="enterMode" class="mini-btn composer-mode" type="button" title="Enter отправляет. Нажмите, чтобы Enter добавлял новую строку." aria-label="Режим Enter">↵</button>
+      <button id="composerExpand" class="mini-btn composer-expand" type="button" title="Расширить поле ввода" aria-label="Расширить поле ввода" aria-pressed="false">⇵</button>
       <button id="clearDraft" class="mini-btn composer-clear" type="button" title="Очистить черновик" aria-label="Очистить черновик">×</button>
       <span id="charCount" class="char-count"></span>
     </div>
@@ -1393,6 +1412,7 @@ const composerStatus = document.getElementById('composerStatus');
 const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
 const enterModeBtn = document.getElementById('enterMode');
+const composerExpandBtn = document.getElementById('composerExpand');
 const clearDraftBtn = document.getElementById('clearDraft');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
@@ -1455,6 +1475,7 @@ if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter
 let overviewOpen = localStorage.getItem('bridgeOverview') === null
   ? window.innerWidth >= 1280
   : localStorage.getItem('bridgeOverview') !== '0';
+let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
 if(enterMode !== 'send' && enterMode !== 'multiline') enterMode = 'send';
 let favoriteSeqs = loadFavoriteSeqs();
@@ -1665,6 +1686,18 @@ function updateEnterMode(){
   enterModeBtn.setAttribute('aria-label', enterModeBtn.title);
   enterModeBtn.setAttribute('aria-pressed', multiline ? 'true' : 'false');
   input.placeholder = 'Сообщение агентам';
+}
+function applyComposerExpanded(){
+  document.body.classList.toggle('composer-expanded', Boolean(composerExpanded));
+  if(composerExpandBtn){
+    composerExpandBtn.classList.toggle('on', Boolean(composerExpanded));
+    composerExpandBtn.textContent = composerExpanded ? '⇲' : '⇵';
+    composerExpandBtn.title = composerExpanded ? 'Вернуть компактное поле ввода' : 'Расширить поле ввода';
+    composerExpandBtn.setAttribute('aria-label', composerExpandBtn.title);
+    composerExpandBtn.setAttribute('aria-pressed', composerExpanded ? 'true' : 'false');
+  }
+  resizeInput();
+  requestAnimationFrame(updateBottomButton);
 }
 function updateDocumentTitle(){
   const unread = unseenCount > 0 ? '(' + (unseenCount > 99 ? '99+' : unseenCount) + ') ' : '';
@@ -2425,8 +2458,12 @@ async function status(){
   }
 }
 function resizeInput(){
+  const viewportH = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 480);
+  const maxHeight = composerExpanded ? Math.min(520, Math.round(viewportH * 0.46)) : 170;
+  input.style.maxHeight = maxHeight + 'px';
   input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 170) + 'px';
+  input.style.height = Math.min(input.scrollHeight, maxHeight) + 'px';
+  input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden';
 }
 function setComposerStatus(text, tone){
   composerStatus.textContent = text || '';
@@ -2909,6 +2946,12 @@ enterModeBtn.addEventListener('click', () => {
   updateEnterMode();
   input.focus();
 });
+composerExpandBtn.addEventListener('click', () => {
+  composerExpanded = !composerExpanded;
+  localStorage.setItem('bridgeComposerExpanded', composerExpanded ? '1' : '0');
+  applyComposerExpanded();
+  input.focus();
+});
 healthRetry.addEventListener('click', () => {
   status();
   poll();
@@ -3139,12 +3182,16 @@ window.addEventListener('keydown', e => {
   }
 });
 window.addEventListener('hashchange', () => focusHashTarget(true));
-window.addEventListener('resize', applyOverviewState);
+window.addEventListener('resize', () => {
+  applyOverviewState();
+  resizeInput();
+});
 
 scrubCredentialedUrl();
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
 applyOverviewState();
+applyComposerExpanded();
 applyMessageFilter();
 updateEnterMode();
 resizeInput();
