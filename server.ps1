@@ -62,6 +62,21 @@ function Read-Body {
   $body = $sr.ReadToEnd(); $sr.Close()
   return $body
 }
+function Get-QueryParamUtf8 {
+  param($ctx, [string]$Name)
+  $raw = ''
+  try { $raw = [string]$ctx.Request.Url.Query } catch { $raw = '' }
+  if ($raw.StartsWith('?')) { $raw = $raw.Substring(1) }
+  foreach ($part in @($raw -split '&')) {
+    if ([string]::IsNullOrWhiteSpace($part)) { continue }
+    $kv = $part.Split([char]'=', 2)
+    $k = [System.Net.WebUtility]::UrlDecode($kv[0])
+    if ($k -ne $Name) { continue }
+    if ($kv.Count -lt 2) { return '' }
+    return [System.Net.WebUtility]::UrlDecode($kv[1])
+  }
+  try { return [string]$ctx.Request.QueryString[$Name] } catch { return '' }
+}
 function Test-Auth {
   param($ctx)
   if (-not $authPass) { return $true }   # no password configured -> open
@@ -307,7 +322,7 @@ try {
         Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/code') {
-        $q = [string]$ctx.Request.QueryString['q']
+        $q = Get-QueryParamUtf8 $ctx 'q'
         $hits = @(Get-CodeRecallForApi -Query $q -TopK 8)
         $itemsJson = '[' + (($hits | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"q":' + (("" + $q) | ConvertTo-Json -Compress) + ',"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
