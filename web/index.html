@@ -437,6 +437,12 @@
   .overview-item.claude .role{color:var(--claude);background:var(--claude-bg);border-color:rgba(184,140,255,.24)}
   .overview-item.codex .role{color:var(--codex);background:var(--codex-bg);border-color:rgba(104,211,145,.22)}
   .overview-item.user .role{color:var(--user);background:var(--user-bg);border-color:rgba(114,183,255,.28)}
+  .overview-item.favorite .role{
+    color:var(--model);
+    background:#2b2618;
+    border-color:rgba(255,209,102,.42);
+  }
+  .overview-item.favorite .txt{color:#eadcb1}
   .overview-item .txt{
     min-width:0;
     overflow:hidden;
@@ -1374,6 +1380,10 @@
       <div class="overview-line"><span>важное</span><b id="ovFav">0</b></div>
     </div>
   </section>
+  <section class="overview-section" aria-label="Важные сообщения">
+    <h2>Важное</h2>
+    <div id="overviewFavorites" class="overview-list overview-favorites"></div>
+  </section>
   <section class="overview-section" aria-label="Последние сообщения">
     <h2>Последние сообщения</h2>
     <div id="overviewRecent" class="overview-list"></div>
@@ -1461,6 +1471,7 @@ const overviewToggle = document.getElementById('overviewToggle');
 const overviewPanel = document.getElementById('overviewPanel');
 const overviewClose = document.getElementById('overviewClose');
 const overviewRecent = document.getElementById('overviewRecent');
+const overviewFavorites = document.getElementById('overviewFavorites');
 const exportChatBtn = document.getElementById('exportChat');
 const exportMarkdownBtn = document.getElementById('exportMarkdown');
 const searchPanel = document.getElementById('searchPanel');
@@ -1669,6 +1680,19 @@ function overviewText(msg){
   if(msg.dataset.hasAttachments === '1') return 'вложения';
   return 'без текста';
 }
+function overviewItemHtml(msg, extraClass, marker){
+  const role = roleInfo[msg.dataset.role] || {short:'?', name:msg.dataset.role || ''};
+  const seq = msg.dataset.seq || '';
+  const time = msg.querySelector('time.time');
+  const ago = time ? time.textContent : '';
+  const title = [role.name, seq ? '#' + seq : '', time ? time.title : ''].filter(Boolean).join(' · ');
+  const klass = [msg.dataset.role || '', extraClass || ''].filter(Boolean).join(' ');
+  return '<button type="button" class="overview-item ' + escAttr(klass) + '" data-jump-seq="' + escAttr(seq) + '" title="' + escAttr(title) + '">' +
+    '<span class="role">' + esc(marker || role.short) + '</span>' +
+    '<span class="txt">' + esc(overviewText(msg)) + '</span>' +
+    '<span class="ago">' + esc(ago) + '</span>' +
+  '</button>';
+}
 function updateOverview(){
   if(!overviewPanel) return;
   const messages = [...document.querySelectorAll('.msg')];
@@ -1697,6 +1721,15 @@ function updateOverview(){
   const ovTask = document.getElementById('ovTask');
   if(ovTask) ovTask.title = task;
   setText('ovBeat', beat);
+  const favoriteMessages = messages
+    .filter(msg => msg.dataset.favorite === '1')
+    .sort((a,b) => (Number(b.dataset.seq) || 0) - (Number(a.dataset.seq) || 0))
+    .slice(0, 6);
+  if(overviewFavorites){
+    overviewFavorites.innerHTML = favoriteMessages.length
+      ? favoriteMessages.map(msg => overviewItemHtml(msg, 'favorite', '★')).join('')
+      : '<div class="overview-empty">Отмеченные звездочкой сообщения появятся здесь</div>';
+  }
   const recent = messages
     .filter(msg => msg.dataset.role !== 'system')
     .slice(-7)
@@ -1705,18 +1738,7 @@ function updateOverview(){
     overviewRecent.innerHTML = '<div class="overview-empty">Сообщений пока нет</div>';
     return;
   }
-  overviewRecent.innerHTML = recent.map(msg => {
-    const role = roleInfo[msg.dataset.role] || {short:'?', name:msg.dataset.role || ''};
-    const seq = msg.dataset.seq || '';
-    const time = msg.querySelector('time.time');
-    const ago = time ? time.textContent : '';
-    const title = [role.name, seq ? '#' + seq : '', time ? time.title : ''].filter(Boolean).join(' · ');
-    return '<button type="button" class="overview-item ' + escAttr(msg.dataset.role || '') + '" data-jump-seq="' + escAttr(seq) + '" title="' + escAttr(title) + '">' +
-      '<span class="role">' + esc(role.short) + '</span>' +
-      '<span class="txt">' + esc(overviewText(msg)) + '</span>' +
-      '<span class="ago">' + esc(ago) + '</span>' +
-    '</button>';
-  }).join('');
+  overviewRecent.innerHTML = recent.map(msg => overviewItemHtml(msg)).join('');
 }
 function rememberLastSent(text){
   const value = String(text || '').trim();
