@@ -17,7 +17,11 @@ backlog.jsonl
 plan.jsonl
 plan.archive.jsonl
 reflect.last
+metrics.jsonl
+radar.last
 usage.jsonl
+notify.log
+notify.last
 *.log
 *.tmp.*
 .git/

@@ -33,7 +33,7 @@ function Get-TurnsStats {
 }
 
 function Read-MetricsJsonl {
-  $mf = Join-Path $bridgeRoot 'metrics.jsonl'
+  $mf = Join-Path (Get-BridgeRoot) 'metrics.jsonl'
   if (-not (Test-Path $mf)) { return @() }
 
   Get-Content $mf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
@@ -44,7 +44,7 @@ function Read-MetricsJsonl {
 function Append-MetricsRecord {
   param([hashtable]$Record)
 
-  $mf = Join-Path $bridgeRoot 'metrics.jsonl'
+  $mf = Join-Path (Get-BridgeRoot) 'metrics.jsonl'
   $Record['ts'] = [DateTime]::UtcNow.ToString('o')
   $line = $Record | ConvertTo-Json -Compress -Depth 5
   Add-Content -LiteralPath $mf -Value $line -Encoding UTF8
@@ -53,7 +53,7 @@ function Append-MetricsRecord {
 function Read-RecentTurns {
   param([int]$Limit = 200)
 
-  $tf = Join-Path $bridgeRoot 'turns.jsonl'
+  $tf = Join-Path (Get-BridgeRoot) 'turns.jsonl'
   $entries = @()
   if (Test-Path $tf) {
     $entries = @(Get-Content $tf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
@@ -77,6 +77,42 @@ function Write-MetricsSnapshot {
     success_pct = $stats.success_pct
     window_from = $stats.window_from
     window_to   = $stats.window_to
+  }
+}
+
+function Get-MetricsForApi {
+  $currentStats = Get-TurnsStats -Entries @(Read-RecentTurns -Limit 200)
+  $series = New-Object 'System.Collections.Generic.List[object]'
+  $mf = Join-Path (Get-BridgeRoot) 'metrics.jsonl'
+  if (Test-Path -LiteralPath $mf) {
+    foreach ($line in (Get-Content -LiteralPath $mf -Encoding UTF8)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      try { $rec = $line | ConvertFrom-Json } catch { continue }
+      if ([string]$rec.type -ne 'snapshot') { continue }
+      [void]$series.Add([pscustomobject]@{
+        ts          = [string]$rec.ts
+        timeout_pct = [double]$rec.timeout_pct
+        avg_sec     = [double]$rec.avg_sec
+        success_pct = [double]$rec.success_pct
+        total_turns = [int]$rec.total_turns
+      })
+    }
+  }
+
+  $items = @($series.ToArray() | Sort-Object ts)
+  if ($items.Count -gt 100) { $items = @($items[($items.Count - 100)..($items.Count - 1)]) }
+
+  return [pscustomobject]@{
+    current = [pscustomobject]@{
+      total_turns = [int]$currentStats.total
+      timeout_pct = [double]$currentStats.timeout_pct
+      avg_sec     = [double]$currentStats.avg_sec
+      success_pct = [double]$currentStats.success_pct
+      window_from = $currentStats.window_from
+      window_to   = $currentStats.window_to
+    }
+    series       = @($items)
+    series_count = [int]$items.Count
   }
 }
 
@@ -112,7 +148,7 @@ function Invoke-MetricsReflection {
   $verdicts = $records | Where-Object { $_.type -eq 'verdict' }
   if (-not $hyps) { return }
 
-  $tf = Join-Path $bridgeRoot 'turns.jsonl'
+  $tf = Join-Path (Get-BridgeRoot) 'turns.jsonl'
   $allTurns = @()
   if (Test-Path $tf) {
     $allTurns = @(Get-Content $tf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {

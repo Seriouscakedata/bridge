@@ -150,15 +150,16 @@
   #planToggle{order:3}
   #memoryBtn{order:4}
   #codeToggle{order:5}
-  #usageToggle{order:6}
-  #exportChat{order:7}
-  #exportMarkdown{order:8}
-  #compactToggle{order:9}
-  #systemToggle{order:10}
-  #pauseToggle{order:11}
-  #restart{order:12}
-  #kill{order:13}
-  #moreMenu{order:14}
+  #dashToggle{order:6}
+  #usageToggle{order:7}
+  #exportChat{order:8}
+  #exportMarkdown{order:9}
+  #compactToggle{order:10}
+  #systemToggle{order:11}
+  #pauseToggle{order:12}
+  #restart{order:13}
+  #kill{order:14}
+  #moreMenu{order:15}
   .header-toggle-btn{
     justify-self:end;
     align-self:center;
@@ -315,6 +316,7 @@
   #overviewPanel,
   #planPanel,
   #codePanel,
+  #dashPanel,
   #usagePanel{
     position:fixed;
     top:148px;
@@ -337,29 +339,35 @@
   body.overview-open #overviewPanel{display:flex}
   body.plan-open #planPanel{display:flex}
   body.code-open #codePanel{display:flex}
+  body.dash-open #dashPanel{display:flex}
   body.usage-open #usagePanel{display:flex}
   body.has-health-banner #overviewPanel,
   body.has-health-banner #planPanel,
   body.has-health-banner #codePanel,
+  body.has-health-banner #dashPanel,
   body.has-health-banner #usagePanel{top:188px}
   #searchPanel.open ~ #overviewPanel,
   #searchPanel.open ~ #planPanel,
   #searchPanel.open ~ #codePanel,
+  #searchPanel.open ~ #dashPanel,
   #searchPanel.open ~ #usagePanel{top:198px}
   body.has-health-banner #searchPanel.open ~ #overviewPanel,
   body.has-health-banner #searchPanel.open ~ #planPanel,
   body.has-health-banner #searchPanel.open ~ #codePanel,
+  body.has-health-banner #searchPanel.open ~ #dashPanel,
   body.has-health-banner #searchPanel.open ~ #usagePanel{top:238px}
   @media (min-width:1360px){
     body.overview-open #log,
     body.plan-open #log,
     body.code-open #log,
+    body.dash-open #log,
     body.usage-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
     #overviewPanel,
     #planPanel,
     #codePanel,
+    #dashPanel,
     #usagePanel{
       right:12px;
       width:min(320px,calc(100vw - 24px));
@@ -369,6 +377,7 @@
   #overviewToggle.on{border-color:rgba(114,183,255,.64);color:#b9dcff;background:#172333}
   #planToggle.on{border-color:rgba(104,211,145,.6);color:#c2f5d3;background:#14251b}
   #codeToggle.on{border-color:rgba(255,209,102,.58);color:#f8df9a;background:#2b2618}
+  #dashToggle.on{border-color:rgba(104,211,145,.58);color:#c2f5d3;background:#14251b}
   #usageToggle.on{border-color:rgba(114,183,255,.58);color:#b9dcff;background:#172333}
   .overview-head{
     display:flex;
@@ -688,6 +697,50 @@
     white-space:nowrap;
   }
   .usage-cost{color:#d7ecff!important}
+  .dash-sparks{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    background:var(--border-soft);
+  }
+  .dash-spark{
+    min-width:0;
+    padding:9px 10px;
+    background:#101720;
+    display:grid;
+    gap:7px;
+  }
+  .dash-spark-head{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:10px;
+    min-width:0;
+    font-size:12px;
+    color:var(--soft);
+  }
+  .dash-spark-head b{
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .dash-spark-head span{
+    flex:none;
+    color:var(--muted);
+    font-size:11px;
+    font-variant-numeric:tabular-nums;
+  }
+  .dash-spark svg{
+    display:block;
+    width:100%;
+    height:36px;
+    overflow:visible;
+  }
+  .dash-spark .axis{stroke:rgba(255,255,255,.08);stroke-width:1}
+  .dash-spark .line{fill:none;stroke:var(--user);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  .dash-spark.timeout .line{stroke:var(--danger)}
+  .dash-spark.success .line{stroke:var(--codex)}
 
   #log{
     position:relative;
@@ -1446,9 +1499,10 @@
     body.overview-open #log,
     body.plan-open #log,
     body.code-open #log,
+    body.dash-open #log,
     body.usage-open #log{padding-right:var(--content-pad)}
-    #overviewPanel,#planPanel,#codePanel,#usagePanel{display:none!important}
-    #overviewToggle,#planToggle,#codeToggle,#usageToggle{display:none}
+    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{display:none!important}
+    #overviewToggle,#planToggle,#codeToggle,#dashToggle,#usageToggle{display:none}
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1630,6 +1684,7 @@
       <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
       <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
       <button id="codeToggle" class="icon" type="button" title="Код-память" aria-pressed="false">{ } <span class="sec-label">Код</span></button>
+      <button id="dashToggle" class="icon" type="button" title="Дашборд" aria-pressed="false">📊 <span class="sec-label">Дашборд</span></button>
       <button id="usageToggle" class="icon" type="button" title="Расход" aria-pressed="false">💸 <span class="sec-label">Расход</span></button>
       <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
       <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
@@ -1760,6 +1815,31 @@
   </section>
 </aside>
 
+<aside id="dashPanel" aria-label="Дашборд" aria-hidden="true">
+  <div class="overview-head">
+    <strong>📊 Дашборд</strong>
+    <button id="dashClose" class="mini-btn overview-close" type="button" title="Скрыть дашборд" aria-label="Скрыть дашборд">×</button>
+  </div>
+  <section class="overview-section" aria-label="Текущие метрики">
+    <h2>Сейчас</h2>
+    <div class="overview-kpis">
+      <div class="overview-kpi"><b id="dashTotal">0</b><span>ходов</span></div>
+      <div class="overview-kpi"><b id="dashTimeout">0%</b><span>таймауты</span></div>
+      <div class="overview-kpi"><b id="dashAvgSec">0с</b><span>средняя длит.</span></div>
+      <div class="overview-kpi"><b id="dashSuccess">0%</b><span>успехи</span></div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Тренды метрик">
+    <h2>Тренды</h2>
+    <div id="dashSeriesNote" class="overview-empty">Тренд накопится за несколько часов</div>
+    <div id="dashSparks" class="dash-sparks" aria-label="Спарклайны метрик">
+      <div id="dashSparkTimeout" class="dash-spark timeout"></div>
+      <div id="dashSparkAvg" class="dash-spark"></div>
+      <div id="dashSparkSuccess" class="dash-spark success"></div>
+    </div>
+  </section>
+</aside>
+
 <aside id="usagePanel" aria-label="Расход" aria-hidden="true">
   <div class="overview-head">
     <strong>💸 Расход</strong>
@@ -1840,6 +1920,7 @@ let pollInFlight = false;
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
+let dashInFlight = false;
 let usageInFlight = false;
 let connectionFailures = 0;
 let activeAgentLabel = '';
@@ -1898,6 +1979,18 @@ const codeClose = document.getElementById('codeClose');
 const codeQuery = document.getElementById('codeQuery');
 const codeSearch = document.getElementById('codeSearch');
 const codeResults = document.getElementById('codeResults');
+const dashToggle = document.getElementById('dashToggle');
+const dashPanel = document.getElementById('dashPanel');
+const dashClose = document.getElementById('dashClose');
+const dashTotal = document.getElementById('dashTotal');
+const dashTimeout = document.getElementById('dashTimeout');
+const dashAvgSec = document.getElementById('dashAvgSec');
+const dashSuccess = document.getElementById('dashSuccess');
+const dashSeriesNote = document.getElementById('dashSeriesNote');
+const dashSparks = document.getElementById('dashSparks');
+const dashSparkTimeout = document.getElementById('dashSparkTimeout');
+const dashSparkAvg = document.getElementById('dashSparkAvg');
+const dashSparkSuccess = document.getElementById('dashSparkSuccess');
 const usageToggle = document.getElementById('usageToggle');
 const usagePanel = document.getElementById('usagePanel');
 const usageClose = document.getElementById('usageClose');
@@ -1975,11 +2068,18 @@ if(codeOpen && (overviewOpen || planOpen)){
   overviewOpen = false;
   planOpen = false;
 }
-let usageOpen = localStorage.getItem('bridgeUsage') === '1';
-if(usageOpen && (overviewOpen || planOpen || codeOpen)){
+let dashOpen = localStorage.getItem('bridgeDash') === '1';
+if(dashOpen && (overviewOpen || planOpen || codeOpen)){
   overviewOpen = false;
   planOpen = false;
   codeOpen = false;
+}
+let usageOpen = localStorage.getItem('bridgeUsage') === '1';
+if(usageOpen && (overviewOpen || planOpen || codeOpen || dashOpen)){
+  overviewOpen = false;
+  planOpen = false;
+  codeOpen = false;
+  dashOpen = false;
 }
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
@@ -2167,6 +2267,17 @@ function applyCodeState(){
   }
   requestAnimationFrame(updateBottomButton);
 }
+function applyDashState(){
+  const enabled = Boolean(dashOpen && window.innerWidth > 1180);
+  document.body.classList.toggle('dash-open', enabled);
+  if(dashPanel) dashPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(dashToggle){
+    dashToggle.classList.toggle('on', enabled);
+    dashToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    dashToggle.title = enabled ? 'Скрыть дашборд' : 'Показать дашборд';
+  }
+  requestAnimationFrame(updateBottomButton);
+}
 function applyUsageState(){
   const enabled = Boolean(usageOpen && window.innerWidth > 1180);
   document.body.classList.toggle('usage-open', enabled);
@@ -2182,6 +2293,73 @@ function fmtMoney(n, digits){
   const value = Number(n) || 0;
   const d = digits == null ? (Math.abs(value) >= 1 ? 2 : 4) : digits;
   return '$' + value.toFixed(d);
+}
+function fmtPct(n){
+  const value = Number(n) || 0;
+  return (value * 100).toFixed(1) + '%';
+}
+function sparkValue(rows, key){
+  if(!rows || !rows.length) return '';
+  const last = rows[rows.length - 1];
+  if(key === 'avg_sec') return (Number(last[key]) || 0).toFixed(1) + 'с';
+  return fmtPct(last[key]);
+}
+function renderSpark(container, rows, key, title){
+  if(!container) return;
+  const vals = rows.map(r => Number(r[key])).filter(v => Number.isFinite(v));
+  if(vals.length < 2){
+    container.innerHTML = '';
+    return;
+  }
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if(max === min){ max = min + 1; min = min - 1; }
+  const pts = vals.map((v, i) => {
+    const x = vals.length === 1 ? 0 : (i / (vals.length - 1)) * 100;
+    const y = 30 - ((v - min) / (max - min)) * 26;
+    return x.toFixed(2) + ',' + y.toFixed(2);
+  }).join(' ');
+  container.innerHTML =
+    '<div class="dash-spark-head"><b>' + esc(title) + '</b><span>' + esc(sparkValue(rows, key)) + '</span></div>' +
+    '<svg viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="' + escAttr(title) + '">' +
+      '<line class="axis" x1="0" y1="30" x2="100" y2="30"></line>' +
+      '<polyline class="line" points="' + escAttr(pts) + '"></polyline>' +
+    '</svg>';
+}
+function renderMetrics(data){
+  const cur = data && data.current ? data.current : {};
+  const series = data && Array.isArray(data.series) ? data.series : [];
+  if(dashTotal) dashTotal.textContent = String(Number(cur.total_turns) || 0);
+  if(dashTimeout) dashTimeout.textContent = fmtPct(cur.timeout_pct);
+  if(dashAvgSec) dashAvgSec.textContent = (Number(cur.avg_sec) || 0).toFixed(1) + 'с';
+  if(dashSuccess) dashSuccess.textContent = fmtPct(cur.success_pct);
+  const enough = series.length >= 2;
+  if(dashSeriesNote){
+    dashSeriesNote.style.display = enough ? 'none' : 'block';
+    dashSeriesNote.textContent = enough ? '' : 'Тренд накопится за несколько часов';
+  }
+  if(dashSparks) dashSparks.style.display = enough ? 'flex' : 'none';
+  renderSpark(dashSparkTimeout, series, 'timeout_pct', 'Таймауты');
+  renderSpark(dashSparkAvg, series, 'avg_sec', 'Длительность');
+  renderSpark(dashSparkSuccess, series, 'success_pct', 'Успехи');
+}
+async function pollMetrics(){
+  if(dashInFlight) return;
+  dashInFlight = true;
+  try{
+    const r = await fetch('/api/metrics');
+    if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
+    const data = await r.json();
+    renderMetrics(data);
+  }catch(e){
+    if(dashSeriesNote){
+      dashSeriesNote.style.display = 'block';
+      dashSeriesNote.textContent = 'Дашборд недоступен: ' + (e.message || e);
+    }
+    if(dashSparks) dashSparks.style.display = 'none';
+  }finally{
+    dashInFlight = false;
+  }
 }
 function usageWindow(data, hours){
   const rows = data && Array.isArray(data.windows) ? data.windows : [];
@@ -4003,12 +4181,15 @@ overviewToggle.addEventListener('click', () => {
   if(overviewOpen){
     planOpen = false;
     codeOpen = false;
+    dashOpen = false;
     usageOpen = false;
     localStorage.setItem('bridgePlan', '0');
     localStorage.setItem('bridgeCode', '0');
+    localStorage.setItem('bridgeDash', '0');
     localStorage.setItem('bridgeUsage', '0');
     applyPlanState();
     applyCodeState();
+    applyDashState();
     applyUsageState();
   }
   localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
@@ -4025,12 +4206,15 @@ if(planToggle){
     if(planOpen){
       overviewOpen = false;
       codeOpen = false;
+      dashOpen = false;
       usageOpen = false;
       localStorage.setItem('bridgeOverview', '0');
       localStorage.setItem('bridgeCode', '0');
+      localStorage.setItem('bridgeDash', '0');
       localStorage.setItem('bridgeUsage', '0');
       applyOverviewState();
       applyCodeState();
+      applyDashState();
       applyUsageState();
     }
     localStorage.setItem('bridgePlan', planOpen ? '1' : '0');
@@ -4051,12 +4235,15 @@ if(codeToggle){
     if(codeOpen){
       overviewOpen = false;
       planOpen = false;
+      dashOpen = false;
       usageOpen = false;
       localStorage.setItem('bridgeOverview', '0');
       localStorage.setItem('bridgePlan', '0');
+      localStorage.setItem('bridgeDash', '0');
       localStorage.setItem('bridgeUsage', '0');
       applyOverviewState();
       applyPlanState();
+      applyDashState();
       applyUsageState();
     }
     localStorage.setItem('bridgeCode', codeOpen ? '1' : '0');
@@ -4071,6 +4258,35 @@ if(codeClose){
     applyCodeState();
   });
 }
+if(dashToggle){
+  dashToggle.addEventListener('click', () => {
+    dashOpen = !(document.body.classList.contains('dash-open'));
+    if(dashOpen){
+      overviewOpen = false;
+      planOpen = false;
+      codeOpen = false;
+      usageOpen = false;
+      localStorage.setItem('bridgeOverview', '0');
+      localStorage.setItem('bridgePlan', '0');
+      localStorage.setItem('bridgeCode', '0');
+      localStorage.setItem('bridgeUsage', '0');
+      applyOverviewState();
+      applyPlanState();
+      applyCodeState();
+      applyUsageState();
+    }
+    localStorage.setItem('bridgeDash', dashOpen ? '1' : '0');
+    applyDashState();
+    pollMetrics();
+  });
+}
+if(dashClose){
+  dashClose.addEventListener('click', () => {
+    dashOpen = false;
+    localStorage.setItem('bridgeDash', '0');
+    applyDashState();
+  });
+}
 if(usageToggle){
   usageToggle.addEventListener('click', () => {
     usageOpen = !(document.body.classList.contains('usage-open'));
@@ -4078,12 +4294,15 @@ if(usageToggle){
       overviewOpen = false;
       planOpen = false;
       codeOpen = false;
+      dashOpen = false;
       localStorage.setItem('bridgeOverview', '0');
       localStorage.setItem('bridgePlan', '0');
       localStorage.setItem('bridgeCode', '0');
+      localStorage.setItem('bridgeDash', '0');
       applyOverviewState();
       applyPlanState();
       applyCodeState();
+      applyDashState();
     }
     localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
     applyUsageState();
@@ -4271,6 +4490,12 @@ window.addEventListener('keydown', e => {
     applyPlanState();
     return;
   }
+  if(e.key === 'Escape' && document.body.classList.contains('dash-open')){
+    dashOpen = false;
+    localStorage.setItem('bridgeDash', '0');
+    applyDashState();
+    return;
+  }
   if(e.key === 'Escape' && document.body.classList.contains('usage-open')){
     usageOpen = false;
     localStorage.setItem('bridgeUsage', '0');
@@ -4292,6 +4517,7 @@ window.addEventListener('resize', () => {
   applyOverviewState();
   applyPlanState();
   applyCodeState();
+  applyDashState();
   applyUsageState();
   resizeInput();
 });
@@ -4302,6 +4528,7 @@ applyViewPrefs();
 applyOverviewState();
 applyPlanState();
 applyCodeState();
+applyDashState();
 applyUsageState();
 applyHeaderCollapsed();
 applyComposerExpanded();
@@ -4313,10 +4540,12 @@ updateSendState();
 poll();
 status();
 pollPlan();
+pollMetrics();
 pollUsage();
 setInterval(poll, 1500);
 setInterval(status, 1200);
 setInterval(pollPlan, 3000);
+setInterval(pollMetrics, 5000);
 setInterval(pollUsage, 5000);
 setInterval(refreshTimes, 30000);
 </script>

@@ -2,6 +2,7 @@
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 . (Join-Path $PSScriptRoot 'lib\radar.ps1')
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 
 $cfg  = Get-BridgeConfig
 $port = [int]$cfg.port
@@ -330,6 +331,10 @@ try {
       elseif ($method -eq 'GET' -and $path -eq '/api/usage') {
         $u = Get-UsageSummary
         Send-Text $ctx ($u | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/metrics') {
+        $m = Get-MetricsForApi
+        Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
         $r = Get-RadarDigestForApi

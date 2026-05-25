@@ -60,6 +60,16 @@
       24
     ]
   },
+  "notify": {
+    "enabled": true,
+    "events": {
+      "done": true,
+      "need_you": true,
+      "gate": true
+    },
+    "throttleSeconds": 20,
+    "timeoutSec": 10
+  },
   "autonomy": {
     "enabled": true,
     "requireApproval": false,
