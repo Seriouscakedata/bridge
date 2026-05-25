@@ -139,9 +139,22 @@
   .meta b.ok{color:var(--codex)}
   .meta b.warn{color:var(--model)}
   .meta b.bad{color:var(--danger)}
-  .btns{min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+  .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
+  .btns-secondary{display:contents}
+  #moreMenu{display:none}
+  #searchToggle{order:1}
+  #overviewToggle{order:2}
+  #memoryBtn{order:3}
+  #exportChat{order:4}
+  #exportMarkdown{order:5}
+  #compactToggle{order:6}
+  #systemToggle{order:7}
+  #pauseToggle{order:8}
+  #restart{order:9}
+  #kill{order:10}
+  #moreMenu{order:11}
   .header-toggle-btn{
     justify-self:end;
     align-self:center;
@@ -1240,24 +1253,26 @@
       width:100vw;
       max-width:100vw;
     }
-    header{padding:10px 11px;overflow:hidden}
+    header{padding:10px 11px;overflow:visible}
     .brand{gap:8px}
     .mark{width:31px;height:31px;border-radius:8px}
     h1{font-size:14px}
     .subtitle{display:none}
+    .centerbar{display:none}
     .chips{gap:6px}
     .chip{padding:5px 8px;font-size:11px}
     .btns{
       width:100%;
       display:grid;
-      grid-template-columns:repeat(3,minmax(0,1fr));
+      grid-template-columns:40px minmax(0,1fr) minmax(0,1fr) 40px;
       justify-content:stretch;
       gap:7px;
       max-width:calc(100vw - 22px);
-      overflow:hidden;
+      overflow:visible;
     }
     .btns button{
       width:100%;
+      min-height:40px;
       min-width:0;
       padding-left:6px;
       padding-right:6px;
@@ -1266,7 +1281,28 @@
       white-space:nowrap;
       font-size:12px;
     }
-    .btns button.icon{width:100%;height:34px}
+    .btns button.icon{width:100%;height:40px}
+    #moreMenu{display:inline-flex;align-items:center;justify-content:center;min-height:40px}
+    .btns-secondary{
+      position:absolute;
+      right:0;
+      top:calc(100% + 7px);
+      z-index:60;
+      display:none;
+      flex-direction:column;
+      gap:6px;
+      width:max-content;
+      max-width:calc(100vw - 24px);
+      min-width:164px;
+      padding:6px;
+      background:var(--panel);
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:10px;
+      box-shadow:0 8px 24px rgba(0,0,0,.4);
+    }
+    .btns-secondary.open{display:flex}
+    .btns-secondary button{width:100%;justify-content:center;min-height:36px}
+    #inp{max-height:40vh}
     .filterbar{padding:7px 10px}
     .filterbar .label{display:none}
     .filter-btn{padding:5px 9px;font-size:11.5px}
@@ -1277,8 +1313,8 @@
     #searchCount{text-align:left;min-width:auto}
     .search-tools{margin-left:auto}
     #log{padding:14px 10px 18px;gap:11px}
-    #scrollProgress{top:178px;bottom:calc(74px + env(safe-area-inset-bottom,0px));width:2px}
-    body.has-health-banner #scrollProgress{top:222px}
+    #scrollProgress{top:126px;bottom:calc(74px + env(safe-area-inset-bottom,0px));width:2px}
+    body.has-health-banner #scrollProgress{top:170px}
     .msg,.from-user{max-width:100%;grid-template-columns:30px minmax(0,1fr);gap:8px}
     .from-user{grid-template-columns:minmax(0,1fr) 30px}
     .from-system{
@@ -1297,6 +1333,8 @@
     body.compact-mode .msg,body.compact-mode .from-user{max-width:100%}
     footer{padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px));gap:8px}
     .composer-meta{font-size:10.5px}
+    .mini-btn{min-height:32px;padding:4px 8px}
+    .composer-meta .mini-btn{min-height:32px}
     #attach,#screen,#voice{width:38px}
     #send{padding:0 12px}
     #toTop,#toBottom{right:12px}
@@ -1305,8 +1343,8 @@
   }
   @media (max-width:520px){
     header,#searchPanel,.filterbar,#log,footer{
-      width:min(100%,390px);
-      max-width:min(100%,390px);
+      width:100%;
+      max-width:100%;
     }
     .btns{max-width:100%}
     footer{
@@ -1369,16 +1407,18 @@
   </div>
   <div class="btns">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
-    <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦</button>
-    <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠</button>
-    <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
-    <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD</button>
-    <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
-    <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
-    <button type="button" onclick="ctl('pause')" title="Пауза">⏸ Пауза</button>
-    <button type="button" onclick="ctl('resume')" title="Продолжить">▶ Продолжить</button>
-    <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻</button>
+    <button id="pauseToggle" type="button" onclick="togglePause()" title="Пауза">⏸ Пауза</button>
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
+    <button id="moreMenu" class="icon" type="button" title="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
+    <div class="btns-secondary" id="btnsSecondary">
+      <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦</button>
+      <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠</button>
+      <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
+      <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD</button>
+      <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
+      <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
+      <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻</button>
+    </div>
   </div>
   <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
 </header>
@@ -1509,10 +1549,14 @@ let statusInFlight = false;
 let connectionFailures = 0;
 let activeAgentLabel = '';
 let systemGroupsExpanded = new Set();
+let _paused = false;
 
 const log = document.getElementById('log');
 const headerEl = document.querySelector('header');
 const headerToggle = document.getElementById('headerToggle');
+const pauseToggleBtn = document.getElementById('pauseToggle');
+const moreMenuBtn = document.getElementById('moreMenu');
+const btnsSecondary = document.getElementById('btnsSecondary');
 const working = document.getElementById('working');
 const emptyState = document.getElementById('emptyState');
 const scrollProgress = document.getElementById('scrollProgress');
@@ -1627,6 +1671,25 @@ function scrubCredentialedUrl(){
       history.replaceState(null, '', u.pathname + u.search + u.hash);
     }
   }catch(e){}
+}
+
+function updatePauseToggle(paused){
+  _paused = !!paused;
+  if(!pauseToggleBtn) return;
+  pauseToggleBtn.textContent = _paused ? '▶ Продолжить' : '⏸ Пауза';
+  pauseToggleBtn.title = _paused ? 'Продолжить' : 'Пауза';
+}
+function togglePause(){
+  ctl(_paused ? 'resume' : 'pause');
+}
+function setMoreMenuOpen(open){
+  if(!moreMenuBtn || !btnsSecondary) return;
+  const next = !!open;
+  btnsSecondary.classList.toggle('open', next);
+  moreMenuBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+}
+function toggleMoreMenu(){
+  setMoreMenuOpen(!(btnsSecondary && btnsSecondary.classList.contains('open')));
 }
 
 function esc(s){
@@ -1891,6 +1954,7 @@ function setHealthBanner(level, title, detail, show, source){
   document.body.classList.toggle('has-health-banner', visible);
 }
 function updateHealthBannerFromStatus(s, beat, statusText){
+  if(s) updatePauseToggle(!!s.paused);
   if(!s || document.body.classList.contains('offline')) return;
   if(s.paused){
     setHealthBanner('warn', 'Пауза включена', 'Автономный цикл остановлен до команды продолжения.', true, 'status');
@@ -2684,7 +2748,8 @@ async function status(){
 }
 function resizeInput(){
   const viewportH = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 480);
-  const maxHeight = composerExpanded ? Math.min(520, Math.round(viewportH * 0.46)) : 170;
+  const collapsedMax = window.innerWidth <= 640 ? Math.max(170, Math.round(viewportH * 0.4)) : 170;
+  const maxHeight = composerExpanded ? Math.min(520, Math.round(viewportH * 0.46)) : collapsedMax;
   input.style.maxHeight = maxHeight + 'px';
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, maxHeight) + 'px';
@@ -3343,6 +3408,12 @@ input.addEventListener('input', () => {
 log.addEventListener('scroll', updateBottomButton);
 toTop.addEventListener('click', () => log.scrollTo({top:0, behavior:'smooth'}));
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
+if(moreMenuBtn){
+  moreMenuBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleMoreMenu();
+  });
+}
 searchToggle.addEventListener('click', () => {
   if(searchPanel.classList.contains('open')) closeSearch();
   else openSearch();
@@ -3393,6 +3464,13 @@ searchInput.addEventListener('keydown', e => {
   }
 });
 document.addEventListener('click', e => {
+  if(btnsSecondary && btnsSecondary.classList.contains('open')){
+    if(btnsSecondary.contains(e.target)){
+      if(e.target.closest('button')) setMoreMenuOpen(false);
+    } else if(!moreMenuBtn || !moreMenuBtn.contains(e.target)){
+      setMoreMenuOpen(false);
+    }
+  }
   const systemBundleBtn = e.target.closest('.system-bundle button');
   if(systemBundleBtn){
     const groupId = systemBundleBtn.closest('.system-bundle')?.dataset.systemGroup;
@@ -3507,6 +3585,10 @@ window.addEventListener('keydown', e => {
   }
   if(e.key === 'Escape' && searchPanel.classList.contains('open')){
     closeSearch();
+    return;
+  }
+  if(e.key === 'Escape' && btnsSecondary && btnsSecondary.classList.contains('open')){
+    setMoreMenuOpen(false);
     return;
   }
   if(e.key === 'Escape' && lightbox.classList.contains('open')){
