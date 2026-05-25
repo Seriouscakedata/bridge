@@ -784,6 +784,9 @@
   }
   .msg.expanded .bubble.long .md{max-height:none}
   .msg.expanded .bubble.long .md:after{display:none}
+  .expand-inline{display:block;background:none;border:none;cursor:pointer;color:var(--model);font-size:12.5px;font-weight:600;padding:6px 0 2px;width:100%;text-align:center;letter-spacing:.02em;opacity:.85;transition:opacity .15s,color .15s}
+  .expand-inline:hover{opacity:1;color:var(--fg)}
+  .msg.expanded .expand-inline{display:none}
   .md h1,.md h2,.md h3,.md h4{margin:.65em 0 .35em;line-height:1.25;color:#fff}
   .md h1{font-size:1.28em}
   .md h2{font-size:1.18em}
@@ -2521,6 +2524,7 @@ function addMsg(m){
         '<div class="msg-actions">' + favoriteButton + expandButton + quoteButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
       '<div class="md">' + renderMd(rawText) + '</div>' +
+      (isLong ? '<button type="button" class="expand-inline expand-msg" aria-label="Показать полностью">Показать полностью ↓</button>' : '') +
       renderAttachments(m) +
     '</div>';
   log.insertBefore(div, working);
@@ -3466,9 +3470,9 @@ document.addEventListener('click', e => {
   if(expandBtn){
     const msg = expandBtn.closest('.msg');
     const expanded = msg ? msg.classList.toggle('expanded') : false;
-    expandBtn.textContent = expanded ? '↑' : '↓';
-    expandBtn.title = expanded ? 'Свернуть длинное сообщение' : 'Развернуть длинное сообщение';
-    expandBtn.setAttribute('aria-label', expandBtn.title);
+    // обновляем только кнопку в шапке (.mini-btn), инлайн-кнопка всегда скрыта при expanded
+    const topBtn = msg ? msg.querySelector('.msg-actions .expand-msg') : null;
+    if(topBtn){ topBtn.textContent = expanded ? '↑' : '↓'; topBtn.title = expanded ? 'Свернуть длинное сообщение' : 'Развернуть длинное сообщение'; topBtn.setAttribute('aria-label', topBtn.title); }
     if(expanded) msg.scrollIntoView({behavior:'smooth', block:'nearest'});
     return;
   }
