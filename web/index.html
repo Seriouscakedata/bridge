@@ -1265,6 +1265,17 @@ let voiceBaseText = '';
 let voiceFinalText = '';
 let dragDepth = 0;
 
+function scrubCredentialedUrl(){
+  try{
+    const u = new URL(window.location.href);
+    if(u.username || u.password){
+      u.username = '';
+      u.password = '';
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
+    }
+  }catch(e){}
+}
+
 function esc(s){
   return String(s ?? '')
     .replace(/&/g,'&amp;')
@@ -2240,6 +2251,7 @@ async function requestOk(url, options, timeoutMs){
   const opts = options ? Object.assign({}, options) : {};
   if(!Object.prototype.hasOwnProperty.call(opts, 'credentials')) opts.credentials = 'same-origin';
   if(!Object.prototype.hasOwnProperty.call(opts, 'cache')) opts.cache = 'no-store';
+  const requestUrl = String(url || '').startsWith('/') ? location.origin + url : url;
   let timer = null;
   let ctrl = null;
   if(typeof AbortController !== 'undefined' && !opts.signal){
@@ -2248,7 +2260,7 @@ async function requestOk(url, options, timeoutMs){
     timer = setTimeout(() => ctrl.abort(), timeoutMs || 12000);
   }
   try{
-    const r = await fetch(url, opts);
+    const r = await fetch(requestUrl, opts);
     if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
     return r;
   }catch(e){
@@ -2837,6 +2849,7 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('hashchange', () => focusHashTarget(true));
 
+scrubCredentialedUrl();
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
 applyMessageFilter();
