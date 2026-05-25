@@ -289,6 +289,166 @@
   .health-banner.bad .health-title{color:#ffd7da}
   body.has-health-banner #scrollProgress{top:174px}
 
+  #overviewPanel{
+    position:fixed;
+    top:148px;
+    right:16px;
+    bottom:calc(86px + env(safe-area-inset-bottom,0px));
+    z-index:3;
+    width:300px;
+    min-height:0;
+    display:none;
+    flex-direction:column;
+    gap:12px;
+    padding:12px;
+    border:1px solid var(--border);
+    border-radius:14px;
+    background:rgba(18,22,29,.9);
+    box-shadow:var(--shadow);
+    backdrop-filter:blur(16px);
+    overflow:auto;
+  }
+  body.overview-open #overviewPanel{display:flex}
+  body.has-health-banner #overviewPanel{top:188px}
+  #searchPanel.open ~ #overviewPanel{top:198px}
+  body.has-health-banner #searchPanel.open ~ #overviewPanel{top:238px}
+  body.overview-open #log{padding-right:calc(var(--content-pad) + 326px)}
+  #overviewToggle.on{border-color:rgba(114,183,255,.64);color:#b9dcff;background:#172333}
+  .overview-head{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    min-width:0;
+  }
+  .overview-head strong{
+    min-width:0;
+    flex:1;
+    font-size:13px;
+    line-height:1.2;
+  }
+  .overview-close{flex:none}
+  .overview-section{
+    border:1px solid var(--border-soft);
+    border-radius:11px;
+    background:rgba(10,14,20,.48);
+    overflow:hidden;
+  }
+  .overview-section h2{
+    margin:0;
+    padding:9px 10px 7px;
+    color:var(--soft);
+    font-size:11px;
+    line-height:1.2;
+    text-transform:uppercase;
+    letter-spacing:0;
+    border-bottom:1px solid var(--border-soft);
+    background:rgba(255,255,255,.025);
+  }
+  .overview-kpis{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:1px;
+    background:var(--border-soft);
+  }
+  .overview-kpi{
+    min-width:0;
+    padding:9px 10px;
+    background:#101720;
+  }
+  .overview-kpi b{
+    display:block;
+    color:var(--txt);
+    font-size:19px;
+    line-height:1.1;
+    font-variant-numeric:tabular-nums;
+  }
+  .overview-kpi span{
+    display:block;
+    margin-top:4px;
+    color:var(--muted);
+    font-size:11px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .overview-lines{
+    display:flex;
+    flex-direction:column;
+    gap:7px;
+    padding:10px;
+  }
+  .overview-line{
+    display:flex;
+    gap:8px;
+    min-width:0;
+    color:var(--muted);
+    font-size:12px;
+    line-height:1.35;
+  }
+  .overview-line span{flex:none;color:#778397}
+  .overview-line b{
+    min-width:0;
+    color:var(--soft);
+    font-weight:650;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .overview-list{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    background:var(--border-soft);
+  }
+  .overview-item{
+    width:100%;
+    min-height:0;
+    padding:9px 10px;
+    border:0;
+    border-radius:0;
+    background:#101720;
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    gap:7px;
+    align-items:center;
+    text-align:left;
+  }
+  .overview-item:hover{background:#151d28}
+  .overview-item .role{
+    width:22px;
+    height:22px;
+    display:grid;
+    place-items:center;
+    border-radius:7px;
+    border:1px solid var(--border-soft);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:800;
+  }
+  .overview-item.claude .role{color:var(--claude);background:var(--claude-bg);border-color:rgba(184,140,255,.24)}
+  .overview-item.codex .role{color:var(--codex);background:var(--codex-bg);border-color:rgba(104,211,145,.22)}
+  .overview-item.user .role{color:var(--user);background:var(--user-bg);border-color:rgba(114,183,255,.28)}
+  .overview-item .txt{
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.25;
+  }
+  .overview-item .ago{
+    color:#758195;
+    font-size:11px;
+    white-space:nowrap;
+  }
+  .overview-empty{
+    padding:11px 10px;
+    color:var(--muted);
+    font-size:12px;
+    background:#101720;
+  }
+
   #log{
     position:relative;
     flex:1;
@@ -982,6 +1142,11 @@
     .meta{gap:3px}
     .btns{justify-content:flex-start;flex-wrap:wrap}
   }
+  @media (max-width:1180px){
+    body.overview-open #log{padding-right:var(--content-pad)}
+    #overviewPanel{display:none!important}
+    #overviewToggle{display:none}
+  }
   @media (max-width:640px){
     body{background:var(--bg)}
     header{padding:10px 11px}
@@ -1079,6 +1244,7 @@
   </div>
   <div class="btns">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
+    <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦</button>
     <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
     <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD</button>
     <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
@@ -1131,6 +1297,35 @@
     <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
   </div>
 </main>
+
+<aside id="overviewPanel" aria-label="Обзор сеанса" aria-hidden="true">
+  <div class="overview-head">
+    <strong>Обзор сеанса</strong>
+    <button id="overviewClose" class="mini-btn overview-close" type="button" title="Скрыть обзор" aria-label="Скрыть обзор">×</button>
+  </div>
+  <section class="overview-section" aria-label="Статистика">
+    <h2>Статистика</h2>
+    <div class="overview-kpis">
+      <div class="overview-kpi"><b id="ovTotal">0</b><span>сообщений</span></div>
+      <div class="overview-kpi"><b id="ovVisible">0</b><span>видно сейчас</span></div>
+      <div class="overview-kpi"><b id="ovFiles">0</b><span>с файлами</span></div>
+      <div class="overview-kpi"><b id="ovCode">0</b><span>с кодом</span></div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Состояние">
+    <h2>Состояние</h2>
+    <div class="overview-lines">
+      <div class="overview-line"><span>агент</span><b id="ovAgent">ожидание</b></div>
+      <div class="overview-line"><span>задача</span><b id="ovTask">нет активной задачи</b></div>
+      <div class="overview-line"><span>ритм</span><b id="ovBeat">обновляется</b></div>
+      <div class="overview-line"><span>важное</span><b id="ovFav">0</b></div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Последние сообщения">
+    <h2>Последние сообщения</h2>
+    <div id="overviewRecent" class="overview-list"></div>
+  </section>
+</aside>
 
 <div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
@@ -1205,6 +1400,10 @@ const lightboxName = document.getElementById('lightboxName');
 const lightboxOpen = document.getElementById('lightboxOpen');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
+const overviewToggle = document.getElementById('overviewToggle');
+const overviewPanel = document.getElementById('overviewPanel');
+const overviewClose = document.getElementById('overviewClose');
+const overviewRecent = document.getElementById('overviewRecent');
 const exportChatBtn = document.getElementById('exportChat');
 const exportMarkdownBtn = document.getElementById('exportMarkdown');
 const searchPanel = document.getElementById('searchPanel');
@@ -1253,6 +1452,9 @@ let compactMode = localStorage.getItem('bridgeCompact') === '1';
 let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
 let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
+let overviewOpen = localStorage.getItem('bridgeOverview') === null
+  ? window.innerWidth >= 1280
+  : localStorage.getItem('bridgeOverview') !== '0';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
 if(enterMode !== 'send' && enterMode !== 'multiline') enterMode = 'send';
 let favoriteSeqs = loadFavoriteSeqs();
@@ -1376,6 +1578,71 @@ function setMessageFavorite(msg, on, btn){
   updateFavoriteButton(btn || msg.querySelector('.favorite-msg'), on);
   updateFilterCounts();
   if(activeFilter === 'favorites') applyMessageFilter();
+  updateOverview();
+}
+function applyOverviewState(){
+  const enabled = Boolean(overviewOpen && window.innerWidth > 1180);
+  document.body.classList.toggle('overview-open', enabled);
+  if(overviewPanel) overviewPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(overviewToggle){
+    overviewToggle.classList.toggle('on', enabled);
+    overviewToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    overviewToggle.title = enabled ? 'Скрыть обзор сеанса' : 'Показать обзор сеанса';
+  }
+  requestAnimationFrame(updateBottomButton);
+}
+function overviewText(msg){
+  if(!msg) return '';
+  const raw = String(msg.dataset.rawText || '').replace(/\s+/g, ' ').trim();
+  if(raw) return raw.length > 84 ? raw.slice(0, 84) + '...' : raw;
+  if(msg.dataset.hasAttachments === '1') return 'вложения';
+  return 'без текста';
+}
+function updateOverview(){
+  if(!overviewPanel) return;
+  const messages = [...document.querySelectorAll('.msg')];
+  const visible = messages.filter(msg =>
+    isVisibleByPrefs(msg) && !(msg.classList.contains('system-collapsed') && !msg.classList.contains('search-hit'))
+  );
+  const files = messages.filter(msg => msg.dataset.hasAttachments === '1').length;
+  const code = messages.filter(msg => msg.dataset.hasCode === '1').length;
+  const fav = messages.filter(msg => msg.dataset.favorite === '1').length;
+  const setText = (id, value) => {
+    const el = document.getElementById(id);
+    if(el) el.textContent = String(value);
+  };
+  setText('ovTotal', messages.length);
+  setText('ovVisible', visible.length);
+  setText('ovFiles', files);
+  setText('ovCode', code);
+  setText('ovFav', fav + ' ' + pluralRu(fav, 'сообщение', 'сообщения', 'сообщений'));
+  const agent = activeAgentLabel || 'ожидание';
+  const st = document.getElementById('st')?.textContent || 'ожидание';
+  const task = document.getElementById('task')?.textContent || 'нет активной задачи';
+  const beat = document.getElementById('beat')?.textContent || 'обновляется';
+  setText('ovAgent', agent + (st ? ' · ' + st : ''));
+  setText('ovTask', task);
+  setText('ovBeat', beat);
+  const recent = messages
+    .filter(msg => msg.dataset.role !== 'system')
+    .slice(-7)
+    .reverse();
+  if(!recent.length){
+    overviewRecent.innerHTML = '<div class="overview-empty">Сообщений пока нет</div>';
+    return;
+  }
+  overviewRecent.innerHTML = recent.map(msg => {
+    const role = roleInfo[msg.dataset.role] || {short:'?', name:msg.dataset.role || ''};
+    const seq = msg.dataset.seq || '';
+    const time = msg.querySelector('time.time');
+    const ago = time ? time.textContent : '';
+    const title = [role.name, seq ? '#' + seq : '', time ? time.title : ''].filter(Boolean).join(' · ');
+    return '<button type="button" class="overview-item ' + escAttr(msg.dataset.role || '') + '" data-jump-seq="' + escAttr(seq) + '" title="' + escAttr(title) + '">' +
+      '<span class="role">' + esc(role.short) + '</span>' +
+      '<span class="txt">' + esc(overviewText(msg)) + '</span>' +
+      '<span class="ago">' + esc(ago) + '</span>' +
+    '</button>';
+  }).join('');
 }
 function updateComposerMeta(){
   const text = input.value || '';
@@ -1617,6 +1884,7 @@ function applyMessageFilter(){
   updateEmptyState();
   if(searchPanel.classList.contains('open')) updateSearch(false);
   updateBottomButton();
+  updateOverview();
 }
 function applyViewPrefs(){
   document.body.classList.toggle('compact-mode', compactMode);
@@ -1633,6 +1901,7 @@ function applyViewPrefs(){
   updateDaySeparators();
   if(stickToBottom) requestAnimationFrame(() => scrollToBottom('auto'));
   else requestAnimationFrame(updateBottomButton);
+  updateOverview();
 }
 function scrollToBottom(behavior){
   unseenCount = 0;
@@ -2009,6 +2278,7 @@ function refreshTimes(){
     t.textContent = relativeTime(t.getAttribute('datetime'));
     t.title = fullTime(t.getAttribute('datetime'));
   });
+  updateOverview();
 }
 
 async function poll(){
@@ -2146,6 +2416,7 @@ async function status(){
     } else {
       working.style.display = 'none';
     }
+    updateOverview();
     updateBottomButton();
   }catch(e){
     showConnectionProblem('status', e);
@@ -2699,6 +2970,16 @@ searchToggle.addEventListener('click', () => {
   if(searchPanel.classList.contains('open')) closeSearch();
   else openSearch();
 });
+overviewToggle.addEventListener('click', () => {
+  overviewOpen = !(document.body.classList.contains('overview-open'));
+  localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
+  applyOverviewState();
+});
+overviewClose.addEventListener('click', () => {
+  overviewOpen = false;
+  localStorage.setItem('bridgeOverview', '0');
+  applyOverviewState();
+});
 exportChatBtn.addEventListener('click', exportChat);
 exportMarkdownBtn.addEventListener('click', exportMarkdown);
 compactToggle.addEventListener('click', () => {
@@ -2744,6 +3025,16 @@ document.addEventListener('click', e => {
       rebuildSystemGroups();
       updateDaySeparators();
       updateEmptyState();
+    }
+    return;
+  }
+  const overviewBtn = e.target.closest('.overview-item[data-jump-seq]');
+  if(overviewBtn){
+    const seq = overviewBtn.dataset.jumpSeq;
+    const msg = seq ? document.getElementById('m-' + seq) : null;
+    if(msg){
+      msg.scrollIntoView({behavior:'smooth', block:'center'});
+      flashTargetMessage(msg);
     }
     return;
   }
@@ -2848,10 +3139,12 @@ window.addEventListener('keydown', e => {
   }
 });
 window.addEventListener('hashchange', () => focusHashTarget(true));
+window.addEventListener('resize', applyOverviewState);
 
 scrubCredentialedUrl();
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
+applyOverviewState();
 applyMessageFilter();
 updateEnterMode();
 resizeInput();
