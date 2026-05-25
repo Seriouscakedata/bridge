@@ -2437,9 +2437,21 @@ function appendToComposer(snippet){
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
 }
+function selectionInsideMessage(msg){
+  if(!msg || !window.getSelection) return '';
+  const sel = window.getSelection();
+  if(!sel || sel.isCollapsed) return '';
+  const nodeInMsg = node => {
+    let n = node && (node.nodeType === 1 ? node : node.parentNode);
+    return Boolean(n && msg.contains(n));
+  };
+  if(!nodeInMsg(sel.anchorNode) || !nodeInMsg(sel.focusNode)) return '';
+  return sel.toString().trim();
+}
 function quoteMessage(msg){
   if(!msg) return;
-  const raw = String(msg.dataset.rawText || '').trim();
+  const selected = selectionInsideMessage(msg);
+  const raw = (selected || String(msg.dataset.rawText || '')).trim();
   if(!raw) return;
   const roleKey = msg.dataset.role || '';
   const role = (roleInfo[roleKey] && roleInfo[roleKey].name) || roleKey || 'сообщение';
@@ -2452,8 +2464,9 @@ function quoteMessage(msg){
     quoted += '\n> ...';
   }
   appendToComposer(quoted + '\n\n');
-  setComposerStatus('Цитата добавлена в черновик', 'ok');
-  clearComposerStatusSoon('Цитата добавлена в черновик');
+  const okText = selected ? 'Выделенный фрагмент добавлен в черновик' : 'Цитата добавлена в черновик';
+  setComposerStatus(okText, 'ok');
+  clearComposerStatusSoon(okText);
 }
 function setVoiceState(on){
   voiceListening = Boolean(on);
@@ -2754,7 +2767,8 @@ document.addEventListener('click', e => {
   const msgBtn = e.target.closest('.copy-msg');
   if(msgBtn){
     const msg = msgBtn.closest('.msg');
-    copyText(msg ? msg.dataset.copyText || msg.dataset.rawText || '' : '', msgBtn);
+    const selected = selectionInsideMessage(msg);
+    copyText(msg ? selected || msg.dataset.copyText || msg.dataset.rawText || '' : '', msgBtn);
     return;
   }
   const attBtn = e.target.closest('.copy-att');
