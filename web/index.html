@@ -513,12 +513,17 @@
     color:var(--soft);
   }
   .empty-state.show{display:block}
+  body.offline .empty-state.show{
+    border-color:rgba(255,107,107,.36);
+    background:rgba(52,25,27,.3);
+  }
   .empty-state strong{
     display:block;
     margin-bottom:6px;
     color:#fff;
     font-size:14px;
   }
+  body.offline .empty-state strong{color:#ffd7da}
   .empty-state span{
     display:block;
     color:var(--muted);
@@ -1433,7 +1438,10 @@ function updateEmptyState(){
   }
   let title = firstLoad ? 'История загружается' : 'Сообщений пока нет';
   let hint = 'Новые сообщения появятся здесь автоматически.';
-  if(q){
+  if(document.body.classList.contains('offline')){
+    title = 'Нет связи с мостом';
+    hint = 'Проверяю соединение. Когда сервер ответит, история загрузится автоматически.';
+  } else if(q){
     title = 'Поиск ничего не нашел';
     hint = 'Измените запрос или сбросьте фильтр ленты.';
   } else if(activeFilter !== 'all'){
@@ -1913,6 +1921,7 @@ function showConnectionProblem(source, err){
   setChip('chipCodex', false);
   setChip('chipModel', false);
   working.style.display = 'none';
+  updateEmptyState();
   updateDocumentTitle();
   updateBottomButton();
 }
