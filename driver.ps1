@@ -111,15 +111,37 @@ function Start-ReflectIfDue {
   try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
 }
 
-function Get-AutonomyExecuteEnabled {
-  try {
-    $cfgA = Get-BridgeConfig
-    if ($cfgA.PSObject.Properties.Name -notcontains 'autonomy') { return $true }
-    $a = $cfgA.autonomy
-    $en = if ($null -ne $a.enabled) { [bool]$a.enabled } else { $true }
-    $ex = if ($null -ne $a.executeApproved) { [bool]$a.executeApproved } else { $true }
-    return ($en -and $ex)
-  } catch { return $false }
+function Get-AutonomyRequireApproval {
+  try { $a = (Get-BridgeConfig).autonomy; if ($null -ne $a.requireApproval) { return [bool]$a.requireApproval } } catch {}
+  return $false
+}
+
+function Get-LastUserActivityMinutes {
+  # Minutes since the last [USER] message (fallback: driver start). For the idle-quiet gate.
+  $ts = $null
+  try { $u = @(Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' }); if ($u.Count -gt 0) { $ts = [datetime]$u[-1].ts } } catch {}
+  if (-not $ts) { try { $ts = [datetime](Read-State).driver_started } catch {} }
+  if (-not $ts) { return 99999 }
+  try { return ((Get-Date).ToUniversalTime() - $ts.ToUniversalTime()).TotalMinutes } catch { return 99999 }
+}
+
+function Test-AutonomyReady {
+  # True if the bridge may START autonomous backlog work right now.
+  $a = $null
+  try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $a = $cfgA.autonomy } } catch { return $false }
+  $enabled = if ($a -and $null -ne $a.enabled) { [bool]$a.enabled } else { $true }
+  if (-not $enabled) { return $false }
+  $quietMin = if ($a -and $a.idleQuietMinutes) { [double]$a.idleQuietMinutes } else { 10 }
+  if ((Get-LastUserActivityMinutes) -lt $quietMin) { return $false }
+  $cap = if ($a -and $null -ne $a.maxAutonomousTasksPerDay) { [int]$a.maxAutonomousTasksPerDay } else { 0 }
+  if ($cap -gt 0) {
+    $st = Read-State
+    $today = (Get-Date).ToString('yyyy-MM-dd')
+    $cnt = 0
+    if (($st.PSObject.Properties.Name -contains 'autonomous_day') -and ([string]$st.autonomous_day -eq $today)) { $cnt = [int]$st.autonomous_count }
+    if ($cnt -ge $cap) { return $false }
+  }
+  return $true
 }
 
 function Get-RecallKeywords {
@@ -340,6 +362,19 @@ SAFETY GATE: перед удалением файлов/папок ВНЕ дир
 function Set-AgentPid([int]$ProcId) { Update-State ({ param($s) $s.agent_pid = $ProcId }.GetNewClosure()) | Out-Null }
 function Clear-AgentPid { Update-State { param($s) $s.agent_pid = $null } | Out-Null }
 
+function Wait-AgentProcess {
+  # Wait for an agent process up to $TimeoutMs, refreshing the heartbeat every ~5s so a
+  # long turn doesn't look "dead" to the watchdog (which else false-positive rolls back).
+  # Returns $true if the process exited within the timeout.
+  param($Proc, [int]$TimeoutMs)
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+    if ($Proc.WaitForExit(5000)) { return $true }
+    try { Update-State { param($s) $s.heartbeat=(Get-Date).ToString('o') } | Out-Null } catch {}
+  }
+  return $Proc.WaitForExit(0)
+}
+
 function Invoke-Planner {
   param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal')
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
@@ -354,7 +389,7 @@ function Invoke-Planner {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id
-    if (-not $p.WaitForExit(240000)) { try { $p.Kill() } catch {}; return '(planner timeout)' }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 240000)) { try { $p.Kill() } catch {}; return '(planner timeout)' }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
   } finally { Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
@@ -373,7 +408,7 @@ function Invoke-Coder {
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id
-    if (-not $p.WaitForExit(600000)) { try { $p.Kill() } catch {}; return '(coder timeout)' }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) { try { $p.Kill() } catch {}; return '(coder timeout)' }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
   } finally { Clear-AgentPid; Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
@@ -607,15 +642,20 @@ while ($true) {
         Update-State { param($s) $s.current_backlog_id=$null } | Out-Null
         $state = Read-State
       }
-      # Autonomy: take the oldest APPROVED backlog idea and run it as a self-task.
+      # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
+      # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
       $claimedIdea = $null
-      if (Get-AutonomyExecuteEnabled) { try { $claimedIdea = Get-NextApprovedIdea } catch {} }
+      if (Test-AutonomyReady) { try { $claimedIdea = Get-NextRunnableIdea -IncludeNew (-not (Get-AutonomyRequireApproval)) } catch {} }
       if ($claimedIdea) {
         $bid = [string]$claimedIdea.id
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
-        Update-State ({ param($s) $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+        $today = (Get-Date).ToString('yyyy-MM-dd')
+        Update-State ({ param($s)
+          $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
+        }.GetNewClosure()) | Out-Null
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
-        Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу: $([string]$claimedIdea.text)" -Kind event | Out-Null
+        Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         $state = Read-State
       } else {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null

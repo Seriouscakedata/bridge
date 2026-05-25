@@ -33,9 +33,12 @@
   },
   "autonomy": {
     "enabled": true,
+    "requireApproval": false,
+    "idleQuietMinutes": 10,
+    "maxAutonomousTasksPerDay": 0,
     "reflectEveryHours": 6,
-    "executeApproved": true,
-    "maxIdeasPerReflect": 3
+    "maxIdeasPerReflect": 3,
+    "stablePromoteMinutes": 30
   },
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }

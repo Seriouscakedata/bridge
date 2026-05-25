@@ -81,6 +81,17 @@ function Get-NextApprovedIdea {
   return $null
 }
 
+function Get-NextRunnableIdea {
+  # Next idea to auto-run. With -IncludeNew (autonomy without manual approval) 'new'
+  # items are also runnable; 'approved' always takes priority, then oldest-first.
+  param([bool]$IncludeNew = $false)
+  $statuses = if ($IncludeNew) { @('approved','new') } else { @('approved') }
+  $items = @(Get-Backlog | Where-Object { $statuses -contains [string]$_.status } |
+    Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }}, @{Expression={[string]$_.ts}})
+  if ($items.Count -gt 0) { return $items[0] }
+  return $null
+}
+
 function Get-IdeaById {
   param([string]$Id)
   foreach ($i in @(Get-Backlog)) { if ([string]$i.id -eq $Id) { return $i } }

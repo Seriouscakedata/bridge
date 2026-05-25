@@ -298,6 +298,8 @@ function Initialize-Bridge {
       driver_started = $null
       claimed_at     = $null
       current_backlog_id = $null
+      autonomous_day   = $null
+      autonomous_count = 0
     }
     Write-State -State $state
   } else {
@@ -310,6 +312,7 @@ function Initialize-Bridge {
       last_user_seq=0; summarized_seq=0; turn=0; lastSeq=0
       heartbeat=$null; driver_started=$null; claimed_at=$null
       current_backlog_id=$null
+      autonomous_day=$null; autonomous_count=0
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
