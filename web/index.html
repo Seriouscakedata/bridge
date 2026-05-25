@@ -143,6 +143,7 @@
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
   .btns-secondary{display:contents}
+  .sec-label{display:none}
   #moreMenu{display:none}
   #searchToggle{order:1}
   #overviewToggle{order:2}
@@ -1301,9 +1302,12 @@
       box-shadow:0 8px 24px rgba(0,0,0,.4);
     }
     .btns-secondary.open{display:flex}
-    .btns-secondary button{width:100%;justify-content:center;min-height:36px}
+    .btns-secondary.open .sec-label{display:inline}
+    .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
+    .btns-secondary button.icon{height:auto}
+    #btnsSecondary #overviewToggle{display:none}
     #inp{max-height:40vh}
-    .filterbar{padding:7px 10px}
+    .filterbar{padding:7px 10px;flex-wrap:nowrap}
     .filterbar .label{display:none}
     .filter-btn{padding:5px 9px;font-size:11.5px}
     .health-banner{padding:8px 10px;align-items:flex-start}
@@ -1335,6 +1339,7 @@
     .composer-meta{font-size:10.5px}
     .mini-btn{min-height:32px;padding:4px 8px}
     .composer-meta .mini-btn{min-height:32px}
+    .composer-mode,.composer-expand{min-height:32px;height:auto}
     #attach,#screen,#voice{width:38px}
     #send{padding:0 12px}
     #toTop,#toBottom{right:12px}
@@ -1411,13 +1416,13 @@
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
     <button id="moreMenu" class="icon" type="button" title="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
     <div class="btns-secondary" id="btnsSecondary">
-      <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦</button>
-      <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠</button>
-      <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
-      <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD</button>
+      <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦ <span class="sec-label">Обзор</span></button>
+      <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
+      <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
+      <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
       <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
       <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
-      <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻</button>
+      <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻ <span class="sec-label">Рестарт</span></button>
     </div>
   </div>
   <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
@@ -1570,6 +1575,7 @@ const screenBtn = document.getElementById('screen');
 const voiceBtn = document.getElementById('voice');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
+const composerMeta = document.getElementById('composerMeta');
 const stagedFilesEl = document.getElementById('stagedFiles');
 const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
@@ -1886,6 +1892,7 @@ function rememberLastSent(text){
 }
 function updateComposerMeta(){
   const text = input.value || '';
+  if(composerMeta) composerMeta.style.opacity = (text.trim() || document.activeElement === input) ? '1' : '0.4';
   const chars = [...text].length;
   const lines = text ? text.split(/\r\n|\r|\n/).length : 1;
   const charLabel = chars + ' ' + pluralRu(chars, 'символ', 'символа', 'символов');
@@ -3405,6 +3412,8 @@ input.addEventListener('keydown', e => {
 input.addEventListener('input', () => {
   persistInput();
 });
+input.addEventListener('focus', updateComposerMeta);
+input.addEventListener('blur', updateComposerMeta);
 log.addEventListener('scroll', updateBottomButton);
 toTop.addEventListener('click', () => log.scrollTo({top:0, behavior:'smooth'}));
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
