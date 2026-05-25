@@ -328,11 +328,16 @@ while ($true) {
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post')
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
   $attachmentMetas = @()
+  $failedAttachmentPaths = @()
   $fileMarkerPattern = '(?m)^\s*\[\[FILE:\s*(.+?)\s*\]\]\s*$'
   foreach ($match in [regex]::Matches($reply, $fileMarkerPattern)) {
     $sourcePath = $match.Groups[1].Value.Trim().Trim('"').Trim("'")
+    if ($sourcePath.StartsWith('<') -and $sourcePath.EndsWith('>') -and $sourcePath.Length -gt 2) {
+      $sourcePath = $sourcePath.Substring(1, $sourcePath.Length - 2).Trim()
+    }
     $meta = Register-AttachmentPath -SourcePath $sourcePath
     if ($meta) { $attachmentMetas += $meta }
+    else { $failedAttachmentPaths += $sourcePath }
   }
   # [[SAVE: title]] ... [[/SAVE]] -> durable decision note
   $savePattern = '(?s)\[\[SAVE:\s*(.+?)\s*\]\](.*?)\[\[/SAVE\]\]'
@@ -345,6 +350,12 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
+  if ($failedAttachmentPaths.Count -gt 0) {
+    $failLines = ($failedAttachmentPaths | ForEach-Object { "- $_" }) -join "`n"
+    $fileWarning = "⚠ Не удалось прикрепить файл:`n$failLines"
+    if ([string]::IsNullOrWhiteSpace($visibleReply)) { $visibleReply = $fileWarning }
+    else { $visibleReply = $visibleReply.TrimEnd() + "`n`n" + $fileWarning }
+  }
   if ([string]::IsNullOrWhiteSpace($visibleReply) -and $attachmentMetas.Count -eq 0) { $visibleReply = "(нет ответа от $speaker)" }
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
