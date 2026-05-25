@@ -611,6 +611,33 @@
   .composer-status.show{display:block}
   .composer-status.ok{color:var(--codex)}
   .composer-status.bad{color:var(--danger)}
+  .upload-queue{
+    display:none;
+    gap:6px;
+    flex-wrap:wrap;
+    align-items:center;
+    padding:1px 0;
+  }
+  .upload-queue.show{display:flex}
+  .upload-pill{
+    max-width:min(260px,100%);
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    padding:5px 8px;
+    border:1px solid var(--border-soft);
+    border-radius:999px;
+    background:#111822;
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.2;
+  }
+  .upload-pill .u-ico{flex:none;color:var(--muted)}
+  .upload-pill .u-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .upload-pill .u-size{flex:none;color:#748196;font-size:11px}
+  .upload-pill.active{border-color:rgba(114,183,255,.58);background:#12263d;color:#d9ecff}
+  .upload-pill.done{border-color:rgba(104,211,145,.44);background:#12281e;color:#d9f8e4}
+  .upload-pill.bad{border-color:rgba(255,107,107,.58);background:#32181c;color:#ffd7da}
   .composer-meta{
     min-height:15px;
     padding-left:2px;
@@ -785,6 +812,7 @@
   <div class="compose-main">
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
     <div id="composerStatus" class="composer-status" role="status" aria-live="polite"></div>
+    <div id="uploadQueue" class="upload-queue" aria-live="polite"></div>
     <div id="composerMeta" class="composer-meta" aria-live="polite">
       <span id="draftState" class="draft-state"></span>
       <span id="charCount" class="char-count"></span>
@@ -822,6 +850,7 @@ const fileInput = document.getElementById('fileInput');
 const attachBtn = document.getElementById('attach');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
+const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
@@ -1473,6 +1502,36 @@ function setComposerStatus(text, tone){
   composerStatus.textContent = text || '';
   composerStatus.className = 'composer-status' + (text ? ' show' : '') + (tone ? ' ' + tone : '');
 }
+function uploadName(file){
+  return (file && file.name) ? file.name : 'clipboard.png';
+}
+function uploadIcon(file){
+  const type = file && file.type ? file.type : '';
+  return type.startsWith('image/') ? '◩' : '□';
+}
+function renderUploadQueue(files, activeIndex, badIndex){
+  files = [...files].filter(Boolean);
+  if(!files.length){
+    uploadQueue.className = 'upload-queue';
+    uploadQueue.innerHTML = '';
+    return;
+  }
+  uploadQueue.className = 'upload-queue show';
+  uploadQueue.innerHTML = files.map((file, i) => {
+    const state = i === badIndex ? ' bad' : (i < activeIndex ? ' done' : (i === activeIndex ? ' active' : ''));
+    const size = fmtSize(file.size || 0);
+    return '<span class="upload-pill' + state + '" title="' + escAttr(uploadName(file) + ' · ' + size) + '">' +
+      '<span class="u-ico" aria-hidden="true">' + uploadIcon(file) + '</span>' +
+      '<span class="u-name">' + esc(uploadName(file)) + '</span>' +
+      '<span class="u-size">' + esc(size) + '</span>' +
+    '</span>';
+  }).join('');
+}
+function clearUploadQueueSoon(){
+  setTimeout(() => {
+    if(!uploading) renderUploadQueue([], -1, -1);
+  }, 2200);
+}
 function clearComposerStatusSoon(text){
   setTimeout(() => {
     if(composerStatus.textContent === text) setComposerStatus('');
@@ -1618,7 +1677,8 @@ async function uploadFiles(files){
   if(!files.length || uploading) return;
   const tooBig = files.find(f => Number(f.size) > 25 * 1024 * 1024);
   if(tooBig){
-    setComposerStatus('Файл больше 25 MB: ' + (tooBig.name || 'file'), 'bad');
+    renderUploadQueue(files, -1, files.indexOf(tooBig));
+    setComposerStatus('Файл больше 25 MB: ' + uploadName(tooBig), 'bad');
     return;
   }
   uploading = true;
@@ -1632,25 +1692,30 @@ async function uploadFiles(files){
     updateComposerMeta();
   }
   updateSendState();
+  renderUploadQueue(files, 0, -1);
   try{
     for(let i = 0; i < files.length; i++){
       const file = files[i];
-      setComposerStatus('Загрузка ' + (i + 1) + '/' + files.length + ': ' + (file.name || 'clipboard.png'));
+      renderUploadQueue(files, i, -1);
+      setComposerStatus('Загрузка ' + (i + 1) + '/' + files.length + ': ' + uploadName(file));
       const dataB64 = await readDataUrl(file);
       const text = i === 0 ? caption : '';
       const r = await fetch('/api/upload', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({name:file.name || 'clipboard.png', mime:file.type || '', dataB64, text})
+        body:JSON.stringify({name:uploadName(file), mime:file.type || '', dataB64, text})
       });
       if(!r.ok) throw new Error('HTTP ' + r.status);
       uploaded++;
+      renderUploadQueue(files, i + 1, -1);
     }
     const okText = files.length === 1 ? 'Файл прикреплён' : 'Файлы прикреплены: ' + files.length;
     setComposerStatus(okText, 'ok');
     clearComposerStatusSoon(okText);
+    clearUploadQueueSoon();
     poll();
   }catch(e){
+    renderUploadQueue(files, uploaded, uploaded);
     if(caption && uploaded === 0){
       input.value = draft;
       localStorage.setItem('bridgeDraft', draft);
