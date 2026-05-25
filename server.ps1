@@ -1,5 +1,6 @@
 ﻿# server.ps1 -- local web UI for the bridge (HttpListener, no admin needed).
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\plan.ps1')
 
 $cfg  = Get-BridgeConfig
 $port = [int]$cfg.port
@@ -299,6 +300,10 @@ try {
         $items = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/plan') {
+        $p = Get-PlanForApi
+        Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 12) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/add') {
         $body = Read-Body $ctx | ConvertFrom-Json
