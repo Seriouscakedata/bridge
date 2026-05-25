@@ -1334,12 +1334,12 @@ function scrollToBottom(behavior){
   log.scrollTo({top:log.scrollHeight, behavior:behavior || 'smooth'});
   requestAnimationFrame(updateBottomButton);
 }
-function ensureUnreadMarker(){
+function ensureUnreadMarker(beforeEl){
   if(unreadMarker && unreadMarker.isConnected) return;
   unreadMarker = document.createElement('div');
   unreadMarker.className = 'unread-sep';
   unreadMarker.textContent = 'Новые сообщения';
-  log.insertBefore(unreadMarker, working);
+  log.insertBefore(unreadMarker, beforeEl && beforeEl.parentNode === log ? beforeEl : working);
 }
 function clearUnreadMarker(){
   if(unreadMarker && unreadMarker.isConnected) unreadMarker.remove();
@@ -1688,6 +1688,7 @@ function addMsg(m){
       renderAttachments(m) +
     '</div>';
   log.insertBefore(div, working);
+  return div;
 }
 function refreshTimes(){
   document.querySelectorAll('time.time').forEach(t => {
@@ -1703,20 +1704,24 @@ async function poll(){
     const beforeBottom = isNearBottom();
     const data = await fetchJson('/api/messages?since=' + lastSeq);
     noteConnectionOk();
-    if(data.length && !beforeBottom && !firstLoad) ensureUnreadMarker();
+    const added = [];
     for(const m of data){
-      addMsg(m);
+      const el = addMsg(m);
+      if(el) added.push(el);
       lastSeq = Math.max(lastSeq, Number(m.seq) || 0);
     }
     if(data.length) applyMessageFilter();
     if(data.length){
+      const visibleAdded = added.filter(isVisibleByPrefs).length;
+      const firstVisibleAdded = added.find(isVisibleByPrefs);
+      if(visibleAdded && !beforeBottom && !firstLoad) ensureUnreadMarker(firstVisibleAdded);
       const focusedHash = focusHashTarget(!firstLoad);
       if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
       if(beforeBottom || firstLoad){
         if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
         firstLoad = false;
       } else {
-        unseenCount += data.length;
+        unseenCount += visibleAdded;
       }
     }
     updateBottomButton();
