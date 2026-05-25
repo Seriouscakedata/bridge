@@ -700,10 +700,9 @@
   .typing i:nth-child(2){animation-delay:.2s}
   .typing i:nth-child(3){animation-delay:.4s}
   @keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.38}30%{transform:translateY(-5px);opacity:1}}
-  #toBottom{
+  .scroll-jump{
     position:fixed;
     right:18px;
-    bottom:calc(86px + env(safe-area-inset-bottom,0px));
     z-index:5;
     min-width:42px;
     height:42px;
@@ -713,7 +712,9 @@
     box-shadow:var(--shadow);
     background:#252c38;
   }
-  #toBottom.show{display:grid}
+  .scroll-jump.show{display:grid}
+  #toTop{bottom:calc(136px + env(safe-area-inset-bottom,0px))}
+  #toBottom{bottom:calc(86px + env(safe-area-inset-bottom,0px))}
   #toBottom .new-count{
     position:absolute;
     top:-7px;
@@ -907,7 +908,9 @@
     .composer-meta{font-size:10.5px}
     #attach,#screen,#voice{width:38px}
     #send{padding:0 12px}
-    #toBottom{right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px))}
+    #toTop,#toBottom{right:12px}
+    #toTop{bottom:calc(126px + env(safe-area-inset-bottom,0px))}
+    #toBottom{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   }
   @media (max-width:520px){
     footer{
@@ -996,7 +999,8 @@
   </div>
 </main>
 
-<button id="toBottom" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
+<button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
+<button id="toBottom" class="scroll-jump" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
 
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
@@ -1044,6 +1048,7 @@ let systemGroupsExpanded = new Set();
 const log = document.getElementById('log');
 const working = document.getElementById('working');
 const emptyState = document.getElementById('emptyState');
+const toTop = document.getElementById('toTop');
 const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
@@ -1244,6 +1249,7 @@ function updateBottomButton(){
   }
   toBottom.classList.toggle('show', !stickToBottom);
   toBottom.classList.toggle('has-new', unseenCount > 0);
+  toTop.classList.toggle('show', log.scrollTop > Math.max(420, log.clientHeight * 0.7));
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
   updateDocumentTitle();
@@ -2391,6 +2397,7 @@ input.addEventListener('input', () => {
   updateSendState();
 });
 log.addEventListener('scroll', updateBottomButton);
+toTop.addEventListener('click', () => log.scrollTo({top:0, behavior:'smooth'}));
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
 searchToggle.addEventListener('click', () => {
   if(searchPanel.classList.contains('open')) closeSearch();
