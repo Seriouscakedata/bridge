@@ -20,7 +20,8 @@ $fullContext    = if ($cfg.fullContextCount) { [int]$cfg.fullContextCount } else
 $summarizeBatch = if ($cfg.summarizeBatch)   { [int]$cfg.summarizeBatch }   else { 15 }
 $triageModel       = if ($cfg.triageModel)       { [string]$cfg.triageModel }       else { 'sonnet' }
 $deepModel         = if ($cfg.deepModel)         { [string]$cfg.deepModel }         else { 'opus' }
-$discussMinTurns   = if ($cfg.discussMinTurns)   { [int]$cfg.discussMinTurns }      else { 6 }
+$discussMinTurns   = if ($cfg.discussMinTurns)   { [int]$cfg.discussMinTurns }      else { 3 }
+$discussMaxTurns   = if ($cfg.discussMaxTurns)   { [int]$cfg.discussMaxTurns }      else { 8 }
 $researchMaxTurns  = if ($cfg.researchMaxTurns)  { [int]$cfg.researchMaxTurns }     else { 2 }
 
 function Get-PlannerModel {
@@ -240,7 +241,7 @@ $claudeActionBlock
       $researchNote = "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
       $suffix = $claudeBase + $researchNote
     } elseif ($Mode -eq 'discuss') {
-      $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt / минимум $discussMinTurns): ты ведёшь настоящую дискуссию, не просто принимаешь аргументы. Отвечай на возражения Codex по существу — прими или оспорь каждый конкретный аргумент с обоснованием. Не суммируй позиции без ответа на критику. STATUS: DONE разрешён ТОЛЬКО когда ходов >= $discussMinTurns И все ключевые разногласия исчерпаны. Иначе — STATUS: DISCUSS с новым вопросом или тезисом."
+      $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt, минимум $discussMinTurns, максимум $discussMaxTurns). Цель — НЕ спорить, а СОЙТИСЬ к решению; ты ведёшь обсуждение к синтезу.`nКаждый ход ЗАКАНЧИВАЙ блоком состояния — ровно эти 4 строки с этими префиксами (для машинного парсинга):`nСогласовано: <что уже принято обеими сторонами; это не переоткрывается>`nОткрыто: <нерешённые вопросы; если их нет — напиши «нет»>`nРешение: <текущий консолидированный вариант>`nРиски: <ключевые риски и как смягчаем>`nЯвно принимай сильные пункты Codex, не пересказывай без нужды; спорь только по сути нерешённого.`nSTATUS: DONE разрешён, когда ходов >= $discussMinTurns И «Открыто:» пусто/«нет» И заполнены «Решение:» и «Риски:» — тогда дай ## ИТОГ. Иначе — STATUS: DISCUSS."
       $suffix = $claudeBase + $discussNote
     } else {
       $suffix = $claudeBase
@@ -248,13 +249,14 @@ $claudeActionBlock
   } elseif ($Mode -eq 'discuss') {
     $suffix = @"
 
-ТВОЙ ХОД как ОППОНЕНТ (Codex) — раунд $dt из $discussMinTurns минимум.
-Это НАСТОЯЩАЯ ДИСКУССИЯ. Твоя роль — КРИТИЧЕСКИ проверять позицию Claude, не соглашаться по умолчанию.
-ОБЯЗАТЕЛЬНО в каждом ответе:
-  1. Укажи конкретный слабый пункт, риск или скрытое допущение в последнем аргументе Claude (не общий, а конкретный).
-  2. Предложи альтернативный подход или компромисс, реально отличающийся от предложенного Claude.
-  3. Задай уточняющий вопрос, если позиция Claude неполная или противоречивая.
-⚠ ЗАПРЕЩЕНО: соглашаться без конкретных аргументов; перефразировать слова Claude без возражений; писать «в целом согласен»; закрывать обсуждение (это роль Claude).
+ТВОЙ ХОД как РЕЦЕНЗЕНТ РЕШЕНИЯ (Codex) — раунд $dt (минимум $discussMinTurns, максимум $discussMaxTurns).
+Цель обсуждения — СОЙТИСЬ к рабочему решению, а не спорить. Ты проверяешь решение Claude на прочность и помогаешь его закрыть.
+В каждом ответе:
+  1. Явно ПРИМИ сильные/верные пункты Claude (назови их) — чтобы они закрылись и не переоткрывались.
+  2. Добавляй риск или возражение ТОЛЬКО если оно новое и конкретное (не повторяй уже учтённое в «Согласовано»).
+  3. Видишь нерешённый вопрос — назови его коротко, чтобы Claude внёс в «Открыто».
+  4. Когда открытых блокеров нет — так и скажи, предложи критерий завершения.
+⚠ Ты НЕ обязан возражать ради возражения. Согласие с обоснованием — это нормально и желательно. НЕ переоткрывай согласованное. Обсуждение закрывает Claude.
 Кратко, конкретно, по-русски. НЕ меняй файлы (читать код/материалы для аргументов — можно).
 "@
   } else {
@@ -713,13 +715,25 @@ while ($true) {
     Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
-  # Guard: block premature DONE in discuss mode
+  # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'discuss') {
     $dtNow = [int](Read-State).discuss_turn
-    if ($dtNow -lt $discussMinTurns) {
-      Add-Message -From system -Text "💬 Обсуждение продолжается ($dtNow/$discussMinTurns ходов). Claude, углубите дискуссию — не закрывайте тему раньше времени." -Kind event | Out-Null
+    $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*Решение:[ \t]*\S'
+    $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*Риски:[ \t]*\S'
+    $openMatch   = [regex]::Match($reply, '(?im)^[*_> \t#-]*Открыто:[ \t]*(.*)$')
+    $openVal     = if ($openMatch.Success) { $openMatch.Groups[1].Value.Trim().Trim('*').Trim() } else { 'нет' }
+    $openClosed  = [string]::IsNullOrWhiteSpace($openVal) -or ($openVal -imatch '^(нет|нет блокеров|блокеров нет|отсутствуют|none|n/?a|-|—)$')
+    $converged   = ($dtNow -ge $discussMinTurns) -and $hasDecision -and $hasRisks -and $openClosed
+    $ceiling     = ($dtNow -ge $discussMaxTurns)
+    if (-not $converged -and -not $ceiling) {
+      $why = if ($dtNow -lt $discussMinTurns) { "рано ($dtNow/$discussMinTurns ходов)" }
+             elseif (-not $hasDecision -or -not $hasRisks) { "нет блока «Решение:»/«Риски:»" }
+             else { "остались открытые вопросы: $openVal" }
+      Add-Message -From system -Text "💬 Обсуждение продолжается — $why. Claude, доведите до синтеза: блок Согласовано/Открыто/Решение/Риски, «Открыто» пусто." -Kind event | Out-Null
       $plannerStatus = 'DISCUSS'
       Update-State { param($s) $s.task_mode='discuss' } | Out-Null
+    } elseif ($ceiling -and -not $converged) {
+      Add-Message -From system -Text "💬 Потолок обсуждения ($discussMaxTurns ходов) — закрываю с текущим решением." -Kind event | Out-Null
     }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
