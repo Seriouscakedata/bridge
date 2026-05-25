@@ -13,7 +13,9 @@ function Detect-StudyMode {
   # not glued into a compound (Detect-StudyMode / study-режим / study/изучи) or a
   # noun (изучение/изучаю). Negative look-around rejects neighbouring letters, '-' and '/'.
   $verb = '(?i)(?<![\p{L}\-/])(?:изучи(?:ть|те|м)?|исследу(?:йте|ете|ем|й)?|разбер(?:ись|ите|и)|study|explore|research|investigate)(?![\p{L}\-/])'
-  if ($TaskText -notmatch $verb) { return $null }
+  $verbMatch = [regex]::Match($TaskText, $verb)
+  if (-not $verbMatch.Success) { return $null }
+  $trigger = $verbMatch.Value
   $patterns = @(
     '"(?<p>[A-Za-z]:\\[^"]+)"',
     "'(?<p>[A-Za-z]:\\[^']+)'",
@@ -27,9 +29,9 @@ function Detect-StudyMode {
     if ($pathMatch.Success) {
       $path = $pathMatch.Groups['p'].Value.Trim()
       if ($path -and (Test-Path -LiteralPath $path)) {
-        return @{ subtype='local'; path=$path }
+        return @{ subtype='local'; path=$path; trigger=$trigger }
       }
     }
   }
-  return @{ subtype='external'; path=$null }
+  return @{ subtype='external'; path=$null; trigger=$trigger }
 }

@@ -900,6 +900,7 @@ while ($true) {
       }.GetNewClosure()) | Out-Null
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
+      if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       $state = Read-State
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
@@ -938,6 +939,7 @@ while ($true) {
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
         Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
+        if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: backlog" -Kind event | Out-Null }
         $state = Read-State
       } else {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
