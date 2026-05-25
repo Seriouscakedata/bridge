@@ -66,6 +66,31 @@ function Get-MessageAttachmentPaths {
   return $paths
 }
 
+function Start-LibrarianIfDue {
+  # Launch the nightly memory consolidator at most once per 24h, detached, when idle.
+  try { $mc = Get-MemoryConfig } catch { return }
+  if (-not $mc.enabled) { return }
+  $marker = Join-Path $bridgeRoot 'memory\librarian.last'
+  if (Test-Path $marker) {
+    try {
+      $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim())
+      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours(24)) { return }
+    } catch {}
+  }
+  $lib = Join-Path $bridgeRoot 'librarian.ps1'
+  if (-not (Test-Path $lib)) { return }
+  # Touch the marker NOW so we don't relaunch every idle tick while it runs.
+  try {
+    $md = Join-Path $bridgeRoot 'memory'
+    if (-not (Test-Path $md)) { New-Item -ItemType Directory -Path $md -Force | Out-Null }
+    [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  try {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden | Out-Null
+    Add-Message -From system -Text "🧠 Запущен библиотекарь памяти (консолидация в фоне)." -Kind event | Out-Null
+  } catch {}
+}
+
 function Get-RecallKeywords {
   param([string]$TaskText = '')
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
@@ -164,12 +189,15 @@ function Format-Transcript {
   }
   $decSect = Get-DecisionsRecall -TaskText $TaskText
   $evSect = Get-EvidenceRecall -TaskText $TaskText
+  $memSect = ''
+  try { $memSect = Get-MemoryRecall -TaskText $TaskText } catch { $memSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
+  $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $decAppend + $evAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $decAppend + $evAppend)
   }
-  return $body + $decAppend + $evAppend
+  return $body + $memAppend + $decAppend + $evAppend
 }
 
 function Build-Prompt {
@@ -215,6 +243,7 @@ $Task
   4) После КАЖДОЙ проверенной рабочей правки: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" add -A; git -C "..." commit -m "что сделал"`. Это фиксирует прогресс (watchdog откатит на последний коммит при поломке).
   5) `web\index.html` (UI) можно править свободно -- применяется без перезапуска (просто обнови вкладку). ⛔ НЕ создавай restart.flag ради HTML-правок -- это лишние перезапуски и шум в истории.
   6) НЕ ТРОГАЙ: `watchdog.ps1`, `supervisor.ps1` без крайней нужды, папку `.git`, задачи Планировщика; НЕ убивай процессы моста/watchdog; НЕ удаляй файлы движка.
+  7) `secrets.json` содержит API-ключи (Gemini и др.). НИКОГДА не выводи его содержимое в чат и не коммить — он в .gitignore. Память: `lib\memory.ps1` (embeddings+поиск), `librarian.ps1` (ночная консолидация), хранилище `memory\` (gitignored).
 
 ДИАЛОГ:
 $transcript
@@ -536,6 +565,7 @@ while ($true) {
       $state = Read-State
     } else {
       Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      try { Start-LibrarianIfDue } catch {}
       Start-Sleep -Seconds $idlePoll; continue
     }
   } else {
@@ -745,6 +775,10 @@ while ($true) {
         Add-Message -From system -Text "📝 Итог обсуждения сохранён: $dpath" -Kind event | Out-Null
       } catch {}
     }
+    try {
+      $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
+      if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
+    } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
     Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue

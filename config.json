@@ -14,5 +14,16 @@
   "summarizeBatch": 15,
   "triageModel": "sonnet",
   "deepModel": "opus",
+  "memory": {
+    "enabled": true,
+    "embedModel": "gemini-embedding-001",
+    "embedDim": 1536,
+    "gateModel": "gemini-2.5-flash-lite",
+    "librarianModel": "gemini-2.5-flash",
+    "recallTopK": 5,
+    "recallMinScore": 0.62,
+    "dedupThreshold": 0.93,
+    "maxInjectChars": 1200
+  },
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }

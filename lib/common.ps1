@@ -259,7 +259,7 @@ function Get-Messages {
 function Initialize-Bridge {
   param([switch]$Reset)
   $root = Get-BridgeRoot
-  foreach ($d in @('lib','web','sandbox','files','decisions')) {
+  foreach ($d in @('lib','web','sandbox','files','decisions','memory')) {
     $dp = Join-Path $root $d
     if (-not (Test-Path $dp)) { New-Item -ItemType Directory -Path $dp -Force | Out-Null }
   }
@@ -319,3 +319,7 @@ function Initialize-Bridge {
   }
   return (Read-State)
 }
+
+# Long-term vector memory (Gemini embeddings + Flash librarian). Best-effort: if this
+# layer fails to load or Gemini is unreachable, the engine keeps running unchanged.
+try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.ps1 failed to load: $($_.Exception.Message)" }
