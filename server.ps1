@@ -154,7 +154,12 @@ try {
           $data = $data.Substring($comma + 1)
         }
         $data = $data -replace '\s+', ''
-        $bytes = [Convert]::FromBase64String($data)
+        try {
+          $bytes = [Convert]::FromBase64String($data)
+        } catch {
+          Send-Text $ctx '{"ok":false,"error":"bad base64"}' 'application/json; charset=utf-8' 400
+          continue
+        }
         if ($bytes.Length -gt $maxUploadBytes) {
           Send-Text $ctx '{"ok":false,"error":"upload too large"}' 'application/json; charset=utf-8' 413
           continue
