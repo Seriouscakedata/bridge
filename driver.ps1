@@ -248,7 +248,7 @@ function Next-Speaker {
 }
 
 function Get-TaskTopic {
-  param([string]$TaskText, [int]$MaxLen = 55)
+  param([string]$TaskText, [int]$MaxLen = 200)
   $clean = ($TaskText -replace '[\r\n]+', ' ' -replace '\s+', ' ').Trim()
   if ($clean.Length -le $MaxLen) { return $clean }
   return ($clean.Substring(0, $MaxLen).TrimEnd() + '...')
