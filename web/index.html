@@ -30,6 +30,9 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%;width:100%;max-width:100%;overflow:hidden}
+  @supports (height:100dvh){
+    html,body{height:100dvh}
+  }
   body{
     margin:0;
     font-family:"Segoe UI",system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
@@ -232,6 +235,7 @@
     flex:1;
     overflow-y:auto;
     overflow-x:hidden;
+    scrollbar-gutter:stable;
     width:100%;
     max-width:100%;
     min-width:0;
@@ -618,7 +622,7 @@
   #toBottom{
     position:fixed;
     right:18px;
-    bottom:86px;
+    bottom:calc(86px + env(safe-area-inset-bottom,0px));
     z-index:5;
     min-width:42px;
     height:42px;
@@ -651,7 +655,7 @@
     width:100%;
     max-width:100%;
     min-width:0;
-    padding:12px 16px;
+    padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));
     background:rgba(23,26,33,.94);
     border-top:1px solid var(--border);
     display:flex;
@@ -811,11 +815,11 @@
     .md{font-size:13.5px}
     body.compact-mode #log{padding:10px 8px 14px}
     body.compact-mode .msg,body.compact-mode .from-user{max-width:100%}
-    footer{padding:10px;gap:8px}
+    footer{padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px));gap:8px}
     .composer-meta{font-size:10.5px}
     #attach{width:38px}
     #send{padding:0 12px}
-    #toBottom{right:12px;bottom:78px}
+    #toBottom{right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   }
   @media (max-width:520px){
     footer{
