@@ -159,6 +159,8 @@ $transcript
 
 ТВОЙ ХОД как КОДЕР (Codex). Выполни последнюю инструкцию ПЛАНИРОВЩИКА и любое сообщение [USER].
 Делай реальные действия (файлы/команды) в рамках задачи. Кратко отчитайся по-русски, что сделал и каков результат.
+ПЛАН ЗАДАЧИ: для сложных задач (3+ шага) в первом ответе пиши нумерованный чеклист шагов. Обновляй при каждом ходе: ✅ готово, 🔄 текущий, ⬜ впереди.
+SAFETY GATE: перед удалением файлов/папок ВНЕ директории bridge, массовой перезаписью чужих данных, убийством процессов пользователя, внешними сетевыми запросами — напиши строку [[SAFETY: <что именно>]] и НЕ ВЫПОЛНЯЙ. Драйвер остановится и спросит пользователя.
 ⛔ НАПОМИНАНИЕ: restart.flag -- ТОЛЬКО если изменён `.ps1`-файл. Проверь перед созданием: `git diff --name-only HEAD`. Для `web\index.html` флаг НЕ нужен.
 "@
   }
@@ -411,6 +413,22 @@ while ($true) {
     }
   }
   Update-State { param($s) $s.timeout_retry_count=0 } | Out-Null
+
+  # Safety gate: intercept dangerous-action flag from Codex before processing reply
+  if ($speaker -eq 'codex') {
+    $safetyPat = '(?m)^\s*\[\[SAFETY:\s*(.+?)\s*\]\]\s*$'
+    $safetyM = [regex]::Match([string]$reply, $safetyPat)
+    if ($safetyM.Success) {
+      $safetyDesc = $safetyM.Groups[1].Value.Trim()
+      $preReply = [regex]::Replace([string]$reply, $safetyPat, '').Trim()
+      if (-not [string]::IsNullOrWhiteSpace($preReply)) {
+        Add-Message -From codex -Text $preReply | Out-Null
+      }
+      Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      continue
+    }
+  }
 
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post' -TaskText $task)
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
