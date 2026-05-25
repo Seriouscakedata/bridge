@@ -837,12 +837,14 @@ while ($true) {
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
   $attachmentMetas = @()
   $failedAttachmentPaths = @()
+  $fileMarkerPaths = @()
   $fileMarkerPattern = '(?m)^\s*\[\[FILE:\s*(.+?)\s*\]\]\s*$'
   foreach ($match in [regex]::Matches($reply, $fileMarkerPattern)) {
     $sourcePath = $match.Groups[1].Value.Trim().Trim('"').Trim("'")
     if ($sourcePath.StartsWith('<') -and $sourcePath.EndsWith('>') -and $sourcePath.Length -gt 2) {
       $sourcePath = $sourcePath.Substring(1, $sourcePath.Length - 2).Trim()
     }
+    $fileMarkerPaths += $sourcePath
     $meta = Register-AttachmentPath -SourcePath $sourcePath
     if ($meta) { $attachmentMetas += $meta }
     else { $failedAttachmentPaths += $sourcePath }
@@ -1070,6 +1072,19 @@ while ($true) {
       Update-State { param($s) $s.task_mode='discuss' } | Out-Null
     } elseif ($ceiling -and -not $converged) {
       Add-Message -From system -Text "💬 Потолок обсуждения ($discussMaxTurns ходов) — закрываю с текущим решением." -Kind event | Out-Null
+    }
+  }
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'study') {
+    $hasStudyReport = $false
+    foreach ($fp in $fileMarkerPaths) {
+      try {
+        if ([System.IO.Path]::GetExtension([string]$fp) -ieq '.md') { $hasStudyReport = $true }
+      } catch {}
+    }
+    if (-not $hasStudyReport -or $attachmentMetas.Count -eq 0) {
+      Add-Message -From system -Text "📚 Study требует итоговый Markdown-отчёт через [[FILE: ...md]]. Claude, создай/прикрепи отчёт и повтори синтез." -Kind event | Out-Null
+      $plannerStatus = 'CONTINUE'
+      Update-State { param($s) $s.task_mode='study'; $s.study_phase='synthesis' } | Out-Null
     }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
