@@ -449,6 +449,62 @@ SAFETY GATE: перед удалением файлов/папок ВНЕ дир
 function Set-AgentPid([int]$ProcId) { Update-State ({ param($s) $s.agent_pid = $ProcId }.GetNewClosure()) | Out-Null }
 function Clear-AgentPid { Update-State { param($s) $s.agent_pid = $null } | Out-Null }
 
+$agentPidsFile = Join-Path $bridgeRoot 'runtime\agent_pids.txt'
+
+function Stop-AgentTree {
+  param([int]$ProcId)
+  if ($ProcId -le 0) { return }
+  try { & taskkill /PID $ProcId /T /F 2>$null | Out-Null } catch {}
+}
+
+function Register-AgentPid {
+  param([int]$ProcId)
+  if ($ProcId -le 0) { return }
+  try {
+    $dir = Split-Path -Parent $agentPidsFile
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    Add-Content -LiteralPath $agentPidsFile -Value $ProcId -Encoding UTF8
+  } catch {}
+}
+
+function Unregister-AgentPid {
+  param([int]$ProcId)
+  if ($ProcId -le 0) { return }
+  try {
+    if (-not (Test-Path $agentPidsFile)) { return }
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (Get-Content $agentPidsFile -Encoding UTF8)) {
+      $trimmed = ([string]$line).Trim()
+      if ($trimmed -notmatch '^\d+$') { continue }
+      if ([int]$trimmed -ne $ProcId) { [void]$kept.Add($trimmed) }
+    }
+    [System.IO.File]::WriteAllLines($agentPidsFile, $kept.ToArray(), $Utf8NoBom)
+  } catch {}
+}
+
+function Sweep-AgentOrphans {
+  # Only PIDs launched by this bridge are recorded here; never scan unrelated processes.
+  param()
+  if (-not (Test-Path $agentPidsFile)) { return }
+  try {
+    $seen = @{}
+    $lines = Get-Content $agentPidsFile -Encoding UTF8 | Where-Object { ([string]$_).Trim() -match '^\d+$' }
+    foreach ($line in $lines) {
+      $orphanPid = [int](([string]$line).Trim())
+      if ($orphanPid -eq $PID -or $seen.ContainsKey($orphanPid)) { continue }
+      $seen[$orphanPid] = $true
+      try {
+        $proc = Get-Process -Id $orphanPid -ErrorAction SilentlyContinue
+        if ($proc) {
+          Write-Host "Sweep: убиваю орфан PID $orphanPid ($($proc.ProcessName))"
+          Stop-AgentTree $orphanPid
+        }
+      } catch {}
+    }
+  } catch {}
+  try { [System.IO.File]::WriteAllText($agentPidsFile, '', $Utf8NoBom) } catch {}
+}
+
 function Wait-AgentProcess {
   # Wait for an agent process up to $TimeoutMs, refreshing the heartbeat every ~5s so a
   # long turn doesn't look "dead" to the watchdog (which else false-positive rolls back).
@@ -478,13 +534,13 @@ function Invoke-Planner {
   try {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-    $null = $p.Handle; Set-AgentPid $p.Id
+    $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 240000)) {
-      try { $p.Kill() } catch {}
+      Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
-  } finally { Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
@@ -501,13 +557,13 @@ function Invoke-Coder {
     $p = Start-Process -FilePath $codexExe `
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-    $null = $p.Handle; Set-AgentPid $p.Id
+    $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
-      try { $p.Kill() } catch {}
+      Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
-  } finally { Clear-AgentPid; Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
@@ -532,10 +588,10 @@ $NewBlock
   try {
     $p = Start-Process -FilePath $claudeExe -ArgumentList '-p','--model',$triageModel `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-    $null = $p.Handle
-    if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch {}; return $null }
+    $null = $p.Handle; Register-AgentPid $p.Id
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000)) { Stop-AgentTree $p.Id; return $null }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
-  } finally { Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { return $null }
   return $reply.Trim()
 }
@@ -704,6 +760,8 @@ function Write-EvidenceLog {
 }
 
 # ---------- startup ----------
+Sweep-AgentOrphans
+
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
 # summary and decisions are file-based and already survive. We keep current_task /
 # task_turn / task_mode / last_user_seq / summarized_seq, and only clear the transient
