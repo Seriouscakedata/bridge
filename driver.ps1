@@ -75,9 +75,9 @@ $Task
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
-  3) Применить правки .ps1-файлов движка: создай файл `bridge\control\restart.flag` -- супервизор перезапустит мост (без UAC). ВАЖНО: restart.flag ТОЛЬКО после изменения .ps1-файлов! Для `web\index.html` рестарт НЕ нужен.
+  3) Применить правки .ps1-файлов движка: создай файл `bridge\control\restart.flag` -- супервизор перезапустит мост (без UAC). ⛔ СТРОГИЙ ЗАПРЕТ: restart.flag создавать ТОЛЬКО если изменён хотя бы один `.ps1`-файл. Перед созданием флага ОБЯЗАТЕЛЬНО проверь: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" diff --name-only HEAD` -- если в выводе НЕТ ни одного `.ps1`, флаг НЕ создавай (мост перезапустится зря).
   4) После КАЖДОЙ проверенной рабочей правки: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" add -A; git -C "..." commit -m "что сделал"`. Это фиксирует прогресс (watchdog откатит на последний коммит при поломке).
-  5) `web\index.html` (UI) можно править свободно -- применяется без перезапуска (просто обнови вкладку). НЕ создавай restart.flag ради HTML-правок -- это лишние перезапуски.
+  5) `web\index.html` (UI) можно править свободно -- применяется без перезапуска (просто обнови вкладку). ⛔ НЕ создавай restart.flag ради HTML-правок -- это лишние перезапуски и шум в истории.
   6) НЕ ТРОГАЙ: `watchdog.ps1`, `supervisor.ps1` без крайней нужды, папку `.git`, задачи Планировщика; НЕ убивай процессы моста/watchdog; НЕ удаляй файлы движка.
 
 ДИАЛОГ:
@@ -113,6 +113,7 @@ $transcript
 
 ТВОЙ ХОД как КОДЕР (Codex). Выполни последнюю инструкцию ПЛАНИРОВЩИКА и любое сообщение [USER].
 Делай реальные действия (файлы/команды) в рамках задачи. Кратко отчитайся по-русски, что сделал и каков результат.
+⛔ НАПОМИНАНИЕ: restart.flag -- ТОЛЬКО если изменён `.ps1`-файл. Проверь перед созданием: `git diff --name-only HEAD`. Для `web\index.html` флаг НЕ нужен.
 "@
   }
   return ($shared + $suffix)
