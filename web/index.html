@@ -144,6 +144,7 @@
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
   #kill{background:#34191b;border-color:#7d3136;color:#ffd7da;font-weight:700}
   #kill:hover{background:#4a2024;border-color:var(--danger)}
+  #exportMarkdown{font-size:10px;font-weight:800;letter-spacing:0}
 
   #searchPanel{
     width:100%;
@@ -976,6 +977,7 @@
   <div class="btns">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
     <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩</button>
+    <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD</button>
     <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
     <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
     <button type="button" onclick="ctl('pause')" title="Пауза">⏸ Пауза</button>
@@ -1090,6 +1092,7 @@ const lightboxOpen = document.getElementById('lightboxOpen');
 const newCount = document.getElementById('newCount');
 const searchToggle = document.getElementById('searchToggle');
 const exportChatBtn = document.getElementById('exportChat');
+const exportMarkdownBtn = document.getElementById('exportMarkdown');
 const searchPanel = document.getElementById('searchPanel');
 const searchInput = document.getElementById('searchInput');
 const searchCount = document.getElementById('searchCount');
@@ -2039,6 +2042,37 @@ function stampForFile(){
     String(d.getMinutes()).padStart(2,'0') +
     String(d.getSeconds()).padStart(2,'0');
 }
+function markdownExport(messages){
+  const rows = Array.isArray(messages) ? messages : [];
+  const out = [
+    '# Claude <-> Codex Bridge',
+    '',
+    'Экспорт: ' + new Date().toLocaleString('ru-RU'),
+    'Сообщений: ' + rows.length,
+    ''
+  ];
+  rows.forEach(m => {
+    const role = (roleInfo[m.from] && roleInfo[m.from].name) || m.from || 'Система';
+    const seq = m.seq ? ' #' + m.seq : '';
+    const when = fullTime(m.ts) || String(m.ts || '');
+    out.push('## ' + role + seq + (when ? ' · ' + when : ''));
+    out.push('');
+    out.push(String(m.text || '').trim() || '_без текста_');
+    const atts = msgAttachments(m);
+    if(atts.length){
+      out.push('');
+      out.push('**Вложения:**');
+      atts.forEach(a => {
+        const name = String(a.name || 'file');
+        const url = a.url ? absoluteUrl(a.url) : '';
+        const size = a.size ? ' · ' + fmtSize(a.size) : '';
+        out.push('- ' + name + size + (url ? ': ' + url : ''));
+      });
+    }
+    out.push('');
+  });
+  return out.join('\n');
+}
 async function requestOk(url, options, timeoutMs){
   const opts = options ? Object.assign({}, options) : {};
   if(!Object.prototype.hasOwnProperty.call(opts, 'credentials')) opts.credentials = 'same-origin';
@@ -2078,6 +2112,21 @@ async function exportChat(){
     setComposerStatus('Экспорт не удался: ' + (e.message || e), 'bad');
   }finally{
     exportChatBtn.disabled = false;
+  }
+}
+async function exportMarkdown(){
+  exportMarkdownBtn.disabled = true;
+  setComposerStatus('Экспорт Markdown...');
+  try{
+    const data = await fetchJson('/api/messages?since=0');
+    downloadText('bridge-history-' + stampForFile() + '.md', markdownExport(data), 'text/markdown;charset=utf-8');
+    const okText = 'Markdown экспортирован: ' + data.length + ' ' + pluralRu(data.length, 'сообщение', 'сообщения', 'сообщений');
+    setComposerStatus(okText, 'ok');
+    clearComposerStatusSoon(okText);
+  }catch(e){
+    setComposerStatus('Markdown не экспортирован: ' + (e.message || e), 'bad');
+  }finally{
+    exportMarkdownBtn.disabled = false;
   }
 }
 function updateSendState(){
@@ -2441,6 +2490,7 @@ searchToggle.addEventListener('click', () => {
   else openSearch();
 });
 exportChatBtn.addEventListener('click', exportChat);
+exportMarkdownBtn.addEventListener('click', exportMarkdown);
 compactToggle.addEventListener('click', () => {
   compactMode = !compactMode;
   localStorage.setItem('bridgeCompact', compactMode ? '1' : '0');
