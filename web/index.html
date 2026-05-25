@@ -1167,7 +1167,11 @@
   }
   @media (max-width:640px){
     body{background:var(--bg)}
-    header{padding:10px 11px}
+    header,#searchPanel,.filterbar,footer{
+      width:100vw;
+      max-width:100vw;
+    }
+    header{padding:10px 11px;overflow:hidden}
     .brand{gap:8px}
     .mark{width:31px;height:31px;border-radius:8px}
     h1{font-size:14px}
@@ -1180,6 +1184,8 @@
       grid-template-columns:repeat(3,minmax(0,1fr));
       justify-content:stretch;
       gap:7px;
+      max-width:calc(100vw - 22px);
+      overflow:hidden;
     }
     .btns button{
       width:100%;
@@ -1206,6 +1212,14 @@
     body.has-health-banner #scrollProgress{top:222px}
     .msg,.from-user{max-width:100%;grid-template-columns:30px minmax(0,1fr);gap:8px}
     .from-user{grid-template-columns:minmax(0,1fr) 30px}
+    .from-system{
+      width:100%;
+      max-width:100%;
+      grid-template-columns:minmax(0,1fr);
+      justify-self:stretch;
+    }
+    .from-system .bubble{width:100%}
+    .system-bundle,.day-sep{width:100%;max-width:100%}
     .avatar{width:30px;height:30px;border-radius:9px}
     .bubble{padding:9px 10px;border-radius:11px}
     .msg-actions{opacity:1;pointer-events:auto}
@@ -1221,6 +1235,11 @@
     #toBottom{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   }
   @media (max-width:520px){
+    header,#searchPanel,.filterbar,#log,footer{
+      width:min(100%,390px);
+      max-width:min(100%,390px);
+    }
+    .btns{max-width:100%}
     footer{
       display:grid;
       grid-template-columns:42px 42px 42px minmax(0,1fr);
