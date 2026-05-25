@@ -255,7 +255,10 @@ try {
         $mp = Get-MemoryMapPath
         if (Test-Path $mp) { $mapTxt = Get-Content -LiteralPath $mp -Raw -Encoding UTF8 }
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + ($mapTxt | ConvertTo-Json) + ',"items":' + $itemsJson + '}'
+        # ("" + $mapTxt) strips ETS NoteProperties that Get-Content -Raw attaches, so
+        # ConvertTo-Json emits a plain JSON string instead of a {"value":...} object.
+        $mapJson = (("" + $mapTxt) | ConvertTo-Json -Compress)
+        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/memory/add') {
