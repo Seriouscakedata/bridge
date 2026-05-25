@@ -113,6 +113,26 @@ function Start-ReflectIfDue {
   try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
 }
 
+function Start-TechRadarIfDue {
+  # Launch weekly tech-radar, detached, no more than once per radarEveryHours (default 168=7d).
+  $everyH = 168
+  try { $cfgB = Get-BridgeConfig; if ($cfgB.PSObject.Properties.Name -contains 'radarEveryHours') { $everyH = [int]$cfgB.radarEveryHours } } catch {}
+  $marker = Join-Path $bridgeRoot 'radar.last'
+  if (Test-Path -LiteralPath $marker) {
+    try {
+      $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
+      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($everyH)) { return }
+    } catch {}
+  }
+  $rf = Join-Path $bridgeRoot 'techradar.ps1'
+  if (-not (Test-Path -LiteralPath $rf)) { return }
+  try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+    Add-Message -From system -Text "📡 Тех-радар запущен в фоне (еженедельный обход Хабра)." -Kind event | Out-Null
+  } catch {}
+}
+
 function Get-AutonomyRequireApproval {
   try { return [bool](Get-AutonomySettings).requireApproval } catch { return $false }
 }
@@ -871,6 +891,7 @@ while ($true) {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
         try { Start-LibrarianIfDue } catch {}
         try { Start-ReflectIfDue } catch {}
+        try { Start-TechRadarIfDue } catch {}
         Start-Sleep -Seconds $idlePoll; continue
       }
     }
