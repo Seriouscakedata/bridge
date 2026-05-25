@@ -20,6 +20,32 @@ $fullContext    = if ($cfg.fullContextCount) { [int]$cfg.fullContextCount } else
 $summarizeBatch = if ($cfg.summarizeBatch)   { [int]$cfg.summarizeBatch }   else { 15 }
 $triageModel    = if ($cfg.triageModel) { [string]$cfg.triageModel } else { 'sonnet' }
 $deepModel      = if ($cfg.deepModel)   { [string]$cfg.deepModel }   else { 'opus' }
+
+function Get-PlannerModel {
+  param([string]$TaskText, [string]$Mode)
+
+  if ($Mode -eq 'discuss') { return $deepModel }
+
+  $text = if ($null -eq $TaskText) { '' } else { [string]$TaskText }
+
+  if ($text -imatch '(^|[^\p{L}\p{N}_])(opus|опус)([^\p{L}\p{N}_]|$)') { return $deepModel }
+
+  $wordCount = ($text -split '\s+' | Where-Object { $_ }).Count
+  if ($wordCount -gt 300) { return $deepModel }
+
+  $numberedSteps = ([regex]::Matches($text, '(?m)^\s*\d+[\.\)]')).Count
+  if ($numberedSteps -ge 3) { return $deepModel }
+
+  $stageWords = ([regex]::Matches($text, '(?i)(фаз[аыеу]?|этап\w*|шаг\w*)')).Count
+  if ($stageWords -ge 2) { return $deepModel }
+
+  $complexKeywords = @('архитектур','рефактор','перераб','redesign','мигр','интеграц','масштаб','overhaul','сложн','многошаг')
+  foreach ($kw in $complexKeywords) {
+    if ($text -imatch $kw) { return $deepModel }
+  }
+
+  return $triageModel
+}
 $null = Initialize-Bridge
 
 # ---------- helpers ----------
@@ -312,7 +338,7 @@ while ($true) {
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
   $speaker = if ($tt -eq 0) { 'claude' } else { Next-Speaker }
-  $plannerModel = if ($mode -eq 'discuss') { $deepModel } else { $triageModel }
+  $plannerModel = Get-PlannerModel -TaskText $task -Mode $mode
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
