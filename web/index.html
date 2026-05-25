@@ -566,13 +566,16 @@
     display:flex;
     align-items:center;
     gap:8px;
+    flex-wrap:wrap;
     background:#111720;
     border-bottom:1px solid var(--border-soft);
     color:var(--muted);
     font-size:11px;
   }
   .codebar .lang{font-weight:700;text-transform:uppercase;letter-spacing:0}
-  .copy-code{margin-left:auto}
+  .code-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+  .copy-code{margin-left:0}
+  .mini-btn.wrap-code.on{color:var(--model);border-color:rgba(255,209,102,.52);background:rgba(255,209,102,.1)}
   .md pre{
     margin:0;
     padding:12px;
@@ -592,6 +595,8 @@
     line-height:1.5;
     white-space:pre;
   }
+  .codebox.wrap-code pre{overflow-x:hidden}
+  .codebox.wrap-code pre code{white-space:pre-wrap;word-break:break-word}
   .tok.kw{color:#c792ea;font-weight:700}
   .tok.str{color:#c3e88d}
   .tok.com{color:#69758a;font-style:italic}
@@ -1612,7 +1617,7 @@ function renderMd(src){
   for(const block of blocks){
     const codeHtml =
       '<div class="codebox">' +
-        '<div class="codebar"><span class="lang">' + esc(block.lang) + '</span><button type="button" class="mini-btn copy-code" title="Скопировать код" aria-label="Скопировать код">&#x2398;</button></div>' +
+        '<div class="codebar"><span class="lang">' + esc(block.lang) + '</span><span class="code-tools"><button type="button" class="mini-btn wrap-code" title="Переносить длинные строки" aria-label="Переносить длинные строки" aria-pressed="false">↔</button><button type="button" class="mini-btn copy-code" title="Скопировать код" aria-label="Скопировать код">&#x2398;</button></span></div>' +
         '<pre><code>' + highlightCode(block.code, block.lang) + '</code></pre>' +
       '</div>';
     html = html.replace(block.token, codeHtml);
@@ -1754,6 +1759,9 @@ function addMsg(m){
   const linkButton = seq
     ? '<button type="button" class="mini-btn link-msg" title="Скопировать ссылку на это сообщение" aria-label="Скопировать ссылку на это сообщение">#</button>'
     : '';
+  const quoteButton = rawText.trim()
+    ? '<button type="button" class="mini-btn quote-msg" title="Ответить цитатой" aria-label="Ответить цитатой">↩</button>'
+    : '';
   const div = document.createElement('article');
   div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '') + (isFavorite ? ' favorite' : '');
   if(seq) div.id = 'm-' + seq;
@@ -1772,7 +1780,7 @@ function addMsg(m){
         '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
         (seqLabel ? '<span class="seq" title="Номер сообщения">' + esc(seqLabel) + '</span>' : '') +
-        '<div class="msg-actions">' + favoriteButton + expandButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
+        '<div class="msg-actions">' + favoriteButton + expandButton + quoteButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
       '<div class="md">' + renderMd(rawText) + '</div>' +
       renderAttachments(m) +
@@ -2155,6 +2163,31 @@ function persistInput(){
   updateComposerMeta();
   updateSendState();
 }
+function appendToComposer(snippet){
+  const current = input.value.trimEnd();
+  input.value = current ? current + '\n\n' + snippet : snippet;
+  persistInput();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+function quoteMessage(msg){
+  if(!msg) return;
+  const raw = String(msg.dataset.rawText || '').trim();
+  if(!raw) return;
+  const roleKey = msg.dataset.role || '';
+  const role = (roleInfo[roleKey] && roleInfo[roleKey].name) || roleKey || 'сообщение';
+  const seq = msg.dataset.seq ? ' #' + msg.dataset.seq : '';
+  const allLines = raw.split(/\r\n|\r|\n/);
+  const snippet = raw.length > 1600 ? raw.slice(0, 1600).trimEnd() : raw;
+  const lines = snippet.split(/\r\n|\r|\n/).slice(0, 14);
+  let quoted = '> ' + role + seq + '\n' + lines.map(line => '> ' + line).join('\n');
+  if(allLines.length > lines.length || raw.length > snippet.length){
+    quoted += '\n> ...';
+  }
+  appendToComposer(quoted + '\n\n');
+  setComposerStatus('Цитата добавлена в черновик', 'ok');
+  clearComposerStatusSoon('Цитата добавлена в черновик');
+}
 function setVoiceState(on){
   voiceListening = Boolean(on);
   voiceBtn.classList.toggle('listening', voiceListening);
@@ -2409,6 +2442,18 @@ document.addEventListener('click', e => {
     }
     return;
   }
+  const wrapBtn = e.target.closest('.wrap-code');
+  if(wrapBtn){
+    const box = wrapBtn.closest('.codebox');
+    if(box){
+      const on = box.classList.toggle('wrap-code');
+      wrapBtn.classList.toggle('on', on);
+      wrapBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      wrapBtn.title = on ? 'Отключить перенос строк' : 'Переносить длинные строки';
+      wrapBtn.setAttribute('aria-label', wrapBtn.title);
+    }
+    return;
+  }
   const codeBtn = e.target.closest('.copy-code');
   if(codeBtn){
     const code = codeBtn.closest('.codebox')?.querySelector('code')?.textContent || '';
@@ -2419,6 +2464,11 @@ document.addEventListener('click', e => {
   if(favoriteBtn){
     const msg = favoriteBtn.closest('.msg');
     setMessageFavorite(msg, !(msg && msg.dataset.favorite === '1'), favoriteBtn);
+    return;
+  }
+  const quoteBtn = e.target.closest('.quote-msg');
+  if(quoteBtn){
+    quoteMessage(quoteBtn.closest('.msg'));
     return;
   }
   const msgBtn = e.target.closest('.copy-msg');
