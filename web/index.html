@@ -571,9 +571,15 @@
   .md a{color:#92c7ff;text-decoration:none;border-bottom:1px solid rgba(146,199,255,.34)}
   .md a:hover{border-bottom-color:#92c7ff}
   .attachments{min-width:0;max-width:100%;display:flex;flex-direction:column;gap:8px;margin-top:9px}
+  .att-img-card{
+    max-width:min(560px,100%);
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+  }
   .att-img{
     display:block;
-    max-width:min(560px,100%);
+    max-width:100%;
     color:var(--muted);
     text-decoration:none;
   }
@@ -599,6 +605,14 @@
   }
   .att-name .name{min-width:0;overflow:hidden;text-overflow:ellipsis}
   .att-name .size{flex:none;color:#6f7b8d}
+  .att-name .copy-att{flex:none;margin-left:auto}
+  .att-file-row{
+    width:max-content;
+    max-width:100%;
+    display:flex;
+    align-items:center;
+    gap:7px;
+  }
   .att-file{
     display:flex;
     align-items:center;
@@ -612,6 +626,7 @@
     color:var(--txt);
     text-decoration:none;
   }
+  .att-file-row .att-file{min-width:0;flex:1}
   .att-file:hover{border-color:#4b5565;background:#111822}
   .att-file .paper{color:var(--muted)}
   .att-file span.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1148,6 +1163,15 @@ function updateBottomButton(){
 function messageLink(seq){
   return location.origin + location.pathname + location.search + '#m-' + encodeURIComponent(String(seq || ''));
 }
+function absoluteUrl(url){
+  const s = String(url || '');
+  if(!s) return '';
+  try{
+    return new URL(s, location.href).href;
+  }catch(e){
+    return s;
+  }
+}
 function flashTargetMessage(el){
   if(!el) return;
   el.classList.add('target-flash');
@@ -1525,14 +1549,19 @@ function renderAttachments(m){
     const size = fmtSize(a.size);
     const mime = String(a.mime || '');
     if(a.kind === 'image' || mime.startsWith('image/')){
-      return '<a class="att-img" href="' + url + '" target="_blank" rel="noopener" data-lightbox="' + url + '" data-name="' + nameAttr + '" data-size="' + escAttr(size) + '">' +
+      return '<div class="att-img-card">' +
+        '<a class="att-img" href="' + url + '" target="_blank" rel="noopener" data-lightbox="' + url + '" data-name="' + nameAttr + '" data-size="' + escAttr(size) + '">' +
         '<img src="' + url + '" alt="' + name + '" loading="lazy">' +
-        '<span class="att-name"><span class="name">' + name + '</span>' + (size ? '<span class="size">' + esc(size) + '</span>' : '') + '</span>' +
-      '</a>';
+        '</a>' +
+        '<div class="att-name"><span class="name">' + name + '</span>' + (size ? '<span class="size">' + esc(size) + '</span>' : '') + '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Copy attachment link" aria-label="Copy attachment link">&#x2398;</button></div>' +
+      '</div>';
     }
-    return '<a class="att-file" href="' + url + '" download>' +
+    return '<div class="att-file-row">' +
+      '<a class="att-file" href="' + url + '" download>' +
       '<span class="paper">📎</span><span class="name">' + name + '</span><small>' + fmtSize(a.size) + '</small>' +
-    '</a>';
+      '</a>' +
+      '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Copy attachment link" aria-label="Copy attachment link">&#x2398;</button>' +
+    '</div>';
   }).join('') + '</div>';
 }
 function normalizeSearch(s){
@@ -2295,6 +2324,11 @@ document.addEventListener('click', e => {
   if(msgBtn){
     const msg = msgBtn.closest('.msg');
     copyText(msg ? msg.dataset.copyText || msg.dataset.rawText || '' : '', msgBtn);
+    return;
+  }
+  const attBtn = e.target.closest('.copy-att');
+  if(attBtn){
+    copyText(absoluteUrl(attBtn.dataset.url || ''), attBtn);
     return;
   }
   const linkBtn = e.target.closest('.link-msg');
