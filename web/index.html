@@ -244,6 +244,7 @@
     border:1px solid var(--border);
     border-radius:12px;
     background:var(--panel);
+    --fade-bg:var(--panel);
     box-shadow:0 10px 30px rgba(0,0,0,.16);
   }
   .msg-head{
@@ -288,15 +289,17 @@
     font-size:11px;
   }
   .mini-btn:hover{color:var(--txt)}
+  .mini-btn.expand-msg{font-weight:800}
+  .msg.expanded .mini-btn.expand-msg{color:var(--model);border-color:rgba(255,209,102,.48);background:rgba(255,209,102,.1)}
   .mini-btn.copied{color:var(--codex);border-color:rgba(104,211,145,.55);background:rgba(104,211,145,.1)}
   .mini-btn.bad{color:var(--danger);border-color:rgba(255,107,107,.56);background:rgba(255,107,107,.1)}
   .from-claude .avatar,.from-claude .bubble{border-color:rgba(184,140,255,.28)}
   .from-claude .avatar{background:var(--claude-bg);color:var(--claude)}
-  .from-claude .bubble{background:linear-gradient(180deg, rgba(35,26,50,.92), rgba(25,25,34,.96))}
+  .from-claude .bubble{background:linear-gradient(180deg, rgba(35,26,50,.92), rgba(25,25,34,.96));--fade-bg:#191922}
   .from-claude .who{color:var(--claude)}
   .from-codex .avatar,.from-codex .bubble{border-color:rgba(104,211,145,.26)}
   .from-codex .avatar{background:var(--codex-bg);color:var(--codex)}
-  .from-codex .bubble{background:linear-gradient(180deg, rgba(22,41,31,.92), rgba(24,29,34,.96))}
+  .from-codex .bubble{background:linear-gradient(180deg, rgba(22,41,31,.92), rgba(24,29,34,.96));--fade-bg:#181d22}
   .from-codex .who{color:var(--codex)}
   .from-user{
     align-self:flex-end;
@@ -304,7 +307,7 @@
     max-width:min(820px,84%);
   }
   .from-user .avatar{grid-column:2;grid-row:1;background:var(--user-bg);color:var(--user);border-color:rgba(114,183,255,.32)}
-  .from-user .bubble{grid-column:1;grid-row:1;background:linear-gradient(180deg, rgba(18,38,61,.96), rgba(17,31,49,.98));border-color:rgba(114,183,255,.32)}
+  .from-user .bubble{grid-column:1;grid-row:1;background:linear-gradient(180deg, rgba(18,38,61,.96), rgba(17,31,49,.98));border-color:rgba(114,183,255,.32);--fade-bg:#111f31}
   .from-user .who{color:var(--user)}
   .from-system{
     align-self:center;
@@ -320,6 +323,7 @@
     border-style:dashed;
     border-color:rgba(140,150,165,.24);
     background:rgba(20,23,29,.56);
+    --fade-bg:#14171d;
     box-shadow:none;
     color:#b0bac8;
   }
@@ -385,6 +389,23 @@
   .md p{margin:.45em 0}
   .md p:first-child{margin-top:0}
   .md p:last-child{margin-bottom:0}
+  .bubble.long .md{
+    max-height:420px;
+    overflow:hidden;
+    position:relative;
+  }
+  .bubble.long .md:after{
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    bottom:0;
+    height:58px;
+    pointer-events:none;
+    background:linear-gradient(180deg, rgba(0,0,0,0), var(--fade-bg));
+  }
+  .msg.expanded .bubble.long .md{max-height:none}
+  .msg.expanded .bubble.long .md:after{display:none}
   .md h1,.md h2,.md h3,.md h4{margin:.65em 0 .35em;line-height:1.25;color:#fff}
   .md h1{font-size:1.28em}
   .md h2{font-size:1.18em}
@@ -1348,22 +1369,28 @@ function addMsg(m){
   }
   const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
   const atts = msgAttachments(m);
+  const rawText = String(m.text || '');
+  const lineCount = rawText ? rawText.split(/\r\n|\r|\n/).length : 0;
+  const isLong = m.from !== 'system' && (rawText.length > 2200 || lineCount > 42);
+  const expandButton = isLong
+    ? '<button type="button" class="mini-btn expand-msg" title="Развернуть длинное сообщение" aria-label="Развернуть длинное сообщение">↧</button>'
+    : '';
   const div = document.createElement('article');
-  div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'');
+  div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '');
   div.dataset.role = String(m.from || 'system');
-  div.dataset.rawText = m.text || '';
-  div.dataset.searchText = [role.name, m.from || '', m.text || '', ...atts.map(a => a.name || '')].join(' ');
+  div.dataset.rawText = rawText;
+  div.dataset.searchText = [role.name, m.from || '', rawText, ...atts.map(a => a.name || '')].join(' ');
   div.dataset.hasAttachments = atts.length ? '1' : '0';
-  div.dataset.hasCode = /```/.test(String(m.text || '')) ? '1' : '0';
+  div.dataset.hasCode = /```/.test(rawText) ? '1' : '0';
   div.innerHTML =
     '<div class="avatar" aria-hidden="true">' + esc(role.short) + '</div>' +
-    '<div class="bubble">' +
+    '<div class="bubble' + (isLong ? ' long' : '') + '">' +
       '<div class="msg-head">' +
         '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
-        '<div class="msg-actions"><button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
+        '<div class="msg-actions">' + expandButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
-      '<div class="md">' + renderMd(m.text) + '</div>' +
+      '<div class="md">' + renderMd(rawText) + '</div>' +
       renderAttachments(m) +
     '</div>';
   log.insertBefore(div, working);
@@ -1821,6 +1848,16 @@ document.addEventListener('click', e => {
   if(msgBtn){
     const msg = msgBtn.closest('.msg');
     copyText(msg ? msg.dataset.rawText || '' : '', msgBtn);
+    return;
+  }
+  const expandBtn = e.target.closest('.expand-msg');
+  if(expandBtn){
+    const msg = expandBtn.closest('.msg');
+    const expanded = msg ? msg.classList.toggle('expanded') : false;
+    expandBtn.textContent = expanded ? '↥' : '↧';
+    expandBtn.title = expanded ? 'Свернуть длинное сообщение' : 'Развернуть длинное сообщение';
+    expandBtn.setAttribute('aria-label', expandBtn.title);
+    if(expanded) msg.scrollIntoView({behavior:'smooth', block:'nearest'});
     return;
   }
   const imgLink = e.target.closest('[data-lightbox]');
