@@ -313,7 +313,7 @@
   #searchPanel.open ~ #overviewPanel{top:198px}
   body.has-health-banner #searchPanel.open ~ #overviewPanel{top:238px}
   @media (min-width:1360px){
-    body.overview-open #log{padding-right:calc(var(--content-pad) + 326px)}
+    body.overview-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
     #overviewPanel{
@@ -499,7 +499,7 @@
   .msg{
     min-width:0;
     width:fit-content;
-    max-width:min(860px,84%);
+    max-width:min(960px,86%);
     display:grid;
     grid-template-columns:34px minmax(0,1fr);
     gap:10px;
@@ -619,14 +619,14 @@
   .from-user{
     align-self:flex-end;
     grid-template-columns:minmax(0,1fr) 34px;
-    max-width:min(820px,84%);
+    max-width:min(900px,86%);
   }
   .from-user .avatar{grid-column:2;grid-row:1;background:var(--user-bg);color:var(--user);border-color:rgba(114,183,255,.32)}
   .from-user .bubble{grid-column:1;grid-row:1;background:linear-gradient(180deg, rgba(18,38,61,.96), rgba(17,31,49,.98));border-color:rgba(114,183,255,.32);--fade-bg:#111f31}
   .from-user .who{color:var(--user)}
   .from-system{
     align-self:center;
-    max-width:min(900px,92%);
+    max-width:min(980px,92%);
     grid-template-columns:minmax(0,1fr);
     gap:0;
   }
@@ -649,7 +649,7 @@
   .from-system.system-collapsed:not(.search-hit){display:none}
   .system-bundle{
     align-self:center;
-    width:min(900px,92%);
+    width:min(980px,92%);
     display:flex;
     justify-content:center;
     margin:-6px 0 1px;
@@ -670,11 +670,11 @@
   body.compact-mode .msg{
     grid-template-columns:26px minmax(0,1fr);
     gap:8px;
-    max-width:min(940px,88%);
+    max-width:min(1040px,88%);
   }
   body.compact-mode .from-user{
     grid-template-columns:minmax(0,1fr) 26px;
-    max-width:min(900px,88%);
+    max-width:min(980px,88%);
   }
   body.compact-mode .avatar{width:26px;height:26px;border-radius:8px;font-size:11px}
   body.compact-mode .bubble{padding:7px 9px;border-radius:10px}
@@ -917,7 +917,7 @@
 
   #working{
     width:fit-content;
-    max-width:min(760px,86%);
+    max-width:min(980px,86%);
     display:none;
     align-items:center;
     gap:10px;
@@ -1174,6 +1174,12 @@
     body.overview-open #log{padding-right:var(--content-pad)}
     #overviewPanel{display:none!important}
     #overviewToggle{display:none}
+  }
+  @media (min-width:1360px){
+    .msg{max-width:min(1120px,88%)}
+    .from-user{max-width:min(1040px,86%)}
+    .from-system,.system-bundle{max-width:min(1080px,88%)}
+    #working{max-width:min(1040px,88%)}
   }
   @media (max-width:640px){
     body{background:var(--bg)}
