@@ -238,6 +238,57 @@
   .filter-btn.on .count{background:rgba(114,183,255,.16);color:#d9ecff}
   .msg.filtered-out,.day-sep.filtered-out{display:none}
 
+  .health-banner{
+    width:100%;
+    max-width:100%;
+    display:none;
+    align-items:center;
+    gap:10px;
+    padding:8px var(--content-pad);
+    background:rgba(16,20,26,.96);
+    border-bottom:1px solid var(--border-soft);
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.35;
+    z-index:2;
+  }
+  .health-banner.show{display:flex}
+  .health-banner .health-dot{
+    flex:none;
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:var(--model);
+    box-shadow:0 0 12px rgba(255,209,102,.35);
+  }
+  .health-banner .health-title{
+    flex:none;
+    font-weight:800;
+    color:var(--txt);
+  }
+  .health-banner .health-detail{
+    min-width:0;
+    flex:1;
+    color:var(--muted);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .health-banner.warn{
+    background:rgba(43,38,24,.96);
+    border-bottom-color:rgba(255,209,102,.32);
+  }
+  .health-banner.bad{
+    background:rgba(42,21,24,.96);
+    border-bottom-color:rgba(255,107,107,.38);
+  }
+  .health-banner.bad .health-dot{
+    background:var(--danger);
+    box-shadow:0 0 12px rgba(255,107,107,.38);
+  }
+  .health-banner.bad .health-title{color:#ffd7da}
+  body.has-health-banner #scrollProgress{top:174px}
+
   #log{
     position:relative;
     flex:1;
@@ -947,12 +998,15 @@
     .filterbar{padding:7px 10px}
     .filterbar .label{display:none}
     .filter-btn{padding:5px 9px;font-size:11.5px}
+    .health-banner{padding:8px 10px;align-items:flex-start}
+    .health-banner .health-detail{white-space:normal}
     #searchPanel{padding:8px 10px;flex-wrap:wrap}
     .search-wrap{flex-basis:100%}
     #searchCount{text-align:left;min-width:auto}
     .search-tools{margin-left:auto}
     #log{padding:14px 10px 18px;gap:11px}
     #scrollProgress{top:178px;bottom:calc(74px + env(safe-area-inset-bottom,0px));width:2px}
+    body.has-health-banner #scrollProgress{top:222px}
     .msg,.from-user{max-width:100%;grid-template-columns:30px minmax(0,1fr);gap:8px}
     .from-user{grid-template-columns:minmax(0,1fr) 30px}
     .avatar{width:30px;height:30px;border-radius:9px}
@@ -1030,6 +1084,13 @@
   <button class="filter-btn" type="button" data-filter="user" aria-pressed="false">Вы <span class="count">0</span></button>
   <button class="filter-btn" type="button" data-filter="files" aria-pressed="false">Файлы <span class="count">0</span></button>
   <button class="filter-btn" type="button" data-filter="code" aria-pressed="false">Код <span class="count">0</span></button>
+</div>
+
+<div id="healthBanner" class="health-banner" role="status" aria-live="polite">
+  <span class="health-dot" aria-hidden="true"></span>
+  <span id="healthTitle" class="health-title"></span>
+  <span id="healthDetail" class="health-detail"></span>
+  <button id="healthRetry" class="mini-btn" type="button" title="Проверить статус сейчас">↻</button>
 </div>
 
 <div id="searchPanel" aria-label="Поиск по истории">
@@ -1138,6 +1199,10 @@ const searchNext = document.getElementById('searchNext');
 const searchClose = document.getElementById('searchClose');
 const compactToggle = document.getElementById('compactToggle');
 const systemToggle = document.getElementById('systemToggle');
+const healthBanner = document.getElementById('healthBanner');
+const healthTitle = document.getElementById('healthTitle');
+const healthDetail = document.getElementById('healthDetail');
+const healthRetry = document.getElementById('healthRetry');
 const codeFilterBtn = document.querySelector('.filter-btn[data-filter="code"]');
 if(codeFilterBtn && !document.querySelector('.filter-btn[data-filter="favorites"]')){
   const favoriteFilterBtn = document.createElement('button');
@@ -1299,9 +1364,34 @@ function updateDocumentTitle(){
   const active = activeAgentLabel ? activeAgentLabel + ' · ' : '';
   document.title = unread + active + baseTitle;
 }
+function setHealthBanner(level, title, detail, show, source){
+  if(!healthBanner) return;
+  const visible = Boolean(show && title);
+  healthBanner.className = 'health-banner' + (visible ? ' show' : '') + (level ? ' ' + level : '');
+  healthBanner.dataset.source = visible ? (source || '') : '';
+  healthTitle.textContent = title || '';
+  healthDetail.textContent = detail || '';
+  healthBanner.title = [title, detail].filter(Boolean).join(' · ');
+  document.body.classList.toggle('has-health-banner', visible);
+}
+function updateHealthBannerFromStatus(s, beat, statusText){
+  if(!s || document.body.classList.contains('offline')) return;
+  if(s.paused){
+    setHealthBanner('warn', 'Пауза включена', 'Автономный цикл остановлен до команды продолжения.', true, 'status');
+  } else if(beat.level === 'bad'){
+    setHealthBanner('bad', 'Heartbeat устарел', (beat.label || 'нет данных') + '. Последний статус: ' + (statusText || s.status || 'ожидание'), true, 'status');
+  } else if(beat.level === 'warn'){
+    setHealthBanner('warn', 'Редкий heartbeat', (beat.label || 'недавно') + '. Следим, не завис ли активный агент.', true, 'status');
+  } else {
+    setHealthBanner('', '', '', false);
+  }
+}
 function noteConnectionOk(){
   connectionFailures = 0;
   document.body.classList.remove('offline');
+  if(healthBanner && healthBanner.dataset.source === 'connection'){
+    setHealthBanner('', '', '', false);
+  }
 }
 function isNearBottom(){
   return log.scrollHeight - log.scrollTop - log.clientHeight < 120;
@@ -1934,6 +2024,7 @@ function showConnectionProblem(source, err){
   beatEl.textContent = 'нет связи';
   beatEl.title = statusEl.title;
   beatEl.className = 'bad';
+  setHealthBanner('bad', 'Нет связи с мостом', 'Повторяю запросы. ' + source + ': ' + detail, true, 'connection');
   setChip('chipClaude', false);
   setChip('chipCodex', false);
   setChip('chipModel', false);
@@ -1984,6 +2075,7 @@ async function status(){
     beatEl.className = beat.level;
     beatEl.title = beat.title;
     document.body.classList.toggle('stale-heartbeat', beat.level === 'warn' || beat.level === 'bad');
+    updateHealthBannerFromStatus(s, beat, statusText);
 
     const taskEl = document.getElementById('task');
     const taskText = s.current_task ? String(s.current_task) : 'нет активной задачи';
@@ -2486,6 +2578,10 @@ attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
 clearDraftBtn.addEventListener('click', clearDraft);
+healthRetry.addEventListener('click', () => {
+  status();
+  poll();
+});
 fileInput.addEventListener('change', e => {
   uploadFiles(e.target.files);
   fileInput.value = '';
