@@ -41,8 +41,15 @@ function Send-Bytes {
   $ctx.Response.OutputStream.Write($Bytes, 0, $Bytes.Length)
   $ctx.Response.OutputStream.Close()
 }
+function Set-NoStoreHeaders {
+  param($ctx)
+  $ctx.Response.AddHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+  $ctx.Response.AddHeader('Pragma', 'no-cache')
+  $ctx.Response.AddHeader('Expires', '0')
+}
 function Send-Text {
   param($ctx, [string]$Text, [string]$ContentType = 'text/plain; charset=utf-8', [int]$Status = 200)
+  Set-NoStoreHeaders $ctx
   Send-Bytes $ctx ([System.Text.Encoding]::UTF8.GetBytes($Text)) $ContentType $Status
 }
 function Read-Body {
@@ -98,7 +105,6 @@ try {
 
       if ($method -eq 'GET' -and ($path -eq '/' -or $path -eq '/index.html')) {
         $html = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
-        $ctx.Response.AddHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
         Send-Text $ctx $html 'text/html; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/messages') {
