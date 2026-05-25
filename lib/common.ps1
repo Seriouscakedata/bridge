@@ -285,6 +285,7 @@ function Initialize-Bridge {
       task_turn      = 0
       task_mode      = 'normal'
       discuss_turn   = 0
+      research_count = 0
       task_start_seq = 0
       no_progress_count = 0
       timeout_retry_count = 0
@@ -302,7 +303,7 @@ function Initialize-Bridge {
     $defaults = @{
       status='idle'; paused=$false; stop=$false; abort=$false
       active_agent=$null; active_model=$null; status_text=$null; agent_pid=$null
-      current_task=$null; task_turn=0; task_mode='normal'; discuss_turn=0; task_start_seq=0
+      current_task=$null; task_turn=0; task_mode='normal'; discuss_turn=0; research_count=0; task_start_seq=0
       no_progress_count=0; timeout_retry_count=0
       last_user_seq=0; summarized_seq=0; turn=0; lastSeq=0
       heartbeat=$null; driver_started=$null; claimed_at=$null

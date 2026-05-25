@@ -21,6 +21,7 @@ $summarizeBatch = if ($cfg.summarizeBatch)   { [int]$cfg.summarizeBatch }   else
 $triageModel       = if ($cfg.triageModel)       { [string]$cfg.triageModel }       else { 'sonnet' }
 $deepModel         = if ($cfg.deepModel)         { [string]$cfg.deepModel }         else { 'opus' }
 $discussMinTurns   = if ($cfg.discussMinTurns)   { [int]$cfg.discussMinTurns }      else { 6 }
+$researchMaxTurns  = if ($cfg.researchMaxTurns)  { [int]$cfg.researchMaxTurns }     else { 2 }
 
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
@@ -104,6 +105,24 @@ function Build-Prompt {
   param([string]$Role, [string]$Task, [string]$Mode = 'normal')
   $transcript = Format-Transcript
   $dt = [int](Read-State).discuss_turn
+  $claudeToolHint = if ($Mode -eq 'research') {
+    'У тебя есть инструменты Read/Grep/Glob, WebSearch и WebFetch. Bash недоступен.'
+  } else {
+    'У тебя есть инструменты Read/Grep/Glob и Bash (можешь САМ выполнять команды).'
+  }
+  $claudeActionBlock = if ($Mode -eq 'research') {
+@"
+RESEARCH-ХОД -- не выполняй действия в системе и не меняй файлы. Твоя задача: найти/прочитать внешние источники, выделить проверяемые факты, записать evidence-маркеры и дать план следующего action-хода.
+"@
+  } else {
+@"
+ПРОСТОЕ ДЕЙСТВИЕ -- выполни САМ (без Codex, без Opus), затем `STATUS: DONE`. К простым относятся:
+- скриншот экрана; открыть/запустить программу, файл или папку; закрыть/завершить программу или процесс; список процессов/окон; системная информация; одна-две короткие ОБРАТИМЫЕ команды.
+- Сделай через Bash и кратко отчитайся по-русски.
+- Скриншот: выполни `powershell -NoProfile -ExecutionPolicy Bypass -File "$bridgeRoot\tools\screenshot.ps1"` -- он напечатает путь к PNG; пришли его пользователю отдельной строкой `[[FILE: <путь>]]`.
+- Любой файл пользователю -- тем же маркером `[[FILE: <путь>]]`.
+"@
+  }
   $shared = @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
 Рабочий корень: $workRoot
@@ -132,25 +151,25 @@ $transcript
   if ($Role -eq 'claude') {
     $claudeBase = @"
 
-ТВОЙ ХОД как ПЛАНИРОВЩИК (Claude). У тебя есть инструменты Read/Grep/Glob и Bash (можешь САМ выполнять команды). Реши, как действовать, и заверши ответ ПОСЛЕДНЕЙ отдельной строкой -- только маркер STATUS.
+ТВОЙ ХОД как ПЛАНИРОВЩИК (Claude). $claudeToolHint Реши, как действовать, и заверши ответ ПОСЛЕДНЕЙ отдельной строкой -- только маркер STATUS.
 
-ПРОСТОЕ ДЕЙСТВИЕ -- выполни САМ (без Codex, без Opus), затем `STATUS: DONE`. К простым относятся:
-- скриншот экрана; открыть/запустить программу, файл или папку; закрыть/завершить программу или процесс; список процессов/окон; системная информация; одна-две короткие ОБРАТИМЫЕ команды.
-- Сделай через Bash и кратко отчитайся по-русски.
-- Скриншот: выполни `powershell -NoProfile -ExecutionPolicy Bypass -File "$bridgeRoot\tools\screenshot.ps1"` -- он напечатает путь к PNG; пришли его пользователю отдельной строкой `[[FILE: <путь>]]`.
-- Любой файл пользователю -- тем же маркером `[[FILE: <путь>]]`.
+$claudeActionBlock
 
 Маркеры:
 - STATUS: DONE -- сделано (в т.ч. ты сам выполнил простое действие выше); либо работа/обсуждение завершены -- тогда дай ИТОГ (для обсуждения -- чёткое заключение).
 - STATUS: CHAT -- только ответить/спросить пользователя, без действий и без Codex (вопрос, объяснение, уточнение).
 - STATUS: CONTINUE -- СЛОЖНОЕ -> Codex: написание/правка кода, многошаговое, сборка фич, итерации с тестами, рефакторинг, рискованное/необратимое в больших масштабах. Дай Codex конкретную инструкцию (что, где, критерий готовности).
 - STATUS: DISCUSS -- разобрать ИДЕЮ вместе с Codex (без правок): поставь ему тезис/вопрос.
+- STATUS: RESEARCH -- нужен отдельный web-ход Claude: поиск/чтение внешних источников без Bash. Дай краткую причину, особенно если это второй research-ход по задаче.
 
 ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать в ответе результат проверки: вывод команды, git diff, содержимое файла или тест. Без явной проверки STATUS: DONE запрещён -- используй STATUS: CONTINUE и попроси Codex проверить, или проверь сам через Bash.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 "@
-    if ($Mode -eq 'discuss') {
+    if ($Mode -eq 'research') {
+      $researchNote = "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
+      $suffix = $claudeBase + $researchNote
+    } elseif ($Mode -eq 'discuss') {
       $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt / минимум $discussMinTurns): ты ведёшь настоящую дискуссию, не просто принимаешь аргументы. Отвечай на возражения Codex по существу — прими или оспорь каждый конкретный аргумент с обоснованием. Не суммируй позиции без ответа на критику. STATUS: DONE разрешён ТОЛЬКО когда ходов >= $discussMinTurns И все ключевые разногласия исчерпаны. Иначе — STATUS: DISCUSS с новым вопросом или тезисом."
       $suffix = $claudeBase + $discussNote
     } else {
@@ -185,12 +204,13 @@ function Set-AgentPid([int]$ProcId) { Update-State ({ param($s) $s.agent_pid = $
 function Clear-AgentPid { Update-State { param($s) $s.agent_pid = $null } | Out-Null }
 
 function Invoke-Planner {
-  param([string]$Prompt, [string]$Model = '')
+  param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal')
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "claude_in_$g.txt"; $outF=Join-Path $env:TEMP "claude_out_$g.txt"; $errF=Join-Path $env:TEMP "claude_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
   # Narrow --add-dir to the bridge folder (faster startup); Bash already gives full read access.
-  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$bridgeRoot,'--allowedTools','Read','Grep','Glob','Bash')
+  $allowedTools = if ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') } else { @('Read','Grep','Glob','Bash') }
+  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$bridgeRoot,'--allowedTools') + $allowedTools
   if ($Model) { $claudeArgs += @('--model', $Model) }
   $reply = ''
   try {
@@ -294,11 +314,13 @@ function Get-AgentStatusText {
   param([string]$Speaker, [string]$Mode, [string]$TaskText = '')
   $topic = if ($TaskText) { Get-TaskTopic $TaskText } else { '' }
   if ($topic) {
+    if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return "Claude исследует источники: «$topic»" }
     if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return "Claude обдумывает план: «$topic»" }
     if ($Speaker -eq 'claude') { return "Claude планирует: «$topic»" }
     if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return "Codex оценивает идею: «$topic»" }
     if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
   }
+  if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return 'Claude ищет и сверяет внешние источники без Bash.' }
   if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет следующий шаг.' }
   if ($Speaker -eq 'claude') { return 'Claude анализирует задачу и выбирает следующий шаг.' }
   if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex оценивает план, риски и варианты без изменения файлов.' }
@@ -315,6 +337,7 @@ function Get-AgentPhaseStatusText {
     'prompt'  { return "Готовлю контекст и промпт для $who..." }
     'invoke'  {
       if ($topic) {
+        if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return "Claude ищет внешние источники: «$topic»" }
         if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return "Codex оценивает идею: «$topic»" }
         if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
         if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return "Claude обдумывает план: «$topic»" }
@@ -322,6 +345,7 @@ function Get-AgentPhaseStatusText {
       }
       if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex читает контекст и отвечает без изменения файлов.' }
       if ($Speaker -eq 'codex') { return 'Codex работает с файлами и командами.' }
+      if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return 'Claude проверяет внешние источники без Bash.' }
       if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет план.' }
       return 'Claude анализирует задачу и выбирает следующий шаг.'
     }
@@ -410,7 +434,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -425,7 +449,7 @@ while ($true) {
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -435,7 +459,7 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
-      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.research_count=0; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
@@ -449,7 +473,7 @@ while ($true) {
   $task = [string]$state.current_task
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
-  $speaker = if ($tt -eq 0) { 'claude' } else { Next-Speaker }
+  $speaker = if ($mode -eq 'research') { 'claude' } elseif ($tt -eq 0) { 'claude' } else { Next-Speaker }
   $plannerModel = Get-PlannerModel -TaskText $task -Mode $mode
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
@@ -462,7 +486,7 @@ while ($true) {
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
   try {
-    if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel }
+    if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
   } catch {
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
@@ -484,7 +508,7 @@ while ($true) {
       continue
     } else {
       Add-Message -From system -Text "⏱ Таймаут $who повторился. Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -501,7 +525,7 @@ while ($true) {
         Add-Message -From codex -Text $preReply | Out-Null
       }
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -578,10 +602,15 @@ while ($true) {
   if ($modeBeforeIncrement -eq 'discuss') {
     Update-State { param($s) $s.discuss_turn=[int]$s.discuss_turn+1 } | Out-Null
   }
+  if ($speaker -eq 'claude' -and $modeBeforeIncrement -eq 'research' -and $evidenceSources.Count -eq 0) {
+    Add-Message -From system -Text "🔍 Research-ход не дал маркер [[EVIDENCE: ...]]. Дальнейший web-доступ по этой задаче заблокирован до новой задачи." -Kind event | Out-Null
+    $researchBlockValue = $researchMaxTurns
+    Update-State ({ param($s) $s.research_count=$researchBlockValue }.GetNewClosure()) | Out-Null
+  }
 
   $plannerStatus = 'CONTINUE'
   if ($speaker -eq 'claude') {
-    $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE)\s*$')
+    $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE|RESEARCH)\s*$')
     if ($statusHits.Count -gt 0) { $plannerStatus = $statusHits[$statusHits.Count - 1].Groups[1].Value.ToUpper() }
     if ($plannerStatus -eq 'DISCUSS') {
       if ($modeBeforeIncrement -ne 'discuss') {
@@ -591,10 +620,27 @@ while ($true) {
       }
     }
     elseif ($plannerStatus -eq 'CONTINUE') { Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0 } | Out-Null }
+    elseif ($plannerStatus -eq 'RESEARCH') {
+      if ($modeBeforeIncrement -eq 'research') {
+        Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0 } | Out-Null
+      } else {
+        $rc = [int](Read-State).research_count
+        if ($rc -lt $researchMaxTurns) {
+          $newRc = $rc + 1
+          Update-State ({ param($s) $s.task_mode='research'; $s.research_count=$newRc; $s.discuss_turn=0 }.GetNewClosure()) | Out-Null
+        } else {
+          Add-Message -From system -Text "🔍 Бюджет research исчерпан ($researchMaxTurns/$researchMaxTurns ходов). Codex получит уже собранные данные." -Kind event | Out-Null
+          Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0 } | Out-Null
+        }
+      }
+    }
+    if ($modeBeforeIncrement -eq 'research' -and $plannerStatus -ne 'DONE' -and $plannerStatus -ne 'CHAT') {
+      Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0 } | Out-Null
+    }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   # Guard: block premature DONE in discuss mode
@@ -616,12 +662,12 @@ while ($true) {
       } catch {}
     }
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
