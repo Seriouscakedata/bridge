@@ -1,0 +1,170 @@
+﻿# metrics.ps1 -- Learning Loop pt1: health metrics, hypotheses, reflection.
+
+function Get-TurnsStats {
+  param([object[]]$Entries)
+
+  if (-not $Entries -or $Entries.Count -eq 0) {
+    return [pscustomobject]@{
+      total       = 0
+      timeout_pct = 0.0
+      avg_sec     = 0.0
+      success_pct = 0.0
+      window_from = $null
+      window_to   = $null
+    }
+  }
+
+  $total = $Entries.Count
+  $timeouts = @($Entries | Where-Object { $_.status -eq 'timeout' }).Count
+  $successes = @($Entries | Where-Object { $_.status -eq 'ok' }).Count
+  $secs = @($Entries | Where-Object { $_.sec -ne $null } | ForEach-Object { [double]$_.sec })
+  $avgSec = if ($secs.Count -gt 0) { [Math]::Round(($secs | Measure-Object -Average).Average, 2) } else { 0.0 }
+  $wFrom = ($Entries | Sort-Object ts | Select-Object -First 1).ts
+  $wTo = ($Entries | Sort-Object ts | Select-Object -Last 1).ts
+
+  [pscustomobject]@{
+    total       = $total
+    timeout_pct = [Math]::Round($timeouts / $total, 4)
+    avg_sec     = $avgSec
+    success_pct = [Math]::Round($successes / $total, 4)
+    window_from = $wFrom
+    window_to   = $wTo
+  }
+}
+
+function Read-MetricsJsonl {
+  $mf = Join-Path $bridgeRoot 'metrics.jsonl'
+  if (-not (Test-Path $mf)) { return @() }
+
+  Get-Content $mf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
+    try { $_ | ConvertFrom-Json } catch {}
+  }
+}
+
+function Append-MetricsRecord {
+  param([hashtable]$Record)
+
+  $mf = Join-Path $bridgeRoot 'metrics.jsonl'
+  $Record['ts'] = [DateTime]::UtcNow.ToString('o')
+  $line = $Record | ConvertTo-Json -Compress -Depth 5
+  Add-Content -LiteralPath $mf -Value $line -Encoding UTF8
+}
+
+function Read-RecentTurns {
+  param([int]$Limit = 200)
+
+  $tf = Join-Path $bridgeRoot 'turns.jsonl'
+  $entries = @()
+  if (Test-Path $tf) {
+    $entries = @(Get-Content $tf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
+      try { $_ | ConvertFrom-Json } catch {}
+    } | Where-Object { $_ })
+    if ($entries.Count -gt $Limit) { $entries = $entries[-$Limit..-1] }
+  }
+
+  return @($entries)
+}
+
+function Write-MetricsSnapshot {
+  $entries = @(Read-RecentTurns -Limit 200)
+  $stats = Get-TurnsStats -Entries $entries
+
+  Append-MetricsRecord @{
+    type        = 'snapshot'
+    total_turns = $stats.total
+    timeout_pct = $stats.timeout_pct
+    avg_sec     = $stats.avg_sec
+    success_pct = $stats.success_pct
+    window_from = $stats.window_from
+    window_to   = $stats.window_to
+  }
+}
+
+function Get-LastSnapshot {
+  $records = Read-MetricsJsonl
+  $snaps = $records | Where-Object { $_.type -eq 'snapshot' }
+  if (-not $snaps) { return $null }
+  $snaps | Sort-Object ts | Select-Object -Last 1
+}
+
+function Write-Hypothesis {
+  param([string]$CommitHash, [string]$TaskText)
+
+  Write-MetricsSnapshot
+  $entries = @(Read-RecentTurns -Limit 200)
+  $stats = Get-TurnsStats -Entries $entries
+
+  Append-MetricsRecord @{
+    type     = 'hypothesis'
+    commit   = $CommitHash
+    task     = $TaskText
+    baseline = @{
+      timeout_pct = $stats.timeout_pct
+      avg_sec     = $stats.avg_sec
+      success_pct = $stats.success_pct
+    }
+  }
+}
+
+function Invoke-MetricsReflection {
+  $records = Read-MetricsJsonl
+  $hyps = $records | Where-Object { $_.type -eq 'hypothesis' }
+  $verdicts = $records | Where-Object { $_.type -eq 'verdict' }
+  if (-not $hyps) { return }
+
+  $tf = Join-Path $bridgeRoot 'turns.jsonl'
+  $allTurns = @()
+  if (Test-Path $tf) {
+    $allTurns = @(Get-Content $tf -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
+      try { $_ | ConvertFrom-Json } catch {}
+    } | Where-Object { $_ })
+  }
+
+  foreach ($hyp in $hyps) {
+    $hypTs = [DateTime]$hyp.ts
+    if (([DateTime]::UtcNow - $hypTs).TotalHours -lt 24) { continue }
+
+    $already = $verdicts | Where-Object { $_.hypothesis_ts -eq $hyp.ts }
+    if ($already) { continue }
+
+    $afterTurns = @($allTurns | Where-Object { [DateTime]$_.ts -gt $hypTs })
+    if ($afterTurns.Count -lt 10) { continue }
+
+    $afterStats = Get-TurnsStats -Entries $afterTurns
+    $bl = $hyp.baseline
+
+    $dPct = $afterStats.timeout_pct - [double]$bl.timeout_pct
+    $dSec = if ([double]$bl.avg_sec -gt 0) { ($afterStats.avg_sec - [double]$bl.avg_sec) / [double]$bl.avg_sec } else { 0 }
+
+    $verdict = 'no_effect'
+    if ($dPct -lt -0.05 -or $dSec -lt -0.15) { $verdict = 'worked' }
+    elseif ($dPct -gt 0.05 -or $dSec -gt 0.15) { $verdict = 'worse' }
+
+    Append-MetricsRecord @{
+      type          = 'verdict'
+      hypothesis_ts = $hyp.ts
+      commit        = $hyp.commit
+      task          = $hyp.task
+      verdict       = $verdict
+      delta         = @{
+        timeout_pct = [Math]::Round($dPct, 4)
+        avg_sec     = [Math]::Round($afterStats.avg_sec - [double]$bl.avg_sec, 2)
+        success_pct = [Math]::Round($afterStats.success_pct - [double]$bl.success_pct, 4)
+      }
+      after         = @{
+        timeout_pct = $afterStats.timeout_pct
+        avg_sec     = $afterStats.avg_sec
+        success_pct = $afterStats.success_pct
+      }
+    }
+
+    try {
+      $bPct = [Math]::Round([double]$bl.timeout_pct * 100, 1)
+      $aPct = [Math]::Round($afterStats.timeout_pct * 100, 1)
+      $bAvg = [Math]::Round([double]$bl.avg_sec, 1)
+      $aAvg = [Math]::Round($afterStats.avg_sec, 1)
+      $memText = "Гипотеза '$($hyp.task)' (коммит $($hyp.commit)): вердикт $verdict. Таймауты: $bPct% -> $aPct%. Среднее время хода: $bAvg -> $aAvg сек. ($($afterTurns.Count) ходов после улучшения)"
+      Add-Memory -Text $memText -Tags @('learning-loop','hypothesis','verdict') -Importance 0.8 | Out-Null
+    } catch {}
+  }
+}

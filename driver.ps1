@@ -1,6 +1,7 @@
 ﻿# driver.ps1 -- INTERACTIVE bridge: idles, and treats each [USER] chat message as a
 # task. Planner (Claude) plans/reviews, Coder (Codex) executes with FULL PC access.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 $ErrorActionPreference = 'Continue'
 
 # UTF-8 end-to-end (Russian survives the stdin/stdout file round-trip).
@@ -836,6 +837,14 @@ while ($true) {
         Update-State { param($s) $s.current_backlog_id=$null } | Out-Null
         $state = Read-State
       }
+      # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
+      $_lastSnap = try { Get-LastSnapshot } catch { $null }
+      $_snapAgeH = if ($_lastSnap) { ([DateTime]::UtcNow - [DateTime]$_lastSnap.ts).TotalHours } else { 999 }
+      if ($_snapAgeH -ge 3) {
+        try { Write-MetricsSnapshot } catch {}
+        try { Invoke-MetricsReflection } catch {}
+      }
+
       # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
       # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
       $claimedIdea = $null
@@ -1218,7 +1227,13 @@ while ($true) {
     # If this was an autonomous backlog task, close it out.
     try {
       $doneBid = [string](Read-State).current_backlog_id
-      if ($doneBid) { Set-Idea -Id $doneBid -Status 'done' | Out-Null; Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null }
+      if ($doneBid) {
+        Set-Idea -Id $doneBid -Status 'done' | Out-Null
+        Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null
+        # Mark autonomous improvements as hypotheses for later reflection.
+        $_hCommit = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
+        if ($_hCommit) { try { Write-Hypothesis -CommitHash $_hCommit -TaskText ([string]$task) } catch {} }
+      }
     } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
     Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
