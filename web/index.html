@@ -988,6 +988,7 @@ let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
 let sending = false;
 let uploading = false;
+let dragDepth = 0;
 
 function esc(s){
   return String(s ?? '')
@@ -1888,26 +1889,36 @@ fileInput.addEventListener('change', e => {
   fileInput.value = '';
 });
 window.addEventListener('paste', e => {
-  const items = [...(e.clipboardData && e.clipboardData.items ? e.clipboardData.items : [])];
-  const files = items.filter(i => i.kind === 'file' && i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+  const data = e.clipboardData;
+  const pastedFiles = data && data.files ? [...data.files].filter(Boolean) : [];
+  const items = [...(data && data.items ? data.items : [])];
+  const itemFiles = items
+    .filter(i => i.kind === 'file')
+    .map(i => i.getAsFile())
+    .filter(Boolean);
+  const files = pastedFiles.length ? pastedFiles : itemFiles;
   if(files.length){
     e.preventDefault();
     uploadFiles(files);
   }
 });
-for(const ev of ['dragenter','dragover']){
-  window.addEventListener(ev, e => {
-    e.preventDefault();
-    document.body.classList.add('dragover');
-  });
-}
-for(const ev of ['dragleave','drop']){
-  window.addEventListener(ev, e => {
-    e.preventDefault();
-    document.body.classList.remove('dragover');
-  });
-}
+window.addEventListener('dragenter', e => {
+  e.preventDefault();
+  dragDepth++;
+  document.body.classList.add('dragover');
+});
+window.addEventListener('dragover', e => {
+  e.preventDefault();
+});
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if(!dragDepth) document.body.classList.remove('dragover');
+});
 window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragover');
   const files = e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files : [];
   uploadFiles(files);
 });
