@@ -48,6 +48,8 @@
   body > *{min-width:0}
   body.offline header{border-bottom-color:rgba(255,107,107,.55)}
   body.offline .mark{box-shadow:0 0 0 3px rgba(255,107,107,.12)}
+  body.stale-heartbeat header{border-bottom-color:rgba(255,209,102,.42)}
+  body.stale-heartbeat .mark{box-shadow:0 0 0 3px rgba(255,209,102,.1)}
   button,textarea{font:inherit}
   button{
     background:var(--panel-2);
@@ -373,6 +375,25 @@
   .from-system .msg-actions{display:none}
   .from-system .who{color:var(--system)}
   .from-system .md{font-size:12px}
+  .from-system.system-collapsed:not(.search-hit){display:none}
+  .system-bundle{
+    align-self:center;
+    width:min(900px,92%);
+    display:flex;
+    justify-content:center;
+    margin:-6px 0 1px;
+  }
+  .system-bundle.filtered-out{display:none}
+  .system-bundle button{
+    min-height:26px;
+    padding:4px 10px;
+    border-radius:999px;
+    border-style:dashed;
+    color:#a8b3c3;
+    background:rgba(20,23,29,.58);
+    font-size:11px;
+  }
+  .system-bundle button:hover{color:#d8e0eb;border-color:#536072;background:#171d26}
   body.hide-system .from-system:not(.search-hit){display:none}
   body.compact-mode #log{gap:8px;padding:14px 16px 18px}
   body.compact-mode .msg{
@@ -966,6 +987,7 @@ let pollInFlight = false;
 let statusInFlight = false;
 let connectionFailures = 0;
 let activeAgentLabel = '';
+let systemGroupsExpanded = new Set();
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
@@ -1145,6 +1167,49 @@ function isVisibleByPrefs(msg){
   if(!showSystem && msg.classList.contains('from-system')) return false;
   return true;
 }
+function rebuildSystemGroups(){
+  document.querySelectorAll('.system-bundle').forEach(n => n.remove());
+  document.querySelectorAll('.from-system').forEach(msg => {
+    msg.classList.remove('system-collapsed');
+    delete msg.dataset.systemGroup;
+  });
+
+  let group = [];
+  const flushGroup = () => {
+    if(group.length < 3){
+      group = [];
+      return;
+    }
+    const first = group[0];
+    const hiddenCount = group.length - 1;
+    const groupId = 'sys-' + (first.dataset.seq || String(first.dataset.rawText || '').length + '-' + group.length);
+    const expanded = systemGroupsExpanded.has(groupId);
+    const label = hiddenCount + ' ' + pluralRu(hiddenCount, 'системное событие', 'системных события', 'системных событий');
+    group.forEach(msg => { msg.dataset.systemGroup = groupId; });
+    group.slice(1).forEach(msg => msg.classList.toggle('system-collapsed', !expanded));
+
+    const bundle = document.createElement('div');
+    bundle.className = 'system-bundle' + (!showSystem || activeFilter !== 'all' ? ' filtered-out' : '');
+    bundle.dataset.systemGroup = groupId;
+    bundle.innerHTML =
+      '<button type="button" title="' + (expanded ? 'Свернуть системные события' : 'Показать системные события') + '">' +
+        (expanded ? 'Свернуть ' : '+ ') + label +
+      '</button>';
+    first.after(bundle);
+    group = [];
+  };
+
+  [...log.children].forEach(child => {
+    if(child === working || child.classList.contains('day-sep') || child.classList.contains('unread-sep')){
+      flushGroup();
+    } else if(child.classList.contains('msg') && child.classList.contains('from-system')){
+      group.push(child);
+    } else if(child.classList.contains('msg')){
+      flushGroup();
+    }
+  });
+  flushGroup();
+}
 function updateDaySeparators(){
   let currentSep = null;
   let visibleSinceSep = false;
@@ -1216,6 +1281,7 @@ function applyMessageFilter(){
   document.querySelectorAll('.msg').forEach(msg => {
     msg.classList.toggle('filtered-out', !messageMatchesFilter(msg));
   });
+  rebuildSystemGroups();
   updateDaySeparators();
   updateFilterCounts();
   updateEmptyState();
@@ -1233,6 +1299,7 @@ function applyViewPrefs(){
   systemToggle.setAttribute('aria-pressed', !showSystem ? 'true' : 'false');
   systemToggle.textContent = showSystem ? 'События' : 'Без событий';
   systemToggle.title = showSystem ? 'Скрыть системные события' : 'Показать системные события';
+  rebuildSystemGroups();
   updateDaySeparators();
   if(stickToBottom) requestAnimationFrame(() => scrollToBottom('auto'));
   else requestAnimationFrame(updateBottomButton);
@@ -1637,6 +1704,7 @@ function setChip(id,on){
 function showConnectionProblem(source, err){
   connectionFailures++;
   document.body.classList.add('offline');
+  document.body.classList.remove('stale-heartbeat');
   activeAgentLabel = 'offline';
   const detail = err && err.message ? err.message : String(err || source || '');
   const text = 'Нет связи с мостом. Повторяю...';
@@ -1696,6 +1764,7 @@ async function status(){
     beatEl.textContent = beat.label;
     beatEl.className = beat.level;
     beatEl.title = beat.title;
+    document.body.classList.toggle('stale-heartbeat', beat.level === 'warn' || beat.level === 'bad');
 
     const taskEl = document.getElementById('task');
     const taskText = s.current_task ? String(s.current_task) : 'нет активной задачи';
@@ -2204,6 +2273,18 @@ searchInput.addEventListener('keydown', e => {
   }
 });
 document.addEventListener('click', e => {
+  const systemBundleBtn = e.target.closest('.system-bundle button');
+  if(systemBundleBtn){
+    const groupId = systemBundleBtn.closest('.system-bundle')?.dataset.systemGroup;
+    if(groupId){
+      if(systemGroupsExpanded.has(groupId)) systemGroupsExpanded.delete(groupId);
+      else systemGroupsExpanded.add(groupId);
+      rebuildSystemGroups();
+      updateDaySeparators();
+      updateEmptyState();
+    }
+    return;
+  }
   const codeBtn = e.target.closest('.copy-code');
   if(codeBtn){
     const code = codeBtn.closest('.codebox')?.querySelector('code')?.textContent || '';
