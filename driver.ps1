@@ -845,11 +845,12 @@ while ($true) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
       $studyDetect = Detect-StudyMode -TaskText $taskMsg
+      $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.task_base_commit=$baseCommit; $s.critic_retry_count=0
       }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
@@ -878,10 +879,11 @@ while ($true) {
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext
+        $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.task_base_commit=$baseCommit; $s.critic_retry_count=0
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
@@ -1236,6 +1238,77 @@ while ($true) {
       Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$true } | Out-Null
     } elseif ($didActions -and -not $hasVerify -and $vrc -ge 2) {
       Add-Message -From system -Text "🔍 Верификация не пройдена за 2 попытки — закрываю как есть (нужно внимание оператора)." -Kind event | Out-Null
+    }
+  }
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    # Независимый критик: перед закрытием ревьюим git-дифф задачи на другой модели.
+    # Серьёзное -> возврат Codex на доработку; сбои критика не блокируют завершение.
+    try {
+      $stC = Read-State
+      if ([bool]$stC.task_did_actions) {
+        $criticMaxRetries = 2
+        try { $cfgCr = Get-BridgeConfig; if ($cfgCr.PSObject.Properties.Name -contains 'criticMaxRetries') { $criticMaxRetries = [int]$cfgCr.criticMaxRetries } } catch {}
+        $crc  = [int]$stC.critic_retry_count
+        $base = [string]$stC.task_base_commit
+        $diff = ''
+        if (-not [string]::IsNullOrWhiteSpace($base)) {
+          try { $diff = (& git -C $bridgeRoot diff $base -- 2>$null | Out-String) } catch { $diff = '' }
+        }
+        if ([string]::IsNullOrWhiteSpace($diff)) {
+          try { $diff = (& git -C $bridgeRoot diff HEAD -- 2>$null | Out-String) } catch { $diff = '' }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($diff)) {
+          if ($crc -ge $criticMaxRetries) {
+            Add-Message -From system -Text "🔎 Критик: лимит доработок ($criticMaxRetries) исчерпан — закрываю задачу как есть, нужно внимание оператора." -Kind event | Out-Null
+          } else {
+            if ($diff.Length -gt 16000) { $diff = $diff.Substring(0,16000) + "`n...[дифф обрезан]..." }
+            $criticModelName = ''
+            try { $criticModelName = [string](Get-LLMConfig)['critic'] } catch {}
+            $criticPrompt = @"
+Ты — независимый код-критик. Другой ИИ (Codex) внёс изменения в проект на PowerShell (автономный мост Claude<->Codex на Windows). Проверь git-дифф на СЕРЬЁЗНЫЕ проблемы: баги, уязвимости безопасности, регрессии, потеря данных, падения, синтаксические ошибки, нарушение инвариантов (каждый .ps1 в UTF-8 с BOM; не трогать watchdog/supervisor/.git; не выводить секреты).
+НЕ придирайся к стилю, именованию и форматированию — отмечай только то, что реально сломает работу или создаёт риск.
+
+ЗАДАЧА: $task
+
+GIT-ДИФФ:
+$diff
+
+Верни СТРОГО JSON без markdown и без пояснений:
+{"verdict":"OK","severity":"none","issues":[],"summary":"одна фраза по-русски"}
+Где severity = "serious" ТОЛЬКО если есть баг/уязвимость/регрессия, которую обязательно исправить до закрытия; иначе "minor" или "none".
+"@
+            $rawC = Invoke-LLM -Purpose 'critic' -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+            $verdict='OK'; $severity='none'; $summary=''; $issuesText=''
+            if (-not [string]::IsNullOrWhiteSpace($rawC)) {
+              $cleanC = ($rawC -replace '```json','' -replace '```','').Trim()
+              $mC = [regex]::Match($cleanC, '(?s)\{.*\}')
+              if ($mC.Success) {
+                try {
+                  $cv = $mC.Value | ConvertFrom-Json
+                  if ($cv.verdict)  { $verdict  = [string]$cv.verdict }
+                  if ($cv.severity) { $severity = ([string]$cv.severity).Trim().ToLower() }
+                  if ($cv.summary)  { $summary  = [string]$cv.summary }
+                  if ($cv.issues)   { $issuesText = (@($cv.issues) -join '; ') }
+                } catch {}
+              }
+            }
+            $taskShort = ($task -replace '\s+',' ').Trim()
+            if ($taskShort.Length -gt 80) { $taskShort = $taskShort.Substring(0,80) }
+            try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + "  model=$criticModelName verdict=$verdict severity=$severity crc=$crc | $taskShort | $summary | $issuesText") -Encoding UTF8 } catch {}
+            if ($severity -eq 'serious') {
+              $newCrc = $crc + 1
+              Update-State ({ param($s) $s.critic_retry_count=$newCrc }.GetNewClosure()) | Out-Null
+              Add-Message -From system -Text "🔎 Независимый критик ($criticModelName) нашёл серьёзное (попытка $newCrc/$criticMaxRetries): $issuesText`n`nCodex, исправь это и снова доведи до STATUS: DONE — задачу НЕ закрываю." -Kind event | Out-Null
+              $plannerStatus = 'CONTINUE'
+              Update-State { param($s) $s.task_mode='normal' } | Out-Null
+            } else {
+              Add-Message -From system -Text "🔎 Критик ($criticModelName): $verdict / $severity — $summary" -Kind event | Out-Null
+            }
+          }
+        }
+      }
+    } catch {
+      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + '  critic-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {

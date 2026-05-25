@@ -14,6 +14,7 @@ function Get-LLMConfig {
     reflect   = 'deepseek-v4-flash'
     postmortem = 'deepseek-v4-flash'
     deep      = 'deepseek-v4-pro'
+    critic    = 'deepseek-v4-pro'
     fallback  = 'gemini-2.5-flash'
   }
   $m = $null
@@ -64,7 +65,7 @@ function Invoke-LLMProvider {
 }
 
 function Invoke-LLM {
-  # Route a cheap background call by Purpose (gate|librarian|reflect|deep) or explicit -Model.
+  # Route a cheap background call by Purpose (gate|librarian|reflect|critic|deep) or explicit -Model.
   # Falls back to the configured fallback model if the primary provider fails.
   param([string]$Purpose = '', [string]$Model = '', [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3)
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
