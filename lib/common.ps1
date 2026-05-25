@@ -129,7 +129,8 @@ function Add-Message {
     [ValidateSet('claude','codex','user','system')] [string]$From,
     [string]$Text,
     [string]$Kind = 'message',
-    [object[]]$Attachments = @()
+    [object[]]$Attachments = @(),
+    [string]$Model = ''
   )
   Use-BridgeLock {
     $state = Read-State
@@ -142,6 +143,7 @@ function Add-Message {
       kind = $Kind
       text = $Text
     }
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $msg.model = $Model }
     if ($Attachments -and @($Attachments).Count -gt 0) {
       $msg.attachments = @($Attachments)
     }

@@ -1307,7 +1307,8 @@
     .btns-secondary button.icon{height:auto}
     #btnsSecondary #overviewToggle{display:none}
     #inp{max-height:40vh}
-    .filterbar{padding:7px 10px;flex-wrap:nowrap}
+    .filterbar{padding:7px 10px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+    .filterbar::-webkit-scrollbar{display:none}
     .filterbar .label{display:none}
     .filter-btn{padding:5px 9px;font-size:11.5px}
     .health-banner{padding:8px 10px;align-items:flex-start}
@@ -2590,7 +2591,7 @@ function addMsg(m){
     '<div class="avatar" aria-hidden="true">' + esc(role.short) + '</div>' +
     '<div class="bubble' + (isLong ? ' long' : '') + '">' +
       '<div class="msg-head">' +
-        '<div class="who">' + esc(role.name) + '</div>' +
+        '<div class="who">' + esc(role.name) + (m.model && m.from === 'claude' ? ' <span style="color:var(--muted);font-weight:400">· ' + esc(m.model.charAt(0).toUpperCase() + m.model.slice(1)) + '</span>' : '') + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
         (seqLabel ? '<span class="seq" title="Номер сообщения">' + esc(seqLabel) + '</span>' : '') +
         '<div class="msg-actions">' + favoriteButton + expandButton + quoteButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
