@@ -1374,7 +1374,7 @@ function addMsg(m){
   const lineCount = rawText ? rawText.split(/\r\n|\r|\n/).length : 0;
   const isLong = m.from !== 'system' && (rawText.length > 2200 || lineCount > 42);
   const expandButton = isLong
-    ? '<button type="button" class="mini-btn expand-msg" title="Развернуть длинное сообщение" aria-label="Развернуть длинное сообщение">↧</button>'
+    ? '<button type="button" class="mini-btn expand-msg" title="Развернуть длинное сообщение" aria-label="Развернуть длинное сообщение">↓</button>'
     : '';
   const div = document.createElement('article');
   div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '');
@@ -1855,7 +1855,7 @@ document.addEventListener('click', e => {
   if(expandBtn){
     const msg = expandBtn.closest('.msg');
     const expanded = msg ? msg.classList.toggle('expanded') : false;
-    expandBtn.textContent = expanded ? '↥' : '↧';
+    expandBtn.textContent = expanded ? '↑' : '↓';
     expandBtn.title = expanded ? 'Свернуть длинное сообщение' : 'Развернуть длинное сообщение';
     expandBtn.setAttribute('aria-label', expandBtn.title);
     if(expanded) msg.scrollIntoView({behavior:'smooth', block:'nearest'});
