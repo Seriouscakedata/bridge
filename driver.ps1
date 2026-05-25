@@ -236,6 +236,7 @@ $Task
 - [SYSTEM] -- объективные события от драйвера.
 - У вас полный доступ: чтение/запись файлов где угодно и запуск команд. Будь аккуратен с необратимыми действиями (удаление, перезапись, сеть).
 - Чтобы прислать файл/скриншот пользователю в чат, помести в ответ отдельной строкой маркер `[[FILE: C:\полный\путь]]` (можно несколько).
+- ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
@@ -668,9 +669,21 @@ while ($true) {
       $evidenceSources += $source
     }
   }
+  # [[REMEMBER: fact]] -> agent deliberately pushes a durable memory (no gate -- the agent chose).
+  $rememberPattern = '(?m)^\s*\[\[REMEMBER:\s*(.+?)\s*\]\]\s*$'
+  $rememberedFacts = @()
+  foreach ($m in [regex]::Matches($reply, $rememberPattern)) {
+    $fact = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($fact)) { continue }
+    try {
+      $rid = Add-Memory -Text $fact -Tags @('explicit', $speaker) -Source ('explicit:' + $speaker) -Importance 0.75
+      if ($rid) { $rememberedFacts += $fact }
+    } catch {}
+  }
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
@@ -683,6 +696,7 @@ while ($true) {
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
   foreach ($source in $evidenceSources) { Add-Message -From system -Text "📊 Evidence записан: $source" -Kind event | Out-Null }
+  foreach ($rf in $rememberedFacts) { Add-Message -From system -Text "🧠 Запомнено агентом: $rf" -Kind event | Out-Null }
 
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
