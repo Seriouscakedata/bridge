@@ -247,8 +247,22 @@ function Next-Speaker {
   return 'claude'
 }
 
+function Get-TaskTopic {
+  param([string]$TaskText, [int]$MaxLen = 55)
+  $clean = ($TaskText -replace '[\r\n]+', ' ' -replace '\s+', ' ').Trim()
+  if ($clean.Length -le $MaxLen) { return $clean }
+  return ($clean.Substring(0, $MaxLen).TrimEnd() + '...')
+}
+
 function Get-AgentStatusText {
-  param([string]$Speaker, [string]$Mode)
+  param([string]$Speaker, [string]$Mode, [string]$TaskText = '')
+  $topic = if ($TaskText) { Get-TaskTopic $TaskText } else { '' }
+  if ($topic) {
+    if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return "Claude обдумывает план: «$topic»" }
+    if ($Speaker -eq 'claude') { return "Claude планирует: «$topic»" }
+    if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return "Codex оценивает идею: «$topic»" }
+    if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
+  }
   if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет следующий шаг.' }
   if ($Speaker -eq 'claude') { return 'Claude анализирует задачу и выбирает следующий шаг.' }
   if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex оценивает план, риски и варианты без изменения файлов.' }
@@ -257,19 +271,26 @@ function Get-AgentStatusText {
 }
 
 function Get-AgentPhaseStatusText {
-  param([string]$Speaker, [string]$Mode, [string]$Phase)
-  $who = if ($Speaker -eq 'claude') { 'Claude' } elseif ($Speaker -eq 'codex') { 'Codex' } else { 'агент' }
+  param([string]$Speaker, [string]$Mode, [string]$Phase, [string]$TaskText = '')
+  $who   = if ($Speaker -eq 'claude') { 'Claude' } elseif ($Speaker -eq 'codex') { 'Codex' } else { 'агент' }
+  $topic = if ($TaskText) { Get-TaskTopic $TaskText } else { '' }
   switch ($Phase) {
-    'summary' { return "Драйвер проверяет объём истории перед ходом $who." }
-    'prompt'  { return "Драйвер готовит свежий контекст для $who." }
+    'summary' { return "Проверяю историю диалога перед ходом $who..." }
+    'prompt'  { return "Готовлю контекст и промпт для $who..." }
     'invoke'  {
+      if ($topic) {
+        if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return "Codex оценивает идею: «$topic»" }
+        if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
+        if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return "Claude обдумывает план: «$topic»" }
+        return "Claude планирует: «$topic»"
+      }
       if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex читает контекст и отвечает без изменения файлов.' }
       if ($Speaker -eq 'codex') { return 'Codex работает с файлами и командами.' }
       if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет план.' }
       return 'Claude анализирует задачу и выбирает следующий шаг.'
     }
-    'post'    { return "Драйвер обрабатывает ответ $who и вложения." }
-    default   { return Get-AgentStatusText -Speaker $Speaker -Mode $Mode }
+    'post'    { return "Обрабатываю ответ $who, проверяю вложения..." }
+    default   { return Get-AgentStatusText -Speaker $Speaker -Mode $Mode -TaskText $TaskText }
   }
 }
 
@@ -340,19 +361,19 @@ while ($true) {
   $speaker = if ($tt -eq 0) { 'claude' } else { Next-Speaker }
   $plannerModel = Get-PlannerModel -TaskText $task -Mode $mode
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
-  $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode
+  $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 
-  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'summary')
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'summary' -TaskText $task)
   Update-ContextSummary   # compress old history if it grew beyond the hot window
-  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt')
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt' -TaskText $task)
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
-  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke')
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel }
   else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
-  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post')
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post' -TaskText $task)
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
   $attachmentMetas = @()
   $failedAttachmentPaths = @()
