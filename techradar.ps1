@@ -173,7 +173,7 @@ function Write-RadarDigestFiles {
   }
   [System.IO.File]::WriteAllText((Get-RadarDigestPath), (($lines.ToArray() -join "`n") + "`n"), $Utf8NoBom)
 
-  $jsonLine = ($Run | ConvertTo-Json -Compress -Depth 12)
+  $jsonLine = ($Run | ConvertTo-Json -Compress -Depth 8)
   $hist = Get-RadarHistoryPath
   if (Test-Path -LiteralPath $hist) {
     Add-Content -LiteralPath $hist -Value $jsonLine -Encoding UTF8

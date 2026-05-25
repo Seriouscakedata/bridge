@@ -528,25 +528,9 @@ function renderRadar(){
       `</div>`+
       `<div class="radar-title"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.title||'Без заголовка')}</a></div>`+
       `<div class="radar-summary">${esc(it.summary||'')}</div>`+
-      `<div class="radar-link"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.link||'')}</a></div>`+
-      `<div class="row"><button class="primary addRadarBtn" type="button">→ в бэклог</button><span class="spacer"></span></div>`;
-    card.querySelector('.addRadarBtn').addEventListener('click', async e=>{
-      const b = e.currentTarget;
-      b.disabled = true; b.textContent = 'добавляю…';
-      try{
-        const r = await api('/api/radar/backlog',{method:'POST',body:JSON.stringify({id:it.id, link:it.link})});
-        if(r.ok){
-          toast(r.duplicate ? 'Уже есть в бэклоге' : 'Добавлено в бэклог', 'ok');
-          b.textContent = r.duplicate ? 'уже в бэклоге' : 'добавлено';
-        }else{
-          toast('Ошибка: '+(r.error||''), 'bad');
-          b.disabled = false; b.textContent = '→ в бэклог';
-        }
-      }catch(err){
-        toast('Ошибка: '+err, 'bad');
-        b.disabled = false; b.textContent = '→ в бэклог';
-      }
-    });
+      `<div class="radar-link"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.link||'')}</a></div>`;
+    // Passive digest: radar is FYI only. No "add to backlog" CTA — the user is never asked
+    // to read/triage articles, and web content is never routed into actionable items.
     g.appendChild(card);
   }
 }

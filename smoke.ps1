@@ -14,6 +14,24 @@ foreach ($f in $ps1s) {
     if ($errs.Count -gt 0) { $failed += "PARSE: $($f.Name) ($($errs.Count) err)" }
 }
 
+# 1b. Footgun lint -- ETS string -> ConvertTo-Json OOM (the /api/radar incident, 2026-05-25).
+#     `Get-Content -Raw` attaches ETS PSProvider/PSDrive note-props to the returned string;
+#     serializing it with a high ConvertTo-Json -Depth recurses into provider object graphs and
+#     OOM-crashes the host (~70GB zombie powershell). Convention: read JSON-bound text with
+#     [IO.File]::ReadAllText (or "" + $s), return flat DTOs, keep ConvertTo-Json -Depth <= 10.
+$lintFiles = @(Get-ChildItem (Join-Path $b 'lib') -Filter *.ps1 -ErrorAction SilentlyContinue)
+$lintFiles += @(Get-ChildItem $b -Filter *.ps1 -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'smoke.ps1' })
+foreach ($lf in ($lintFiles | Sort-Object FullName -Unique)) {
+    $lines = @()
+    try { $lines = [System.IO.File]::ReadAllLines($lf.FullName) } catch {}
+    foreach ($ln in $lines) {
+        if ($ln.TrimStart().StartsWith('#')) { continue }   # skip comment lines (docs may mention the pattern)
+        $dm = [regex]::Match($ln, 'ConvertTo-Json[^|]*?-Depth\s+(\d+)')
+        if ($dm.Success -and [int]$dm.Groups[1].Value -ge 12) { $failed += "LINT: $($lf.Name): ConvertTo-Json -Depth $($dm.Groups[1].Value) (>=12 OOM risk; use <=10 + flat DTO)" }
+        if ($ln -match 'Get-Content[^|]*-Raw[^|]*\|\s*ConvertTo-Json') { $failed += "LINT: $($lf.Name): Get-Content -Raw piped into ConvertTo-Json (ETS OOM; use ReadAllText)" }
+    }
+}
+
 # 2. Auth (same pattern as watchdog)
 $pw = $null
 $usr = 'timur'
@@ -49,6 +67,12 @@ if ($m -ne 200) { $failed += "HTTP /api/memory = $m" }
 # 5. Mini-task: /api/messages (exercises conversation store, read-only)
 $ms = Probe 'http://localhost:8787/api/messages'
 if ($ms -ne 200) { $failed += "HTTP /api/messages = $ms" }
+
+# 6. /api/radar + /api/plan -- the endpoints that crashed the host; a fast 200 proves no OOM hang
+$rd = Probe 'http://localhost:8787/api/radar'
+if ($rd -ne 200) { $failed += "HTTP /api/radar = $rd" }
+$pl = Probe 'http://localhost:8787/api/plan'
+if ($pl -ne 200) { $failed += "HTTP /api/plan = $pl" }
 
 # Result
 if ($failed.Count -eq 0) {

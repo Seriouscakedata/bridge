@@ -304,11 +304,11 @@ try {
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/plan') {
         $p = Get-PlanForApi
-        Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 12) 'application/json; charset=utf-8'
+        Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
         $r = Get-RadarDigestForApi
-        Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 12) 'application/json; charset=utf-8'
+        Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/radar/run') {
         $rf = Join-Path $root 'techradar.ps1'

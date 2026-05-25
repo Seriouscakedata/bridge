@@ -25,6 +25,25 @@ function Kill-Bridge {
     Where-Object { $_.CommandLine -like '*\server.ps1*' -or $_.CommandLine -like '*\driver.ps1*' } |
     ForEach-Object { taskkill /PID $_.ProcessId /F /T 2>$null | Out-Null }
 }
+function Reap-Bloated {
+  # Memory-leak guard: kill any bridge server/driver powershell whose PRIVATE memory exceeds the
+  # cap. A runaway (e.g. the /api/radar ConvertTo-Json OOM that spawned 50-70GB zombie powershell)
+  # never recovers and strangles the whole machine. The loop below then restarts a fresh one.
+  # The supervisor is ELEVATED, so it CAN kill these (a non-elevated watchdog cannot). Match by
+  # PRIVATE memory (zombies had small working sets but 70GB private). /F only (no /T) to spare
+  # any codex children. Cap 8GB: no healthy bridge powershell ever approaches this.
+  try {
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+      Where-Object { $_.CommandLine -like '*\server.ps1*' -or $_.CommandLine -like '*\driver.ps1*' } |
+      ForEach-Object {
+        $priv = 0; try { $priv = [int64](Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).PrivateMemorySize64 } catch {}
+        if ($priv -gt 8GB) {
+          Log ("REAP: bloated PID " + $_.ProcessId + " private=" + [int]($priv/1MB) + "MB > 8GB -> kill (mem-leak guard)")
+          taskkill /PID $_.ProcessId /F 2>$null | Out-Null
+        }
+      }
+  } catch { Log ("reap error: " + $_.Exception.Message) }
+}
 function Start-Srv {
   Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'server.ps1') `
     -NoNewWindow -PassThru -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
@@ -42,6 +61,7 @@ Add-Message -From system -Text "Супервизор запущен (elevated). 
 
 while ($true) {
   try {
+    Reap-Bloated
     if (Test-Path $flagStop) {
       Remove-Item $flagStop -Force -ErrorAction SilentlyContinue
       Log "stop flag -> exit"; Kill-Bridge; break

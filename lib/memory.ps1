@@ -53,7 +53,7 @@ function Get-MemoryConfig {
 function Invoke-GeminiApi {
   param([string]$Url, $BodyObj, [int]$TimeoutSec = 60)
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  $json  = $BodyObj | ConvertTo-Json -Depth 12
+  $json  = $BodyObj | ConvertTo-Json -Depth 8
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   return Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec
 }
