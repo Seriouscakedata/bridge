@@ -147,15 +147,16 @@
   #moreMenu{display:none}
   #searchToggle{order:1}
   #overviewToggle{order:2}
-  #memoryBtn{order:3}
-  #exportChat{order:4}
-  #exportMarkdown{order:5}
-  #compactToggle{order:6}
-  #systemToggle{order:7}
-  #pauseToggle{order:8}
-  #restart{order:9}
-  #kill{order:10}
-  #moreMenu{order:11}
+  #planToggle{order:3}
+  #memoryBtn{order:4}
+  #exportChat{order:5}
+  #exportMarkdown{order:6}
+  #compactToggle{order:7}
+  #systemToggle{order:8}
+  #pauseToggle{order:9}
+  #restart{order:10}
+  #kill{order:11}
+  #moreMenu{order:12}
   .header-toggle-btn{
     justify-self:end;
     align-self:center;
@@ -309,7 +310,8 @@
   .health-banner.bad .health-title{color:#ffd7da}
   body.has-health-banner #scrollProgress{top:174px}
 
-  #overviewPanel{
+  #overviewPanel,
+  #planPanel{
     position:fixed;
     top:148px;
     right:16px;
@@ -329,20 +331,27 @@
     overflow:auto;
   }
   body.overview-open #overviewPanel{display:flex}
-  body.has-health-banner #overviewPanel{top:188px}
-  #searchPanel.open ~ #overviewPanel{top:198px}
-  body.has-health-banner #searchPanel.open ~ #overviewPanel{top:238px}
+  body.plan-open #planPanel{display:flex}
+  body.has-health-banner #overviewPanel,
+  body.has-health-banner #planPanel{top:188px}
+  #searchPanel.open ~ #overviewPanel,
+  #searchPanel.open ~ #planPanel{top:198px}
+  body.has-health-banner #searchPanel.open ~ #overviewPanel,
+  body.has-health-banner #searchPanel.open ~ #planPanel{top:238px}
   @media (min-width:1360px){
-    body.overview-open #log{padding-right:calc(var(--content-pad) + 344px)}
+    body.overview-open #log,
+    body.plan-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
-    #overviewPanel{
+    #overviewPanel,
+    #planPanel{
       right:12px;
       width:min(320px,calc(100vw - 24px));
       background:rgba(18,22,29,.96);
     }
   }
   #overviewToggle.on{border-color:rgba(114,183,255,.64);color:#b9dcff;background:#172333}
+  #planToggle.on{border-color:rgba(104,211,145,.6);color:#c2f5d3;background:#14251b}
   .overview-head{
     display:flex;
     align-items:center;
@@ -483,6 +492,106 @@
     font-size:12px;
     background:#101720;
   }
+  .plan-progress-box{
+    padding:10px;
+    background:#101720;
+  }
+  .plan-progress-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.3;
+  }
+  .plan-progress-row b{font-size:18px;color:var(--txt);font-variant-numeric:tabular-nums}
+  .plan-meter{
+    height:8px;
+    margin-top:9px;
+    border-radius:999px;
+    overflow:hidden;
+    background:#0b1016;
+    border:1px solid var(--border-soft);
+  }
+  .plan-meter span{
+    display:block;
+    height:100%;
+    width:0%;
+    border-radius:999px;
+    background:linear-gradient(90deg, var(--codex), var(--user));
+    transition:width .22s ease;
+  }
+  .plan-current{
+    margin-top:10px;
+    padding:8px 9px;
+    border:1px solid rgba(104,211,145,.18);
+    border-radius:8px;
+    background:rgba(104,211,145,.07);
+    color:#cdebd8;
+    font-size:12px;
+    line-height:1.35;
+  }
+  .plan-current b{color:#e8fff0}
+  .plan-tree{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    background:var(--border-soft);
+  }
+  .plan-branch{background:#101720}
+  .plan-branch summary{list-style:none}
+  .plan-branch summary::-webkit-details-marker{display:none}
+  .plan-node{
+    --depth:0;
+    width:100%;
+    min-width:0;
+    padding:9px 9px 9px calc(9px + (var(--depth) * 14px));
+    background:#101720;
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr);
+    gap:8px;
+    align-items:start;
+    color:var(--soft);
+    font-size:12px;
+    line-height:1.3;
+  }
+  .plan-branch > summary.plan-node{cursor:pointer}
+  .plan-branch > summary.plan-node:hover,
+  .plan-node:hover{background:#151d28}
+  .plan-node.current{
+    background:#132018;
+    box-shadow:inset 3px 0 0 var(--codex);
+  }
+  .plan-icon{width:18px;text-align:center;line-height:1.25}
+  .plan-main{min-width:0}
+  .plan-top{
+    display:flex;
+    min-width:0;
+    gap:6px;
+    align-items:baseline;
+  }
+  .plan-id{
+    flex:none;
+    color:#89a0ba;
+    font-family:Consolas,"Cascadia Mono",monospace;
+    font-size:11px;
+  }
+  .plan-title{
+    min-width:0;
+    color:var(--txt);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .plan-meta{
+    margin-top:3px;
+    color:var(--muted);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .plan-branch:not([open]) .plan-children{display:none}
 
   #log{
     position:relative;
@@ -1238,9 +1347,10 @@
     .btns{grid-column:1 / -1;justify-content:flex-start;flex-wrap:wrap}
   }
   @media (max-width:1180px){
-    body.overview-open #log{padding-right:var(--content-pad)}
-    #overviewPanel{display:none!important}
-    #overviewToggle{display:none}
+    body.overview-open #log,
+    body.plan-open #log{padding-right:var(--content-pad)}
+    #overviewPanel,#planPanel{display:none!important}
+    #overviewToggle,#planToggle{display:none}
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1305,7 +1415,8 @@
     .btns-secondary.open .sec-label{display:inline}
     .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
     .btns-secondary button.icon{height:auto}
-    #btnsSecondary #overviewToggle{display:none}
+    #btnsSecondary #overviewToggle,
+    #btnsSecondary #planToggle{display:none}
     #inp{max-height:40vh}
     .filterbar{padding:7px 10px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
     .filterbar::-webkit-scrollbar{display:none}
@@ -1418,6 +1529,7 @@
     <button id="moreMenu" class="icon" type="button" title="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
     <div class="btns-secondary" id="btnsSecondary">
       <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦ <span class="sec-label">Обзор</span></button>
+      <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
       <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
       <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
       <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
@@ -1504,6 +1616,30 @@
   </section>
 </aside>
 
+<aside id="planPanel" aria-label="План-доска" aria-hidden="true">
+  <div class="overview-head">
+    <strong>План</strong>
+    <button id="planClose" class="mini-btn overview-close" type="button" title="Скрыть план" aria-label="Скрыть план">×</button>
+  </div>
+  <section class="overview-section" aria-label="Прогресс плана">
+    <h2>Прогресс</h2>
+    <div class="plan-progress-box">
+      <div class="plan-progress-row">
+        <span id="planProgressText">План-доска пуста</span>
+        <b id="planProgressPct">0%</b>
+      </div>
+      <div class="plan-meter" aria-hidden="true"><span id="planProgressFill"></span></div>
+      <div id="planCurrent" class="plan-current">Текущий шаг не выбран</div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Дерево плана">
+    <h2>Дерево</h2>
+    <div id="planTree" class="plan-tree">
+      <div class="overview-empty">План-доска пуста</div>
+    </div>
+  </section>
+</aside>
+
 <div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
 <button id="toBottom" class="scroll-jump" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
@@ -1552,6 +1688,7 @@ let lastRenderedDay = '';
 let unreadMarker = null;
 let pollInFlight = false;
 let statusInFlight = false;
+let planInFlight = false;
 let connectionFailures = 0;
 let activeAgentLabel = '';
 let systemGroupsExpanded = new Set();
@@ -1595,6 +1732,14 @@ const overviewPanel = document.getElementById('overviewPanel');
 const overviewClose = document.getElementById('overviewClose');
 const overviewRecent = document.getElementById('overviewRecent');
 const overviewFavorites = document.getElementById('overviewFavorites');
+const planToggle = document.getElementById('planToggle');
+const planPanel = document.getElementById('planPanel');
+const planClose = document.getElementById('planClose');
+const planProgressText = document.getElementById('planProgressText');
+const planProgressPct = document.getElementById('planProgressPct');
+const planProgressFill = document.getElementById('planProgressFill');
+const planCurrent = document.getElementById('planCurrent');
+const planTree = document.getElementById('planTree');
 const exportChatBtn = document.getElementById('exportChat');
 const exportMarkdownBtn = document.getElementById('exportMarkdown');
 const searchPanel = document.getElementById('searchPanel');
@@ -1654,6 +1799,8 @@ if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter
 let overviewOpen = localStorage.getItem('bridgeOverview') === null
   ? window.innerWidth >= 1360
   : localStorage.getItem('bridgeOverview') !== '0';
+let planOpen = localStorage.getItem('bridgePlan') === '1';
+if(overviewOpen && planOpen) planOpen = false;
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
@@ -1817,6 +1964,136 @@ function applyOverviewState(){
     overviewToggle.title = enabled ? 'Скрыть обзор сеанса' : 'Показать обзор сеанса';
   }
   requestAnimationFrame(updateBottomButton);
+}
+function applyPlanState(){
+  const enabled = Boolean(planOpen && window.innerWidth > 1180);
+  document.body.classList.toggle('plan-open', enabled);
+  if(planPanel) planPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(planToggle){
+    planToggle.classList.toggle('on', enabled);
+    planToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    planToggle.title = enabled ? 'Скрыть план-доску' : 'Показать план-доску';
+  }
+  requestAnimationFrame(updateBottomButton);
+}
+function normalizePlanStatus(status){
+  const s = String(status || 'pending').trim().toLowerCase();
+  return ['pending','in_progress','done','blocked','skipped'].includes(s) ? s : 'pending';
+}
+function planStatusIcon(status){
+  return {
+    pending:'⬜',
+    in_progress:'🔄',
+    done:'✅',
+    blocked:'⛔',
+    skipped:'⤬'
+  }[normalizePlanStatus(status)] || '⬜';
+}
+function planNodeArray(data){
+  return data && Array.isArray(data.nodes) ? data.nodes : [];
+}
+function getCurrentPlanStep(nodes){
+  const statusById = new Map();
+  nodes.forEach(n => statusById.set(String(n.id || ''), normalizePlanStatus(n.status)));
+  for(const node of nodes){
+    if(String(node.type || '') !== 'step') continue;
+    const status = normalizePlanStatus(node.status);
+    if(status !== 'pending' && status !== 'in_progress') continue;
+    const deps = Array.isArray(node.deps) ? node.deps : [];
+    const ready = deps.every(dep => statusById.get(String(dep || '')) === 'done');
+    if(ready) return node;
+  }
+  return null;
+}
+function planNodeBody(node){
+  const type = String(node.type || '').toUpperCase();
+  const id = String(node.id || '');
+  const title = String(node.title || id || type || 'узел');
+  const meta = [];
+  if(node.criteria) meta.push('критерий: ' + String(node.criteria));
+  if(Array.isArray(node.deps) && node.deps.length) meta.push('deps: ' + node.deps.map(v => String(v)).join(', '));
+  if(node.result) meta.push(String(node.result));
+  return '<span class="plan-icon" aria-hidden="true">' + planStatusIcon(node.status) + '</span>' +
+    '<span class="plan-main">' +
+      '<span class="plan-top"><span class="plan-id">' + esc(id || type) + '</span><span class="plan-title">' + esc(title) + '</span></span>' +
+      (meta.length ? '<span class="plan-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
+    '</span>';
+}
+function renderPlanTree(nodes, current){
+  const byId = new Map();
+  const childrenByParent = new Map();
+  nodes.forEach(node => {
+    const id = String(node.id || '');
+    if(id) byId.set(id, node);
+  });
+  nodes.forEach(node => {
+    const parent = node.parent == null ? '' : String(node.parent);
+    if(!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+    childrenByParent.get(parent).push(node);
+  });
+  const emitted = new Set();
+  const currentId = current ? String(current.id || '') : '';
+  const renderNode = (node, depth) => {
+    const id = String(node.id || '');
+    if(emitted.has(id)) return '';
+    emitted.add(id);
+    const type = String(node.type || '');
+    const children = childrenByParent.get(id) || [];
+    const cls = 'plan-node ' + escAttr(type) + (id && id === currentId ? ' current' : '');
+    const style = ' style="--depth:' + Math.max(0, depth) + '"';
+    if(children.length && type !== 'step'){
+      return '<details class="plan-branch" open>' +
+        '<summary class="' + cls + '"' + style + '>' + planNodeBody(node) + '</summary>' +
+        '<div class="plan-children">' + children.map(child => renderNode(child, depth + 1)).join('') + '</div>' +
+      '</details>';
+    }
+    return '<div class="' + cls + '"' + style + '>' + planNodeBody(node) + '</div>';
+  };
+  const roots = nodes.filter(node => {
+    const parent = node.parent == null ? '' : String(node.parent);
+    return !parent || !byId.has(parent);
+  });
+  let html = roots.map(node => renderNode(node, 0)).join('');
+  const rest = nodes.filter(node => !emitted.has(String(node.id || ''))).map(node => renderNode(node, 0)).join('');
+  html += rest;
+  return html || '<div class="overview-empty">План-доска пуста</div>';
+}
+function renderPlan(data){
+  if(!planTree) return;
+  const nodes = planNodeArray(data);
+  const progress = data && data.progress ? data.progress : {total:0, done:0, percent:0};
+  const total = Number(progress.total) || 0;
+  const done = Number(progress.done) || 0;
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const hasPlan = Boolean(data && data.meta && nodes.length);
+  if(planProgressText) planProgressText.textContent = hasPlan ? (done + '/' + total + ' ' + pluralRu(total, 'шаг', 'шага', 'шагов')) : 'План-доска пуста';
+  if(planProgressPct) planProgressPct.textContent = percent + '%';
+  if(planProgressFill) planProgressFill.style.width = percent + '%';
+  if(!hasPlan){
+    if(planCurrent) planCurrent.textContent = 'Текущий шаг не выбран';
+    planTree.innerHTML = '<div class="overview-empty">План-доска пуста</div>';
+    return;
+  }
+  const current = getCurrentPlanStep(nodes);
+  if(planCurrent){
+    planCurrent.innerHTML = current
+      ? '<b>Текущий шаг:</b> ' + esc(String(current.id || '')) + ' — ' + esc(String(current.title || '')) +
+        (current.criteria ? '<br><span>критерий: ' + esc(String(current.criteria)) + '</span>' : '')
+      : 'Нет доступных pending/in_progress шагов';
+  }
+  planTree.innerHTML = renderPlanTree(nodes, current);
+}
+async function pollPlan(){
+  if(planInFlight) return;
+  planInFlight = true;
+  try{
+    const data = await fetchJson('/api/plan');
+    renderPlan(data);
+  }catch(e){
+    if(planTree) planTree.innerHTML = '<div class="overview-empty">План недоступен: ' + esc(e.message || e) + '</div>';
+  }finally{
+    planInFlight = false;
+  }
 }
 function overviewText(msg){
   if(!msg) return '';
@@ -3430,6 +3707,11 @@ searchToggle.addEventListener('click', () => {
 });
 overviewToggle.addEventListener('click', () => {
   overviewOpen = !(document.body.classList.contains('overview-open'));
+  if(overviewOpen){
+    planOpen = false;
+    localStorage.setItem('bridgePlan', '0');
+    applyPlanState();
+  }
   localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
   applyOverviewState();
 });
@@ -3438,6 +3720,26 @@ overviewClose.addEventListener('click', () => {
   localStorage.setItem('bridgeOverview', '0');
   applyOverviewState();
 });
+if(planToggle){
+  planToggle.addEventListener('click', () => {
+    planOpen = !(document.body.classList.contains('plan-open'));
+    if(planOpen){
+      overviewOpen = false;
+      localStorage.setItem('bridgeOverview', '0');
+      applyOverviewState();
+    }
+    localStorage.setItem('bridgePlan', planOpen ? '1' : '0');
+    applyPlanState();
+    pollPlan();
+  });
+}
+if(planClose){
+  planClose.addEventListener('click', () => {
+    planOpen = false;
+    localStorage.setItem('bridgePlan', '0');
+    applyPlanState();
+  });
+}
 exportChatBtn.addEventListener('click', exportChat);
 exportMarkdownBtn.addEventListener('click', exportMarkdown);
 compactToggle.addEventListener('click', () => {
@@ -3597,6 +3899,12 @@ window.addEventListener('keydown', e => {
     closeSearch();
     return;
   }
+  if(e.key === 'Escape' && document.body.classList.contains('plan-open')){
+    planOpen = false;
+    localStorage.setItem('bridgePlan', '0');
+    applyPlanState();
+    return;
+  }
   if(e.key === 'Escape' && btnsSecondary && btnsSecondary.classList.contains('open')){
     setMoreMenuOpen(false);
     return;
@@ -3610,6 +3918,7 @@ window.addEventListener('keydown', e => {
 window.addEventListener('hashchange', () => focusHashTarget(true));
 window.addEventListener('resize', () => {
   applyOverviewState();
+  applyPlanState();
   resizeInput();
 });
 
@@ -3617,6 +3926,7 @@ scrubCredentialedUrl();
 input.value = localStorage.getItem(DRAFT_KEY) || '';
 applyViewPrefs();
 applyOverviewState();
+applyPlanState();
 applyHeaderCollapsed();
 applyComposerExpanded();
 applyMessageFilter();
@@ -3626,8 +3936,10 @@ updateComposerMeta();
 updateSendState();
 poll();
 status();
+pollPlan();
 setInterval(poll, 1500);
 setInterval(status, 1200);
+setInterval(pollPlan, 3000);
 setInterval(refreshTimes, 30000);
 </script>
 </body>

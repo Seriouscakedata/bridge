@@ -13,6 +13,8 @@ sandbox/
 memory/
 jobs/
 backlog.jsonl
+plan.jsonl
+plan.archive.jsonl
 reflect.last
 *.log
 *.tmp.*
