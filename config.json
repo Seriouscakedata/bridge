@@ -40,6 +40,6 @@
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
   },
-  "radarEveryHours": 1000000,
+  "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }
