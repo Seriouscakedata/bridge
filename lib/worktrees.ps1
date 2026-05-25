@@ -16,6 +16,7 @@ function New-Worktree {
   # Create an isolated worktree on a new branch off HEAD inside $RepoRoot/.bridge-wt/<Name>.
   # Returns @{ repo; branch; path } or $null. Use for a project repo OR the bridge repo.
   param([string]$RepoRoot, [string]$Name)
+  $ErrorActionPreference = 'Continue'   # git writes progress to stderr; don't let it throw under EAP=Stop
   if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path (Join-Path $RepoRoot '.git'))) { return $null }
   $git = Get-GitExe
   $safe = ([string]$Name) -replace '[^A-Za-z0-9_.-]+','-'
@@ -33,6 +34,7 @@ function Merge-Worktree {
   # Commit any changes in the worktree, then merge its branch into the repo's current branch.
   # Returns @{ ok; conflict; committed }. On conflict, aborts the merge (no half-merged state).
   param($Wt, [string]$Message = 'bridge: merge worktree')
+  $ErrorActionPreference = 'Continue'
   $git = Get-GitExe
   $committed = $false
   try {
@@ -49,6 +51,7 @@ function Merge-Worktree {
 function Remove-Worktree {
   # Tear down a worktree and delete its branch. Safe to call even if already gone.
   param($Wt)
+  $ErrorActionPreference = 'Continue'
   $git = Get-GitExe
   try { & $git -C $Wt.repo worktree remove --force $Wt.path 2>&1 | Out-Null } catch {}
   try { & $git -C $Wt.repo branch -D $Wt.branch 2>&1 | Out-Null } catch {}

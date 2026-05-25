@@ -347,3 +347,5 @@ try { . (Join-Path $PSScriptRoot 'settings.ps1') } catch { Write-Warning "settin
 try { . (Join-Path $PSScriptRoot 'jobs.ps1') } catch { Write-Warning "jobs.ps1 failed to load: $($_.Exception.Message)" }
 # Worktree isolation primitives (foundation for parallel workers + sandbox).
 try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "worktrees.ps1 failed to load: $($_.Exception.Message)" }
+# Parallel worker orchestration (run sub-tasks concurrently in worktrees, merge back).
+try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
