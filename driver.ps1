@@ -975,7 +975,7 @@ while ($true) {
       Update-State ({ param($s) $s.study_phase=$nextPhase }.GetNewClosure()) | Out-Null
     } elseif ($turnNow -ge ($studyMaxTurns - 1)) {
       Update-State { param($s) $s.study_phase='synthesis' } | Out-Null
-    } elseif ($curPhase -match '^gather' -and $turnNow -ge 3) {
+    } elseif ($curPhase -match '^gather' -and $turnNow -ge 2) {
       Update-State { param($s) $s.study_phase='synthesis' } | Out-Null
     }
   }
