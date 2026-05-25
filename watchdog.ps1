@@ -27,6 +27,15 @@ function Promote-Stable {
     $epoch0 = [datetime]'1970-01-01T00:00:00Z'
     $nowEpoch = [int]((Get-Date).ToUniversalTime() - $epoch0.ToUniversalTime()).TotalSeconds
     if ($headEpoch -gt 0 -and ($nowEpoch - $headEpoch) -ge ($promoteMin * 60)) {
+      $smokeScript = Join-Path $b 'smoke.ps1'
+      if (Test-Path $smokeScript) {
+        $smokeOut = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $smokeScript 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          WLog ("smoke FAILED - not promoting: " + ($smokeOut -join '; '))
+          Pop-Location; return
+        }
+        WLog ("smoke OK - " + ($smokeOut -join ' '))
+      }
       & $git branch -f stable HEAD 2>$null
       WLog "stable advanced to $head (healthy >= $promoteMin min)"
     }
