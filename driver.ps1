@@ -18,8 +18,9 @@ $loopDelay  = [int]$cfg.loopDelaySeconds
 $idlePoll   = if ($cfg.idlePollSeconds) { [int]$cfg.idlePollSeconds } else { 3 }
 $fullContext    = if ($cfg.fullContextCount) { [int]$cfg.fullContextCount } else { 20 }
 $summarizeBatch = if ($cfg.summarizeBatch)   { [int]$cfg.summarizeBatch }   else { 15 }
-$triageModel    = if ($cfg.triageModel) { [string]$cfg.triageModel } else { 'sonnet' }
-$deepModel      = if ($cfg.deepModel)   { [string]$cfg.deepModel }   else { 'opus' }
+$triageModel       = if ($cfg.triageModel)       { [string]$cfg.triageModel }       else { 'sonnet' }
+$deepModel         = if ($cfg.deepModel)         { [string]$cfg.deepModel }         else { 'opus' }
+$discussMinTurns   = if ($cfg.discussMinTurns)   { [int]$cfg.discussMinTurns }      else { 6 }
 
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
@@ -102,6 +103,7 @@ function Format-Transcript {
 function Build-Prompt {
   param([string]$Role, [string]$Task, [string]$Mode = 'normal')
   $transcript = Format-Transcript
+  $dt = [int](Read-State).discuss_turn
   $shared = @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
 Рабочий корень: $workRoot
@@ -128,7 +130,7 @@ $Task
 $transcript
 "@
   if ($Role -eq 'claude') {
-    $suffix = @"
+    $claudeBase = @"
 
 ТВОЙ ХОД как ПЛАНИРОВЩИК (Claude). У тебя есть инструменты Read/Grep/Glob и Bash (можешь САМ выполнять команды). Реши, как действовать, и заверши ответ ПОСЛЕДНЕЙ отдельной строкой -- только маркер STATUS.
 
@@ -148,11 +150,23 @@ $transcript
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 "@
+    if ($Mode -eq 'discuss') {
+      $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt / минимум $discussMinTurns): ты ведёшь настоящую дискуссию, не просто принимаешь аргументы. Отвечай на возражения Codex по существу — прими или оспорь каждый конкретный аргумент с обоснованием. Не суммируй позиции без ответа на критику. STATUS: DONE разрешён ТОЛЬКО когда ходов >= $discussMinTurns И все ключевые разногласия исчерпаны. Иначе — STATUS: DISCUSS с новым вопросом или тезисом."
+      $suffix = $claudeBase + $discussNote
+    } else {
+      $suffix = $claudeBase
+    }
   } elseif ($Mode -eq 'discuss') {
     $suffix = @"
 
-ТВОЙ ХОД как СОБЕСЕДНИК (Codex), на равных с Claude. Это ОБСУЖДЕНИЕ идеи, НЕ выполнение.
-Разбери последний тезис/вопрос Claude по существу: найди слабые места и риски, предложи улучшения/компромиссы/альтернативы, при необходимости задай уточняющий вопрос. НЕ меняй файлы (можешь читать код/материалы для аргументов). Кратко, по делу, по-русски.
+ТВОЙ ХОД как ОППОНЕНТ (Codex) — раунд $dt из $discussMinTurns минимум.
+Это НАСТОЯЩАЯ ДИСКУССИЯ. Твоя роль — КРИТИЧЕСКИ проверять позицию Claude, не соглашаться по умолчанию.
+ОБЯЗАТЕЛЬНО в каждом ответе:
+  1. Укажи конкретный слабый пункт, риск или скрытое допущение в последнем аргументе Claude (не общий, а конкретный).
+  2. Предложи альтернативный подход или компромисс, реально отличающийся от предложенного Claude.
+  3. Задай уточняющий вопрос, если позиция Claude неполная или противоречивая.
+⚠ ЗАПРЕЩЕНО: соглашаться без конкретных аргументов; перефразировать слова Claude без возражений; писать «в целом согласен»; закрывать обсуждение (это роль Claude).
+Кратко, конкретно, по-русски. НЕ меняй файлы (читать код/материалы для аргументов — можно).
 "@
   } else {
     $suffix = @"
@@ -341,7 +355,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -356,7 +370,7 @@ while ($true) {
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -366,7 +380,7 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
-      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
@@ -408,7 +422,7 @@ while ($true) {
       continue
     } else {
       Add-Message -From system -Text "⏱ Таймаут $who повторился. Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -425,7 +439,7 @@ while ($true) {
         Add-Message -From codex -Text $preReply | Out-Null
       }
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -483,19 +497,38 @@ while ($true) {
     }
   }
 
+  $modeBeforeIncrement = $mode
   Update-State { param($s) $s.task_turn=[int]$s.task_turn+1; $s.turn=[int]$s.turn+1; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+  if ($modeBeforeIncrement -eq 'discuss') {
+    Update-State { param($s) $s.discuss_turn=[int]$s.discuss_turn+1 } | Out-Null
+  }
 
   $plannerStatus = 'CONTINUE'
   if ($speaker -eq 'claude') {
     $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE)\s*$')
     if ($statusHits.Count -gt 0) { $plannerStatus = $statusHits[$statusHits.Count - 1].Groups[1].Value.ToUpper() }
-    if ($plannerStatus -eq 'DISCUSS')      { Update-State { param($s) $s.task_mode='discuss' } | Out-Null }
-    elseif ($plannerStatus -eq 'CONTINUE') { Update-State { param($s) $s.task_mode='normal' } | Out-Null }
+    if ($plannerStatus -eq 'DISCUSS') {
+      if ($modeBeforeIncrement -ne 'discuss') {
+        Update-State { param($s) $s.task_mode='discuss'; $s.discuss_turn=0 } | Out-Null
+      } else {
+        Update-State { param($s) $s.task_mode='discuss' } | Out-Null
+      }
+    }
+    elseif ($plannerStatus -eq 'CONTINUE') { Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0 } | Out-Null }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
+  }
+  # Guard: block premature DONE in discuss mode
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'discuss') {
+    $dtNow = [int](Read-State).discuss_turn
+    if ($dtNow -lt $discussMinTurns) {
+      Add-Message -From system -Text "💬 Обсуждение продолжается ($dtNow/$discussMinTurns ходов). Claude, углубите дискуссию — не закрывайте тему раньше времени." -Kind event | Out-Null
+      $plannerStatus = 'DISCUSS'
+      Update-State { param($s) $s.task_mode='discuss' } | Out-Null
+    }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
@@ -507,12 +540,12 @@ while ($true) {
       } catch {}
     }
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
