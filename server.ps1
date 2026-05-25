@@ -169,6 +169,46 @@ try {
         $json = ([ordered]@{ ok = $true; attachment = $meta } | ConvertTo-Json -Compress -Depth 10)
         Send-Text $ctx $json 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/screenshot') {
+        $caption = ''
+        $postMessage = $true
+        if ($ctx.Request.ContentLength64 -gt 0) {
+          try {
+            $body = Read-Body $ctx | ConvertFrom-Json
+            $caption = [string]$body.text
+            if ($null -ne $body.PSObject.Properties['post']) { $postMessage = [bool]$body.post }
+          } catch {
+            $caption = ''
+          }
+        }
+        $toolPath = Join-Path $root 'tools\screenshot.ps1'
+        if (-not (Test-Path -LiteralPath $toolPath -PathType Leaf)) {
+          Send-Text $ctx '{"ok":false,"error":"screenshot tool missing"}' 'application/json; charset=utf-8' 500
+          continue
+        }
+        $shotOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $toolPath 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+          $err = 'screenshot failed: ' + (($shotOutput | Out-String).Trim())
+          $json = ([ordered]@{ ok = $false; error = $err } | ConvertTo-Json -Compress -Depth 5)
+          Send-Text $ctx $json 'application/json; charset=utf-8' 500
+          continue
+        }
+        $shotPath = [string]($shotOutput | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)
+        if (-not $shotPath) {
+          Send-Text $ctx '{"ok":false,"error":"screenshot path missing"}' 'application/json; charset=utf-8' 500
+          continue
+        }
+        $meta = Register-AttachmentPath -SourcePath ([string]$shotPath)
+        if (-not $meta) {
+          Send-Text $ctx '{"ok":false,"error":"screenshot attachment failed"}' 'application/json; charset=utf-8' 500
+          continue
+        }
+        $text = if ([string]::IsNullOrWhiteSpace($caption)) { 'Снимок экрана' } else { $caption }
+        $seq = $null
+        if ($postMessage) { $seq = Add-Message -From user -Text $text -Attachments @($meta) }
+        $json = ([ordered]@{ ok = $true; seq = $seq; attachment = $meta } | ConvertTo-Json -Compress -Depth 10)
+        Send-Text $ctx $json 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'POST' -and $path -eq '/api/control') {
         $body = Read-Body $ctx | ConvertFrom-Json
         $action = [string]$body.action
