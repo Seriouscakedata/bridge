@@ -1490,6 +1490,11 @@ function addMsg(m){
   const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
   const atts = msgAttachments(m);
   const rawText = String(m.text || '');
+  const copyParts = [rawText, ...atts.map(a => {
+    const name = String(a.name || 'file');
+    const url = String(a.url || '');
+    return url ? name + ': ' + location.origin + url : name;
+  })].filter(Boolean);
   const lineCount = rawText ? rawText.split(/\r\n|\r|\n/).length : 0;
   const isLong = m.from !== 'system' && (rawText.length > 2200 || lineCount > 42);
   const expandButton = isLong
@@ -1499,6 +1504,7 @@ function addMsg(m){
   div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '');
   div.dataset.role = String(m.from || 'system');
   div.dataset.rawText = rawText;
+  div.dataset.copyText = copyParts.join('\n');
   div.dataset.searchText = [role.name, m.from || '', rawText, ...atts.map(a => a.name || '')].join(' ');
   div.dataset.hasAttachments = atts.length ? '1' : '0';
   div.dataset.hasCode = /```/.test(rawText) ? '1' : '0';
@@ -1984,7 +1990,7 @@ document.addEventListener('click', e => {
   const msgBtn = e.target.closest('.copy-msg');
   if(msgBtn){
     const msg = msgBtn.closest('.msg');
-    copyText(msg ? msg.dataset.rawText || '' : '', msgBtn);
+    copyText(msg ? msg.dataset.copyText || msg.dataset.rawText || '' : '', msgBtn);
     return;
   }
   const expandBtn = e.target.closest('.expand-msg');
