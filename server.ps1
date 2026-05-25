@@ -242,6 +242,56 @@ try {
         }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and ($path -eq '/memory' -or $path -eq '/memory.html')) {
+        $memHtmlPath = Join-Path $root 'web\memory.html'
+        if (Test-Path $memHtmlPath) {
+          Send-Text $ctx (Get-Content -LiteralPath $memHtmlPath -Raw -Encoding UTF8) 'text/html; charset=utf-8'
+        } else { Send-FileNotFound $ctx }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/memory') {
+        $stats = Get-MemoryStats
+        $items = @(Get-MemoriesView)
+        $mapTxt = ''
+        $mp = Get-MemoryMapPath
+        if (Test-Path $mp) { $mapTxt = Get-Content -LiteralPath $mp -Raw -Encoding UTF8 }
+        $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
+        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + ($mapTxt | ConvertTo-Json) + ',"items":' + $itemsJson + '}'
+        Send-Text $ctx $payload 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/memory/add') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $text = [string]$body.text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+          Send-Text $ctx '{"ok":false,"error":"empty text"}' 'application/json; charset=utf-8' 400
+        } else {
+          $tags = @(); if ($body.tags) { $tags = @($body.tags | ForEach-Object { [string]$_ }) }
+          $imp = 0.6; if ($null -ne $body.importance) { try { $imp = [double]$body.importance } catch {} }
+          $id = Add-Memory -Text $text -Tags $tags -Source 'manual' -Importance $imp
+          if ($id) { Send-Text $ctx ('{"ok":true,"id":"' + $id + '"}') 'application/json; charset=utf-8' }
+          else { Send-Text $ctx '{"ok":false,"error":"embedding failed (check API key/quota)"}' 'application/json; charset=utf-8' 500 }
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/memory/update') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $id = [string]$body.id
+        $imp = $null; if ($null -ne $body.importance) { $imp = $body.importance }
+        $txt = $null; if ($null -ne $body.text) { $txt = [string]$body.text }
+        $pin = $null; if ($null -ne $body.pinned) { $pin = [bool]$body.pinned }
+        $ok = Set-Memory -Id $id -Importance $imp -Text $txt -Pinned $pin
+        Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/memory/delete') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $ok = Remove-Memory -Id ([string]$body.id)
+        Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/memory/reindex') {
+        $lib = Join-Path $root 'librarian.ps1'
+        if (Test-Path $lib) {
+          try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden | Out-Null } catch {}
+          Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+        } else { Send-Text $ctx '{"ok":false,"error":"librarian.ps1 missing"}' 'application/json; charset=utf-8' 500 }
+      }
       else {
         Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404
       }

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Память моста</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#0f1115; --panel:#171a21; --panel-2:#1d222b; --border:#303744; --border-soft:#252b35;
+    --txt:#eef2f7; --muted:#9ca6b5; --soft:#c8d0dc; --user:#72b7ff; --codex:#68d391;
+    --claude:#b88cff; --model:#ffd166; --danger:#ff6b6b; --shadow:0 18px 50px rgba(0,0,0,.32);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+    background:radial-gradient(circle at 20% 0%, rgba(184,140,255,.08), transparent 24rem),
+               radial-gradient(circle at 95% 8%, rgba(104,211,145,.07), transparent 22rem), var(--bg);
+    color:var(--txt); display:flex; flex-direction:column; min-height:100%;
+  }
+  button,textarea,input{font:inherit}
+  button{background:var(--panel-2);color:var(--txt);border:1px solid var(--border);border-radius:8px;padding:7px 11px;cursor:pointer;font-size:13px;line-height:1;transition:background .15s,border-color .15s}
+  button:hover{background:#252b36;border-color:#465061}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:var(--user);border-color:var(--user);color:#06182d;font-weight:700}
+  button.primary:hover{background:#8ac4ff;border-color:#8ac4ff}
+  button.danger{background:#34191b;border-color:#7d3136;color:#ffd7da}
+  button.danger:hover{background:#4a2024;border-color:var(--danger)}
+  a{color:#92c7ff;text-decoration:none}
+  header{
+    position:sticky;top:0;z-index:5;padding:12px 18px;background:rgba(23,26,33,.94);
+    border-bottom:1px solid var(--border);backdrop-filter:blur(14px);
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:center;gap:10px}
+  .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(135deg, rgba(184,140,255,.26), rgba(104,211,145,.22));
+    border:1px solid rgba(255,255,255,.08);font-size:18px}
+  h1{font-size:16px;margin:0;font-weight:700}
+  .sub{font-size:12px;color:var(--muted);margin-top:2px}
+  .head-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .stats{
+    display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--border-soft);
+    background:rgba(15,18,24,.7);font-size:12px;color:var(--muted);align-items:center;
+  }
+  .kpi{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border-soft);border-radius:999px;background:#131922}
+  .kpi b{color:var(--txt);font-variant-numeric:tabular-nums}
+  .src-pill{padding:2px 7px;border-radius:999px;font-size:11px;border:1px solid var(--border-soft);color:var(--muted)}
+  .src-decision{color:#cdb6ff;border-color:rgba(184,140,255,.4);background:rgba(184,140,255,.08)}
+  .src-task{color:#9fe6bd;border-color:rgba(104,211,145,.4);background:rgba(104,211,145,.08)}
+  .src-manual{color:#bcd9ff;border-color:rgba(114,183,255,.4);background:rgba(114,183,255,.08)}
+  .tabs{display:flex;gap:6px;padding:10px 18px 0}
+  .tab{padding:7px 14px;border-radius:9px 9px 0 0;border:1px solid var(--border-soft);border-bottom:none;background:#141921;color:var(--muted)}
+  .tab.on{background:var(--panel);color:var(--txt);border-color:var(--border)}
+  .wrap{flex:1;padding:14px 18px 40px;max-width:1100px;width:100%;margin:0 auto}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  #filter{flex:1;min-width:180px;background:#0b0f15;border:1px solid var(--border);border-radius:9px;color:var(--txt);padding:9px 11px;outline:none}
+  #filter:focus{border-color:rgba(114,183,255,.7)}
+  .grid{display:flex;flex-direction:column;gap:11px}
+  .card{
+    border:1px solid var(--border);border-radius:12px;background:var(--panel);
+    padding:12px;display:flex;flex-direction:column;gap:9px;box-shadow:0 8px 22px rgba(0,0,0,.14);
+  }
+  .card.pinned{border-color:rgba(255,209,102,.5);box-shadow:0 0 0 1px rgba(255,209,102,.1),0 8px 22px rgba(0,0,0,.18)}
+  .card .meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+  .card .tag{padding:1px 7px;border-radius:999px;background:#10151d;border:1px solid var(--border-soft);color:#9fb0c5}
+  .card textarea{
+    width:100%;min-height:54px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;
+    color:var(--txt);padding:9px 11px;font-size:14px;line-height:1.5;resize:vertical;outline:none;
+  }
+  .card textarea:focus{border-color:rgba(114,183,255,.6)}
+  .card .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .imp{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+  .imp input[type=range]{width:120px;accent-color:var(--model)}
+  .imp b{color:var(--model);font-variant-numeric:tabular-nums;min-width:30px;text-align:right}
+  .card .spacer{flex:1}
+  .star{width:34px;height:32px;display:grid;place-items:center;padding:0;font-size:16px}
+  .star.on{color:var(--model);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.1)}
+  .empty{padding:40px 18px;text-align:center;color:var(--muted);border:1px dashed var(--border-soft);border-radius:14px;background:rgba(20,23,29,.4)}
+  .md{font-size:14px;line-height:1.6;color:var(--txt)}
+  .md h1,.md h2,.md h3{color:#fff;margin:.8em 0 .35em;line-height:1.25}
+  .md h1{font-size:1.3em} .md h2{font-size:1.15em} .md h3{font-size:1.03em}
+  .md ul{margin:.4em 0;padding-left:1.3em} .md li{margin:.2em 0}
+  .md code{background:#0c1016;border:1px solid var(--border-soft);border-radius:5px;padding:1px 5px;color:#f4d78b;font-family:Consolas,monospace;font-size:.92em}
+  .md strong{color:#fff}
+  #toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;
+    background:#1d222b;border:1px solid var(--border);border-radius:10px;padding:10px 16px;
+    box-shadow:var(--shadow);font-size:13px;transition:opacity .2s,transform .2s;pointer-events:none;z-index:30;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.bad{border-color:var(--danger);color:#ffd7da}
+  #toast.ok{border-color:rgba(104,211,145,.5);color:#d9f8e4}
+  .addbox{border:1px solid var(--border);border-radius:12px;background:var(--panel-2);padding:12px;margin-bottom:14px;display:none;flex-direction:column;gap:9px}
+  .addbox.show{display:flex}
+  .addbox textarea{width:100%;min-height:60px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:9px 11px;font-size:14px;resize:vertical;outline:none}
+  .addbox input[type=text]{background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:8px 10px;outline:none}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">🧠</div>
+    <div>
+      <h1>Долговременная память</h1>
+      <div class="sub"><a href="/">← к чату</a> · векторное хранилище моста</div>
+    </div>
+  </div>
+  <div class="head-actions">
+    <button id="addToggle" type="button">＋ Добавить</button>
+    <button id="reindexBtn" type="button" title="Запустить библиотекаря: ингест решений, дедуп, пересборка карты">↻ Пересобрать карту</button>
+    <button id="refreshBtn" type="button">⟳ Обновить</button>
+  </div>
+</header>
+
+<div class="stats" id="stats">загрузка…</div>
+
+<div class="tabs">
+  <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
+  <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
+</div>
+
+<div class="wrap">
+  <div id="recordsView">
+    <div class="addbox" id="addBox">
+      <textarea id="addText" placeholder="Текст новой памяти (короткий устойчивый факт)…"></textarea>
+      <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="addTags" placeholder="теги через запятую" style="flex:1;min-width:160px">
+        <span class="imp">важность <b id="addImpVal">0.60</b>
+          <input type="range" id="addImp" min="0" max="1" step="0.05" value="0.6"></span>
+        <button class="primary" id="addSave" type="button">Сохранить</button>
+        <button id="addCancel" type="button">Отмена</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="filter" placeholder="фильтр по тексту, источнику, тегам…">
+      <span id="shownCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+  <div id="mapView" class="hidden">
+    <div class="md" id="mapContent"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let ITEMS = [];
+let MAP = '';
+const $ = s => document.querySelector(s);
+const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function toast(msg, kind){
+  const t = $('#toast'); t.textContent = msg; t.className = 'show ' + (kind||'');
+  clearTimeout(t._t); t._t = setTimeout(()=>{ t.className = t.className.replace('show','').trim(); }, 2600);
+}
+function ago(iso){
+  if(!iso) return '';
+  const d = new Date(iso); if(isNaN(d)) return '';
+  const s = Math.floor((Date.now()-d.getTime())/1000);
+  if(s<60) return 'только что';
+  if(s<3600) return Math.floor(s/60)+' мин назад';
+  if(s<86400) return Math.floor(s/3600)+' ч назад';
+  return Math.floor(s/86400)+' дн назад';
+}
+function srcClass(src){
+  const k = (src||'').split(':')[0];
+  if(k==='decision') return 'src-decision';
+  if(k==='task') return 'src-task';
+  if(k==='manual') return 'src-manual';
+  return '';
+}
+
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
+  return r.json();
+}
+
+async function load(){
+  try{
+    const d = await api('/api/memory');
+    ITEMS = d.items || [];
+    MAP = d.map || '';
+    renderStats(d.stats||{});
+    renderGrid();
+    renderMap();
+  }catch(e){ toast('Ошибка загрузки: '+e, 'bad'); }
+}
+
+function renderStats(s){
+  const bs = s.bySource || {};
+  const srcStr = Object.keys(bs).map(k => `${k}: ${bs[k]}`).join(' · ') || '—';
+  let last = s.lastLibrarian ? ago(s.lastLibrarian) : 'ещё не запускался';
+  $('#stats').innerHTML =
+    `<span class="kpi">записей <b>${s.count||0}</b></span>`+
+    `<span class="kpi">закреплено <b>${s.pinned||0}</b></span>`+
+    `<span class="kpi">библиотекарь <b>${esc(last)}</b></span>`+
+    `<span class="kpi">карта <b>${s.mapExists?'есть':'нет'}</b></span>`+
+    `<span style="margin-left:auto">по источникам: ${esc(srcStr)}</span>`;
+}
+
+function sortItems(a,b){
+  if((b.pinned?1:0)!==(a.pinned?1:0)) return (b.pinned?1:0)-(a.pinned?1:0);
+  if((b.importance||0)!==(a.importance||0)) return (b.importance||0)-(a.importance||0);
+  return (b.ts||'').localeCompare(a.ts||'');
+}
+
+function renderGrid(){
+  const f = ($('#filter').value||'').toLowerCase().trim();
+  const list = ITEMS.slice().sort(sortItems).filter(m=>{
+    if(!f) return true;
+    return (m.text||'').toLowerCase().includes(f) ||
+           (m.source||'').toLowerCase().includes(f) ||
+           (m.tags||[]).join(' ').toLowerCase().includes(f);
+  });
+  $('#shownCount').textContent = list.length===ITEMS.length ? `${ITEMS.length}` : `${list.length} из ${ITEMS.length}`;
+  const g = $('#grid');
+  if(list.length===0){ g.innerHTML = '<div class="empty">Память пуста. Записи появятся по мере работы моста, либо добавь вручную.</div>'; return; }
+  g.innerHTML = '';
+  for(const m of list){
+    const tags = (m.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
+    const imp = (m.importance!=null?m.importance:0).toFixed(2);
+    const card = document.createElement('div');
+    card.className = 'card' + (m.pinned?' pinned':'');
+    card.innerHTML =
+      `<div class="meta">`+
+        `<span class="src-pill ${srcClass(m.source)}">${esc(m.source||'?')}</span>`+
+        tags +
+        `<span style="margin-left:auto">${esc(ago(m.ts))}</span>`+
+      `</div>`+
+      `<textarea>${esc(m.text)}</textarea>`+
+      `<div class="row">`+
+        `<span class="imp">важность <b class="impVal">${imp}</b>`+
+          `<input type="range" min="0" max="1" step="0.05" value="${m.importance||0}"></span>`+
+        `<span class="spacer"></span>`+
+        `<button class="star${m.pinned?' on':''}" title="Закрепить (не удаляется при дедупе)">★</button>`+
+        `<button class="saveBtn" disabled>Сохранить</button>`+
+        `<button class="danger delBtn">Удалить</button>`+
+      `</div>`;
+    const ta = card.querySelector('textarea');
+    const range = card.querySelector('input[type=range]');
+    const impVal = card.querySelector('.impVal');
+    const saveBtn = card.querySelector('.saveBtn');
+    const orig = {text:m.text, imp:String(m.importance||0)};
+    const dirty = ()=>{ saveBtn.disabled = (ta.value===orig.text && range.value===orig.imp); };
+    ta.addEventListener('input', dirty);
+    range.addEventListener('input', ()=>{ impVal.textContent = parseFloat(range.value).toFixed(2); dirty(); });
+    saveBtn.addEventListener('click', async ()=>{
+      saveBtn.disabled = true; saveBtn.textContent='…';
+      const body = {id:m.id, importance:parseFloat(range.value)};
+      if(ta.value!==orig.text) body.text = ta.value;
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify(body)});
+      saveBtn.textContent='Сохранить';
+      if(r.ok){ toast('Сохранено','ok'); load(); } else { toast('Не удалось сохранить (embedding?)','bad'); saveBtn.disabled=false; }
+    });
+    card.querySelector('.star').addEventListener('click', async ()=>{
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify({id:m.id, pinned:!m.pinned})});
+      if(r.ok){ toast(m.pinned?'Откреплено':'Закреплено','ok'); load(); } else toast('Ошибка','bad');
+    });
+    card.querySelector('.delBtn').addEventListener('click', async ()=>{
+      if(!confirm('Удалить эту запись памяти?')) return;
+      const r = await api('/api/memory/delete',{method:'POST',body:JSON.stringify({id:m.id})});
+      if(r.ok){ toast('Удалено','ok'); load(); } else toast('Ошибка','bad');
+    });
+    g.appendChild(card);
+  }
+}
+
+function renderMap(){
+  $('#mapContent').innerHTML = MAP ? mdToHtml(MAP) : '<div class="empty">Карта ещё не собрана. Нажми «Пересобрать карту».</div>';
+}
+
+// minimal, safe markdown -> html (escape first)
+function mdToHtml(src){
+  const lines = esc(src).split(/\r?\n/);
+  let html='', inList=false;
+  const inline = s => s
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>');
+  for(let line of lines){
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if(h){ if(inList){html+='</ul>';inList=false;} const n=h[1].length; html+=`<h${n}>${inline(h[2])}</h${n}>`; continue; }
+    if(li){ if(!inList){html+='<ul>';inList=true;} html+=`<li>${inline(li[1])}</li>`; continue; }
+    if(inList){html+='</ul>';inList=false;}
+    if(line.trim()==='') continue;
+    html+=`<p>${inline(line)}</p>`;
+  }
+  if(inList) html+='</ul>';
+  return html;
+}
+
+// tabs
+$('#tabRecords').addEventListener('click', ()=>{ $('#tabRecords').classList.add('on'); $('#tabMap').classList.remove('on'); $('#recordsView').classList.remove('hidden'); $('#mapView').classList.add('hidden'); });
+$('#tabMap').addEventListener('click', ()=>{ $('#tabMap').classList.add('on'); $('#tabRecords').classList.remove('on'); $('#mapView').classList.remove('hidden'); $('#recordsView').classList.add('hidden'); });
+
+$('#filter').addEventListener('input', renderGrid);
+$('#refreshBtn').addEventListener('click', load);
+$('#reindexBtn').addEventListener('click', async ()=>{
+  const b=$('#reindexBtn'); b.disabled=true; b.textContent='запущено…';
+  const r = await api('/api/memory/reindex',{method:'POST',body:'{}'});
+  if(r.ok){ toast('Библиотекарь запущен — карта обновится через ~20 сек','ok'); setTimeout(()=>{load();}, 22000); }
+  else toast('Ошибка запуска','bad');
+  setTimeout(()=>{ b.disabled=false; b.textContent='↻ Пересобрать карту'; }, 22000);
+});
+
+// add box
+$('#addToggle').addEventListener('click', ()=> $('#addBox').classList.toggle('show'));
+$('#addCancel').addEventListener('click', ()=>{ $('#addBox').classList.remove('show'); $('#addText').value=''; $('#addTags').value=''; });
+$('#addImp').addEventListener('input', e=> $('#addImpVal').textContent = parseFloat(e.target.value).toFixed(2));
+$('#addSave').addEventListener('click', async ()=>{
+  const text = $('#addText').value.trim();
+  if(!text){ toast('Введите текст','bad'); return; }
+  const tags = $('#addTags').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const importance = parseFloat($('#addImp').value);
+  const b=$('#addSave'); b.disabled=true; b.textContent='…';
+  const r = await api('/api/memory/add',{method:'POST',body:JSON.stringify({text,tags,importance})});
+  b.disabled=false; b.textContent='Сохранить';
+  if(r.ok){ toast('Добавлено','ok'); $('#addText').value=''; $('#addTags').value=''; $('#addBox').classList.remove('show'); load(); }
+  else toast('Ошибка: '+(r.error||''),'bad');
+});
+
+load();
+</script>
+</body>
+</html>

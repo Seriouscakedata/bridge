@@ -128,6 +128,7 @@ function Add-Memory {
     source     = $Source
     tags       = @($Tags)
     importance = [double]$Importance
+    pinned     = $false
     text       = [string]$Text
     vec        = @($vec)
   }
@@ -257,6 +258,10 @@ function Invoke-MemoryDedup {
       if (-not $arr[$j].Keep) { continue }
       $sim = Get-CosineSimilarity -A $arr[$i].Mem.vec -B $arr[$j].Mem.vec
       if ($sim -ge $Threshold) {
+        $ip = [bool]($arr[$i].Mem.PSObject.Properties['pinned'] -and $arr[$i].Mem.pinned)
+        $jp = [bool]($arr[$j].Mem.PSObject.Properties['pinned'] -and $arr[$j].Mem.pinned)
+        if ($ip -and -not $jp) { $arr[$j].Keep = $false; continue }   # never drop a pinned memory
+        if ($jp -and -not $ip) { $arr[$i].Keep = $false; break }
         $ii = [double]$arr[$i].Mem.importance; $jj = [double]$arr[$j].Mem.importance
         if ($jj -gt $ii) { $arr[$i].Keep = $false; break } else { $arr[$j].Keep = $false }
       }
@@ -264,9 +269,92 @@ function Invoke-MemoryDedup {
   }
   $kept = @($arr | Where-Object { $_.Keep } | ForEach-Object { $_.Mem })
   $removed = $mems.Count - $kept.Count
-  if ($removed -gt 0) {
-    $lines = $kept | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }
-    Use-BridgeLock ({ Write-AtomicFile -Path (Get-MemoryStorePath) -Content (($lines -join "`n") + "`n") }.GetNewClosure())
-  }
+  if ($removed -gt 0) { Save-AllMemories $kept }
   return $removed
+}
+
+# ---- management (used by the web UI) ----
+function Save-AllMemories {
+  param($Mems)
+  $lines = @($Mems | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+  $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
+  Use-BridgeLock ({ Write-AtomicFile -Path (Get-MemoryStorePath) -Content $content }.GetNewClosure())
+}
+
+function Get-MemoriesView {
+  # All memories WITHOUT the heavy vec arrays, for the API/UI.
+  $out = foreach ($m in @(Get-AllMemories)) {
+    [pscustomobject]@{
+      id         = [string]$m.id
+      ts         = [string]$m.ts
+      source     = [string]$m.source
+      tags       = @($m.tags)
+      importance = [double]$m.importance
+      pinned     = [bool]($m.PSObject.Properties['pinned'] -and $m.pinned)
+      text       = [string]$m.text
+    }
+  }
+  return @($out)
+}
+
+function Remove-Memory {
+  param([string]$Id)
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $mems = @(Get-AllMemories)
+  $kept = @($mems | Where-Object { [string]$_.id -ne $Id })
+  if ($kept.Count -eq $mems.Count) { return $false }
+  Save-AllMemories $kept
+  return $true
+}
+
+function Set-Memory {
+  # Edit a memory in place. $Text re-embeds. Pass $null to leave a field unchanged.
+  param([string]$Id, $Importance = $null, $Text = $null, $Pinned = $null)
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $mems = @(Get-AllMemories)
+  $found = $false
+  foreach ($m in $mems) {
+    if ([string]$m.id -ne $Id) { continue }
+    $found = $true
+    if ($null -ne $Importance) {
+      $imp = [double]$Importance; if ($imp -lt 0) { $imp = 0 }; if ($imp -gt 1) { $imp = 1 }
+      $m | Add-Member -NotePropertyName importance -NotePropertyValue $imp -Force
+    }
+    if ($null -ne $Pinned) {
+      $p = [bool]$Pinned
+      $m | Add-Member -NotePropertyName pinned -NotePropertyValue $p -Force
+      if ($p) { $m | Add-Member -NotePropertyName importance -NotePropertyValue 1.0 -Force }
+    }
+    if ($null -ne $Text -and -not [string]::IsNullOrWhiteSpace([string]$Text) -and ([string]$Text) -ne ([string]$m.text)) {
+      $newVec = Get-Embedding -Text ([string]$Text) -TaskType 'RETRIEVAL_DOCUMENT'
+      if (-not $newVec) { return $false }   # embedding failed -> don't half-update
+      $m | Add-Member -NotePropertyName text -NotePropertyValue ([string]$Text) -Force
+      $m | Add-Member -NotePropertyName vec  -NotePropertyValue (@($newVec)) -Force
+    }
+    break
+  }
+  if (-not $found) { return $false }
+  Save-AllMemories $mems
+  return $true
+}
+
+function Get-MemoryStats {
+  $mems = @(Get-AllMemories)
+  $last = $null
+  $mp = Get-MemoryMarkerPath
+  if (Test-Path $mp) { try { $last = (Get-Content $mp -Raw -Encoding UTF8).Trim() } catch {} }
+  $bySource = [ordered]@{}
+  foreach ($m in $mems) {
+    $key = (([string]$m.source) -split ':')[0]
+    if ([string]::IsNullOrWhiteSpace($key)) { $key = '?' }
+    if ($bySource.Contains($key)) { $bySource[$key] = [int]$bySource[$key] + 1 } else { $bySource[$key] = 1 }
+  }
+  $pinned = @($mems | Where-Object { $_.PSObject.Properties['pinned'] -and $_.pinned }).Count
+  return [pscustomobject]@{
+    count         = $mems.Count
+    pinned        = $pinned
+    lastLibrarian = $last
+    mapExists     = (Test-Path (Get-MemoryMapPath))
+    bySource      = $bySource
+  }
 }
