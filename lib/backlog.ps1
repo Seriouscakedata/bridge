@@ -81,12 +81,25 @@ function Get-NextApprovedIdea {
   return $null
 }
 
+function Test-IdeaExternal {
+  # Externally-sourced ideas (tech-radar / web) are security-sensitive: they must NEVER
+  # auto-run, only after explicit human approval (status 'approved').
+  param($Idea)
+  $tags = @($Idea.tags)
+  return (($tags -contains 'external') -or ($tags -contains 'radar') -or ([string]$Idea.from -eq 'radar'))
+}
+
 function Get-NextRunnableIdea {
-  # Next idea to auto-run. With -IncludeNew (autonomy without manual approval) 'new'
-  # items are also runnable; 'approved' always takes priority, then oldest-first.
+  # Next idea to auto-run. 'approved' (human-greenlit) always runs. With -IncludeNew
+  # (autonomy without manual approval) 'new' items run too -- EXCEPT external/radar ones,
+  # which always require explicit approval (anti-backdoor: web-sourced never auto-executes).
   param([bool]$IncludeNew = $false)
-  $statuses = if ($IncludeNew) { @('approved','new') } else { @('approved') }
-  $items = @(Get-Backlog | Where-Object { $statuses -contains [string]$_.status } |
+  $items = @(Get-Backlog | Where-Object {
+      $st = [string]$_.status
+      if ($st -eq 'approved') { $true }
+      elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
+      else { $false }
+    } |
     Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }}, @{Expression={[string]$_.ts}})
   if ($items.Count -gt 0) { return $items[0] }
   return $null
