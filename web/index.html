@@ -301,6 +301,13 @@
     line-height:1.2;
     white-space:nowrap;
   }
+  .seq{
+    color:#657185;
+    font-size:11px;
+    line-height:1.2;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
   .msg-actions{
     margin-left:auto;
     display:flex;
@@ -312,6 +319,7 @@
   .long-msg .msg-actions{opacity:1;pointer-events:auto}
   .msg.search-hit .bubble{border-color:rgba(255,209,102,.58);box-shadow:0 0 0 1px rgba(255,209,102,.16),0 10px 30px rgba(0,0,0,.16)}
   .msg.search-current .bubble{border-color:var(--model);box-shadow:0 0 0 2px rgba(255,209,102,.28),0 16px 38px rgba(0,0,0,.24)}
+  .msg:target .bubble,.msg.target-flash .bubble{border-color:rgba(114,183,255,.78);box-shadow:0 0 0 2px rgba(114,183,255,.22),0 16px 38px rgba(0,0,0,.24)}
   .mini-btn{
     height:24px;
     min-width:30px;
@@ -1097,6 +1105,23 @@ function updateBottomButton(){
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
   updateDocumentTitle();
 }
+function messageLink(seq){
+  return location.origin + location.pathname + location.search + '#m-' + encodeURIComponent(String(seq || ''));
+}
+function flashTargetMessage(el){
+  if(!el) return;
+  el.classList.add('target-flash');
+  setTimeout(() => el.classList.remove('target-flash'), 1600);
+}
+function focusHashTarget(smooth){
+  const raw = location.hash ? decodeURIComponent(location.hash.slice(1)) : '';
+  if(!/^m-\d+$/.test(raw)) return false;
+  const el = document.getElementById(raw);
+  if(!el) return false;
+  el.scrollIntoView({behavior:smooth ? 'smooth' : 'auto', block:'center'});
+  flashTargetMessage(el);
+  return true;
+}
 function isVisibleByPrefs(msg){
   if(!msg || msg.classList.contains('filtered-out')) return false;
   if(!showSystem && msg.classList.contains('from-system')) return false;
@@ -1511,6 +1536,8 @@ function addMsg(m){
   const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
   const atts = msgAttachments(m);
   const rawText = String(m.text || '');
+  const seq = Number(m.seq) || 0;
+  const seqLabel = seq ? '#' + seq : '';
   const copyParts = [rawText, ...atts.map(a => {
     const name = String(a.name || 'file');
     const url = String(a.url || '');
@@ -1521,12 +1548,17 @@ function addMsg(m){
   const expandButton = isLong
     ? '<button type="button" class="mini-btn expand-msg" title="Развернуть длинное сообщение" aria-label="Развернуть длинное сообщение">↓</button>'
     : '';
+  const linkButton = seq
+    ? '<button type="button" class="mini-btn link-msg" title="Скопировать ссылку на это сообщение" aria-label="Скопировать ссылку на это сообщение">#</button>'
+    : '';
   const div = document.createElement('article');
   div.className = 'msg from-' + esc(String(m.from || 'system')).replace(/[^a-z0-9_-]/gi,'') + (isLong ? ' long-msg' : '');
+  if(seq) div.id = 'm-' + seq;
   div.dataset.role = String(m.from || 'system');
+  div.dataset.seq = seq ? String(seq) : '';
   div.dataset.rawText = rawText;
   div.dataset.copyText = copyParts.join('\n');
-  div.dataset.searchText = [role.name, m.from || '', rawText, ...atts.map(a => a.name || '')].join(' ');
+  div.dataset.searchText = [seqLabel, role.name, m.from || '', rawText, ...atts.map(a => a.name || '')].join(' ');
   div.dataset.hasAttachments = atts.length ? '1' : '0';
   div.dataset.hasCode = /```/.test(rawText) ? '1' : '0';
   div.innerHTML =
@@ -1535,7 +1567,8 @@ function addMsg(m){
       '<div class="msg-head">' +
         '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
-        '<div class="msg-actions">' + expandButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
+        (seqLabel ? '<span class="seq" title="Номер сообщения">' + esc(seqLabel) + '</span>' : '') +
+        '<div class="msg-actions">' + expandButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
       '</div>' +
       '<div class="md">' + renderMd(rawText) + '</div>' +
       renderAttachments(m) +
@@ -1563,9 +1596,10 @@ async function poll(){
     }
     if(data.length) applyMessageFilter();
     if(data.length){
+      const focusedHash = focusHashTarget(!firstLoad);
       if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
       if(beforeBottom || firstLoad){
-        scrollToBottom(firstLoad ? 'auto' : 'smooth');
+        if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
         firstLoad = false;
       } else {
         unseenCount += data.length;
@@ -2044,6 +2078,17 @@ document.addEventListener('click', e => {
     copyText(msg ? msg.dataset.copyText || msg.dataset.rawText || '' : '', msgBtn);
     return;
   }
+  const linkBtn = e.target.closest('.link-msg');
+  if(linkBtn){
+    const msg = linkBtn.closest('.msg');
+    const seq = msg ? msg.dataset.seq : '';
+    if(seq){
+      history.replaceState(null, '', '#m-' + encodeURIComponent(seq));
+      flashTargetMessage(msg);
+      copyText(messageLink(seq), linkBtn);
+    }
+    return;
+  }
   const expandBtn = e.target.closest('.expand-msg');
   if(expandBtn){
     const msg = expandBtn.closest('.msg');
@@ -2092,6 +2137,7 @@ window.addEventListener('keydown', e => {
     lightbox.querySelector('img').src = '';
   }
 });
+window.addEventListener('hashchange', () => focusHashTarget(true));
 
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
