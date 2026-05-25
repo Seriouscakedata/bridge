@@ -60,11 +60,27 @@ try {
 } catch {}
 if ([string]::IsNullOrWhiteSpace($openIdeas)) { $openIdeas = '(пусто)' }
 
+# goals
+$goalsSection = '(не задан)'
+$goalsPath = Join-Path $bridgeRoot 'goals.md'
+if (Test-Path -LiteralPath $goalsPath) {
+  try {
+    $gc = Get-Content -LiteralPath $goalsPath -Raw -Encoding UTF8
+    if ($gc.Length -gt 2000) { $gc = $gc.Substring(0,2000) }
+    if (-not [string]::IsNullOrWhiteSpace($gc)) { $goalsSection = $gc }
+  } catch {}
+}
+
 $prompt = @"
 Ты — аналитик-наблюдатель ИИ-моста (пара агентов Claude+Codex, разработка на ПК пользователя Тимура).
 Твоя задача: на основе ДАННЫХ ниже предложить до $maxIdeas КОНКРЕТНЫХ, выполнимых улучшений самого моста (код, процесс, надёжность, UX, память, автономия).
+
+ЦЕЛИ МОСТА (north-star):
+$goalsSection
+
 Требования к идеям:
 - $scopeLine
+- каждая идея должна двигать мост к хотя бы одной из целей выше;
 - конкретные и проверяемые (не «улучшить качество», а «что и где изменить и зачем»);
 - опирайся ТОЛЬКО на данные ниже (телеметрия, память, диалог); не выдумывай проблем;
 - НЕ повторяй то, что уже есть в открытом бэклоге;
@@ -84,7 +100,10 @@ $convoTail
 $openIdeas
 
 Верни СТРОГО JSON-массив без markdown, формата:
-[{"text":"идея одной-двумя фразами по-русски","tags":["короткие","теги"]}]
+[{"text":"идея одной-двумя фразами по-русски","tags":["короткие","теги"],"value":N,"confidence":N,"effort":N}]
+
+Где value (1–5) — польза для моста/пользователя, confidence (1–5) — уверенность, что идея сработает, effort (1–5) — трудозатраты (1=легко, 5=сложно).
+Чем выше value*confidence/effort, тем ценнее идея.
 "@
 
 $raw = Invoke-LLM -Purpose 'reflect' -Prompt $prompt -TimeoutSec 120 -Temperature 0.4
@@ -100,7 +119,14 @@ foreach ($it in $ideas) {
   $text = [string]$it.text
   if ([string]::IsNullOrWhiteSpace($text)) { continue }
   $tags = @('reflect'); try { if ($it.tags) { $tags = @('reflect') + @($it.tags | ForEach-Object { [string]$_ }) } } catch {}
-  $id = Add-Idea -Text $text -From 'reflect' -Tags $tags -Status 'new'
+  $score = 0.0
+  try {
+    $v = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.value))
+    $c = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.confidence))
+    $e = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.effort))
+    $score = [Math]::Round($v * $c / $e, 2)
+  } catch {}
+  $id = Add-Idea -Text $text -From 'reflect' -Tags $tags -Status 'new' -Score $score
   if ($id) { $added++ }
 }
 Write-ReflectLog "ideas added: $added"

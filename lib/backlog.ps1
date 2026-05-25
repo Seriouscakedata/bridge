@@ -7,7 +7,7 @@ function Get-BacklogPath { Join-Path (Get-BridgeRoot) 'backlog.jsonl' }
 
 function Add-Idea {
   # Append a backlog idea. Returns the new id.
-  param([string]$Text, [string]$From = 'agent', [string[]]$Tags = @(), [string]$Status = 'new')
+  param([string]$Text, [string]$From = 'agent', [string[]]$Tags = @(), [string]$Status = 'new', [double]$Score = 0.0)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $rec = [ordered]@{
     id       = [guid]::NewGuid().ToString('N')
@@ -16,6 +16,7 @@ function Add-Idea {
     status   = $Status
     tags     = @($Tags)
     attempts = 0
+    score    = $Score
     text     = [string]$Text
   }
   $line = ($rec | ConvertTo-Json -Compress -Depth 6)
@@ -100,7 +101,9 @@ function Get-NextRunnableIdea {
       elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
       else { $false }
     } |
-    Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }}, @{Expression={[string]$_.ts}})
+    Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
+                @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+                @{Expression={[string]$_.ts}})
   if ($items.Count -gt 0) { return $items[0] }
   return $null
 }
