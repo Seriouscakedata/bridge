@@ -899,6 +899,20 @@
   .composer-meta .char-count{flex:none}
   .composer-meta .char-count.warn{color:var(--model)}
   .composer-meta .char-count.bad{color:var(--danger)}
+  .composer-mode{
+    flex:none;
+    height:20px;
+    min-width:28px;
+    padding:0 7px;
+    border-radius:6px;
+    font-size:12px;
+    opacity:.86;
+  }
+  .composer-mode.on{
+    color:var(--model);
+    border-color:rgba(255,209,102,.52);
+    background:rgba(255,209,102,.1);
+  }
   .composer-clear{
     display:none;
     flex:none;
@@ -1133,6 +1147,7 @@
     <div id="uploadQueue" class="upload-queue" aria-live="polite"></div>
     <div id="composerMeta" class="composer-meta" aria-live="polite">
       <span id="draftState" class="draft-state"></span>
+      <button id="enterMode" class="mini-btn composer-mode" type="button" title="Enter отправляет. Нажмите, чтобы Enter добавлял новую строку." aria-label="Режим Enter">↵</button>
       <button id="clearDraft" class="mini-btn composer-clear" type="button" title="Очистить черновик" aria-label="Очистить черновик">×</button>
       <span id="charCount" class="char-count"></span>
     </div>
@@ -1182,6 +1197,7 @@ const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
 const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
+const enterModeBtn = document.getElementById('enterMode');
 const clearDraftBtn = document.getElementById('clearDraft');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
@@ -1237,6 +1253,8 @@ let compactMode = localStorage.getItem('bridgeCompact') === '1';
 let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
 let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
+let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
+if(enterMode !== 'send' && enterMode !== 'multiline') enterMode = 'send';
 let favoriteSeqs = loadFavoriteSeqs();
 let sending = false;
 let uploading = false;
@@ -1358,6 +1376,17 @@ function updateComposerMeta(){
   charCount.className = 'char-count' + (chars > 12000 ? ' bad' : chars > 6000 ? ' warn' : '');
   draftState.textContent = text.trim() ? 'черновик сохранен' : 'готово к вводу';
   clearDraftBtn.classList.toggle('show', Boolean(text));
+}
+function updateEnterMode(){
+  const multiline = enterMode === 'multiline';
+  enterModeBtn.classList.toggle('on', multiline);
+  enterModeBtn.textContent = multiline ? '⌃↵' : '↵';
+  enterModeBtn.title = multiline
+    ? 'Enter добавляет новую строку. Ctrl+Enter отправляет.'
+    : 'Enter отправляет. Нажмите, чтобы Enter добавлял новую строку.';
+  enterModeBtn.setAttribute('aria-label', enterModeBtn.title);
+  enterModeBtn.setAttribute('aria-pressed', multiline ? 'true' : 'false');
+  input.placeholder = 'Сообщение агентам';
 }
 function updateDocumentTitle(){
   const unread = unseenCount > 0 ? '(' + (unseenCount > 99 ? '99+' : unseenCount) + ') ' : '';
@@ -2578,6 +2607,12 @@ attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
 clearDraftBtn.addEventListener('click', clearDraft);
+enterModeBtn.addEventListener('click', () => {
+  enterMode = enterMode === 'send' ? 'multiline' : 'send';
+  localStorage.setItem('bridgeEnterMode', enterMode);
+  updateEnterMode();
+  input.focus();
+});
 healthRetry.addEventListener('click', () => {
   status();
   poll();
@@ -2621,7 +2656,10 @@ window.addEventListener('drop', e => {
   uploadFiles(files);
 });
 input.addEventListener('keydown', e => {
-  if(e.key === 'Enter' && !e.shiftKey){
+  if(e.key !== 'Enter') return;
+  const sendByEnter = enterMode === 'send' && !e.shiftKey;
+  const sendByShortcut = enterMode === 'multiline' && (e.ctrlKey || e.metaKey);
+  if(sendByEnter || sendByShortcut){
     e.preventDefault();
     send();
   }
@@ -2788,6 +2826,7 @@ window.addEventListener('hashchange', () => focusHashTarget(true));
 input.value = localStorage.getItem('bridgeDraft') || '';
 applyViewPrefs();
 applyMessageFilter();
+updateEnterMode();
 resizeInput();
 updateComposerMeta();
 updateSendState();
