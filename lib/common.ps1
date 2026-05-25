@@ -361,3 +361,5 @@ try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "workt
 try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
 # Telegram push notifications (best-effort, non-fatal).
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
+# Study-mode detection (single source of truth; bounded command-verb gate).
+try { . (Join-Path $PSScriptRoot 'study.ps1') } catch { Write-Warning "study.ps1 failed to load: $($_.Exception.Message)" }

@@ -152,29 +152,9 @@ function Get-LastUserActivityMinutes {
   try { return ((Get-Date).ToUniversalTime() - $ts).TotalMinutes } catch { return 99999 }
 }
 
-function Detect-StudyMode {
-  param([string]$TaskText)
-  if ([string]::IsNullOrWhiteSpace($TaskText)) { return $null }
-  if ($TaskText -notmatch '(?i)(изуч|study|исследу|explore|разбери)') { return $null }
-  $patterns = @(
-    '"(?<p>[A-Za-z]:\\[^"]+)"',
-    "'(?<p>[A-Za-z]:\\[^']+)'",
-    '(?<p>[A-Za-z]:\\[^\s"'']+)',
-    '"(?<p>\\\\[^"]+)"',
-    "'(?<p>\\\\[^']+)'",
-    '(?<p>\\\\[^\s"'']+)'
-  )
-  foreach ($pat in $patterns) {
-    $pathMatch = [regex]::Match($TaskText, $pat)
-    if ($pathMatch.Success) {
-      $path = $pathMatch.Groups['p'].Value.Trim()
-      if ($path -and (Test-Path -LiteralPath $path)) {
-        return @{ subtype='local'; path=$path }
-      }
-    }
-  }
-  return @{ subtype='external'; path=$null }
-}
+# Detect-StudyMode now lives in lib/study.ps1 (loaded via common.ps1).
+# It requires a BOUNDED study command-verb and accepts -IsAutonomous to skip
+# backlog tasks. Defining it here would shadow the lib version -> do not re-add.
 
 function Test-AutonomyReady {
   # True if the bridge may START autonomous backlog work right now (reads merged settings).
@@ -945,7 +925,7 @@ while ($true) {
         $bid = [string]$claimedIdea.id
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
         $today = (Get-Date).ToString('yyyy-MM-dd')
-        $studyDetect = Detect-StudyMode -TaskText $btext
+        $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
         $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
