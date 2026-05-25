@@ -202,6 +202,16 @@
     background:#12263d;
     border-color:rgba(114,183,255,.58);
   }
+  .filter-btn .count{
+    margin-left:4px;
+    padding:1px 5px;
+    border-radius:999px;
+    background:rgba(255,255,255,.07);
+    color:#9fb0c5;
+    font-size:10px;
+    font-variant-numeric:tabular-nums;
+  }
+  .filter-btn.on .count{background:rgba(114,183,255,.16);color:#d9ecff}
   .msg.filtered-out,.day-sep.filtered-out{display:none}
 
   #log{
@@ -384,6 +394,31 @@
     height:1px;
     flex:1;
     background:linear-gradient(90deg, transparent, rgba(255,209,102,.55), transparent);
+  }
+  .empty-state{
+    align-self:center;
+    width:min(620px,92%);
+    display:none;
+    margin:auto 0;
+    padding:22px 18px;
+    text-align:center;
+    border:1px dashed rgba(120,132,150,.34);
+    border-radius:14px;
+    background:rgba(20,23,29,.42);
+    color:var(--soft);
+  }
+  .empty-state.show{display:block}
+  .empty-state strong{
+    display:block;
+    margin-bottom:6px;
+    color:#fff;
+    font-size:14px;
+  }
+  .empty-state span{
+    display:block;
+    color:var(--muted);
+    font-size:12px;
+    line-height:1.45;
   }
 
   .md{font-size:14px;line-height:1.56;color:var(--txt);overflow-wrap:anywhere}
@@ -797,12 +832,12 @@
 
 <div id="filterBar" class="filterbar" aria-label="Фильтр ленты">
   <span class="label">показать:</span>
-  <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">Все</button>
-  <button class="filter-btn" type="button" data-filter="claude" aria-pressed="false">Claude</button>
-  <button class="filter-btn" type="button" data-filter="codex" aria-pressed="false">Codex</button>
-  <button class="filter-btn" type="button" data-filter="user" aria-pressed="false">Вы</button>
-  <button class="filter-btn" type="button" data-filter="files" aria-pressed="false">Файлы</button>
-  <button class="filter-btn" type="button" data-filter="code" aria-pressed="false">Код</button>
+  <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">Все <span class="count">0</span></button>
+  <button class="filter-btn" type="button" data-filter="claude" aria-pressed="false">Claude <span class="count">0</span></button>
+  <button class="filter-btn" type="button" data-filter="codex" aria-pressed="false">Codex <span class="count">0</span></button>
+  <button class="filter-btn" type="button" data-filter="user" aria-pressed="false">Вы <span class="count">0</span></button>
+  <button class="filter-btn" type="button" data-filter="files" aria-pressed="false">Файлы <span class="count">0</span></button>
+  <button class="filter-btn" type="button" data-filter="code" aria-pressed="false">Код <span class="count">0</span></button>
 </div>
 
 <div id="searchPanel" aria-label="Поиск по истории">
@@ -819,6 +854,10 @@
 </div>
 
 <main id="log" aria-live="polite">
+  <div id="emptyState" class="empty-state" aria-live="polite">
+    <strong>История загружается</strong>
+    <span>Если сообщений нет, проверьте фильтр или строку поиска.</span>
+  </div>
   <div id="working" class="">
     <span class="work-dot">...</span>
     <span class="lbl"></span>
@@ -866,6 +905,7 @@ let unreadMarker = null;
 
 const log = document.getElementById('log');
 const working = document.getElementById('working');
+const emptyState = document.getElementById('emptyState');
 const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
@@ -1029,6 +1069,44 @@ function messageMatchesFilter(msg){
   if(activeFilter === 'code') return msg.dataset.hasCode === '1';
   return msg.dataset.role === activeFilter;
 }
+function updateFilterCounts(){
+  const counts = {all:0, claude:0, codex:0, user:0, files:0, code:0};
+  document.querySelectorAll('.msg').forEach(msg => {
+    if(!showSystem && msg.classList.contains('from-system')) return;
+    const role = msg.dataset.role;
+    counts.all++;
+    if(counts[role] !== undefined) counts[role]++;
+    if(msg.dataset.hasAttachments === '1') counts.files++;
+    if(msg.dataset.hasCode === '1') counts.code++;
+  });
+  filterButtons.forEach(btn => {
+    const count = btn.querySelector('.count');
+    if(count) count.textContent = String(counts[btn.dataset.filter] || 0);
+  });
+}
+function updateEmptyState(){
+  const q = searchPanel.classList.contains('open') ? searchInput.value.trim() : '';
+  const hasVisible = [...document.querySelectorAll('.msg')].some(isVisibleByPrefs);
+  if(hasVisible){
+    emptyState.classList.remove('show');
+    return;
+  }
+  let title = firstLoad ? 'История загружается' : 'Сообщений пока нет';
+  let hint = 'Новые сообщения появятся здесь автоматически.';
+  if(q){
+    title = 'Поиск ничего не нашел';
+    hint = 'Измените запрос или сбросьте фильтр ленты.';
+  } else if(activeFilter !== 'all'){
+    title = 'В этом фильтре пока пусто';
+    hint = 'Выберите «Все» или другой тип сообщений.';
+  } else if(!showSystem){
+    title = 'В ленте нет видимых сообщений';
+    hint = 'Системные события скрыты. Включите «События», чтобы увидеть служебную историю.';
+  }
+  emptyState.querySelector('strong').textContent = title;
+  emptyState.querySelector('span').textContent = hint;
+  emptyState.classList.add('show');
+}
 function applyMessageFilter(){
   filterButtons.forEach(btn => {
     const on = btn.dataset.filter === activeFilter;
@@ -1039,6 +1117,8 @@ function applyMessageFilter(){
     msg.classList.toggle('filtered-out', !messageMatchesFilter(msg));
   });
   updateDaySeparators();
+  updateFilterCounts();
+  updateEmptyState();
   if(searchPanel.classList.contains('open')) updateSearch(false);
   updateBottomButton();
 }
@@ -1321,6 +1401,7 @@ function updateSearch(scrollCurrent){
   if(!q){
     searchIndex = -1;
     updateSearchCount();
+    updateEmptyState();
     return;
   }
   document.querySelectorAll('.msg:not(.filtered-out)').forEach(msg => {
@@ -1337,6 +1418,7 @@ function updateSearch(scrollCurrent){
     searchIndex = -1;
     updateSearchCount();
   }
+  updateEmptyState();
 }
 function stepSearch(delta){
   if(!searchMatches.length) return;
@@ -1358,6 +1440,7 @@ function closeSearch(){
   searchToggle.classList.remove('on');
   searchToggle.setAttribute('aria-pressed','false');
   clearSearchMarks();
+  updateEmptyState();
 }
 function addMsg(m){
   const key = dayKey(m.ts);
