@@ -312,7 +312,16 @@
   body.has-health-banner #overviewPanel{top:188px}
   #searchPanel.open ~ #overviewPanel{top:198px}
   body.has-health-banner #searchPanel.open ~ #overviewPanel{top:238px}
-  body.overview-open #log{padding-right:calc(var(--content-pad) + 326px)}
+  @media (min-width:1360px){
+    body.overview-open #log{padding-right:calc(var(--content-pad) + 326px)}
+  }
+  @media (min-width:1181px) and (max-width:1359px){
+    #overviewPanel{
+      right:12px;
+      width:min(320px,calc(100vw - 24px));
+      background:rgba(18,22,29,.96);
+    }
+  }
   #overviewToggle.on{border-color:rgba(114,183,255,.64);color:#b9dcff;background:#172333}
   .overview-head{
     display:flex;
@@ -1492,7 +1501,7 @@ let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
 let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
 let overviewOpen = localStorage.getItem('bridgeOverview') === null
-  ? window.innerWidth >= 1280
+  ? window.innerWidth >= 1360
   : localStorage.getItem('bridgeOverview') !== '0';
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
@@ -1658,10 +1667,13 @@ function updateOverview(){
   setText('ovFav', fav + ' ' + pluralRu(fav, 'сообщение', 'сообщения', 'сообщений'));
   const agent = activeAgentLabel || 'ожидание';
   const st = document.getElementById('st')?.textContent || 'ожидание';
-  const task = document.getElementById('task')?.textContent || 'нет активной задачи';
+  const taskNode = document.getElementById('task');
+  const task = taskNode?.title || taskNode?.textContent || 'нет активной задачи';
   const beat = document.getElementById('beat')?.textContent || 'обновляется';
   setText('ovAgent', agent + (st ? ' · ' + st : ''));
-  setText('ovTask', task);
+  setText('ovTask', task.length > 96 ? task.slice(0, 96) + '...' : task);
+  const ovTask = document.getElementById('ovTask');
+  if(ovTask) ovTask.title = task;
   setText('ovBeat', beat);
   const recent = messages
     .filter(msg => msg.dataset.role !== 'system')
