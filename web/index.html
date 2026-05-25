@@ -143,6 +143,8 @@
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
   .btns-secondary{display:contents}
+  .sec-group{display:contents}
+  .sec-group-title{display:none}
   .sec-label{display:none}
   #moreMenu{display:none}
   #searchToggle{order:1}
@@ -1501,8 +1503,10 @@
     body.code-open #log,
     body.dash-open #log,
     body.usage-open #log{padding-right:var(--content-pad)}
-    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{display:none!important}
-    #overviewToggle,#planToggle,#codeToggle,#dashToggle,#usageToggle{display:none}
+    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{
+      left:12px; right:12px; width:auto; max-width:none;
+      background:rgba(13,17,23,.98); z-index:40;
+    }
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1563,12 +1567,13 @@
       border-radius:10px;
       box-shadow:0 8px 24px rgba(0,0,0,.4);
     }
-    .btns-secondary.open{display:flex}
+    .btns-secondary.open{display:flex;max-height:calc(100vh - 130px);overflow-y:auto}
+    .btns-secondary.open .sec-group{display:flex;flex-direction:column;gap:6px}
+    .btns-secondary.open .sec-group + .sec-group{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
+    .btns-secondary.open .sec-group-title{display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:0 2px 2px}
     .btns-secondary.open .sec-label{display:inline}
     .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
     .btns-secondary button.icon{height:auto}
-    #btnsSecondary #overviewToggle,
-    #btnsSecondary #planToggle{display:none}
     #inp{max-height:40vh}
     .filterbar{padding:7px 10px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
     .filterbar::-webkit-scrollbar{display:none}
@@ -1609,6 +1614,15 @@
     #toTop,#toBottom{right:12px}
     #toTop{bottom:calc(126px + env(safe-area-inset-bottom,0px))}
     #toBottom{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
+    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{
+      top:58px; bottom:calc(74px + env(safe-area-inset-bottom,0px));
+      left:8px; right:8px; padding:11px; border-radius:13px;
+    }
+    body.has-health-banner #overviewPanel,
+    body.has-health-banner #planPanel,
+    body.has-health-banner #codePanel,
+    body.has-health-banner #dashPanel,
+    body.has-health-banner #usagePanel{top:94px}
   }
   @media (max-width:520px){
     header,#searchPanel,.filterbar,#log,footer{
@@ -1680,17 +1694,29 @@
     <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу">⛔ Стоп</button>
     <button id="moreMenu" class="icon" type="button" title="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
     <div class="btns-secondary" id="btnsSecondary">
-      <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦ <span class="sec-label">Обзор</span></button>
-      <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
-      <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
-      <button id="codeToggle" class="icon" type="button" title="Код-память" aria-pressed="false">{ } <span class="sec-label">Код</span></button>
-      <button id="dashToggle" class="icon" type="button" title="Дашборд" aria-pressed="false">📊 <span class="sec-label">Дашборд</span></button>
-      <button id="usageToggle" class="icon" type="button" title="Расход" aria-pressed="false">💸 <span class="sec-label">Расход</span></button>
-      <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
-      <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
-      <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
-      <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
-      <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻ <span class="sec-label">Рестарт</span></button>
+      <div class="sec-group">
+        <div class="sec-group-title">Панели</div>
+        <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦ <span class="sec-label">Обзор</span></button>
+        <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
+        <button id="codeToggle" class="icon" type="button" title="Код-память" aria-pressed="false">{ } <span class="sec-label">Код</span></button>
+        <button id="dashToggle" class="icon" type="button" title="Дашборд" aria-pressed="false">📊 <span class="sec-label">Дашборд</span></button>
+        <button id="usageToggle" class="icon" type="button" title="Расход" aria-pressed="false">💸 <span class="sec-label">Расход</span></button>
+      </div>
+      <div class="sec-group">
+        <div class="sec-group-title">История</div>
+        <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
+        <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
+        <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
+      </div>
+      <div class="sec-group">
+        <div class="sec-group-title">Вид</div>
+        <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
+        <button id="systemToggle" type="button" title="Показать или скрыть системные события">События</button>
+      </div>
+      <div class="sec-group">
+        <div class="sec-group-title">Система</div>
+        <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻ <span class="sec-label">Рестарт</span></button>
+      </div>
     </div>
   </div>
   <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
@@ -2235,7 +2261,7 @@ function setMessageFavorite(msg, on, btn){
   updateOverview();
 }
 function applyOverviewState(){
-  const enabled = Boolean(overviewOpen && window.innerWidth > 1180);
+  const enabled = Boolean(overviewOpen);
   document.body.classList.toggle('overview-open', enabled);
   if(overviewPanel) overviewPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(overviewToggle){
@@ -2246,7 +2272,7 @@ function applyOverviewState(){
   requestAnimationFrame(updateBottomButton);
 }
 function applyPlanState(){
-  const enabled = Boolean(planOpen && window.innerWidth > 1180);
+  const enabled = Boolean(planOpen);
   document.body.classList.toggle('plan-open', enabled);
   if(planPanel) planPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(planToggle){
@@ -2257,7 +2283,7 @@ function applyPlanState(){
   requestAnimationFrame(updateBottomButton);
 }
 function applyCodeState(){
-  const enabled = Boolean(codeOpen && window.innerWidth > 1180);
+  const enabled = Boolean(codeOpen);
   document.body.classList.toggle('code-open', enabled);
   if(codePanel) codePanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(codeToggle){
@@ -2268,7 +2294,7 @@ function applyCodeState(){
   requestAnimationFrame(updateBottomButton);
 }
 function applyDashState(){
-  const enabled = Boolean(dashOpen && window.innerWidth > 1180);
+  const enabled = Boolean(dashOpen);
   document.body.classList.toggle('dash-open', enabled);
   if(dashPanel) dashPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(dashToggle){
@@ -2279,7 +2305,7 @@ function applyDashState(){
   requestAnimationFrame(updateBottomButton);
 }
 function applyUsageState(){
-  const enabled = Boolean(usageOpen && window.innerWidth > 1180);
+  const enabled = Boolean(usageOpen);
   document.body.classList.toggle('usage-open', enabled);
   if(usagePanel) usagePanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(usageToggle){
