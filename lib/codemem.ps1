@@ -218,10 +218,10 @@ function Write-CodeStoreAndManifest {
   $lines = @($Records | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 })
   $content = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' }
   $manifestJson = Convert-CodeManifestToJson -Manifest $Manifest -Slug $Slug
-  Use-BridgeLock ({
-      Write-AtomicFile -Path $storePath -Content $content
-      Write-AtomicFile -Path $manifestPath -Content $manifestJson
-    }.GetNewClosure())
+  Use-BridgeLock {
+    Write-AtomicFile -Path $storePath -Content $content
+    Write-AtomicFile -Path $manifestPath -Content $manifestJson
+  }
 }
 
 function Index-CodeBase {
@@ -331,7 +331,8 @@ function Index-CodeBase {
   return [pscustomobject]@{
     project = [string]$Slug
     files = [int]$files.Count
-    symbols = [int]$symbols
+    symbols = [int]$records.Count
+    changedSymbols = [int]$symbols
     embedded = [int]$embedded
     skipped = [int]$skipped
     failed = [int]$failed
@@ -418,8 +419,15 @@ function Get-CodeStats {
   param([string]$Slug = '')
   if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-ProjectSlug }
   $records = @(Get-CodeStoreRecords -Slug $Slug)
+  $tagCode = @($records | Where-Object { @($_.tags) -contains 'code' }).Count
+  $functions = @($records | Where-Object { [string]$_.kind -eq 'function' }).Count
+  $classes = @($records | Where-Object { [string]$_.kind -eq 'class' }).Count
   return [pscustomobject]@{
     project = [string]$Slug
-    count = [int]$records.Count
+    count = [int]$tagCode
+    records = [int]$records.Count
+    tag_code = [int]$tagCode
+    functions = [int]$functions
+    classes = [int]$classes
   }
 }
