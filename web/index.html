@@ -255,6 +255,26 @@
   #log::-webkit-scrollbar{width:11px}
   #log::-webkit-scrollbar-track{background:transparent}
   #log::-webkit-scrollbar-thumb{background:#323946;border:3px solid var(--bg);border-radius:999px}
+  #scrollProgress{
+    position:fixed;
+    top:136px;
+    right:0;
+    bottom:calc(70px + env(safe-area-inset-bottom,0px));
+    z-index:4;
+    width:3px;
+    display:none;
+    pointer-events:none;
+    background:rgba(255,255,255,.035);
+  }
+  #scrollProgress span{
+    display:block;
+    width:100%;
+    height:100%;
+    transform:scaleY(0);
+    transform-origin:top;
+    background:linear-gradient(180deg, var(--user), var(--codex), var(--model));
+    box-shadow:0 0 12px rgba(114,183,255,.32);
+  }
   .msg{
     min-width:0;
     width:fit-content;
@@ -896,6 +916,7 @@
     #searchCount{text-align:left;min-width:auto}
     .search-tools{margin-left:auto}
     #log{padding:14px 10px 18px;gap:11px}
+    #scrollProgress{top:178px;bottom:calc(74px + env(safe-area-inset-bottom,0px));width:2px}
     .msg,.from-user{max-width:100%;grid-template-columns:30px minmax(0,1fr);gap:8px}
     .from-user{grid-template-columns:minmax(0,1fr) 30px}
     .avatar{width:30px;height:30px;border-radius:9px}
@@ -999,6 +1020,7 @@
   </div>
 </main>
 
+<div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
 <button id="toBottom" class="scroll-jump" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
 
@@ -1048,6 +1070,8 @@ let systemGroupsExpanded = new Set();
 const log = document.getElementById('log');
 const working = document.getElementById('working');
 const emptyState = document.getElementById('emptyState');
+const scrollProgress = document.getElementById('scrollProgress');
+const scrollProgressFill = scrollProgress ? scrollProgress.querySelector('span') : null;
 const toTop = document.getElementById('toTop');
 const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
@@ -1241,6 +1265,18 @@ function noteConnectionOk(){
 function isNearBottom(){
   return log.scrollHeight - log.scrollTop - log.clientHeight < 120;
 }
+function updateScrollProgress(){
+  if(!scrollProgress || !scrollProgressFill) return;
+  const maxScroll = Math.max(0, log.scrollHeight - log.clientHeight);
+  if(maxScroll < 80){
+    scrollProgress.style.display = 'none';
+    scrollProgressFill.style.transform = 'scaleY(0)';
+    return;
+  }
+  const progress = Math.max(0, Math.min(1, log.scrollTop / maxScroll));
+  scrollProgress.style.display = 'block';
+  scrollProgressFill.style.transform = 'scaleY(' + progress.toFixed(4) + ')';
+}
 function updateBottomButton(){
   stickToBottom = isNearBottom();
   if(stickToBottom){
@@ -1252,6 +1288,7 @@ function updateBottomButton(){
   toTop.classList.toggle('show', log.scrollTop > Math.max(420, log.clientHeight * 0.7));
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
+  updateScrollProgress();
   updateDocumentTitle();
 }
 function messageLink(seq){
