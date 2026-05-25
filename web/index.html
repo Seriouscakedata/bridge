@@ -1999,6 +1999,8 @@ function stampForFile(){
 }
 async function requestOk(url, options, timeoutMs){
   const opts = options ? Object.assign({}, options) : {};
+  if(!Object.prototype.hasOwnProperty.call(opts, 'credentials')) opts.credentials = 'same-origin';
+  if(!Object.prototype.hasOwnProperty.call(opts, 'cache')) opts.cache = 'no-store';
   let timer = null;
   let ctrl = null;
   if(typeof AbortController !== 'undefined' && !opts.signal){
