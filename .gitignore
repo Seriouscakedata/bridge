@@ -11,6 +11,7 @@ runtime/
 decisions/
 sandbox/
 memory/
+jobs/
 backlog.jsonl
 reflect.last
 *.log

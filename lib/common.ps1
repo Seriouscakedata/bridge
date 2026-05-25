@@ -306,6 +306,7 @@ function Initialize-Bridge {
       current_backlog_id = $null
       autonomous_day   = $null
       autonomous_count = 0
+      active_jobs      = @()
     }
     Write-State -State $state
   } else {
@@ -319,6 +320,7 @@ function Initialize-Bridge {
       heartbeat=$null; driver_started=$null; claimed_at=$null
       current_backlog_id=$null
       autonomous_day=$null; autonomous_count=0
+      active_jobs=@()
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
@@ -341,3 +343,5 @@ try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 fai
 try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }
 # User-tunable settings (gitignored overrides: idle-quiet, autonomy scope, etc.).
 try { . (Join-Path $PSScriptRoot 'settings.ps1') } catch { Write-Warning "settings.ps1 failed to load: $($_.Exception.Message)" }
+# Background job manager (long-running commands -- e.g. hour-long project runs).
+try { . (Join-Path $PSScriptRoot 'jobs.ps1') } catch { Write-Warning "jobs.ps1 failed to load: $($_.Exception.Message)" }

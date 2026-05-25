@@ -362,6 +362,7 @@ $autoScopeLine
 - Чтобы прислать файл/скриншот пользователю в чат, помести в ответ отдельной строкой маркер `[[FILE: C:\полный\путь]]` (можно несколько).
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
 - ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
+- ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
@@ -833,11 +834,41 @@ while ($true) {
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
+    try { foreach ($j in @($state.active_jobs)) { Stop-BridgeJob $j } } catch {}
     try { Invoke-PostMortem -FailureType 'rollback' -Task ([string]$state.current_task) -Context 'manual abort' } catch {}
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
+
+  # --- BACKGROUND JOBS: if any are running, WAIT (poll) instead of running an agent turn,
+  #     so long commands (e.g. hour-long project runs) don't time out and the bridge is
+  #     neither "idle" (no autonomy grab) nor killed. Results are fed back when done.
+  $activeJobs = @(); try { if ($state.active_jobs) { $activeJobs = @($state.active_jobs) } } catch {}
+  if ($activeJobs.Count -gt 0) {
+    $jobMaxH = 6; try { $cfgJ = Get-BridgeConfig; if ($cfgJ.PSObject.Properties.Name -contains 'jobMaxHours') { $jobMaxH = [double]$cfgJ.jobMaxHours } } catch {}
+    $stillRunning = New-Object System.Collections.Generic.List[object]
+    foreach ($job in $activeJobs) {
+      $finished = $false; $reason = 'done'
+      if (Test-JobDone $job) { $finished = $true }
+      else {
+        $ageH = 0; try { $ageH = ((Get-Date).ToUniversalTime() - ([datetime]$job.started).ToUniversalTime()).TotalHours } catch {}
+        if ($ageH -ge $jobMaxH) { try { Stop-BridgeJob $job } catch {}; $finished = $true; $reason = 'timeout' }
+      }
+      if ($finished) {
+        $res = Get-JobResult $job
+        if ($reason -eq 'timeout') {
+          Add-Message -From system -Text ("⏱ Фоновая задача [$($job.id)] превысила лимит ($jobMaxH ч) и остановлена.`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$($res.tail)") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text ("✅ Фоновая задача [$($job.id)] завершена (код выхода: $($res.exitCode)).`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$($res.tail)") -Kind event | Out-Null
+        }
+      } else { [void]$stillRunning.Add($job) }
+    }
+    $remaining = @($stillRunning.ToArray())
+    Update-State ({ param($s) $s.active_jobs=$remaining; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.status_text=$(if ($remaining.Count -gt 0) { "⏳ Жду фоновую задачу (" + $remaining.Count + ")..." } else { $null }) }.GetNewClosure()) | Out-Null
+    if ($remaining.Count -gt 0) { Start-Sleep -Seconds $loopDelay; continue }
+    $state = Read-State
+  }
 
   $maxUser = Get-MaxUserSeq
 
@@ -1039,6 +1070,23 @@ while ($true) {
     if ([string]::IsNullOrWhiteSpace($idea)) { continue }
     try { $iid = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new'; if ($iid) { $proposedIdeas += $idea } } catch {}
   }
+  # [[RUNJOB: команда | папка]] -> запустить долгую команду в фоне (без таймаута хода).
+  $runjobPattern = '(?m)^\s*\[\[RUNJOB:\s*(.+?)\s*\]\]\s*$'
+  $startedJobs = @()
+  foreach ($m in [regex]::Matches($reply, $runjobPattern)) {
+    $spec = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($spec)) { continue }
+    $parts = $spec -split '\|', 2
+    $jcmd = $parts[0].Trim()
+    $jdir = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($jcmd)) { continue }
+    try { $job = Start-BridgeJob -Command $jcmd -WorkDir $jdir; if ($job) { $startedJobs += $job } } catch {}
+  }
+  if ($startedJobs.Count -gt 0) {
+    $sj = $startedJobs
+    Update-State ({ param($s) $cur=@(); if ($s.active_jobs) { $cur=@($s.active_jobs) }; $s.active_jobs=@($cur + $sj) }.GetNewClosure()) | Out-Null
+    foreach ($job in $sj) { Add-Message -From system -Text "🛠 Запущена фоновая задача [$($job.id)]: $($job.cmd)`nЖду завершения (без таймаута), результат придёт сюда." -Kind event | Out-Null }
+  }
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
@@ -1047,6 +1095,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $studyFallbackPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $ideaPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $runjobPattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
