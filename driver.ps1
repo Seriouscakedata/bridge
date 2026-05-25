@@ -463,7 +463,11 @@ function Register-AgentPid {
   try {
     $dir = Split-Path -Parent $agentPidsFile
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    Add-Content -LiteralPath $agentPidsFile -Value $ProcId -Encoding UTF8
+    # Record PID + start-time + name. Start-time makes the record uniquely identify THIS
+    # process, so a later-recycled PID (e.g. the user's app) can never be mistaken for ours.
+    $ticks = 0; $name = ''
+    try { $pp = Get-Process -Id $ProcId -ErrorAction SilentlyContinue; if ($pp) { $ticks = $pp.StartTime.Ticks; $name = $pp.ProcessName } } catch {}
+    Add-Content -LiteralPath $agentPidsFile -Value ("$ProcId|$ticks|$name") -Encoding UTF8
   } catch {}
 }
 
@@ -475,28 +479,37 @@ function Unregister-AgentPid {
     $kept = New-Object System.Collections.Generic.List[string]
     foreach ($line in (Get-Content $agentPidsFile -Encoding UTF8)) {
       $trimmed = ([string]$line).Trim()
-      if ($trimmed -notmatch '^\d+$') { continue }
-      if ([int]$trimmed -ne $ProcId) { [void]$kept.Add($trimmed) }
+      if (-not $trimmed) { continue }
+      $linePid = ($trimmed -split '\|')[0]
+      if ($linePid -notmatch '^\d+$') { continue }
+      if ([int]$linePid -ne $ProcId) { [void]$kept.Add($trimmed) }
     }
     [System.IO.File]::WriteAllLines($agentPidsFile, $kept.ToArray(), $Utf8NoBom)
   } catch {}
 }
 
 function Sweep-AgentOrphans {
-  # Only PIDs launched by this bridge are recorded here; never scan unrelated processes.
+  # Kill ONLY processes this bridge spawned, verified by PID **and** start-time. A recycled
+  # PID now owned by another app (e.g. the user's Codex) has a different start-time -> skipped.
+  # Records without a verified start-time are NEVER killed (fail-safe). Format: PID|ticks|name.
   param()
   if (-not (Test-Path $agentPidsFile)) { return }
   try {
     $seen = @{}
-    $lines = Get-Content $agentPidsFile -Encoding UTF8 | Where-Object { ([string]$_).Trim() -match '^\d+$' }
-    foreach ($line in $lines) {
-      $orphanPid = [int](([string]$line).Trim())
+    foreach ($line in (Get-Content $agentPidsFile -Encoding UTF8)) {
+      $trimmed = ([string]$line).Trim()
+      if (-not $trimmed) { continue }
+      $parts = $trimmed -split '\|'
+      if ($parts[0] -notmatch '^\d+$') { continue }
+      $orphanPid = [int]$parts[0]
+      $ticks = 0; if ($parts.Count -ge 2 -and $parts[1] -match '^\d+$') { $ticks = [long]$parts[1] }
       if ($orphanPid -eq $PID -or $seen.ContainsKey($orphanPid)) { continue }
       $seen[$orphanPid] = $true
+      if ($ticks -le 0) { continue }   # no verified start-time -> DO NOT kill (safety)
       try {
         $proc = Get-Process -Id $orphanPid -ErrorAction SilentlyContinue
-        if ($proc) {
-          Write-Host "Sweep: убиваю орфан PID $orphanPid ($($proc.ProcessName))"
+        if ($proc -and $proc.StartTime.Ticks -eq $ticks) {
+          Write-Host "Sweep: убиваю свой орфан PID $orphanPid ($($proc.ProcessName))"
           Stop-AgentTree $orphanPid
         }
       } catch {}
