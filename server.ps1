@@ -270,10 +270,10 @@ try {
         $items = @(Get-MemoriesView)
         $mapTxt = ''
         $mp = Get-MemoryMapPath
-        if (Test-Path $mp) { $mapTxt = Get-Content -LiteralPath $mp -Raw -Encoding UTF8 }
+        if (Test-Path $mp) { $mapTxt = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) }
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        # ("" + $mapTxt) strips ETS NoteProperties that Get-Content -Raw attaches, so
-        # ConvertTo-Json emits a plain JSON string instead of a {"value":...} object.
+        # ReadAllText returns a plain CLR string, so ConvertTo-Json cannot serialize
+        # PowerShell provider ETS properties as a {"value":...} object.
         $mapJson = (("" + $mapTxt) | ConvertTo-Json -Compress)
         $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
