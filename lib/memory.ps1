@@ -30,6 +30,11 @@ function Get-MemoryConfig {
     recallMinScore = 0.62
     dedupThreshold = 0.93
     maxInjectChars = 1200
+    skillTopK = 2
+    skillMinScore = 0.55
+    skillMaxInjectChars = 600
+    skillImportance = 0.8
+    skillDedupThreshold = 0.96
   }
   $m = $null
   try {
@@ -150,12 +155,18 @@ function Get-AllMemories {
 
 function Search-Memory {
   # Returns array of [pscustomobject]{ Score; Mem } sorted by score desc.
-  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1)
+  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string]$ExcludeTag = '')
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return @() }
   if ($TopK -le 0)    { $TopK = [int]$mc.recallTopK }
   if ($MinScore -lt 0) { $MinScore = [double]$mc.recallMinScore }
   $mems = @(Get-AllMemories)
+  if (-not [string]::IsNullOrWhiteSpace($RequireTag)) {
+    $mems = @($mems | Where-Object { @($_.tags) -contains $RequireTag })
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExcludeTag)) {
+    $mems = @($mems | Where-Object { -not (@($_.tags) -contains $ExcludeTag) })
+  }
   if ($mems.Count -eq 0) { return @() }
   $qvec = Get-Embedding -Text $Query -TaskType 'RETRIEVAL_QUERY'
   if (-not $qvec) { return @() }
@@ -172,7 +183,7 @@ function Get-MemoryRecall {
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return '' }
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return '' }
-  try { $hits = Search-Memory -Query $TaskText } catch { return '' }
+  try { $hits = Search-Memory -Query $TaskText -ExcludeTag 'skill' } catch { return '' }
   if (-not $hits -or @($hits).Count -eq 0) { return '' }
   $maxChars = [int]$mc.maxInjectChars
   $sb = New-Object System.Text.StringBuilder
@@ -187,6 +198,131 @@ function Get-MemoryRecall {
   $bodyTxt = $sb.ToString().Trim()
   if ([string]::IsNullOrWhiteSpace($bodyTxt)) { return '' }
   return "=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (релевантное, semantic) ===`n$bodyTxt"
+}
+
+function Get-SkillRecall {
+  # Formatted procedural playbook block to inject into a prompt. '' on any failure.
+  param([string]$TaskText = '')
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return '' }
+  try {
+    $mc = Get-MemoryConfig
+    if (-not $mc.enabled) { return '' }
+    $hits = Search-Memory -Query $TaskText -RequireTag 'skill' -TopK ([int]$mc.skillTopK) -MinScore ([double]$mc.skillMinScore)
+    if (-not $hits -or @($hits).Count -eq 0) { return '' }
+    $maxChars = [int]$mc.skillMaxInjectChars
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($h in $hits) {
+      $t = ([string]$h.Mem.text).Trim() -replace '\s+', ' '
+      if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+      $pct = [int]([Math]::Round([double]$h.Score * 100))
+      $entry = "- ($pct%) $t"
+      if ($sb.Length + $entry.Length + 1 -gt $maxChars) { break }
+      [void]$sb.AppendLine($entry)
+    }
+    $bodyTxt = $sb.ToString().Trim()
+    if ([string]::IsNullOrWhiteSpace($bodyTxt)) { return '' }
+    return "=== ПЛЕЙБУК (релевантный навык) ===`n$bodyTxt"
+  } catch { return '' }
+}
+
+function Add-SkillMemory {
+  # Extract and store a reusable procedure from an actual task transcript. Never throws.
+  param([string]$TaskText, [string]$Transcript)
+  try {
+    $mc = Get-MemoryConfig
+    if (-not $mc.enabled) { return $null }
+    if ([string]::IsNullOrWhiteSpace($Transcript)) { return $null }
+    $task = [string]$TaskText; if ($task.Length -gt 1500) { $task = $task.Substring(0, 1500) }
+    $tr = [string]$Transcript; if ($tr.Length -gt 10000) { $tr = $tr.Substring($tr.Length - 10000) }
+    $prompt = @"
+Ты — библиотекарь навыков ИИ-моста Claude+Codex.
+Из фактического transcript извлеки ТОЛЬКО переиспользуемую процедуру, которая пригодится в будущих похожих задачах.
+Не давай общих советов, не выдумывай шаги, не пересказывай результат задачи.
+
+Если в transcript нет нетривиального переиспользуемого навыка, ответь ровно:
+NO_SKILL
+
+Иначе ответь строго в таком формате, без markdown-забора:
+Когда применять: ...
+Шаги:
+1. ...
+2. ...
+Грабли: ...
+Проверка: ...
+
+ЗАДАЧА:
+$task
+
+TRANSCRIPT:
+$tr
+"@
+    $raw = Invoke-LLM -Purpose 'gate' -Prompt $prompt -TimeoutSec 60 -Temperature 0.1
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    $txt = ([string]$raw -replace '```(?:text|markdown|md)?','' -replace '```','').Trim()
+    if ($txt -eq 'NO_SKILL') { return $null }
+    if ($txt.Length -lt 120) { return $null }
+    if ($txt.Length -gt 1800) { $txt = $txt.Substring(0, 1800).Trim() }
+    return (Add-Memory -Text $txt -Tags @('skill') -Source 'skill' -Importance ([double]$mc.skillImportance))
+  } catch { return $null }
+}
+
+function Add-StudyLessons {
+  # Distill a final study Markdown report into 1-3 durable lessons. Returns count; never throws.
+  param([string]$ReportPath, [string]$TaskText = '')
+  try {
+    $mc = Get-MemoryConfig
+    if (-not $mc.enabled) { return 0 }
+    if ([string]::IsNullOrWhiteSpace($ReportPath)) { return 0 }
+    if ([System.IO.Path]::GetExtension([string]$ReportPath) -ine '.md') { return 0 }
+    if (-not (Test-Path -LiteralPath $ReportPath)) { return 0 }
+    $report = Get-Content -LiteralPath $ReportPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($report)) { return 0 }
+    if ($report.Length -gt 6000) { $report = $report.Substring(0, 6000) }
+    $task = [string]$TaskText; if ($task.Length -gt 1500) { $task = $task.Substring(0, 1500) }
+    $prompt = @"
+Ты — фильтр долговременной памяти ИИ-моста.
+Из итогового study-отчёта выдели 1-3 урока, которые полезно помнить в будущих задачах.
+Пиши только устойчивые выводы: архитектурные факты, грабли, правила работы, проверенные ограничения.
+Не сохраняй пересказ отчёта и очевидные общие советы.
+
+Верни СТРОГО JSON-массив строк без markdown и пояснений:
+["урок 1", "урок 2"]
+
+ЗАДАЧА:
+$task
+
+ОТЧЁТ:
+$report
+"@
+    $raw = Invoke-LLM -Purpose 'gate' -Prompt $prompt -TimeoutSec 60 -Temperature 0.1
+    if ([string]::IsNullOrWhiteSpace($raw)) { return 0 }
+    $clean = ([string]$raw -replace '```json','' -replace '```','').Trim()
+    $mt = [regex]::Match($clean, '(?s)\[.*\]')
+    if (-not $mt.Success) { return 0 }
+    try { $items = @($mt.Value | ConvertFrom-Json) } catch { return 0 }
+    $count = 0
+    foreach ($item in $items) {
+      $lesson = ''
+      if ($null -eq $item) { continue }
+      if ($item -is [string]) {
+        $lesson = [string]$item
+      } else {
+        try {
+          if ($item.PSObject.Properties.Name -contains 'lesson') { $lesson = [string]$item.lesson }
+          elseif ($item.PSObject.Properties.Name -contains 'text') { $lesson = [string]$item.text }
+          elseif ($item.PSObject.Properties.Name -contains 'fact') { $lesson = [string]$item.fact }
+          else { $lesson = ($item | ConvertTo-Json -Compress -Depth 4) }
+        } catch { $lesson = [string]$item }
+      }
+      $lesson = ($lesson.Trim() -replace '\s+', ' ')
+      if ([string]::IsNullOrWhiteSpace($lesson)) { continue }
+      if ($lesson.Length -gt 800) { $lesson = $lesson.Substring(0, 800).Trim() }
+      $id = Add-Memory -Text $lesson -Tags @('lesson','study') -Source 'study' -Importance 0.7
+      if ($id) { $count++ }
+      if ($count -ge 3) { break }
+    }
+    return $count
+  } catch { return 0 }
 }
 
 # ---- write gate (Flash-Lite) ----
@@ -257,8 +393,12 @@ function Invoke-MemoryDedup {
     if (-not $arr[$i].Keep) { continue }
     for ($j = $i + 1; $j -lt $arr.Count; $j++) {
       if (-not $arr[$j].Keep) { continue }
+      $iSkill = @($arr[$i].Mem.tags) -contains 'skill'
+      $jSkill = @($arr[$j].Mem.tags) -contains 'skill'
+      if ($iSkill -ne $jSkill) { continue }
+      $thr = if ($iSkill -and $jSkill) { [double]$mc.skillDedupThreshold } else { $Threshold }
       $sim = Get-CosineSimilarity -A $arr[$i].Mem.vec -B $arr[$j].Mem.vec
-      if ($sim -ge $Threshold) {
+      if ($sim -ge $thr) {
         $ip = [bool]($arr[$i].Mem.PSObject.Properties['pinned'] -and $arr[$i].Mem.pinned)
         $jp = [bool]($arr[$j].Mem.PSObject.Properties['pinned'] -and $arr[$j].Mem.pinned)
         if ($ip -and -not $jp) { $arr[$j].Keep = $false; continue }   # never drop a pinned memory

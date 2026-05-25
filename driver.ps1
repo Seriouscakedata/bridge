@@ -274,13 +274,16 @@ function Format-Transcript {
   $evSect = Get-EvidenceRecall -TaskText $TaskText
   $memSect = ''
   try { $memSect = Get-MemoryRecall -TaskText $TaskText } catch { $memSect = '' }
+  $skillSect = ''
+  try { $skillSect = Get-SkillRecall -TaskText $TaskText } catch { $skillSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
+  $skillAppend = if ($skillSect) { "`n`n$skillSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $decAppend + $evAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $decAppend + $evAppend)
   }
-  return $body + $memAppend + $decAppend + $evAppend
+  return $body + $memAppend + $skillAppend + $decAppend + $evAppend
 }
 
 function Build-Prompt {
@@ -1226,6 +1229,37 @@ while ($true) {
     try {
       $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
       if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
+    } catch {}
+    try {
+      $stMem = Read-State
+      $turnForSkill = [int]$stMem.task_turn
+      $didActionsForSkill = [bool]$stMem.task_did_actions
+      if ($turnForSkill -ge 2 -and $didActionsForSkill -and $modeBeforeIncrement -ne 'study') {
+        $startSeqSkill = [int]$stMem.task_start_seq
+        $thread = (Get-Messages -Since ($startSeqSkill - 1) | ForEach-Object {
+          "**$($_.from):** $($_.text)"
+        }) -join "`n`n"
+        $skillId = Add-SkillMemory -TaskText $task -Transcript $thread
+        if ($skillId) { Add-Message -From system -Text "📘 плейбук сохранён." -Kind event | Out-Null }
+      }
+    } catch {}
+    try {
+      if ($modeBeforeIncrement -eq 'study') {
+        $studyReportPath = $null
+        foreach ($fp in $fileMarkerPaths) {
+          try {
+            $candidate = [string]$fp
+            if ([System.IO.Path]::GetExtension($candidate) -ieq '.md' -and (Test-Path -LiteralPath $candidate)) {
+              $studyReportPath = $candidate
+              break
+            }
+          } catch {}
+        }
+        if ($studyReportPath) {
+          $lessonCount = Add-StudyLessons -ReportPath $studyReportPath -TaskText $task
+          Add-Message -From system -Text "🎓 уроков: $lessonCount" -Kind event | Out-Null
+        }
+      }
     } catch {}
     # If this was an autonomous backlog task, close it out.
     try {
