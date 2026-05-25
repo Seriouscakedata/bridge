@@ -345,6 +345,10 @@ try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.p
 try { . (Join-Path $PSScriptRoot 'codemem.ps1') } catch { Write-Warning "codemem.ps1 failed to load: $($_.Exception.Message)" }
 # LLM router (DeepSeek/Gemini for cheap background thinking) -- load AFTER memory.ps1.
 try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 failed to load: $($_.Exception.Message)" }
+# Usage accounting (prepaid agent turns + paid API calls). Best-effort and non-fatal.
+try { . (Join-Path $PSScriptRoot 'usage.ps1') } catch { Write-Warning "usage.ps1 failed to load: $($_.Exception.Message)" }
+# Planner model router layered on top of Get-PlannerModel; learns from turns.jsonl outcomes.
+try { . (Join-Path $PSScriptRoot 'router.ps1') } catch { Write-Warning "router.ps1 failed to load: $($_.Exception.Message)" }
 # Self-improvement backlog (ideas the agents raise themselves).
 try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }
 # User-tunable settings (gitignored overrides: idle-quiet, autonomy scope, etc.).

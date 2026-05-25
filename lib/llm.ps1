@@ -32,7 +32,7 @@ function Get-LLMConfig {
 
 function Invoke-DeepSeekChat {
   # Returns model text or $null. Non-thinking by default (cheap, direct).
-  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [switch]$Thinking)
+  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [switch]$Thinking, [string]$Purpose = '')
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
   $key = Get-Secret 'deepseekApiKey'
   if (-not $key) { return $null }
@@ -52,15 +52,23 @@ function Invoke-DeepSeekChat {
       -ContentType 'application/json' -Body $bytes -UseBasicParsing -TimeoutSec $TimeoutSec
     $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     $obj = $txt | ConvertFrom-Json
+    try {
+      $pt = 0; $ct = 0
+      if ($obj.usage) {
+        if ($null -ne $obj.usage.prompt_tokens) { $pt = [int]$obj.usage.prompt_tokens }
+        if ($null -ne $obj.usage.completion_tokens) { $ct = [int]$obj.usage.completion_tokens }
+      }
+      $null = Add-UsageRecord -Kind paid -Provider 'deepseek' -Model $Model -Purpose $Purpose -PromptTokens $pt -CompletionTokens $ct -Status 'ok'
+    } catch {}
     return [string]$obj.choices[0].message.content
   } catch { return $null }
 }
 
 function Invoke-LLMProvider {
-  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3)
+  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [string]$Purpose = '')
   if ([string]::IsNullOrWhiteSpace($Model)) { return $null }
-  if ($Model -like 'deepseek*') { return Invoke-DeepSeekChat -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature }
-  if ($Model -like 'gemini*')   { return Invoke-GeminiChat   -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature }
+  if ($Model -like 'deepseek*') { return Invoke-DeepSeekChat -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose }
+  if ($Model -like 'gemini*')   { return Invoke-GeminiChat   -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose }
   return $null
 }
 
@@ -74,11 +82,11 @@ function Invoke-LLM {
   if ([string]::IsNullOrWhiteSpace($model) -and $Purpose -and $cfg.ContainsKey($Purpose)) { $model = [string]$cfg[$Purpose] }
   if ([string]::IsNullOrWhiteSpace($model)) { $model = [string]$cfg['fallback'] }
   if ($model -eq 'off') { return $null }
-  $res = Invoke-LLMProvider -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature
+  $res = Invoke-LLMProvider -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose
   if (-not [string]::IsNullOrWhiteSpace($res)) { return $res }
   $fb = [string]$cfg['fallback']
   if ($fb -and $fb -ne $model -and $fb -ne 'off') {
-    return (Invoke-LLMProvider -Model $fb -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature)
+    return (Invoke-LLMProvider -Model $fb -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose)
   }
   return $null
 }

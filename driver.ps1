@@ -791,6 +791,9 @@ function Write-TurnLog {
       mode    = $Mode
     }
     Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+    try {
+      $null = Add-UsageRecord -Kind prepaid -Provider $Speaker -Model $Model -Purpose $Mode -Sec $sec -Status $turnStatus
+    } catch {}
   } catch {}
 }
 
@@ -971,7 +974,9 @@ while ($true) {
              elseif ($tt -eq 0) { 'claude' }
              else { Next-Speaker }
   if ($forcePlanner) { Update-State { param($s) $s.force_planner=$false } | Out-Null }
-  $plannerModel = Get-PlannerModel -TaskText $task -Mode $mode
+  $plannerEscalate = $false
+  try { $plannerEscalate = ([int](Read-State).timeout_retry_count -ge 1) } catch {}
+  $plannerModel = Select-PlannerModel -TaskText $task -Mode $mode -Escalate $plannerEscalate
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null

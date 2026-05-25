@@ -17,6 +17,7 @@ backlog.jsonl
 plan.jsonl
 plan.archive.jsonl
 reflect.last
+usage.jsonl
 *.log
 *.tmp.*
 .git/

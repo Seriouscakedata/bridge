@@ -150,14 +150,15 @@
   #planToggle{order:3}
   #memoryBtn{order:4}
   #codeToggle{order:5}
-  #exportChat{order:6}
-  #exportMarkdown{order:7}
-  #compactToggle{order:8}
-  #systemToggle{order:9}
-  #pauseToggle{order:10}
-  #restart{order:11}
-  #kill{order:12}
-  #moreMenu{order:13}
+  #usageToggle{order:6}
+  #exportChat{order:7}
+  #exportMarkdown{order:8}
+  #compactToggle{order:9}
+  #systemToggle{order:10}
+  #pauseToggle{order:11}
+  #restart{order:12}
+  #kill{order:13}
+  #moreMenu{order:14}
   .header-toggle-btn{
     justify-self:end;
     align-self:center;
@@ -313,7 +314,8 @@
 
   #overviewPanel,
   #planPanel,
-  #codePanel{
+  #codePanel,
+  #usagePanel{
     position:fixed;
     top:148px;
     right:16px;
@@ -335,24 +337,30 @@
   body.overview-open #overviewPanel{display:flex}
   body.plan-open #planPanel{display:flex}
   body.code-open #codePanel{display:flex}
+  body.usage-open #usagePanel{display:flex}
   body.has-health-banner #overviewPanel,
   body.has-health-banner #planPanel,
-  body.has-health-banner #codePanel{top:188px}
+  body.has-health-banner #codePanel,
+  body.has-health-banner #usagePanel{top:188px}
   #searchPanel.open ~ #overviewPanel,
   #searchPanel.open ~ #planPanel,
-  #searchPanel.open ~ #codePanel{top:198px}
+  #searchPanel.open ~ #codePanel,
+  #searchPanel.open ~ #usagePanel{top:198px}
   body.has-health-banner #searchPanel.open ~ #overviewPanel,
   body.has-health-banner #searchPanel.open ~ #planPanel,
-  body.has-health-banner #searchPanel.open ~ #codePanel{top:238px}
+  body.has-health-banner #searchPanel.open ~ #codePanel,
+  body.has-health-banner #searchPanel.open ~ #usagePanel{top:238px}
   @media (min-width:1360px){
     body.overview-open #log,
     body.plan-open #log,
-    body.code-open #log{padding-right:calc(var(--content-pad) + 344px)}
+    body.code-open #log,
+    body.usage-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
     #overviewPanel,
     #planPanel,
-    #codePanel{
+    #codePanel,
+    #usagePanel{
       right:12px;
       width:min(320px,calc(100vw - 24px));
       background:rgba(18,22,29,.96);
@@ -361,6 +369,7 @@
   #overviewToggle.on{border-color:rgba(114,183,255,.64);color:#b9dcff;background:#172333}
   #planToggle.on{border-color:rgba(104,211,145,.6);color:#c2f5d3;background:#14251b}
   #codeToggle.on{border-color:rgba(255,209,102,.58);color:#f8df9a;background:#2b2618}
+  #usageToggle.on{border-color:rgba(114,183,255,.58);color:#b9dcff;background:#172333}
   .overview-head{
     display:flex;
     align-items:center;
@@ -649,6 +658,36 @@
     text-overflow:ellipsis;
     white-space:nowrap;
   }
+  .usage-list{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    background:var(--border-soft);
+  }
+  .usage-provider{
+    min-width:0;
+    padding:9px 10px;
+    background:#101720;
+    display:grid;
+    gap:4px;
+  }
+  .usage-provider strong{
+    min-width:0;
+    color:var(--txt);
+    font-size:12px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .usage-provider span{
+    min-width:0;
+    color:var(--muted);
+    font-size:11px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .usage-cost{color:#d7ecff!important}
 
   #log{
     position:relative;
@@ -1406,9 +1445,10 @@
   @media (max-width:1180px){
     body.overview-open #log,
     body.plan-open #log,
-    body.code-open #log{padding-right:var(--content-pad)}
-    #overviewPanel,#planPanel,#codePanel{display:none!important}
-    #overviewToggle,#planToggle,#codeToggle{display:none}
+    body.code-open #log,
+    body.usage-open #log{padding-right:var(--content-pad)}
+    #overviewPanel,#planPanel,#codePanel,#usagePanel{display:none!important}
+    #overviewToggle,#planToggle,#codeToggle,#usageToggle{display:none}
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1590,6 +1630,7 @@
       <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
       <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
       <button id="codeToggle" class="icon" type="button" title="Код-память" aria-pressed="false">{ } <span class="sec-label">Код</span></button>
+      <button id="usageToggle" class="icon" type="button" title="Расход" aria-pressed="false">💸 <span class="sec-label">Расход</span></button>
       <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
       <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
       <button id="compactToggle" type="button" title="Переключить плотность ленты">Сжато</button>
@@ -1719,6 +1760,36 @@
   </section>
 </aside>
 
+<aside id="usagePanel" aria-label="Расход" aria-hidden="true">
+  <div class="overview-head">
+    <strong>💸 Расход</strong>
+    <button id="usageClose" class="mini-btn overview-close" type="button" title="Скрыть расход" aria-label="Скрыть расход">×</button>
+  </div>
+  <section class="overview-section" aria-label="Сводка расхода">
+    <h2>Сводка</h2>
+    <div class="overview-kpis">
+      <div class="overview-kpi"><b id="usageBurn24">$0</b><span>$/час за 24ч</span></div>
+      <div class="overview-kpi"><b id="usageTotalCost">$0</b><span>paid всего</span></div>
+      <div class="overview-kpi"><b id="usagePrepaidCalls">0</b><span>prepaid вызовов</span></div>
+      <div class="overview-kpi"><b id="usageTotalCalls">0</b><span>всего вызовов</span></div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Окна расхода">
+    <h2>Окна</h2>
+    <div class="overview-lines">
+      <div class="overview-line"><span>1ч</span><b id="usageWindow1">$0/ч · 0 выз.</b></div>
+      <div class="overview-line"><span>24ч</span><b id="usageWindow24">$0/ч · 0 выз.</b></div>
+      <div class="overview-line"><span>prepaid</span><b id="usagePrepaidMin">0 мин за 24ч</b></div>
+    </div>
+  </section>
+  <section class="overview-section" aria-label="Провайдеры расхода">
+    <h2>Провайдеры</h2>
+    <div id="usageProviders" class="usage-list">
+      <div class="overview-empty">Расход пока не загружен</div>
+    </div>
+  </section>
+</aside>
+
 <div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
 <button id="toBottom" class="scroll-jump" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
@@ -1769,6 +1840,7 @@ let pollInFlight = false;
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
+let usageInFlight = false;
 let connectionFailures = 0;
 let activeAgentLabel = '';
 let systemGroupsExpanded = new Set();
@@ -1826,6 +1898,17 @@ const codeClose = document.getElementById('codeClose');
 const codeQuery = document.getElementById('codeQuery');
 const codeSearch = document.getElementById('codeSearch');
 const codeResults = document.getElementById('codeResults');
+const usageToggle = document.getElementById('usageToggle');
+const usagePanel = document.getElementById('usagePanel');
+const usageClose = document.getElementById('usageClose');
+const usageBurn24 = document.getElementById('usageBurn24');
+const usageTotalCost = document.getElementById('usageTotalCost');
+const usagePrepaidCalls = document.getElementById('usagePrepaidCalls');
+const usageTotalCalls = document.getElementById('usageTotalCalls');
+const usageWindow1 = document.getElementById('usageWindow1');
+const usageWindow24 = document.getElementById('usageWindow24');
+const usagePrepaidMin = document.getElementById('usagePrepaidMin');
+const usageProviders = document.getElementById('usageProviders');
 const exportChatBtn = document.getElementById('exportChat');
 const exportMarkdownBtn = document.getElementById('exportMarkdown');
 const searchPanel = document.getElementById('searchPanel');
@@ -1891,6 +1974,12 @@ let codeOpen = localStorage.getItem('bridgeCode') === '1';
 if(codeOpen && (overviewOpen || planOpen)){
   overviewOpen = false;
   planOpen = false;
+}
+let usageOpen = localStorage.getItem('bridgeUsage') === '1';
+if(usageOpen && (overviewOpen || planOpen || codeOpen)){
+  overviewOpen = false;
+  planOpen = false;
+  codeOpen = false;
 }
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
@@ -2077,6 +2166,70 @@ function applyCodeState(){
     codeToggle.title = enabled ? 'Скрыть код-память' : 'Показать код-память';
   }
   requestAnimationFrame(updateBottomButton);
+}
+function applyUsageState(){
+  const enabled = Boolean(usageOpen && window.innerWidth > 1180);
+  document.body.classList.toggle('usage-open', enabled);
+  if(usagePanel) usagePanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(usageToggle){
+    usageToggle.classList.toggle('on', enabled);
+    usageToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    usageToggle.title = enabled ? 'Скрыть расход' : 'Показать расход';
+  }
+  requestAnimationFrame(updateBottomButton);
+}
+function fmtMoney(n, digits){
+  const value = Number(n) || 0;
+  const d = digits == null ? (Math.abs(value) >= 1 ? 2 : 4) : digits;
+  return '$' + value.toFixed(d);
+}
+function usageWindow(data, hours){
+  const rows = data && Array.isArray(data.windows) ? data.windows : [];
+  return rows.find(w => Number(w.hours) === Number(hours)) || null;
+}
+function renderUsage(data){
+  const providers = data && Array.isArray(data.by_provider) ? data.by_provider : [];
+  const w1 = usageWindow(data, 1) || {calls:0, burn_usd_per_hr:0, cost_usd:0, prepaid_calls:0, prepaid_min:0};
+  const w24 = usageWindow(data, 24) || {calls:0, burn_usd_per_hr:0, cost_usd:0, prepaid_calls:0, prepaid_min:0};
+  const prepaidCalls = providers
+    .filter(p => ['claude','codex'].includes(String(p.provider || '').toLowerCase()))
+    .reduce((sum, p) => sum + (Number(p.calls) || 0), 0);
+  if(usageBurn24) usageBurn24.textContent = fmtMoney(w24.burn_usd_per_hr, 4);
+  if(usageTotalCost) usageTotalCost.textContent = fmtMoney(data && data.total_cost_usd, 4);
+  if(usagePrepaidCalls) usagePrepaidCalls.textContent = String(prepaidCalls || Number(w24.prepaid_calls) || 0);
+  if(usageTotalCalls) usageTotalCalls.textContent = String((data && Number(data.total_calls)) || 0);
+  if(usageWindow1) usageWindow1.textContent = fmtMoney(w1.burn_usd_per_hr, 4) + '/ч · ' + (Number(w1.calls) || 0) + ' выз.';
+  if(usageWindow24) usageWindow24.textContent = fmtMoney(w24.burn_usd_per_hr, 4) + '/ч · ' + (Number(w24.calls) || 0) + ' выз.';
+  if(usagePrepaidMin) usagePrepaidMin.textContent = ((Number(w24.prepaid_min) || 0).toFixed(2)) + ' мин за 24ч';
+  if(!usageProviders) return;
+  if(!providers.length){
+    usageProviders.innerHTML = '<div class="overview-empty">Записей расхода пока нет</div>';
+    return;
+  }
+  usageProviders.innerHTML = providers.map(p => {
+    const name = String(p.provider || 'unknown');
+    const calls = Number(p.calls) || 0;
+    const cost = Number(p.cost_usd) || 0;
+    const pt = Number(p.prompt_tokens) || 0;
+    const ct = Number(p.completion_tokens) || 0;
+    return '<div class="usage-provider">' +
+      '<strong>' + esc(name) + '</strong>' +
+      '<span class="usage-cost">' + calls + ' выз. · ' + fmtMoney(cost, 6) + '</span>' +
+      '<span>in ' + pt + ' · out ' + ct + '</span>' +
+    '</div>';
+  }).join('');
+}
+async function pollUsage(){
+  if(usageInFlight) return;
+  usageInFlight = true;
+  try{
+    const data = await fetchJson('/api/usage');
+    renderUsage(data);
+  }catch(e){
+    if(usageProviders) usageProviders.innerHTML = '<div class="overview-empty">Расход недоступен: ' + esc(e.message || e) + '</div>';
+  }finally{
+    usageInFlight = false;
+  }
 }
 function renderCodeResults(items, note){
   if(!codeResults) return;
@@ -3850,10 +4003,13 @@ overviewToggle.addEventListener('click', () => {
   if(overviewOpen){
     planOpen = false;
     codeOpen = false;
+    usageOpen = false;
     localStorage.setItem('bridgePlan', '0');
     localStorage.setItem('bridgeCode', '0');
+    localStorage.setItem('bridgeUsage', '0');
     applyPlanState();
     applyCodeState();
+    applyUsageState();
   }
   localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
   applyOverviewState();
@@ -3869,10 +4025,13 @@ if(planToggle){
     if(planOpen){
       overviewOpen = false;
       codeOpen = false;
+      usageOpen = false;
       localStorage.setItem('bridgeOverview', '0');
       localStorage.setItem('bridgeCode', '0');
+      localStorage.setItem('bridgeUsage', '0');
       applyOverviewState();
       applyCodeState();
+      applyUsageState();
     }
     localStorage.setItem('bridgePlan', planOpen ? '1' : '0');
     applyPlanState();
@@ -3892,10 +4051,13 @@ if(codeToggle){
     if(codeOpen){
       overviewOpen = false;
       planOpen = false;
+      usageOpen = false;
       localStorage.setItem('bridgeOverview', '0');
       localStorage.setItem('bridgePlan', '0');
+      localStorage.setItem('bridgeUsage', '0');
       applyOverviewState();
       applyPlanState();
+      applyUsageState();
     }
     localStorage.setItem('bridgeCode', codeOpen ? '1' : '0');
     applyCodeState();
@@ -3907,6 +4069,32 @@ if(codeClose){
     codeOpen = false;
     localStorage.setItem('bridgeCode', '0');
     applyCodeState();
+  });
+}
+if(usageToggle){
+  usageToggle.addEventListener('click', () => {
+    usageOpen = !(document.body.classList.contains('usage-open'));
+    if(usageOpen){
+      overviewOpen = false;
+      planOpen = false;
+      codeOpen = false;
+      localStorage.setItem('bridgeOverview', '0');
+      localStorage.setItem('bridgePlan', '0');
+      localStorage.setItem('bridgeCode', '0');
+      applyOverviewState();
+      applyPlanState();
+      applyCodeState();
+    }
+    localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
+    applyUsageState();
+    pollUsage();
+  });
+}
+if(usageClose){
+  usageClose.addEventListener('click', () => {
+    usageOpen = false;
+    localStorage.setItem('bridgeUsage', '0');
+    applyUsageState();
   });
 }
 if(codeSearch) codeSearch.addEventListener('click', runCodeSearch);
@@ -4083,6 +4271,12 @@ window.addEventListener('keydown', e => {
     applyPlanState();
     return;
   }
+  if(e.key === 'Escape' && document.body.classList.contains('usage-open')){
+    usageOpen = false;
+    localStorage.setItem('bridgeUsage', '0');
+    applyUsageState();
+    return;
+  }
   if(e.key === 'Escape' && btnsSecondary && btnsSecondary.classList.contains('open')){
     setMoreMenuOpen(false);
     return;
@@ -4098,6 +4292,7 @@ window.addEventListener('resize', () => {
   applyOverviewState();
   applyPlanState();
   applyCodeState();
+  applyUsageState();
   resizeInput();
 });
 
@@ -4107,6 +4302,7 @@ applyViewPrefs();
 applyOverviewState();
 applyPlanState();
 applyCodeState();
+applyUsageState();
 applyHeaderCollapsed();
 applyComposerExpanded();
 applyMessageFilter();
@@ -4117,9 +4313,11 @@ updateSendState();
 poll();
 status();
 pollPlan();
+pollUsage();
 setInterval(poll, 1500);
 setInterval(status, 1200);
 setInterval(pollPlan, 3000);
+setInterval(pollUsage, 5000);
 setInterval(refreshTimes, 30000);
 </script>
 </body>

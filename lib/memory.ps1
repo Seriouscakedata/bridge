@@ -72,6 +72,7 @@ function Get-Embedding {
   # cap very long text so a single huge memory doesn't blow the request
   $t = [string]$Text
   if ($t.Length -gt 8000) { $t = $t.Substring(0, 8000) }
+  $estTokens = [int][Math]::Ceiling([Math]::Max(1, $t.Length) / 4.0)
   $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):embedContent?key=$key"
   $body = @{
     model    = "models/$model"
@@ -82,13 +83,16 @@ function Get-Embedding {
   try {
     $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec 60
     if (-not $r.embedding.values) { return $null }
+    try {
+      $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $model -Purpose 'embed' -PromptTokens $estTokens -CompletionTokens 0 -Status 'ok'
+    } catch {}
     return ,@($r.embedding.values | ForEach-Object { [double]$_ })
   } catch { return $null }
 }
 
 function Invoke-GeminiChat {
   # Returns the model's text, or $null on any failure.
-  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.2)
+  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.2, [string]$Purpose = '')
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
   $key = Get-Secret 'geminiApiKey'
   if (-not $key) { return $null }
@@ -99,6 +103,14 @@ function Invoke-GeminiChat {
   }
   try {
     $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec $TimeoutSec
+    try {
+      $pt = 0; $ct = 0
+      if ($r.usageMetadata) {
+        if ($null -ne $r.usageMetadata.promptTokenCount) { $pt = [int]$r.usageMetadata.promptTokenCount }
+        if ($null -ne $r.usageMetadata.candidatesTokenCount) { $ct = [int]$r.usageMetadata.candidatesTokenCount }
+      }
+      $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $Model -Purpose $Purpose -PromptTokens $pt -CompletionTokens $ct -Status 'ok'
+    } catch {}
     return [string]$r.candidates[0].content.parts[0].text
   } catch { return $null }
 }

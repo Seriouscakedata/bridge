@@ -327,6 +327,10 @@ try {
         $itemsJson = '[' + (($hits | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"q":' + (("" + $q) | ConvertTo-Json -Compress) + ',"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/usage') {
+        $u = Get-UsageSummary
+        Send-Text $ctx ($u | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
         $r = Get-RadarDigestForApi
         Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
