@@ -35,6 +35,9 @@ function Get-MemoryConfig {
     skillMaxInjectChars = 600
     skillImportance = 0.8
     skillDedupThreshold = 0.96
+    codeTopK = 4
+    codeMinScore = 0.5
+    codeMaxInjectChars = 900
   }
   $m = $null
   try {

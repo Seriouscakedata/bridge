@@ -306,6 +306,12 @@ try {
         $p = Get-PlanForApi
         Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/code') {
+        $q = [string]$ctx.Request.QueryString['q']
+        $hits = @(Get-CodeRecallForApi -Query $q -TopK 8)
+        $itemsJson = '[' + (($hits | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"q":' + (("" + $q) | ConvertTo-Json -Compress) + ',"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
         $r = Get-RadarDigestForApi
         Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'

@@ -341,6 +341,8 @@ function Initialize-Bridge {
 # Long-term vector memory (Gemini embeddings + Flash librarian). Best-effort: if this
 # layer fails to load or Gemini is unreachable, the engine keeps running unchanged.
 try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.ps1 failed to load: $($_.Exception.Message)" }
+# Per-project semantic code memory, stored separately from ordinary long-term memory.
+try { . (Join-Path $PSScriptRoot 'codemem.ps1') } catch { Write-Warning "codemem.ps1 failed to load: $($_.Exception.Message)" }
 # LLM router (DeepSeek/Gemini for cheap background thinking) -- load AFTER memory.ps1.
 try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 failed to load: $($_.Exception.Message)" }
 # Self-improvement backlog (ideas the agents raise themselves).
