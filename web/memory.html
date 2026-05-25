@@ -121,6 +121,7 @@
   <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
   <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
   <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
+  <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
 </div>
 
 <div class="wrap">
@@ -159,6 +160,44 @@
       </div>
     </div>
     <div class="grid" id="blGrid"></div>
+  </div>
+  <div id="settingsView" class="hidden">
+    <div class="card" style="gap:14px">
+      <div class="row" style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="setEnabled" style="width:18px;height:18px;accent-color:var(--codex)">
+        <label for="setEnabled"><b>Автономия включена</b> — мост сам берёт идеи из бэклога, когда свободен.</label>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="setAutoRun" style="width:18px;height:18px;accent-color:var(--codex)">
+        <label for="setAutoRun"><b>Без ручного одобрения</b> — идеи выполняются автоматически (откат на стабильную версию, если что).</label>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Тишина до автозапуска (минут):</label>
+        <input type="number" id="setIdle" min="0" step="1" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Частота саморефлексии (часов):</label>
+        <input type="number" id="setReflect" min="0.1" step="0.5" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Лимит автозадач в день (0 = без лимита):</label>
+        <input type="number" id="setCap" min="0" step="1" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div style="border-top:1px solid var(--border-soft);padding-top:12px">
+        <div style="margin-bottom:8px"><b>Область авто-улучшения</b> (касается только автономной работы, не твоих задач):</div>
+        <label style="display:block;margin:5px 0"><input type="radio" name="scope" value="bridge" style="accent-color:var(--user)"> Только сам мост</label>
+        <label style="display:block;margin:5px 0"><input type="radio" name="scope" value="projects" style="accent-color:var(--user)"> Мост + его проекты</label>
+        <div style="margin-top:10px">
+          <label style="font-size:12px;color:var(--muted)">Проекты, которые мост считает внешними:</label>
+          <select id="projList" style="width:100%;margin-top:5px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:8px 9px;outline:none"><option>загрузка…</option></select>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Список git-проектов под рабочим корнем (для справки). «Мост + проекты» разрешит автономно улучшать и их.</div>
+        </div>
+      </div>
+      <div class="row" style="display:flex;gap:10px;align-items:center">
+        <button class="primary" id="setSave" type="button">Сохранить настройки</button>
+        <span id="setStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -312,14 +351,60 @@ function mdToHtml(src){
 
 // tabs
 function switchTab(name){
-  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog'};
-  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView'};
+  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',settings:'#tabSettings'};
+  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',settings:'#settingsView'};
   for(const k in tabs){ $(tabs[k]).classList.toggle('on', k===name); $(views[k]).classList.toggle('hidden', k!==name); }
   if(name==='backlog') loadBacklog();
+  if(name==='settings') loadSettings();
 }
 $('#tabRecords').addEventListener('click',()=>switchTab('records'));
 $('#tabMap').addEventListener('click',()=>switchTab('map'));
 $('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
+$('#tabSettings').addEventListener('click',()=>switchTab('settings'));
+
+// ---- settings ----
+let projectsLoaded = false;
+async function loadSettings(){
+  try{
+    const d = await api('/api/settings'); const s = d.settings||{};
+    $('#setEnabled').checked = !!s.enabled;
+    $('#setAutoRun').checked = !s.requireApproval;            // checkbox = "без одобрения"
+    $('#setIdle').value = s.idleQuietMinutes!=null ? s.idleQuietMinutes : 10;
+    $('#setReflect').value = s.reflectEveryHours!=null ? s.reflectEveryHours : 6;
+    $('#setCap').value = s.maxAutonomousTasksPerDay!=null ? s.maxAutonomousTasksPerDay : 0;
+    const sc = s.scope||'bridge';
+    document.querySelectorAll('input[name="scope"]').forEach(r=>{ r.checked = (r.value===sc); });
+  }catch(e){ toast('Ошибка загрузки настроек: '+e,'bad'); }
+  if(!projectsLoaded) loadProjects();
+}
+async function loadProjects(){
+  const sel = $('#projList');
+  try{
+    const d = await api('/api/projects'); const ps = d.projects||[];
+    if(ps.length===0){ sel.innerHTML = '<option>(git-проектов под рабочим корнем не найдено)</option>'; }
+    else { sel.innerHTML = ps.map(p=>`<option>${esc(p)}</option>`).join(''); }
+    projectsLoaded = true;
+  }catch(e){ sel.innerHTML = '<option>ошибка сканирования</option>'; }
+}
+$('#setSave').addEventListener('click', async ()=>{
+  const scopeEl = document.querySelector('input[name="scope"]:checked');
+  const body = {
+    enabled: $('#setEnabled').checked,
+    requireApproval: !$('#setAutoRun').checked,
+    idleQuietMinutes: parseFloat($('#setIdle').value)||0,
+    reflectEveryHours: parseFloat($('#setReflect').value)||6,
+    maxAutonomousTasksPerDay: parseInt($('#setCap').value)||0,
+    scope: scopeEl ? scopeEl.value : 'bridge'
+  };
+  const b=$('#setSave'); b.disabled=true; $('#setStatus').textContent='сохраняю…';
+  try{
+    const r = await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    $('#setStatus').textContent = r.ok ? 'сохранено ✓' : 'ошибка';
+    toast(r.ok?'Настройки сохранены':'Ошибка', r.ok?'ok':'bad');
+  }catch(e){ $('#setStatus').textContent='ошибка'; toast('Ошибка: '+e,'bad'); }
+  b.disabled=false;
+  setTimeout(()=>{ $('#setStatus').textContent=''; }, 4000);
+});
 
 // ---- backlog ----
 let BL = [];

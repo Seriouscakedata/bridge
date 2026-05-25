@@ -11,12 +11,15 @@ try { [Console]::OutputEncoding = $Utf8NoBom } catch {}
 $bridgeRoot = Get-BridgeRoot
 function Write-ReflectLog { param([string]$Msg) try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'reflect.log') -Value ((Get-Date).ToString('s') + '  ' + $Msg) -Encoding UTF8 } catch {} }
 
-$cfg = Get-BridgeConfig
-$auto = $null
-if ($cfg.PSObject.Properties.Name -contains 'autonomy') { $auto = $cfg.autonomy }
-$enabled = if ($auto -and $null -ne $auto.enabled) { [bool]$auto.enabled } else { $true }
-if (-not $enabled) { Write-ReflectLog 'autonomy disabled; exit'; return }
-$maxIdeas = if ($auto -and $auto.maxIdeasPerReflect) { [int]$auto.maxIdeasPerReflect } else { 3 }
+$auto = Get-AutonomySettings
+if (-not [bool]$auto.enabled) { Write-ReflectLog 'autonomy disabled; exit'; return }
+$maxIdeas = if ($auto.maxIdeasPerReflect) { [int]$auto.maxIdeasPerReflect } else { 3 }
+$scope = [string]$auto.scope
+$scopeLine = if ($scope -eq 'projects') {
+  "ОБЛАСТЬ: предлагай улучшения САМОГО МОСТА и его проектов (под рабочим корнем). Не предлагай трогать личные/системные файлы."
+} else {
+  "ОБЛАСТЬ: предлагай улучшения ТОЛЬКО самого моста (его код, надёжность, UX, память, автономия). НЕ предлагай менять другие проекты."
+}
 
 Write-ReflectLog '=== reflect start ==='
 
@@ -61,6 +64,7 @@ $prompt = @"
 Ты — аналитик-наблюдатель ИИ-моста (пара агентов Claude+Codex, разработка на ПК пользователя Тимура).
 Твоя задача: на основе ДАННЫХ ниже предложить до $maxIdeas КОНКРЕТНЫХ, выполнимых улучшений самого моста (код, процесс, надёжность, UX, память, автономия).
 Требования к идеям:
+- $scopeLine
 - конкретные и проверяемые (не «улучшить качество», а «что и где изменить и зачем»);
 - опирайся ТОЛЬКО на данные ниже (телеметрия, память, диалог); не выдумывай проблем;
 - НЕ повторяй то, что уже есть в открытом бэклоге;

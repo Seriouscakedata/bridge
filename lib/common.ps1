@@ -336,3 +336,5 @@ try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.p
 try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 failed to load: $($_.Exception.Message)" }
 # Self-improvement backlog (ideas the agents raise themselves).
 try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }
+# User-tunable settings (gitignored overrides: idle-quiet, autonomy scope, etc.).
+try { . (Join-Path $PSScriptRoot 'settings.ps1') } catch { Write-Warning "settings.ps1 failed to load: $($_.Exception.Message)" }

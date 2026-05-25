@@ -113,8 +113,7 @@ function Start-ReflectIfDue {
 }
 
 function Get-AutonomyRequireApproval {
-  try { $a = (Get-BridgeConfig).autonomy; if ($null -ne $a.requireApproval) { return [bool]$a.requireApproval } } catch {}
-  return $false
+  try { return [bool](Get-AutonomySettings).requireApproval } catch { return $false }
 }
 
 function Get-LastUserActivityMinutes {
@@ -151,14 +150,14 @@ function Detect-StudyMode {
 }
 
 function Test-AutonomyReady {
-  # True if the bridge may START autonomous backlog work right now.
+  # True if the bridge may START autonomous backlog work right now (reads merged settings).
   $a = $null
-  try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $a = $cfgA.autonomy } } catch { return $false }
-  $enabled = if ($a -and $null -ne $a.enabled) { [bool]$a.enabled } else { $true }
-  if (-not $enabled) { return $false }
-  $quietMin = if ($a -and $a.idleQuietMinutes) { [double]$a.idleQuietMinutes } else { 10 }
+  try { $a = Get-AutonomySettings } catch { return $false }
+  if (-not $a) { return $false }
+  if (-not [bool]$a.enabled) { return $false }
+  $quietMin = [double]$a.idleQuietMinutes
   if ((Get-LastUserActivityMinutes) -lt $quietMin) { return $false }
-  $cap = if ($a -and $null -ne $a.maxAutonomousTasksPerDay) { [int]$a.maxAutonomousTasksPerDay } else { 0 }
+  $cap = [int]$a.maxAutonomousTasksPerDay
   if ($cap -gt 0) {
     $st = Read-State
     $today = (Get-Date).ToString('yyyy-MM-dd')
@@ -284,6 +283,15 @@ function Build-Prompt {
   $promptState = Read-State
   $dt = [int]$promptState.discuss_turn
   $studyTurn = [int]$promptState.task_turn
+  # Scope notice for AUTONOMOUS (backlog) tasks only -- user-typed tasks are never restricted.
+  $autoScopeLine = ''
+  try {
+    if ([string]$promptState.current_backlog_id) {
+      $sc = (Get-AutonomySettings).scope
+      if ($sc -eq 'projects') { $autoScopeLine = "ОБЛАСТЬ АВТОНОМНОЙ ЗАДАЧИ: сам мост И его проекты под $workRoot. НЕ трогай личные/системные файлы вне проектов." }
+      else { $autoScopeLine = "ОБЛАСТЬ АВТОНОМНОЙ ЗАДАЧИ: ТОЛЬКО сам мост ($bridgeRoot). НЕ меняй другие проекты/файлы вне bridge." }
+    }
+  } catch {}
   $claudeToolHint = if ($Mode -eq 'research') {
     'У тебя есть инструменты Read/Grep/Glob, WebSearch и WebFetch. Bash недоступен.'
   } elseif ($Mode -eq 'study') {
@@ -314,6 +322,7 @@ STUDY-ХОД -- выполняй текущую фазу изучения. Мо�
 
 ТЕКУЩАЯ ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:
 $Task
+$autoScopeLine
 
 РОЛИ: ПЛАНИРОВЩИК = Claude (разбор задачи, инструкции, ревью). КОДЕР = Codex (выполнение: файлы, команды, тесты).
 ПРАВИЛА:

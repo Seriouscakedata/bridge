@@ -330,6 +330,32 @@ try {
           Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
         } else { Send-Text $ctx '{"ok":false,"error":"reflect.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/settings') {
+        $s = Get-AutonomySettings
+        $cfg2 = Get-BridgeConfig
+        $sJson = ($s | ConvertTo-Json -Compress -Depth 4)
+        $payload = '{"ok":true,"settings":' + $sJson + ',"workRoot":' + (("" + $cfg2.workRoot) | ConvertTo-Json -Compress) + '}'
+        Send-Text $ctx $payload 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/settings') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $upd = @{}
+        if ($null -ne $body.enabled)                  { $upd['enabled'] = [bool]$body.enabled }
+        if ($null -ne $body.requireApproval)          { $upd['requireApproval'] = [bool]$body.requireApproval }
+        if ($null -ne $body.idleQuietMinutes)         { $v=0.0; if([double]::TryParse([string]$body.idleQuietMinutes,[ref]$v)){ if($v -lt 0){$v=0}; $upd['idleQuietMinutes'] = $v } }
+        if ($null -ne $body.reflectEveryHours)        { $v=0.0; if([double]::TryParse([string]$body.reflectEveryHours,[ref]$v)){ if($v -lt 0.1){$v=0.1}; $upd['reflectEveryHours'] = $v } }
+        if ($null -ne $body.maxAutonomousTasksPerDay) { $v=0;   if([int]::TryParse([string]$body.maxAutonomousTasksPerDay,[ref]$v)){ if($v -lt 0){$v=0}; $upd['maxAutonomousTasksPerDay'] = $v } }
+        if ($null -ne $body.scope)                    { $sc=[string]$body.scope; if($sc -eq 'bridge' -or $sc -eq 'projects'){ $upd['scope'] = $sc } }
+        if ($upd.Count -gt 0) { Set-AutonomySetting -Updates $upd | Out-Null }
+        [void](Add-Message -From system -Text "⚙ Настройки автономии обновлены пользователем." -Kind event)
+        $s2 = Get-AutonomySettings
+        Send-Text $ctx ('{"ok":true,"settings":' + ($s2 | ConvertTo-Json -Compress -Depth 4) + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/projects') {
+        $projs = @(Get-ExternalProjects)
+        $arr = '[' + (($projs | ForEach-Object { (("" + $_) | ConvertTo-Json -Compress) }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"projects":' + $arr + ',"bridge":' + (("" + (Get-BridgeRoot)) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8'
+      }
       else {
         Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404
       }
