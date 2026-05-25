@@ -117,12 +117,17 @@ function Get-AutonomyRequireApproval {
 }
 
 function Get-LastUserActivityMinutes {
-  # Minutes since the last [USER] message (fallback: driver start). For the idle-quiet gate.
+  # Minutes since the last write to conversation.jsonl (mtime = any bridge activity proxy).
+  # Faster than parsing messages; captures user, agent, and system writes alike.
+  # Fallback: driver start time from state.
   $ts = $null
-  try { $u = @(Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' }); if ($u.Count -gt 0) { $ts = [datetime]$u[-1].ts } } catch {}
-  if (-not $ts) { try { $ts = [datetime](Read-State).driver_started } catch {} }
+  try {
+    $p = Get-ConversationPath
+    if (Test-Path -LiteralPath $p) { $ts = (Get-Item -LiteralPath $p).LastWriteTimeUtc }
+  } catch {}
+  if (-not $ts) { try { $ts = ([datetime](Read-State).driver_started).ToUniversalTime() } catch {} }
   if (-not $ts) { return 99999 }
-  try { return ((Get-Date).ToUniversalTime() - $ts.ToUniversalTime()).TotalMinutes } catch { return 99999 }
+  try { return ((Get-Date).ToUniversalTime() - $ts).TotalMinutes } catch { return 99999 }
 }
 
 function Detect-StudyMode {
