@@ -335,6 +335,35 @@ function Set-BridgeStatusText {
   Update-State ({ param($s) $s.status_text=$Text; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 }
 
+function Write-TurnLog {
+  param(
+    [string]$Speaker,
+    [string]$Model,
+    [string]$Mode,
+    [DateTime]$StartedAtUtc,
+    [string]$Reply,
+    [string]$Status = ''
+  )
+  try {
+    $turnStatus = $Status
+    if ([string]::IsNullOrWhiteSpace($turnStatus)) {
+      if ([string]$Reply -match 'timeout') { $turnStatus = 'timeout' }
+      elseif ([string]::IsNullOrWhiteSpace($Reply)) { $turnStatus = 'empty' }
+      else { $turnStatus = 'ok' }
+    }
+    $sec = [Math]::Round(([DateTime]::UtcNow - $StartedAtUtc).TotalSeconds, 3)
+    $entry = [ordered]@{
+      ts      = [DateTime]::UtcNow.ToString('o')
+      speaker = $Speaker
+      model   = $Model
+      sec     = $sec
+      status  = $turnStatus
+      mode    = $Mode
+    }
+    Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+  } catch {}
+}
+
 # ---------- startup ----------
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
 # summary and decisions are file-based and already survive. We keep current_task /
@@ -405,8 +434,15 @@ while ($true) {
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt' -TaskText $task)
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
-  if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel }
-  else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
+  $turnStart = [DateTime]::UtcNow
+  try {
+    if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel }
+    else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
+  } catch {
+    Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
+    throw
+  }
+  Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 
