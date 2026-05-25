@@ -749,7 +749,13 @@
   .composer-meta .char-count.bad{color:var(--danger)}
   #attach{font-size:18px}
   #screen{font-size:16px}
-  #attach,#screen,#send{flex:none}
+  #voice{font-size:16px}
+  #voice.listening{
+    color:#ffd7da;
+    background:#34191b;
+    border-color:#7d3136;
+  }
+  #attach,#screen,#voice,#send{flex:none}
   #fileInput{display:none}
   body.dragover:after{
     content:"Отпустите файл, чтобы прикрепить";
@@ -826,20 +832,21 @@
     body.compact-mode .msg,body.compact-mode .from-user{max-width:100%}
     footer{padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px));gap:8px}
     .composer-meta{font-size:10.5px}
-    #attach,#screen{width:38px}
+    #attach,#screen,#voice{width:38px}
     #send{padding:0 12px}
     #toBottom{right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   }
   @media (max-width:520px){
     footer{
       display:grid;
-      grid-template-columns:42px 42px minmax(0,1fr);
+      grid-template-columns:42px 42px 42px minmax(0,1fr);
       align-items:end;
     }
     .compose-main{grid-column:1 / -1}
     #attach{grid-column:1;grid-row:2;width:42px}
     #screen{grid-column:2;grid-row:2;width:42px}
-    #send{grid-column:3;grid-row:2;width:100%;min-height:38px}
+    #voice{grid-column:3;grid-row:2;width:42px}
+    #send{grid-column:4;grid-row:2;width:100%;min-height:38px}
     .composer-meta{gap:6px}
   }
   @media (prefers-reduced-motion:reduce){
@@ -921,6 +928,7 @@
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
   <button id="screen" class="icon" title="Сделать снимок экрана и отправить в ленту" type="button">▣</button>
+  <button id="voice" class="icon" title="Голосовой ввод в черновик" type="button">🎙</button>
   <input id="fileInput" type="file" multiple>
   <div class="compose-main">
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
@@ -967,6 +975,7 @@ const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
 const attachBtn = document.getElementById('attach');
 const screenBtn = document.getElementById('screen');
+const voiceBtn = document.getElementById('voice');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
 const uploadQueue = document.getElementById('uploadQueue');
@@ -1012,6 +1021,10 @@ if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter
 let sending = false;
 let uploading = false;
 let screenshotting = false;
+let speechRec = null;
+let voiceListening = false;
+let voiceBaseText = '';
+let voiceFinalText = '';
 let dragDepth = 0;
 
 function esc(s){
@@ -1825,10 +1838,12 @@ async function exportChat(){
 function updateSendState(){
   sendBtn.disabled = sending || uploading || screenshotting || !input.value.trim();
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
-  attachBtn.disabled = uploading || screenshotting;
-  screenBtn.disabled = uploading || screenshotting;
+  attachBtn.disabled = sending || uploading || screenshotting;
+  screenBtn.disabled = sending || uploading || screenshotting;
+  voiceBtn.disabled = !speechSupported() || (!voiceListening && (sending || uploading || screenshotting));
   attachBtn.setAttribute('aria-busy', uploading ? 'true' : 'false');
   screenBtn.setAttribute('aria-busy', screenshotting ? 'true' : 'false');
+  voiceBtn.setAttribute('aria-busy', voiceListening ? 'true' : 'false');
 }
 async function copyText(text, btn){
   try{
@@ -1875,8 +1890,9 @@ async function copyText(text, btn){
   }
 }
 async function send(){
+  if(voiceListening && speechRec) speechRec.stop();
   const text = input.value.trim();
-  if(!text || sending || uploading) return;
+  if(!text || sending || uploading || screenshotting) return;
   const draft = input.value;
   sending = true;
   input.value = '';
@@ -1902,7 +1918,8 @@ async function send(){
   }
 }
 async function takeScreenshot(){
-  if(uploading || screenshotting) return;
+  if(voiceListening && speechRec) speechRec.stop();
+  if(sending || uploading || screenshotting) return;
   screenshotting = true;
   const caption = input.value.trim();
   const draft = input.value;
@@ -1934,6 +1951,83 @@ async function takeScreenshot(){
   }finally{
     screenshotting = false;
     updateSendState();
+  }
+}
+function speechSupported(){
+  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+function persistInput(){
+  localStorage.setItem('bridgeDraft', input.value);
+  resizeInput();
+  updateComposerMeta();
+  updateSendState();
+}
+function setVoiceState(on){
+  voiceListening = Boolean(on);
+  voiceBtn.classList.toggle('listening', voiceListening);
+  voiceBtn.textContent = voiceListening ? '■' : '🎙';
+  voiceBtn.title = voiceListening ? 'Остановить голосовой ввод' : 'Голосовой ввод в черновик';
+  updateSendState();
+}
+function ensureSpeech(){
+  if(speechRec) return speechRec;
+  const SpeechCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SpeechCtor){
+    voiceBtn.disabled = true;
+    voiceBtn.title = 'Голосовой ввод не поддерживается этим браузером';
+    setComposerStatus('Голосовой ввод не поддерживается этим браузером', 'bad');
+    return null;
+  }
+  speechRec = new SpeechCtor();
+  speechRec.lang = 'ru-RU';
+  speechRec.continuous = true;
+  speechRec.interimResults = true;
+  speechRec.maxAlternatives = 1;
+  speechRec.onstart = () => {
+    setVoiceState(true);
+    setComposerStatus('Слушаю...');
+  };
+  speechRec.onend = () => {
+    setVoiceState(false);
+    if(composerStatus.textContent === 'Слушаю...') setComposerStatus('');
+  };
+  speechRec.onerror = e => {
+    setVoiceState(false);
+    setComposerStatus('Голосовой ввод: ' + (e.error || 'ошибка распознавания'), 'bad');
+  };
+  speechRec.onresult = e => {
+    let finalText = '';
+    let interimText = '';
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      const phrase = e.results[i][0] && e.results[i][0].transcript ? e.results[i][0].transcript.trim() : '';
+      if(!phrase) continue;
+      if(e.results[i].isFinal) finalText += phrase + ' ';
+      else interimText += phrase + ' ';
+    }
+    if(finalText){
+      voiceFinalText = (voiceFinalText + ' ' + finalText).trim();
+      input.value = [voiceBaseText, voiceFinalText].filter(Boolean).join(voiceBaseText && voiceFinalText ? ' ' : '');
+      persistInput();
+    }
+    if(interimText) setComposerStatus('Слышу: ' + interimText.trim());
+    else if(voiceListening) setComposerStatus('Слушаю...');
+  };
+  return speechRec;
+}
+function toggleVoice(){
+  const rec = ensureSpeech();
+  if(!rec) return;
+  if(voiceListening){
+    rec.stop();
+    return;
+  }
+  voiceBaseText = input.value.trim();
+  voiceFinalText = '';
+  try{
+    rec.start();
+  }catch(e){
+    setVoiceState(false);
+    setComposerStatus('Голосовой ввод уже запущен или недоступен', 'bad');
   }
 }
 async function ctl(action){
@@ -2018,6 +2112,7 @@ async function uploadFiles(files){
 
 attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
+voiceBtn.addEventListener('click', toggleVoice);
 fileInput.addEventListener('change', e => {
   uploadFiles(e.target.files);
   fileInput.value = '';
