@@ -926,7 +926,24 @@
     .subtitle{display:none}
     .chips{gap:6px}
     .chip{padding:5px 8px;font-size:11px}
-    .btns button:not(.icon){flex:1}
+    .btns{
+      width:100%;
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      justify-content:stretch;
+      gap:7px;
+    }
+    .btns button{
+      width:100%;
+      min-width:0;
+      padding-left:6px;
+      padding-right:6px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      font-size:12px;
+    }
+    .btns button.icon{width:100%;height:34px}
     .filterbar{padding:7px 10px}
     .filterbar .label{display:none}
     .filter-btn{padding:5px 9px;font-size:11.5px}
