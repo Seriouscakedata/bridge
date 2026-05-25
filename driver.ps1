@@ -1421,7 +1421,14 @@ while ($true) {
           if ($crc -ge $criticMaxRetries) {
             Add-Message -From system -Text "🔎 Критик: лимит доработок ($criticMaxRetries) исчерпан — закрываю задачу как есть, нужно внимание оператора." -Kind event | Out-Null
           } else {
-            if ($diff.Length -gt 16000) { $diff = $diff.Substring(0,16000) + "`n...[дифф обрезан]..." }
+            $diffWasTruncated = $false
+            if ($diff.Length -gt 16000) {
+              $diffWasTruncated = $true
+              $diff = $diff.Substring(0,16000) + "`n...[дифф обрезан]..."
+            }
+            $truncationNote = if ($diffWasTruncated) {
+              "ВАЖНО: diff ниже обрезан по лимиту контекста. Не считай сам факт обрезки синтаксической ошибкой, потерей кода или доказательством обрезанной функции; проверяй только реально видимые изменения. Синтаксис .ps1 и BOM проверяются отдельными командами."
+            } else { "" }
             $criticModelName = ''
             try { $criticModelName = [string](Get-LLMConfig)['critic'] } catch {}
             $criticPrompt = @"
@@ -1435,6 +1442,8 @@ while ($true) {
 - Бесконечные циклы / отсутствие таймаута; убийство процессов по возрасту/эвристике; чтение или вывод secrets.json.
 
 ЗАДАЧА: $task
+
+$truncationNote
 
 GIT-ДИФФ:
 $diff
@@ -1454,10 +1463,33 @@ $diff
                   if ($cv.verdict)  { $verdict  = [string]$cv.verdict }
                   if ($cv.severity) { $severity = ([string]$cv.severity).Trim().ToLower() }
                   if ($cv.summary)  { $summary  = [string]$cv.summary }
-                  if ($cv.issues)   { $issuesText = (@($cv.issues) -join '; ') }
+                  if ($cv.issues) {
+                    $issueParts = New-Object 'System.Collections.Generic.List[string]'
+                    foreach ($issue in @($cv.issues)) {
+                      if ($null -eq $issue) { continue }
+                      if ($issue -is [string]) {
+                        $txtIssue = ([string]$issue).Trim()
+                      } else {
+                        $fields = New-Object 'System.Collections.Generic.List[string]'
+                        foreach ($pn in @('file','line','severity','issue','problem','message','summary','fix')) {
+                          try {
+                            if ($issue.PSObject.Properties.Name -contains $pn) {
+                              $pv = [string]$issue.$pn
+                              if (-not [string]::IsNullOrWhiteSpace($pv)) { [void]$fields.Add(("{0}={1}" -f $pn,$pv)) }
+                            }
+                          } catch {}
+                        }
+                        if ($fields.Count -gt 0) { $txtIssue = [string]::Join(' | ', [string[]]@($fields.ToArray())) }
+                        else { $txtIssue = ($issue | ConvertTo-Json -Compress -Depth 4) }
+                      }
+                      if (-not [string]::IsNullOrWhiteSpace($txtIssue)) { [void]$issueParts.Add($txtIssue) }
+                    }
+                    $issuesText = [string]::Join('; ', [string[]]@($issueParts.ToArray()))
+                  }
                 } catch {}
               }
             }
+            if ([string]::IsNullOrWhiteSpace($issuesText) -and -not [string]::IsNullOrWhiteSpace($summary)) { $issuesText = $summary }
             $taskShort = ($task -replace '\s+',' ').Trim()
             if ($taskShort.Length -gt 80) { $taskShort = $taskShort.Substring(0,80) }
             try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + "  model=$criticModelName verdict=$verdict severity=$severity crc=$crc | $taskShort | $summary | $issuesText") -Encoding UTF8 } catch {}

@@ -218,10 +218,10 @@ function Write-CodeStoreAndManifest {
   $lines = @($Records | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 })
   $content = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' }
   $manifestJson = Convert-CodeManifestToJson -Manifest $Manifest -Slug $Slug
-  Use-BridgeLock {
+  Use-BridgeLock ({
     Write-AtomicFile -Path $storePath -Content $content
     Write-AtomicFile -Path $manifestPath -Content $manifestJson
-  }
+  }.GetNewClosure())
 }
 
 function Index-CodeBase {
