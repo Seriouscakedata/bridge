@@ -831,6 +831,7 @@
     min-height:15px;
     padding-left:2px;
     display:flex;
+    align-items:center;
     justify-content:space-between;
     gap:10px;
     color:#6f7b8d;
@@ -842,6 +843,18 @@
   .composer-meta .char-count{flex:none}
   .composer-meta .char-count.warn{color:var(--model)}
   .composer-meta .char-count.bad{color:var(--danger)}
+  .composer-clear{
+    display:none;
+    flex:none;
+    height:20px;
+    min-width:24px;
+    padding:0 7px;
+    border-radius:6px;
+    font-size:12px;
+    opacity:.78;
+  }
+  .composer-clear.show{display:inline-flex;align-items:center;justify-content:center}
+  .composer-clear:hover{opacity:1}
   #attach{font-size:18px}
   #screen{font-size:16px}
   #voice{font-size:16px}
@@ -1037,6 +1050,7 @@
     <div id="uploadQueue" class="upload-queue" aria-live="polite"></div>
     <div id="composerMeta" class="composer-meta" aria-live="polite">
       <span id="draftState" class="draft-state"></span>
+      <button id="clearDraft" class="mini-btn composer-clear" type="button" title="Очистить черновик" aria-label="Очистить черновик">×</button>
       <span id="charCount" class="char-count"></span>
     </div>
   </div>
@@ -1085,6 +1099,7 @@ const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
 const uploadQueue = document.getElementById('uploadQueue');
 const draftState = document.getElementById('draftState');
+const clearDraftBtn = document.getElementById('clearDraft');
 const charCount = document.getElementById('charCount');
 const lightbox = document.getElementById('lightbox');
 const lightboxName = document.getElementById('lightboxName');
@@ -1255,6 +1270,7 @@ function updateComposerMeta(){
   charCount.textContent = charLabel + lineLabel;
   charCount.className = 'char-count' + (chars > 12000 ? ' bad' : chars > 6000 ? ' warn' : '');
   draftState.textContent = text.trim() ? 'черновик сохранен' : 'готово к вводу';
+  clearDraftBtn.classList.toggle('show', Boolean(text));
 }
 function updateDocumentTitle(){
   const unread = unseenCount > 0 ? '(' + (unseenCount > 99 ? '99+' : unseenCount) + ') ' : '';
@@ -2256,6 +2272,17 @@ function persistInput(){
   updateComposerMeta();
   updateSendState();
 }
+function clearDraft(){
+  if(voiceListening && speechRec) speechRec.stop();
+  input.value = '';
+  localStorage.removeItem('bridgeDraft');
+  resizeInput();
+  updateComposerMeta();
+  updateSendState();
+  input.focus();
+  setComposerStatus('Черновик очищен', 'ok');
+  clearComposerStatusSoon('Черновик очищен');
+}
 function appendToComposer(snippet){
   const current = input.value.trimEnd();
   input.value = current ? current + '\n\n' + snippet : snippet;
@@ -2432,6 +2459,7 @@ async function uploadFiles(files){
 attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
+clearDraftBtn.addEventListener('click', clearDraft);
 fileInput.addEventListener('change', e => {
   uploadFiles(e.target.files);
   fileInput.value = '';
@@ -2477,10 +2505,7 @@ input.addEventListener('keydown', e => {
   }
 });
 input.addEventListener('input', () => {
-  localStorage.setItem('bridgeDraft', input.value);
-  resizeInput();
-  updateComposerMeta();
-  updateSendState();
+  persistInput();
 });
 log.addEventListener('scroll', updateBottomButton);
 toTop.addEventListener('click', () => log.scrollTo({top:0, behavior:'smooth'}));
