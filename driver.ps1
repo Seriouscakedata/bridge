@@ -229,6 +229,28 @@ function Get-AgentStatusText {
   return $null
 }
 
+function Get-AgentPhaseStatusText {
+  param([string]$Speaker, [string]$Mode, [string]$Phase)
+  $who = if ($Speaker -eq 'claude') { 'Claude' } elseif ($Speaker -eq 'codex') { 'Codex' } else { 'агент' }
+  switch ($Phase) {
+    'summary' { return "Драйвер проверяет объём истории перед ходом $who." }
+    'prompt'  { return "Драйвер готовит свежий контекст для $who." }
+    'invoke'  {
+      if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return 'Codex читает контекст и отвечает без изменения файлов.' }
+      if ($Speaker -eq 'codex') { return 'Codex работает с файлами и командами.' }
+      if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет план.' }
+      return 'Claude анализирует задачу и выбирает следующий шаг.'
+    }
+    'post'    { return "Драйвер обрабатывает ответ $who и вложения." }
+    default   { return Get-AgentStatusText -Speaker $Speaker -Mode $Mode }
+  }
+}
+
+function Set-BridgeStatusText {
+  param([string]$Text)
+  Update-State ({ param($s) $s.status_text=$Text; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+}
+
 # ---------- startup ----------
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
 # summary and decisions are file-based and already survive. We keep current_task /
@@ -294,12 +316,16 @@ while ($true) {
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'summary')
   Update-ContextSummary   # compress old history if it grew beyond the hot window
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt')
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke')
   if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel }
   else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
+  Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post')
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
   $attachmentMetas = @()
   $fileMarkerPattern = '(?m)^\s*\[\[FILE:\s*(.+?)\s*\]\]\s*$'
