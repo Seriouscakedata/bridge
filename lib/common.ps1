@@ -309,6 +309,8 @@ function Initialize-Bridge {
       autonomous_day   = $null
       autonomous_count = 0
       active_jobs      = @()
+      task_base_commit = ''
+      critic_retry_count = 0
     }
     Write-State -State $state
   } else {
@@ -322,7 +324,7 @@ function Initialize-Bridge {
       heartbeat=$null; driver_started=$null; claimed_at=$null
       current_backlog_id=$null
       autonomous_day=$null; autonomous_count=0
-      active_jobs=@()
+      active_jobs=@(); task_base_commit=''; critic_retry_count=0
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {

@@ -566,7 +566,9 @@ function Invoke-Planner {
   param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal')
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "claude_in_$g.txt"; $outF=Join-Path $env:TEMP "claude_out_$g.txt"; $errF=Join-Path $env:TEMP "claude_err_$g.txt"
-  [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
+  # Opus -> maximum thinking budget ('ultrathink' = top tier in Claude Code). They write code.
+  $effPrompt = if ($Model -match 'opus') { $Prompt + "`n`nultrathink" } else { $Prompt }
+  [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   # Narrow --add-dir to the bridge folder (faster startup); Bash already gives full read access.
   $allowedTools = if ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
@@ -599,7 +601,7 @@ function Invoke-Coder {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $p = Start-Process -FilePath $codexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
+      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
