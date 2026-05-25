@@ -1507,7 +1507,10 @@ const modelNames = {
   'gpt-5':'GPT-5',
   'gpt-5.5':'GPT-5.5',
   'gpt-5.4':'GPT-5.4',
-  'gpt-5.3-codex':'GPT-5.3 Codex'
+  'gpt-5.4-mini':'GPT-5.4 Mini',
+  'gpt-5.3-codex':'GPT-5.3 Codex',
+  'gpt-5.3-codex-spark':'GPT-5.3 Codex Spark',
+  'gpt-5.2':'GPT-5.2'
 };
 let compactMode = localStorage.getItem('bridgeCompact') === '1';
 let showSystem = localStorage.getItem('bridgeShowSystem') !== '0';
@@ -2103,6 +2106,53 @@ function highlightCode(raw, lang){
   return html;
 }
 
+function trimUrlTail(url){
+  let clean = String(url || '');
+  let tail = '';
+  while(/[.,;:!?]$/.test(clean)){
+    tail = clean.slice(-1) + tail;
+    clean = clean.slice(0, -1);
+  }
+  const opens = (clean.match(/\(/g) || []).length;
+  let closes = (clean.match(/\)/g) || []).length;
+  while(clean.endsWith(')') && closes > opens){
+    tail = ')' + tail;
+    clean = clean.slice(0, -1);
+    closes--;
+  }
+  return {url:clean, tail};
+}
+function linkifySegment(segment){
+  return String(segment || '').replace(/(^|[\s([])((?:https?:\/\/|\/files\/)[^\s<>"']+)/g, (m, lead, rawUrl) => {
+    const trimmed = trimUrlTail(rawUrl);
+    if(!trimmed.url) return m;
+    const href = trimmed.url.startsWith('/files/') ? absoluteUrl(trimmed.url) : trimmed.url;
+    return lead + '<a href="' + escAttr(href) + '" target="_blank" rel="noopener">' + trimmed.url + '</a>' + trimmed.tail;
+  });
+}
+function linkifyPlainTextHtml(html){
+  let out = '';
+  let pos = 0;
+  let inAnchor = false;
+  let inCode = false;
+  const tagRe = /<[^>]+>/g;
+  let match;
+  while((match = tagRe.exec(html))){
+    const text = html.slice(pos, match.index);
+    out += (inAnchor || inCode) ? text : linkifySegment(text);
+    const tag = match[0];
+    if(/^<a\b/i.test(tag)) inAnchor = true;
+    else if(/^<\/a\b/i.test(tag)) inAnchor = false;
+    else if(/^<code\b/i.test(tag)) inCode = true;
+    else if(/^<\/code\b/i.test(tag)) inCode = false;
+    out += tag;
+    pos = tagRe.lastIndex;
+  }
+  const rest = html.slice(pos);
+  out += (inAnchor || inCode) ? rest : linkifySegment(rest);
+  return out;
+}
+
 function renderMd(src){
   src = String(src || '').replace(/\r\n/g,'\n');
   const blocks = [];
@@ -2118,6 +2168,7 @@ function renderMd(src){
   safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   safe = safe.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|\/files\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  safe = linkifyPlainTextHtml(safe);
 
   const lines = safe.split('\n');
   const out = [];
@@ -2226,14 +2277,14 @@ function renderAttachments(m){
         '<a class="att-img" href="' + url + '" target="_blank" rel="noopener" data-lightbox="' + url + '" data-name="' + nameAttr + '" data-size="' + escAttr(size) + '">' +
         '<img src="' + url + '" alt="' + name + '" loading="lazy">' +
         '</a>' +
-        '<div class="att-name"><span class="name">' + name + '</span>' + (size ? '<span class="size">' + esc(size) + '</span>' : '') + '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Copy attachment link" aria-label="Copy attachment link">&#x2398;</button></div>' +
+        '<div class="att-name"><span class="name">' + name + '</span>' + (size ? '<span class="size">' + esc(size) + '</span>' : '') + '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Скопировать ссылку на вложение" aria-label="Скопировать ссылку на вложение">&#x2398;</button></div>' +
       '</div>';
     }
     return '<div class="att-file-row">' +
       '<a class="att-file" href="' + url + '" download>' +
       '<span class="paper">📎</span><span class="name">' + name + '</span><small>' + fmtSize(a.size) + '</small>' +
       '</a>' +
-      '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Copy attachment link" aria-label="Copy attachment link">&#x2398;</button>' +
+      '<button type="button" class="mini-btn copy-att" data-url="' + url + '" title="Скопировать ссылку на вложение" aria-label="Скопировать ссылку на вложение">&#x2398;</button>' +
     '</div>';
   }).join('') + '</div>';
 }
