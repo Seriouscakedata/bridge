@@ -45,7 +45,11 @@ function Get-RadarDigestForApi {
   $md = ''
   $digestPath = Get-RadarDigestPath
   if (Test-Path -LiteralPath $digestPath) {
-    try { $md = Get-Content -LiteralPath $digestPath -Raw -Encoding UTF8 } catch { $md = '' }
+    # NOTE: use ReadAllText, NOT Get-Content -Raw. Get-Content -Raw attaches ETS provider
+    # NoteProperties (PSProvider/PSDrive) to the string; ConvertTo-Json -Depth 12 then
+    # recurses into those rich .NET object graphs and OOM-crashes the server. (Same ETS
+    # string bug as /api/memory, but fatal here because of the high depth.)
+    try { $md = [System.IO.File]::ReadAllText($digestPath, (New-Object System.Text.UTF8Encoding($false))) } catch { $md = '' }
   }
 
   $run = Get-RadarLatestRun
