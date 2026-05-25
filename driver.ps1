@@ -2,6 +2,7 @@
 # task. Planner (Claude) plans/reviews, Coder (Codex) executes with FULL PC access.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
+. (Join-Path $PSScriptRoot 'lib\plan.ps1')
 $ErrorActionPreference = 'Continue'
 
 # UTF-8 end-to-end (Russian survives the stdin/stdout file round-trip).
@@ -345,6 +346,13 @@ STUDY-ХОД -- выполняй текущую фазу изучения. Мо�
 - Любой файл пользователю -- тем же маркером `[[FILE: <путь>]]`.
 "@
   }
+  $planPromptBlock = ''
+  try {
+    $planPromptText = Format-PlanForPrompt
+    if (-not [string]::IsNullOrWhiteSpace($planPromptText)) {
+      $planPromptBlock = "`n`nПЛАН-ДОСКА (веди работу по ней):`n$planPromptText"
+    }
+  } catch {}
   $shared = @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
 Рабочий корень: $workRoot
@@ -363,6 +371,7 @@ $autoScopeLine
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
 - ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
 - ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
+- ПАРАЛЛЕЛЬ (только планировщик): если задачу можно разбить на 2+ НЕЗАВИСИМЫЕ части (напр. изучить разных субагентов, разобрать разные модули/файлы, аудит UI отдельно) — оставь отдельной строкой `[[PARALLEL: <путь_к_репозиторию> || под-задача 1 ;; под-задача 2 ;; под-задача 3]]`. Каждая уйдёт отдельному Codex-воркеру в ИЗОЛИРОВАННОЙ копии репо ПАРАЛЛЕЛЬНО, результаты вольются обратно (конфликты придут тебе на разрешение). Только для по-настоящему независимых частей (не трогают одни и те же файлы); путь репозитория обязателен (НЕ сам мост). После завершения проверь результат запуском.
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
@@ -373,7 +382,7 @@ $autoScopeLine
   7) `secrets.json` содержит API-ключи (Gemini и др.). НИКОГДА не выводи его содержимое в чат и не коммить — он в .gitignore. Память: `lib\memory.ps1` (embeddings+поиск), `librarian.ps1` (ночная консолидация), хранилище `memory\` (gitignored).
 
 ДИАЛОГ:
-$transcript
+$transcript$planPromptBlock
 "@
   if ($Role -eq 'claude') {
     $claudeBase = @"
@@ -391,6 +400,8 @@ $claudeActionBlock
 
 ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать результат проверки и добавить отдельной строкой маркер [[VERIFIED: что проверено | результат]]. Без [[VERIFIED:]] DONE отклоняется.
 ⚠ ПОВЕДЕНЧЕСКАЯ ПРОВЕРКА (КРИТИЧНО): если задача создала ИСПОЛНЯЕМОЕ (скрипт, функцию, фичу, которая производит вывод) — diff или содержимое файла НЕ считается проверкой. ОБЯЗАТЕЛЬНО ЗАПУСТИ это на реальном/тестовом входе и покажи ФАКТИЧЕСКИЙ вывод, и убедись, что вывод осмысленный и отвечает критериям задачи (не «код выглядит правильно», а «запустил — работает и даёт верный результат»). Для исполняемых задач DONE без реального запуска запрещён. Урок: тех-радар в diff «выглядел нормально», но при запуске выдавал мусор (заголовки = XmlElement) — потому что его никто не ЗАПУСТИЛ и не посмотрел вывод.
+
+ПЛАН-ДОСКА: для КРУПНОЙ задачи (несколько эпиков/много шагов) в первом ходе сформируй доску блоком [[PLAN]] ... [[/PLAN]]: строки EPIC/TASK/STEP, deps и критерии готовности. Затем веди работу пошагово; при готовности шага ставь отдельной строкой [[STEP-DONE: <id> | краткий результат]]. Для мелкой задачи план не нужен.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 "@
@@ -889,8 +900,11 @@ while ($true) {
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.task_base_commit=$baseCommit; $s.critic_retry_count=0
+        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+        $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
+        $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
       }.GetNewClosure()) | Out-Null
+      try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
@@ -922,9 +936,12 @@ while ($true) {
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.task_base_commit=$baseCommit; $s.critic_retry_count=0
+          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
+          $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
+        try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
         Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         $state = Read-State
@@ -1095,6 +1112,49 @@ while ($true) {
     Update-State ({ param($s) $cur=@(); if ($s.active_jobs) { $cur=@($s.active_jobs) }; $s.active_jobs=@($cur + $sj) }.GetNewClosure()) | Out-Null
     foreach ($job in $sj) { Add-Message -From system -Text "🛠 Запущена фоновая задача [$($job.id)]: $($job.cmd)`nЖду завершения (без таймаута), результат придёт сюда." -Kind event | Out-Null }
   }
+  # [[PLAN]] ... [[/PLAN]] -> создать persisted план-доску для текущей задачи.
+  $planBlockPattern = '(?is)\[\[PLAN\]\].*?\[\[/PLAN\]\]'
+  $planCreatedStepCount = $null
+  try {
+    $planNodes = ConvertFrom-PlanBlock -Text $reply
+    if ($planNodes) {
+      $planCreatedStepCount = New-Plan -Task $task -Nodes $planNodes
+    }
+  } catch {
+    Add-Message -From system -Text ("⚠ Не удалось создать план-доску: " + $_.Exception.Message) -Kind event | Out-Null
+  }
+
+  # [[STEP-DONE: id | результат]] и [[STEP: id | status | результат]] -> обновить шаги плана.
+  $stepDonePattern = '(?m)^\s*\[\[STEP-DONE:\s*([^|\]]+?)(?:\s*\|\s*(.*?))?\s*\]\]\s*$'
+  $stepPattern = '(?m)^\s*\[\[STEP:\s*(.+?)\s*\]\]\s*$'
+  $planStepUpdates = @()
+  foreach ($m in [regex]::Matches($reply, $stepDonePattern)) {
+    $stepId = $m.Groups[1].Value.Trim()
+    $stepResult = if ($m.Groups.Count -gt 2) { $m.Groups[2].Value.Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($stepId)) { continue }
+    try {
+      $okStep = Set-PlanStepStatus -Id $stepId -Status done -Result $stepResult
+      if ($okStep) { $planStepUpdates += "$stepId → done" }
+      else { Add-Message -From system -Text "⚠ Шаг плана не найден: $stepId" -Kind event | Out-Null }
+    } catch {
+      Add-Message -From system -Text ("⚠ Не удалось обновить шаг плана ${stepId}: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+  }
+  foreach ($m in [regex]::Matches($reply, $stepPattern)) {
+    $parts = @($m.Groups[1].Value -split '\|', 3)
+    $stepId = if ($parts.Count -ge 1) { $parts[0].Trim() } else { '' }
+    $rawStepStatus = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
+    $stepStatus = if ($parts.Count -ge 2) { Normalize-PlanStatus -Status $rawStepStatus } else { '' }
+    $stepResult = if ($parts.Count -ge 3) { $parts[2].Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($stepId) -or [string]::IsNullOrWhiteSpace($stepStatus)) { continue }
+    try {
+      $okStep = Set-PlanStepStatus -Id $stepId -Status $stepStatus -Result $stepResult
+      if ($okStep) { $planStepUpdates += "$stepId → $stepStatus" }
+      else { Add-Message -From system -Text "⚠ Шаг плана не найден: $stepId" -Kind event | Out-Null }
+    } catch {
+      Add-Message -From system -Text ("⚠ Не удалось обновить шаг плана ${stepId}: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+  }
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
@@ -1104,6 +1164,10 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $ideaPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $runjobPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, '(?s)\[\[PARALLEL:.+?\]\]', '')
+  $visibleReply = [regex]::Replace($visibleReply, $planBlockPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $stepPattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
@@ -1116,6 +1180,8 @@ while ($true) {
   Add-Message -From $speaker -Text $visibleReply -Attachments $attachmentMetas -Model $activeModel | Out-Null
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
   foreach ($source in $evidenceSources) { Add-Message -From system -Text "📊 Evidence записан: $source" -Kind event | Out-Null }
+  if ($null -ne $planCreatedStepCount) { Add-Message -From system -Text "🗂 План-доска создана: шагов $planCreatedStepCount" -Kind event | Out-Null }
+  foreach ($pu in $planStepUpdates) { Add-Message -From system -Text "🗂 Шаг плана обновлён: $pu" -Kind event | Out-Null }
   if ($studyFindings.Count -gt 0) {
     $snap = [string](Read-State).study_snapshot
     $snapParts = @()
@@ -1126,6 +1192,39 @@ while ($true) {
   }
   foreach ($rf in $rememberedFacts) { Add-Message -From system -Text "🧠 Запомнено агентом: $rf" -Kind event | Out-Null }
   foreach ($pi in $proposedIdeas) { Add-Message -From system -Text "💡 Идея в бэклог (от $speaker): $pi" -Kind event | Out-Null }
+
+  # [[PARALLEL: <repo> || подзадача1 ;; подзадача2 ;; ...]] -> планировщик запускает
+  # независимые под-задачи ПАРАЛЛЕЛЬНО (каждая в своём worktree), затем мерж. Блокирует
+  # ход на время выполнения (heartbeat обновляется), потом постит сводку.
+  if ($speaker -eq 'claude') {
+    $pmatch = [regex]::Match($reply, '(?s)\[\[PARALLEL:\s*(.+?)\s*\]\]')
+    if ($pmatch.Success) {
+      $pspec = $pmatch.Groups[1].Value.Trim()
+      $prepo = $workRoot; $psubsRaw = $pspec
+      if ($pspec -match '(?s)^(.*?)\|\|(.*)$') { $prepo = $matches[1].Trim(); $psubsRaw = $matches[2].Trim() }
+      $psubs = @($psubsRaw -split '\s*;;\s*' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+      if ($psubs.Count -lt 2) {
+        Add-Message -From system -Text "🧩 PARALLEL проигнорирован: нужно >=2 под-задачи через ' ;; '." -Kind event | Out-Null
+      } else {
+        Add-Message -From system -Text "🧩 Параллельная команда: $($psubs.Count) воркеров в worktrees репозитория $prepo. Жду завершения (без таймаута)..." -Kind event | Out-Null
+        $pcount = $psubs.Count
+        $tick = ({ param() Update-State ({ param($s) $s.heartbeat=(Get-Date).ToString('o'); $s.status_text="🧩 Параллельные воркеры ($pcount)..." }.GetNewClosure()) | Out-Null }).GetNewClosure()
+        $pres = $null
+        try { $pres = Invoke-CodexParallel -RepoRoot $prepo -Subtasks $psubs -OnTick $tick -TimeoutSec 3600 } catch { Add-Message -From system -Text "🧩 Параллель: ошибка — $($_.Exception.Message)" -Kind event | Out-Null }
+        if ($pres) {
+          if ($pres.error) {
+            Add-Message -From system -Text "🧩 Параллель не запущена: $($pres.error)" -Kind event | Out-Null
+          } else {
+            $plines = foreach ($pr in $pres.results) {
+              $stat = if ($pr.mergeOk) { 'влито ✅' } elseif ($pr.conflict) { 'КОНФЛИКТ ⚠ (разрешить вручную)' } else { 'не влито ❌' }
+              "• $($pr.name): $stat — " + (($pr.subtask -replace '\s+',' '))
+            }
+            Add-Message -From system -Text ("🧩 Параллель завершена: влито $($pres.merged), конфликтов $($pres.conflicts).`n" + ($plines -join "`n") + "`n`nПланировщик: проверь результат ЗАПУСКОМ, разреши конфликты если есть, доведи до DONE.") -Kind event | Out-Null
+          }
+        }
+      }
+    }
+  }
 
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
@@ -1354,7 +1453,7 @@ $diff
             try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + "  model=$criticModelName verdict=$verdict severity=$severity crc=$crc | $taskShort | $summary | $issuesText") -Encoding UTF8 } catch {}
             if ($severity -eq 'serious') {
               $newCrc = $crc + 1
-              Update-State ({ param($s) $s.critic_retry_count=$newCrc }.GetNewClosure()) | Out-Null
+              Update-State ({ param($s) $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue $newCrc -Force }.GetNewClosure()) | Out-Null
               Add-Message -From system -Text "🔎 Независимый критик ($criticModelName) нашёл серьёзное (попытка $newCrc/$criticMaxRetries): $issuesText`n`nCodex, исправь это и снова доведи до STATUS: DONE — задачу НЕ закрываю." -Kind event | Out-Null
               $plannerStatus = 'CONTINUE'
               Update-State { param($s) $s.task_mode='normal' } | Out-Null
