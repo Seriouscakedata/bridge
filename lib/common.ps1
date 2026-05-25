@@ -247,13 +247,13 @@ function Get-Messages {
   param([int]$Since = 0)
   $p = Get-ConversationPath
   if (-not (Test-Path $p)) { return @() }
-  $out = @()
+  $out = New-Object 'System.Collections.Generic.List[object]'
   foreach ($line in (Get-Content -LiteralPath $p -Encoding UTF8)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try { $m = $line | ConvertFrom-Json } catch { continue }
-    if ([int]$m.seq -gt $Since) { $out += $m }
+    if ([int]$m.seq -gt $Since) { [void]$out.Add($m) }
   }
-  return $out
+  return @($out.ToArray())
 }
 
 function Initialize-Bridge {
