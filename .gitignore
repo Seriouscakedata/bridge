@@ -10,6 +10,8 @@ runtime/
 decisions/
 sandbox/
 memory/
+backlog.jsonl
+reflect.last
 *.log
 *.tmp.*
 .git/

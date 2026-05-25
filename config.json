@@ -18,12 +18,24 @@
     "enabled": true,
     "embedModel": "gemini-embedding-001",
     "embedDim": 1536,
-    "gateModel": "gemini-2.5-flash-lite",
-    "librarianModel": "gemini-2.5-flash",
+    "autoGate": true,
     "recallTopK": 5,
     "recallMinScore": 0.62,
     "dedupThreshold": 0.93,
     "maxInjectChars": 1200
+  },
+  "llm": {
+    "gate": "deepseek-v4-flash",
+    "librarian": "deepseek-v4-flash",
+    "reflect": "deepseek-v4-flash",
+    "deep": "deepseek-v4-pro",
+    "fallback": "gemini-2.5-flash"
+  },
+  "autonomy": {
+    "enabled": true,
+    "reflectEveryHours": 6,
+    "executeApproved": true,
+    "maxIdeasPerReflect": 3
   },
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }

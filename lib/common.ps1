@@ -297,6 +297,7 @@ function Initialize-Bridge {
       heartbeat      = $null
       driver_started = $null
       claimed_at     = $null
+      current_backlog_id = $null
     }
     Write-State -State $state
   } else {
@@ -308,6 +309,7 @@ function Initialize-Bridge {
       no_progress_count=0; timeout_retry_count=0
       last_user_seq=0; summarized_seq=0; turn=0; lastSeq=0
       heartbeat=$null; driver_started=$null; claimed_at=$null
+      current_backlog_id=$null
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
@@ -324,3 +326,7 @@ function Initialize-Bridge {
 # Long-term vector memory (Gemini embeddings + Flash librarian). Best-effort: if this
 # layer fails to load or Gemini is unreachable, the engine keeps running unchanged.
 try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.ps1 failed to load: $($_.Exception.Message)" }
+# LLM router (DeepSeek/Gemini for cheap background thinking) -- load AFTER memory.ps1.
+try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 failed to load: $($_.Exception.Message)" }
+# Self-improvement backlog (ideas the agents raise themselves).
+try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }

@@ -66,7 +66,7 @@ if ($mems.Count -gt 0) {
 ЗАПИСИ ПАМЯТИ:
 $listing
 "@
-  $map = Invoke-GeminiChat -Model ([string]$mc.librarianModel) -Prompt $prompt -TimeoutSec 180 -Temperature 0.3
+  $map = Invoke-LLM -Purpose 'librarian' -Prompt $prompt -TimeoutSec 180 -Temperature 0.3
   if (-not [string]::IsNullOrWhiteSpace($map)) {
     # strip a wrapping ```markdown ... ``` fence if the model added one
     $map = ($map -replace '(?s)^\s*```(?:markdown|md)?\s*\r?\n','' -replace '(?s)\r?\n```\s*$','').Trim()

@@ -295,6 +295,41 @@ try {
           Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
         } else { Send-Text $ctx '{"ok":false,"error":"librarian.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/backlog') {
+        $items = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
+        $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/backlog/add') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $text = [string]$body.text
+        if ([string]::IsNullOrWhiteSpace($text)) { Send-Text $ctx '{"ok":false,"error":"empty"}' 'application/json; charset=utf-8' 400 }
+        else {
+          $st = if ($body.status) { [string]$body.status } else { 'new' }
+          $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+          Send-Text $ctx ('{"ok":' + (([bool]$id).ToString().ToLower()) + ',"id":"' + [string]$id + '"}') 'application/json; charset=utf-8'
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/backlog/update') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $st = $null; if ($null -ne $body.status) { $st = [string]$body.status }
+        $tx = $null; if ($null -ne $body.text) { $tx = [string]$body.text }
+        $ok = Set-Idea -Id ([string]$body.id) -Status $st -Text $tx
+        Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/backlog/delete') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $ok = Remove-Idea -Id ([string]$body.id)
+        Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/reflect') {
+        $rf = Join-Path $root 'reflect.ps1'
+        if (Test-Path $rf) {
+          try { [System.IO.File]::WriteAllText((Join-Path $root 'reflect.last'), '2000-01-01T00:00:00.0000000Z', (New-Object System.Text.UTF8Encoding($false))) } catch {}
+          try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
+          Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+        } else { Send-Text $ctx '{"ok":false,"error":"reflect.ps1 missing"}' 'application/json; charset=utf-8' 500 }
+      }
       else {
         Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404
       }

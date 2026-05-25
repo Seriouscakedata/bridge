@@ -120,6 +120,7 @@
 <div class="tabs">
   <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
   <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
+  <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
 </div>
 
 <div class="wrap">
@@ -142,6 +143,22 @@
   </div>
   <div id="mapView" class="hidden">
     <div class="md" id="mapContent"></div>
+  </div>
+  <div id="backlogView" class="hidden">
+    <div class="toolbar">
+      <button id="addIdeaToggle" type="button">＋ Идея</button>
+      <button id="reflectBtn" type="button" title="Запустить саморефлексию: агент предложит улучшения на основе данных">🤔 Подумать сейчас</button>
+      <button id="refreshBl" type="button">⟳ Обновить</button>
+      <span id="blCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="addbox" id="addIdeaBox">
+      <textarea id="ideaText" placeholder="Идея/улучшение для моста — что и зачем…"></textarea>
+      <div class="row" style="display:flex;gap:10px;align-items:center">
+        <button class="primary" id="ideaSave" type="button">Добавить (сразу одобрено)</button>
+        <button id="ideaCancel" type="button">Отмена</button>
+      </div>
+    </div>
+    <div class="grid" id="blGrid"></div>
   </div>
 </div>
 
@@ -294,8 +311,87 @@ function mdToHtml(src){
 }
 
 // tabs
-$('#tabRecords').addEventListener('click', ()=>{ $('#tabRecords').classList.add('on'); $('#tabMap').classList.remove('on'); $('#recordsView').classList.remove('hidden'); $('#mapView').classList.add('hidden'); });
-$('#tabMap').addEventListener('click', ()=>{ $('#tabMap').classList.add('on'); $('#tabRecords').classList.remove('on'); $('#mapView').classList.remove('hidden'); $('#recordsView').classList.add('hidden'); });
+function switchTab(name){
+  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog'};
+  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView'};
+  for(const k in tabs){ $(tabs[k]).classList.toggle('on', k===name); $(views[k]).classList.toggle('hidden', k!==name); }
+  if(name==='backlog') loadBacklog();
+}
+$('#tabRecords').addEventListener('click',()=>switchTab('records'));
+$('#tabMap').addEventListener('click',()=>switchTab('map'));
+$('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
+
+// ---- backlog ----
+let BL = [];
+const BL_STATUS = {
+  'new':      {label:'новая',       cls:'src-task'},
+  'approved': {label:'одобрена',    cls:'src-manual'},
+  'running':  {label:'выполняется', cls:'src-decision'},
+  'done':     {label:'готово',      cls:'src-task'},
+  'rejected': {label:'отклонена',   cls:''},
+  'failed':   {label:'ошибка',      cls:''}
+};
+async function loadBacklog(){
+  try{ const d = await api('/api/backlog'); BL = d.items||[]; renderBacklog(); }
+  catch(e){ toast('Ошибка загрузки бэклога: '+e,'bad'); }
+}
+function renderBacklog(){
+  const g = $('#blGrid');
+  const order = {running:0,approved:1,'new':2,failed:3,rejected:4,done:5};
+  const list = BL.slice().sort((a,b)=>{
+    const oa=order[a.status]??9, ob=order[b.status]??9;
+    if(oa!==ob) return oa-ob;
+    return (b.ts||'').localeCompare(a.ts||'');
+  });
+  $('#blCount').textContent = `${BL.length} всего`;
+  if(list.length===0){ g.innerHTML='<div class="empty">Бэклог пуст. Идеи появятся от агентов ([[IDEA]]), от саморефлексии, или добавь свою.</div>'; return; }
+  g.innerHTML='';
+  for(const it of list){
+    const s = BL_STATUS[it.status] || {label:it.status,cls:''};
+    const card = document.createElement('div');
+    card.className='card';
+    let actions='';
+    if(it.status==='new'){ actions=`<button class="approveBtn primary">Одобрить</button><button class="rejectBtn">Отклонить</button>`; }
+    else if(it.status==='approved'){ actions=`<button class="unapproveBtn">Снять одобрение</button>`; }
+    else if(it.status==='running'){ actions=`<span style="color:var(--model);font-size:12px">выполняется…</span>`; }
+    else { actions=`<button class="reopenBtn">Вернуть в новые</button>`; }
+    card.innerHTML =
+      `<div class="meta">`+
+        `<span class="src-pill ${s.cls}">${esc(s.label)}</span>`+
+        `<span class="tag">от ${esc(it.from||'?')}</span>`+
+        (it.attempts>0?`<span class="tag">попыток: ${it.attempts}</span>`:'')+
+        `<span style="margin-left:auto">${esc(ago(it.ts))}</span>`+
+      `</div>`+
+      `<textarea>${esc(it.text)}</textarea>`+
+      `<div class="row">${actions}<span class="spacer"></span><button class="saveBtn" disabled>Сохранить текст</button><button class="danger delBtn">Удалить</button></div>`;
+    const ta=card.querySelector('textarea'); const saveBtn=card.querySelector('.saveBtn'); const orig=it.text;
+    ta.addEventListener('input',()=>{ saveBtn.disabled = (ta.value===orig); });
+    const upd = async (body, okMsg)=>{ const r=await api('/api/backlog/update',{method:'POST',body:JSON.stringify(Object.assign({id:it.id},body))}); if(r.ok){toast(okMsg||'Готово','ok'); loadBacklog();} else toast('Ошибка','bad'); };
+    saveBtn.addEventListener('click',()=>upd({text:ta.value},'Текст сохранён'));
+    const b = sel=>card.querySelector(sel);
+    if(b('.approveBtn')) b('.approveBtn').addEventListener('click',()=>upd({status:'approved'},'Одобрено — выполнится на простое'));
+    if(b('.rejectBtn')) b('.rejectBtn').addEventListener('click',()=>upd({status:'rejected'},'Отклонено'));
+    if(b('.unapproveBtn')) b('.unapproveBtn').addEventListener('click',()=>upd({status:'new'},'Одобрение снято'));
+    if(b('.reopenBtn')) b('.reopenBtn').addEventListener('click',()=>upd({status:'new'},'Возвращено'));
+    b('.delBtn').addEventListener('click', async ()=>{ if(!confirm('Удалить идею?'))return; const r=await api('/api/backlog/delete',{method:'POST',body:JSON.stringify({id:it.id})}); if(r.ok){toast('Удалено','ok'); loadBacklog();} else toast('Ошибка','bad'); });
+    g.appendChild(card);
+  }
+}
+$('#refreshBl').addEventListener('click', loadBacklog);
+$('#addIdeaToggle').addEventListener('click', ()=> $('#addIdeaBox').classList.toggle('show'));
+$('#ideaCancel').addEventListener('click', ()=>{ $('#addIdeaBox').classList.remove('show'); $('#ideaText').value=''; });
+$('#ideaSave').addEventListener('click', async ()=>{
+  const text=$('#ideaText').value.trim(); if(!text){ toast('Введите текст','bad'); return; }
+  const r=await api('/api/backlog/add',{method:'POST',body:JSON.stringify({text,status:'approved'})});
+  if(r.ok){ toast('Добавлено','ok'); $('#ideaText').value=''; $('#addIdeaBox').classList.remove('show'); loadBacklog(); } else toast('Ошибка','bad');
+});
+$('#reflectBtn').addEventListener('click', async ()=>{
+  const b=$('#reflectBtn'); b.disabled=true; b.textContent='думаю…';
+  const r=await api('/api/reflect',{method:'POST',body:'{}'});
+  if(r.ok){ toast('Саморефлексия запущена — идеи появятся через ~20-40 сек','ok'); setTimeout(loadBacklog, 30000); }
+  else toast('Ошибка запуска','bad');
+  setTimeout(()=>{ b.disabled=false; b.textContent='🤔 Подумать сейчас'; }, 30000);
+});
 
 $('#filter').addEventListener('input', renderGrid);
 $('#refreshBtn').addEventListener('click', load);

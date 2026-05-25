@@ -91,6 +91,37 @@ function Start-LibrarianIfDue {
   } catch {}
 }
 
+function Start-ReflectIfDue {
+  # Launch idle self-reflection at most once per autonomy.reflectEveryHours, detached.
+  $auto = $null
+  try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $auto = $cfgA.autonomy } } catch { return }
+  $enabled = if ($auto -and $null -ne $auto.enabled) { [bool]$auto.enabled } else { $true }
+  if (-not $enabled) { return }
+  $everyH = if ($auto -and $auto.reflectEveryHours) { [double]$auto.reflectEveryHours } else { 6 }
+  $marker = Join-Path $bridgeRoot 'reflect.last'
+  if (Test-Path $marker) {
+    try {
+      $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim())
+      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($everyH)) { return }
+    } catch {}
+  }
+  $rf = Join-Path $bridgeRoot 'reflect.ps1'
+  if (-not (Test-Path $rf)) { return }
+  try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
+}
+
+function Get-AutonomyExecuteEnabled {
+  try {
+    $cfgA = Get-BridgeConfig
+    if ($cfgA.PSObject.Properties.Name -notcontains 'autonomy') { return $true }
+    $a = $cfgA.autonomy
+    $en = if ($null -ne $a.enabled) { [bool]$a.enabled } else { $true }
+    $ex = if ($null -ne $a.executeApproved) { [bool]$a.executeApproved } else { $true }
+    return ($en -and $ex)
+  } catch { return $false }
+}
+
 function Get-RecallKeywords {
   param([string]$TaskText = '')
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
@@ -237,6 +268,7 @@ $Task
 - У вас полный доступ: чтение/запись файлов где угодно и запуск команд. Будь аккуратен с необратимыми действиями (удаление, перезапись, сеть).
 - Чтобы прислать файл/скриншот пользователю в чат, помести в ответ отдельной строкой маркер `[[FILE: C:\полный\путь]]` (можно несколько).
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
+- ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
@@ -564,13 +596,33 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
-      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+      Update-State ({ param($s) $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
     } else {
-      Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
-      try { Start-LibrarianIfDue } catch {}
-      Start-Sleep -Seconds $idlePoll; continue
+      # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
+      $leftBid = [string]$state.current_backlog_id
+      if ($leftBid) {
+        try { if ((Get-IdeaById -Id $leftBid).status -eq 'running') { Set-Idea -Id $leftBid -Status 'failed' | Out-Null; Add-Message -From system -Text "⚠ Автозадача из бэклога не завершилась успешно — помечена 'failed'." -Kind event | Out-Null } } catch {}
+        Update-State { param($s) $s.current_backlog_id=$null } | Out-Null
+        $state = Read-State
+      }
+      # Autonomy: take the oldest APPROVED backlog idea and run it as a self-task.
+      $claimedIdea = $null
+      if (Get-AutonomyExecuteEnabled) { try { $claimedIdea = Get-NextApprovedIdea } catch {} }
+      if ($claimedIdea) {
+        $bid = [string]$claimedIdea.id
+        $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
+        Update-State ({ param($s) $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+        try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
+        Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу: $([string]$claimedIdea.text)" -Kind event | Out-Null
+        $state = Read-State
+      } else {
+        Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        try { Start-LibrarianIfDue } catch {}
+        try { Start-ReflectIfDue } catch {}
+        Start-Sleep -Seconds $idlePoll; continue
+      }
     }
   } else {
     if ($maxUser -gt [int]$state.last_user_seq) { Update-State ({ param($s) $s.last_user_seq=$maxUser }.GetNewClosure()) | Out-Null }
@@ -680,10 +732,19 @@ while ($true) {
       if ($rid) { $rememberedFacts += $fact }
     } catch {}
   }
+  # [[IDEA: ...]] -> agent raises a self-improvement idea into the backlog (status 'new').
+  $ideaPattern = '(?m)^\s*\[\[IDEA:\s*(.+?)\s*\]\]\s*$'
+  $proposedIdeas = @()
+  foreach ($m in [regex]::Matches($reply, $ideaPattern)) {
+    $idea = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($idea)) { continue }
+    try { $iid = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new'; if ($iid) { $proposedIdeas += $idea } } catch {}
+  }
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $ideaPattern, '')
   if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
@@ -697,6 +758,7 @@ while ($true) {
   foreach ($sp in $savedPaths) { Add-Message -From system -Text "📝 Заметка сохранена: $sp" -Kind event | Out-Null }
   foreach ($source in $evidenceSources) { Add-Message -From system -Text "📊 Evidence записан: $source" -Kind event | Out-Null }
   foreach ($rf in $rememberedFacts) { Add-Message -From system -Text "🧠 Запомнено агентом: $rf" -Kind event | Out-Null }
+  foreach ($pi in $proposedIdeas) { Add-Message -From system -Text "💡 Идея в бэклог (от $speaker): $pi" -Kind event | Out-Null }
 
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
@@ -836,8 +898,13 @@ while ($true) {
       $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
       if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
     } catch {}
+    # If this was an autonomous backlog task, close it out.
+    try {
+      $doneBid = [string](Read-State).current_backlog_id
+      if ($doneBid) { Set-Idea -Id $doneBid -Status 'done' | Out-Null; Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null }
+    } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.research_count=0; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {

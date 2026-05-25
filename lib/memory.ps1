@@ -25,8 +25,7 @@ function Get-MemoryConfig {
     enabled        = $true
     embedModel     = 'gemini-embedding-001'
     embedDim       = 1536
-    gateModel      = 'gemini-2.5-flash-lite'
-    librarianModel = 'gemini-2.5-flash'
+    autoGate       = $true
     recallTopK     = 5
     recallMinScore = 0.62
     dedupThreshold = 0.93
@@ -215,7 +214,7 @@ $out
 {"keep": true|false, "fact": "1-2 предложения сути по-русски", "importance": 0.0-1.0, "tags": ["короткие","теги"]}
 Если запоминать не стоит — {"keep": false}.
 "@
-  $raw = Invoke-GeminiChat -Model ([string]$mc.gateModel) -Prompt $prompt -TimeoutSec 40 -Temperature 0.1
+  $raw = Invoke-LLM -Purpose 'gate' -Prompt $prompt -TimeoutSec 40 -Temperature 0.1
   if (-not $raw) { return $null }
   $clean = ($raw -replace '```json','' -replace '```','').Trim()
   $mt = [regex]::Match($clean, '(?s)\{.*\}')
@@ -235,6 +234,8 @@ function Add-TaskMemory {
   # Gate + store, in one call. Returns memory id or $null. Never throws.
   param([string]$TaskText, [string]$Outcome, [string]$Source = 'task')
   try {
+    $mc = Get-MemoryConfig
+    if (-not $mc.enabled -or -not $mc.autoGate) { return $null }
     $d = Get-MemoryDistilled -TaskText $TaskText -Outcome $Outcome
     if (-not $d) { return $null }
     return (Add-Memory -Text $d.Fact -Tags $d.Tags -Source $Source -Importance $d.Importance)
