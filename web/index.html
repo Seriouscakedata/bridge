@@ -1293,12 +1293,11 @@ function rebuildSystemGroups(){
       return;
     }
     const first = group[0];
-    const hiddenCount = group.length - 1;
     const groupId = 'sys-' + (first.dataset.seq || String(first.dataset.rawText || '').length + '-' + group.length);
     const expanded = systemGroupsExpanded.has(groupId);
-    const label = hiddenCount + ' ' + pluralRu(hiddenCount, 'системное событие', 'системных события', 'системных событий');
+    const label = group.length + ' ' + pluralRu(group.length, 'системное событие', 'системных события', 'системных событий');
     group.forEach(msg => { msg.dataset.systemGroup = groupId; });
-    group.slice(1).forEach(msg => msg.classList.toggle('system-collapsed', !expanded));
+    group.forEach(msg => msg.classList.toggle('system-collapsed', !expanded));
 
     const bundle = document.createElement('div');
     bundle.className = 'system-bundle' + (!showSystem || activeFilter !== 'all' ? ' filtered-out' : '');
@@ -1307,7 +1306,7 @@ function rebuildSystemGroups(){
       '<button type="button" title="' + (expanded ? 'Свернуть системные события' : 'Показать системные события') + '">' +
         (expanded ? 'Свернуть ' : '+ ') + label +
       '</button>';
-    first.after(bundle);
+    first.before(bundle);
     group = [];
   };
 
