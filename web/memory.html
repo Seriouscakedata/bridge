@@ -78,6 +78,11 @@
   .star{width:34px;height:32px;display:grid;place-items:center;padding:0;font-size:16px}
   .star.on{color:var(--model);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.1)}
   .empty{padding:40px 18px;text-align:center;color:var(--muted);border:1px dashed var(--border-soft);border-radius:14px;background:rgba(20,23,29,.4)}
+  .radar-title{font-size:16px;font-weight:750;line-height:1.35}
+  .radar-summary{font-size:14px;line-height:1.5;color:var(--soft)}
+  .radar-score{display:flex;gap:7px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+  .radar-score span{padding:2px 7px;border:1px solid var(--border-soft);border-radius:999px;background:#10151d}
+  .radar-link{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .md{font-size:14px;line-height:1.6;color:var(--txt)}
   .md h1,.md h2,.md h3{color:#fff;margin:.8em 0 .35em;line-height:1.25}
   .md h1{font-size:1.3em} .md h2{font-size:1.15em} .md h3{font-size:1.03em}
@@ -121,6 +126,7 @@
   <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
   <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
   <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
+  <div class="tab" data-tab="radar" id="tabRadar">Радар</div>
   <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
 </div>
 
@@ -160,6 +166,14 @@
       </div>
     </div>
     <div class="grid" id="blGrid"></div>
+  </div>
+  <div id="radarView" class="hidden">
+    <div class="toolbar">
+      <button id="runRadarBtn" type="button">Обновить радар</button>
+      <button id="refreshRadarBtn" type="button">↻ Обновить</button>
+      <span id="radarCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="grid" id="radarGrid"></div>
   </div>
   <div id="settingsView" class="hidden">
     <div class="card" style="gap:14px">
@@ -206,6 +220,7 @@
 <script>
 let ITEMS = [];
 let MAP = '';
+let RADAR = null;
 const $ = s => document.querySelector(s);
 const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -351,15 +366,17 @@ function mdToHtml(src){
 
 // tabs
 function switchTab(name){
-  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',settings:'#tabSettings'};
-  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',settings:'#settingsView'};
+  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',radar:'#tabRadar',settings:'#tabSettings'};
+  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',radar:'#radarView',settings:'#settingsView'};
   for(const k in tabs){ $(tabs[k]).classList.toggle('on', k===name); $(views[k]).classList.toggle('hidden', k!==name); }
   if(name==='backlog') loadBacklog();
+  if(name==='radar') loadRadar();
   if(name==='settings') loadSettings();
 }
 $('#tabRecords').addEventListener('click',()=>switchTab('records'));
 $('#tabMap').addEventListener('click',()=>switchTab('map'));
 $('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
+$('#tabRadar').addEventListener('click',()=>switchTab('radar'));
 $('#tabSettings').addEventListener('click',()=>switchTab('settings'));
 
 // ---- settings ----
@@ -476,6 +493,72 @@ $('#reflectBtn').addEventListener('click', async ()=>{
   if(r.ok){ toast('Саморефлексия запущена — идеи появятся через ~20-40 сек','ok'); setTimeout(loadBacklog, 30000); }
   else toast('Ошибка запуска','bad');
   setTimeout(()=>{ b.disabled=false; b.textContent='🤔 Подумать сейчас'; }, 30000);
+});
+
+// ---- radar ----
+async function loadRadar(){
+  try{
+    const d = await api('/api/radar');
+    RADAR = d || {items:[]};
+    renderRadar();
+  }catch(e){
+    toast('Ошибка загрузки радара: '+e, 'bad');
+  }
+}
+function renderRadar(){
+  const d = RADAR || {items:[]};
+  const items = d.items || [];
+  const when = d.generatedAt ? ago(d.generatedAt) : 'ещё не запускался';
+  $('#radarCount').textContent = `${items.length} пунктов · ${when}`;
+  const g = $('#radarGrid');
+  if(items.length===0){
+    g.innerHTML = '<div class="empty">План-доска радара пуста. Нажмите «Обновить радар», чтобы собрать дайджест по AI/ML-лентам Habr.</div>';
+    return;
+  }
+  g.innerHTML = '';
+  for(const it of items){
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML =
+      `<div class="meta">`+
+        `<span class="src-pill src-task">value ${esc(String(it.value||''))}</span>`+
+        `<span class="tag">confidence ${esc(String(it.confidence||''))}</span>`+
+        `<span class="tag">effort ${esc(String(it.effort||''))}</span>`+
+        `<span class="tag">score ${esc(String(it.score||''))}</span>`+
+      `</div>`+
+      `<div class="radar-title"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.title||'Без заголовка')}</a></div>`+
+      `<div class="radar-summary">${esc(it.summary||'')}</div>`+
+      `<div class="radar-link"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.link||'')}</a></div>`+
+      `<div class="row"><button class="primary addRadarBtn" type="button">→ в бэклог</button><span class="spacer"></span></div>`;
+    card.querySelector('.addRadarBtn').addEventListener('click', async e=>{
+      const b = e.currentTarget;
+      b.disabled = true; b.textContent = 'добавляю…';
+      try{
+        const r = await api('/api/radar/backlog',{method:'POST',body:JSON.stringify({id:it.id, link:it.link})});
+        if(r.ok){
+          toast(r.duplicate ? 'Уже есть в бэклоге' : 'Добавлено в бэклог', 'ok');
+          b.textContent = r.duplicate ? 'уже в бэклоге' : 'добавлено';
+        }else{
+          toast('Ошибка: '+(r.error||''), 'bad');
+          b.disabled = false; b.textContent = '→ в бэклог';
+        }
+      }catch(err){
+        toast('Ошибка: '+err, 'bad');
+        b.disabled = false; b.textContent = '→ в бэклог';
+      }
+    });
+    g.appendChild(card);
+  }
+}
+$('#refreshRadarBtn').addEventListener('click', loadRadar);
+$('#runRadarBtn').addEventListener('click', async ()=>{
+  const b = $('#runRadarBtn'); b.disabled = true; b.textContent = 'запущено…';
+  try{
+    const r = await api('/api/radar/run',{method:'POST',body:'{}'});
+    if(r.ok){ toast('Радар запущен — дайджест обновится после прогона','ok'); setTimeout(loadRadar, 45000); }
+    else toast('Ошибка запуска: '+(r.error||''),'bad');
+  }catch(e){ toast('Ошибка запуска: '+e,'bad'); }
+  setTimeout(()=>{ b.disabled=false; b.textContent='Обновить радар'; }, 45000);
 });
 
 $('#filter').addEventListener('input', renderGrid);

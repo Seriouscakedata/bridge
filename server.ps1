@@ -1,6 +1,7 @@
 ﻿# server.ps1 -- local web UI for the bridge (HttpListener, no admin needed).
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
+. (Join-Path $PSScriptRoot 'lib\radar.ps1')
 
 $cfg  = Get-BridgeConfig
 $port = [int]$cfg.port
@@ -304,6 +305,30 @@ try {
       elseif ($method -eq 'GET' -and $path -eq '/api/plan') {
         $p = Get-PlanForApi
         Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 12) 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
+        $r = Get-RadarDigestForApi
+        Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 12) 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/radar/run') {
+        $rf = Join-Path $root 'techradar.ps1'
+        if (Test-Path -LiteralPath $rf) {
+          try {
+            Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+            Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+          } catch {
+            $err = ("" + $_.Exception.Message) | ConvertTo-Json -Compress
+            Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
+          }
+        } else {
+          Send-Text $ctx '{"ok":false,"error":"techradar.ps1 missing"}' 'application/json; charset=utf-8' 500
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/radar/backlog') {
+        $body = Read-Body $ctx | ConvertFrom-Json
+        $res = Add-RadarDigestItemToBacklog -Id ([string]$body.id) -Link ([string]$body.link)
+        $status = if ([bool]$res.ok) { 200 } else { 400 }
+        Send-Text $ctx ($res | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8' $status
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/add') {
         $body = Read-Body $ctx | ConvertFrom-Json

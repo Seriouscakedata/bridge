@@ -12,6 +12,7 @@ decisions/
 sandbox/
 memory/
 jobs/
+radar/
 backlog.jsonl
 plan.jsonl
 plan.archive.jsonl

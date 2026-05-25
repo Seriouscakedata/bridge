@@ -1,38 +1,25 @@
-﻿# techradar.ps1 -- weekly AI/ML tech-radar from Habr feeds (research-only, no shell).
-# Reads sources.md, fetches RSS, evaluates via DeepSeek, files into backlog as external/new.
-# Launched detached by driver.ps1; ideas require MANUAL approval before any auto-run.
+﻿param(
+  [int]$MaxPerFeed = 8,
+  [int]$MaxDigestItems = 12
+)
+
+# techradar.ps1 -- weekly AI/ML digest from approved Habr feeds.
+# Reads RSS, evaluates articles via DeepSeek, writes a digest. It never writes to backlog.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\radar.ps1')
 $ErrorActionPreference = 'Continue'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 try { [Console]::OutputEncoding = $Utf8NoBom } catch {}
 
 $bridgeRoot = Get-BridgeRoot
+$null = Initialize-RadarDir
+
 function Write-RadarLog {
   param([string]$Msg)
-  try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'radar.log') -Value ((Get-Date).ToString('s') + '  ' + $Msg) -Encoding UTF8 } catch {}
-}
-
-function ConvertTo-RssUrl {
-  param([string]$PageUrl)
-  # https://habr.com/ru/flows/.../articles/ -> https://habr.com/ru/rss/flows/.../articles/?fl=ru
-  $rss = $PageUrl -replace 'habr\.com/ru/', 'habr.com/ru/rss/'
-  $rss = $rss.TrimEnd('/') + '/?fl=ru'
-  return $rss
-}
-
-function Get-FeedArticles {
-  param([string]$RssUrl, [int]$Max = 8)
-  try {
-    $resp = Invoke-WebRequest -Uri $RssUrl -UseBasicParsing -TimeoutSec 30 `
-      -Headers @{ 'User-Agent' = 'Mozilla/5.0 (compatible; bridge-radar/1.0)' }
-    [xml]$xml = $resp.Content
-    return @(@($xml.rss.channel.item) | Select-Object -First $Max | ForEach-Object {
-      $desc = [string]$_.description -replace '<[^>]+>','' -replace '\s+',' '
-      if ($desc.Length -gt 500) { $desc = $desc.Substring(0,500) }
-      [PSCustomObject]@{ title=$([string]$_.title); link=$([string]$_.link); desc=$desc }
-    })
-  } catch { return @() }
+  $line = (Get-Date).ToString('s') + '  ' + $Msg
+  try { Add-Content -LiteralPath (Get-RadarLogPath) -Value $line -Encoding UTF8 } catch {}
+  Write-Host $line
 }
 
 function Test-RadarFeedUrl {
@@ -40,55 +27,108 @@ function Test-RadarFeedUrl {
   return ($Url -match '^https://habr\.com/ru/(flows/ai_and_ml|hubs/(artificial_intelligence|machine_learning|natural_language_processing))/articles/?$')
 }
 
-Write-RadarLog '=== radar start ==='
+function ConvertTo-RssUrl {
+  param([string]$PageUrl)
+  $rss = $PageUrl -replace 'habr\.com/ru/', 'habr.com/ru/rss/'
+  $rss = $rss.TrimEnd('/') + '/?fl=ru'
+  return $rss
+}
 
-# Read feed URLs from sources.md
-$sourcesPath = Join-Path $bridgeRoot 'sources.md'
-$feedUrls = @()
-if (Test-Path -LiteralPath $sourcesPath) {
-  foreach ($line in (Get-Content -LiteralPath $sourcesPath -Encoding UTF8)) {
-    if ($line -match '(https://habr\.com[^\s)\]]+)') {
-      $url = $Matches[1].TrimEnd('/') + '/'
-      if (Test-RadarFeedUrl $url) { $feedUrls += $url }
+function Get-RadarNodeText {
+  param($Node)
+  if ($null -eq $Node) { return '' }
+  try {
+    if ($Node -is [System.Xml.XmlNode]) { return ([System.Net.WebUtility]::HtmlDecode([string]$Node.InnerText)).Trim() }
+    if ($Node.PSObject.Properties.Name -contains '#text') { return ([System.Net.WebUtility]::HtmlDecode([string]$Node.'#text')).Trim() }
+  } catch {}
+  return ([System.Net.WebUtility]::HtmlDecode([string]$Node)).Trim()
+}
+
+function ConvertFrom-RadarHtml {
+  param([string]$Html, [int]$MaxChars = 700)
+  if ([string]::IsNullOrWhiteSpace($Html)) { return '' }
+  $txt = $Html -replace '(?is)<script[^>]*>.*?</script>', ' '
+  $txt = $txt -replace '(?is)<style[^>]*>.*?</style>', ' '
+  $txt = $txt -replace '<[^>]+>', ' '
+  $txt = [System.Net.WebUtility]::HtmlDecode($txt)
+  $txt = ($txt -replace '\s+', ' ').Trim()
+  if ($txt.Length -gt $MaxChars) { $txt = $txt.Substring(0, $MaxChars).Trim() }
+  return $txt
+}
+
+function Get-RadarFeedUrls {
+  $sourcesPath = Join-Path $bridgeRoot 'sources.md'
+  $feedUrls = @()
+  if (Test-Path -LiteralPath $sourcesPath) {
+    foreach ($line in (Get-Content -LiteralPath $sourcesPath -Encoding UTF8)) {
+      if ($line -match '(https://habr\.com[^\s)\]]+)') {
+        $url = $Matches[1].TrimEnd('/') + '/'
+        if (Test-RadarFeedUrl $url) { $feedUrls += $url }
+        else { Write-RadarLog "skip source (not AI/ML feed): $url" }
+      }
     }
   }
-}
-$feedUrls = @($feedUrls | Select-Object -Unique)
-if ($feedUrls.Count -eq 0) {
-  $feedUrls = @(
-    'https://habr.com/ru/flows/ai_and_ml/articles/',
-    'https://habr.com/ru/hubs/artificial_intelligence/articles/',
-    'https://habr.com/ru/hubs/machine_learning/articles/',
-    'https://habr.com/ru/hubs/natural_language_processing/articles/'
-  )
-}
-
-# Build dedup set from existing backlog (URLs already stored)
-$knownUrls = @{}
-try {
-  @(Get-Backlog) | ForEach-Object {
-    if ([string]$_.text -match 'https?://\S+') { $knownUrls[$Matches[0]] = 1 }
+  $feedUrls = @($feedUrls | Select-Object -Unique)
+  if ($feedUrls.Count -eq 0) {
+    $feedUrls = @(
+      'https://habr.com/ru/flows/ai_and_ml/articles/',
+      'https://habr.com/ru/hubs/artificial_intelligence/articles/',
+      'https://habr.com/ru/hubs/machine_learning/articles/',
+      'https://habr.com/ru/hubs/natural_language_processing/articles/'
+    )
   }
-} catch {}
+  return @($feedUrls)
+}
 
-$scoreThreshold = 2.0
-$added = 0
-$seen = @{}
+function Get-FeedArticles {
+  param([string]$RssUrl, [int]$Max = 8)
+  try {
+    $resp = Invoke-WebRequest -Uri $RssUrl -UseBasicParsing -TimeoutSec 30 `
+      -Headers @{ 'User-Agent' = 'Mozilla/5.0 (compatible; bridge-radar/2.0)' }
+    [xml]$xml = $resp.Content
+    return @(@($xml.rss.channel.item) | Select-Object -First $Max | ForEach-Object {
+      $title = Get-RadarNodeText $_.title
+      $link = Get-RadarNodeText $_.link
+      $desc = ConvertFrom-RadarHtml (Get-RadarNodeText $_.description)
+      $pub = Get-RadarNodeText $_.pubDate
+      [PSCustomObject]@{
+        title = $title
+        link = $link
+        desc = $desc
+        published = $pub
+      }
+    } | Where-Object {
+      -not [string]::IsNullOrWhiteSpace([string]$_.title) -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.link)
+    })
+  } catch {
+    Write-RadarLog "fetch failed: $RssUrl | $($_.Exception.Message)"
+    return @()
+  }
+}
 
-foreach ($feedUrl in $feedUrls) {
-  $rssUrl = ConvertTo-RssUrl $feedUrl
-  Write-RadarLog "fetch $rssUrl"
-  $articles = Get-FeedArticles -RssUrl $rssUrl -Max 8
-  Write-RadarLog "got $($articles.Count) articles"
+function Limit-RadarNumber {
+  param($Value)
+  $n = 1.0
+  try { $n = [double]$Value } catch {}
+  return [Math]::Max(1.0, [Math]::Min(5.0, $n))
+}
 
-  foreach ($art in $articles) {
-    $link = [string]$art.link
-    if ([string]::IsNullOrWhiteSpace($link) -or $seen.ContainsKey($link) -or $knownUrls.ContainsKey($link)) { continue }
-    $seen[$link] = 1
-    $title = [string]$art.title
-    $desc  = [string]$art.desc
+function ConvertFrom-RadarEvalJson {
+  param([string]$Raw)
+  if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
+  $clean = ($Raw -replace '```json', '' -replace '```', '').Trim()
+  $match = [regex]::Match($clean, '(?s)\{.*\}')
+  if (-not $match.Success) { return $null }
+  try { return ($match.Value | ConvertFrom-Json) } catch { return $null }
+}
 
-    $evalPrompt = @"
+function Invoke-RadarArticleEval {
+  param($Article)
+  $title = [string]$Article.title
+  $desc = [string]$Article.desc
+  $link = [string]$Article.link
+  $evalPrompt = @"
 Ты — тех-радар ИИ-инженера. Оцени статью для команды, разрабатывающей автономного ИИ-агента на Windows (Claude+Codex).
 Тематика интереса: ИИ-агенты и оркестрация, долгосрочная память/контекст, инструменты разработки, удешевление LLM, автоматизация PowerShell/Windows.
 
@@ -98,41 +138,128 @@ foreach ($feedUrl in $feedUrls) {
 Ссылка: $link
 
 Оцени:
-- value (1-5): польза для нашей работы (1=нерелевантно, 5=очень ценно)
-- confidence (1-5): достоверность/реальность (1=сомнительно, 5=проверено)
-- effort (1-5): сложность применения (1=легко, 5=очень сложно)
+- value (1-5): польза именно для нашей работы; 1-2 = нерелевантно или почти не применимо, 3 = потенциально полезно, 5 = очень ценно.
+- confidence (1-5): достоверность/реальность.
+- effort (1-5): сложность применения.
 
 Верни СТРОГО JSON без markdown:
 {"value":N,"confidence":N,"effort":N,"summary":"одна фраза по-русски — что это и зачем нам"}
 "@
+  $raw = Invoke-LLM -Purpose 'reflect' -Prompt $evalPrompt -TimeoutSec 60 -Temperature 0.2
+  return (ConvertFrom-RadarEvalJson -Raw $raw)
+}
 
-    $raw = Invoke-LLM -Purpose 'reflect' -Prompt $evalPrompt -TimeoutSec 60 -Temperature 0.2
-    if ([string]::IsNullOrWhiteSpace($raw)) { Write-RadarLog "no LLM reply: $title"; continue }
+function Write-RadarDigestFiles {
+  param($Run)
+  $lines = New-Object 'System.Collections.Generic.List[string]'
+  $runItems = @($Run['items'])
+  [void]$lines.Add('# Тех-радар AI/ML')
+  [void]$lines.Add('')
+  [void]$lines.Add("_Обновлено: $($Run['ts'])_")
+  [void]$lines.Add('')
+  [void]$lines.Add("Источники: $(@($Run['sources']).Count); оценено: $($Run['evaluated']); в дайджесте: $($Run['accepted']); отброшено value<3: $($Run['rejectedLowValue']).")
+  [void]$lines.Add('')
+  if ($runItems.Count -eq 0) {
+    [void]$lines.Add('Релевантных пунктов для дайджеста нет.')
+  } else {
+    $n = 1
+    foreach ($item in $runItems) {
+      [void]$lines.Add("$n. [$($item.title)]($($item.link))")
+      [void]$lines.Add("   Что это и зачем нам: $($item.summary)")
+      [void]$lines.Add("   Оценка: value=$($item.value); confidence=$($item.confidence); effort=$($item.effort); score=$($item.score)")
+      [void]$lines.Add('')
+      $n++
+    }
+  }
+  [System.IO.File]::WriteAllText((Get-RadarDigestPath), (($lines.ToArray() -join "`n") + "`n"), $Utf8NoBom)
 
-    $clean = ($raw -replace '```json','' -replace '```','').Trim()
-    $match = [regex]::Match($clean, '(?s)\{.*\}')
-    if (-not $match.Success) { continue }
-    $ev = $null
-    try { $ev = $match.Value | ConvertFrom-Json } catch { continue }
-
-    $v = [Math]::Max(1.0,[Math]::Min(5.0,[double]$ev.value))
-    $c = [Math]::Max(1.0,[Math]::Min(5.0,[double]$ev.confidence))
-    $e = [Math]::Max(1.0,[Math]::Min(5.0,[double]$ev.effort))
-    $score = [Math]::Round($v * $c / $e, 2)
-    $summary = [string]$ev.summary
-    Write-RadarLog "score=$score v=$v c=$c e=$e | $title"
-
-    if ($score -lt $scoreThreshold) { continue }
-
-    $ideaText = "$title`n$summary`n$link"
-    $id = Add-Idea -Text $ideaText -From 'radar' -Tags @('external','radar') -Status 'new' -Score $score
-    if ($id) { $added++ }
+  $jsonLine = ($Run | ConvertTo-Json -Compress -Depth 12)
+  $hist = Get-RadarHistoryPath
+  if (Test-Path -LiteralPath $hist) {
+    Add-Content -LiteralPath $hist -Value $jsonLine -Encoding UTF8
+  } else {
+    [System.IO.File]::WriteAllText($hist, $jsonLine + "`n", $Utf8NoBom)
   }
 }
 
-Write-RadarLog "added=$added"
-if ($added -gt 0) {
-  try { Add-Message -From system -Text "📡 Тех-радар: $added новых статей в Бэклоге — одобри вручную (🧠 → «Бэклог»)." -Kind event | Out-Null } catch {}
+Write-RadarLog '=== radar digest start ==='
+$feedUrls = @(Get-RadarFeedUrls)
+Write-RadarLog "sources=$($feedUrls.Count) maxPerFeed=$MaxPerFeed"
+
+$seen = @{}
+$accepted = New-Object 'System.Collections.Generic.List[object]'
+$considered = 0
+$evaluated = 0
+$rejectedLowValue = 0
+$evalFailed = 0
+
+foreach ($feedUrl in $feedUrls) {
+  $rssUrl = ConvertTo-RssUrl $feedUrl
+  Write-RadarLog "fetch $rssUrl"
+  $articles = @(Get-FeedArticles -RssUrl $rssUrl -Max $MaxPerFeed)
+  Write-RadarLog "got $($articles.Count) articles"
+
+  foreach ($art in $articles) {
+    $link = [string]$art.link
+    if ([string]::IsNullOrWhiteSpace($link) -or $seen.ContainsKey($link)) { continue }
+    $seen[$link] = 1
+    $considered++
+
+    $title = [string]$art.title
+    Write-RadarLog "article: $title"
+    $ev = Invoke-RadarArticleEval -Article $art
+    if (-not $ev) {
+      $evalFailed++
+      Write-RadarLog "eval failed: $title"
+      continue
+    }
+    $evaluated++
+
+    $v = Limit-RadarNumber $ev.value
+    $c = Limit-RadarNumber $ev.confidence
+    $e = Limit-RadarNumber $ev.effort
+    $score = [Math]::Round($v * $c / $e, 2)
+    $summary = ([string]$ev.summary).Trim()
+    if ([string]::IsNullOrWhiteSpace($summary)) { $summary = 'Краткая оценка не вернулась.' }
+
+    if ($v -lt 3.0) {
+      $rejectedLowValue++
+      Write-RadarLog "reject value<3 v=$v c=$c e=$e score=$score | $title"
+      continue
+    }
+
+    $item = [ordered]@{
+      id = New-RadarItemId -Link $link -Title $title
+      title = $title
+      summary = $summary
+      link = $link
+      value = $v
+      confidence = $c
+      effort = $e
+      score = $score
+      published = [string]$art.published
+      source = $feedUrl
+    }
+    [void]$accepted.Add([pscustomobject]$item)
+    Write-RadarLog "accept v=$v c=$c e=$e score=$score | $title"
+  }
 }
+
+$items = @($accepted.ToArray() | Sort-Object @{Expression={ [double]$_.score }; Descending=$true}, @{Expression={ [double]$_.value }; Descending=$true} | Select-Object -First $MaxDigestItems)
+$run = [ordered]@{
+  type = 'digest'
+  ts = (Get-Date).ToUniversalTime().ToString('o')
+  sources = @($feedUrls)
+  considered = $considered
+  evaluated = $evaluated
+  accepted = @($items).Count
+  acceptedBeforeCap = @($accepted.ToArray()).Count
+  rejectedLowValue = $rejectedLowValue
+  evalFailed = $evalFailed
+  items = @($items)
+}
+
+Write-RadarDigestFiles -Run $run
 try { [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'radar.last'), (Get-Date).ToString('o'), $Utf8NoBom) } catch {}
-Write-RadarLog '=== radar done ==='
+Write-RadarLog "digest items=$(@($items).Count) considered=$considered evaluated=$evaluated rejectedLowValue=$rejectedLowValue evalFailed=$evalFailed"
+Write-RadarLog '=== radar digest done ==='
