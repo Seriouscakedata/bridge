@@ -748,7 +748,8 @@
   .composer-meta .char-count.warn{color:var(--model)}
   .composer-meta .char-count.bad{color:var(--danger)}
   #attach{font-size:18px}
-  #attach,#send{flex:none}
+  #screen{font-size:16px}
+  #attach,#screen,#send{flex:none}
   #fileInput{display:none}
   body.dragover:after{
     content:"Отпустите файл, чтобы прикрепить";
@@ -825,19 +826,20 @@
     body.compact-mode .msg,body.compact-mode .from-user{max-width:100%}
     footer{padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px));gap:8px}
     .composer-meta{font-size:10.5px}
-    #attach{width:38px}
+    #attach,#screen{width:38px}
     #send{padding:0 12px}
     #toBottom{right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   }
   @media (max-width:520px){
     footer{
       display:grid;
-      grid-template-columns:42px minmax(0,1fr);
+      grid-template-columns:42px 42px minmax(0,1fr);
       align-items:end;
     }
     .compose-main{grid-column:1 / -1}
     #attach{grid-column:1;grid-row:2;width:42px}
-    #send{grid-column:2;grid-row:2;width:100%;min-height:38px}
+    #screen{grid-column:2;grid-row:2;width:42px}
+    #send{grid-column:3;grid-row:2;width:100%;min-height:38px}
     .composer-meta{gap:6px}
   }
   @media (prefers-reduced-motion:reduce){
@@ -918,6 +920,7 @@
 
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
+  <button id="screen" class="icon" title="Сделать снимок экрана и отправить в ленту" type="button">▣</button>
   <input id="fileInput" type="file" multiple>
   <div class="compose-main">
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
@@ -963,6 +966,7 @@ const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
 const attachBtn = document.getElementById('attach');
+const screenBtn = document.getElementById('screen');
 const sendBtn = document.getElementById('send');
 const composerStatus = document.getElementById('composerStatus');
 const uploadQueue = document.getElementById('uploadQueue');
@@ -1007,6 +1011,7 @@ let activeFilter = localStorage.getItem('bridgeFilter') || 'all';
 if(!filterButtons.some(btn => btn.dataset.filter === activeFilter)) activeFilter = 'all';
 let sending = false;
 let uploading = false;
+let screenshotting = false;
 let dragDepth = 0;
 
 function esc(s){
@@ -1818,10 +1823,12 @@ async function exportChat(){
   }
 }
 function updateSendState(){
-  sendBtn.disabled = sending || uploading || !input.value.trim();
+  sendBtn.disabled = sending || uploading || screenshotting || !input.value.trim();
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
-  attachBtn.disabled = uploading;
+  attachBtn.disabled = uploading || screenshotting;
+  screenBtn.disabled = uploading || screenshotting;
   attachBtn.setAttribute('aria-busy', uploading ? 'true' : 'false');
+  screenBtn.setAttribute('aria-busy', screenshotting ? 'true' : 'false');
 }
 async function copyText(text, btn){
   try{
@@ -1891,6 +1898,41 @@ async function send(){
     setComposerStatus('Не отправлено: ' + (e.message || e), 'bad');
   }finally{
     sending = false;
+    updateSendState();
+  }
+}
+async function takeScreenshot(){
+  if(uploading || screenshotting) return;
+  screenshotting = true;
+  const caption = input.value.trim();
+  const draft = input.value;
+  updateSendState();
+  setComposerStatus('Делаю снимок экрана...');
+  try{
+    const payload = {text:caption};
+    const data = await fetchJson('/api/screenshot', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    if(caption){
+      input.value = '';
+      localStorage.removeItem('bridgeDraft');
+      resizeInput();
+      updateComposerMeta();
+    }
+    const okText = data && data.attachment ? 'Снимок экрана добавлен в ленту' : 'Снимок экрана сделан';
+    setComposerStatus(okText, 'ok');
+    clearComposerStatusSoon(okText);
+    poll();
+  }catch(e){
+    input.value = draft;
+    if(draft) localStorage.setItem('bridgeDraft', draft);
+    resizeInput();
+    updateComposerMeta();
+    setComposerStatus('Снимок не удался: ' + (e.message || e), 'bad');
+  }finally{
+    screenshotting = false;
     updateSendState();
   }
 }
@@ -1975,6 +2017,7 @@ async function uploadFiles(files){
 }
 
 attachBtn.addEventListener('click', () => fileInput.click());
+screenBtn.addEventListener('click', takeScreenshot);
 fileInput.addEventListener('change', e => {
   uploadFiles(e.target.files);
   fileInput.value = '';
