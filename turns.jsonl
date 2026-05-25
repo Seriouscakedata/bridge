@@ -14,3 +14,7 @@
 {"ts":"2026-05-25T08:13:45.3511144Z","speaker":"claude","model":"sonnet","sec":240.022,"status":"timeout","mode":"normal"}
 {"ts":"2026-05-25T08:19:30.7636145Z","speaker":"claude","model":"sonnet","sec":182.892,"status":"ok","mode":"normal"}
 {"ts":"2026-05-25T09:37:33.2793048Z","speaker":"codex","model":"codex","sec":601.556,"status":"timeout","mode":"normal"}
+{"ts":"2026-05-25T09:49:36.3921051Z","speaker":"codex","model":"codex","sec":124.96,"status":"timeout","mode":"normal"}
+{"ts":"2026-05-25T09:51:07.1541445Z","speaker":"claude","model":"sonnet","sec":88.177,"status":"ok","mode":"normal"}
+{"ts":"2026-05-25T09:55:10.9225690Z","speaker":"claude","model":"opus","sec":240.605,"status":"timeout","mode":"normal"}
+{"ts":"2026-05-25T09:58:12.3776189Z","speaker":"claude","model":"opus","sec":180.886,"status":"timeout","mode":"normal"}

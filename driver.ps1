@@ -359,7 +359,7 @@ $claudeActionBlock
 - STATUS: DISCUSS -- разобрать ИДЕЮ вместе с Codex (без правок): поставь ему тезис/вопрос.
 - STATUS: RESEARCH -- нужен отдельный web-ход Claude: поиск/чтение внешних источников без Bash. Дай краткую причину, особенно если это второй research-ход по задаче.
 
-ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать в ответе результат проверки: вывод команды, git diff, содержимое файла или тест. Без явной проверки STATUS: DONE запрещён -- используй STATUS: CONTINUE и попроси Codex проверить, или проверь сам через Bash.
+ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать в ответе результат проверки: вывод команды, git diff, содержимое файла, тест или скриншот, и добавь отдельной строкой маркер [[VERIFIED: что проверено | результат]]. Для задач с правками файлов STATUS: DONE без [[VERIFIED:]] будет отклонён.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 "@
@@ -370,7 +370,12 @@ $claudeActionBlock
       $snapState = Read-State
       $discussSnapshot = if ($snapState.discuss_snapshot) { [string]$snapState.discuss_snapshot } else { '' }
       $snapshotBlock = if (-not [string]::IsNullOrWhiteSpace($discussSnapshot)) { "`n`nПРЕДЫДУЩИЙ СНИМОК ОБСУЖДЕНИЯ (пережил сжатие истории; продолжай отсюда):`n$discussSnapshot" } else { '' }
-      $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt, минимум $discussMinTurns, максимум $discussMaxTurns). Цель — НЕ спорить, а СОЙТИСЬ к решению; ты ведёшь обсуждение к синтезу.`nКаждый ход ЗАКАНЧИВАЙ блоком состояния — ровно эти строки с этими префиксами (для машинного парсинга):`nТип: <idea|architecture|implementation>`nСогласовано: <что уже принято обеими сторонами; это не переоткрывается>`nОткрыто: <нерешённые вопросы; если их нет — напиши «нет»>`nРешение: <текущий консолидированный вариант>`nРиски: <ключевые риски и как смягчаем>`nЕсли Тип=architecture или implementation: обязателен пункт «План реализации:» — конкретные файлы/шаги/критерии готовности.`nЯвно принимай сильные пункты Codex, не пересказывай без нужды; спорь только по сути нерешённого.`nSTATUS: DONE разрешён, когда ходов >= $discussMinTurns И «Открыто:» пусто/«нет» И заполнены «Решение:» и «Риски:» — тогда дай ## ИТОГ.`nSTATUS: CONTINUE разрешён в конце discuss, если Тип=architecture/implementation И есть непустой «План реализации:».`nИначе — STATUS: DISCUSS.$snapshotBlock"
+      $convergeNote = if ($dt -ge ($discussMinTurns - 1)) {
+        "`n`n🎯 ФАЗА КОНВЕРГЕНЦИИ (ход $dt): хватит исследовать и оппонировать — СФОРМУЛИРУЙ итоговое решение или компромисс с конкретикой. Заполни «Решение:» и «Риски:», доведи «Открыто:» до «нет». Не тяни до потолка — сходитесь к решению."
+      } else {
+        "`n`nФаза исследования/оппозиции (ход $dt): разбери варианты и риски; к ходу $($discussMinTurns - 1) перейдёшь к конвергенции."
+      }
+      $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $dt, минимум $discussMinTurns, максимум $discussMaxTurns). Цель — НЕ спорить, а СОЙТИСЬ к решению; ты ведёшь обсуждение к синтезу.`nКаждый ход ЗАКАНЧИВАЙ блоком состояния — ровно эти строки с этими префиксами (для машинного парсинга):`nТип: <idea|architecture|implementation>`nСогласовано: <что уже принято обеими сторонами; это не переоткрывается>`nОткрыто: <нерешённые вопросы; если их нет — напиши «нет»>`nРешение: <текущий консолидированный вариант>`nРиски: <ключевые риски и как смягчаем>`nЕсли Тип=architecture или implementation: обязателен пункт «План реализации:» — конкретные файлы/шаги/критерии готовности.`nЯвно принимай сильные пункты Codex, не пересказывай без нужды; спорь только по сути нерешённого.`nSTATUS: DONE разрешён, когда ходов >= $discussMinTurns И «Открыто:» пусто/«нет» И заполнены «Решение:» и «Риски:» — тогда дай ## ИТОГ.`nSTATUS: CONTINUE разрешён в конце discuss, если Тип=architecture/implementation И есть непустой «План реализации:».`nИначе — STATUS: DISCUSS.$convergeNote$snapshotBlock"
       $suffix = $claudeBase + $discussNote
     } elseif ($Mode -eq 'study') {
       $subtype = [string]$promptState.study_subtype
@@ -389,6 +394,11 @@ $claudeActionBlock
       $suffix = $claudeBase
     }
   } elseif ($Mode -eq 'discuss') {
+    $codexDiscussPhase = if ($dt -ge ($discussMinTurns - 1)) {
+      "🎯 ФАЗА КОНВЕРГЕНЦИИ: предложи КОНКРЕТНЫЙ итог/компромисс, а не только критику. Если согласен — явно заяви критерий завершения."
+    } else {
+      "Фаза исследования/оппозиции: проверяй на прочность, но готовься к конвергенции."
+    }
     $suffix = @"
 
 ТВОЙ ХОД как РЕЦЕНЗЕНТ РЕШЕНИЯ (Codex) — раунд $dt (минимум $discussMinTurns, максимум $discussMaxTurns).
@@ -399,6 +409,7 @@ $claudeActionBlock
   3. Видишь нерешённый вопрос — назови его коротко, чтобы Claude внёс в «Открыто».
   4. Когда открытых блокеров нет — так и скажи, предложи критерий завершения.
 ⚠ Ты НЕ обязан возражать ради возражения. Согласие с обоснованием — это нормально и желательно. НЕ переоткрывай согласованное. Обсуждение закрывает Claude.
+$codexDiscussPhase
 Кратко, конкретно, по-русски. НЕ меняй файлы (читать код/материалы для аргументов — можно).
 "@
   } elseif ($Mode -eq 'study') {
@@ -458,15 +469,19 @@ function Invoke-Planner {
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$bridgeRoot,'--allowedTools') + $allowedTools
   if ($Model) { $claudeArgs += @('--model', $Model) }
   $reply = ''
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 240000)) { try { $p.Kill() } catch {}; return '(planner timeout)' }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 240000)) {
+      try { $p.Kill() } catch {}
+      return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
+    }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
   } finally { Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
-  return $reply.Trim()
+  return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
 function Invoke-Coder {
@@ -476,16 +491,20 @@ function Invoke-Coder {
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
   $sbMode = if ($Mode -eq 'discuss') { 'read-only' } else { 'danger-full-access' }
   $reply = ''
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $p = Start-Process -FilePath $codexExe `
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) { try { $p.Kill() } catch {}; return '(coder timeout)' }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
+      try { $p.Kill() } catch {}
+      return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
+    }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
   } finally { Clear-AgentPid; Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
-  return $reply.Trim()
+  return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
 function Invoke-Summarizer {
@@ -699,7 +718,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -714,7 +733,7 @@ while ($true) {
 
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -729,7 +748,7 @@ while ($true) {
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
       }.GetNewClosure()) | Out-Null
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       $state = Read-State
@@ -753,7 +772,7 @@ while ($true) {
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
@@ -773,10 +792,13 @@ while ($true) {
   $task = [string]$state.current_task
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
-  $speaker = if ($mode -eq 'research') { 'claude' }
+  $forcePlanner = [bool]$state.force_planner
+  $speaker = if ($forcePlanner) { 'claude' }
+             elseif ($mode -eq 'research') { 'claude' }
              elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
              elseif ($tt -eq 0) { 'claude' }
              else { Next-Speaker }
+  if ($forcePlanner) { Update-State { param($s) $s.force_planner=$false } | Out-Null }
   $plannerModel = Get-PlannerModel -TaskText $task -Mode $mode
   $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
@@ -789,29 +811,31 @@ while ($true) {
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
   try {
-    if ($speaker -eq 'claude') { $reply = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
-    else { $reply = Invoke-Coder -Prompt $prompt -Mode $mode }
+    if ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
+    else { $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode }
   } catch {
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
     throw
   }
-  Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply
+  $reply = [string]$turnResult.text
+  Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 
-  # Handle agent timeouts as retryable errors, not normal replies.
-  if ($reply -eq '(coder timeout)' -or $reply -eq '(planner timeout)') {
-    $who = if ($reply -eq '(coder timeout)') { 'Codex' } else { 'Claude' }
+  # Handle agent timeouts as retryable structured errors.
+  if ($turnResult.status -eq 'timeout') {
+    $who = if ($turnResult.errorType -eq 'coder_timeout') { 'Codex' } else { 'Claude' }
+    $dur = [int]$turnResult.duration
     $trc = [int](Read-State).timeout_retry_count
     if ($trc -lt 1) {
-      Add-Message -From system -Text "⏱ Таймаут $who — повторяю попытку..." -Kind event | Out-Null
+      Add-Message -From system -Text "⏱ Таймаут $who (${dur}с, $($turnResult.errorType)) — повторяю попытку..." -Kind event | Out-Null
       $newTrc = $trc + 1
       $mutTrc = { param($s) $s.timeout_retry_count = $newTrc; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()
       Update-State $mutTrc | Out-Null
       continue
     } else {
-      Add-Message -From system -Text "⏱ Таймаут $who повторился. Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Add-Message -From system -Text "⏱ Таймаут $who повторился (${dur}с). Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -828,7 +852,7 @@ while ($true) {
         Add-Message -From codex -Text $preReply | Out-Null
       }
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -857,6 +881,7 @@ while ($true) {
     if ($sc) { $savedPaths += (Save-Decision -Title $st -Content $sc) }
   }
   $evidencePattern = '(?m)^\s*\[\[EVIDENCE:\s*(.+?)\s*\]\]\s*$'
+  $verifiedPattern = '(?m)^\s*\[\[VERIFIED:\s*(.+?)\s*\]\]\s*$'
   $evidenceSources = @()
   foreach ($m in [regex]::Matches($reply, $evidencePattern)) {
     $parts = @($m.Groups[1].Value -split '\|', 3)
@@ -903,6 +928,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($reply, $fileMarkerPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $savePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $verifiedPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $findingPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $studyFallbackPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
@@ -933,6 +959,7 @@ while ($true) {
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
     $gitDiffOut = & git -C $bridgeRoot diff --stat HEAD 2>&1
+    if ($mode -eq 'normal') { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
     $npc = [int](Read-State).no_progress_count
     if ($hasChanges) {
@@ -1050,7 +1077,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
@@ -1087,6 +1114,18 @@ while ($true) {
       Update-State { param($s) $s.task_mode='study'; $s.study_phase='synthesis' } | Out-Null
     }
   }
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    $didActions = [bool](Read-State).task_did_actions
+    $hasVerify  = $reply -imatch '(?im)^\s*\[\[VERIFIED:\s*.+?\]\]\s*$'
+    $vrc        = [int](Read-State).verify_retry_count
+    if ($didActions -and -not $hasVerify -and $vrc -lt 2) {
+      Add-Message -From system -Text "🔍 Фаза верификации: задача меняла файлы, но проверки нет. Claude, ВЫПОЛНИ через Bash проверочную команду/тест/чтение файла/скриншот, покажи результат и добавь строку [[VERIFIED: что проверено | результат]], затем STATUS: DONE." -Kind event | Out-Null
+      $plannerStatus = 'VERIFY'
+      Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$true } | Out-Null
+    } elseif ($didActions -and -not $hasVerify -and $vrc -ge 2) {
+      Add-Message -From system -Text "🔍 Верификация не пройдена за 2 попытки — закрываю как есть (нужно внимание оператора)." -Kind event | Out-Null
+    }
+  }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
       try {
@@ -1106,12 +1145,12 @@ while ($true) {
       if ($doneBid) { Set-Idea -Id $doneBid -Status 'done' | Out-Null; Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null }
     } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
