@@ -10,6 +10,7 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
+. (Join-Path $PSScriptRoot 'lib\auditor.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
@@ -1266,6 +1267,7 @@ while ($true) {
       # reflect.ps1 (leaf-level tweaks) and Doctor (acute repair).
       try { Start-ArchitectIfDue -Mode 'normal' } catch {}
       try { Start-DeepThinkIfDue } catch {}
+      try { Start-AuditorIfDue } catch {}
 
       # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
       # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).

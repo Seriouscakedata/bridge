@@ -69,6 +69,14 @@
     "throttleSeconds": 20,
     "timeoutSec": 10
   },
+  "auditor": {
+    "enabled": true,
+    "intervalMin": 15,
+    "cooldownMin": 30,
+    "model": "gemini-2.5-flash-lite",
+    "doctorRecidivismHours": 24,
+    "doctorRecidivismMax": 2
+  },
   "autonomy": {
     "enabled": true,
     "requireApproval": false,
