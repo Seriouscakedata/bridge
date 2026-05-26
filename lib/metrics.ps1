@@ -211,7 +211,7 @@ function Invoke-MetricsReflection {
 
 function Invoke-PostMortem {
   # Cheap DeepSeek post-mortem on timeout/safety/rollback. Saves lesson to memory + optional idea.
-  param([string]$FailureType, [string]$Task = '', [string]$Context = '')
+  param([string]$FailureType, [string]$Task = '', [string]$Context = '', [string]$Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Task)) { return }
   $shortTask = if ($Task.Length -gt 120) { $Task.Substring(0, 120) + '...' } else { $Task }
   $prompt = @"
@@ -223,23 +223,33 @@ function Invoke-PostMortem {
 Ответь ТОЛЬКО в таком формате (без пояснений):
 УРОК: <одно-два предложения — почему упало и что делать иначе в будущем>
 ИДЕЯ: <одна строка — конкретная идея в бэклог для устранения причины, или NONE>
+НЕ_ПОВТОРЯТЬ: <КОНТЕКСТ: что и при каких условиях пробовали | ПРОВАЛ: что именно пошло не так> или NONE
 "@
   $raw = try { Invoke-LLM -Purpose 'postmortem' -Prompt $prompt -TimeoutSec 45 -Temperature 0.3 } catch { $null }
   if ([string]::IsNullOrWhiteSpace($raw)) { return }
 
   $lessonM = [regex]::Match($raw, '(?im)^УРОК:\s*(.+)$')
   $ideaM   = [regex]::Match($raw, '(?im)^ИДЕЯ:\s*(.+)$')
+  $negativeM = [regex]::Match($raw, '(?im)^НЕ_ПОВТОРЯТЬ:\s*(.+)$')
 
   if ($lessonM.Success) {
     $lesson  = $lessonM.Groups[1].Value.Trim()
     $memText = "[$FailureType] Задача: $shortTask — Урок: $lesson"
-    try { Add-Memory -Text $memText -Tags @('lesson', $FailureType) -Source 'postmortem' -Importance 0.7 | Out-Null } catch {}
+    try { Add-Memory -Channel $Channel -Text $memText -Tags @('lesson', $FailureType) -Source 'postmortem' -Importance 0.7 | Out-Null } catch {}
     try { Add-Message -From system -Text "🧠 Post-mortem ($FailureType): $lesson" -Kind event | Out-Null } catch {}
   }
   if ($ideaM.Success) {
     $ideaText = $ideaM.Groups[1].Value.Trim()
     if ($ideaText -and $ideaText -notmatch '(?i)^none$') {
       try { Add-Idea -Text $ideaText -From 'postmortem' -Tags @('lesson','postmortem') -Status 'new' | Out-Null } catch {}
+    }
+  }
+  if ($negativeM.Success) {
+    $negative = $negativeM.Groups[1].Value.Trim()
+    if ($negative -and $negative -notmatch '(?i)^none$' -and $negative -match 'КОНТЕКСТ:' -and $negative -match 'ПРОВАЛ:') {
+      $negative = ($negative -replace '[\x00-\x1F\x7F]', ' ' -replace '\s+', ' ').Trim()
+      if ($negative.Length -gt 700) { $negative = $negative.Substring(0, 700).Trim() }
+      try { Add-Memory -Channel $Channel -Text $negative -Tags @('skill-rejected', $FailureType) -Source 'postmortem-negative' -Importance 0.65 | Out-Null } catch {}
     }
   }
   # Append a structured failure record for the Architect's meta-pattern detection.

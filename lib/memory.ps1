@@ -35,6 +35,9 @@ function Get-MemoryConfig {
     skillMaxInjectChars = 600
     skillImportance = 0.8
     skillDedupThreshold = 0.96
+    antiSkillTopK = 2
+    antiSkillMinScore = 0.55
+    antiSkillMaxInjectChars = 600
     codeTopK = 4
     codeMinScore = 0.5
     codeMaxInjectChars = 900
@@ -143,7 +146,12 @@ function Get-CosineSimilarity {
 # ---- store ----
 function Get-CurrentMemoryChannel {
   # Channel slug to stamp on new memories. Falls back to 'main' (legacy/no-channels-yet).
-  if (Get-Command Get-ActiveChannel -ErrorAction SilentlyContinue) {
+  $effectiveCmd = Get-Command -Name 'Get-EffectiveChannel' -ErrorAction SilentlyContinue
+  if ($null -ne $effectiveCmd) {
+    try { $s = [string](Get-EffectiveChannel); if (-not [string]::IsNullOrWhiteSpace($s)) { return $s } } catch {}
+  }
+  $activeCmd = Get-Command -Name 'Get-ActiveChannel' -ErrorAction SilentlyContinue
+  if ($null -ne $activeCmd) {
     try { $s = [string](Get-ActiveChannel); if (-not [string]::IsNullOrWhiteSpace($s)) { return $s } } catch {}
   }
   return 'main'
@@ -228,7 +236,7 @@ function Search-Memory {
   # Returns array of [pscustomobject]{ Score; Mem } sorted by score desc.
   # -Channel: filter so only memories from $Channel + 'shared' memories are searched.
   #          $null/'' = use active channel; '__all__' = bypass filter (admin/UI views).
-  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string]$ExcludeTag = '', [string]$Channel = $null)
+  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string[]]$ExcludeTag = @(), [string]$Channel = $null)
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return @() }
   if ($TopK -le 0)    { $TopK = [int]$mc.recallTopK }
@@ -237,8 +245,9 @@ function Search-Memory {
   if (-not [string]::IsNullOrWhiteSpace($RequireTag)) {
     $mems = @($mems | Where-Object { @($_.tags) -contains $RequireTag })
   }
-  if (-not [string]::IsNullOrWhiteSpace($ExcludeTag)) {
-    $mems = @($mems | Where-Object { -not (@($_.tags) -contains $ExcludeTag) })
+  foreach ($tag in @($ExcludeTag)) {
+    if ([string]::IsNullOrWhiteSpace($tag)) { continue }
+    $mems = @($mems | Where-Object { -not (@($_.tags) -contains $tag) })
   }
   # Channel filter (phase 4): default to active channel; '__all__' skips filtering.
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
@@ -261,7 +270,7 @@ function Get-MemoryRecall {
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return '' }
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return '' }
-  try { $hits = Search-Memory -Query $TaskText -ExcludeTag 'skill' } catch { return '' }
+  try { $hits = Search-Memory -Query $TaskText -ExcludeTag @('skill','skill-rejected') } catch { return '' }
   if (-not $hits -or @($hits).Count -eq 0) { return '' }
   $maxChars = [int]$mc.maxInjectChars
   $sb = New-Object System.Text.StringBuilder
@@ -300,6 +309,33 @@ function Get-SkillRecall {
     $bodyTxt = $sb.ToString().Trim()
     if ([string]::IsNullOrWhiteSpace($bodyTxt)) { return '' }
     return "=== ПЛЕЙБУК (релевантный навык) ===`n$bodyTxt"
+  } catch { return '' }
+}
+
+function Get-AntiSkillRecall {
+  # Formatted warning block for failed past approaches. '' on any failure.
+  param([string]$TaskText = '')
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return '' }
+  try {
+    $mc = Get-MemoryConfig
+    if (-not $mc.enabled) { return '' }
+    $topK = [Math]::Max(1, [Math]::Min(5, [int]$mc.antiSkillTopK))
+    $minScore = [Math]::Max(0.1, [Math]::Min(0.95, [double]$mc.antiSkillMinScore))
+    $maxChars = [Math]::Max(200, [Math]::Min(2000, [int]$mc.antiSkillMaxInjectChars))
+    $hits = Search-Memory -Query $TaskText -RequireTag 'skill-rejected' -TopK $topK -MinScore $minScore
+    if (-not $hits -or @($hits).Count -eq 0) { return '' }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($h in $hits) {
+      $t = ([string]$h.Mem.text).Trim() -replace '\s+', ' '
+      if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+      $pct = [int]([Math]::Round([double]$h.Score * 100))
+      $entry = "- ($pct%) $t"
+      if ($sb.Length + $entry.Length + 1 -gt $maxChars) { break }
+      [void]$sb.AppendLine($entry)
+    }
+    $bodyTxt = $sb.ToString().Trim()
+    if ([string]::IsNullOrWhiteSpace($bodyTxt)) { return '' }
+    return "=== НЕ ПОВТОРЯТЬ (прошлые провалы) ===`n$bodyTxt"
   } catch { return '' }
 }
 

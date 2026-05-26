@@ -308,17 +308,20 @@ function Format-Transcript {
   try { $memSect = Get-MemoryRecall -TaskText $TaskText } catch { $memSect = '' }
   $skillSect = ''
   try { $skillSect = Get-SkillRecall -TaskText $TaskText } catch { $skillSect = '' }
+  $antiSkillSect = ''
+  try { $antiSkillSect = Get-AntiSkillRecall -TaskText $TaskText } catch { $antiSkillSect = '' }
   $codeSect = ''
   try { $codeSect = Get-CodeRecall -Query $TaskText } catch { $codeSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
   $skillAppend = if ($skillSect) { "`n`n$skillSect" } else { '' }
+  $antiSkillAppend = if ($antiSkillSect) { "`n`n$antiSkillSect" } else { '' }
   $codeAppend = if ($codeSect) { "`n`n$codeSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $codeAppend + $decAppend + $evAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend)
   }
-  return $body + $memAppend + $skillAppend + $codeAppend + $decAppend + $evAppend
+  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend
 }
 
 function Build-Prompt {

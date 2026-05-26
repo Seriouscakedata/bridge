@@ -27,7 +27,10 @@
     "recallTopK": 5,
     "recallMinScore": 0.62,
     "dedupThreshold": 0.93,
-    "maxInjectChars": 1200
+    "maxInjectChars": 1200,
+    "antiSkillTopK": 2,
+    "antiSkillMinScore": 0.55,
+    "antiSkillMaxInjectChars": 600
   },
   "llm": {
     "gate": "deepseek-v4-flash",
