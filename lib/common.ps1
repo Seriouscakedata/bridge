@@ -400,6 +400,163 @@ function Get-PreflightBlockers {
   }
 }
 
+function Is-TestChannel {
+  param([Parameter(Mandatory)][string]$Name)
+  if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+  if ($Name -match '[\\/]') { return $false }
+  return ($Name -match '^(smoke|test)[-_]')
+}
+
+function Get-TestChannelDriverProcessIds {
+  param([Parameter(Mandatory)][string]$Name)
+
+  $ids = New-Object 'System.Collections.Generic.List[int]'
+  if (-not (Is-TestChannel -Name $Name)) { return @() }
+  $pattern = "(?i)(^|\s)-Channel\s+[`"']?" + [regex]::Escape($Name) + "[`"']?(\s|$)"
+  try {
+    foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+      $cmd = [string]$p.CommandLine
+      if ([string]::IsNullOrWhiteSpace($cmd)) { continue }
+      if ($cmd -notmatch '\\driver\.ps1\b') { continue }
+      if ($cmd -match $pattern) { [void]$ids.Add([int]$p.ProcessId) }
+    }
+  } catch {}
+  return @($ids.ToArray())
+}
+
+function Set-TestChannelArchivedFlag {
+  param([Parameter(Mandatory)][string]$Name)
+
+  if (-not (Is-TestChannel -Name $Name)) { return $false }
+  $cfgPath = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Name) 'channel.json'
+  try {
+    if (Test-Path -LiteralPath $cfgPath) {
+      $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } else {
+      $cfg = [pscustomobject]@{ slug=$Name; name=$Name }
+    }
+    $cfg | Add-Member -NotePropertyName archived -NotePropertyValue $true -Force
+    $cfg | Add-Member -NotePropertyName archived_at -NotePropertyValue ((Get-Date).ToString('o')) -Force
+    [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Archive-TestChannelIfIdle {
+  param(
+    [Parameter(Mandatory)][string]$Name,
+    [int]$GraceMinutes = 10
+  )
+
+  if (-not (Is-TestChannel -Name $Name)) { return $null }
+  if ($Name -ne [System.IO.Path]::GetFileName($Name)) { return $null }
+  if ($GraceMinutes -lt 0) { $GraceMinutes = 0 }
+
+  $root = Get-BridgeRoot
+  $chRoot = Join-Path $root 'channels'
+  $chDir = Join-Path $chRoot $Name
+  if (-not (Test-Path -LiteralPath $chDir -PathType Container)) { return $null }
+
+  $current = ''
+  try {
+    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $current = [string](Get-EffectiveChannel) }
+  } catch {}
+  if (-not [string]::IsNullOrWhiteSpace($current) -and $current -eq $Name) { return $null }
+  try {
+    $active = [string](Get-ActiveChannel)
+    if (-not [string]::IsNullOrWhiteSpace($active) -and $active -eq $Name) { return $null }
+  } catch {}
+
+  $locks = @(Get-ChildItem -LiteralPath $chDir -Filter '*.lock' -File -ErrorAction SilentlyContinue)
+  if ($locks.Count -gt 0) { return $null }
+
+  $statePath = Join-Path $chDir 'state.json'
+  if (Test-Path -LiteralPath $statePath) {
+    try {
+      $st = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $status = ([string]$st.status).ToLowerInvariant()
+      if (-not [string]::IsNullOrWhiteSpace($status) -and $status -notin @('idle','done')) { return $null }
+      if (-not [string]::IsNullOrWhiteSpace([string]$st.current_task)) { return $null }
+      if (-not [string]::IsNullOrWhiteSpace([string]$st.active_agent)) { return $null }
+      if (-not [string]::IsNullOrWhiteSpace([string]$st.current_agent)) { return $null }
+      if ([bool]$st.doctor_active) { return $null }
+      if ($st.active_jobs -and @($st.active_jobs).Count -gt 0) { return $null }
+      if ($st.PSObject.Properties.Name -contains 'task_id') {
+        if (-not [string]::IsNullOrWhiteSpace([string]$st.task_id) -and -not [bool]$st.task_archived) { return $null }
+      }
+    } catch {
+      return [pscustomobject]@{ Name=$Name; Archived=$null; Error=("state read failed: " + $_.Exception.Message) }
+    }
+  }
+
+  $lastTouch = (Get-Date).AddYears(-1)
+  $sawActivityFile = $false
+  foreach ($f in @('conversation.jsonl','turns.jsonl','channel.json','plan.jsonl','backlog.jsonl')) {
+    $fp = Join-Path $chDir $f
+    if (Test-Path -LiteralPath $fp) {
+      $mt = (Get-Item -LiteralPath $fp).LastWriteTime
+      $sawActivityFile = $true
+      if ($mt -gt $lastTouch) { $lastTouch = $mt }
+    }
+  }
+  if (-not $sawActivityFile) { $lastTouch = (Get-Item -LiteralPath $chDir).LastWriteTime }
+  $ageMin = ((Get-Date) - $lastTouch).TotalMinutes
+  if ($ageMin -lt $GraceMinutes) { return $null }
+
+  $driverPids = @(Get-TestChannelDriverProcessIds -Name $Name)
+  if ($driverPids.Count -gt 0) {
+    if (Set-TestChannelArchivedFlag -Name $Name) {
+      return [pscustomobject]@{ Name=$Name; Archived=$null; PendingStop=$true; DriverPids=$driverPids; AgeMinutes=[int]$ageMin }
+    }
+    return [pscustomobject]@{ Name=$Name; Archived=$null; Error='failed to mark channel archived before driver stop' }
+  }
+
+  $archRoot = Join-Path $chRoot '_archive'
+  if (-not (Test-Path -LiteralPath $archRoot)) { New-Item -ItemType Directory -Path $archRoot -Force | Out-Null }
+  $stamp = (Get-Date).ToString('yyyy-MM-dd_HHmmss')
+  $dest = Join-Path $archRoot ($stamp + '_' + $Name)
+  $n = 1
+  while (Test-Path -LiteralPath $dest) {
+    $dest = Join-Path $archRoot ($stamp + '_' + $Name + '_' + $n)
+    $n++
+  }
+
+  try {
+    Move-Item -LiteralPath $chDir -Destination $dest -ErrorAction Stop
+    return [pscustomobject]@{ Name=$Name; Archived=$dest; AgeMinutes=[int]$ageMin }
+  } catch {
+    return [pscustomobject]@{ Name=$Name; Archived=$null; Error=$_.Exception.Message }
+  }
+}
+
+function Invoke-TestChannelCleanup {
+  param([int]$GraceMinutes = 10)
+
+  $root = Get-BridgeRoot
+  $chRoot = Join-Path $root 'channels'
+  if (-not (Test-Path -LiteralPath $chRoot -PathType Container)) { return @() }
+
+  $results = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($ch in @(Get-ChildItem -LiteralPath $chRoot -Directory -ErrorAction SilentlyContinue)) {
+    if ($ch.Name -eq '_archive') { continue }
+    if (-not (Is-TestChannel -Name $ch.Name)) { continue }
+    $r = Archive-TestChannelIfIdle -Name $ch.Name -GraceMinutes $GraceMinutes
+    if ($r -and ($r.Archived -or $r.PendingStop)) {
+      try {
+        if ($r.PendingStop) {
+          Add-Message -From system -Kind event -Text ("test_channel_archive_pending: " + $r.Name + " marked archived; waiting for driver stop (pid " + ((@($r.DriverPids) | ForEach-Object { [string]$_ }) -join ',') + ", age " + $r.AgeMinutes + " min)") | Out-Null
+        } else {
+          Add-Message -From system -Kind event -Text ("test_channel_archived: " + $r.Name + " -> " + $r.Archived + " (age " + $r.AgeMinutes + " min)") | Out-Null
+        }
+      } catch {}
+      [void]$results.Add($r)
+    }
+  }
+  return @($results.ToArray())
+}
+
 function Add-Message {
   param(
     [ValidateSet('claude','codex','user','system')] [string]$From,

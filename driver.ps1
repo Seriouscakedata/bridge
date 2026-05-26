@@ -1291,6 +1291,19 @@ while ($true) {
       try { Start-ArchitectIfDue -Mode 'normal' } catch {}
       try { Start-DeepThinkIfDue } catch {}
       try { Start-AuditorIfDue } catch {}
+      try {
+        if ([string]$Channel -eq 'main') {
+          if ($null -eq $script:LastTestCleanupTick) { $script:LastTestCleanupTick = 0 }
+          $script:LastTestCleanupTick = [int]$script:LastTestCleanupTick + 1
+          if ($script:LastTestCleanupTick -ge 30) {
+            $script:LastTestCleanupTick = 0
+            $cleaned = @(Invoke-TestChannelCleanup -GraceMinutes 10)
+            if ($cleaned.Count -gt 0) {
+              Write-Host ("[cleanup] processed test channels: " + (($cleaned | ForEach-Object { $_.Name }) -join ', '))
+            }
+          }
+        }
+      } catch {}
 
       # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
       # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
