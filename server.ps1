@@ -152,7 +152,11 @@ try {
       elseif ($method -eq 'POST' -and $path -eq '/api/say') {
         $body = Read-Body $ctx | ConvertFrom-Json
         $text = [string]$body.text
-        if (-not [string]::IsNullOrWhiteSpace($text)) { [void](Add-Message -From user -Text $text) }
+        $atts = @()
+        if ($null -ne $body.PSObject.Properties['attachments']) { $atts = @($body.attachments) }
+        if (-not [string]::IsNullOrWhiteSpace($text) -or $atts.Count -gt 0) {
+          [void](Add-Message -From user -Text $text -Attachments $atts)
+        }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/upload') {
@@ -267,8 +271,13 @@ try {
         } else { Send-FileNotFound $ctx }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/memory') {
+        # Phase 4: ?channel=<slug> filters items; default shows ALL channels so the user can
+        # audit/organize. Pass ?channel=__active__ for "what's recallable from the current channel".
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        if ([string]::IsNullOrWhiteSpace($chParam)) { $chParam = '__all__' }
+        elseif ($chParam -eq '__active__') { $chParam = (Get-ActiveChannel) }
         $stats = Get-MemoryStats
-        $items = @(Get-MemoriesView)
+        $items = @(Get-MemoriesView -Channel $chParam)
         $mapTxt = ''
         $mp = Get-MemoryMapPath
         if (Test-Path $mp) { $mapTxt = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) }
@@ -276,7 +285,9 @@ try {
         # ReadAllText returns a plain CLR string, so ConvertTo-Json cannot serialize
         # PowerShell provider ETS properties as a {"value":...} object.
         $mapJson = (("" + $mapTxt) | ConvertTo-Json -Compress)
-        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + '}'
+        $activeChJson = (("" + (Get-ActiveChannel)) | ConvertTo-Json -Compress)
+        $filterJson   = (("" + $chParam) | ConvertTo-Json -Compress)
+        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + ',"activeChannel":' + $activeChJson + ',"filterChannel":' + $filterJson + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/memory/add') {
@@ -287,7 +298,9 @@ try {
         } else {
           $tags = @(); if ($body.tags) { $tags = @($body.tags | ForEach-Object { [string]$_ }) }
           $imp = 0.6; if ($null -ne $body.importance) { try { $imp = [double]$body.importance } catch {} }
-          $id = Add-Memory -Text $text -Tags $tags -Source 'manual' -Importance $imp
+          $ch = $null; if ($null -ne $body.channel -and -not [string]::IsNullOrWhiteSpace([string]$body.channel)) { $ch = [string]$body.channel }
+          $shared = $false; if ($null -ne $body.shared) { try { $shared = [bool]$body.shared } catch {} }
+          $id = Add-Memory -Text $text -Tags $tags -Source 'manual' -Importance $imp -Channel $ch -Shared $shared
           if ($id) { Send-Text $ctx ('{"ok":true,"id":"' + $id + '"}') 'application/json; charset=utf-8' }
           else { Send-Text $ctx '{"ok":false,"error":"embedding failed (check API key/quota)"}' 'application/json; charset=utf-8' 500 }
         }
@@ -298,7 +311,9 @@ try {
         $imp = $null; if ($null -ne $body.importance) { $imp = $body.importance }
         $txt = $null; if ($null -ne $body.text) { $txt = [string]$body.text }
         $pin = $null; if ($null -ne $body.pinned) { $pin = [bool]$body.pinned }
-        $ok = Set-Memory -Id $id -Importance $imp -Text $txt -Pinned $pin
+        $sh  = $null; if ($null -ne $body.PSObject.Properties['shared']) { $sh = [bool]$body.shared }
+        $ch  = $null; if ($null -ne $body.channel -and -not [string]::IsNullOrWhiteSpace([string]$body.channel)) { $ch = [string]$body.channel }
+        $ok = Set-Memory -Id $id -Importance $imp -Text $txt -Pinned $pin -Shared $sh -Channel $ch
         Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/memory/delete') {
@@ -439,6 +454,94 @@ try {
         $projs = @(Get-ExternalProjects)
         $arr = '[' + (($projs | ForEach-Object { (("" + $_) | ConvertTo-Json -Compress) }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"projects":' + $arr + ',"bridge":' + (("" + (Get-BridgeRoot)) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8'
+      }
+      # ----- multi-channel endpoints (phase 2) -----
+      elseif ($method -eq 'GET' -and $path -eq '/api/channels') {
+        # List non-archived channels + which one is active. ?includeArchived=1 includes them too.
+        $inclArch = (Get-QueryParamUtf8 $ctx 'includeArchived') -eq '1'
+        $list = if ($inclArch) { Get-ChannelList -IncludeArchived } else { Get-ChannelList }
+        $active = Get-ActiveChannel
+        $items = '[' + (($list | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Compress) + ',"items":' + $items + '}') 'application/json; charset=utf-8'
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/channels') {
+        # Create a new channel. Body: { slug, name?, description?, project_root? }
+        $body = $null
+        try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+        $slug = if ($body) { [string]$body.slug } else { '' }
+        $name = if ($body) { [string]$body.name } else { '' }
+        $desc = if ($body) { [string]$body.description } else { '' }
+        $proj = if ($body -and $body.project_root) { [string]$body.project_root } else { $null }
+        if ([string]::IsNullOrWhiteSpace($slug)) {
+          Send-Text $ctx '{"ok":false,"error":"slug required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $cfgNew = New-Channel -Slug $slug -Name $name -Description $desc -ProjectRoot $proj
+          if (-not $cfgNew) {
+            Send-Text $ctx '{"ok":false,"error":"slug exists or invalid"}' 'application/json; charset=utf-8' 409
+          } else {
+            [void](Add-Message -From system -Text ("🧵 Создан канал: " + [string]$cfgNew.name + " (" + [string]$cfgNew.slug + ")") -Kind event)
+            Send-Text $ctx ('{"ok":true,"channel":' + ($cfgNew | ConvertTo-Json -Compress -Depth 6) + '}') 'application/json; charset=utf-8'
+          }
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/channels/active') {
+        # Switch the active channel. Body: { slug }
+        $body = $null
+        try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+        $slug = if ($body) { [string]$body.slug } else { '' }
+        if ([string]::IsNullOrWhiteSpace($slug)) {
+          Send-Text $ctx '{"ok":false,"error":"slug required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $ok = Set-ActiveChannel -Slug $slug
+          if ($ok) {
+            # Post the event into the NEW channel's conversation so the user sees the switch landed.
+            [void](Add-Message -From system -Text ("🧵 Активный канал: " + $slug) -Kind event)
+            Send-Text $ctx ('{"ok":true,"active":' + (("" + $slug) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8'
+          } else {
+            Send-Text $ctx '{"ok":false,"error":"channel not found"}' 'application/json; charset=utf-8' 404
+          }
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/channels/update') {
+        # Edit channel metadata. Body: { slug, name?, description?, project_root? }
+        $body = $null
+        try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+        $slug = if ($body) { [string]$body.slug } else { '' }
+        if ([string]::IsNullOrWhiteSpace($slug)) {
+          Send-Text $ctx '{"ok":false,"error":"slug required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $patch = @{}
+          if ($null -ne $body.PSObject.Properties['name'])        { $patch['name'] = [string]$body.name }
+          if ($null -ne $body.PSObject.Properties['description']) { $patch['description'] = [string]$body.description }
+          if ($null -ne $body.PSObject.Properties['project_root']) {
+            $pr = $body.project_root
+            $patch['project_root'] = if ($null -eq $pr -or [string]::IsNullOrWhiteSpace([string]$pr)) { $null } else { [string]$pr }
+          }
+          $ok = Save-ChannelConfig -Slug $slug -Patch $patch
+          $cfgUpd = Get-ChannelConfig -Slug $slug
+          if ($ok -and $cfgUpd) {
+            Send-Text $ctx ('{"ok":true,"channel":' + ($cfgUpd | ConvertTo-Json -Compress -Depth 6) + '}') 'application/json; charset=utf-8'
+          } else {
+            Send-Text $ctx '{"ok":false,"error":"channel not found"}' 'application/json; charset=utf-8' 404
+          }
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/channels/archive') {
+        # Archive a channel. Body: { slug }
+        $body = $null
+        try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+        $slug = if ($body) { [string]$body.slug } else { '' }
+        if ([string]::IsNullOrWhiteSpace($slug)) {
+          Send-Text $ctx '{"ok":false,"error":"slug required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $ok = Archive-Channel -Slug $slug
+          if ($ok) {
+            [void](Add-Message -From system -Text ("🗂 Канал в архив: " + $slug) -Kind event)
+            Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+          } else {
+            Send-Text $ctx '{"ok":false,"error":"cannot archive (main/active/missing)"}' 'application/json; charset=utf-8' 400
+          }
+        }
       }
       else {
         Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404

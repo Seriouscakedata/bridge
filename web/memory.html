@@ -294,11 +294,17 @@ function renderGrid(){
   for(const m of list){
     const tags = (m.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
     const imp = (m.importance!=null?m.importance:0).toFixed(2);
+    const channel = String(m.channel || 'main');
+    const isShared = !!m.shared;
+    const channelChip = isShared
+      ? `<span class="tag" title="Общая память: доступна из всех каналов" style="background:rgba(155,200,255,.16);border-color:rgba(155,200,255,.42);color:#cfe5ff">🌐 общая</span>`
+      : `<span class="tag" title="Канал: ${esc(channel)}" style="background:rgba(255,222,160,.12);border-color:rgba(255,222,160,.32);color:#ffdda0">🧵 ${esc(channel)}</span>`;
     const card = document.createElement('div');
     card.className = 'card' + (m.pinned?' pinned':'');
     card.innerHTML =
       `<div class="meta">`+
         `<span class="src-pill ${srcClass(m.source)}">${esc(m.source||'?')}</span>`+
+        channelChip +
         tags +
         `<span style="margin-left:auto">${esc(ago(m.ts))}</span>`+
       `</div>`+
@@ -307,6 +313,7 @@ function renderGrid(){
         `<span class="imp">важность <b class="impVal">${imp}</b>`+
           `<input type="range" min="0" max="1" step="0.05" value="${m.importance||0}"></span>`+
         `<span class="spacer"></span>`+
+        `<button class="shareBtn${isShared?' on':''}" title="Сделать общей (видна из всех каналов)">🌐</button>`+
         `<button class="star${m.pinned?' on':''}" title="Закрепить (не удаляется при дедупе)">★</button>`+
         `<button class="saveBtn" disabled>Сохранить</button>`+
         `<button class="danger delBtn">Удалить</button>`+
@@ -330,6 +337,10 @@ function renderGrid(){
     card.querySelector('.star').addEventListener('click', async ()=>{
       const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify({id:m.id, pinned:!m.pinned})});
       if(r.ok){ toast(m.pinned?'Откреплено':'Закреплено','ok'); load(); } else toast('Ошибка','bad');
+    });
+    card.querySelector('.shareBtn').addEventListener('click', async ()=>{
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify({id:m.id, shared:!isShared})});
+      if(r.ok){ toast(isShared?'Снят флаг "общая"':'Помечена как общая','ok'); load(); } else toast('Ошибка','bad');
     });
     card.querySelector('.delBtn').addEventListener('click', async ()=>{
       if(!confirm('Удалить эту запись памяти?')) return;

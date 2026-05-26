@@ -33,6 +33,39 @@ function Get-ActiveChannel {
   return 'main'
 }
 
+# --- pinned channel (phase 3-lite) ---
+# Driver pins the channel for the duration of a task so that switching the active
+# channel via UI mid-task doesn't yank data out from under it. The server process
+# does NOT pin -- it always operates on Get-ActiveChannel for fresh user requests.
+$script:PinnedChannel = $null
+function Set-PinnedChannel { param([string]$Slug) $script:PinnedChannel = $Slug }
+function Clear-PinnedChannel { $script:PinnedChannel = $null }
+function Get-PinnedChannel { return $script:PinnedChannel }
+function Get-EffectiveChannel {
+  # Channel to actually read/write from. Pinned wins, else active marker.
+  if (-not [string]::IsNullOrWhiteSpace([string]$script:PinnedChannel)) { return [string]$script:PinnedChannel }
+  return (Get-ActiveChannel)
+}
+
+function Get-EffectiveProjectRoot {
+  # Channel-specific project_root (Codex's -C target) with fallback to bridge config workRoot.
+  # Used by the driver so each channel can drive a different codebase.
+  param([string]$Slug = $null)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
+  $cfg = Get-ChannelConfig -Slug $Slug
+  if ($cfg -and $cfg.PSObject.Properties['project_root']) {
+    $pr = [string]$cfg.project_root
+    if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr)) { return $pr }
+  }
+  # Fallback to global workRoot from config.json.
+  try {
+    $bcfg = Get-BridgeConfig
+    $wr = [string]$bcfg.workRoot
+    if (-not [string]::IsNullOrWhiteSpace($wr)) { return $wr }
+  } catch {}
+  return (Get-BridgeRoot)
+}
+
 function Set-ActiveChannel {
   param([string]$Slug)
   if ([string]::IsNullOrWhiteSpace($Slug)) { return $false }
@@ -47,9 +80,10 @@ function Set-ActiveChannel {
 }
 
 function Get-ChannelDir {
-  # Path to a channel's directory (does not check existence). $Slug=$null -> active channel.
+  # Path to a channel's directory (does not check existence).
+  # $Slug=$null -> effective channel (pinned-in-driver overrides active marker; see Get-EffectiveChannel).
   param([string]$Slug = $null)
-  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-ActiveChannel }
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
   return (Join-Path (Get-ChannelsRoot) $Slug)
 }
 

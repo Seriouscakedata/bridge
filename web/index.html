@@ -1679,6 +1679,65 @@
   @media (prefers-reduced-motion:reduce){
     *,#log{scroll-behavior:auto!important;animation:none!important;transition:none!important}
   }
+  /* ---- channel selector (phase 2) ---- */
+  .channel-selector{position:relative;display:flex;align-items:center;margin-left:10px}
+  .channel-btn{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:6px 10px;border-radius:10px;
+    border:1px solid var(--border);background:rgba(255,255,255,.04);
+    color:var(--text);font-size:13px;font-weight:500;cursor:pointer;
+    transition:background .15s,border-color .15s;
+    max-width:220px;
+  }
+  .channel-btn:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
+  .channel-btn .channel-glyph{font-size:14px;opacity:.85}
+  .channel-btn .channel-name{
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;
+  }
+  .channel-btn .channel-caret{opacity:.55;font-size:11px;margin-left:2px}
+  .channel-selector.open .channel-btn{background:rgba(114,183,255,.12);border-color:rgba(114,183,255,.42);color:#cfe5ff}
+  .channel-menu{
+    display:none;position:absolute;top:calc(100% + 6px);left:0;
+    min-width:260px;max-width:340px;max-height:60vh;overflow:auto;
+    background:rgba(18,22,29,.97);backdrop-filter:blur(20px);
+    border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 12px 32px rgba(0,0,0,.45);
+    z-index:60;padding:6px;
+  }
+  .channel-selector.open .channel-menu{display:block}
+  .channel-menu-head{
+    font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    padding:6px 10px 4px;
+  }
+  .channel-list{display:flex;flex-direction:column;gap:2px;padding:2px}
+  .channel-item{
+    display:flex;align-items:center;gap:6px;
+    padding:7px 9px;border-radius:8px;cursor:pointer;color:var(--text);
+    border:1px solid transparent;
+  }
+  .channel-item:hover{background:rgba(255,255,255,.06)}
+  .channel-item.active{background:rgba(114,183,255,.16);border-color:rgba(114,183,255,.32);color:#cfe5ff}
+  .channel-item .ch-name{flex:1;font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .channel-item .ch-desc{display:block;font-size:11px;color:var(--muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+  .channel-item .ch-actions{display:none;gap:3px;margin-left:auto;align-items:center;flex-shrink:0}
+  .channel-item:hover .ch-actions, .channel-item.active .ch-actions{display:inline-flex}
+  .channel-item .ch-mini{
+    background:transparent;border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:1px 6px;font-size:10px;cursor:pointer;line-height:1.4;
+  }
+  .channel-item .ch-mini:hover{background:rgba(255,255,255,.08);color:var(--text)}
+  .channel-item .ch-mini.danger:hover{color:#ffb0b0;border-color:rgba(255,107,107,.42)}
+  .channel-menu-foot{border-top:1px solid var(--border);margin-top:4px;padding:6px 4px 2px}
+  .channel-action{
+    width:100%;text-align:left;background:transparent;border:1px dashed var(--border);
+    color:var(--muted);border-radius:8px;padding:7px 10px;font-size:13px;cursor:pointer;
+  }
+  .channel-action:hover{background:rgba(255,255,255,.06);color:var(--text);border-style:solid}
+  @media(max-width:640px){
+    .channel-btn .channel-name{max-width:90px}
+    .channel-btn{max-width:160px}
+    .channel-menu{left:auto;right:0;min-width:240px}
+  }
 </style>
 </head>
 <body>
@@ -1688,6 +1747,20 @@
     <div>
       <h1>Claude &lt;-&gt; Codex</h1>
       <div class="subtitle">локальный мост агентов</div>
+    </div>
+  </div>
+  <div class="channel-selector" id="channelSelector">
+    <button id="channelBtn" class="channel-btn" type="button" title="Активный канал — клик для переключения" aria-haspopup="true" aria-expanded="false">
+      <span class="channel-glyph">🧵</span>
+      <span class="channel-name" id="channelName">main</span>
+      <span class="channel-caret" aria-hidden="true">▾</span>
+    </button>
+    <div id="channelMenu" class="channel-menu" role="menu" aria-hidden="true">
+      <div class="channel-menu-head">Каналы</div>
+      <div id="channelList" class="channel-list"></div>
+      <div class="channel-menu-foot">
+        <button id="channelNewBtn" class="channel-action" type="button">+ Новый канал</button>
+      </div>
     </div>
   </div>
   <div class="centerbar">
@@ -2134,6 +2207,7 @@ let sending = false;
 let uploading = false;
 let screenshotting = false;
 let pendingFiles = [];
+let pendingScreenshots = [];
 let speechRec = null;
 let voiceListening = false;
 let voiceBaseText = '';
@@ -3703,7 +3777,7 @@ async function exportMarkdown(){
   }
 }
 function updateSendState(){
-  const hasSendable = pendingFiles.length > 0 || Boolean(input.value.trim());
+  const hasSendable = pendingFiles.length > 0 || pendingScreenshots.length > 0 || Boolean(input.value.trim());
   sendBtn.disabled = sending || uploading || screenshotting || !hasSendable;
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
   attachBtn.disabled = sending || uploading || screenshotting;
@@ -3768,28 +3842,35 @@ async function send(){
     await uploadFiles(filesToSend);
     return;
   }
-  if(!text) return;
+  if(!text && !pendingScreenshots.length) return;
   const draft = input.value;
+  const screensToSend = [...pendingScreenshots];
+  pendingScreenshots = [];
   sending = true;
   input.value = '';
   localStorage.removeItem(DRAFT_KEY);
   localStorage.removeItem(DRAFT_TS_KEY);
   resizeInput();
   updateComposerMeta();
+  renderStagedFiles();
   updateSendState();
   setComposerStatus('Отправка...');
   try{
-    await requestOk('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+    const payload = {text};
+    if(screensToSend.length) payload.attachments = screensToSend;
+    await requestOk('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     rememberLastSent(draft);
     setComposerStatus('Отправлено', 'ok');
     clearComposerStatusSoon('Отправлено');
     poll();
   }catch(e){
     input.value = draft;
+    pendingScreenshots = [...screensToSend];
     localStorage.setItem(DRAFT_KEY, draft);
     localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
     resizeInput();
     updateComposerMeta();
+    renderStagedFiles();
     setComposerStatus('Не отправлено: ' + (e.message || e), 'bad');
   }finally{
     sending = false;
@@ -3800,37 +3881,24 @@ async function takeScreenshot(){
   if(voiceListening && speechRec) speechRec.stop();
   if(sending || uploading || screenshotting) return;
   screenshotting = true;
-  const caption = input.value.trim();
-  const draft = input.value;
   updateSendState();
   setComposerStatus('Делаю снимок экрана...');
   try{
-    const payload = {text:caption};
     const data = await fetchJson('/api/screenshot', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload)
+      body:JSON.stringify({post:false})
     });
-    if(caption){
-      input.value = '';
-      localStorage.removeItem(DRAFT_KEY);
-      localStorage.removeItem(DRAFT_TS_KEY);
-      resizeInput();
-      updateComposerMeta();
-      rememberLastSent(draft);
+    if(data && data.attachment){
+      pendingScreenshots.push(data.attachment);
+      renderStagedFiles();
+      setComposerStatus('Снимок прикреплён — нажмите Отправить', 'ok');
+      clearComposerStatusSoon('Снимок прикреплён — нажмите Отправить');
+      input.focus();
+    } else {
+      setComposerStatus('Снимок не удался', 'bad');
     }
-    const okText = data && data.attachment ? 'Снимок экрана добавлен в ленту' : 'Снимок экрана сделан';
-    setComposerStatus(okText, 'ok');
-    clearComposerStatusSoon(okText);
-    poll();
   }catch(e){
-    input.value = draft;
-    if(draft){
-      localStorage.setItem(DRAFT_KEY, draft);
-      localStorage.setItem(DRAFT_TS_KEY, new Date().toISOString());
-    }
-    resizeInput();
-    updateComposerMeta();
     setComposerStatus('Снимок не удался: ' + (e.message || e), 'bad');
   }finally{
     screenshotting = false;
@@ -3854,11 +3922,13 @@ function persistInput(){
 }
 function clearDraft(){
   if(voiceListening && speechRec) speechRec.stop();
+  pendingScreenshots = [];
   input.value = '';
   localStorage.removeItem(DRAFT_KEY);
   localStorage.removeItem(DRAFT_TS_KEY);
   resizeInput();
   updateComposerMeta();
+  renderStagedFiles();
   updateSendState();
   input.focus();
   setComposerStatus('Черновик очищен', 'ok');
@@ -4008,7 +4078,35 @@ function readDataUrl(file){
 function renderStagedFiles(){
   if(!stagedFilesEl) return;
   stagedFilesEl.innerHTML = '';
-  stagedFilesEl.classList.toggle('show', pendingFiles.length > 0);
+  const total = pendingFiles.length + pendingScreenshots.length;
+  stagedFilesEl.classList.toggle('show', total > 0);
+  pendingScreenshots.forEach((att, i) => {
+    const pill = document.createElement('span');
+    pill.className = 'staged-pill';
+    pill.title = att.name || 'screenshot.png';
+
+    const icon = document.createElement('span');
+    icon.className = 's-ico';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '📸';
+
+    const name = document.createElement('span');
+    name.className = 's-name';
+    name.textContent = att.name || 'screenshot.png';
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'rm';
+    remove.title = 'Убрать снимок';
+    remove.setAttribute('aria-label', 'Убрать снимок');
+    remove.dataset.si = String(i);
+    remove.textContent = '×';
+
+    pill.appendChild(icon);
+    pill.appendChild(name);
+    pill.appendChild(remove);
+    stagedFilesEl.appendChild(pill);
+  });
   pendingFiles.forEach((file, i) => {
     const pill = document.createElement('span');
     pill.className = 'staged-pill';
@@ -4036,7 +4134,15 @@ function renderStagedFiles(){
     pill.appendChild(remove);
     stagedFilesEl.appendChild(pill);
   });
-  stagedFilesEl.querySelectorAll('.rm').forEach(btn => {
+  stagedFilesEl.querySelectorAll('.rm[data-si]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pendingScreenshots.splice(Number(btn.dataset.si), 1);
+      renderStagedFiles();
+      updateSendState();
+      input.focus();
+    });
+  });
+  stagedFilesEl.querySelectorAll('.rm[data-i]').forEach(btn => {
     btn.addEventListener('click', () => {
       pendingFiles.splice(Number(btn.dataset.i), 1);
       renderStagedFiles();
@@ -4605,12 +4711,185 @@ status();
 pollPlan();
 pollMetrics();
 pollUsage();
+pollChannels();
 setInterval(poll, 1500);
 setInterval(status, 1200);
 setInterval(pollPlan, 3000);
 setInterval(pollMetrics, 5000);
 setInterval(pollUsage, 5000);
+setInterval(pollChannels, 15000);
 setInterval(refreshTimes, 30000);
+
+// ----- channel selector (phase 2) -----
+const channelSelector = document.getElementById('channelSelector');
+const channelBtn      = document.getElementById('channelBtn');
+const channelMenu     = document.getElementById('channelMenu');
+const channelNameEl   = document.getElementById('channelName');
+const channelListEl   = document.getElementById('channelList');
+const channelNewBtn   = document.getElementById('channelNewBtn');
+let channelsCache = { active: 'main', items: [] };
+
+async function pollChannels(){
+  try{
+    const data = await fetchJson('/api/channels');
+    if(!data || !data.ok) return;
+    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [] };
+    renderChannels();
+  }catch(e){ /* keep last cache */ }
+}
+function renderChannels(){
+  const active = channelsCache.active;
+  const items  = channelsCache.items;
+  const activeItem = items.find(x => String(x.slug) === active);
+  if(channelNameEl) channelNameEl.textContent = activeItem ? (activeItem.name || activeItem.slug) : active;
+  if(channelBtn) channelBtn.title = 'Активный канал: ' + (activeItem ? (activeItem.name || activeItem.slug) : active) + ' — клик для переключения';
+  if(!channelListEl) return;
+  channelListEl.innerHTML = '';
+  if(!items.length){
+    const empty = document.createElement('div');
+    empty.className = 'overview-empty';
+    empty.style.padding = '8px 10px';
+    empty.textContent = 'Каналов нет';
+    channelListEl.appendChild(empty);
+    return;
+  }
+  for(const ch of items){
+    const slug = String(ch.slug || '');
+    const isActive = slug === active;
+    const item = document.createElement('div');
+    item.className = 'channel-item' + (isActive ? ' active' : '');
+    item.dataset.slug = slug;
+    const nameWrap = document.createElement('div');
+    nameWrap.style.flex = '1';
+    nameWrap.style.overflow = 'hidden';
+    const name = document.createElement('span');
+    name.className = 'ch-name';
+    name.textContent = String(ch.name || slug);
+    nameWrap.appendChild(name);
+    const desc = String(ch.description || '');
+    if(desc){
+      const d = document.createElement('span');
+      d.className = 'ch-desc';
+      d.textContent = desc;
+      nameWrap.appendChild(d);
+    }
+    item.appendChild(nameWrap);
+    const acts = document.createElement('div');
+    acts.className = 'ch-actions';
+    if(!isActive){
+      const switchBtn = document.createElement('button');
+      switchBtn.className = 'ch-mini';
+      switchBtn.type = 'button';
+      switchBtn.textContent = 'Открыть';
+      switchBtn.title = 'Переключиться на этот канал';
+      switchBtn.addEventListener('click', (e) => { e.stopPropagation(); switchChannel(slug); });
+      acts.appendChild(switchBtn);
+    }
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'ch-mini';
+    renameBtn.type = 'button';
+    renameBtn.textContent = '✎';
+    renameBtn.title = 'Переименовать';
+    renameBtn.addEventListener('click', (e) => { e.stopPropagation(); editChannel(ch); });
+    acts.appendChild(renameBtn);
+    if(slug !== 'main' && !isActive){
+      const archBtn = document.createElement('button');
+      archBtn.className = 'ch-mini danger';
+      archBtn.type = 'button';
+      archBtn.textContent = '🗂';
+      archBtn.title = 'В архив';
+      archBtn.addEventListener('click', (e) => { e.stopPropagation(); archiveChannel(slug); });
+      acts.appendChild(archBtn);
+    }
+    item.appendChild(acts);
+    item.addEventListener('click', () => { if(!isActive) switchChannel(slug); });
+    channelListEl.appendChild(item);
+  }
+}
+function openChannelMenu(){
+  channelSelector.classList.add('open');
+  if(channelMenu) channelMenu.setAttribute('aria-hidden', 'false');
+  if(channelBtn) channelBtn.setAttribute('aria-expanded', 'true');
+  pollChannels();
+}
+function closeChannelMenu(){
+  channelSelector.classList.remove('open');
+  if(channelMenu) channelMenu.setAttribute('aria-hidden', 'true');
+  if(channelBtn) channelBtn.setAttribute('aria-expanded', 'false');
+}
+async function switchChannel(slug){
+  try{
+    const r = await fetchJson('/api/channels/active', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})});
+    if(r && r.ok){
+      closeChannelMenu();
+      // Reload everything: messages, plan, backlog, etc. now point at the new channel.
+      lastSeq = 0;
+      document.getElementById('log').innerHTML = '';
+      firstLoad = true;
+      channelsCache.active = slug;
+      renderChannels();
+      poll(); status(); pollPlan(); pollMetrics();
+    } else {
+      alert('Не получилось переключиться: ' + (r && r.error ? r.error : 'unknown'));
+    }
+  }catch(e){ alert('Ошибка переключения канала: ' + e.message); }
+}
+async function archiveChannel(slug){
+  if(!confirm('Архивировать канал "' + slug + '"? Данные сохранятся, канал просто скроется из списка.')) return;
+  try{
+    const r = await fetchJson('/api/channels/archive', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})});
+    if(r && r.ok){ pollChannels(); }
+    else { alert('Не получилось архивировать: ' + (r && r.error ? r.error : 'unknown')); }
+  }catch(e){ alert('Ошибка архивации: ' + e.message); }
+}
+async function editChannel(ch){
+  const newName = prompt('Имя канала:', String(ch.name || ch.slug));
+  if(newName === null) return;
+  const newDesc = prompt('Описание (можно пусто):', String(ch.description || ''));
+  if(newDesc === null) return;
+  const newProj = prompt('Project root (полный путь к рабочей папке этого канала; пусто = workRoot моста):', String(ch.project_root || ''));
+  if(newProj === null) return;
+  const patch = {slug: String(ch.slug), name: newName, description: newDesc, project_root: newProj.trim() || null};
+  try{
+    const r = await fetchJson('/api/channels/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
+    if(r && r.ok){ pollChannels(); }
+    else { alert('Не удалось обновить: ' + (r && r.error ? r.error : 'unknown')); }
+  }catch(e){ alert('Ошибка обновления: ' + e.message); }
+}
+async function createChannel(){
+  const name = prompt('Название нового канала (например, "Проект X"):');
+  if(name === null || !name.trim()) return;
+  const slug = prompt('Slug канала (только латиница, цифры, дефис; будет именем папки):', name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''));
+  if(slug === null || !slug.trim()) return;
+  const desc = prompt('Краткое описание (можно пусто):', '');
+  if(desc === null) return;
+  const proj = prompt('Project root (полный путь к рабочей папке; пусто = workRoot моста):', '');
+  if(proj === null) return;
+  try{
+    const r = await fetchJson('/api/channels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug:slug.trim(), name:name.trim(), description:desc, project_root: proj.trim() || null})});
+    if(r && r.ok){
+      pollChannels();
+      // Auto-switch to the newly-created channel.
+      if(r.channel && r.channel.slug) switchChannel(String(r.channel.slug));
+    } else {
+      alert('Не получилось создать канал: ' + (r && r.error ? r.error : 'unknown'));
+    }
+  }catch(e){ alert('Ошибка создания: ' + e.message); }
+}
+if(channelBtn){
+  channelBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if(channelSelector.classList.contains('open')) closeChannelMenu();
+    else openChannelMenu();
+  });
+}
+if(channelNewBtn){
+  channelNewBtn.addEventListener('click', (e) => { e.stopPropagation(); closeChannelMenu(); createChannel(); });
+}
+document.addEventListener('click', (e) => {
+  if(!channelSelector) return;
+  if(!channelSelector.contains(e.target)) closeChannelMenu();
+});
 </script>
 </body>
 </html>

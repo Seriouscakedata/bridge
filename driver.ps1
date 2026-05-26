@@ -620,9 +620,18 @@ function Invoke-Coder {
   $sbMode = if ($Mode -eq 'discuss') { 'read-only' } else { 'danger-full-access' }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  # Phase 5 (channels): per-channel project_root routes Codex -C to the actual codebase of
+  # the active channel. Falls back to config.workRoot when the channel has none.
+  $coderCwd = $workRoot
+  try {
+    if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+      $pr = [string](Get-EffectiveProjectRoot)
+      if (-not [string]::IsNullOrWhiteSpace($pr)) { $coderCwd = $pr }
+    }
+  } catch {}
   try {
     $p = Start-Process -FilePath $codexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
+      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
@@ -870,6 +879,20 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
 # ---------- main loop ----------
 while ($true) {
  try {
+  # Phase 3-lite (channels): when idle, refresh the channel pin from the active marker.
+  # While a task is in flight (state.current_task non-empty), keep the previously-pinned
+  # channel so a UI channel-switch mid-task doesn't yank conversation/plan/backlog out
+  # from under the running task. The driver settles into the new channel on the next idle tick.
+  $prePinState = Read-State
+  $prePinTask  = [string]$prePinState.current_task
+  if ([string]::IsNullOrWhiteSpace($prePinTask)) {
+    try { Set-PinnedChannel (Get-ActiveChannel) } catch {}
+  } else {
+    # Defensive: if pin was somehow cleared (process restart) while a task was held mid-flight,
+    # re-pin to whatever the active marker says now -- at least we're consistent through this iteration.
+    if ([string]::IsNullOrWhiteSpace([string](Get-PinnedChannel))) { try { Set-PinnedChannel (Get-ActiveChannel) } catch {} }
+  }
+
   $state = Read-State
 
   if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }

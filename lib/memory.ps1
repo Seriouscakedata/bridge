@@ -131,9 +131,19 @@ function Get-CosineSimilarity {
 }
 
 # ---- store ----
+function Get-CurrentMemoryChannel {
+  # Channel slug to stamp on new memories. Falls back to 'main' (legacy/no-channels-yet).
+  if (Get-Command Get-ActiveChannel -ErrorAction SilentlyContinue) {
+    try { $s = [string](Get-ActiveChannel); if (-not [string]::IsNullOrWhiteSpace($s)) { return $s } } catch {}
+  }
+  return 'main'
+}
+
 function Add-Memory {
   # Embed $Text and append a memory record. Returns the new id, or $null.
-  param([string]$Text, [string[]]$Tags = @(), [string]$Source = 'task', [double]$Importance = 0.5)
+  # -Channel: explicit channel slug; default = current active channel.
+  # -Shared:  if $true, memory is recallable from EVERY channel (cross-channel knowledge).
+  param([string]$Text, [string[]]$Tags = @(), [string]$Source = 'task', [double]$Importance = 0.5, [string]$Channel = $null, [bool]$Shared = $false)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return $null }
@@ -141,6 +151,7 @@ function Add-Memory {
   if (-not $vec) { return $null }
   $dir = Get-MemoryDir
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
   $rec = [ordered]@{
     id         = [guid]::NewGuid().ToString('N')
     ts         = (Get-Date).ToUniversalTime().ToString('o')
@@ -148,12 +159,47 @@ function Add-Memory {
     tags       = @($Tags)
     importance = [double]$Importance
     pinned     = $false
+    channel    = [string]$Channel
+    shared     = [bool]$Shared
     text       = [string]$Text
     vec        = @($vec)
   }
   $line = ($rec | ConvertTo-Json -Compress -Depth 6)
   Use-BridgeLock ({ Add-Content -LiteralPath (Get-MemoryStorePath) -Value $line -Encoding UTF8 }.GetNewClosure())
   return $rec.id
+}
+
+function Get-MemoryChannel {
+  # Read channel from a memory record. Legacy records without 'channel' field are treated
+  # as belonging to 'main' (where everything lived before phase 4).
+  param($Mem)
+  if (-not $Mem) { return 'main' }
+  try {
+    if ($Mem.PSObject.Properties['channel']) {
+      $c = [string]$Mem.channel
+      if (-not [string]::IsNullOrWhiteSpace($c)) { return $c }
+    }
+  } catch {}
+  return 'main'
+}
+
+function Test-MemoryShared {
+  # Returns $true if a memory is marked shared (cross-channel).
+  param($Mem)
+  if (-not $Mem) { return $false }
+  try {
+    if ($Mem.PSObject.Properties['shared']) { return [bool]$Mem.shared }
+  } catch {}
+  return $false
+}
+
+function Test-MemoryVisibleInChannel {
+  # Should this memory be recalled when working in $Channel?
+  # YES if: shared OR no channel set (legacy) AND $Channel == 'main', OR its channel matches.
+  param($Mem, [string]$Channel)
+  if (Test-MemoryShared $Mem) { return $true }
+  $mc = Get-MemoryChannel $Mem
+  return ($mc -eq $Channel)
 }
 
 function Get-AllMemories {
@@ -170,7 +216,9 @@ function Get-AllMemories {
 
 function Search-Memory {
   # Returns array of [pscustomobject]{ Score; Mem } sorted by score desc.
-  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string]$ExcludeTag = '')
+  # -Channel: filter so only memories from $Channel + 'shared' memories are searched.
+  #          $null/'' = use active channel; '__all__' = bypass filter (admin/UI views).
+  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string]$ExcludeTag = '', [string]$Channel = $null)
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return @() }
   if ($TopK -le 0)    { $TopK = [int]$mc.recallTopK }
@@ -181,6 +229,11 @@ function Search-Memory {
   }
   if (-not [string]::IsNullOrWhiteSpace($ExcludeTag)) {
     $mems = @($mems | Where-Object { -not (@($_.tags) -contains $ExcludeTag) })
+  }
+  # Channel filter (phase 4): default to active channel; '__all__' skips filtering.
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  if ($Channel -ne '__all__') {
+    $mems = @($mems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
   }
   if ($mems.Count -eq 0) { return @() }
   $qvec = Get-Embedding -Text $Query -TaskType 'RETRIEVAL_QUERY'
@@ -439,7 +492,13 @@ function Save-AllMemories {
 
 function Get-MemoriesView {
   # All memories WITHOUT the heavy vec arrays, for the API/UI.
-  $out = foreach ($m in @(Get-AllMemories)) {
+  # -Channel: '' or $null = active; '__all__' = all channels (admin view).
+  param([string]$Channel = '__all__')
+  $all = @(Get-AllMemories)
+  if (-not [string]::IsNullOrWhiteSpace($Channel) -and $Channel -ne '__all__') {
+    $all = @($all | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
+  }
+  $out = foreach ($m in $all) {
     [pscustomobject]@{
       id         = [string]$m.id
       ts         = [string]$m.ts
@@ -447,6 +506,8 @@ function Get-MemoriesView {
       tags       = @($m.tags)
       importance = [double]$m.importance
       pinned     = [bool]($m.PSObject.Properties['pinned'] -and $m.pinned)
+      channel    = (Get-MemoryChannel $m)
+      shared     = (Test-MemoryShared $m)
       text       = [string]$m.text
     }
   }
@@ -465,7 +526,7 @@ function Remove-Memory {
 
 function Set-Memory {
   # Edit a memory in place. $Text re-embeds. Pass $null to leave a field unchanged.
-  param([string]$Id, $Importance = $null, $Text = $null, $Pinned = $null)
+  param([string]$Id, $Importance = $null, $Text = $null, $Pinned = $null, $Shared = $null, $Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
   $mems = @(Get-AllMemories)
   $found = $false
@@ -480,6 +541,12 @@ function Set-Memory {
       $p = [bool]$Pinned
       $m | Add-Member -NotePropertyName pinned -NotePropertyValue $p -Force
       if ($p) { $m | Add-Member -NotePropertyName importance -NotePropertyValue 1.0 -Force }
+    }
+    if ($null -ne $Shared) {
+      $m | Add-Member -NotePropertyName shared -NotePropertyValue ([bool]$Shared) -Force
+    }
+    if ($null -ne $Channel -and -not [string]::IsNullOrWhiteSpace([string]$Channel)) {
+      $m | Add-Member -NotePropertyName channel -NotePropertyValue ([string]$Channel) -Force
     }
     if ($null -ne $Text -and -not [string]::IsNullOrWhiteSpace([string]$Text) -and ([string]$Text) -ne ([string]$m.text)) {
       $newVec = Get-Embedding -Text ([string]$Text) -TaskType 'RETRIEVAL_DOCUMENT'
