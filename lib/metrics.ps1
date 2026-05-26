@@ -238,4 +238,71 @@ function Invoke-PostMortem {
       try { Add-Idea -Text $ideaText -From 'postmortem' -Tags @('lesson','postmortem') -Status 'new' | Out-Null } catch {}
     }
   }
+  # Append a structured failure record for the Architect's meta-pattern detection.
+  try { Add-FailureRecord -Class $FailureType -Task $shortTask -Context $Context } catch {}
+}
+
+# --- Failures catalogue (meta-pattern source for Architect) ---
+function Get-FailuresPath { Join-Path (Get-BridgeRoot) 'memory\failures.jsonl' }
+
+function Add-FailureRecord {
+  # Append a structured failure entry. Class examples: timeout, rollback, safety, oom,
+  # coder_bypass, verify_fail, doctor_abort. Used by Get-FailurePatterns to spot recurrences.
+  param([string]$Class, [string]$Task = '', [string]$Context = '', [string]$Signature = '')
+  if ([string]::IsNullOrWhiteSpace($Class)) { return }
+  $dir = Split-Path (Get-FailuresPath) -Parent
+  if (-not (Test-Path $dir)) { try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch {} }
+  # Signature defaults to class + short task hash so dedup / count can group recurrences.
+  if ([string]::IsNullOrWhiteSpace($Signature)) {
+    $src = ($Class + '|' + ([string]$Task)).Trim()
+    try {
+      $sha = [System.Security.Cryptography.SHA1]::Create()
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($src)
+      $h = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant()
+      $sha.Dispose()
+      $Signature = $Class + ':' + $h.Substring(0,8)
+    } catch { $Signature = $Class }
+  }
+  $rec = [ordered]@{
+    ts        = [DateTime]::UtcNow.ToString('o')
+    class     = $Class
+    signature = $Signature
+    task      = ([string]$Task)
+    context   = ([string]$Context)
+  }
+  $line = $rec | ConvertTo-Json -Compress -Depth 4
+  try { Add-Content -LiteralPath (Get-FailuresPath) -Value $line -Encoding UTF8 } catch {}
+}
+
+function Get-FailurePatterns {
+  # Return top recurring failure classes/signatures over the recent window. Used by Architect
+  # to detect "this class of bug keeps happening; we're missing capability X".
+  param([int]$WindowHours = 168, [int]$TopN = 8)
+  $p = Get-FailuresPath
+  if (-not (Test-Path $p)) { return @() }
+  $cutoff = [DateTime]::UtcNow.AddHours(-[Math]::Abs($WindowHours))
+  $recs = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($line in [System.IO.File]::ReadAllLines($p, [System.Text.Encoding]::UTF8)) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $r = $line | ConvertFrom-Json } catch { continue }
+    try { $ts = [DateTime]$r.ts } catch { continue }
+    if ($ts -lt $cutoff) { continue }
+    [void]$recs.Add($r)
+  }
+  if ($recs.Count -eq 0) { return @() }
+  # Group by class, count, list 1-line samples (most recent 2).
+  $groups = $recs | Group-Object class
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($g in $groups) {
+    $samples = @($g.Group | Sort-Object ts -Descending | Select-Object -First 2 | ForEach-Object {
+      $t = [string]$_.task; if ($t.Length -gt 80) { $t = $t.Substring(0,80) + '...' }
+      "  [$([DateTime]$_.ts | ForEach-Object { $_.ToString('MM-dd HH:mm') })] $t"
+    })
+    [void]$out.Add([pscustomobject]@{
+      class   = [string]$g.Name
+      count   = [int]$g.Count
+      samples = ($samples -join "`n")
+    })
+  }
+  return @($out | Sort-Object -Property count -Descending | Select-Object -First $TopN)
 }
