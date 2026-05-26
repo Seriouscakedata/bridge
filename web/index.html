@@ -4823,8 +4823,12 @@ async function switchChannel(slug){
     if(r && r.ok){
       closeChannelMenu();
       // Reload everything: messages, plan, backlog, etc. now point at the new channel.
+      // IMPORTANT: don't wipe log.innerHTML wholesale -- #emptyState and #working are
+      // children of #log, and poll() relies on `working` as the insertBefore reference.
+      // Mirror the same surgical reset that status()'s rewind branch uses.
       lastSeq = 0;
-      document.getElementById('log').innerHTML = '';
+      [...log.querySelectorAll('.msg,.day-sep,.unread-marker')].forEach(n => n.remove());
+      lastRenderedDay = '';
       firstLoad = true;
       channelsCache.active = slug;
       renderChannels();
