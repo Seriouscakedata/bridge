@@ -346,6 +346,8 @@
     background:rgba(0,0,0,.45);
     touch-action:none;
   }
+  .drag-handle{display:none;width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,.22);margin:-2px auto 7px;flex-shrink:0;touch-action:none;cursor:grab;align-self:center}
+  @media(max-width:640px){.drag-handle{display:block}}
   body.overview-open #overviewPanel{display:flex}
   body.plan-open #planPanel{display:flex}
   body.code-open #codePanel{display:flex}
@@ -1776,6 +1778,7 @@
 
 <div id="panelScrim" aria-hidden="true"></div>
 <aside id="overviewPanel" aria-label="Обзор сеанса" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>Обзор сеанса</strong>
     <button id="overviewClose" class="mini-btn overview-close" type="button" title="Скрыть обзор" aria-label="Скрыть обзор">×</button>
@@ -1809,6 +1812,7 @@
 </aside>
 
 <aside id="planPanel" aria-label="План-доска" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>План</strong>
     <button id="planClose" class="mini-btn overview-close" type="button" title="Скрыть план" aria-label="Скрыть план">×</button>
@@ -1833,6 +1837,7 @@
 </aside>
 
 <aside id="codePanel" aria-label="Код-память" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>Код-память</strong>
     <button id="codeClose" class="mini-btn overview-close" type="button" title="Скрыть код-память" aria-label="Скрыть код-память">×</button>
@@ -1853,6 +1858,7 @@
 </aside>
 
 <aside id="dashPanel" aria-label="Дашборд" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>📊 Дашборд</strong>
     <button id="dashClose" class="mini-btn overview-close" type="button" title="Скрыть дашборд" aria-label="Скрыть дашборд">×</button>
@@ -1878,6 +1884,7 @@
 </aside>
 
 <aside id="usagePanel" aria-label="Расход" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>💸 Расход</strong>
     <button id="usageClose" class="mini-btn overview-close" type="button" title="Скрыть расход" aria-label="Скрыть расход">×</button>
@@ -4364,12 +4371,11 @@ function closeActivePanel(){
 const panelScrim = document.getElementById('panelScrim');
 if(panelScrim) panelScrim.addEventListener('click', closeActivePanel);
 {
-  let _swipeY0 = 0;
-  [overviewPanel,planPanel,codePanel,dashPanel,usagePanel].forEach(p => {
-    if(!p) return;
-    p.addEventListener('touchstart', e => { _swipeY0 = e.touches[0].clientY; }, {passive:true});
-    p.addEventListener('touchend', e => {
-      if(e.changedTouches[0].clientY - _swipeY0 > 60) closeActivePanel();
+  let _sy = 0;
+  document.querySelectorAll('#overviewPanel .drag-handle,#planPanel .drag-handle,#codePanel .drag-handle,#dashPanel .drag-handle,#usagePanel .drag-handle').forEach(h => {
+    h.addEventListener('touchstart', e => { _sy = e.touches[0].clientY; }, {passive:true});
+    h.addEventListener('touchend', e => {
+      if(e.changedTouches[0].clientY - _sy > 40) closeActivePanel();
     }, {passive:true});
   });
 }
