@@ -16,7 +16,7 @@
 
 function Get-ArchitectMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect.last' }
 function Get-ArchitectCountMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect.taskcount.last' }
-function Get-ArchitectExternalSystemsPath { Join-Path (Get-BridgeRoot) 'memory\external-systems.md' }
+function Get-ArchitectExternalSystemsPath { Join-Path (Get-BridgeRoot) 'external-systems.md' }
 function Get-ArchitectMatrixPath { Join-Path (Get-BridgeRoot) 'architecture-matrix.md' }
 
 function Get-OperatorInterventions {
