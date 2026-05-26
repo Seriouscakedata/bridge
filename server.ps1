@@ -336,6 +336,10 @@ try {
         $m = Get-MetricsForApi
         Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/memory/count') {
+        $total = @(Get-AllMemories).Count
+        Send-Text $ctx ('{"ok":true,"total":' + $total + '}') 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/radar') {
         $r = Get-RadarDigestForApi
         Send-Text $ctx ($r | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
