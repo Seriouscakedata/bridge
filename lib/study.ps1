@@ -15,6 +15,11 @@ function Detect-StudyMode {
   $verb = '(?i)(?<![\p{L}\-/])(?:изучи(?:ть|те|м)?|исследу(?:йте|ете|ем|й)?|разбер(?:ись|ите|и)|study|explore|research|investigate)(?![\p{L}\-/])'
   $verbMatch = [regex]::Match($TaskText, $verb)
   if (-not $verbMatch.Success) { return $null }
+  # Bug-report / audit context = NOT a study request, even with the verb. The user is asking
+  # the bridge to debug itself / audit its own behavior; planner handles that directly. Study
+  # mode here just times out (see incident 2026-05-26: "Изучи проблему..." -> 2x planner timeout).
+  $bugMarkers = '(?i)\bпроблем|\bошибк|\bбаг\b|\bбагрепорт|не\s+(?:работа|вижу|дела|выполня|отрабат|отвеча|показыв|появля|обновля|раб\b|готов)|сломан|пада(?:ет|ют)|ленится|почему\s+мост|зависает|тайма?ут|аудит\s+(?:моста|себя)|что\s+случилось|случилось\s+с\s+мост|broken|doesn''t\s+work|why\s+does|audit\s+(?:the\s+)?bridge'
+  if ([regex]::IsMatch($TaskText, $bugMarkers)) { return $null }
   $trigger = $verbMatch.Value
   $patterns = @(
     '"(?<p>[A-Za-z]:\\[^"]+)"',

@@ -74,6 +74,15 @@ if ($rd -ne 200) { $failed += "HTTP /api/radar = $rd" }
 $pl = Probe 'http://localhost:8787/api/plan'
 if ($pl -ne 200) { $failed += "HTTP /api/plan = $pl" }
 
+# 7. Mobile UI invariant -- planToggle must be REACHABLE on mobile (NOT buried inside the
+# `⋮`-menu secondary group). Catches the regression where "no plan board on mobile" shipped
+# 2026-05-26 even though the button was in the DOM (commit claimed done; UX was broken).
+$auditScript = Join-Path $b 'tools\ui_audit.ps1'
+if (Test-Path $auditScript) {
+    $auditOut = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $auditScript -RequireId planToggle -RequireOutside btnsSecondary -Width 390 2>&1
+    if ($LASTEXITCODE -ne 0) { $failed += ("UI-AUDIT: " + ($auditOut -join '; ')) }
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"
