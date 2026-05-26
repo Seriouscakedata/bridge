@@ -196,6 +196,13 @@ function Test-RestartLoop {
   # Detect "many restarts in a short window with no successful turn" — symptom of a stall the
   # current trigger set (timeout/rollback) misses. User reported 2026-05-26: bridge restarted
   # 4 times in 4 min while Doctor stayed silent. Returns reason string if triggered, else $null.
+  #
+  # FIX 2026-05-26: previously [datetime]$m.ts (where $m.ts ends in "Z") returned a LOCAL
+  # DateTime in PowerShell (the cast auto-converts UTC->Local and sets Kind=Local). The
+  # resulting comparison against a UTC cutoff used raw ticks, so a UTC timestamp from hours
+  # ago was treated as "recent" by the timezone-offset amount. Result: every historical
+  # restart event passed the cutoff filter forever → Doctor false-positive on every fresh
+  # boot. Fix: ((Get-Date $m.ts).ToUniversalTime()) normalizes back to UTC for the compare.
   param([int]$WindowMinutes = 5, [int]$RestartThreshold = 3)
   $root = Get-BridgeRoot
   $cutoff = (Get-Date).AddMinutes(-[Math]::Abs($WindowMinutes)).ToUniversalTime()
@@ -204,7 +211,7 @@ function Test-RestartLoop {
   try {
     $msgs = @(Get-Messages -Since 0) | Where-Object { $_.from -eq 'system' -and ([string]$_.text) -match 'Перезапуск по запросу' }
     foreach ($m in $msgs) {
-      try { if ([datetime]$m.ts -ge $cutoff) { $restarts++ } } catch {}
+      try { if (([datetime]$m.ts).ToUniversalTime() -ge $cutoff) { $restarts++ } } catch {}
     }
   } catch {}
   if ($restarts -lt $RestartThreshold) { return $null }
@@ -217,7 +224,7 @@ function Test-RestartLoop {
       foreach ($line in [System.IO.File]::ReadAllLines($tp, [System.Text.Encoding]::UTF8) | Select-Object -Last 50) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try { $r = $line | ConvertFrom-Json } catch { continue }
-        try { if ([datetime]$r.ts -ge $cutoff -and [string]$r.status -eq 'ok') { $okTurns++ } } catch {}
+        try { if (([datetime]$r.ts).ToUniversalTime() -ge $cutoff -and [string]$r.status -eq 'ok') { $okTurns++ } } catch {}
       }
     }
   } catch {}
