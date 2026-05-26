@@ -3659,11 +3659,25 @@ async function poll(){
     const beforeBottom = isNearBottom();
     const data = await fetchJson('/api/messages?since=' + lastSeq);
     noteConnectionOk();
+    data.forEach(m => { lastSeq = Math.max(lastSeq, Number(m.seq) || 0); });
+
+    let toRender = data;
+    if(firstLoad && data.length > 0){
+      const nonSystem = data.filter(m => m.from !== 'system');
+      const last10 = nonSystem.slice(-10);
+      if(last10.length > 0){
+        const minSeq = Number(last10[0].seq) || 0;
+        const last10Seqs = new Set(last10.map(m => Number(m.seq)));
+        toRender = data.filter(m => m.from === 'system'
+          ? Number(m.seq) >= minSeq
+          : last10Seqs.has(Number(m.seq)));
+      }
+    }
+
     const added = [];
-    for(const m of data){
+    for(const m of toRender){
       const el = addMsg(m);
       if(el) added.push(el);
-      lastSeq = Math.max(lastSeq, Number(m.seq) || 0);
     }
     if(data.length) applyMessageFilter();
     if(data.length){
