@@ -102,6 +102,9 @@ function Get-MetricsForApi {
   $items = @($series.ToArray() | Sort-Object ts)
   if ($items.Count -gt 100) { $items = @($items[($items.Count - 100)..($items.Count - 1)]) }
 
+  $drStats = $null
+  try { $drStats = Get-DoctorStats -WindowHours 168 } catch {}
+
   return [pscustomobject]@{
     current = [pscustomobject]@{
       total_turns = [int]$currentStats.total
@@ -113,7 +116,7 @@ function Get-MetricsForApi {
     }
     series       = @($items)
     series_count = [int]$items.Count
-    doctor       = (try { Get-DoctorStats -WindowHours 168 } catch { $null })
+    doctor       = $drStats
   }
 }
 
