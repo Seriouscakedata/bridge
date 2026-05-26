@@ -317,6 +317,8 @@ function Get-AuditorSnapshot {
       agent_pid_alive = Test-AuditorPidAlive -PidValue $agentPid
       hb_age_sec = [int]$hbAge
       task_turn = Get-AuditorStateInt -State $st -Names @('task_turn','current_task_turn') -Default 0
+      task_mode = if ($st -and $st.PSObject.Properties.Name -contains 'task_mode') { [string]$st.task_mode } else { 'normal' }
+      discuss_turn = Get-AuditorStateInt -State $st -Names @('discuss_turn') -Default 0
       critic_retry_count = Get-AuditorStateInt -State $st -Names @('critic_retry_count') -Default 0
       current_task_short = if ($st) { Get-AuditorCurrentTaskShort -State $st } else { '' }
       restart_events_20min = [int]$restartCount
@@ -359,7 +361,8 @@ function Test-AuditorTriggers {
     if ([int]$c.empty_reply_streak -ge 2) {
       [void]$items.Add((New-AuditorTrigger -Name 'empty_reply_streak' -Channel $slug -Detail ("{0} consecutive empty agent replies" -f [int]$c.empty_reply_streak)))
     }
-    if ([int]$c.task_turn -gt 10 -and [int]$c.hb_age_sec -lt 60) {
+    $inDiscussion = ([string]$c.task_mode -eq 'discuss') -or ([int]$c.discuss_turn -gt 0)
+    if ([int]$c.task_turn -gt 30 -and [int]$c.hb_age_sec -lt 60 -and -not $inDiscussion) {
       [void]$items.Add((New-AuditorTrigger -Name 'same_task_too_long' -Channel $slug -Detail ("task_turn={0}, hb_age_sec={1}" -f [int]$c.task_turn, [int]$c.hb_age_sec)))
     }
     if ([int]$c.critic_retry_count -ge $criticMax -and -not [string]::IsNullOrWhiteSpace([string]$c.current_task_short)) {
