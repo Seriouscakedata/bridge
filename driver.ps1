@@ -892,6 +892,51 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
 }
 
+# Doctor restart-loop guard (FIX: 2026-05-26).
+# Bug: when Codex (as Doctor's coder) edited a .ps1 and set restart.flag, the bridge
+# restarted, Doctor stayed active (doctor_active=true, current_task=<doctor task>), but
+# doctor_attempts never incremented because the increment branch only triggers when
+# current_task is EMPTY. Result: infinite restart loop, Codex never committed, working tree
+# accumulated changes. This guard treats each driver startup-while-Doctor-active as one
+# "attempt", so the existing max-attempts gate actually fires.
+#
+# 2026-05-26 incident: 6 restarts in 10 min while Doctor was "in progress" -- user had to
+# kill the bridge manually. Save Codex's pending edits to a stash branch first if you see
+# the loop happening again (changes are recoverable via `git stash list`).
+try {
+  $startupState = Read-State
+  if ([bool]$startupState.doctor_active) {
+    $newAtt = [int]$startupState.doctor_attempts + 1
+    $maxA = 3   # initial + 2 restarts; beyond that the loop is real and we escalate
+    Update-State { param($s) $s.doctor_attempts = [int]$s.doctor_attempts + 1 } | Out-Null
+    Add-Message -From system -Text ("🩺 Доктор резюмирован после рестарта (попытка " + $newAtt + "/" + $maxA + ").") -Kind event | Out-Null
+    if ($newAtt -ge $maxA) {
+      # Restart loop -- abort Doctor cleanly + restore held_task so the operator sees what
+      # was running. Doctor's prompt may have generated useful diagnostic memories; those
+      # stay in long-term memory regardless.
+      $held = [string]$startupState.held_task
+      $reason = [string]$startupState.doctor_reason
+      Update-State {
+        param($s)
+        $s.doctor_active = $false
+        $s.doctor_attempts = 0
+        $s.doctor_reason = ''
+        $s.doctor_started_at = $null
+        $s.current_task = $null    # operator will re-submit / inspect; don't auto-resume held_task to avoid loop chain
+        $s.held_task = $held       # keep for the operator-visible event below
+        $s.task_turn = 0
+        $s.task_mode = 'normal'
+        $s.status = 'idle'
+        $s.active_agent = $null
+        $s.active_model = $null
+        $s.status_text = $null
+      } | Out-Null
+      $snip = $held; if ($snip.Length -gt 80) { $snip = $snip.Substring(0,80) + '...' }
+      Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newAtt рестартов мостa при reason='" + $reason + "'). Приостановленная задача: «" + $snip + "» — оператор, проверь рабочее дерево (git status / git stash list) и при необходимости перепиши задачу.") -Kind event | Out-Null
+    }
+  }
+} catch {}
+
 # ---------- main loop ----------
 while ($true) {
  try {
@@ -1445,12 +1490,17 @@ while ($true) {
         $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*Решение:[ \t]*\S'
         $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*Риски:[ \t]*\S'
         $openMatch   = [regex]::Match($reply, '(?im)^[*_> \t#-]*Открыто:[ \t]*(.*)$')
-        $openVal     = if ($openMatch.Success) { $openMatch.Groups[1].Value.Trim().Trim('*').Trim() } else { 'нет' }
+        # FIX 2026-05-26 (Codex's Doctor fix, applied manually after restart-loop incident):
+        # TrimEnd punctuation so "Открыто: нет." matches the "no open blockers" regex.
+        # Without this, a trailing dot in "нет." was treated as an unresolved open question
+        # and the convergence gate kept looping until 905s Codex timeout fired.
+        $openVal     = if ($openMatch.Success) { $openMatch.Groups[1].Value.Trim().Trim('*').Trim().TrimEnd('.',',',';','!','?',':',' ') } else { 'нет' }
         $openClosed  = [string]::IsNullOrWhiteSpace($openVal) -or ($openVal -imatch '^(нет|нет блокеров|блокеров нет|отсутствуют|none|n/?a|-|—)$')
         $converged   = ($dtNow -ge $discussMinTurns) -and $hasDecision -and $hasRisks -and $openClosed
+        $ceiling     = ($dtNow -ge $discussMaxTurns)
         $planMatch = [regex]::Match($reply, '(?ims)^[*_> \t#-]*План реализации:[ \t]*(.*?)(?=^\s*(STATUS:|Тип:|Согласовано:|Открыто:|Решение:|Риски:)|\z)')
         $hasPlan = $planMatch.Success -and -not [string]::IsNullOrWhiteSpace($planMatch.Groups[1].Value)
-        if (-not $converged -or -not $hasPlan) {
+        if (-not $ceiling -and (-not $converged -or -not $hasPlan)) {
           $why = if ($dtNow -lt $discussMinTurns) { "рано ($dtNow/$discussMinTurns ходов)" }
                  elseif (-not $hasDecision -or -not $hasRisks) { "нет блока «Решение:»/«Риски:»" }
                  elseif (-not $openClosed) { "остались открытые вопросы: $openVal" }
@@ -1459,6 +1509,9 @@ while ($true) {
           $plannerStatus = 'DISCUSS'
           Update-State { param($s) $s.task_mode='discuss' } | Out-Null
         } else {
+          if ($ceiling -and (-not $converged -or -not $hasPlan)) {
+            Add-Message -From system -Text "💬 Потолок обсуждения ($discussMaxTurns ходов) достигнут — закрываю обсуждение с текущим планом, передаю Codex'у." -Kind event | Out-Null
+          }
           Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot='' } | Out-Null
         }
       } elseif ($modeBeforeIncrement -eq 'study') {
@@ -1500,7 +1553,9 @@ while ($true) {
     $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*Решение:[ \t]*\S'
     $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*Риски:[ \t]*\S'
     $openMatch   = [regex]::Match($reply, '(?im)^[*_> \t#-]*Открыто:[ \t]*(.*)$')
-    $openVal     = if ($openMatch.Success) { $openMatch.Groups[1].Value.Trim().Trim('*').Trim() } else { 'нет' }
+    # Same TrimEnd punctuation fix as above (2026-05-26): keeps "нет." from being treated
+    # as unresolved open question.
+    $openVal     = if ($openMatch.Success) { $openMatch.Groups[1].Value.Trim().Trim('*').Trim().TrimEnd('.',',',';','!','?',':',' ') } else { 'нет' }
     $openClosed  = [string]::IsNullOrWhiteSpace($openVal) -or ($openVal -imatch '^(нет|нет блокеров|блокеров нет|отсутствуют|none|n/?a|-|—)$')
     $converged   = ($dtNow -ge $discussMinTurns) -and $hasDecision -and $hasRisks -and $openClosed
     $ceiling     = ($dtNow -ge $discussMaxTurns)
