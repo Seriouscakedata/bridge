@@ -196,6 +196,11 @@ function Get-ChannelFilesPath {
   param([string]$Slug = $null)
   return (Join-Path (Get-ChannelDir -Slug $Slug) 'files')
 }
+function Get-ChannelStatePath {
+  # Phase 3 (full multi-driver): each channel has its own state.json so drivers run in parallel.
+  param([string]$Slug = $null)
+  return (Join-Path (Get-ChannelDir -Slug $Slug) 'state.json')
+}
 
 function Initialize-Channels {
   # One-shot migration: if old-layout files exist at bridge root and channels/main/ is empty,
@@ -235,6 +240,17 @@ function Initialize-Channels {
       [System.IO.File]::WriteAllText($dst, '', (New-Object System.Text.UTF8Encoding($false)))
     }
   }
+  # Phase 3 (full multi-driver): migrate root state.json into channels/main/state.json.
+  # MOVE so there's exactly one canonical location and no stale-shadow risk. Watchdog
+  # was updated to read channels/main/state.json with root as legacy fallback.
+  $stateSrc = Join-Path $root 'state.json'
+  $stateDst = Join-Path $mainDir 'state.json'
+  if ((Test-Path $stateSrc) -and -not (Test-Path $stateDst)) {
+    try { Move-Item -LiteralPath $stateSrc -Destination $stateDst -Force } catch {}
+  }
+  # For NON-main channels: state.json gets seeded by each channel's driver on its first
+  # Initialize-Bridge call (which now also self-heals lastSeq from any existing
+  # conversation.jsonl, so the per-channel UI poll picks up new messages correctly).
   # Migrate files/ subfolder: contents go into main/files/
   $srcFiles = Join-Path $root 'files'
   $dstFiles = Join-Path $mainDir 'files'

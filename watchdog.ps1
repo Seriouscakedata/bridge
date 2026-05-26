@@ -88,11 +88,27 @@ function Check-Once {
     $r = Invoke-WebRequest -UseBasicParsing 'http://localhost:8787/api/status' -Credential $cred -TimeoutSec 6
     if ($r.StatusCode -eq 200) { $apiOk = $true }
   } catch {}
+  # Phase 3 (full): state.json is now per-channel under channels/<slug>/state.json.
+  # Watchdog monitors EVERY channel's heartbeat; "alive" means at least the main channel
+  # is fresh (it's the canonical channel — bridge git auto-rollback only applies to it
+  # anyway, since other channels work in unrelated project_root repos).
+  # Legacy fallback: also try root state.json (very first migration moment).
   $hbOk = $false; $hbAge = 99999
-  try {
-    $st = Get-Content (Join-Path $b 'state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($st.heartbeat) { $hbAge = [int](((Get-Date) - [datetime]$st.heartbeat).TotalSeconds); if ($hbAge -lt 300) { $hbOk = $true } }
-  } catch {}
+  $candidates = @(
+    (Join-Path $b 'channels\main\state.json'),
+    (Join-Path $b 'state.json')
+  )
+  foreach ($sp in $candidates) {
+    if (-not (Test-Path $sp)) { continue }
+    try {
+      $st = Get-Content $sp -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($st.heartbeat) {
+        $age = [int](((Get-Date) - [datetime]$st.heartbeat).TotalSeconds)
+        if ($age -lt $hbAge) { $hbAge = $age }
+        if ($age -lt 300) { $hbOk = $true; break }
+      }
+    } catch {}
+  }
 
   $fails = 0; if (Test-Path $failFile) { try { $fails = [int](Get-Content $failFile -Raw) } catch {} }
 

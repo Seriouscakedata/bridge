@@ -3554,7 +3554,12 @@ async function status(){
   if(statusInFlight) return;
   statusInFlight = true;
   try{
-    const s = await fetchJson('/api/status');
+    // Phase 3 (full): each channel has its own driver + state.json. Ask for THIS channel's
+    // status so the "agent thinking" indicator reflects what THIS tab's driver is doing,
+    // not a global single-driver status. channelsCache.active is the slug the UI is viewing.
+    const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
+    const url = ch ? ('/api/status?channel=' + encodeURIComponent(ch)) : '/api/status';
+    const s = await fetchJson(url);
     noteConnectionOk();
     if(typeof s.lastSeq === 'number' && s.lastSeq < lastSeq){
       [...log.querySelectorAll('.msg,.day-sep')].forEach(n => n.remove());
@@ -4053,7 +4058,11 @@ function toggleVoice(){
 }
 async function ctl(action){
   try{
-    await requestOk('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})});
+    // Route control actions to THIS tab's channel (per-channel driver, phase 3 full).
+    // 'restart' is supervisor-wide — channel doesn't matter, but harmless to pass.
+    const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
+    const body = ch ? {action, channel: ch} : {action};
+    await requestOk('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     status();
   }catch(e){
     showConnectionProblem('control', e);

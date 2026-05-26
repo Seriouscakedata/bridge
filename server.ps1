@@ -132,7 +132,15 @@ try {
         Send-Text $ctx $json 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/status') {
-        $state = Read-State
+        # Phase 3 (full): ?channel=<slug> reads THAT channel's state.json; default = active marker.
+        # The driver of each channel writes its own state independently, so this gives UI
+        # an accurate per-tab "what's that channel's driver doing right now" view.
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $state = Read-State
+        } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx ($state | ConvertTo-Json -Compress -Depth 10) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path.StartsWith('/files/')) {
@@ -238,30 +246,39 @@ try {
         Send-Text $ctx $json 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/control') {
+        # Phase 3 (full): control actions (pause/resume/kill/stop) target a SPECIFIC channel's
+        # driver via ?channel=<slug> or body.channel; default = active marker. Restart is
+        # supervisor-wide (signals all drivers via Kill-Bridge in supervisor.ps1).
         $body = Read-Body $ctx | ConvertFrom-Json
         $action = [string]$body.action
-        if ($action -eq 'kill') {
-          $apid = (Read-State).agent_pid
-          Update-State { param($s) $s.abort = $true } | Out-Null
-          if ($apid) { try { Start-Process taskkill -ArgumentList '/PID',([string]$apid),'/F','/T' -NoNewWindow -Wait } catch {} }
-          [void](Add-Message -From system -Text "🛑 Стоп-кран нажат пользователем." -Kind event)
-        } elseif ($action -eq 'restart') {
-          $ctl = Join-Path (Get-BridgeRoot) 'control'
-          if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
-          Set-Content -LiteralPath (Join-Path $ctl 'restart.flag') -Value '1' -Encoding ASCII
-          [void](Add-Message -From system -Text "♻ Запрошен перезапуск -- супервизор выполнит его без UAC." -Kind event)
-        } else {
-          Update-State {
-            param($s)
-            switch ($action) {
-              'pause'  { $s.paused = $true }
-              'resume' { $s.paused = $false; $s.stop = $false }
-              'stop'   { $s.stop = $true; $s.status = 'stopped' }
-            }
-          } | Out-Null
-          $label = @{pause='⏸ Пауза';resume='▶ Продолжаем';stop='⏹ Полная остановка'}[$action]
-          if ($label) { [void](Add-Message -From system -Text "Управление: $label" -Kind event) }
-        }
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body.channel) { $chParam = [string]$body.channel }
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          if ($action -eq 'kill') {
+            $apid = (Read-State).agent_pid
+            Update-State { param($s) $s.abort = $true } | Out-Null
+            if ($apid) { try { Start-Process taskkill -ArgumentList '/PID',([string]$apid),'/F','/T' -NoNewWindow -Wait } catch {} }
+            [void](Add-Message -From system -Text "🛑 Стоп-кран нажат пользователем." -Kind event)
+          } elseif ($action -eq 'restart') {
+            $ctl = Join-Path (Get-BridgeRoot) 'control'
+            if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
+            Set-Content -LiteralPath (Join-Path $ctl 'restart.flag') -Value '1' -Encoding ASCII
+            [void](Add-Message -From system -Text "♻ Запрошен перезапуск -- супервизор выполнит его без UAC." -Kind event)
+          } else {
+            Update-State {
+              param($s)
+              switch ($action) {
+                'pause'  { $s.paused = $true }
+                'resume' { $s.paused = $false; $s.stop = $false }
+                'stop'   { $s.stop = $true; $s.status = 'stopped' }
+              }
+            } | Out-Null
+            $label = @{pause='⏸ Пауза';resume='▶ Продолжаем';stop='⏹ Полная остановка'}[$action]
+            if ($label) { [void](Add-Message -From system -Text "Управление: $label" -Kind event) }
+          }
+        } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and ($path -eq '/memory' -or $path -eq '/memory.html')) {

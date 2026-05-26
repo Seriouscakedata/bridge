@@ -1,9 +1,25 @@
 ﻿# driver.ps1 -- INTERACTIVE bridge: idles, and treats each [USER] chat message as a
 # task. Planner (Claude) plans/reviews, Coder (Codex) executes with FULL PC access.
+#
+# Phase 3 (full): supports per-channel parallel drivers. Pass `-Channel <slug>` and the
+# driver hard-pins itself to that channel for its entire process lifetime -- all
+# Read-State/Update-State/Add-Message calls route into channels/<slug>/. Supervisor
+# spawns one process per non-archived channel.
+param([string]$Channel = $null)
+
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 $ErrorActionPreference = 'Continue'
+
+# Resolve and lock the channel for this driver process. If -Channel wasn't passed
+# (legacy single-driver mode or supervisor before update), fall back to active marker.
+if ([string]::IsNullOrWhiteSpace($Channel)) {
+  $Channel = (Get-ActiveChannel)
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+}
+Set-PinnedChannel $Channel
+Write-Host ("driver pinned to channel: " + $Channel)
 
 # UTF-8 end-to-end (Russian survives the stdin/stdout file round-trip).
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -879,20 +895,8 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
 # ---------- main loop ----------
 while ($true) {
  try {
-  # Phase 3-lite (channels): when idle, refresh the channel pin from the active marker.
-  # While a task is in flight (state.current_task non-empty), keep the previously-pinned
-  # channel so a UI channel-switch mid-task doesn't yank conversation/plan/backlog out
-  # from under the running task. The driver settles into the new channel on the next idle tick.
-  $prePinState = Read-State
-  $prePinTask  = [string]$prePinState.current_task
-  if ([string]::IsNullOrWhiteSpace($prePinTask)) {
-    try { Set-PinnedChannel (Get-ActiveChannel) } catch {}
-  } else {
-    # Defensive: if pin was somehow cleared (process restart) while a task was held mid-flight,
-    # re-pin to whatever the active marker says now -- at least we're consistent through this iteration.
-    if ([string]::IsNullOrWhiteSpace([string](Get-PinnedChannel))) { try { Set-PinnedChannel (Get-ActiveChannel) } catch {} }
-  }
-
+  # Phase 3 (full): channel is hard-pinned at process startup. No per-iteration re-evaluation
+  # -- each driver lives in its own channel for its entire lifetime.
   $state = Read-State
 
   if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }

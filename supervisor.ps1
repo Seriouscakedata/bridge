@@ -16,9 +16,12 @@ $flagRestart = Join-Path $ctl 'restart.flag'
 $flagStop    = Join-Path $ctl 'stop.flag'
 $supLog = Join-Path $ctl 'supervisor.log'
 $srvOut = Join-Path $ctl 'server.out.log'; $srvErr = Join-Path $ctl 'server.err.log'
-$drvOut = Join-Path $ctl 'driver.out.log'; $drvErr = Join-Path $ctl 'driver.err.log'
 function Log($m){ ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) | Out-File $supLog -Append -Encoding utf8 }
 $null = Initialize-Bridge
+
+# Phase 3 (full): supervisor keeps ONE driver per non-archived channel. Each driver is
+# pinned to its channel for life. $drivers hashtable: slug -> Process object.
+$drivers = @{}
 
 function Kill-Bridge {
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
@@ -49,15 +52,26 @@ function Start-Srv {
     -NoNewWindow -PassThru -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
 }
 function Start-Drv {
-  Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'driver.ps1') `
+  # Spawn a driver pinned to a specific channel. Per-channel log files keep crashes attributable.
+  param([string]$Slug)
+  $drvOut = Join-Path $ctl ("driver." + $Slug + ".out.log")
+  $drvErr = Join-Path $ctl ("driver." + $Slug + ".err.log")
+  Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'driver.ps1'),'-Channel',$Slug `
     -NoNewWindow -PassThru -RedirectStandardOutput $drvOut -RedirectStandardError $drvErr
+}
+function Get-ActiveSlugs {
+  # Non-archived channel slugs, in stable order.
+  $list = @(Get-ChannelList)
+  $slugs = @($list | ForEach-Object { [string]$_.slug } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($slugs.Count -eq 0) { $slugs = @('main') }
+  return $slugs
 }
 
 Log "=== supervisor start, PID $PID ==="
 Kill-Bridge
 Start-Sleep -Seconds 2
-$srv = $null; $drv = $null
-Add-Message -From system -Text "Супервизор запущен (elevated). Держу сервер и драйвер живыми; перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
+$srv = $null
+Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
 while ($true) {
   try {
@@ -70,17 +84,35 @@ while ($true) {
       Remove-Item $flagRestart -Force -ErrorAction SilentlyContinue
       Log "restart flag -> recycle"
       Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
-      Kill-Bridge; $srv = $null; $drv = $null; Start-Sleep -Seconds 3
+      Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
     }
     if ($null -eq $srv -or $srv.HasExited) {
       Log "starting server..."
       $srv = Start-Srv; Start-Sleep -Seconds 3
       Log ("server pid=" + $(if($srv){$srv.Id}else{'?'}) + " hasExited=" + $(if($srv){$srv.HasExited}else{'?'}))
     }
-    if ($null -eq $drv -or $drv.HasExited) {
-      Log "starting driver..."
-      $drv = Start-Drv; Start-Sleep -Seconds 4
-      Log ("driver pid=" + $(if($drv){$drv.Id}else{'?'}) + " hasExited=" + $(if($drv){$drv.HasExited}else{'?'}))
+    # Spawn one driver per non-archived channel; restart any that died.
+    $slugs = Get-ActiveSlugs
+    foreach ($slug in $slugs) {
+      $proc = $drivers[$slug]
+      if ($null -eq $proc -or $proc.HasExited) {
+        Log ("starting driver for channel '" + $slug + "'...")
+        $proc = Start-Drv -Slug $slug
+        Start-Sleep -Seconds 2
+        Log ("driver[" + $slug + "] pid=" + $(if($proc){$proc.Id}else{'?'}) + " hasExited=" + $(if($proc){$proc.HasExited}else{'?'}))
+        $drivers[$slug] = $proc
+      }
+    }
+    # Reap drivers whose channel was archived (channel no longer in $slugs).
+    $known = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($k in $drivers.Keys) { $known.Add([string]$k) }
+    foreach ($k in $known) {
+      if (-not ($slugs -contains $k)) {
+        Log ("channel '" + $k + "' archived -> stopping its driver")
+        $p = $drivers[$k]
+        if ($p -and -not $p.HasExited) { try { taskkill /PID $p.Id /F /T 2>$null | Out-Null } catch {} }
+        $drivers.Remove($k)
+      }
     }
   } catch { Log ("ERR " + $_.Exception.Message) }
   Start-Sleep -Seconds 5

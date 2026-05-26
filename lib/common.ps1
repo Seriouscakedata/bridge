@@ -51,7 +51,14 @@ function Write-AtomicFile {
   Move-Item -LiteralPath $tmp -Destination $Path -Force
 }
 
-function Get-StatePath { Join-Path (Get-BridgeRoot) 'state.json' }   # phase 1: stays global (watchdog/smoke read it directly)
+function Get-StatePath {
+  # Phase 3 (full): state.json lives PER channel under channels/<slug>/state.json so each
+  # driver can work in parallel without trampling shared state. Falls back to legacy
+  # root path during very first bootstrap (before channels.ps1 dot-sourced) or for
+  # processes that didn't pin a channel.
+  if (Get-Command Get-ChannelStatePath -ErrorAction SilentlyContinue) { return (Get-ChannelStatePath) }
+  return (Join-Path (Get-BridgeRoot) 'state.json')
+}
 function Get-ConversationPath {
   # Channel-aware. Falls back to legacy root path if channels.ps1 hasn't loaded yet (during
   # very first Initialize-Bridge, before dot-source of channels.ps1).
@@ -282,6 +289,23 @@ function Initialize-Bridge {
   }
   $state = Read-State
   if ($Reset -or $null -eq $state) {
+    # Phase 3 (full): when creating a fresh per-channel state.json, scan the channel's
+    # existing conversation.jsonl and seed lastSeq from the max seq there. Otherwise UI
+    # polling with ?since=<oldChannelSeq> would never see new sub-1 messages.
+    $initialLastSeq = 0
+    try {
+      $convoPath = Get-ConversationPath
+      if (Test-Path -LiteralPath $convoPath) {
+        foreach ($line in (Get-Content -LiteralPath $convoPath -Encoding UTF8)) {
+          if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          try {
+            $obj = $line | ConvertFrom-Json
+            $s = [int]$obj.seq
+            if ($s -gt $initialLastSeq) { $initialLastSeq = $s }
+          } catch {}
+        }
+      }
+    } catch {}
     $state = [ordered]@{
       status         = 'idle'
       paused         = $false
@@ -309,7 +333,7 @@ function Initialize-Bridge {
       last_user_seq  = 0
       summarized_seq = 0
       turn           = 0
-      lastSeq        = 0
+      lastSeq        = $initialLastSeq
       heartbeat      = $null
       driver_started = $null
       claimed_at     = $null
