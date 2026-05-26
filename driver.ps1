@@ -1618,7 +1618,19 @@ while ($true) {
       $plannerStatus = 'VERIFY'
       Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$true } | Out-Null
     } elseif ($didActions -and -not $hasVerify -and $vrc -ge 2) {
-      Add-Message -From system -Text "🔍 Верификация не пройдена за 2 попытки — закрываю как есть (нужно внимание оператора)." -Kind event | Out-Null
+      $vfDiff = ''
+      try {
+        $vfBase = [string](Read-State).task_base_commit
+        if (-not [string]::IsNullOrWhiteSpace($vfBase)) {
+          $vfDiff = (& git -C $bridgeRoot diff $vfBase -- 2>$null | Out-String).Trim()
+          if ($vfDiff.Length -gt 2000) { $vfDiff = $vfDiff.Substring(0,2000) + "`n...[truncated]" }
+        }
+      } catch {}
+      $vfLast = $reply.Trim(); if ($vfLast.Length -gt 800) { $vfLast = $vfLast.Substring(0,800) + "`n...[truncated]" }
+      $vfMsg = "🔍 Верификация не пройдена за 2 попытки — закрываю как есть."
+      if ($vfDiff) { $vfMsg += "`n`n**Git diff (от начала задачи):**`n``````diff`n$vfDiff`n``````" }
+      if ($vfLast) { $vfMsg += "`n`n**Последний вывод агента:**`n``````$vfLast`n``````" }
+      Add-Message -From system -Text $vfMsg -Kind event | Out-Null
       try { Send-PushEvent -Kind need_you -Text "Верификация не пройдена: $(Get-PushSnippet -Text $task)" } catch {}
     }
   }
@@ -1803,7 +1815,18 @@ $diff
                 Add-Message -From system -Text "🚨 Авто-smoke FAILED (попытка $($smokeVrc+1)/2) — .ps1 повреждены, задача НЕ закрывается. Codex, исправь: $smokeShort" -Kind event | Out-Null
                 $plannerStatus = 'CONTINUE'
               } else {
-                Add-Message -From system -Text "🚨 Авто-smoke провалился 2× — закрываю как есть, нужно внимание оператора." -Kind event | Out-Null
+                $sfDiff = ''
+                try {
+                  $sfBase = [string](Read-State).task_base_commit
+                  if (-not [string]::IsNullOrWhiteSpace($sfBase)) {
+                    $sfDiff = (& git -C $bridgeRoot diff $sfBase -- 2>$null | Out-String).Trim()
+                    if ($sfDiff.Length -gt 2000) { $sfDiff = $sfDiff.Substring(0,2000) + "`n...[truncated]" }
+                  }
+                } catch {}
+                $sfMsg = "🚨 Авто-smoke провалился 2× — закрываю как есть, нужно внимание оператора."
+                if ($sfDiff) { $sfMsg += "`n`n**Git diff (от начала задачи):**`n``````diff`n$sfDiff`n``````" }
+                $sfMsg += "`n`n**Smoke output:** $smokeShort"
+                Add-Message -From system -Text $sfMsg -Kind event | Out-Null
                 try { Send-PushEvent -Kind need_you -Text "Smoke FAIL: $(Get-PushSnippet -Text $task)" } catch {}
               }
             } else {

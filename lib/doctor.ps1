@@ -50,6 +50,7 @@ function Activate-Doctor {
   if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0,80) + '...' }
   $detailMsg = if ([string]::IsNullOrWhiteSpace($Detail)) { '' } else { " — $Detail" }
   try { Add-Message -From system -Text ("🩺 Доктор активирован: " + $Reason + $detailMsg + ". Задача приостановлена: «" + $snippet + "». Диагностика и фикс пойдут отдельной задачей.") -Kind event | Out-Null } catch {}
+  try { Append-DoctorEvent -Event 'activate' -Reason $Reason } catch {}
   return $true
 }
 
@@ -181,6 +182,7 @@ function Complete-Doctor {
   }.GetNewClosure()) | Out-Null
   $snippet = $held; if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0,80) + '...' }
   try { Add-Message -From system -Text ("🩺 Доктор закончил — фикс применён и проверен. Возобновляю приостановленную задачу: «" + $snippet + "».") -Kind event | Out-Null } catch {}
+  try { Append-DoctorEvent -Event 'complete' } catch {}
 }
 
 function Abort-Doctor {
@@ -190,6 +192,7 @@ function Abort-Doctor {
   Update-State { param($s) $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.current_task=$null; $s.task_turn=0 } | Out-Null
   try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
+  try { Append-DoctorEvent -Event 'abort' -Reason $Reason } catch {}
 }
 
 function Test-RestartLoop {

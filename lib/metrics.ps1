@@ -113,6 +113,7 @@ function Get-MetricsForApi {
     }
     series       = @($items)
     series_count = [int]$items.Count
+    doctor       = (try { Get-DoctorStats -WindowHours 168 } catch { $null })
   }
 }
 
@@ -305,4 +306,34 @@ function Get-FailurePatterns {
     })
   }
   return @($out | Sort-Object -Property count -Descending | Select-Object -First $TopN)
+}
+
+function Append-DoctorEvent {
+  param([string]$Event, [string]$Reason = '')
+  Append-MetricsRecord @{ type='doctor_event'; event=$Event; reason=$Reason }
+}
+
+function Get-DoctorStats {
+  param([int]$WindowHours = 168)
+  $cutoff = [DateTime]::UtcNow.AddHours(-[Math]::Abs($WindowHours))
+  $recs = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($rec in @(Read-MetricsJsonl)) {
+    if ([string]$rec.type -ne 'doctor_event') { continue }
+    $inWindow = $false
+    try { $inWindow = ([DateTime]$rec.ts).ToUniversalTime() -ge $cutoff } catch {}
+    if ($inWindow) { [void]$recs.Add($rec) }
+  }
+  $activations   = @($recs | Where-Object { [string]$_.event -eq 'activate' })
+  $rlActivations = @($activations | Where-Object { [string]$_.reason -imatch 'restart_loop' })
+  $aborts        = @($recs | Where-Object { [string]$_.event -eq 'abort' })
+  $completes     = @($recs | Where-Object { [string]$_.event -eq 'complete' })
+  $falsePosCount = @($recs | Where-Object { [string]$_.event -eq 'false_positive' }).Count
+  [pscustomobject]@{
+    activations_total        = $activations.Count
+    restart_loop_activations = $rlActivations.Count
+    completions              = $completes.Count
+    aborts                   = $aborts.Count
+    false_positives          = $falsePosCount
+    window_hours             = $WindowHours
+  }
 }
