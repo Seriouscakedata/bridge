@@ -596,15 +596,44 @@ function Wait-AgentProcess {
   return $Proc.WaitForExit(0)
 }
 
+function Get-OtherChannelsAgents { Get-OtherChannelsAgentsImpl }
+function Set-CurrentAgent {
+  param([string]$Agent)
+  Set-CurrentAgentImpl -Agent $Agent
+}
+
 function Invoke-Planner {
-  param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal')
+  param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal', [switch]$NoFallback)
+  if (-not $NoFallback) {
+    # Cross-agent fallback: if Claude is busy in another channel and Codex is free in all
+    # other channels, delegate this planner turn to Codex with a planner-prefix prompt.
+    $others = Get-OtherChannelsAgents
+    $claudeBusyElsewhere = $false
+    $codexBusyElsewhere = $false
+    foreach ($k in $others.Keys) {
+      if ($others[$k] -eq 'claude') { $claudeBusyElsewhere = $true }
+      if ($others[$k] -eq 'codex')  { $codexBusyElsewhere = $true }
+    }
+    if ($claudeBusyElsewhere -and -not $codexBusyElsewhere) {
+      $busyCh = ($others.GetEnumerator() | Where-Object { $_.Value -eq 'claude' } | Select-Object -First 1).Key
+      Add-Message -From system -Text ("🔀 Fallback: Claude занят в канале '" + $busyCh + "' → Codex берёт planner-турн.") -Kind event | Out-Null
+      $fallbackPrefix = @"
+⚠ FALLBACK MODE: Ты сейчас замещаешь Claude-планировщика (он занят в канале '$busyCh'). Твоя роль — ПЛАНИРОВЩИК, не кодер. Отвечай как обычный планировщик: разбери задачу, дай инструкции/решение, заверши маркером STATUS (DONE / CHAT / CONTINUE / DISCUSS / RESEARCH). НЕ редактируй файлы и не запускай команд. Будь короче обычного — это резервный ход.
+
+ЗАДАЧА ОТ ОПЕРАТОРА:
+"@
+      $coderRes = Invoke-Coder -Prompt ($fallbackPrefix + "`n" + $Prompt) -Mode 'discuss' -NoFallback
+      return [pscustomobject]@{ text=$coderRes.text; status=$coderRes.status; duration=$coderRes.duration; errorType=$coderRes.errorType; fallback='codex_as_planner' }
+    }
+  }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "claude_in_$g.txt"; $outF=Join-Path $env:TEMP "claude_out_$g.txt"; $errF=Join-Path $env:TEMP "claude_err_$g.txt"
   # Opus -> maximum thinking budget ('ultrathink' = top tier in Claude Code). They write code.
   $effPrompt = if ($Model -match 'opus') { $Prompt + "`n`nultrathink" } else { $Prompt }
   [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   # Narrow --add-dir to the bridge folder (faster startup); Bash already gives full read access.
-  $allowedTools = if ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
+  $allowedTools = if ($Mode -eq 'advisory') { @('Read','Grep','Glob') }
+                  elseif ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
                   else { @('Read','Grep','Glob','Bash') }
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$bridgeRoot,'--allowedTools') + $allowedTools
@@ -615,6 +644,7 @@ function Invoke-Planner {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
+    Set-CurrentAgent 'claude'
     # Planner cap history: 240s -> 600s (probe 2 ultrathink audit), -> 900s (2026-05-26
     # planner_timeout incident: open-ended multi-channel diagnostic "разберись почему
     # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
@@ -625,13 +655,35 @@ function Invoke-Planner {
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
-  } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally { Set-CurrentAgent $null; if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { $reply = '' }
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
 function Invoke-Coder {
-  param([string]$Prompt, [string]$Mode = 'code')
+  param([string]$Prompt, [string]$Mode = 'code', [switch]$NoFallback)
+  if (-not $NoFallback) {
+    # Cross-agent fallback: if Codex is busy in another channel and Claude is free in all
+    # other channels, delegate this coder turn to Claude in advisory-only mode.
+    $others = Get-OtherChannelsAgents
+    $codexBusyElsewhere = $false
+    $claudeBusyElsewhere = $false
+    foreach ($k in $others.Keys) {
+      if ($others[$k] -eq 'codex')  { $codexBusyElsewhere = $true }
+      if ($others[$k] -eq 'claude') { $claudeBusyElsewhere = $true }
+    }
+    if ($codexBusyElsewhere -and -not $claudeBusyElsewhere) {
+      $busyCh = ($others.GetEnumerator() | Where-Object { $_.Value -eq 'codex' } | Select-Object -First 1).Key
+      Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude Opus берёт coder-турн (advisory-only, без правок файлов).") -Kind event | Out-Null
+      $fallbackPrefix = @"
+⚠ FALLBACK MODE: Ты сейчас замещаешь Codex-кодера (он занят в канале '$busyCh'). СТРОГОЕ ОГРАНИЧЕНИЕ: ты НЕ редактируешь файлы, НЕ создаёшь restart.flag, НЕ запускаешь git commit. Дай развёрнутый ТЕКСТОВЫЙ ответ: анализ задачи, план реальных правок с конкретными путями/строками/блоками, ожидаемое поведение. Когда Codex освободится, он подхватит и реально применит правки на основе твоего плана. Закончи ответ обычным маркером статуса.
+
+ЗАДАЧА:
+"@
+      $plannerRes = Invoke-Planner -Prompt ($fallbackPrefix + "`n" + $Prompt) -Model $deepModel -Mode 'advisory' -NoFallback
+      return [pscustomobject]@{ text=$plannerRes.text; status=$plannerRes.status; duration=$plannerRes.duration; errorType=$plannerRes.errorType; fallback='claude_as_coder' }
+    }
+  }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
@@ -717,6 +769,7 @@ function Invoke-Coder {
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
+    Set-CurrentAgent 'codex'
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
     # mandatory visit.ps1 invocations on top of edits, ui_audit, verification, and
     # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
@@ -726,6 +779,7 @@ function Invoke-Coder {
     }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
   } finally {
+    Set-CurrentAgent $null
     if ($codexLockAcquired) { Remove-Item $codexLockFile -Force -ErrorAction SilentlyContinue }
     if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
     # Capture stderr BEFORE cleanup if reply is empty (diagnostic for silent exits).
@@ -956,7 +1010,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='working'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." -Kind event | Out-Null
@@ -964,7 +1018,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
     $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
@@ -1270,7 +1324,7 @@ while ($true) {
       $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode
       # Track that Codex actually ran for this task: used by the coder-bypass gate below
       # so the planner can't ship file changes via STATUS:DONE without Codex+critic review.
-      if ($turnResult.status -eq 'ok') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
+      if ($turnResult.status -eq 'ok' -and [string]$turnResult.fallback -ne 'claude_as_coder') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
     }
   } catch {
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
@@ -1474,7 +1528,9 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $planBlockPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepPattern, '')
-  if ($speaker -eq 'claude') { $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '') }
+  if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
+    $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '')
+  }
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
     $failLines = ($failedAttachmentPaths | ForEach-Object { "- $_" }) -join "`n"
@@ -1533,7 +1589,7 @@ while ($true) {
   }
 
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
-  if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
+  if ($speaker -eq 'codex' -and $mode -ne 'discuss' -and [string]$turnResult.fallback -ne 'claude_as_coder') {
     $gitDiffOut = & git -C $bridgeRoot diff --stat HEAD 2>&1
     # Also check the channel's effective project root (may differ from bridgeRoot).
     if ([string]::IsNullOrWhiteSpace($gitDiffOut)) {

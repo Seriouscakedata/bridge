@@ -171,6 +171,107 @@ function Update-State {
   }
 }
 
+function Get-OtherChannelsAgentsImpl {
+  # Returns @{channelSlug = 'claude'|'codex'} for channels other than the current one
+  # whose state.current_agent points to a live driver process. PID start ticks protect
+  # against PID reuse; entries older than the agent timeout are treated as stale.
+  $result = @{}
+  try {
+    $currentChannel = ''
+    try { $currentChannel = [string]$Channel } catch {}
+    if ([string]::IsNullOrWhiteSpace($currentChannel)) {
+      try { $currentChannel = [string](Get-EffectiveChannel) } catch {}
+    }
+
+    $channelsRoot = Join-Path (Get-BridgeRoot) 'channels'
+    if (-not (Test-Path -LiteralPath $channelsRoot)) { return $result }
+
+    foreach ($dir in @(Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue)) {
+      $slug = [string]$dir.Name
+      if (-not [string]::IsNullOrWhiteSpace($currentChannel) -and $slug -eq $currentChannel) { continue }
+
+      $stateF = Join-Path $dir.FullName 'state.json'
+      if (-not (Test-Path -LiteralPath $stateF)) { continue }
+
+      try {
+        $st = Get-Content -LiteralPath $stateF -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        $agent = ([string]$st.current_agent).ToLowerInvariant()
+        if ($agent -ne 'claude' -and $agent -ne 'codex') { continue }
+
+        $apid = 0
+        try { $apid = [int]$st.current_agent_pid } catch { $apid = 0 }
+        $aTicks = [long]0
+        try { $aTicks = [long]$st.current_agent_ticks } catch { $aTicks = [long]0 }
+        $aSince = $null
+        try {
+          $sinceRaw = [string]$st.current_agent_since
+          if (-not [string]::IsNullOrWhiteSpace($sinceRaw)) { $aSince = [datetime]$sinceRaw }
+        } catch { $aSince = $null }
+
+        $live = $false
+        if ($apid -gt 0) {
+          $proc = Get-Process -Id $apid -ErrorAction SilentlyContinue
+          if ($proc) {
+            try {
+              if ($aTicks -le 0 -or $proc.StartTime.Ticks -eq $aTicks) { $live = $true }
+            } catch {
+              $live = $true
+            }
+          }
+        }
+
+        if ($live -and $aSince) {
+          $ageSec = [math]::Max(0, [int](((Get-Date) - $aSince).TotalSeconds))
+          if ($ageSec -gt 920) { $live = $false }
+        }
+
+        if ($live) { $result[$slug] = $agent }
+      } catch {
+        continue
+      }
+    }
+  } catch {}
+  return $result
+}
+
+function Set-CurrentAgentImpl {
+  param([string]$Agent)
+  # Mark this channel's driver as running the given agent so parallel channel drivers can
+  # route around a busy Claude/Codex pair. Cleared in each Invoke-* finally block.
+  try {
+    if ([string]::IsNullOrWhiteSpace($Agent)) {
+      Update-State {
+        param($s)
+        $s | Add-Member -NotePropertyName current_agent -NotePropertyValue $null -Force
+        $s | Add-Member -NotePropertyName current_agent_pid -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName current_agent_ticks -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName current_agent_since -NotePropertyValue $null -Force
+      } | Out-Null
+      return
+    }
+
+    $normAgent = ([string]$Agent).ToLowerInvariant()
+    if ($normAgent -ne 'claude' -and $normAgent -ne 'codex') { return }
+
+    $ticks = [long]0
+    try { $ticks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.Ticks } catch { $ticks = [long]0 }
+    $nowIso = (Get-Date).ToString('o')
+    Update-State ({
+      param($s)
+      $s | Add-Member -NotePropertyName current_agent -NotePropertyValue $normAgent -Force
+      $s | Add-Member -NotePropertyName current_agent_pid -NotePropertyValue $PID -Force
+      $s | Add-Member -NotePropertyName current_agent_ticks -NotePropertyValue $ticks -Force
+      $s | Add-Member -NotePropertyName current_agent_since -NotePropertyValue $nowIso -Force
+    }.GetNewClosure()) | Out-Null
+  } catch {}
+}
+
+function Get-OtherChannelsAgents { Get-OtherChannelsAgentsImpl }
+function Set-CurrentAgent {
+  param([string]$Agent)
+  Set-CurrentAgentImpl -Agent $Agent
+}
+
 function Add-Message {
   param(
     [ValidateSet('claude','codex','user','system')] [string]$From,
@@ -375,6 +476,10 @@ function Initialize-Bridge {
       active_jobs      = @()
       task_base_commit = ''
       critic_retry_count = 0
+      current_agent      = $null
+      current_agent_pid  = 0
+      current_agent_ticks = 0
+      current_agent_since = $null
       coder_fired        = $false
       coder_bypass_retry_count = 0
       held_task          = $null
@@ -396,6 +501,7 @@ function Initialize-Bridge {
       current_backlog_id=$null
       autonomous_day=$null; autonomous_count=0
       active_jobs=@(); task_base_commit=''; critic_retry_count=0
+      current_agent=$null; current_agent_pid=0; current_agent_ticks=0; current_agent_since=$null
       coder_fired=$false; coder_bypass_retry_count=0
       held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null
     }
