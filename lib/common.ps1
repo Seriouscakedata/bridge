@@ -209,20 +209,18 @@ function Get-OtherChannelsAgentsImpl {
         } catch { $aSince = $null }
 
         $live = $false
-        if ($apid -gt 0) {
-          $proc = Get-Process -Id $apid -ErrorAction SilentlyContinue
-          if ($proc) {
-            try {
-              if ($aTicks -le 0 -or $proc.StartTime.Ticks -eq $aTicks) { $live = $true }
-            } catch {
-              $live = $true
+        if ($apid -gt 0 -and $aTicks -gt 0 -and $aSince) {
+          $ageSec = [math]::Max(0, [int](((Get-Date) - $aSince).TotalSeconds))
+          if ($ageSec -le 920) {
+            $proc = Get-Process -Id $apid -ErrorAction SilentlyContinue
+            if ($proc) {
+              try {
+                if ($proc.StartTime.Ticks -eq $aTicks) { $live = $true }
+              } catch {
+                $live = $false
+              }
             }
           }
-        }
-
-        if ($live -and $aSince) {
-          $ageSec = [math]::Max(0, [int](((Get-Date) - $aSince).TotalSeconds))
-          if ($ageSec -gt 920) { $live = $false }
         }
 
         if ($live) { $result[$slug] = $agent }
