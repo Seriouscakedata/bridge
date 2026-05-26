@@ -873,7 +873,11 @@ while ($true) {
   if ($state.abort) {
     Add-Message -From system -Text "🛑 Стоп-кран: текущая задача прервана. Жду новую." -Kind event | Out-Null
     try { foreach ($j in @($state.active_jobs)) { Stop-BridgeJob $j } } catch {}
-    try { Invoke-PostMortem -FailureType 'rollback' -Task ([string]$state.current_task) -Context 'manual abort' } catch {}
+    # Abort is always intentional (user kill button) -- no post-mortem needed.
+    # If Doctor was active, clean up its state gracefully before resetting.
+    if ([bool](Read-State).doctor_active) {
+      try { Abort-Doctor -Reason 'manual abort by operator' } catch {}
+    }
     Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }

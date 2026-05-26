@@ -126,6 +126,25 @@ foreach ($it in $ideas) {
     $e = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.effort))
     $score = [Math]::Round($v * $c / $e, 2)
   } catch {}
+  # Skip if a near-identical idea already exists in the backlog (non-done).
+  $isDup = $false
+  try {
+    $norm = ($text -replace '\s+',' ').Trim().ToLowerInvariant()
+    $prefix40 = if ($norm.Length -gt 40) { $norm.Substring(0,40) } else { $norm }
+    $existing = @(Get-Backlog | Where-Object { [string]$_.status -notin @('done','rejected') })
+    foreach ($ex in $existing) {
+      $exNorm = (([string]$ex.text) -replace '\s+',' ').Trim().ToLowerInvariant()
+      if ($exNorm.StartsWith($prefix40)) { $isDup = $true; break }
+      # Word-overlap check: if >60% of words match, treat as duplicate
+      $words1 = @($norm -split '\W+' | Where-Object { $_.Length -gt 3 })
+      $words2 = @($exNorm -split '\W+' | Where-Object { $_.Length -gt 3 })
+      if ($words1.Count -gt 3 -and $words2.Count -gt 3) {
+        $shared = ($words1 | Where-Object { $words2 -contains $_ }).Count
+        if ($shared / [Math]::Min($words1.Count,$words2.Count) -gt 0.6) { $isDup = $true; break }
+      }
+    }
+  } catch {}
+  if ($isDup) { continue }
   $id = Add-Idea -Text $text -From 'reflect' -Tags $tags -Status 'new' -Score $score
   if ($id) { $added++ }
 }
