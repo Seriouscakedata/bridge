@@ -139,29 +139,41 @@
   .meta b.ok{color:var(--codex)}
   .meta b.warn{color:var(--model)}
   .meta b.bad{color:var(--danger)}
-  .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+  .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
-  .btns-secondary{display:contents}
-  .sec-group{display:contents}
-  .sec-group-title{display:none}
-  .sec-label{display:none}
-  #moreMenu{display:none}
+  .btns-secondary{
+    position:absolute;
+    right:0;
+    top:calc(100% + 8px);
+    z-index:60;
+    display:none;
+    flex-direction:column;
+    gap:6px;
+    width:max-content;
+    min-width:176px;
+    max-width:min(320px,calc(100vw - 24px));
+    padding:7px;
+    background:var(--panel);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:10px;
+    box-shadow:0 8px 24px rgba(0,0,0,.4);
+  }
+  .btns-secondary.open{display:flex;max-height:calc(100vh - 128px);overflow-y:auto}
+  .sec-group{display:flex;flex-direction:column;gap:6px}
+  .mobile-actions{display:none}
+  .sec-group + .sec-group{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
+  .sec-group-title{display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:0 2px 2px}
+  .sec-label{display:inline}
+  .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
+  .btns-secondary button.icon{height:auto}
+  #moreMenu{display:inline-flex;align-items:center;justify-content:center}
+  .hbtn-mobile-only{display:none!important}
   #searchToggle{order:1}
-  #overviewToggle{order:2}
-  #planToggle{order:3}
-  #memoryBtn{order:4}
-  #codeToggle{order:5}
-  #dashToggle{order:6}
-  #usageToggle{order:7}
-  #exportChat{order:8}
-  #exportMarkdown{order:9}
-  #compactToggle{order:10}
-  #systemToggle{order:11}
-  #pauseToggle{order:12}
-  #restart{order:13}
-  #kill{order:14}
-  #moreMenu{order:15}
+  #pauseToggle{order:2}
+  #kill{order:3}
+  #panelsToggle{order:4}
+  #moreMenu{order:5}
   .header-toggle-btn{
     justify-self:end;
     align-self:center;
@@ -315,11 +327,7 @@
   .health-banner.bad .health-title{color:#ffd7da}
   body.has-health-banner #scrollProgress{top:174px}
 
-  #overviewPanel,
-  #planPanel,
-  #codePanel,
-  #dashPanel,
-  #usagePanel{
+  #panelsArea{
     position:fixed;
     top:148px;
     right:16px;
@@ -329,13 +337,71 @@
     min-height:0;
     display:none;
     flex-direction:column;
-    gap:12px;
-    padding:12px;
     border:1px solid var(--border);
     border-radius:14px;
     background:rgba(18,22,29,.9);
     box-shadow:var(--shadow);
     backdrop-filter:blur(16px);
+    overflow:hidden;
+  }
+  #panelsArea[hidden]{display:none!important}
+  body.overview-open #panelsArea,
+  body.plan-open #panelsArea,
+  body.code-open #panelsArea,
+  body.dash-open #panelsArea,
+  body.usage-open #panelsArea{display:flex}
+  .panels-tabs{
+    position:sticky;
+    top:0;
+    z-index:2;
+    display:flex;
+    gap:4px;
+    padding:8px 8px 7px;
+    background:rgba(18,22,29,.96);
+    border-bottom:1px solid var(--border-soft);
+    overflow-x:auto;
+    scrollbar-width:none;
+  }
+  .panels-tabs::-webkit-scrollbar{display:none}
+  .panels-tab{
+    flex:1 0 auto;
+    min-width:0;
+    min-height:32px;
+    padding:5px 8px;
+    border-radius:8px;
+    color:var(--muted);
+    background:#141922;
+  }
+  .panels-tab.active,
+  .panels-tab[aria-selected="true"]{
+    border-color:rgba(114,183,255,.58);
+    color:#d9ecff;
+    background:#12263d;
+  }
+  .panels-content{
+    flex:1;
+    min-height:0;
+    display:flex;
+    overflow:hidden;
+  }
+  #overviewPanel,
+  #planPanel,
+  #codePanel,
+  #dashPanel,
+  #usagePanel{
+    position:static;
+    width:100%;
+    min-height:0;
+    display:none;
+    flex:1;
+    flex-direction:column;
+    gap:12px;
+    padding:12px;
+    border:0;
+    border-radius:0;
+    background:transparent;
+    box-shadow:none;
+    backdrop-filter:none;
     overflow:auto;
   }
   #panelScrim{
@@ -353,21 +419,9 @@
   body.code-open #codePanel{display:flex}
   body.dash-open #dashPanel{display:flex}
   body.usage-open #usagePanel{display:flex}
-  body.has-health-banner #overviewPanel,
-  body.has-health-banner #planPanel,
-  body.has-health-banner #codePanel,
-  body.has-health-banner #dashPanel,
-  body.has-health-banner #usagePanel{top:188px}
-  #searchPanel.open ~ #overviewPanel,
-  #searchPanel.open ~ #planPanel,
-  #searchPanel.open ~ #codePanel,
-  #searchPanel.open ~ #dashPanel,
-  #searchPanel.open ~ #usagePanel{top:198px}
-  body.has-health-banner #searchPanel.open ~ #overviewPanel,
-  body.has-health-banner #searchPanel.open ~ #planPanel,
-  body.has-health-banner #searchPanel.open ~ #codePanel,
-  body.has-health-banner #searchPanel.open ~ #dashPanel,
-  body.has-health-banner #searchPanel.open ~ #usagePanel{top:238px}
+  body.has-health-banner #panelsArea{top:188px}
+  #searchPanel.open ~ #panelsArea{top:198px}
+  body.has-health-banner #searchPanel.open ~ #panelsArea{top:238px}
   @media (min-width:1360px){
     body.overview-open #log,
     body.plan-open #log,
@@ -376,11 +430,7 @@
     body.usage-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
-    #overviewPanel,
-    #planPanel,
-    #codePanel,
-    #dashPanel,
-    #usagePanel{
+    #panelsArea{
       right:12px;
       width:min(320px,calc(100vw - 24px));
       background:rgba(18,22,29,.96);
@@ -1513,7 +1563,7 @@
     body.code-open #log,
     body.dash-open #log,
     body.usage-open #log{padding-right:var(--content-pad)}
-    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{
+    #panelsArea{
       left:12px; right:12px; width:auto; max-width:none;
       background:rgba(13,17,23,.98); z-index:40;
     }
@@ -1535,8 +1585,10 @@
       width:100vw;
       max-width:100vw;
     }
-    header{padding:10px 11px;overflow:visible}
-    .brand{gap:8px}
+    header{grid-template-columns:minmax(0,1fr) auto;padding:10px 11px;overflow:visible;align-items:center}
+    .brand{display:none}
+    .channel-selector{grid-column:1;grid-row:1;margin-left:0;min-width:0}
+    .header-toggle-btn{display:none}
     .mark{width:31px;height:31px;border-radius:8px}
     h1{font-size:14px}
     .subtitle{display:none}
@@ -1544,16 +1596,19 @@
     .chips{gap:6px}
     .chip{padding:5px 8px;font-size:11px}
     .btns{
-      width:100%;
-      display:grid;
-      grid-template-columns:40px minmax(0,1fr) minmax(0,1fr) 40px;
-      justify-content:stretch;
+      grid-column:2;
+      grid-row:1;
+      width:auto;
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
+      flex-wrap:nowrap;
       gap:7px;
-      max-width:calc(100vw - 22px);
+      max-width:none;
       overflow:visible;
     }
     .btns button{
-      width:100%;
+      width:40px;
       min-height:40px;
       min-width:0;
       padding-left:6px;
@@ -1563,7 +1618,15 @@
       white-space:nowrap;
       font-size:12px;
     }
-    .btns button.icon{width:100%;height:40px}
+    .btns button.icon{width:40px;height:40px}
+    #kill{width:40px;font-size:16px;display:inline-flex;align-items:center;justify-content:center}
+    #kill .hbtn-text{display:none}
+    #searchToggle{order:1}
+    #kill{order:2}
+    #moreMenu{order:3}
+    .hbtn-desktop-only{display:none!important}
+    .hbtn-mobile-only{display:flex!important}
+    .mobile-actions{display:flex}
     #moreMenu{display:inline-flex;align-items:center;justify-content:center;min-height:40px}
     .btns-secondary{
       position:absolute;
@@ -1629,15 +1692,12 @@
     #toTop,#toBottom{right:12px}
     #toTop{bottom:calc(126px + env(safe-area-inset-bottom,0px))}
     #toBottom{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
-    #overviewPanel,#planPanel,#codePanel,#dashPanel,#usagePanel{
+    #panelsArea{
       top:58px; bottom:calc(74px + env(safe-area-inset-bottom,0px));
-      left:8px; right:8px; padding:11px; border-radius:13px;
+      left:8px; right:8px; padding:0; border-radius:13px;
     }
-    body.has-health-banner #overviewPanel,
-    body.has-health-banner #planPanel,
-    body.has-health-banner #codePanel,
-    body.has-health-banner #dashPanel,
-    body.has-health-banner #usagePanel{top:94px}
+    .panels-tab{flex:0 0 auto}
+    body.has-health-banner #panelsArea{top:94px}
   }
   @media (max-width:520px){
     header,#searchPanel,.filterbar,#log,footer{
@@ -1776,17 +1836,18 @@
       <div class="meta-line"><span>сеанс:</span><b id="sessionStats">загрузка</b></div>
     </div>
   </div>
-  <div class="btns">
-    <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)">⌕</button>
-    <button id="pauseToggle" type="button" onclick="togglePause()" title="Пауза">⏸ Пауза</button>
-    <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу. Hotkey: Ctrl+Shift+K">⛔ Стоп</button>
-    <button id="overviewToggle" class="icon" type="button" title="Обзор сеанса" aria-pressed="false">▦ <span class="sec-label">Обзор</span></button>
-    <button id="planToggle" class="icon" type="button" title="План-доска" aria-pressed="false">☷ <span class="sec-label">План</span></button>
-    <button id="codeToggle" class="icon" type="button" title="Код-память" aria-pressed="false">{ } <span class="sec-label">Код</span></button>
-    <button id="dashToggle" class="icon" type="button" title="Дашборд" aria-pressed="false">📊 <span class="sec-label">Дашборд</span></button>
-    <button id="usageToggle" class="icon" type="button" title="Расход" aria-pressed="false">💸 <span class="sec-label">Расход</span></button>
-    <button id="moreMenu" class="icon" type="button" title="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
+  <div id="btnsPrimary" class="btns btns-primary">
+    <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)" aria-label="Поиск по истории">⌕</button>
+    <button id="pauseToggle" class="hbtn-desktop-only" type="button" onclick="togglePause()" title="Пауза" aria-label="Пауза">⏸ Пауза</button>
+    <button id="kill" type="button" onclick="killSwitch()" title="Остановить текущую задачу. Hotkey: Ctrl+Shift+K" aria-label="Остановить текущую задачу"><span aria-hidden="true">⛔</span> <span class="hbtn-text">Стоп</span></button>
+    <button id="panelsToggle" class="hbtn-desktop-only" type="button" title="Панели" aria-label="Панели" aria-expanded="false">📋 Панели</button>
+    <button id="moreMenu" class="icon" type="button" title="Ещё" aria-label="Ещё" aria-haspopup="true" aria-expanded="false">⋮</button>
     <div class="btns-secondary" id="btnsSecondary">
+      <div class="sec-group mobile-actions">
+        <div class="sec-group-title">Основное</div>
+        <button id="pauseToggleMobile" class="hbtn-mobile-only" type="button" title="Пауза" aria-label="Пауза">⏸ <span class="sec-label">Пауза</span></button>
+        <button id="panelsToggleMobile" class="hbtn-mobile-only" type="button" title="Панели" aria-label="Панели" aria-expanded="false">📋 <span class="sec-label">Панели</span></button>
+      </div>
       <div class="sec-group">
         <div class="sec-group-title">История</div>
         <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
@@ -1850,7 +1911,16 @@
 </main>
 
 <div id="panelScrim" aria-hidden="true"></div>
-<aside id="overviewPanel" aria-label="Обзор сеанса" aria-hidden="true">
+<section id="panelsArea" class="panels-area" aria-label="Панели" hidden>
+  <div class="panels-tabs" role="tablist" aria-label="Панели">
+    <button id="overviewToggle" class="panels-tab" type="button" data-panel="overview" role="tab" aria-controls="overviewPanel" aria-selected="false" aria-pressed="false" title="Обзор сеанса">▦ <span>Обзор</span></button>
+    <button id="planToggle" class="panels-tab" type="button" data-panel="plan" role="tab" aria-controls="planPanel" aria-selected="false" aria-pressed="false" title="План-доска">☷ <span>План</span></button>
+    <button id="codeToggle" class="panels-tab" type="button" data-panel="code" role="tab" aria-controls="codePanel" aria-selected="false" aria-pressed="false" title="Код-память">{ } <span>Код</span></button>
+    <button id="dashToggle" class="panels-tab" type="button" data-panel="dash" role="tab" aria-controls="dashPanel" aria-selected="false" aria-pressed="false" title="Дашборд">📊 <span>Дашборд</span></button>
+    <button id="usageToggle" class="panels-tab" type="button" data-panel="usage" role="tab" aria-controls="usagePanel" aria-selected="false" aria-pressed="false" title="Расход">💸 <span>Расход</span></button>
+  </div>
+  <div class="panels-content">
+<aside id="overviewPanel" class="panel" data-panel="overview" aria-label="Обзор сеанса" aria-hidden="true">
   <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>Обзор сеанса</strong>
@@ -1884,7 +1954,7 @@
   </section>
 </aside>
 
-<aside id="planPanel" aria-label="План-доска" aria-hidden="true">
+<aside id="planPanel" class="panel" data-panel="plan" aria-label="План-доска" aria-hidden="true">
   <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>План</strong>
@@ -1909,7 +1979,7 @@
   </section>
 </aside>
 
-<aside id="codePanel" aria-label="Код-память" aria-hidden="true">
+<aside id="codePanel" class="panel" data-panel="code" aria-label="Код-память" aria-hidden="true">
   <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>Код-память</strong>
@@ -1930,7 +2000,7 @@
   </section>
 </aside>
 
-<aside id="dashPanel" aria-label="Дашборд" aria-hidden="true">
+<aside id="dashPanel" class="panel" data-panel="dash" aria-label="Дашборд" aria-hidden="true">
   <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>📊 Дашборд</strong>
@@ -1956,7 +2026,7 @@
   </section>
 </aside>
 
-<aside id="usagePanel" aria-label="Расход" aria-hidden="true">
+<aside id="usagePanel" class="panel" data-panel="usage" aria-label="Расход" aria-hidden="true">
   <div class="drag-handle" aria-hidden="true"></div>
   <div class="overview-head">
     <strong>💸 Расход</strong>
@@ -1986,6 +2056,8 @@
     </div>
   </section>
 </aside>
+  </div>
+</section>
 
 <div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
@@ -2048,6 +2120,11 @@ const log = document.getElementById('log');
 const headerEl = document.querySelector('header');
 const headerToggle = document.getElementById('headerToggle');
 const pauseToggleBtn = document.getElementById('pauseToggle');
+const pauseToggleMobileBtn = document.getElementById('pauseToggleMobile');
+const panelsToggleBtn = document.getElementById('panelsToggle');
+const panelsToggleMobileBtn = document.getElementById('panelsToggleMobile');
+const panelsArea = document.getElementById('panelsArea');
+const panelTabs = Array.from(document.querySelectorAll('.panels-tab'));
 const moreMenuBtn = document.getElementById('moreMenu');
 const btnsSecondary = document.getElementById('btnsSecondary');
 const working = document.getElementById('working');
@@ -2352,15 +2429,99 @@ function setMessageFavorite(msg, on, btn){
   if(activeFilter === 'favorites') applyMessageFilter();
   updateOverview();
 }
+function activePanelId(){
+  if(overviewOpen) return 'overview';
+  if(planOpen) return 'plan';
+  if(codeOpen) return 'code';
+  if(dashOpen) return 'dash';
+  if(usageOpen) return 'usage';
+  return '';
+}
+function syncPanelTabs(){
+  const active = activePanelId();
+  const open = Boolean(active);
+  if(panelsArea){
+    panelsArea.hidden = !open;
+    panelsArea.dataset.activePanel = active || '';
+  }
+  if(open) localStorage.setItem('bridgeLastPanel', active);
+  panelTabs.forEach(btn => {
+    const selected = open && btn.dataset.panel === active;
+    btn.classList.toggle('on', selected);
+    btn.classList.toggle('active', selected);
+    btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    btn.tabIndex = (!open || selected) ? 0 : -1;
+  });
+  [panelsToggleBtn, panelsToggleMobileBtn].forEach(btn => {
+    if(!btn) return;
+    btn.classList.toggle('on', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.title = open ? 'Скрыть панели' : 'Панели';
+    btn.setAttribute('aria-label', btn.title);
+  });
+}
+function persistPanelState(){
+  localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
+  localStorage.setItem('bridgePlan', planOpen ? '1' : '0');
+  localStorage.setItem('bridgeCode', codeOpen ? '1' : '0');
+  localStorage.setItem('bridgeDash', dashOpen ? '1' : '0');
+  localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
+}
+function applyAllPanelStates(){
+  applyOverviewState();
+  applyPlanState();
+  applyCodeState();
+  applyDashState();
+  applyUsageState();
+  syncPanelTabs();
+}
+function openPanels(panelId){
+  const validPanels = ['overview','plan','code','dash','usage'];
+  const stored = localStorage.getItem('bridgeLastPanel') || activePanelId() || 'overview';
+  const fallback = validPanels.includes(stored) ? stored : 'overview';
+  const next = validPanels.includes(panelId || '') ? panelId : fallback;
+  overviewOpen = next === 'overview';
+  planOpen = next === 'plan';
+  codeOpen = next === 'code';
+  dashOpen = next === 'dash';
+  usageOpen = next === 'usage';
+  persistPanelState();
+  applyAllPanelStates();
+  if(next === 'plan') pollPlan();
+  if(next === 'code' && codeQuery) requestAnimationFrame(() => codeQuery.focus());
+  if(next === 'dash') pollMetrics();
+  if(next === 'usage') pollUsage();
+}
+function closePanels(){
+  overviewOpen = false;
+  planOpen = false;
+  codeOpen = false;
+  dashOpen = false;
+  usageOpen = false;
+  persistPanelState();
+  applyAllPanelStates();
+}
+function togglePanels(){
+  if(activePanelId()) closePanels();
+  else openPanels();
+  setMoreMenuOpen(false);
+}
+function selectTab(panelId){
+  openPanels(panelId);
+}
 function applyOverviewState(){
   const enabled = Boolean(overviewOpen);
   document.body.classList.toggle('overview-open', enabled);
   if(overviewPanel) overviewPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(overviewToggle){
     overviewToggle.classList.toggle('on', enabled);
+    overviewToggle.classList.toggle('active', enabled);
     overviewToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    overviewToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     overviewToggle.title = enabled ? 'Скрыть обзор сеанса' : 'Показать обзор сеанса';
   }
+  syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
 }
 function applyPlanState(){
@@ -2369,9 +2530,12 @@ function applyPlanState(){
   if(planPanel) planPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(planToggle){
     planToggle.classList.toggle('on', enabled);
+    planToggle.classList.toggle('active', enabled);
     planToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    planToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     planToggle.title = enabled ? 'Скрыть план-доску' : 'Показать план-доску';
   }
+  syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
 }
 function applyCodeState(){
@@ -2380,9 +2544,12 @@ function applyCodeState(){
   if(codePanel) codePanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(codeToggle){
     codeToggle.classList.toggle('on', enabled);
+    codeToggle.classList.toggle('active', enabled);
     codeToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    codeToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     codeToggle.title = enabled ? 'Скрыть код-память' : 'Показать код-память';
   }
+  syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
 }
 function applyDashState(){
@@ -2391,9 +2558,12 @@ function applyDashState(){
   if(dashPanel) dashPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(dashToggle){
     dashToggle.classList.toggle('on', enabled);
+    dashToggle.classList.toggle('active', enabled);
     dashToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    dashToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     dashToggle.title = enabled ? 'Скрыть дашборд' : 'Показать дашборд';
   }
+  syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
 }
 function applyUsageState(){
@@ -2402,9 +2572,12 @@ function applyUsageState(){
   if(usagePanel) usagePanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   if(usageToggle){
     usageToggle.classList.toggle('on', enabled);
+    usageToggle.classList.toggle('active', enabled);
     usageToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    usageToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     usageToggle.title = enabled ? 'Скрыть расход' : 'Показать расход';
   }
+  syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
 }
 function fmtMoney(n, digits){
@@ -4335,153 +4508,22 @@ searchToggle.addEventListener('click', () => {
   if(searchPanel.classList.contains('open')) closeSearch();
   else openSearch();
 });
-overviewToggle.addEventListener('click', () => {
-  overviewOpen = !(document.body.classList.contains('overview-open'));
-  if(overviewOpen){
-    planOpen = false;
-    codeOpen = false;
-    dashOpen = false;
-    usageOpen = false;
-    localStorage.setItem('bridgePlan', '0');
-    localStorage.setItem('bridgeCode', '0');
-    localStorage.setItem('bridgeDash', '0');
-    localStorage.setItem('bridgeUsage', '0');
-    applyPlanState();
-    applyCodeState();
-    applyDashState();
-    applyUsageState();
-  }
-  localStorage.setItem('bridgeOverview', overviewOpen ? '1' : '0');
-  applyOverviewState();
+if(pauseToggleMobileBtn){
+  pauseToggleMobileBtn.addEventListener('click', () => {
+    if(pauseToggleBtn) pauseToggleBtn.click();
+  });
+}
+if(panelsToggleBtn) panelsToggleBtn.addEventListener('click', togglePanels);
+if(panelsToggleMobileBtn) panelsToggleMobileBtn.addEventListener('click', togglePanels);
+panelTabs.forEach(tab => {
+  tab.addEventListener('click', () => selectTab(tab.dataset.panel));
 });
-overviewClose.addEventListener('click', () => {
-  overviewOpen = false;
-  localStorage.setItem('bridgeOverview', '0');
-  applyOverviewState();
+[overviewClose, planClose, codeClose, dashClose, usageClose].forEach(btn => {
+  if(btn) btn.addEventListener('click', closePanels);
 });
-if(planToggle){
-  planToggle.addEventListener('click', () => {
-    planOpen = !(document.body.classList.contains('plan-open'));
-    if(planOpen){
-      overviewOpen = false;
-      codeOpen = false;
-      dashOpen = false;
-      usageOpen = false;
-      localStorage.setItem('bridgeOverview', '0');
-      localStorage.setItem('bridgeCode', '0');
-      localStorage.setItem('bridgeDash', '0');
-      localStorage.setItem('bridgeUsage', '0');
-      applyOverviewState();
-      applyCodeState();
-      applyDashState();
-      applyUsageState();
-    }
-    localStorage.setItem('bridgePlan', planOpen ? '1' : '0');
-    applyPlanState();
-    pollPlan();
-  });
-}
-if(planClose){
-  planClose.addEventListener('click', () => {
-    planOpen = false;
-    localStorage.setItem('bridgePlan', '0');
-    applyPlanState();
-  });
-}
-if(codeToggle){
-  codeToggle.addEventListener('click', () => {
-    codeOpen = !(document.body.classList.contains('code-open'));
-    if(codeOpen){
-      overviewOpen = false;
-      planOpen = false;
-      dashOpen = false;
-      usageOpen = false;
-      localStorage.setItem('bridgeOverview', '0');
-      localStorage.setItem('bridgePlan', '0');
-      localStorage.setItem('bridgeDash', '0');
-      localStorage.setItem('bridgeUsage', '0');
-      applyOverviewState();
-      applyPlanState();
-      applyDashState();
-      applyUsageState();
-    }
-    localStorage.setItem('bridgeCode', codeOpen ? '1' : '0');
-    applyCodeState();
-    if(codeOpen && codeQuery) codeQuery.focus();
-  });
-}
-if(codeClose){
-  codeClose.addEventListener('click', () => {
-    codeOpen = false;
-    localStorage.setItem('bridgeCode', '0');
-    applyCodeState();
-  });
-}
-if(dashToggle){
-  dashToggle.addEventListener('click', () => {
-    dashOpen = !(document.body.classList.contains('dash-open'));
-    if(dashOpen){
-      overviewOpen = false;
-      planOpen = false;
-      codeOpen = false;
-      usageOpen = false;
-      localStorage.setItem('bridgeOverview', '0');
-      localStorage.setItem('bridgePlan', '0');
-      localStorage.setItem('bridgeCode', '0');
-      localStorage.setItem('bridgeUsage', '0');
-      applyOverviewState();
-      applyPlanState();
-      applyCodeState();
-      applyUsageState();
-    }
-    localStorage.setItem('bridgeDash', dashOpen ? '1' : '0');
-    applyDashState();
-    pollMetrics();
-  });
-}
-if(dashClose){
-  dashClose.addEventListener('click', () => {
-    dashOpen = false;
-    localStorage.setItem('bridgeDash', '0');
-    applyDashState();
-  });
-}
-if(usageToggle){
-  usageToggle.addEventListener('click', () => {
-    usageOpen = !(document.body.classList.contains('usage-open'));
-    if(usageOpen){
-      overviewOpen = false;
-      planOpen = false;
-      codeOpen = false;
-      dashOpen = false;
-      localStorage.setItem('bridgeOverview', '0');
-      localStorage.setItem('bridgePlan', '0');
-      localStorage.setItem('bridgeCode', '0');
-      localStorage.setItem('bridgeDash', '0');
-      applyOverviewState();
-      applyPlanState();
-      applyCodeState();
-      applyDashState();
-    }
-    localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
-    applyUsageState();
-    pollUsage();
-  });
-}
-if(usageClose){
-  usageClose.addEventListener('click', () => {
-    usageOpen = false;
-    localStorage.setItem('bridgeUsage', '0');
-    applyUsageState();
-  });
-}
 // Scrim tap + swipe-down: close active panel
 function closeActivePanel(){
-  if(overviewOpen){ overviewOpen=false; localStorage.setItem('bridgeOverview','0'); applyOverviewState(); }
-  else if(planOpen){ planOpen=false; localStorage.setItem('bridgePlan','0'); applyPlanState(); }
-  else if(codeOpen){ codeOpen=false; localStorage.setItem('bridgeCode','0'); applyCodeState(); }
-  else if(dashOpen){ dashOpen=false; localStorage.setItem('bridgeDash','0'); applyDashState(); }
-  else if(usageOpen){ usageOpen=false; localStorage.setItem('bridgeUsage','0'); applyUsageState(); }
+  closePanels();
 }
 const panelScrim = document.getElementById('panelScrim');
 if(panelScrim) panelScrim.addEventListener('click', closeActivePanel);
@@ -4662,22 +4704,8 @@ window.addEventListener('keydown', e => {
     closeSearch();
     return;
   }
-  if(e.key === 'Escape' && document.body.classList.contains('plan-open')){
-    planOpen = false;
-    localStorage.setItem('bridgePlan', '0');
-    applyPlanState();
-    return;
-  }
-  if(e.key === 'Escape' && document.body.classList.contains('dash-open')){
-    dashOpen = false;
-    localStorage.setItem('bridgeDash', '0');
-    applyDashState();
-    return;
-  }
-  if(e.key === 'Escape' && document.body.classList.contains('usage-open')){
-    usageOpen = false;
-    localStorage.setItem('bridgeUsage', '0');
-    applyUsageState();
+  if(e.key === 'Escape' && activePanelId()){
+    closePanels();
     return;
   }
   if(e.key === 'Escape' && btnsSecondary && btnsSecondary.classList.contains('open')){

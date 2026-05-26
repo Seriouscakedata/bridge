@@ -4,6 +4,7 @@
 # that survive CSS without needing a real browser. Optional headless-screenshot for visual proof.
 # Usage:
 #   .\tools\ui_audit.ps1 -RequireId planToggle -RequireOutside btnsSecondary
+#   .\tools\ui_audit.ps1 -RequireId panelsToggleMobile,pauseToggleMobile -RequireInside btnsSecondary
 #   .\tools\ui_audit.ps1 -Path /memory -RequireText 'Радар' -RequireId tabRadar
 #   .\tools\ui_audit.ps1 -Screenshot mobile.png -Width 390 -Height 844
 [CmdletBinding()]
@@ -12,6 +13,8 @@ param(
   [string[]]$RequireId = @(),
   [string[]]$RequireText = @(),
   [string]$RequireOutside = '',     # id MUST NOT be inside this container id (e.g. btnsSecondary)
+  [string]$RequireInside = '',      # id MUST be inside this container id
+  [int]$MaxHeaderButtons = 0,       # max visible direct buttons in #btnsPrimary for the requested Width
   [string]$Screenshot = '',
   [int]$Width = 390,
   [int]$Height = 844,
@@ -32,6 +35,32 @@ if ($r.StatusCode -ne 200) { Write-Output ("FAIL HTTP " + $r.StatusCode); exit 1
 $html = [string]$r.Content
 $problems = @()
 
+function Get-DivSlice {
+  param(
+    [string]$Html,
+    [string]$Id
+  )
+  $openIdx = $Html.IndexOf('id="' + $Id + '"')
+  if ($openIdx -lt 0) { return $null }
+  $tagStart = $Html.LastIndexOf('<', $openIdx)
+  if ($tagStart -lt 0) { return $null }
+  $depth = 0; $i = $tagStart; $sliceEnd = -1
+  while ($i -lt $Html.Length) {
+    $next = [regex]::Match($Html.Substring($i), '<(/?)div\b')
+    if (-not $next.Success) { break }
+    $i += $next.Index
+    if ($next.Groups[1].Value -eq '/') {
+      $depth--
+      if ($depth -le 0) { $sliceEnd = $i + $next.Length; break }
+    } else {
+      $depth++
+    }
+    $i += $next.Length
+  }
+  if ($sliceEnd -gt $tagStart) { return $Html.Substring($tagStart, $sliceEnd - $tagStart) }
+  return $null
+}
+
 foreach ($id in $RequireId) {
   if ($html -notmatch ('id="' + [regex]::Escape($id) + '"')) { $problems += "missing id '$id'"; continue }
   $tag = [regex]::Match($html, '<[^>]*id="' + [regex]::Escape($id) + '"[^>]*>')
@@ -41,27 +70,24 @@ foreach ($id in $RequireId) {
 if ($RequireOutside -and $RequireId.Count -gt 0) {
   # For each required id, ensure the parent container with id=$RequireOutside does NOT contain it.
   # We slice from the container open-tag to its corresponding close (via depth-counting on <div>).
-  $openIdx = $html.IndexOf('id="' + $RequireOutside + '"')
-  if ($openIdx -ge 0) {
-    $tagStart = $html.LastIndexOf('<', $openIdx)
-    if ($tagStart -ge 0) {
-      $depth = 0; $i = $tagStart; $sliceEnd = -1
-      while ($i -lt $html.Length) {
-        $next = [regex]::Match($html.Substring($i), '<(/?)div\b')
-        if (-not $next.Success) { break }
-        $i += $next.Index
-        if ($next.Groups[1].Value -eq '/') {
-          $depth--; if ($depth -le 0) { $sliceEnd = $i + $next.Length; break }
-        } else { $depth++ }
-        $i += $next.Length
+  $slice = Get-DivSlice -Html $html -Id $RequireOutside
+  if ($null -ne $slice) {
+    foreach ($id in $RequireId) {
+      if ($slice -match ('id="' + [regex]::Escape($id) + '"')) {
+        $problems += "id '$id' is inside container '$RequireOutside' (must be OUTSIDE for mobile reachability)"
       }
-      if ($sliceEnd -gt $tagStart) {
-        $slice = $html.Substring($tagStart, $sliceEnd - $tagStart)
-        foreach ($id in $RequireId) {
-          if ($slice -match ('id="' + [regex]::Escape($id) + '"')) {
-            $problems += "id '$id' is inside container '$RequireOutside' (must be OUTSIDE for mobile reachability)"
-          }
-        }
+    }
+  }
+}
+
+if ($RequireInside -and $RequireId.Count -gt 0) {
+  $slice = Get-DivSlice -Html $html -Id $RequireInside
+  if ($null -eq $slice) {
+    $problems += "container '$RequireInside' not found"
+  } else {
+    foreach ($id in $RequireId) {
+      if ($slice -notmatch ('id="' + [regex]::Escape($id) + '"')) {
+        $problems += "id '$id' is not inside container '$RequireInside'"
       }
     }
   }
@@ -69,6 +95,30 @@ if ($RequireOutside -and $RequireId.Count -gt 0) {
 
 foreach ($t in $RequireText) {
   if ($html -notmatch [regex]::Escape($t)) { $problems += "missing text '$t'" }
+}
+
+if ($MaxHeaderButtons -gt 0) {
+  $primary = Get-DivSlice -Html $html -Id 'btnsPrimary'
+  if ($null -eq $primary) {
+    $problems += "container 'btnsPrimary' not found"
+  } else {
+    $secondaryIdx = $primary.IndexOf('id="btnsSecondary"')
+    if ($secondaryIdx -ge 0) { $primary = $primary.Substring(0, $secondaryIdx) }
+    $visible = @()
+    foreach ($m in [regex]::Matches($primary, '<button\b[^>]*>')) {
+      $tag = $m.Value
+      $idMatch = [regex]::Match($tag, 'id="([^"]+)"')
+      $id = if ($idMatch.Success) { $idMatch.Groups[1].Value } else { '<button>' }
+      $classMatch = [regex]::Match($tag, 'class="([^"]*)"')
+      $classes = if ($classMatch.Success) { $classMatch.Groups[1].Value } else { '' }
+      $inlineHidden = $tag -match 'style="[^"]*display\s*:\s*none'
+      $hiddenByWidth = (($Width -le 640) -and ($classes -match '(^|\s)hbtn-desktop-only(\s|$)')) -or (($Width -ge 641) -and ($classes -match '(^|\s)hbtn-mobile-only(\s|$)'))
+      if (-not $inlineHidden -and -not $hiddenByWidth) { $visible += $id }
+    }
+    if ($visible.Count -gt $MaxHeaderButtons) {
+      $problems += "visible header buttons $($visible.Count) > ${MaxHeaderButtons}: $($visible -join ',')"
+    }
+  }
 }
 
 if ($Screenshot) {
@@ -101,5 +151,9 @@ if ($problems.Count -gt 0) {
 }
 $outsideTag = ''
 if ($RequireOutside) { $outsideTag = " outside=$RequireOutside" }
-Write-Output ("OK " + $Path + " | id=" + ($RequireId -join ',') + " text=" + ($RequireText -join ',') + $outsideTag + " | html=" + [int]($html.Length/1KB) + "KB")
+$insideTag = ''
+if ($RequireInside) { $insideTag = " inside=$RequireInside" }
+$maxTag = ''
+if ($MaxHeaderButtons -gt 0) { $maxTag = " maxHeaderButtons=$MaxHeaderButtons" }
+Write-Output ("OK " + $Path + " | id=" + ($RequireId -join ',') + " text=" + ($RequireText -join ',') + $outsideTag + $insideTag + $maxTag + " | html=" + [int]($html.Length/1KB) + "KB")
 exit 0
