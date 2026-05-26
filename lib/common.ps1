@@ -311,6 +311,8 @@ function Initialize-Bridge {
       active_jobs      = @()
       task_base_commit = ''
       critic_retry_count = 0
+      coder_fired        = $false
+      coder_bypass_retry_count = 0
     }
     Write-State -State $state
   } else {
@@ -325,6 +327,7 @@ function Initialize-Bridge {
       current_backlog_id=$null
       autonomous_day=$null; autonomous_count=0
       active_jobs=@(); task_base_commit=''; critic_retry_count=0
+      coder_fired=$false; coder_bypass_retry_count=0
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
