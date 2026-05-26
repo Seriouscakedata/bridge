@@ -409,6 +409,8 @@ $claudeActionBlock
 ПЛАН-ДОСКА: для КРУПНОЙ задачи (несколько эпиков/много шагов) в первом ходе сформируй доску блоком [[PLAN]] ... [[/PLAN]]: строки EPIC/TASK/STEP, deps и критерии готовности. Затем веди работу пошагово; при готовности шага ставь отдельной строкой [[STEP-DONE: <id> | краткий результат]]. Для мелкой задачи план не нужен.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
+
+⏹ ПРАВИЛО «КРИТЕРИЙ ОСТАНОВКИ»: для любой многошаговой задачи — сформулируй чёткий критерий DONE до начала работы (что конкретно должно работать/вернуть/не сломаться). Для открытых задач вида «делай что считаешь нужным» — первым ходом напиши план (2–4 пункта) с явным критерием завершения. Без критерия остановки — потенциальный бесконечный цикл анализа.
 "@
     if ($Mode -eq 'research') {
       $researchNote = "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
@@ -1606,6 +1608,35 @@ $diff
       }
     } catch {
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + '  critic-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+    }
+  }
+  # Fast ParseFile gate: syntax-check each changed .ps1 individually before slow smoke.
+  # Gives specific file+line errors instantly; also catches newly-created .ps1 not yet in smoke list.
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      if ([bool](Read-State).task_did_actions) {
+        $pfFiles = @()
+        try { $pfFiles = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { $_ -match '\.ps1$' }) } catch {}
+        $pfFailed = $false
+        foreach ($psf in $pfFiles) {
+          $fullPath = Join-Path $bridgeRoot $psf
+          if (Test-Path $fullPath) {
+            $pfErrors = $null; $pfTokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($fullPath,[ref]$pfTokens,[ref]$pfErrors) | Out-Null
+            if ($pfErrors -and $pfErrors.Count -gt 0) {
+              $errLine = $pfErrors[0].Extent.StartLineNumber; $errMsg = $pfErrors[0].Message
+              Add-Message -From system -Text "🚨 ParseFile FAILED: $psf line $errLine — $errMsg. Codex, исправь синтаксис." -Kind event | Out-Null
+              Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1 } | Out-Null
+              $plannerStatus = 'CONTINUE'; $pfFailed = $true; break
+            }
+          }
+        }
+        if (-not $pfFailed -and $pfFiles.Count -gt 0) {
+          Add-Message -From system -Text "✅ ParseFile OK: $($pfFiles -join ', ')" -Kind event | Out-Null
+        }
+      }
+    } catch {
+      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  parsefile-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
   # Auto-smoke gate: after critic passes, if .ps1 files changed vs HEAD, run smoke.ps1 to catch
