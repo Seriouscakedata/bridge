@@ -315,27 +315,66 @@ function Start-ArchitectIfDue {
 
 function Get-DeepThinkMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect.deepthink.last' }
 
+function Test-WithinQuietHours {
+  # Alarm-clock-style gate: runs ONLY in the user's deep-sleep window. User feedback
+  # 2026-05-26: heavy tasks should fire by clock, not by timer ("я бы не привязывался к
+  # таймеру, а именно по будильнику включал, когда пользователь точно спит — 2-6 утра").
+  param([int]$StartHour = 2, [int]$EndHour = 6, [string[]]$DaysOfWeek = @())
+  $now = Get-Date
+  if ($DaysOfWeek.Count -gt 0 -and -not ($DaysOfWeek -contains $now.DayOfWeek.ToString())) { return $false }
+  $h = $now.Hour
+  return ($h -ge $StartHour -and $h -lt $EndHour)
+}
+
 function Should-RunDeepThink {
-  # Weekly open-ended cycle: "what should the bridge be in 3 months?". Distinct marker
-  # from the normal Architect cycle. Fires at most once per 7 days.
+  # TWO weekend nights (Saturday + Sunday morning 02:00-06:00 local). Fires once per
+  # window, max one deep-think per 6 days (so two firings per weekend are de-duped).
+  if (-not (Test-WithinQuietHours -StartHour 2 -EndHour 6 -DaysOfWeek @('Saturday','Sunday'))) { return $false }
   $marker = Get-DeepThinkMarkerPath
   if (-not (Test-Path $marker)) { return $true }
   try { $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch { return $true }
-  return ((Get-Date) - $last) -ge [TimeSpan]::FromDays(7)
+  return ((Get-Date) - $last) -ge [TimeSpan]::FromDays(6)
+}
+
+function Start-DeepThinkDialog {
+  # Inject a deep-think user task with the [[DEEP-THINK]] marker. The driver picks it up
+  # and forces task_mode='discuss' so Claude+Codex bounce ideas back and forth (not a
+  # single Opus monologue). Convergence cap is enforced by the existing discuss-mode max
+  # turns. After STATUS: DONE the planner files 1-3 ideas via the normal pipeline.
+  $ctx = Get-ArchitectContext
+  $prompt = @"
+[[DEEP-THINK]] Архитектурная мета-задача (раз в неделю в выходную ночь).
+
+ОТКРЫТЫЙ ВОПРОС: чем мост должен стать через 3 месяца, чтобы выжить и быть полезным?
+
+ПРАВИЛА ДИАЛОГА (важно):
+- Claude (планировщик) НАЧИНАЕТ: предлагает 1-3 структурных идеи с обоснованием. STATUS: DISCUSS.
+- Codex АКТИВНО КРИТИКУЕТ: что не сработает, какие риски, какие альтернативы есть, почему. Не соглашается из вежливости.
+- Claude отвечает на критику: либо защищает (с дополнительными доводами), либо МЕНЯЕТ позицию (если убедили).
+- Минимум 3 хода discuss, максимум 6. Если за 6 ходов не сошлись — Claude выбирает самый сильный вариант сам.
+- На сходимости — STATUS: DONE с блоком `## ИТОГ` и 1-3 финальными идеями, прошедшими критику. Каждую идею — отдельной строкой в формате `IDEA: <текст>` (driver разберёт и положит в беклог с тегом architect+deep-think).
+
+ЦЕЛЬ ДИАЛОГА — не «выработать общую позицию через компромисс», а **посмотреть на идею с разных сторон**, проверить её устойчивость. Если идея слабая — отбросить, найти лучше.
+
+КОНТЕКСТ (общий для обоих агентов):
+$ctx
+"@
+  try { Add-Message -From user -Text $prompt | Out-Null } catch {}
+  try { Add-Message -From system -Text "🧭💭 Deep-think dialog запущен (Claude↔Codex; discuss-mode, max 6 ходов до сходимости). Это раз в неделю в ночное окно — продолжай работу, я не помешаю." -Kind event | Out-Null } catch {}
 }
 
 function Start-DeepThinkIfDue {
-  # Once per week, do an open-ended Architect pass (mode=deep-think). Separate marker so
-  # the daily/normal-cycle architect runs don't reset this counter.
+  # Weekly weekend-night dialog. Alarm-clock trigger (Sat/Sun 02-06 AM local), not interval.
   try {
     $auto = Get-AutonomySettings
     if (-not [bool]$auto.enabled) { return }
   } catch {}
   if (-not (Should-RunDeepThink)) { return }
+  # Save marker BEFORE injection so we don't re-fire in the same hour window.
   try {
     $ctl = Join-Path (Get-BridgeRoot) 'control'
     if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
     [System.IO.File]::WriteAllText((Get-DeepThinkMarkerPath), (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
-  try { Invoke-Architect -Mode 'deep-think' -MaxIdeas 3 -TimeoutSec 360 | Out-Null } catch { try { Add-Message -From system -Text ("🧭 Deep-think: ошибка: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
+  try { Start-DeepThinkDialog } catch { try { Add-Message -From system -Text ("🧭 Deep-think: ошибка: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
 }

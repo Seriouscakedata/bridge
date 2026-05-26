@@ -974,18 +974,23 @@ while ($true) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
       $studyDetect = Detect-StudyMode -TaskText $taskMsg
+      # 🧭 [[DEEP-THINK]] marker forces discuss-mode dialog (Claude↔Codex back-and-forth)
+      # instead of normal planner->coder. Used by Start-DeepThinkDialog on Sat/Sun nights.
+      $deepThinkMark = [bool]([regex]::IsMatch($taskMsg, '\[\[DEEP-THINK\]\]'))
       $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
-        if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
+        if ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
       }.GetNewClosure()) | Out-Null
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
-      if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
+      if ($deepThinkMark) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
+      if ($studyDetect -and -not $deepThinkMark) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       $state = Read-State
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
@@ -998,10 +1003,12 @@ while ($true) {
       # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
       $_lastSnap = try { Get-LastSnapshot } catch { $null }
       $_snapAgeH = if ($_lastSnap) { ([DateTime]::UtcNow - [DateTime]$_lastSnap.ts).TotalHours } else { 999 }
-      if ($_snapAgeH -ge 3) {
-        try { Write-MetricsSnapshot } catch {}
-        try { Invoke-MetricsReflection } catch {}
-      }
+      # Snapshot every 3h (cheap, just stats from turns.jsonl).
+      if ($_snapAgeH -ge 3) { try { Write-MetricsSnapshot } catch {} }
+      # Hypothesis verdict closure runs ONLY in the nightly quiet window 02:00-06:00 local
+      # (user feedback 2026-05-26: "по будильнику, когда я точно сплю"). Heavier I/O + Add-Memory
+      # call doesn't bother the user, and we still close verdicts within ~24h.
+      try { if (Test-WithinQuietHours -StartHour 2 -EndHour 6) { Invoke-MetricsReflection } } catch {}
 
       # 🧭 Architect (meta-improvement): cron-style, fires when idle if 24h passed OR 10
       # closed tasks accumulated since last run. Architect proposes STRUCTURAL gaps as
@@ -1479,6 +1486,24 @@ while ($true) {
       Update-State { param($s) $s.task_mode='discuss' } | Out-Null
     } elseif ($ceiling -and -not $converged) {
       Add-Message -From system -Text "💬 Потолок обсуждения ($discussMaxTurns ходов) — закрываю с текущим решением." -Kind event | Out-Null
+    }
+    # 🧭 Deep-think harvest: at converged DONE of a [[DEEP-THINK]] discuss task, parse the
+    # planner's `IDEA: <text>` lines from the ## ИТОГ and file them as backlog ideas with
+    # tag=architect+deep-think. These are the ideas that survived the Claude<->Codex critique.
+    if (($converged -or $ceiling) -and ($task -match '\[\[DEEP-THINK\]\]')) {
+      try {
+        $ideaLines = [regex]::Matches($reply, '(?im)^\s*[*_> \t#-]*IDEA:\s*(.+)$')
+        $filed = 0
+        foreach ($im in $ideaLines) {
+          $itext = $im.Groups[1].Value.Trim() -replace '\*+$',''
+          if ([string]::IsNullOrWhiteSpace($itext)) { continue }
+          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new'
+          if ($id) { $filed++ }
+        }
+        if ($filed -gt 0) {
+          Add-Message -From system -Text ("🧭💭 Deep-think dialog завершён: " + $filed + " идей прошли критику Codex'а и легли в беклог (тег: architect+deep-think+dialog-survived, status=new).") -Kind event | Out-Null
+        }
+      } catch {}
     }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'study') {
