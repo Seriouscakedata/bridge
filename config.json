@@ -13,6 +13,7 @@
   "summarizeBatch": 15,
   "triageModel": "sonnet",
   "deepModel": "opus",
+  "sttModel": "gemini-2.0-flash",
   "router": {
     "minSuccess": 0.5,
     "minSamples": 5,

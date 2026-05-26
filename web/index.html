@@ -1507,7 +1507,7 @@
     border-color:#7d3136;
   }
   #attach,#screen,#voice,#send{flex:none}
-  #fileInput{display:none}
+  #fileInput,#audioInput{display:none}
   body.dragover:after{
     content:"Отпустите файл, чтобы прикрепить";
     position:fixed;
@@ -2068,6 +2068,7 @@
   <button id="screen" class="icon" title="Сделать снимок экрана и прикрепить к сообщению" type="button">▣</button>
   <button id="voice" class="icon" title="Голосовой ввод в черновик" type="button">🎙</button>
   <input id="fileInput" type="file" multiple>
+  <input id="audioInput" type="file" accept="audio/*" capture="microphone" style="display:none">
   <div class="compose-main">
     <div id="stagedFiles" class="staged-files" aria-live="polite"></div>
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
@@ -2135,6 +2136,7 @@ const toTop = document.getElementById('toTop');
 const toBottom = document.getElementById('toBottom');
 const input = document.getElementById('inp');
 const fileInput = document.getElementById('fileInput');
+const audioInput = document.getElementById('audioInput');
 const attachBtn = document.getElementById('attach');
 const screenBtn = document.getElementById('screen');
 const voiceBtn = document.getElementById('voice');
@@ -3960,7 +3962,7 @@ function updateSendState(){
   sendBtn.textContent = uploading ? 'Загрузка...' : (sending ? 'Отправка...' : 'Отправить');
   attachBtn.disabled = sending || uploading || screenshotting;
   screenBtn.disabled = sending || uploading || screenshotting;
-  voiceBtn.disabled = !speechSupported() || (!voiceListening && (sending || uploading || screenshotting));
+  voiceBtn.disabled = (!voiceListening && (sending || uploading || screenshotting));
   attachBtn.setAttribute('aria-busy', uploading ? 'true' : 'false');
   screenBtn.setAttribute('aria-busy', screenshotting ? 'true' : 'false');
   voiceBtn.setAttribute('aria-busy', voiceListening ? 'true' : 'false');
@@ -4084,7 +4086,23 @@ async function takeScreenshot(){
   }
 }
 function speechSupported(){
-  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const hasCtor = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const host = String(location.hostname || '').toLowerCase();
+  const localHost = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  return hasCtor && (window.isSecureContext || localHost);
+}
+async function fileToBase64(file){
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000;
+  const chunks = [];
+  for(let i = 0; i < bytes.length; i += chunkSize){
+    let bin = '';
+    const chunk = bytes.subarray(i, i + chunkSize);
+    for(let j = 0; j < chunk.length; j++) bin += String.fromCharCode(chunk[j]);
+    chunks.push(bin);
+  }
+  return btoa(chunks.join(''));
 }
 function persistInput(){
   if(input.value){
@@ -4214,6 +4232,10 @@ function ensureSpeech(){
   return speechRec;
 }
 function toggleVoice(){
+  if(!speechSupported()){
+    if(audioInput) audioInput.click();
+    return;
+  }
   const rec = ensureSpeech();
   if(!rec) return;
   if(voiceListening){
@@ -4413,6 +4435,37 @@ async function uploadFiles(files){
 attachBtn.addEventListener('click', () => fileInput.click());
 screenBtn.addEventListener('click', takeScreenshot);
 voiceBtn.addEventListener('click', toggleVoice);
+audioInput.addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+  e.target.value = '';
+  if(!file) return;
+  setVoiceState(true);
+  setComposerStatus('Распознаю речь...');
+  try{
+    const dataB64 = await fileToBase64(file);
+    const mimeType = file.type || 'audio/mp4';
+    const r = await requestOk('/api/stt', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mimeType, data:dataB64})
+    }, 60000);
+    const data = await r.json();
+    const text = data && data.text ? String(data.text).trim() : '';
+    if(text){
+      input.value = (input.value ? input.value.trimEnd() + ' ' : '') + text;
+      persistInput();
+      setComposerStatus('Готово', 'ok');
+      clearComposerStatusSoon('Готово');
+      input.focus();
+    } else {
+      setComposerStatus('Речь не распознана', 'bad');
+    }
+  }catch(err){
+    setComposerStatus('Ошибка голосового ввода: ' + ((err && err.message) || err), 'bad');
+  }finally{
+    setVoiceState(false);
+  }
+});
 clearDraftBtn.addEventListener('click', clearDraft);
 restoreLastBtn.addEventListener('click', restoreLastSent);
 if(headerToggle){

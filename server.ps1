@@ -167,6 +167,50 @@ try {
         }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/stt') {
+        if ($ctx.Request.ContentLength64 -gt ($maxUploadBytes * 2)) {
+          Send-Text $ctx '{"error":"audio upload too large"}' 'application/json; charset=utf-8' 413
+          continue
+        }
+        try {
+          $body = Read-Body $ctx | ConvertFrom-Json
+          $mimeType = [string]$body.mimeType
+          $audioData = [string]$body.data
+          if ([string]::IsNullOrWhiteSpace($mimeType)) { $mimeType = 'audio/mp4' }
+          if ([string]::IsNullOrWhiteSpace($audioData)) { throw 'no audio data' }
+          $audioData = $audioData -replace '\s+', ''
+          try {
+            $audioBytes = [Convert]::FromBase64String($audioData)
+          } catch {
+            throw 'bad audio base64'
+          }
+          if ($audioBytes.Length -lt 256) { throw 'audio data too small or invalid' }
+          if ($audioBytes.Length -gt $maxUploadBytes) { throw 'audio upload too large' }
+
+          $sttModel = if ($cfg.sttModel) { [string]$cfg.sttModel } else { 'gemini-2.0-flash' }
+          $key = Get-Secret 'geminiApiKey'
+          if (-not $key) { throw 'no geminiApiKey configured' }
+          $sttUrl = "https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=$key"
+          $sttBody = @{
+            contents = @(@{
+              parts = @(
+                @{ text = 'Transcribe the audio recording. Return only the spoken words, no commentary or formatting.' },
+                @{ inlineData = @{ mimeType = $mimeType; data = $audioData } }
+              )
+            })
+            generationConfig = @{ temperature = 0.0 }
+          }
+          $r = Invoke-GeminiApi -Url $sttUrl -BodyObj $sttBody -TimeoutSec 60
+          $parts = @($r.candidates[0].content.parts)
+          $text = (($parts | ForEach-Object { [string]$_.text }) -join '').Trim()
+          if ([string]::IsNullOrWhiteSpace($text)) { throw 'empty transcription response' }
+          $result = @{ text = $text } | ConvertTo-Json -Compress
+          Send-Text $ctx $result 'application/json; charset=utf-8'
+        } catch {
+          $errMsg = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+          Send-Text $ctx $errMsg 'application/json; charset=utf-8' 500
+        }
+      }
       elseif ($method -eq 'POST' -and $path -eq '/api/upload') {
         if ($ctx.Request.ContentLength64 -gt ($maxUploadBytes * 2)) {
           Send-Text $ctx '{"ok":false,"error":"upload too large"}' 'application/json; charset=utf-8' 413
