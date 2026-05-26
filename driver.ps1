@@ -364,10 +364,16 @@ STUDY-ХОД -- выполняй текущую фазу изучения. Мо�
 "@
   }
   $planPromptBlock = ''
+  $taskCheckpointPromptBlock = ''
   try {
     $planPromptText = Format-PlanForPrompt
     if (-not [string]::IsNullOrWhiteSpace($planPromptText)) {
       $planPromptBlock = "`n`nПЛАН-ДОСКА (веди работу по ней):`n$planPromptText"
+    } elseif ($Role -eq 'codex') {
+      $cpBlock = Get-TaskCheckpointBlock
+      if (-not [string]::IsNullOrWhiteSpace($cpBlock)) {
+        $taskCheckpointPromptBlock = "`n`n$cpBlock"
+      }
     }
   } catch {}
   $shared = @"
@@ -399,7 +405,7 @@ $autoScopeLine
   7) `secrets.json` содержит API-ключи (Gemini и др.). НИКОГДА не выводи его содержимое в чат и не коммить — он в .gitignore. Память: `lib\memory.ps1` (embeddings+поиск), `librarian.ps1` (ночная консолидация), хранилище `memory\` (gitignored).
 
 ДИАЛОГ:
-$transcript$planPromptBlock
+$transcript$taskCheckpointPromptBlock$planPromptBlock
 "@
   if ($Role -eq 'claude') {
     $claudeBase = @"
@@ -1262,6 +1268,7 @@ while ($true) {
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
       }.GetNewClosure()) | Out-Null
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
+      try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       if ($deepThinkMark) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
       if ($studyDetect -and -not $deepThinkMark) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
@@ -1324,6 +1331,7 @@ while ($true) {
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
+        try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
         Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: backlog" -Kind event | Out-Null }
@@ -1363,6 +1371,8 @@ while ($true) {
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
+  $headBeforeTurn = ''
+  try { $headBeforeTurn = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch {}
   try {
     if ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else {
@@ -1377,6 +1387,22 @@ while ($true) {
   }
   $reply = [string]$turnResult.text
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
+  if ($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
+    try {
+      $headAfterTurn = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($headBeforeTurn) -and -not [string]::IsNullOrWhiteSpace($headAfterTurn) -and $headBeforeTurn -ne $headAfterTurn) {
+        $commitLines = @(& git -C $bridgeRoot log --reverse --format='%H%x09%s' "$headBeforeTurn..$headAfterTurn" 2>$null)
+        foreach ($cl in $commitLines) {
+          $parts = @(([string]$cl) -split "`t", 2)
+          if ($parts.Count -lt 1 -or [string]::IsNullOrWhiteSpace($parts[0])) { continue }
+          $sha = [string]$parts[0]
+          $subj = if ($parts.Count -ge 2) { [string]$parts[1] } else { '' }
+          $shortSha = if ($sha.Length -gt 7) { $sha.Substring(0, 7) } else { $sha }
+          Add-TaskCheckpoint -Kind commit -Text (($shortSha + ' ' + $subj).Trim())
+        }
+      }
+    } catch {}
+  }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 
@@ -1386,6 +1412,7 @@ while ($true) {
       $reason = ([string]$reply) -replace '^PREFLIGHT_BLOCKED:\s*',''
     }
     if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'неизвестная причина' }
+    try { Set-TaskLastFailure -Kind preflight_blocked -Text $reason } catch {}
     Add-Message -From system -Text ("Pre-flight gate заблокировал запуск Codex: " + $reason + ". Claude, дай инструкцию повторно, когда условие снято, или ответь пользователю через CHAT.") -Kind event | Out-Null
     Update-State { param($s) $s.force_planner=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
     continue
@@ -1456,7 +1483,10 @@ while ($true) {
     }
     $fileMarkerPaths += $sourcePath
     $meta = Register-AttachmentPath -SourcePath $sourcePath
-    if ($meta) { $attachmentMetas += $meta }
+    if ($meta) {
+      $attachmentMetas += $meta
+      try { Add-TaskCheckpoint -Kind file -Text $sourcePath } catch {}
+    }
     else { $failedAttachmentPaths += $sourcePath }
   }
   # [[SAVE: title]] ... [[/SAVE]] -> durable decision note
@@ -1477,6 +1507,12 @@ while ($true) {
     if ([string]::IsNullOrWhiteSpace($source)) { continue }
     if (Write-EvidenceLog -Agent $speaker -Task $task -Source $source -Summary $summary -Confidence $confidence) {
       $evidenceSources += $source
+    }
+  }
+  foreach ($m in [regex]::Matches($reply, $verifiedPattern)) {
+    $vtext = $m.Groups[1].Value.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($vtext)) {
+      try { Add-TaskCheckpoint -Kind verified -Text $vtext } catch {}
     }
   }
   $findingPattern = '(?m)^\s*\[\[FINDING:\s*(.+?)\s*\]\]\s*$'
@@ -1548,6 +1584,8 @@ while ($true) {
     $stepId = $m.Groups[1].Value.Trim()
     $stepResult = if ($m.Groups.Count -gt 2) { $m.Groups[2].Value.Trim() } else { '' }
     if ([string]::IsNullOrWhiteSpace($stepId)) { continue }
+    $stepCheckpoint = if ([string]::IsNullOrWhiteSpace($stepResult)) { $stepId } else { "$stepId | $stepResult" }
+    try { Add-TaskCheckpoint -Kind step_done -Text $stepCheckpoint } catch {}
     try {
       $okStep = Set-PlanStepStatus -Id $stepId -Status done -Result $stepResult
       if ($okStep) { $planStepUpdates += "$stepId → done" }
@@ -1981,6 +2019,7 @@ $diff
             if ($severity -eq 'serious') {
               $newCrc = $crc + 1
               Update-State ({ param($s) $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue $newCrc -Force }.GetNewClosure()) | Out-Null
+              try { Set-TaskLastFailure -Kind critic_rejected -Text $issuesText } catch {}
               Add-Message -From system -Text "🔎 Независимый критик ($criticModelName) нашёл серьёзное (попытка $newCrc/$criticMaxRetries): $issuesText`n`nCodex, исправь это и снова доведи до STATUS: DONE — задачу НЕ закрываю." -Kind event | Out-Null
               $plannerStatus = 'CONTINUE'
               Update-State { param($s) $s.task_mode='normal' } | Out-Null
@@ -2043,6 +2082,7 @@ $diff
             if (-not $smokeOk) {
               $smokeShort = ($smokeOut -replace '\s+',' ').Trim()
               if ($smokeShort.Length -gt 300) { $smokeShort = $smokeShort.Substring(0,300) + '...' }
+              try { Set-TaskLastFailure -Kind smoke_failed -Text $smokeShort } catch {}
               if ($smokeVrc -lt 2) {
                 Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$false } | Out-Null
                 Add-Message -From system -Text "🚨 Авто-smoke FAILED (попытка $($smokeVrc+1)/2) — .ps1 повреждены, задача НЕ закрывается. Codex, исправь: $smokeShort" -Kind event | Out-Null
