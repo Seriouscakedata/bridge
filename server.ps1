@@ -332,6 +332,26 @@ try {
         $u = Get-UsageSummary
         Send-Text $ctx ($u | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/architect/run') {
+        # 🧭 Manual Architect trigger from UI (or curl). Accepts optional body {"mode":"deep-think"}.
+        $mode = 'normal'
+        try {
+          $body = Read-Body $ctx
+          if (-not [string]::IsNullOrWhiteSpace($body)) {
+            $bo = $body | ConvertFrom-Json
+            if ($bo.mode -eq 'deep-think') { $mode = 'deep-think' }
+          }
+        } catch {}
+        try {
+          $r = Invoke-Architect -Mode $mode -MaxIdeas 3
+          try { Save-ArchitectMarker } catch {}
+          $okFlag = if ([bool]$r.ok) { 'true' } else { 'false' }
+          Send-Text $ctx ('{"ok":' + $okFlag + ',"mode":"' + $mode + '","ideas_created":' + [int]$r.count + '}') 'application/json; charset=utf-8'
+        } catch {
+          $err = ("" + $_.Exception.Message) | ConvertTo-Json -Compress
+          Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
+        }
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/metrics') {
         $m = Get-MetricsForApi
         Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'

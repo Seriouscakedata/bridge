@@ -369,6 +369,7 @@ try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "workt
 # Parallel worker orchestration (run sub-tasks concurrently in worktrees, merge back).
 try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'doctor.ps1') } catch { Write-Warning "doctor.ps1 failed to load: $($_.Exception.Message)" }
+try { . (Join-Path $PSScriptRoot 'architect.ps1') } catch { Write-Warning "architect.ps1 failed to load: $($_.Exception.Message)" }
 # Telegram push notifications (best-effort, non-fatal).
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
 # Study-mode detection (single source of truth; bounded command-verb gate).

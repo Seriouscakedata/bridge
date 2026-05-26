@@ -992,6 +992,12 @@ while ($true) {
         try { Invoke-MetricsReflection } catch {}
       }
 
+      # 🧭 Architect (meta-improvement): cron-style, fires when idle if 24h passed OR 10
+      # closed tasks accumulated since last run. Architect proposes STRUCTURAL gaps as
+      # backlog ideas (tag=architect status=new -> needs user approval). Different from
+      # reflect.ps1 (leaf-level tweaks) and Doctor (acute repair).
+      try { Start-ArchitectIfDue -Mode 'normal' } catch {}
+
       # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
       # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
       $claimedIdea = $null
