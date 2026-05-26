@@ -120,6 +120,8 @@ function Check-Once {
     } elseif ($fails -ge $apiRollbackThreshold) {
       WLog "API STILL down after restart -> server code likely broken -> ROLLBACK (safety branch) + restart"
       Invoke-Rollback
+      # 🩺 Doctor signal: bridge picks this up on next loop and runs auto-repair.
+      try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value 'watchdog_rollback_api_stuck' -Encoding ascii } catch {}
       Request-Restart
       '0' | Out-File $failFile -Encoding ascii
       WLog "rollback applied (api-stuck)"
@@ -131,6 +133,8 @@ function Check-Once {
   if ($fails -ge $rollbackThreshold) {
     WLog "driver heartbeat STALE -> ROLLBACK to stable (safety branch first) + restart"
     Invoke-Rollback
+    # 🩺 Doctor signal: bridge picks this up on next loop and runs auto-repair.
+    try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value 'watchdog_rollback_driver_dead' -Encoding ascii } catch {}
     Request-Restart
     '0' | Out-File $failFile -Encoding ascii
     WLog "rollback applied (driver-dead)"

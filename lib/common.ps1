@@ -313,6 +313,11 @@ function Initialize-Bridge {
       critic_retry_count = 0
       coder_fired        = $false
       coder_bypass_retry_count = 0
+      held_task          = $null
+      doctor_active      = $false
+      doctor_attempts    = 0
+      doctor_reason      = ''
+      doctor_started_at  = $null
     }
     Write-State -State $state
   } else {
@@ -328,6 +333,7 @@ function Initialize-Bridge {
       autonomous_day=$null; autonomous_count=0
       active_jobs=@(); task_base_commit=''; critic_retry_count=0
       coder_fired=$false; coder_bypass_retry_count=0
+      held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
@@ -362,6 +368,7 @@ try { . (Join-Path $PSScriptRoot 'jobs.ps1') } catch { Write-Warning "jobs.ps1 f
 try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "worktrees.ps1 failed to load: $($_.Exception.Message)" }
 # Parallel worker orchestration (run sub-tasks concurrently in worktrees, merge back).
 try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
+try { . (Join-Path $PSScriptRoot 'doctor.ps1') } catch { Write-Warning "doctor.ps1 failed to load: $($_.Exception.Message)" }
 # Telegram push notifications (best-effort, non-fatal).
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
 # Study-mode detection (single source of truth; bounded command-verb gate).

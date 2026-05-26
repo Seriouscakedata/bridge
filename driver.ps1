@@ -860,6 +860,47 @@ while ($true) {
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
 
+  # 🩺 Doctor pre-checks: pick up watchdog's repair.signal, or seed the doctor task if active.
+  # When Doctor is active and current_task is empty, we synthesize the doctor task (diagnose +
+  # minimal fix + verify + commit) and let the normal pipeline run it. On its DONE we restore
+  # the held task. Max attempts gate prevents infinite repair loops.
+  try {
+    $sigReason = Test-DoctorSignal
+    if ($sigReason -and -not [bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.held_task)) {
+      Activate-Doctor -Reason $sigReason -Detail 'signal from watchdog' | Out-Null
+      $state = Read-State
+    }
+  } catch {}
+  if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
+    $maxA = Get-DoctorMaxAttempts
+    $att  = [int]$state.doctor_attempts
+    if ($att -ge $maxA) {
+      Abort-Doctor -Reason "max attempts ($maxA) reached"
+      Start-Sleep -Seconds $loopDelay; continue
+    }
+    try {
+      $doctorTask = Get-DoctorTaskText
+      $baseCommitD = ''
+      try { $baseCommitD = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch {}
+      Update-State ({ param($s)
+        $s.current_task     = $doctorTask
+        $s.task_turn        = 0
+        $s.task_mode        = 'normal'
+        $s.task_start_seq   = [int]$s.lastSeq
+        $s.doctor_attempts  = [int]$s.doctor_attempts + 1
+        $s.status           = 'working'
+        $s.heartbeat        = (Get-Date).ToString('o')
+        $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
+      }.GetNewClosure()) | Out-Null
+      try { Add-Message -From system -Text "🩺 Доктор приступает к диагностике и фиксу." -Kind event | Out-Null } catch {}
+      $state = Read-State
+    } catch {
+      try { Add-Message -From system -Text ("🩺 Доктор: ошибка при подготовке задачи: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+      Abort-Doctor -Reason "setup error"
+      Start-Sleep -Seconds $loopDelay; continue
+    }
+  }
+
   # --- BACKGROUND JOBS: if any are running, WAIT (poll) instead of running an agent turn,
   #     so long commands (e.g. hour-long project runs) don't time out and the bridge is
   #     neither "idle" (no autonomy grab) nor killed. Results are fed back when done.
@@ -1011,9 +1052,17 @@ while ($true) {
       Update-State $mutTrc | Out-Null
       continue
     } else {
-      Add-Message -From system -Text "⏱ Таймаут $who повторился (${dur}с). Задача приостановлена — уточни или дай новую." -Kind event | Out-Null
       try { Invoke-PostMortem -FailureType 'timeout' -Task $task -Context "$($turnResult.errorType) (${dur}с)" } catch {}
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      # 🩺 If we're already inside a Doctor task and Doctor itself timed out, escalate -- don't recurse.
+      if ([bool](Read-State).doctor_active) {
+        Add-Message -From system -Text "⏱ Доктор сам упёрся в таймаут (${dur}с). Эскалирую оператору." -Kind event | Out-Null
+        try { Abort-Doctor -Reason "doctor timeout (${dur}с)" } catch {}
+        Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      } else {
+        Add-Message -From system -Text "⏱ Таймаут $who повторился (${dur}с). Передаю Доктору на саморемонт." -Kind event | Out-Null
+        try { Activate-Doctor -Reason ([string]$turnResult.errorType) -Detail "${dur}с после retry" | Out-Null } catch {}
+        Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      }
       continue
     }
   }
@@ -1589,6 +1638,12 @@ $diff
         if ($_hCommit) { try { Write-Hypothesis -CommitHash $_hCommit -TaskText ([string]$task) } catch {} }
       }
     } catch {}
+    # 🩺 If Doctor just finished a repair, restore the held task instead of going idle.
+    if ([bool](Read-State).doctor_active) {
+      try { Complete-Doctor } catch { try { Add-Message -From system -Text ("🩺 Complete-Doctor: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
+      try { Send-PushEvent -Kind done -Text "🩺 Doctor fix shipped; resuming held task." } catch {}
+      continue
+    }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
     Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
