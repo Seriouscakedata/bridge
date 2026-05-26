@@ -91,6 +91,60 @@ function Get-RadarDigestItem {
   return $null
 }
 
+function Invoke-RadarAutoIdeas {
+  # After a radar run, file backlog ideas for HIGH-VALUE digest items that look like
+  # patterns the bridge doesn't have. Strict anti-backdoor: ideas are filed with
+  # status='new' (NEVER auto-executed; user approves). Tag: 'radar-derived'.
+  # Triggered at the end of techradar.ps1 after Write-RadarDigestFiles.
+  $run = Get-RadarLatestRun
+  if (-not $run) { return 0 }
+  $items = @($run.items)
+  if ($items.Count -eq 0) { return 0 }
+  $valueFloor = 4   # only items >= 4 are "actionable" candidates
+  # Cap: keep at most N pending radar-derived ideas so the backlog doesn't bloat.
+  $maxPending = 5
+  $existing = @()
+  try { $existing = @(Get-Backlog) } catch {}
+  $pendingFromRadar = @($existing | Where-Object {
+    $tags = @($_.tags | ForEach-Object { [string]$_ })
+    ($tags -contains 'radar-derived') -and ([string]$_.status -in @('new','approved'))
+  })
+  if ($pendingFromRadar.Count -ge $maxPending) {
+    Write-RadarLog "auto-ideas skipped: $($pendingFromRadar.Count) pending radar-derived ideas (cap=$maxPending)"
+    return 0
+  }
+  # De-dup: build a quick lookup of URLs already mentioned in the backlog.
+  $knownUrls = @{}
+  foreach ($i in $existing) {
+    $t = [string]$i.text
+    foreach ($mm in [regex]::Matches($t, 'https?://\S+')) { $knownUrls[$mm.Value] = 1 }
+  }
+  $added = 0
+  $slots = $maxPending - $pendingFromRadar.Count
+  foreach ($it in $items) {
+    if ($added -ge $slots) { break }
+    $v = 0; try { $v = [double]$it.value } catch {}
+    if ($v -lt $valueFloor) { continue }
+    $link = [string]$it.link
+    if ($knownUrls.ContainsKey($link)) { continue }
+    $title = ([string]$it.title).Trim()
+    $summary = ([string]$it.summary).Trim()
+    $score = 0; try { $score = [double]$it.score } catch {}
+    $text = @"
+[radar-derived: возможный пробел в capability-matrix]
+Статья: $title
+Что это и зачем нам: $summary
+Источник: $link
+Метрики оценки: value=$v score=$score
+_Архитектор / оператор: сравни паттерн со списком возможностей моста (architecture-matrix.md). Если паттерн отсутствует и полезен — одобри, переформулируй в конкретную задачу. Если уже есть/неприменимо — отклони._
+"@
+    $id = Add-Idea -Text $text -From 'radar' -Tags @('radar-derived','external') -Status 'new' -Score $score
+    if ($id) { $added++; $knownUrls[$link] = 1 }
+  }
+  if ($added -gt 0) { Write-RadarLog "auto-ideas filed: $added (value>=4 + not in backlog)" }
+  return $added
+}
+
 function Add-RadarDigestItemToBacklog {
   param([string]$Id, [string]$Link)
   $item = Get-RadarDigestItem -Id $Id -Link $Link

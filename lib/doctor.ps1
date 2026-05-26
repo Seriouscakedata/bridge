@@ -192,6 +192,39 @@ function Abort-Doctor {
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
 }
 
+function Test-RestartLoop {
+  # Detect "many restarts in a short window with no successful turn" — symptom of a stall the
+  # current trigger set (timeout/rollback) misses. User reported 2026-05-26: bridge restarted
+  # 4 times in 4 min while Doctor stayed silent. Returns reason string if triggered, else $null.
+  param([int]$WindowMinutes = 5, [int]$RestartThreshold = 3)
+  $root = Get-BridgeRoot
+  $cutoff = (Get-Date).AddMinutes(-[Math]::Abs($WindowMinutes)).ToUniversalTime()
+  # 1) count "Перезапуск по запросу" system events in conversation.jsonl since cutoff
+  $restarts = 0
+  try {
+    $msgs = @(Get-Messages -Since 0) | Where-Object { $_.from -eq 'system' -and ([string]$_.text) -match 'Перезапуск по запросу' }
+    foreach ($m in $msgs) {
+      try { if ([datetime]$m.ts -ge $cutoff) { $restarts++ } } catch {}
+    }
+  } catch {}
+  if ($restarts -lt $RestartThreshold) { return $null }
+  # 2) check turns.jsonl: was there ANY ok turn in the same window? If yes, restarts are
+  #    just self-test recycles (legitimate) — don't fire Doctor.
+  $okTurns = 0
+  try {
+    $tp = Join-Path $root 'turns.jsonl'
+    if (Test-Path $tp) {
+      foreach ($line in [System.IO.File]::ReadAllLines($tp, [System.Text.Encoding]::UTF8) | Select-Object -Last 50) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $r = $line | ConvertFrom-Json } catch { continue }
+        try { if ([datetime]$r.ts -ge $cutoff -and [string]$r.status -eq 'ok') { $okTurns++ } } catch {}
+      }
+    }
+  } catch {}
+  if ($okTurns -ge 1) { return $null }   # there IS progress, restarts are self-tests
+  return "restart_loop_no_progress (${restarts} restarts/${WindowMinutes}min, 0 ok-turns)"
+}
+
 function Test-DoctorSignal {
   # Watchdog leaves control/repair.signal after a rollback. We pick it up on the next loop
   # iteration, activate Doctor, and consume the signal. File contains a short reason string.

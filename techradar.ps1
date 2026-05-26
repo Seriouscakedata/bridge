@@ -262,4 +262,7 @@ $run = [ordered]@{
 Write-RadarDigestFiles -Run $run
 try { [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'radar.last'), (Get-Date).ToString('o'), $Utf8NoBom) } catch {}
 Write-RadarLog "digest items=$(@($items).Count) considered=$considered evaluated=$evaluated rejectedLowValue=$rejectedLowValue evalFailed=$evalFailed"
+# 🪞 radar -> action: file backlog ideas for value>=4 items that aren't already in the backlog.
+# Strict anti-backdoor: status='new', never auto-executed, capped to 5 pending.
+try { $autoN = Invoke-RadarAutoIdeas; if ($autoN -gt 0) { Add-Message -From system -Text "📡 Радар нашёл $autoN потенциально полезных паттернов и положил в бэклог как 'radar-derived' (тег + status=new). Архитектор разберётся / решишь сам." -Kind event | Out-Null } } catch {}
 Write-RadarLog '=== radar digest done ==='

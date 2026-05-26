@@ -898,6 +898,17 @@ while ($true) {
       $state = Read-State
     }
   } catch {}
+  # Restart-loop trigger (wave 3): >=3 restarts in 5 min with no ok turns -> Doctor.
+  # User reported 2026-05-26: bridge restarted 4x without Doctor activating; this closes that gap.
+  if (-not [bool]$state.doctor_active) {
+    try {
+      $loopReason = Test-RestartLoop
+      if ($loopReason) {
+        Activate-Doctor -Reason 'restart_loop' -Detail $loopReason | Out-Null
+        $state = Read-State
+      }
+    } catch {}
+  }
   if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
     $maxA = Get-DoctorMaxAttempts
     $att  = [int]$state.doctor_attempts
@@ -997,6 +1008,7 @@ while ($true) {
       # backlog ideas (tag=architect status=new -> needs user approval). Different from
       # reflect.ps1 (leaf-level tweaks) and Doctor (acute repair).
       try { Start-ArchitectIfDue -Mode 'normal' } catch {}
+      try { Start-DeepThinkIfDue } catch {}
 
       # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
       # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
@@ -1078,8 +1090,13 @@ while ($true) {
     $who = if ($turnResult.errorType -eq 'coder_timeout') { 'Codex' } else { 'Claude' }
     $dur = [int]$turnResult.duration
     $trc = [int](Read-State).timeout_retry_count
-    if ($trc -lt 1) {
-      Add-Message -From system -Text "⏱ Таймаут $who (${dur}с, $($turnResult.errorType)) — повторяю попытку..." -Kind event | Out-Null
+    # 🩺 Long timeouts (>= ~60% of cap) almost never come back via retry — same prompt would
+    # just timeout again, wasting another 500+s. Heuristic threshold 350s catches both planner
+    # (cap 600s) and coder (cap 900s after Doctor raised it 4cb5f53). User feedback 2026-05-26:
+    # "Doctor didn't appear on timeout" -> now Doctor activates ON the long timeout, not after retry.
+    $isLongTimeout = ($dur -ge 350)
+    if ($trc -lt 1 -and -not $isLongTimeout -and -not [bool](Read-State).doctor_active) {
+      Add-Message -From system -Text "⏱ Таймаут $who (${dur}с, $($turnResult.errorType)) — короткий, повторяю попытку..." -Kind event | Out-Null
       $newTrc = $trc + 1
       $mutTrc = { param($s) $s.timeout_retry_count = $newTrc; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()
       Update-State $mutTrc | Out-Null
@@ -1092,7 +1109,8 @@ while ($true) {
         try { Abort-Doctor -Reason "doctor timeout (${dur}с)" } catch {}
         Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       } else {
-        Add-Message -From system -Text "⏱ Таймаут $who повторился (${dur}с). Передаю Доктору на саморемонт." -Kind event | Out-Null
+        $reasonMsg = if ($trc -ge 1) { "повторился (${dur}с)" } elseif ($isLongTimeout) { "длинный (${dur}с) — retry почти наверняка снова упрётся" } else { "(${dur}с)" }
+        Add-Message -From system -Text "⏱ Таймаут $who $reasonMsg. Передаю Доктору на саморемонт." -Kind event | Out-Null
         try { Activate-Doctor -Reason ([string]$turnResult.errorType) -Detail "${dur}с после retry" | Out-Null } catch {}
         Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       }
@@ -1733,9 +1751,17 @@ $diff
       if ($doneBid) {
         Set-Idea -Id $doneBid -Status 'done' | Out-Null
         Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null
-        # Mark autonomous improvements as hypotheses for later reflection.
-        $_hCommit = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
-        if ($_hCommit) { try { Write-Hypothesis -CommitHash $_hCommit -TaskText ([string]$task) } catch {} }
+      }
+    } catch {}
+    # Mark ANY self-improvement commit as a hypothesis for the 24h verdict cycle (was previously
+    # only autonomous backlog tasks -> we missed user-injected tasks and Doctor fixes entirely).
+    # Wave 3 widening: any task that changed HEAD vs task_base_commit gets a baseline+commit row.
+    try {
+      $stEnd = Read-State
+      $baseC = [string]$stEnd.task_base_commit
+      $headC = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
+      if ($baseC -and $headC -and $baseC -ne $headC) {
+        Write-Hypothesis -CommitHash $headC -TaskText ([string]$task)
       }
     } catch {}
     # 🩺 If Doctor just finished a repair, restore the held task instead of going idle.

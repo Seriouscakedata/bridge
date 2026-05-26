@@ -312,3 +312,30 @@ function Start-ArchitectIfDue {
   Save-ArchitectMarker   # Touch marker BEFORE running so we don't relaunch every idle tick.
   try { Invoke-Architect -Mode $Mode -MaxIdeas 3 | Out-Null } catch { try { Add-Message -From system -Text ("🧭 Архитектор: ошибка цикла: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
 }
+
+function Get-DeepThinkMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect.deepthink.last' }
+
+function Should-RunDeepThink {
+  # Weekly open-ended cycle: "what should the bridge be in 3 months?". Distinct marker
+  # from the normal Architect cycle. Fires at most once per 7 days.
+  $marker = Get-DeepThinkMarkerPath
+  if (-not (Test-Path $marker)) { return $true }
+  try { $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch { return $true }
+  return ((Get-Date) - $last) -ge [TimeSpan]::FromDays(7)
+}
+
+function Start-DeepThinkIfDue {
+  # Once per week, do an open-ended Architect pass (mode=deep-think). Separate marker so
+  # the daily/normal-cycle architect runs don't reset this counter.
+  try {
+    $auto = Get-AutonomySettings
+    if (-not [bool]$auto.enabled) { return }
+  } catch {}
+  if (-not (Should-RunDeepThink)) { return }
+  try {
+    $ctl = Join-Path (Get-BridgeRoot) 'control'
+    if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Get-DeepThinkMarkerPath), (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  try { Invoke-Architect -Mode 'deep-think' -MaxIdeas 3 -TimeoutSec 360 | Out-Null } catch { try { Add-Message -From system -Text ("🧭 Deep-think: ошибка: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
+}
