@@ -58,7 +58,17 @@ function Invoke-GeminiApi {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $json  = $BodyObj | ConvertTo-Json -Depth 8
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-  return Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec
+  try {
+    return Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec
+  } catch {
+    $detail = ''
+    try {
+      $stream = $_.Exception.Response.GetResponseStream()
+      $detail = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+    } catch {}
+    if ($detail) { throw "Gemini API error: $detail" }
+    throw
+  }
 }
 
 function Get-Embedding {

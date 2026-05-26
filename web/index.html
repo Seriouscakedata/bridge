@@ -4458,12 +4458,27 @@ audioInput.addEventListener('change', async e => {
   try{
     const dataB64 = await fileToBase64(file);
     const mimeType = file.type || 'audio/mp4';
-    const r = await requestOk('/api/stt', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({mimeType, data:dataB64})
-    }, 60000);
-    const data = await r.json();
+    const sttCtrl = new AbortController();
+    const sttTimer = setTimeout(() => sttCtrl.abort(), 60000);
+    let data = {};
+    try{
+      const sttResp = await fetch('/api/stt', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        credentials:'same-origin',
+        body:JSON.stringify({mimeType, data:dataB64}),
+        signal:sttCtrl.signal
+      });
+      const raw = await sttResp.text();
+      try{
+        data = raw ? JSON.parse(raw) : {};
+      }catch(_){
+        data = {error:raw};
+      }
+      if(!sttResp.ok) throw new Error(data.error || raw || ('HTTP ' + sttResp.status));
+    }finally{
+      clearTimeout(sttTimer);
+    }
     const text = data && data.text ? String(data.text).trim() : '';
     if(text){
       input.value = (input.value ? input.value.trimEnd() + ' ' : '') + text;

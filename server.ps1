@@ -175,8 +175,12 @@ try {
         try {
           $body = Read-Body $ctx | ConvertFrom-Json
           $mimeType = [string]$body.mimeType
-          $audioData = [string]$body.data
+          # Normalize mobile recorder MIME values before passing audio to Gemini.
+          if ($mimeType -match '^([^;]+)') { $mimeType = $Matches[1].Trim().ToLowerInvariant() }
+          if ($mimeType -eq 'audio/x-m4a') { $mimeType = 'audio/mp4' }
+          if ($mimeType -eq 'audio/mpeg')  { $mimeType = 'audio/mp3' }
           if ([string]::IsNullOrWhiteSpace($mimeType)) { $mimeType = 'audio/mp4' }
+          $audioData = [string]$body.data
           if ([string]::IsNullOrWhiteSpace($audioData)) { throw 'no audio data' }
           $audioData = $audioData -replace '\s+', ''
           try {
