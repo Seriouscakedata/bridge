@@ -25,3 +25,5 @@ notify.last
 *.log
 *.tmp.*
 .git/
+turns.jsonl
+reports/

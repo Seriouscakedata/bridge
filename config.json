@@ -74,7 +74,7 @@
     "enabled": true,
     "requireApproval": false,
     "idleQuietMinutes": 10,
-    "maxAutonomousTasksPerDay": 0,
+    "maxAutonomousTasksPerDay": 8,
     "reflectEveryHours": 6,
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
