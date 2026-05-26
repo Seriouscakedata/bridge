@@ -633,6 +633,7 @@ function Invoke-Planner {
   [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   # Narrow --add-dir to the bridge folder (faster startup); Bash already gives full read access.
   $allowedTools = if ($Mode -eq 'advisory') { @('Read','Grep','Glob') }
+                  elseif ($Mode -eq 'coder-fallback') { @('Read','Grep','Glob','Bash','Edit','MultiEdit','Write') }
                   elseif ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
                   else { @('Read','Grep','Glob','Bash') }
@@ -664,7 +665,7 @@ function Invoke-Coder {
   param([string]$Prompt, [string]$Mode = 'code', [switch]$NoFallback)
   if (-not $NoFallback) {
     # Cross-agent fallback: if Codex is busy in another channel and Claude is free in all
-    # other channels, delegate this coder turn to Claude in advisory-only mode.
+    # other channels, delegate this coder turn to Claude Opus as a real coder fallback.
     $others = Get-OtherChannelsAgents
     $codexBusyElsewhere = $false
     $claudeBusyElsewhere = $false
@@ -674,13 +675,13 @@ function Invoke-Coder {
     }
     if ($codexBusyElsewhere -and -not $claudeBusyElsewhere) {
       $busyCh = ($others.GetEnumerator() | Where-Object { $_.Value -eq 'codex' } | Select-Object -First 1).Key
-      Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude Opus берёт coder-турн (advisory-only, без правок файлов).") -Kind event | Out-Null
+      Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude Opus берёт coder-турн (реальное выполнение).") -Kind event | Out-Null
       $fallbackPrefix = @"
-⚠ FALLBACK MODE: Ты сейчас замещаешь Codex-кодера (он занят в канале '$busyCh'). СТРОГОЕ ОГРАНИЧЕНИЕ: ты НЕ редактируешь файлы, НЕ создаёшь restart.flag, НЕ запускаешь git commit. Дай развёрнутый ТЕКСТОВЫЙ ответ: анализ задачи, план реальных правок с конкретными путями/строками/блоками, ожидаемое поведение. Когда Codex освободится, он подхватит и реально применит правки на основе твоего плана. Закончи ответ обычным маркером статуса.
+⚠ FALLBACK MODE: Ты сейчас замещаешь Codex-кодера (он занят в канале '$busyCh'). Выполняй задачу реально: можно читать/редактировать файлы и запускать команды доступными инструментами. Соблюдай все правила безопасности из промпта ниже: SAFETY для опасных действий, RUNJOB для долгих команд, UTF-8 BOM для .ps1, ParseFile/smoke/commit/restart.flag по правилам моста. Не вызывай Codex и не жди его освобождения — ты резервный кодер этого хода. Отчитайся кратко по результату.
 
 ЗАДАЧА:
 "@
-      $plannerRes = Invoke-Planner -Prompt ($fallbackPrefix + "`n" + $Prompt) -Model $deepModel -Mode 'advisory' -NoFallback
+      $plannerRes = Invoke-Planner -Prompt ($fallbackPrefix + "`n" + $Prompt) -Model $deepModel -Mode 'coder-fallback' -NoFallback
       return [pscustomobject]@{ text=$plannerRes.text; status=$plannerRes.status; duration=$plannerRes.duration; errorType=$plannerRes.errorType; fallback='claude_as_coder' }
     }
   }
@@ -1322,9 +1323,9 @@ while ($true) {
     if ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else {
       $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode
-      # Track that Codex actually ran for this task: used by the coder-bypass gate below
-      # so the planner can't ship file changes via STATUS:DONE without Codex+critic review.
-      if ($turnResult.status -eq 'ok' -and [string]$turnResult.fallback -ne 'claude_as_coder') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
+      # Track that the coder role actually ran for this task. A Claude fallback counts as
+      # the coder for this turn because it has write tools and is not merely advisory.
+      if ($turnResult.status -eq 'ok') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
     }
   } catch {
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
@@ -1588,8 +1589,8 @@ while ($true) {
     }
   }
 
-  # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
-  if ($speaker -eq 'codex' -and $mode -ne 'discuss' -and [string]$turnResult.fallback -ne 'claude_as_coder') {
+  # Stagnation detector: if the coder role made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
+  if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
     $gitDiffOut = & git -C $bridgeRoot diff --stat HEAD 2>&1
     # Also check the channel's effective project root (may differ from bridgeRoot).
     if ([string]::IsNullOrWhiteSpace($gitDiffOut)) {
