@@ -271,6 +271,135 @@ function Set-CurrentAgent {
   Set-CurrentAgentImpl -Agent $Agent
 }
 
+function Get-PreflightBlockers {
+  param([string]$Channel = '')
+
+  $hard = New-Object 'System.Collections.Generic.List[string]'
+  $soft = New-Object 'System.Collections.Generic.List[string]'
+  $root = Get-BridgeRoot
+
+  if ([string]::IsNullOrWhiteSpace($Channel)) {
+    try {
+      if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $Channel = [string](Get-EffectiveChannel) }
+    } catch {
+      [void]$soft.Add("не удалось определить текущий канал: $($_.Exception.Message)")
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+
+  $channelState = $null
+  try {
+    if (Get-Command Get-ChannelStatePath -ErrorAction SilentlyContinue) {
+      $statePath = Get-ChannelStatePath -Slug $Channel
+      if (Test-Path -LiteralPath $statePath) {
+        $channelState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      }
+    }
+    if ($null -eq $channelState) { $channelState = Read-State }
+  } catch {
+    [void]$soft.Add("не удалось прочитать state канала '$Channel': $($_.Exception.Message)")
+  }
+
+  # Codex MSIX supports one exec session per machine. Treat only a live, verified lock as hard.
+  $lockPath = Join-Path $root 'runtime\codex.lock'
+  if (Test-Path -LiteralPath $lockPath) {
+    try {
+      $raw = ([string](Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 -ErrorAction Stop)).Trim()
+      $parts = @($raw -split '\|')
+      $lockPid = 0
+      $lockTicks = [long]0
+      if ($parts.Count -ge 1) { [int]::TryParse($parts[0], [ref]$lockPid) | Out-Null }
+      if ($parts.Count -ge 2) { [long]::TryParse($parts[1], [ref]$lockTicks) | Out-Null }
+
+      if ($lockPid -gt 0) {
+        $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+        if ($proc) {
+          $sameProcess = $true
+          if ($lockTicks -gt 0) {
+            try {
+              $sameProcess = ($proc.StartTime.Ticks -eq $lockTicks)
+            } catch {
+              $sameProcess = $false
+              [void]$soft.Add("codex.lock PID $lockPid найден, но start-time не проверен: $($_.Exception.Message)")
+            }
+          }
+          if ($sameProcess) {
+            $lockAgeSec = 0
+            try { $lockAgeSec = [math]::Max(0, [int](((Get-Date) - (Get-Item -LiteralPath $lockPath).LastWriteTime).TotalSeconds)) } catch { $lockAgeSec = 0 }
+            if ($lockAgeSec -le 920) {
+              $sameChannelActiveCodex = $false
+              try {
+                if ($channelState -and ([string]$channelState.current_agent).ToLowerInvariant() -eq 'codex' -and [int]$channelState.current_agent_pid -eq $lockPid) {
+                  $sameChannelActiveCodex = $true
+                }
+              } catch {
+                [void]$soft.Add("не удалось сверить codex.lock с current_agent канала '$Channel': $($_.Exception.Message)")
+              }
+              if (-not $sameChannelActiveCodex) {
+                [void]$hard.Add("codex.lock активен (PID $lockPid) - другая coder-сессия в работе")
+              }
+            } else {
+              [void]$soft.Add("codex.lock выглядит устаревшим (PID $lockPid, age ${lockAgeSec}s)")
+            }
+          } else {
+            [void]$soft.Add("codex.lock выглядит устаревшим (PID $lockPid не совпал по start-time)")
+          }
+        } else {
+          [void]$soft.Add("codex.lock выглядит устаревшим (PID $lockPid не найден)")
+        }
+      } elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
+        [void]$soft.Add("codex.lock имеет неожиданный формат")
+      }
+    } catch {
+      [void]$soft.Add("не удалось проверить codex.lock: $($_.Exception.Message)")
+    }
+  }
+
+  try {
+    $st = $channelState
+    if ($st -and [bool]$st.doctor_active) {
+      $curTask = [string]$st.current_task
+      $isDoctorTask = ($curTask -match '^\s*🩺\s*ДОКТОР' -or $curTask -match 'ДОКТОР\s+.\s+задача саморемонта моста')
+      if (-not $isDoctorTask) {
+        [void]$hard.Add("Doctor активен на канале '$Channel'")
+      }
+    }
+  } catch {
+    [void]$soft.Add("не удалось проверить Doctor на канале '$Channel': $($_.Exception.Message)")
+  }
+
+  $gitDir = Join-Path $root '.git'
+  try {
+    $gitDirRaw = @(& git -C $root rev-parse --git-dir 2>$null | Select-Object -First 1)
+    if ($gitDirRaw -and -not [string]::IsNullOrWhiteSpace([string]$gitDirRaw[0])) {
+      $gd = [string]$gitDirRaw[0]
+      if ([System.IO.Path]::IsPathRooted($gd)) { $gitDir = $gd } else { $gitDir = Join-Path $root $gd }
+    }
+  } catch {
+    [void]$soft.Add("не удалось определить .git каталог: $($_.Exception.Message)")
+  }
+
+  foreach ($m in @('MERGE_HEAD','CHERRY_PICK_HEAD','REBASE_HEAD','index.lock')) {
+    if (Test-Path -LiteralPath (Join-Path $gitDir $m)) { [void]$hard.Add("git mid-op: .git/$m") }
+  }
+  foreach ($d in @('rebase-merge','rebase-apply')) {
+    if (Test-Path -LiteralPath (Join-Path $gitDir $d) -PathType Container) { [void]$hard.Add("git mid-op: .git/$d/") }
+  }
+
+  try {
+    $dirty = @(& git -C $root status --porcelain 2>$null)
+    $dirtyCount = @($dirty | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+    if ($dirtyCount -gt 0) { [void]$soft.Add("worktree dirty: $dirtyCount изменённых/untracked файлов") }
+  } catch {
+    [void]$soft.Add("не удалось проверить git status: $($_.Exception.Message)")
+  }
+
+  return [pscustomobject]@{
+    Hard = @($hard.ToArray())
+    Soft = @($soft.ToArray())
+  }
+}
+
 function Add-Message {
   param(
     [ValidateSet('claude','codex','user','system')] [string]$From,

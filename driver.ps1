@@ -694,6 +694,26 @@ function Invoke-Coder {
       return [pscustomobject]@{ text=$plannerRes.text; status=$plannerRes.status; duration=$plannerRes.duration; errorType=$plannerRes.errorType; fallback='claude_as_coder' }
     }
   }
+  if (Get-Command Get-PreflightBlockers -ErrorAction SilentlyContinue) {
+    $pf = Get-PreflightBlockers -Channel $Channel
+  } else {
+    $pf = [pscustomobject]@{ Hard = @(); Soft = @('pre-flight helper Get-PreflightBlockers не загружен') }
+  }
+  if (@($pf.Hard).Count -gt 0) {
+    $reason = (@($pf.Hard) -join '; ')
+    return [pscustomobject]@{
+      text             = "PREFLIGHT_BLOCKED: $reason"
+      status           = 'preflight_blocked'
+      duration         = 0
+      errorType        = 'preflight_blocked'
+      preflightBlocked = $true
+      reason           = $reason
+    }
+  }
+  if (@($pf.Soft).Count -gt 0) {
+    $warn = "=== PRE-FLIGHT WARNINGS ===`n" + ((@($pf.Soft) | ForEach-Object { "- $_" }) -join "`n") + "`n===========================`n`n"
+    $Prompt = $warn + $Prompt
+  }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
@@ -1346,6 +1366,17 @@ while ($true) {
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
+
+  if ($turnResult.status -eq 'preflight_blocked' -or [bool]$turnResult.preflightBlocked) {
+    $reason = [string]$turnResult.reason
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+      $reason = ([string]$reply) -replace '^PREFLIGHT_BLOCKED:\s*',''
+    }
+    if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'неизвестная причина' }
+    Add-Message -From system -Text ("Pre-flight gate заблокировал запуск Codex: " + $reason + ". Claude, дай инструкцию повторно, когда условие снято, или ответь пользователю через CHAT.") -Kind event | Out-Null
+    Update-State { param($s) $s.force_planner=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+    continue
+  }
 
   # Handle agent timeouts as retryable structured errors.
   if ($turnResult.status -eq 'timeout') {
