@@ -622,7 +622,7 @@ function Invoke-Planner {
 
 ЗАДАЧА ОТ ОПЕРАТОРА:
 "@
-      $coderRes = Invoke-Coder -Prompt ($fallbackPrefix + "`n" + $Prompt) -Mode 'discuss' -NoFallback
+      $coderRes = Invoke-Coder -Prompt ($fallbackPrefix + "`n" + $Prompt) -Mode 'planner-fallback' -NoFallback
       return [pscustomobject]@{ text=$coderRes.text; status=$coderRes.status; duration=$coderRes.duration; errorType=$coderRes.errorType; fallback='codex_as_planner' }
     }
   }
@@ -681,14 +681,20 @@ function Invoke-Coder {
 
 ЗАДАЧА:
 "@
-      $plannerRes = Invoke-Planner -Prompt ($fallbackPrefix + "`n" + $Prompt) -Model $deepModel -Mode 'coder-fallback' -NoFallback
+      $fallbackModel = 'opus'
+      try {
+        $fallbackCfg = Get-BridgeConfig
+        if ($fallbackCfg.deepModel) { $fallbackModel = [string]$fallbackCfg.deepModel }
+      } catch {}
+      $plannerRes = Invoke-Planner -Prompt ($fallbackPrefix + "`n" + $Prompt) -Model $fallbackModel -Mode 'coder-fallback' -NoFallback
       return [pscustomobject]@{ text=$plannerRes.text; status=$plannerRes.status; duration=$plannerRes.duration; errorType=$plannerRes.errorType; fallback='claude_as_coder' }
     }
   }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
-  $sbMode = if ($Mode -eq 'discuss') { 'read-only' } else { 'danger-full-access' }
+  $readOnlyCoderMode = ($Mode -eq 'discuss' -or $Mode -eq 'planner-fallback')
+  $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { 'danger-full-access' }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   # Phase 5 (channels): per-channel project_root routes Codex -C to the actual codebase of

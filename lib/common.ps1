@@ -251,13 +251,14 @@ function Set-CurrentAgentImpl {
     $normAgent = ([string]$Agent).ToLowerInvariant()
     if ($normAgent -ne 'claude' -and $normAgent -ne 'codex') { return }
 
+    $pidValue = [int]$PID
     $ticks = [long]0
-    try { $ticks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.Ticks } catch { $ticks = [long]0 }
+    try { $ticks = (Get-Process -Id $pidValue -ErrorAction Stop).StartTime.Ticks } catch { $ticks = [long]0 }
     $nowIso = (Get-Date).ToString('o')
     Update-State ({
       param($s)
       $s | Add-Member -NotePropertyName current_agent -NotePropertyValue $normAgent -Force
-      $s | Add-Member -NotePropertyName current_agent_pid -NotePropertyValue $PID -Force
+      $s | Add-Member -NotePropertyName current_agent_pid -NotePropertyValue $pidValue -Force
       $s | Add-Member -NotePropertyName current_agent_ticks -NotePropertyValue $ticks -Force
       $s | Add-Member -NotePropertyName current_agent_since -NotePropertyValue $nowIso -Force
     }.GetNewClosure()) | Out-Null
