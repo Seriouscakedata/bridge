@@ -145,7 +145,8 @@ function Get-CosineSimilarity {
 
 # ---- store ----
 function Get-CurrentMemoryChannel {
-  # Channel slug to stamp on new memories. Falls back to 'main' (legacy/no-channels-yet).
+  # Channel slug to stamp on new memories. Driver-pinned/effective channel wins over
+  # the UI's active channel so an in-flight task stays channel-local if the UI switches.
   $effectiveCmd = Get-Command -Name 'Get-EffectiveChannel' -ErrorAction SilentlyContinue
   if ($null -ne $effectiveCmd) {
     try { $s = [string](Get-EffectiveChannel); if (-not [string]::IsNullOrWhiteSpace($s)) { return $s } } catch {}
@@ -236,7 +237,8 @@ function Search-Memory {
   # Returns array of [pscustomobject]{ Score; Mem } sorted by score desc.
   # -Channel: filter so only memories from $Channel + 'shared' memories are searched.
   #          $null/'' = use active channel; '__all__' = bypass filter (admin/UI views).
-  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', [string[]]$ExcludeTag = @(), [string]$Channel = $null)
+  # -ExcludeTag accepts either a single legacy string or a string array.
+  param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', $ExcludeTag = '', [string]$Channel = $null)
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return @() }
   if ($TopK -le 0)    { $TopK = [int]$mc.recallTopK }

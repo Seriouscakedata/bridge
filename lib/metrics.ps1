@@ -253,7 +253,7 @@ function Invoke-PostMortem {
     }
   }
   # Append a structured failure record for the Architect's meta-pattern detection.
-  try { Add-FailureRecord -Class $FailureType -Task $shortTask -Context $Context } catch {}
+  try { Add-FailureRecord -Class $FailureType -Task $shortTask -Context $Context -Channel $Channel } catch {}
 }
 
 # --- Failures catalogue (meta-pattern source for Architect) ---
@@ -262,10 +262,13 @@ function Get-FailuresPath { Join-Path (Get-BridgeRoot) 'memory\failures.jsonl' }
 function Add-FailureRecord {
   # Append a structured failure entry. Class examples: timeout, rollback, safety, oom,
   # coder_bypass, verify_fail, doctor_abort. Used by Get-FailurePatterns to spot recurrences.
-  param([string]$Class, [string]$Task = '', [string]$Context = '', [string]$Signature = '')
+  param([string]$Class, [string]$Task = '', [string]$Context = '', [string]$Signature = '', [string]$Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Class)) { return }
   $dir = Split-Path (Get-FailuresPath) -Parent
   if (-not (Test-Path $dir)) { try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch {} }
+  if ([string]::IsNullOrWhiteSpace($Channel)) {
+    try { $Channel = Get-CurrentMemoryChannel } catch { $Channel = '' }
+  }
   # Signature defaults to class + short task hash so dedup / count can group recurrences.
   if ([string]::IsNullOrWhiteSpace($Signature)) {
     $src = ($Class + '|' + ([string]$Task)).Trim()
@@ -281,6 +284,7 @@ function Add-FailureRecord {
     ts        = [DateTime]::UtcNow.ToString('o')
     class     = $Class
     signature = $Signature
+    channel   = ([string]$Channel)
     task      = ([string]$Task)
     context   = ([string]$Context)
   }
