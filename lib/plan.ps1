@@ -1,7 +1,13 @@
 ﻿$script:PlanStatuses = @('pending','in_progress','done','blocked','skipped')
 
-function Get-PlanPath { Join-Path (Get-BridgeRoot) 'plan.jsonl' }
-function Get-PlanArchivePath { Join-Path (Get-BridgeRoot) 'plan.archive.jsonl' }
+function Get-PlanPath {
+  if (Get-Command Get-ChannelPlanPath -ErrorAction SilentlyContinue) { return (Get-ChannelPlanPath) }
+  return (Join-Path (Get-BridgeRoot) 'plan.jsonl')
+}
+function Get-PlanArchivePath {
+  if (Get-Command Get-ChannelPlanArchivePath -ErrorAction SilentlyContinue) { return (Get-ChannelPlanArchivePath) }
+  return (Join-Path (Get-BridgeRoot) 'plan.archive.jsonl')
+}
 
 function Normalize-PlanText {
   param([string]$Text)

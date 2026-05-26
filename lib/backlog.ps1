@@ -3,7 +3,10 @@
 # Statuses: new (proposed) -> approved (user OK'd, eligible to auto-run) -> running -> done
 #           also: rejected, failed.
 
-function Get-BacklogPath { Join-Path (Get-BridgeRoot) 'backlog.jsonl' }
+function Get-BacklogPath {
+  if (Get-Command Get-ChannelBacklogPath -ErrorAction SilentlyContinue) { return (Get-ChannelBacklogPath) }
+  return (Join-Path (Get-BridgeRoot) 'backlog.jsonl')
+}
 
 function Add-Idea {
   # Append a backlog idea. Returns the new id.

@@ -51,9 +51,17 @@ function Write-AtomicFile {
   Move-Item -LiteralPath $tmp -Destination $Path -Force
 }
 
-function Get-StatePath { Join-Path (Get-BridgeRoot) 'state.json' }
-function Get-ConversationPath { Join-Path (Get-BridgeRoot) 'conversation.jsonl' }
-function Get-FilesPath { Join-Path (Get-BridgeRoot) 'files' }
+function Get-StatePath { Join-Path (Get-BridgeRoot) 'state.json' }   # phase 1: stays global (watchdog/smoke read it directly)
+function Get-ConversationPath {
+  # Channel-aware. Falls back to legacy root path if channels.ps1 hasn't loaded yet (during
+  # very first Initialize-Bridge, before dot-source of channels.ps1).
+  if (Get-Command Get-ChannelConversationPath -ErrorAction SilentlyContinue) { return (Get-ChannelConversationPath) }
+  return (Join-Path (Get-BridgeRoot) 'conversation.jsonl')
+}
+function Get-FilesPath {
+  if (Get-Command Get-ChannelFilesPath -ErrorAction SilentlyContinue) { return (Get-ChannelFilesPath) }
+  return (Join-Path (Get-BridgeRoot) 'files')
+}
 function Get-SummaryPath { Join-Path (Get-BridgeRoot) 'summary.txt' }
 
 function Read-Summary {
@@ -370,6 +378,10 @@ try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "workt
 try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'doctor.ps1') } catch { Write-Warning "doctor.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'architect.ps1') } catch { Write-Warning "architect.ps1 failed to load: $($_.Exception.Message)" }
+try { . (Join-Path $PSScriptRoot 'channels.ps1') } catch { Write-Warning "channels.ps1 failed to load: $($_.Exception.Message)" }
+# Run channel migration once — moves legacy bridge-root files into channels/main/ if needed.
+# Idempotent; safe to call on every Initialize-Bridge.
+try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
 # Telegram push notifications (best-effort, non-fatal).
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
 # Study-mode detection (single source of truth; bounded command-verb gate).
