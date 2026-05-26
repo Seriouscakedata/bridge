@@ -4,7 +4,6 @@
   "claudeGlob": "C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe",
   "loopDelaySeconds": 2,
   "maxTurns": 150,
-  "leaseTimeoutSeconds": 300,
   "mode": "interactive",
   "planner": "claude",
   "coder": "codex",

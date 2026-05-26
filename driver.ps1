@@ -1608,6 +1608,44 @@ $diff
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + '  critic-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
+  # Auto-smoke gate: after critic passes, if .ps1 files changed vs HEAD, run smoke.ps1 to catch
+  # broken masts before accepting DONE. Reuses verify_retry_count so no new state field needed.
+  # Catches cases where [[VERIFIED: smoke OK]] is claimed but smoke actually fails.
+  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      if ([bool](Read-State).task_did_actions) {
+        $psChanged = $false
+        try {
+          $gitSmFiles = & git -C $bridgeRoot diff --name-only HEAD 2>$null
+          $psChanged = (@($gitSmFiles | Where-Object { $_ -match '\.ps1$' })).Count -gt 0
+        } catch {}
+        if ($psChanged) {
+          $smokeFile = Join-Path $bridgeRoot 'smoke.ps1'
+          if (Test-Path $smokeFile) {
+            $smokeOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $smokeFile 2>&1 | Out-String
+            $smokeOk  = $smokeOut -imatch 'SMOKE OK'
+            $smokeVrc = [int](Read-State).verify_retry_count
+            if (-not $smokeOk) {
+              $smokeShort = ($smokeOut -replace '\s+',' ').Trim()
+              if ($smokeShort.Length -gt 300) { $smokeShort = $smokeShort.Substring(0,300) + '...' }
+              if ($smokeVrc -lt 2) {
+                Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$false } | Out-Null
+                Add-Message -From system -Text "🚨 Авто-smoke FAILED (попытка $($smokeVrc+1)/2) — .ps1 повреждены, задача НЕ закрывается. Codex, исправь: $smokeShort" -Kind event | Out-Null
+                $plannerStatus = 'CONTINUE'
+              } else {
+                Add-Message -From system -Text "🚨 Авто-smoke провалился 2× — закрываю как есть, нужно внимание оператора." -Kind event | Out-Null
+                try { Send-PushEvent -Kind need_you -Text "Smoke FAIL: $(Get-PushSnippet -Text $task)" } catch {}
+              }
+            } else {
+              Add-Message -From system -Text "✅ Авто-smoke: OK — .ps1 не сломаны." -Kind event | Out-Null
+            }
+          }
+        }
+      }
+    } catch {
+      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  auto-smoke-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+    }
+  }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
       try {
