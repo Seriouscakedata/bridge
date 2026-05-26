@@ -83,6 +83,47 @@ if (Test-Path $auditScript) {
     if ($LASTEXITCODE -ne 0) { $failed += ("UI-AUDIT: " + ($auditOut -join '; ')) }
 }
 
+# 8. Pre-flight gate -- verify Get-PreflightBlockers loads and returns valid {Hard,Soft}.
+# git mid-op markers in Hard always fail smoke; codex.lock / doctor_active are transient
+# (active coder session, doctor working) and tolerated -- not a sign of unhealthy code.
+$pfScript = Join-Path $b 'lib\common.ps1'
+if (Test-Path $pfScript) {
+    $pfArg = $pfScript -replace "'","''"
+    $pfRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+        `$ErrorActionPreference = 'SilentlyContinue'
+        . '$pfArg'
+        if (Get-Command Get-PreflightBlockers -ErrorAction SilentlyContinue) {
+            `$r = Get-PreflightBlockers
+            [pscustomobject]@{ ok=`$true; hard=@(`$r.Hard); soft=@(`$r.Soft) } | ConvertTo-Json -Compress -Depth 5
+        } else {
+            [pscustomobject]@{ ok=`$false; hard=@('Get-PreflightBlockers not found'); soft=@() } | ConvertTo-Json -Compress -Depth 5
+        }
+    " 2>&1
+    $pfText = ($pfRaw | ForEach-Object { [string]$_ }) -join "`n"
+    $pfStart = $pfText.IndexOf('{')
+    $pfEnd = $pfText.LastIndexOf('}')
+    if ($pfStart -lt 0 -or $pfEnd -le $pfStart) {
+        $failed += "PREFLIGHT: невалидный вывод Get-PreflightBlockers: $pfText"
+    } else {
+        try {
+            $pfObj = $pfText.Substring($pfStart, $pfEnd - $pfStart + 1) | ConvertFrom-Json
+            if (-not [bool]$pfObj.ok) {
+                $hardStr = @($pfObj.hard | ForEach-Object { [string]$_ }) -join '; '
+                $failed += "PREFLIGHT: функция не загрузилась ($hardStr)"
+            } else {
+                $gitHard = @($pfObj.hard | Where-Object { [string]$_ -match 'git mid-op' })
+                foreach ($h in $gitHard) { $failed += "PREFLIGHT-HARD: $h" }
+                if (-not $pfObj.PSObject.Properties['soft']) { $failed += "PREFLIGHT: .Soft отсутствует в ответе" }
+                if (-not $pfObj.PSObject.Properties['hard']) { $failed += "PREFLIGHT: .Hard отсутствует в ответе" }
+            }
+        } catch {
+            $failed += "PREFLIGHT: не удалось разобрать JSON: $($_.Exception.Message)"
+        }
+    }
+} else {
+    $failed += "PREFLIGHT: lib\common.ps1 не найден"
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"
