@@ -1030,15 +1030,45 @@ while ($true) {
       $finished = $false; $reason = 'done'
       if (Test-JobDone $job) { $finished = $true }
       else {
-        $ageH = 0; try { $ageH = ((Get-Date).ToUniversalTime() - ([datetime]$job.started).ToUniversalTime()).TotalHours } catch {}
-        if ($ageH -ge $jobMaxH) { try { Stop-BridgeJob $job } catch {}; $finished = $true; $reason = 'timeout' }
+        $ageMin = 99999; try { $ageMin = ((Get-Date).ToUniversalTime() - ([datetime]$job.started).ToUniversalTime()).TotalMinutes } catch {}
+        # ORPHAN DETECTION (FIX 2026-05-26): if the launched process is dead AND no .done
+        # marker was written, the job was killed mid-run (typical cause: bridge restart
+        # while visit.ps1 was running). Without this, the driver waits up to jobMaxH (6h)
+        # before timing out, blocking ALL new user input meanwhile. We give 3 minutes for
+        # the runner to start + write its .done; after that, dead pid = orphan.
+        $isOrphan = $false
+        if ($ageMin -ge 3) {
+          try {
+            $jp = 0; try { $jp = [int]$job.pid } catch {}
+            if ($jp -le 0) {
+              $isOrphan = $true   # no PID ever recorded -- bad startup, dead since birth
+            } else {
+              $proc = Get-Process -Id $jp -ErrorAction SilentlyContinue
+              if (-not $proc) { $isOrphan = $true }
+              else {
+                # Verify it's the SAME process (PID could be recycled). startTicks must match.
+                $stickyTicks = 0; try { $stickyTicks = [long]$job.startTicks } catch {}
+                if ($stickyTicks -gt 0) {
+                  try { if ($proc.StartTime.Ticks -ne $stickyTicks) { $isOrphan = $true } } catch {}
+                }
+              }
+            }
+          } catch {}
+        }
+        if ($isOrphan) { $finished = $true; $reason = 'orphan' }
+        elseif (($ageMin / 60.0) -ge $jobMaxH) { try { Stop-BridgeJob $job } catch {}; $finished = $true; $reason = 'timeout' }
       }
       if ($finished) {
         $res = Get-JobResult $job
+        $cap = 1500   # cap "Вывод (хвост)" to avoid context flood
+        $tail = [string]$res.tail
+        if ($tail.Length -gt $cap) { $tail = '...(хвост обрезан)...' + "`n" + $tail.Substring($tail.Length - $cap) }
         if ($reason -eq 'timeout') {
-          Add-Message -From system -Text ("⏱ Фоновая задача [$($job.id)] превысила лимит ($jobMaxH ч) и остановлена.`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$($res.tail)") -Kind event | Out-Null
+          Add-Message -From system -Text ("⏱ Фоновая задача [$($job.id)] превысила лимит ($jobMaxH ч) и остановлена.`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$tail") -Kind event | Out-Null
+        } elseif ($reason -eq 'orphan') {
+          Add-Message -From system -Text ("⚠ Фоновая задача [$($job.id)] потеряна: процесс умер, не записав .done маркер (вероятно, перезапуск моста во время её работы). Снимаю с polling, продолжаю.`nКоманда: $($job.cmd)") -Kind event | Out-Null
         } else {
-          Add-Message -From system -Text ("✅ Фоновая задача [$($job.id)] завершена (код выхода: $($res.exitCode)).`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$($res.tail)") -Kind event | Out-Null
+          Add-Message -From system -Text ("✅ Фоновая задача [$($job.id)] завершена (код выхода: $($res.exitCode)).`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$tail") -Kind event | Out-Null
         }
       } else { [void]$stillRunning.Add($job) }
     }

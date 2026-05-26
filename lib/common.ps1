@@ -44,11 +44,43 @@ function Resolve-ClaudeExe {
 }
 
 function Write-AtomicFile {
+  # Atomic file replacement that survives OneDrive sync locks.
+  #
+  # FIX 2026-05-26: Move-Item -Force was throwing IOException "Cannot create a file when that
+  # file already exists" sporadically on files inside OneDrive folders, because OneDrive
+  # holds a brief read handle during sync that prevents the rename. driver.travel-planner.err.log
+  # was filling up with these errors, and individual state.json writes were silently lost.
+  # Use [System.IO.File]::Replace for atomic swap (designed for this), with a retry loop for
+  # transient lock contention, and a final fallback to copy+delete.
   param([string]$Path, [string]$Content)
   $tmp = "$Path.tmp.$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
   [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
-  # Move-Item -Force is atomic enough on the same volume
-  Move-Item -LiteralPath $tmp -Destination $Path -Force
+  $tries = 0; $maxTries = 6
+  while ($true) {
+    try {
+      if (Test-Path -LiteralPath $Path) {
+        [System.IO.File]::Replace($tmp, $Path, $null)   # atomic, handles OneDrive lock retry internally too
+      } else {
+        [System.IO.File]::Move($tmp, $Path)
+      }
+      return
+    } catch {
+      $tries++
+      if ($tries -ge $maxTries) {
+        # Fallback: non-atomic copy+delete. Worse than Replace but still gets the bytes there.
+        try {
+          Copy-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          return
+        } catch {
+          # Clean up tmp on terminal failure so we don't litter
+          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          throw
+        }
+      }
+      Start-Sleep -Milliseconds (60 * $tries)   # backoff: 60ms, 120ms, 180ms, 240ms, 300ms
+    }
+  }
 }
 
 function Get-StatePath {
