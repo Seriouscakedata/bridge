@@ -621,7 +621,10 @@ function Invoke-Coder {
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$workRoot,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
+    # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
+    # mandatory visit.ps1 invocations on top of edits, ui_audit, verification, and
+    # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000)) {
       Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
