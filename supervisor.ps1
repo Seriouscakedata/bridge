@@ -71,6 +71,8 @@ Log "=== supervisor start, PID $PID ==="
 Kill-Bridge
 Start-Sleep -Seconds 2
 $srv = $null
+$lastRecycleTs = $null   # rate-limit: prevent restart-storm
+$minRecycleSec = 60      # at least 60s between consecutive recycles
 Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
 while ($true) {
@@ -81,10 +83,30 @@ while ($true) {
       Log "stop flag -> exit"; Kill-Bridge; break
     }
     if (Test-Path $flagRestart) {
-      Remove-Item $flagRestart -Force -ErrorAction SilentlyContinue
-      Log "restart flag -> recycle"
-      Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
-      Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
+      # FIX 2026-05-26: rate-limit restart.flag honoring. If we recycled less than
+      # $minRecycleSec ago, drop the flag with a warning instead of recycling again.
+      # This prevents restart-storms when Codex (or any actor) sets the flag faster
+      # than the bridge can finish a turn. Without this, 6+ restarts/10min from a
+      # single task in progress have been observed -- Codex never lands its commit
+      # because the next restart kills it mid-turn.
+      $now = Get-Date
+      $tooSoon = $false
+      if ($lastRecycleTs) {
+        $sinceLast = ($now - $lastRecycleTs).TotalSeconds
+        if ($sinceLast -lt $minRecycleSec) {
+          $tooSoon = $true
+          Remove-Item $flagRestart -Force -ErrorAction SilentlyContinue
+          Log ("restart flag IGNORED (rate-limit: " + [int]$sinceLast + "s < " + $minRecycleSec + "s since last recycle)")
+          Add-Message -From system -Text ("⚠ Restart-flag сброшен супервизором: rate-limit (" + [int]$sinceLast + "s < " + $minRecycleSec + "s). Кто-то (Codex?) пытается рестартить мост слишком часто -- даю текущему ходу доработать.") -Kind event | Out-Null
+        }
+      }
+      if (-not $tooSoon) {
+        Remove-Item $flagRestart -Force -ErrorAction SilentlyContinue
+        Log "restart flag -> recycle"
+        Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
+        Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
+        $lastRecycleTs = Get-Date
+      }
     }
     if ($null -eq $srv -or $srv.HasExited) {
       Log "starting server..."

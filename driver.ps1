@@ -615,10 +615,12 @@ function Invoke-Planner {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
-    # Planner cap was 240s — too tight for Opus on ultrathink on multi-part tasks (probe 2
-    # timed out here on a complex audit). Raised to 600s to match Codex; Sonnet finishes long
-    # before this cap so no regression for simple tasks.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
+    # Planner cap history: 240s -> 600s (probe 2 ultrathink audit), -> 900s (2026-05-26
+    # planner_timeout incident: open-ended multi-channel diagnostic "разберись почему
+    # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
+    # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
+    # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000)) {
       Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
@@ -645,6 +647,71 @@ function Invoke-Coder {
       if (-not [string]::IsNullOrWhiteSpace($pr)) { $coderCwd = $pr }
     }
   } catch {}
+  # Global Codex instance mutex: Codex MSIX supports only one exec session at a time.
+  # When another channel's driver is running Codex, wait up to 120s for it to finish.
+  $codexLockFile = Join-Path $bridgeRoot 'runtime\codex.lock'
+  $codexLockAcquired = $false
+  $codexLockWaitSec = 0
+  $codexLockWarned = $false
+  $codexLockDir = Split-Path -Parent $codexLockFile
+  if (-not (Test-Path $codexLockDir)) { New-Item -ItemType Directory -Force -Path $codexLockDir | Out-Null }
+  while (-not $codexLockAcquired) {
+    $lockStale = $false
+    if (Test-Path $codexLockFile) {
+      try {
+        $ldata = Get-Content $codexLockFile -Raw -Encoding UTF8 -ErrorAction Stop
+        $lparts = @(([string]$ldata).Trim() -split '\|')
+        $lpid = 0; $lticks = [long]0
+        if ($lparts.Count -gt 0) { [int]::TryParse($lparts[0], [ref]$lpid) | Out-Null }
+        if ($lparts.Count -gt 1) { [long]::TryParse($lparts[1], [ref]$lticks) | Out-Null }
+        $lproc = $null
+        if ($lpid -gt 0) { $lproc = Get-Process -Id $lpid -ErrorAction SilentlyContinue }
+        $lockStale = $true
+        if ($lproc) {
+          try {
+            if ($lticks -gt 0 -and $lproc.StartTime.Ticks -eq $lticks) {
+              $lockAgeSec = [math]::Max(0, [int](((Get-Date) - (Get-Item $codexLockFile).LastWriteTime).TotalSeconds))
+              $lockStale = ($lockAgeSec -gt 920)
+            }
+          } catch {
+            $lockStale = $true
+          }
+        }
+      } catch {
+        $lockStale = $true
+      }
+      if ($lockStale) {
+        Remove-Item $codexLockFile -Force -ErrorAction SilentlyContinue
+      }
+    }
+
+    try {
+      $myPid = $PID; $myTicks = [long]0
+      try { $myTicks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.Ticks } catch { $myTicks = 0 }
+      $lockPayload = "$myPid|$myTicks"
+      $lockBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($lockPayload)
+      $fs = [System.IO.File]::Open($codexLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      try { $fs.Write($lockBytes, 0, $lockBytes.Length) } finally { $fs.Dispose() }
+      $codexLockAcquired = $true
+      break
+    } catch [System.IO.IOException] {
+      # Another channel won the race to create the lock.
+    } catch {
+      Add-Message -From system -Text ("⚠ Codex mutex: не смог захватить lock: " + $_.Exception.Message + ". Продолжаю без mutex.") -Kind event | Out-Null
+      break
+    }
+
+    if ($codexLockWaitSec -ge 120) {
+      Add-Message -From system -Text "⚠ Codex mutex: ждали 120s — другой канал не освободил lock. Продолжаю без mutex." -Kind event | Out-Null
+      break
+    }
+    if (-not $codexLockWarned) {
+      Add-Message -From system -Text "⏳ Codex занят другим каналом — жду (до 120s)..." -Kind event | Out-Null
+      $codexLockWarned = $true
+    }
+    Start-Sleep -Seconds 5
+    $codexLockWaitSec += 5
+  }
   try {
     $p = Start-Process -FilePath $codexExe `
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
@@ -658,7 +725,19 @@ function Invoke-Coder {
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
-  } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally {
+    if ($codexLockAcquired) { Remove-Item $codexLockFile -Force -ErrorAction SilentlyContinue }
+    if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
+    # Capture stderr BEFORE cleanup if reply is empty (diagnostic for silent exits).
+    if ([string]::IsNullOrWhiteSpace($reply)) {
+      $se = Get-Content $errF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+      if (-not [string]::IsNullOrWhiteSpace($se)) {
+        $seShort = if ($se.Length -gt 500) { $se.Substring(0,500) + '...(truncated)' } else { $se }
+        Add-Message -From system -Text ("⚠ [Codex stderr]:`n" + $seShort) -Kind event | Out-Null
+      }
+    }
+    Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
+  }
   if ($null -eq $reply) { $reply = '' }
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
@@ -1456,6 +1535,18 @@ while ($true) {
   # Stagnation detector: if Codex made no bridge file changes and no attachments for N turns, trigger self-diagnosis.
   if ($speaker -eq 'codex' -and $mode -ne 'discuss') {
     $gitDiffOut = & git -C $bridgeRoot diff --stat HEAD 2>&1
+    # Also check the channel's effective project root (may differ from bridgeRoot).
+    if ([string]::IsNullOrWhiteSpace($gitDiffOut)) {
+      try {
+        $effPR = [string](Get-EffectiveProjectRoot)
+        if (-not [string]::IsNullOrWhiteSpace($effPR) -and $effPR -ne $bridgeRoot -and (Test-Path $effPR)) {
+          $gitDiffOutPR = & git -C $effPR diff --stat HEAD 2>&1
+          if (-not [string]::IsNullOrWhiteSpace($gitDiffOutPR)) { $gitDiffOut = $gitDiffOutPR }
+        }
+      } catch {
+        Add-Message -From system -Text ("⚠ Stagnation detector project_root check failed: " + $_.Exception.Message) -Kind event | Out-Null
+      }
+    }
     if ($mode -eq 'normal') { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
     $npc = [int](Read-State).no_progress_count
