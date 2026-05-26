@@ -191,7 +191,7 @@ try {
           if ($audioBytes.Length -lt 256) { throw 'audio data too small or invalid' }
           if ($audioBytes.Length -gt $maxUploadBytes) { throw 'audio upload too large' }
 
-          $sttModel = if ($cfg.sttModel) { [string]$cfg.sttModel } else { 'gemini-2.0-flash' }
+          $sttModel = if ($cfg.sttModel) { [string]$cfg.sttModel } else { 'gemini-2.5-flash' }
           $key = Get-Secret 'geminiApiKey'
           if (-not $key) { throw 'no geminiApiKey configured' }
           $sttUrl = "https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=$key"
