@@ -972,14 +972,22 @@ while ($true) {
   } catch {}
   # Restart-loop trigger (wave 3): >=3 restarts in 5 min with no ok turns -> Doctor.
   # User reported 2026-05-26: bridge restarted 4x without Doctor activating; this closes that gap.
+  # GUARD (2026-05-26 second fix): Test-RestartLoop counts the LAST 5 min of conversation
+  # restart events. On a fresh boot after a prior restart loop, those old events are still
+  # in the window and would false-positive Doctor. Skip the check during the driver's first
+  # 90s of uptime so the "noise from the past" ages out before we look.
   if (-not [bool]$state.doctor_active) {
-    try {
-      $loopReason = Test-RestartLoop
-      if ($loopReason) {
-        Activate-Doctor -Reason 'restart_loop' -Detail $loopReason | Out-Null
-        $state = Read-State
-      }
-    } catch {}
+    $driverUptime = 0
+    try { $driverUptime = ((Get-Date) - [datetime]$state.driver_started).TotalSeconds } catch {}
+    if ($driverUptime -ge 90) {
+      try {
+        $loopReason = Test-RestartLoop
+        if ($loopReason) {
+          Activate-Doctor -Reason 'restart_loop' -Detail $loopReason | Out-Null
+          $state = Read-State
+        }
+      } catch {}
+    }
   }
   if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
     $maxA = Get-DoctorMaxAttempts
