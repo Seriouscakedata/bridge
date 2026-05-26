@@ -338,6 +338,14 @@
     backdrop-filter:blur(16px);
     overflow:auto;
   }
+  #panelScrim{
+    display:none;
+    position:fixed;
+    inset:0;
+    z-index:39;
+    background:rgba(0,0,0,.45);
+    touch-action:none;
+  }
   body.overview-open #overviewPanel{display:flex}
   body.plan-open #planPanel{display:flex}
   body.code-open #codePanel{display:flex}
@@ -1507,6 +1515,11 @@
       left:12px; right:12px; width:auto; max-width:none;
       background:rgba(13,17,23,.98); z-index:40;
     }
+    body.overview-open #panelScrim,
+    body.plan-open #panelScrim,
+    body.code-open #panelScrim,
+    body.dash-open #panelScrim,
+    body.usage-open #panelScrim{display:block}
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1764,6 +1777,7 @@
   </div>
 </main>
 
+<div id="panelScrim" aria-hidden="true"></div>
 <aside id="overviewPanel" aria-label="Обзор сеанса" aria-hidden="true">
   <div class="overview-head">
     <strong>Обзор сеанса</strong>
@@ -4340,6 +4354,26 @@ if(usageClose){
     usageOpen = false;
     localStorage.setItem('bridgeUsage', '0');
     applyUsageState();
+  });
+}
+// Scrim tap + swipe-down: close active panel
+function closeActivePanel(){
+  if(overviewOpen){ overviewOpen=false; localStorage.setItem('bridgeOverview','0'); applyOverviewState(); }
+  else if(planOpen){ planOpen=false; localStorage.setItem('bridgePlan','0'); applyPlanState(); }
+  else if(codeOpen){ codeOpen=false; localStorage.setItem('bridgeCode','0'); applyCodeState(); }
+  else if(dashOpen){ dashOpen=false; localStorage.setItem('bridgeDash','0'); applyDashState(); }
+  else if(usageOpen){ usageOpen=false; localStorage.setItem('bridgeUsage','0'); applyUsageState(); }
+}
+const panelScrim = document.getElementById('panelScrim');
+if(panelScrim) panelScrim.addEventListener('click', closeActivePanel);
+{
+  let _swipeY0 = 0;
+  [overviewPanel,planPanel,codePanel,dashPanel,usagePanel].forEach(p => {
+    if(!p) return;
+    p.addEventListener('touchstart', e => { _swipeY0 = e.touches[0].clientY; }, {passive:true});
+    p.addEventListener('touchend', e => {
+      if(e.changedTouches[0].clientY - _swipeY0 > 60) closeActivePanel();
+    }, {passive:true});
   });
 }
 if(codeSearch) codeSearch.addEventListener('click', runCodeSearch);
