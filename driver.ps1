@@ -578,7 +578,10 @@ function Invoke-Planner {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 240000)) {
+    # Planner cap was 240s — too tight for Opus on ultrathink on multi-part tasks (probe 2
+    # timed out here on a complex audit). Raised to 600s to match Codex; Sonnet finishes long
+    # before this cap so no regression for simple tasks.
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 600000)) {
       Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
