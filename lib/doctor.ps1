@@ -146,8 +146,19 @@ function Complete-Doctor {
   $st = Read-State
   $held = [string]$st.held_task
   if ([string]::IsNullOrWhiteSpace($held)) {
-    try { Add-Message -From system -Text "🩺 Доктор завершил, но held_task пуст — нечего возобновлять." -Kind event | Out-Null } catch {}
-    Update-State { param($s) $s.doctor_active=$false; $s.held_task=$null; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.doctor_attempts=0 } | Out-Null
+    try { Add-Message -From system -Text "🩺 Доктор завершил, но held_task пуст — нечего возобновлять. Возвращаюсь в idle." -Kind event | Out-Null } catch {}
+    # FIX 2026-05-26: clear current_task and counters too, else the loop keeps running the
+    # doctor diagnostic prompt as a normal task (caught on first wiring test).
+    Update-State ({ param($s)
+      $s.doctor_active=$false; $s.held_task=$null; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.doctor_attempts=0
+      $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'
+      $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false
+      $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.critic_retry_count=0
+      $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''
+      $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
+      $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
+      $s.status='idle'
+    }.GetNewClosure()) | Out-Null
     return
   }
   Update-State ({ param($s)
