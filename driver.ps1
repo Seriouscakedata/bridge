@@ -1644,7 +1644,7 @@ while ($true) {
       }
       if ($snapMatch.Success) {
         $snap = $snapMatch.Value.Trim()
-        $markerCount = [regex]::Matches($snap, '(?im)^\s*(Тип|Согласовано|Открыто|Решение|Риски|План реализации)\s*:').Count
+        $markerCount = [regex]::Matches($snap, '(?im)^[*_> \t#-]*(Тип|Согласовано|Открыто|Решение|Риски|План\s+реализации)[^:\n]*:').Count
         if ($markerCount -ge 2) {
           Update-State ({ param($s) $s.discuss_snapshot = $snap }.GetNewClosure()) | Out-Null
         }
@@ -1695,7 +1695,7 @@ while ($true) {
         $openClosed  = [string]::IsNullOrWhiteSpace($openVal) -or ($openVal -imatch '^(нет|нет блокеров|блокеров нет|отсутствуют|none|n/?a|-|—)$')
         $converged   = ($dtNow -ge $discussMinTurns) -and $hasDecision -and $hasRisks -and $openClosed
         $ceiling     = ($dtNow -ge $discussMaxTurns)
-        $planMatch = [regex]::Match($reply, '(?ims)^[*_> \t#-]*План реализации:[ \t]*(.*?)(?=^\s*(STATUS:|Тип:|Согласовано:|Открыто:|Решение:|Риски:)|\z)')
+        $planMatch = [regex]::Match($reply, '(?ims)^[*_> \t#-]*План\s+реализации[^:\n]*:[*_ \t]*(.*?)(?=^\s*[*_> \t#-]*(STATUS:|Тип:|Согласовано:|Открыто:|Решение:|Риски:)|\z)')
         $hasPlan = $planMatch.Success -and -not [string]::IsNullOrWhiteSpace($planMatch.Groups[1].Value)
         if (-not $ceiling -and (-not $converged -or -not $hasPlan)) {
           $why = if ($dtNow -lt $discussMinTurns) { "рано ($dtNow/$discussMinTurns ходов)" }
