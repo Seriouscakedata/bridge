@@ -70,15 +70,29 @@ function Get-MessageAttachmentPaths {
 }
 
 function Start-LibrarianIfDue {
-  # Launch the nightly memory consolidator at most once per 24h, detached, when idle.
+  # Run the memory consolidator detached when idle, gated by HYBRID schedule:
+  #   - HARD floor: at least 30 min since the last run (so we don't spam Gemini).
+  #   - SOFT ceiling: at least 6h since the last run -> run unconditionally.
+  #   - DELTA trigger: >= 5 new memories since the last run -> run early (after the floor).
+  # Old "every 24h" was useless during active development (map could be 24h stale while
+  # memory grew 50+ entries). User noticed: "карта памяти сутки не обновлялась". 2026-05-26.
   try { $mc = Get-MemoryConfig } catch { return }
   if (-not $mc.enabled) { return }
   $marker = Join-Path $bridgeRoot 'memory\librarian.last'
-  if (Test-Path $marker) {
-    try {
-      $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim())
-      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours(24)) { return }
-    } catch {}
+  $countMarker = Join-Path $bridgeRoot 'memory\librarian.count.last'
+  $lastTs = $null
+  if (Test-Path $marker) { try { $lastTs = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch {} }
+  if ($lastTs) {
+    $age = (Get-Date) - $lastTs
+    if ($age -lt [TimeSpan]::FromMinutes(30)) { return }     # hard floor
+    if ($age -lt [TimeSpan]::FromHours(6)) {
+      # within the soft ceiling: only run if enough new memories accumulated
+      $lastCount = -1
+      if (Test-Path $countMarker) { try { $lastCount = [int]((Get-Content $countMarker -Raw -Encoding UTF8).Trim()) } catch {} }
+      $curCount = 0
+      try { $curCount = @(Get-AllMemories).Count } catch {}
+      if ($lastCount -ge 0 -and ($curCount - $lastCount) -lt 5) { return }
+    }
   }
   $lib = Join-Path $bridgeRoot 'librarian.ps1'
   if (-not (Test-Path $lib)) { return }

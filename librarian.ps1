@@ -73,6 +73,8 @@ $listing
     $header = "# Карта памяти моста`n`n_Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm') · записей: $($mems.Count)_`n`n"
     Write-AtomicFile -Path (Get-MemoryMapPath) -Content ($header + $map.Trim() + "`n")
     Write-LibLog "map regenerated; memories: $($mems.Count)"
+    # Save current count -> the driver's delta-trigger uses this to decide when to wake us early.
+    try { [System.IO.File]::WriteAllText((Join-Path (Get-MemoryDir) 'librarian.count.last'), [string]$mems.Count, $Utf8NoBom) } catch {}
   } else {
     Write-LibLog 'map generation failed (empty reply)'
   }
