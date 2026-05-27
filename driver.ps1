@@ -2246,6 +2246,7 @@ while ($true) {
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
         Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
+      try { Add-SessionDecisionEvent -EventType 'doctor_fix' -Meta @{ what='doctor_activated' } -Channel $Channel } catch {}
       try { Add-Message -From system -Text "🩺 Доктор приступает к диагностике и фиксу." -Kind event | Out-Null } catch {}
       $state = Read-State
     } catch {
@@ -2490,6 +2491,13 @@ while ($true) {
           Reset-TaskAgentDuration $s
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
+        try {
+          Add-SessionDecisionEvent -EventType 'task_start' -Meta @{ task=$btext.Substring(0,[Math]::Min(120,$btext.Length)) } -Channel $Channel
+          $mGoal = $btext.Substring(0,[Math]::Min(600,$btext.Length))
+          Update-State ({ param($s)
+            $s.session_mission = [ordered]@{ goal=$mGoal; next_step=''; accepted_decisions=@(); constraints=@(); recent_done=@(); blockers=@() }
+          }.GetNewClosure()) | Out-Null
+        } catch {}
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
@@ -2726,6 +2734,7 @@ while ($true) {
     $vtext = $m.Groups[1].Value.Trim()
     if (-not [string]::IsNullOrWhiteSpace($vtext)) {
       try { Add-TaskCheckpoint -Kind verified -Text $vtext } catch {}
+      try { Add-SessionDecisionEvent -EventType 'verified_commit' -Meta @{ what=$vtext.Substring(0,[Math]::Min(100,$vtext.Length)) } -Channel $Channel } catch {}
     }
   }
   $findingPattern = '(?m)^\s*\[\[FINDING:\s*(.+?)\s*\]\]\s*$'
@@ -3100,6 +3109,7 @@ while ($true) {
       $doneHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*DONE\s*$')
       if ($hasChunkProgress -and $doneHits.Count -gt 0) {
         $plannerStatus = 'DONE'
+        try { Add-SessionDecisionEvent -EventType 'convergence' -Meta @{ source='planner'; ts=(Get-Date).ToString('o') } -Channel $Channel } catch {}
         $fastLaneDone = $true
         Update-State { param($s) $s.task_did_actions=$true; $s.no_progress_count=0 } | Out-Null
       }
@@ -3138,6 +3148,7 @@ while ($true) {
       $coderStatus = $coderStatusHits[$coderStatusHits.Count - 1].Groups[1].Value.ToUpper()
       if ($coderStatus -eq 'DONE') {
         $plannerStatus = 'DONE'
+        try { Add-SessionDecisionEvent -EventType 'convergence' -Meta @{ source='coder'; ts=(Get-Date).ToString('o') } -Channel $Channel } catch {}
         $fastLaneDone = $true
       }
     }
