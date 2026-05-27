@@ -541,14 +541,56 @@ function New-ParallelWorkerPrompt {
 - Не трогай файлы вне текущего worktree.
 - Не откатывай чужие изменения и не меняй соседние parallel streams.
 - После правок запусти короткую проверку, затем сделай git add/commit в своей ветке.
-- Финальная строка должна быть STATUS: DONE, STATUS: FAILED или STATUS: PARTIAL.
+- Финальная строка должна быть STATUS: DONE, STATUS: FAILED, STATUS: PARTIAL ИЛИ STATUS: CONTINUE-CHUNK:N/M (см. ниже).
 - ЗАПРЕЩЕНО создавать файл control/restart.flag (ни в своём worktree, ни в основном репо по любому пути). Это убивает соседние параллельные потоки. Драйвер решит про restart сам после merge.
 - ЗАПРЕЩЕНО менять файлы вне своего worktree (даже если путь технически доступен).
+
+ЧАНКИНГ ВНУТРИ ПОТОКА (опция для больших подзадач):
+Если твоя подзадача естественно делится на 3+ независимых коммита и есть риск таймаута за один проход — разбей её на этапы:
+  1. Сделай первый этап работы, ОБЯЗАТЕЛЬНО git add + git commit в своей ветке.
+  2. Финальная строка ровно: `STATUS: CONTINUE-CHUNK:N/M` (N — номер только что закрытого этапа, 1-based; M — всего этапов).
+  3. Драйвер проверит что твой коммит появился, перезапустит тебя В ТОМ ЖЕ worktree с контекстом следующего этапа.
+  4. Когда все этапы готовы — обычный `STATUS: DONE`.
+Лимит: 10 чанков на воркера (защита от runaway). Для мелких подзадач (1 коммит) чанкинг НЕ нужен — обычный `STATUS: DONE`. Используй чанки только когда видишь явное многоэтапное деление работы.
+
+🔢 ПРАВИЛО ПРОВЕРКИ ЧИСЛЕННЫХ УТВЕРЖДЕНИЙ:
+Если в своём STATUS-отчёте пишешь число («обработал N items», «X из Y файлов», «N/M прошли») — ОБЯЗАТЕЛЬНО приложи вывод реальной команды-доказательства. Без proof'а драйвер автоматически (через Test-CoderClaims gate) поймает несоответствие и заявит несостыковку планировщику. Шаблон: «N=51 → `<cmd>` → `<actual output>`».
 
 Разрешённые файлы:
 $fileText
 
 Подзадача:
+$Body
+"@
+}
+
+function New-ParallelWorkerContinuationPrompt {
+  # Used when a worker emitted STATUS: CONTINUE-CHUNK:N/M and driver respawns
+  # it in the SAME worktree for the next chunk. The body is preserved, but
+  # we add chunk context so the worker knows where it is in the sequence.
+  param([string]$Body, [string[]]$Files, [string]$BranchName, [int]$NextChunk, [int]$TotalChunks, [string]$LastCommitSha)
+  $fileText = if ($Files -and $Files.Count -gt 0) { ($Files | ForEach-Object { "- $_" }) -join "`n" } else { "- (files not declared)" }
+  $shortSha = if ($LastCommitSha.Length -gt 7) { $LastCommitSha.Substring(0,7) } else { $LastCommitSha }
+  return @"
+Ты параллельный coder-worker. ПРОДОЛЖАЕШЬ работу в том же git worktree (ветка `$BranchName`).
+
+ПРЕДЫДУЩИЙ ЭТАП завершён: chunk $($NextChunk - 1)/$TotalChunks, последний коммит: $shortSha.
+ТЕКУЩИЙ ЭТАП: chunk $NextChunk/$TotalChunks.
+
+Жёсткие правила (те же что и в первом запуске):
+- Меняй только разрешённые файлы ниже.
+- Не трогай файлы вне текущего worktree.
+- После правок текущего этапа ОБЯЗАТЕЛЬНО git add + git commit в своей ветке.
+- ЗАПРЕЩЕНО создавать control/restart.flag.
+- Финальная строка ровно:
+    • `STATUS: CONTINUE-CHUNK:$NextChunk/$TotalChunks` — если впереди ещё этап;
+    • `STATUS: DONE` — если этот этап последний и вся подзадача завершена;
+    • `STATUS: FAILED` или `STATUS: PARTIAL` — при провале.
+
+Разрешённые файлы:
+$fileText
+
+Подзадача (целиком — продолжай выполнять с этапа $NextChunk):
 $Body
 "@
 }
@@ -613,27 +655,87 @@ function Spawn-Worker {
 
   $ticks = [long]0
   try { $ticks = (Get-Process -Id $proc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+  # Initial chunk-base SHA: HEAD of the worker's branch at spawn time. Used by
+  # the dispatch poll to detect whether the worker actually committed before
+  # claiming CONTINUE-CHUNK:N/M (no advance = worker lied, kill).
+  $startSha = ''
+  try { $startSha = ((& git -C (Get-BridgeRoot) rev-parse $BranchName 2>$null) | Select-Object -First 1).Trim() } catch {}
   return [pscustomobject]@{
-    id         = $sid
-    coder      = $cli                       # back-compat field (= CLI)
-    cli        = $cli
-    workerId   = [string]$WorkerSpec.id
-    model      = [string]$WorkerSpec.model
-    reasoning  = [string]$WorkerSpec.reasoning
-    status     = 'running'
-    branch     = [string]$BranchName
-    worktree   = [System.IO.Path]::GetFullPath($Worktree)
-    pid        = $proc.Id
-    pidTicks   = $ticks
-    process    = $proc
-    inFile     = $inF
-    msgFile    = $msgF
-    outFile    = $outF
-    errFile    = $errF
-    body       = [string]$Body
-    files      = @($files)
-    startedAt  = (Get-Date).ToString('o')
+    id            = $sid
+    coder         = $cli                       # back-compat field (= CLI)
+    cli           = $cli
+    workerId      = [string]$WorkerSpec.id
+    workerSpec    = $WorkerSpec                # full spec — reused by Respawn-WorkerForChunk
+    model         = [string]$WorkerSpec.model
+    reasoning     = [string]$WorkerSpec.reasoning
+    status        = 'running'
+    branch        = [string]$BranchName
+    worktree      = [System.IO.Path]::GetFullPath($Worktree)
+    pid           = $proc.Id
+    pidTicks      = $ticks
+    process       = $proc
+    inFile        = $inF
+    msgFile       = $msgF
+    outFile       = $outF
+    errFile       = $errF
+    body          = [string]$Body
+    files         = @($files)
+    startedAt     = (Get-Date).ToString('o')
+    # Chunk state (initial spawn = no chunks completed yet)
+    chunksDone    = 0
+    chunkBaseSha  = $startSha   # SHA before any chunk
+    chunkLastSha  = $startSha   # SHA after last completed chunk
+    chunkTotalM   = 0            # set when worker first declares M
   }
+}
+
+function Respawn-WorkerForChunk {
+  # After a worker emitted STATUS: CONTINUE-CHUNK:N/M and committed, we respawn
+  # the SAME logical worker in the SAME worktree on the SAME wip-branch with a
+  # continuation prompt referencing the next chunk. Mutates the $Worker object
+  # in-place: new process, new pid/files, updated chunkLastSha/chunksDone.
+  # The git worktree state is preserved (the just-committed work stays).
+  param([object]$Worker, [int]$NextChunk, [int]$TotalChunks, [string]$LastCommitSha)
+  if (-not $Worker) { throw 'Respawn-WorkerForChunk: $Worker is null' }
+  if (-not $Worker.workerSpec) { throw "Respawn-WorkerForChunk: worker $($Worker.id) has no workerSpec — cannot respawn" }
+
+  $cli = ([string]$Worker.workerSpec.cli).ToLowerInvariant()
+  $handler = $Script:ParallelCliRegistry[$cli]
+  if (-not $handler) { throw "Respawn-WorkerForChunk: no CLI handler for '$cli'" }
+
+  $jobs = Get-ParallelJobsDir
+  $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_chunk' + $NextChunk
+  $prefix = Join-Path $jobs ("worker_$($Worker.id)_$stamp")
+  $inF  = "$prefix.in.txt"
+  $msgF = "$prefix.msg.txt"
+  $outF = "$prefix.out.txt"
+  $errF = "$prefix.err.txt"
+
+  $prompt = New-ParallelWorkerContinuationPrompt `
+    -Body $Worker.body -Files @($Worker.files) -BranchName $Worker.branch `
+    -NextChunk $NextChunk -TotalChunks $TotalChunks -LastCommitSha $LastCommitSha
+  $u8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($inF, $prompt, $u8)
+
+  $proc = & $handler -Worker $Worker.workerSpec -Worktree $Worker.worktree -InFile $inF -MsgFile $msgF -OutFile $outF -ErrFile $errF
+  if (-not $proc) { throw "Respawn-WorkerForChunk: CLI handler returned no process" }
+
+  $ticks = [long]0
+  try { $ticks = (Get-Process -Id $proc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+
+  # Mutate worker in-place
+  $Worker.process     = $proc
+  $Worker.pid         = $proc.Id
+  $Worker.pidTicks    = $ticks
+  $Worker.inFile      = $inF
+  $Worker.msgFile     = $msgF
+  $Worker.outFile     = $outF
+  $Worker.errFile     = $errF
+  $Worker.status      = 'running'
+  $Worker.chunksDone  = ($NextChunk - 1)
+  $Worker.chunkLastSha = $LastCommitSha
+  $Worker.chunkTotalM = $TotalChunks
+  return $Worker
 }
 
 function Get-WorkerReplyText {
@@ -681,15 +783,45 @@ function Get-WorkerResult {
 
   $reply = Get-WorkerReplyText $Worker
   $status = 'failed'
+  $chunkN = 0; $chunkM = 0
+
+  # First try chunk-progress marker (specific shape: CONTINUE-CHUNK:N/M)
+  $cm = [regex]::Match($reply, '(?im)^\s*STATUS:\s*CONTINUE-CHUNK\s*:\s*(\d+)\s*/\s*(\d+)\s*$')
+  if ($cm.Success) {
+    $chunkN = [int]$cm.Groups[1].Value
+    $chunkM = [int]$cm.Groups[2].Value
+    return [pscustomobject]@{
+      status  = 'chunk-progress'
+      reply   = $reply
+      commits = @(Get-WorkerCommits $Worker)
+      chunkN  = $chunkN
+      chunkM  = $chunkM
+      error   = ''
+    }
+  }
+
+  # Generic STATUS matcher (any status word)
   $m = [regex]::Match($reply, '^\s*STATUS:\s*(?<s>[A-Z][A-Z0-9_-]*)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Multiline)
   if ($m.Success) {
     $s = $m.Groups['s'].Value.ToUpperInvariant()
     if ($s -eq 'DONE') { $status = 'done' }
     elseif ($s -eq 'PARTIAL') { $status = 'paused-for-restart' }
-    elseif ($s -eq 'CONTINUE' -or $s -eq 'CONTINUE-CHUNK') { $status = 'done' }
+    elseif ($s -eq 'CONTINUE') { $status = 'done' }
+    elseif ($s -eq 'CONTINUE-CHUNK') {
+      # Malformed CONTINUE-CHUNK (didn't match strict N/M shape above) — treat as failed
+      # so worker is forced to re-emit cleanly.
+      $status = 'failed'
+    }
     else { $status = 'failed' }
   }
-  return [pscustomobject]@{ status=$status; reply=$reply; commits=@(Get-WorkerCommits $Worker); error='' }
+  return [pscustomobject]@{
+    status  = $status
+    reply   = $reply
+    commits = @(Get-WorkerCommits $Worker)
+    chunkN  = 0
+    chunkM  = 0
+    error   = ''
+  }
 }
 
 function Save-ParallelStreams {
@@ -834,10 +966,46 @@ function Invoke-ParallelDispatch {
     foreach ($w in $workers) {
       if ($completed.ContainsKey($w.id)) { continue }
       $res = Get-WorkerResult $w
-      if ($res.status -ne 'running') {
-        $completed[$w.id] = $res
-        try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count) -Kind event } catch {}
+      if ($res.status -eq 'running') { continue }
+
+      # 2026-05-27: chunk-progress handling. Worker emitted CONTINUE-CHUNK:N/M.
+      # Verify the worker's branch actually advanced (commit landed), then
+      # respawn the same worker on the next chunk in the same worktree.
+      # If branch didn't advance or chunk limit hit -- close the worker.
+      if ($res.status -eq 'chunk-progress') {
+        $chunkN = [int]$res.chunkN
+        $chunkM = [int]$res.chunkM
+        $branchHead = ''
+        try { $branchHead = ((& git -C (Get-BridgeRoot) rev-parse $w.branch 2>$null) | Select-Object -First 1).Trim() } catch {}
+        $advanced = (-not [string]::IsNullOrWhiteSpace($branchHead)) -and ($branchHead -ne [string]$w.chunkLastSha)
+        if (-not $advanced) {
+          # No commit since last chunk — worker lied / forgot to commit. Mark failed.
+          $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk emitted but branch did not advance' }
+          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " emitted CONTINUE-CHUNK:" + $chunkN + "/" + $chunkM + " but branch " + $w.branch + " did not advance (no commit). Killing.") -Kind event } catch {}
+          continue
+        }
+        if ($chunkN -ge 10) {
+          # Chunk limit reached — close as done with what we have
+          $completed[$w.id] = [pscustomobject]@{ status='done'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk limit reached (10)' }
+          try { Add-Message -From system -Text ("⚠ Worker " + $w.id + " reached chunk limit (10/" + $chunkM + ") -- closing as done.") -Kind event } catch {}
+          continue
+        }
+        # Respawn for next chunk
+        $shortLast = if ($branchHead.Length -gt 7) { $branchHead.Substring(0,7) } else { $branchHead }
+        try {
+          $null = Respawn-WorkerForChunk -Worker $w -NextChunk ($chunkN + 1) -TotalChunks $chunkM -LastCommitSha $branchHead
+          try { Add-Message -From system -Text ("🔂 Worker " + $w.id + " chunk " + $chunkN + "/" + $chunkM + " committed " + $shortLast + " -- respawned on chunk " + ($chunkN + 1) + "/" + $chunkM) -Kind event } catch {}
+        } catch {
+          $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error=("respawn failed: " + $_.Exception.Message) }
+          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " respawn failed at chunk " + ($chunkN + 1) + "/" + $chunkM + ": " + $_.Exception.Message) -Kind event } catch {}
+        }
+        continue
       }
+
+      # Terminal status (done / paused-for-restart / failed)
+      $completed[$w.id] = $res
+      $chunkSummary = if ([int]$w.chunksDone -gt 0) { (" via " + [int]$w.chunksDone + " chunks") } else { '' }
+      try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count + $chunkSummary) -Kind event } catch {}
     }
   }
 
