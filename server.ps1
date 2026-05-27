@@ -13,10 +13,11 @@ $maxUploadBytes = 25 * 1024 * 1024
 
 # Authentication (HTTP Basic). Credentials live in auth.json next to config.
 $authPath = Join-Path $root 'auth.json'
-$authUser = $null; $authPass = $null
+$authUser = $null; $authPass = $null; $authToken = $null
 if (Test-Path $authPath) {
   $a = Get-Content $authPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $authUser = [string]$a.user; $authPass = [string]$a.password
+  if ($null -ne $a.PSObject.Properties['token']) { $authToken = [string]$a.token }
 }
 
 $null = Initialize-Bridge   # ensure files exist
@@ -88,8 +89,16 @@ function Get-QueryParamUtf8 {
 }
 function Test-Auth {
   param($ctx)
-  if (-not $authPass) { return $true }   # no password configured -> open
+  if (-not $authPass -and -not $authToken) { return $true }   # no credentials configured -> open
   $h = $ctx.Request.Headers['Authorization']
+  if ($authToken) {
+    if ($h -and $h.StartsWith('Bearer ')) {
+      $bearer = $h.Substring(7).Trim()
+      if ($bearer -eq $authToken) { return $true }
+    }
+    $qToken = Get-QueryParamUtf8 $ctx 'token'
+    if (-not [string]::IsNullOrWhiteSpace($qToken) -and $qToken -eq $authToken) { return $true }
+  }
   if ($h -and $h.StartsWith('Basic ')) {
     try {
       $raw = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($h.Substring(6)))
@@ -602,6 +611,166 @@ try {
         } catch {
           $err = ("" + $_.Exception.Message) | ConvertTo-Json -Compress
           Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/runbook') {
+        try {
+          $runbookRoot = Get-BridgeRoot
+
+          $runGit = {
+            param([string[]]$ArgsList)
+            try {
+              $out = & git @ArgsList 2>&1 | Out-String
+              return $out.TrimEnd()
+            } catch {
+              return "ERROR: $($_.Exception.Message)"
+            }
+          }
+
+          $gitStatusShort = & $runGit -ArgsList @('-C', $runbookRoot, 'status', '-s')
+          if ([string]::IsNullOrWhiteSpace($gitStatusShort)) { $gitStatusShort = '(clean)' }
+          $gitLog = & $runGit -ArgsList @('-C', $runbookRoot, 'log', '--oneline', '-10')
+          $gitStatus = "## git -C <bridgeRoot> status -s`r`n$gitStatusShort`r`n`r`n## git log --oneline -10`r`n$gitLog`r`n"
+
+          $now = Get-Date
+          $uptimeSec = [int]([Math]::Floor(($now - $serverStartTime).TotalSeconds))
+          $statePath = Join-Path $runbookRoot 'channels\main\state.json'
+          $stateRaw = ''
+          if (Test-Path -LiteralPath $statePath) {
+            try { $stateRaw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) } catch {}
+          }
+          $hbAge = 9999
+          $hbRaw = ''
+          $mHb = [regex]::Match($stateRaw, '"heartbeat"\s*:\s*"([^"]*)"')
+          if ($mHb.Success) { $hbRaw = $mHb.Groups[1].Value }
+          if (-not [string]::IsNullOrWhiteSpace($hbRaw)) {
+            try { $hbAge = [int]([Math]::Floor(($now - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
+          }
+          $hPaused = $false
+          $mPaused = [regex]::Match($stateRaw, '"paused"\s*:\s*(true|false)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if ($mPaused.Success) { $hPaused = ([string]$mPaused.Groups[1].Value).ToLowerInvariant() -eq 'true' }
+          $hStatus = ''
+          $mStatus = [regex]::Match($stateRaw, '"status"\s*:\s*"([^"]*)"')
+          if ($mStatus.Success) { $hStatus = $mStatus.Groups[1].Value }
+          $hLastSeq = 0
+          $mStateSeq = [regex]::Match($stateRaw, '"lastSeq"\s*:\s*(\d+)')
+          if ($mStateSeq.Success) { [void][int]::TryParse($mStateSeq.Groups[1].Value, [ref]$hLastSeq) }
+          $healthSnapshot = [ordered]@{
+            ok = (($hbAge -lt 120) -and (-not $hPaused))
+            uptime_sec = $uptimeSec
+            heartbeat_age_sec = $hbAge
+            paused = $hPaused
+            status = $hStatus
+            lastSeq = $hLastSeq
+            generated_at = $now.ToString('o')
+          }
+          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 8
+
+          $smokePath = Join-Path $runbookRoot 'smoke.ps1'
+          if (Test-Path -LiteralPath $smokePath -PathType Leaf) {
+            $proc = New-Object System.Diagnostics.Process
+            try {
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = 'powershell.exe'
+              $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + ($smokePath -replace '"','\"') + '"'
+              $psi.WorkingDirectory = $runbookRoot
+              $psi.UseShellExecute = $false
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.CreateNoWindow = $true
+              $proc.StartInfo = $psi
+              [void]$proc.Start()
+              $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+              $stderrTask = $proc.StandardError.ReadToEndAsync()
+              if (-not $proc.WaitForExit(30000)) {
+                try { $proc.Kill() } catch {}
+                try { $proc.WaitForExit(5000) | Out-Null } catch {}
+                $smokeSummary = 'SMOKE: timeout'
+              } else {
+                $stdout = $stdoutTask.Result
+                $stderr = $stderrTask.Result
+                $smokeSummary = "ExitCode=$($proc.ExitCode)`r`n`r`nSTDOUT`r`n$stdout`r`nSTDERR`r`n$stderr"
+              }
+            } finally {
+              if ($null -ne $proc) { $proc.Dispose() }
+            }
+          } else {
+            $smokeSummary = 'SMOKE: smoke.ps1 missing'
+          }
+
+          $redactLinePattern = '(?i)key|token|secret|password|bearer|authorization|gemini'
+          $logsDir = Join-Path $runbookRoot 'logs'
+          $logParts = New-Object 'System.Collections.Generic.List[string]'
+          if (Test-Path -LiteralPath $logsDir -PathType Container) {
+            $logFiles = @(Get-ChildItem -LiteralPath $logsDir -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+            if ($logFiles.Count -eq 0) {
+              [void]$logParts.Add('No .log files found.')
+            } else {
+              foreach ($logFile in $logFiles) {
+                [void]$logParts.Add("===== $($logFile.Name) =====")
+                $tailLines = @(Get-Content -LiteralPath $logFile.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue)
+                foreach ($line in $tailLines) {
+                  if ([string]$line -notmatch $redactLinePattern) { [void]$logParts.Add([string]$line) }
+                }
+                [void]$logParts.Add('')
+              }
+            }
+          } else {
+            [void]$logParts.Add('logs directory not found.')
+          }
+          $logsTail = $logParts -join "`r`n"
+
+          $stateObj = $null
+          try { $stateObj = Read-State } catch {}
+          $stateSummary = [ordered]@{}
+          foreach ($field in @('current_channel','current_task','held_task','status','paused','doctor_active','session_mission')) {
+            $value = $null
+            if ($null -ne $stateObj -and $null -ne $stateObj.PSObject.Properties[$field]) {
+              $value = $stateObj.PSObject.Properties[$field].Value
+            }
+            $stateSummary[$field] = $value
+          }
+          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 8
+
+          $worktrees = & $runGit -ArgsList @('-C', $runbookRoot, 'worktree', 'list')
+
+          Add-Type -AssemblyName System.IO.Compression
+          $msOut = New-Object System.IO.MemoryStream
+          $zip = New-Object System.IO.Compression.ZipArchive($msOut, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+          $addZipEntry = {
+            param($Zip, [string]$Name, [string]$Content)
+            $entry = $Zip.CreateEntry($Name)
+            $w = $entry.Open()
+            try {
+              $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Content)
+              $w.Write($bytes, 0, $bytes.Length)
+            } finally {
+              $w.Close()
+            }
+          }
+          try {
+            & $addZipEntry $zip 'git-status.txt' $gitStatus
+            & $addZipEntry $zip 'health.json' $healthJson
+            & $addZipEntry $zip 'smoke-summary.txt' $smokeSummary
+            & $addZipEntry $zip 'logs-tail.txt' $logsTail
+            & $addZipEntry $zip 'state-summary.json' $stateSummaryJson
+            & $addZipEntry $zip 'worktrees.txt' $worktrees
+          } finally {
+            $zip.Dispose()
+          }
+          $zipBytes = $msOut.ToArray()
+          $msOut.Dispose()
+
+          $response = $ctx.Response
+          $response.ContentType = 'application/zip'
+          $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
+          $response.Headers.Add('Content-Disposition', "attachment; filename=`"bridge-runbook-${ts}.zip`"")
+          $response.ContentLength64 = $zipBytes.Length
+          $response.OutputStream.Write($zipBytes, 0, $zipBytes.Length)
+          $response.OutputStream.Close()
+        } catch {
+          $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+          Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
         }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/metrics') {
