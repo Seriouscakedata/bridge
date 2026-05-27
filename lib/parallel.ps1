@@ -433,9 +433,13 @@ function Get-WorkerResult {
 }
 
 function Save-ParallelStreams {
+  # FIX 2026-05-27 (hardening): ignore $State parameter, always read fresh under lock via
+  # Update-State. The 2026-05-27 state-wipe came from this function trusting a caller-passed
+  # $State that turned out to be a fragment object (only parallel_streams field). Add-Member
+  # added the field again, Write-State serialized the fragment as full state -- wipe. Now
+  # the function ONLY does Add-Member on the live state under lock, so it can NEVER replace
+  # other fields. $State param kept for back-compat but ignored.
   param($State, [object[]]$Streams)
-  if (-not $State) { $State = Read-State }
-  if (-not $State) { return }
   $flat = New-Object System.Collections.Generic.List[object]
   foreach ($w in @($Streams)) {
     [void]$flat.Add([pscustomobject]@{
@@ -456,8 +460,14 @@ function Save-ParallelStreams {
       startedAt = [string]$w.startedAt
     })
   }
-  $State | Add-Member -NotePropertyName parallel_streams -NotePropertyValue @($flat.ToArray()) -Force
-  Write-State -State $State
+  $flatArr = @($flat.ToArray())
+  try {
+    Update-State ({ param($s) $s | Add-Member -NotePropertyName parallel_streams -NotePropertyValue $flatArr -Force }.GetNewClosure()) | Out-Null
+  } catch {
+    # Update-State throws "state.json missing" if Read-State returns null (broken state).
+    # Driver loop will auto-recover (Initialize-Bridge); we just bail without writing.
+    try { Add-Message -From system -Text ("⚠ Save-ParallelStreams skipped: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+  }
 }
 
 function Load-ParallelStreams {
