@@ -317,6 +317,120 @@ function Get-TaskCheckpointBlock {
   return $block
 }
 
+function Get-CoderRuntimeContextBlock {
+  [CmdletBinding()]
+  param([string]$RepoRoot = 'C:\Users\rafie\OneDrive\Documents\bridge')
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  [void]$lines.Add('=== RUNTIME CONTEXT (только чтение, для ориентации) ===')
+  [void]$lines.Add("repo: $RepoRoot")
+
+  $st = $null
+  try {
+    $st = Read-State
+    $ch = if ($st.current_channel) { [string]$st.current_channel } else { 'main' }
+    [void]$lines.Add("channel: $ch")
+  } catch {
+    [void]$lines.Add('channel: n/a')
+  }
+
+  try {
+    $sha = (& git -C $RepoRoot log -1 --format='%h' 2>$null).Trim()
+    $sub = (& git -C $RepoRoot log -1 --format='%s' 2>$null).Trim()
+    if ($sha) {
+      if ($sub.Length -gt 80) { $sub = $sub.Substring(0, 80) + '…' }
+      [void]$lines.Add("last_commit: $sha $sub")
+    } else {
+      [void]$lines.Add('last_commit: n/a')
+    }
+  } catch {
+    [void]$lines.Add('last_commit: n/a')
+  }
+
+  try {
+    $dirty = @(& git -C $RepoRoot status --short 2>$null) | Where-Object {
+      $_ -and ($_ -notmatch '(secrets\.json|\.env|auth\.json)')
+    }
+    if ($dirty.Count -eq 0) {
+      [void]$lines.Add('dirty: clean')
+    } else {
+      $first3 = ($dirty | Select-Object -First 3) -join '; '
+      $extra = if ($dirty.Count -gt 3) { " (+$($dirty.Count - 3) more)" } else { '' }
+      [void]$lines.Add("dirty: $($dirty.Count) files | $first3$extra")
+    }
+  } catch {
+    [void]$lines.Add('dirty: n/a')
+  }
+
+  try {
+    $lockPath = Join-Path $RepoRoot 'runtime\codex.lock'
+    if (Test-Path $lockPath) {
+      $lockInfo = (Get-Content $lockPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).Trim()
+      if ($lockInfo) {
+        if ($lockInfo.Length -gt 80) { $lockInfo = $lockInfo.Substring(0, 80) + '…' }
+        [void]$lines.Add("agent_lock: HELD | $lockInfo")
+      } else {
+        [void]$lines.Add('agent_lock: HELD (no owner info)')
+      }
+    } else {
+      [void]$lines.Add('agent_lock: free')
+    }
+  } catch {
+    [void]$lines.Add('agent_lock: n/a')
+  }
+
+  try {
+    if (Get-Command Get-TaskCheckpointBlock -ErrorAction SilentlyContinue) {
+      $cp = Get-TaskCheckpointBlock
+      if ($cp) {
+        $cpTrim = ($cp -replace '\s+', ' ').Trim()
+        if ($cpTrim.Length -gt 120) { $cpTrim = $cpTrim.Substring(0, 120) + '…' }
+        [void]$lines.Add("last_checkpoint: $cpTrim")
+      } else {
+        [void]$lines.Add('last_checkpoint: none')
+      }
+    } else {
+      [void]$lines.Add('last_checkpoint: n/a')
+    }
+  } catch {
+    [void]$lines.Add('last_checkpoint: n/a')
+  }
+
+  try {
+    if ($st -and $st.task_last_failure) {
+      $f = $st.task_last_failure
+      $failOne = $null
+      if ($f -is [string]) {
+        $failOne = $f
+      } else {
+        foreach ($k in @('reason', 'message', 'type', 'text')) {
+          if ($f.PSObject.Properties[$k] -and $f.$k) {
+            $failOne = [string]$f.$k
+            break
+          }
+        }
+        if (-not $failOne) {
+          try { $failOne = ($f | ConvertTo-Json -Compress -Depth 3) } catch { $failOne = '' }
+        }
+      }
+      $failOne = ($failOne -replace '\s+', ' ').Trim()
+      if ($failOne.Length -gt 100) { $failOne = $failOne.Substring(0, 100) + '…' }
+      if ($failOne) {
+        [void]$lines.Add("last_failure: $failOne")
+      } else {
+        [void]$lines.Add('last_failure: none')
+      }
+    } else {
+      [void]$lines.Add('last_failure: none')
+    }
+  } catch {
+    [void]$lines.Add('last_failure: n/a')
+  }
+
+  [void]$lines.Add('=== END RUNTIME CONTEXT ===')
+  return ($lines -join "`n")
+}
+
 function Get-OtherChannelsAgentsImpl {
   # Returns @{channelSlug = 'claude'|'codex'} for channels other than the current one
   # whose state.current_agent points to a live driver process. PID start ticks protect

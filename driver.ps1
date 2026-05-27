@@ -720,6 +720,11 @@ function Invoke-Coder {
     $warn = "=== PRE-FLIGHT WARNINGS ===`n" + ((@($pf.Soft) | ForEach-Object { "- $_" }) -join "`n") + "`n===========================`n`n"
     $Prompt = $warn + $Prompt
   }
+  $ctxBlock = ''
+  try { $ctxBlock = Get-CoderRuntimeContextBlock } catch { $ctxBlock = '' }
+  if ($ctxBlock) {
+    $Prompt = $ctxBlock + "`n`n" + $Prompt
+  }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
