@@ -36,7 +36,11 @@ function Get-StatusCountsText {
 function Get-ExistingDecisionState {
   $state = @{
     Freshness = @{}
+    FreshnessPostArgsFix = @{}
     DedupPairs = @{}
+    RejudgedBrokenSha = @{}
+    LegacyFreshnessChecked = 0
+    LegacyFreshnessDone = 0
     LineCount = 0
   }
   if (-not (Test-Path -LiteralPath $DecisionPath)) { return $state }
@@ -46,7 +50,18 @@ function Get-ExistingDecisionState {
     try { $obj = $line | ConvertFrom-Json } catch { continue }
     $action = [string]$obj.action
     if ($action -in @('backfill-freshness-check', 'backfill-freshness-timeout') -and $obj.PSObject.Properties.Name -contains 'item_id') {
-      $state.Freshness[[string]$obj.item_id] = $true
+      $id = [string]$obj.item_id
+      $state.Freshness[$id] = $true
+      $isPostArgsFix = $false
+      try { $isPostArgsFix = [bool]$obj.git_args_bugfix } catch { $isPostArgsFix = $false }
+      if ($isPostArgsFix) {
+        $state.FreshnessPostArgsFix[$id] = $true
+      } else {
+        $state.LegacyFreshnessChecked = [int]$state.LegacyFreshnessChecked + 1
+        try {
+          if ([bool]$obj.done) { $state.LegacyFreshnessDone = [int]$state.LegacyFreshnessDone + 1 }
+        } catch {}
+      }
     } elseif ($action -eq 'backfill-dedup-pair') {
       $a = [string]$obj.id_a
       $b = [string]$obj.id_b
@@ -54,6 +69,8 @@ function Get-ExistingDecisionState {
         $ids = @($a, $b) | Sort-Object
         $state.DedupPairs[($ids -join '|')] = $true
       }
+    } elseif ($action -eq 'backfill-rejudge-broken-sha' -and $obj.PSObject.Properties.Name -contains 'item_id') {
+      $state.RejudgedBrokenSha[[string]$obj.item_id] = $true
     }
   }
   return $state
@@ -126,6 +143,19 @@ function Set-ItemAutoResolved {
   return $changed
 }
 
+function Get-ItemByIdLocal {
+  param([string]$ItemId)
+  foreach ($item in @(Get-Backlog)) {
+    if ([string]$item.id -eq $ItemId) { return $item }
+  }
+  return $null
+}
+
+function Test-ValidCuratorSha {
+  param([string]$Sha)
+  return (-not [string]::IsNullOrWhiteSpace($Sha) -and $Sha -match '^[0-9a-f]{7,40}$')
+}
+
 function Ensure-ItemEmbedding {
   param($Item)
   try {
@@ -153,6 +183,10 @@ $freshnessSkippedAlreadyAudited = 0
 $freshnessTimeouts = 0
 $freshnessDone = New-Object 'System.Collections.Generic.List[object]'
 $freshnessNotDone = New-Object 'System.Collections.Generic.List[object]'
+$rejudgeTotal = 0
+$rejudgeSkipped = 0
+$rejudgeFixed = 0
+$rejudgeFailed = 0
 
 Write-Host "Backlog curator full backfill"
 Write-Host "channel=$Channel dry_run=$DryRun threshold=$Threshold"
@@ -167,7 +201,7 @@ foreach ($item in @($items | Where-Object { [string]$_.status -eq 'approved' }))
     $freshnessSkippedAlreadyAudited++
     continue
   }
-  if ($existing.Freshness.ContainsKey($id)) {
+  if ($existing.FreshnessPostArgsFix.ContainsKey($id)) {
     $freshnessSkippedAlreadyAudited++
     continue
   }
@@ -185,6 +219,7 @@ foreach ($item in @($items | Where-Object { [string]$_.status -eq 'approved' }))
       done = $false
       sha = $null
       reason = [string]$result.reason
+      git_args_bugfix = $true
     })
     [void]$freshnessNotDone.Add([pscustomobject]@{ id = $id; reason = [string]$result.reason })
     continue
@@ -200,6 +235,7 @@ foreach ($item in @($items | Where-Object { [string]$_.status -eq 'approved' }))
     done = $done
     sha = $sha
     reason = $reason
+    git_args_bugfix = $true
   })
   if ($done) {
     [void]$freshnessDone.Add([pscustomobject]@{ id = $id; sha = $sha; reason = $reason })
@@ -207,6 +243,55 @@ foreach ($item in @($items | Where-Object { [string]$_.status -eq 'approved' }))
   } else {
     [void]$freshnessNotDone.Add([pscustomobject]@{ id = $id; reason = $reason })
   }
+}
+
+$items = @(Get-Backlog)
+foreach ($item in @($items | Where-Object { $_.PSObject.Properties.Name -contains 'auto_curator' -and $null -ne $_.auto_curator })) {
+  $id = [string]$item.id
+  if ([string]::IsNullOrWhiteSpace($id)) { continue }
+  $oldSha = $null
+  try {
+    if ($item.auto_curator.PSObject.Properties.Name -contains 'judged_at_sha') { $oldSha = [string]$item.auto_curator.judged_at_sha }
+  } catch {}
+  if (Test-ValidCuratorSha -Sha $oldSha) { continue }
+  if ($existing.RejudgedBrokenSha.ContainsKey($id)) {
+    $rejudgeSkipped++
+    continue
+  }
+
+  $rejudgeTotal++
+  Write-Host "rejudge_broken_sha[$rejudgeTotal]: $id"
+  if ($DryRun) {
+    Write-Decision ([ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      action = 'backfill-rejudge-broken-sha'
+      item_id = $id
+      old_sha_preview = (Get-TextPreview -Text $oldSha -Max 80)
+      dry_run = $true
+    })
+    continue
+  }
+
+  $result = Invoke-BacklogCurator -ItemId $id
+  $updated = Get-ItemByIdLocal -ItemId $id
+  $newSha = $null
+  try {
+    if ($updated -and $updated.auto_curator.PSObject.Properties.Name -contains 'judged_at_sha') {
+      $newSha = [string]$updated.auto_curator.judged_at_sha
+    }
+  } catch {}
+  $validNow = Test-ValidCuratorSha -Sha $newSha
+  if ($validNow) { $rejudgeFixed++ } else { $rejudgeFailed++ }
+  Write-Decision ([ordered]@{
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    action = 'backfill-rejudge-broken-sha'
+    item_id = $id
+    old_sha_preview = (Get-TextPreview -Text $oldSha -Max 80)
+    new_sha = $newSha
+    valid = $validNow
+    verdict = if ($result -and $result.PSObject.Properties.Name -contains 'verdict') { [string]$result.verdict } else { $null }
+    reason = if ($result -and $result.PSObject.Properties.Name -contains 'reason') { [string]$result.reason } else { $null }
+  })
 }
 
 $items = @(Get-Backlog)
@@ -280,6 +365,18 @@ $reportLines = New-Object 'System.Collections.Generic.List[string]'
 [void]$reportLines.Add("Before: $beforeCounts")
 [void]$reportLines.Add("After: $finalCounts")
 [void]$reportLines.Add("")
+[void]$reportLines.Add('Re-run after $Args bugfix:')
+[void]$reportLines.Add("- previous_broken_freshness_checked: $($existing.LegacyFreshnessChecked)")
+[void]$reportLines.Add("- previous_broken_freshness_done: $($existing.LegacyFreshnessDone)")
+[void]$reportLines.Add("- rerun_checked: $freshnessTotal")
+[void]$reportLines.Add("- rerun_done: $($freshnessDone.Count)")
+[void]$reportLines.Add("- rerun_not_done: $($freshnessNotDone.Count)")
+[void]$reportLines.Add("- rerun_timeouts: $freshnessTimeouts")
+[void]$reportLines.Add("- rejudged_broken_sha: $rejudgeTotal")
+[void]$reportLines.Add("- rejudge_skipped_already_done: $rejudgeSkipped")
+[void]$reportLines.Add("- rejudge_fixed: $rejudgeFixed")
+[void]$reportLines.Add("- rejudge_failed: $rejudgeFailed")
+[void]$reportLines.Add("")
 [void]$reportLines.Add("Freshness pass 2:")
 [void]$reportLines.Add("- checked: $freshnessTotal")
 [void]$reportLines.Add("- skipped_already_audited_or_resolved: $freshnessSkippedAlreadyAudited")
@@ -317,6 +414,11 @@ if ($DryRun) {
 
 Write-Host "freshness_checks_total=$freshnessTotal"
 Write-Host "freshness_skipped_already_audited_or_resolved=$freshnessSkippedAlreadyAudited"
+Write-Host "freshness_done=$($freshnessDone.Count)"
+Write-Host "freshness_not_done=$($freshnessNotDone.Count)"
+Write-Host "rejudged_broken_sha=$rejudgeTotal"
+Write-Host "rejudge_fixed=$rejudgeFixed"
+Write-Host "rejudge_failed=$rejudgeFailed"
 Write-Host "dedup_pairs_found=$($dedupPairs.Count)"
 Write-Host "embedding_errors=$($embeddingErrors.Count)"
 Write-Host "new_decisions_logged=$newDecisions"
