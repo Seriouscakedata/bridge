@@ -2384,6 +2384,8 @@ let searchIndex = -1;
 let lastRenderedDay = '';
 let unreadMarker = null;
 let pollInFlight = false;
+let channelEpoch = 0;
+let channelSwitchInProgress = false;
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
@@ -4154,53 +4156,69 @@ function refreshTimes(){
   updateOverview();
 }
 
+function renderMessageBatch(data, options){
+  const opts = options || {};
+  const beforeBottom = typeof opts.beforeBottom === 'boolean' ? opts.beforeBottom : isNearBottom();
+  data.forEach(m => { lastSeq = Math.max(lastSeq, Number(m.seq) || 0); });
+
+  let toRender = data;
+  if(firstLoad && data.length > 0){
+    const nonSystem = data.filter(m => m.from !== 'system');
+    const last10 = nonSystem.slice(-10);
+    if(last10.length > 0){
+      const minSeq = Number(last10[0].seq) || 0;
+      const last10Seqs = new Set(last10.map(m => Number(m.seq)));
+      toRender = data.filter(m => m.from === 'system'
+        ? Number(m.seq) >= minSeq
+        : last10Seqs.has(Number(m.seq)));
+    }
+  }
+
+  const added = [];
+  for(const m of toRender){
+    const el = addMsg(m);
+    if(el) added.push(el);
+  }
+  if(data.length) applyMessageFilter();
+  if(data.length){
+    const visibleAdded = added.filter(isVisibleByPrefs).length;
+    const firstVisibleAdded = added.find(isVisibleByPrefs);
+    if(visibleAdded && !beforeBottom && !firstLoad) ensureUnreadMarker(firstVisibleAdded);
+    const focusedHash = focusHashTarget(!firstLoad);
+    if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
+    if(beforeBottom || firstLoad){
+      if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
+      firstLoad = false;
+    } else {
+      unseenCount += visibleAdded;
+    }
+  } else if(firstLoad && opts.finishFirstLoadWhenEmpty){
+    firstLoad = false;
+    applyMessageFilter();
+  }
+  updateBottomButton();
+}
+
 async function poll(){
-  if(pollInFlight) return;
+  if(pollInFlight || channelSwitchInProgress) return;
   pollInFlight = true;
+  const myEpoch = channelEpoch;
+  let staleEpoch = false;
   try{
     const beforeBottom = isNearBottom();
     const data = await fetchJson('/api/messages?since=' + lastSeq);
+    if(myEpoch !== channelEpoch || channelSwitchInProgress){
+      staleEpoch = true;
+      return;
+    }
     noteConnectionOk();
-    data.forEach(m => { lastSeq = Math.max(lastSeq, Number(m.seq) || 0); });
-
-    let toRender = data;
-    if(firstLoad && data.length > 0){
-      const nonSystem = data.filter(m => m.from !== 'system');
-      const last10 = nonSystem.slice(-10);
-      if(last10.length > 0){
-        const minSeq = Number(last10[0].seq) || 0;
-        const last10Seqs = new Set(last10.map(m => Number(m.seq)));
-        toRender = data.filter(m => m.from === 'system'
-          ? Number(m.seq) >= minSeq
-          : last10Seqs.has(Number(m.seq)));
-      }
-    }
-
-    const added = [];
-    for(const m of toRender){
-      const el = addMsg(m);
-      if(el) added.push(el);
-    }
-    if(data.length) applyMessageFilter();
-    if(data.length){
-      const visibleAdded = added.filter(isVisibleByPrefs).length;
-      const firstVisibleAdded = added.find(isVisibleByPrefs);
-      if(visibleAdded && !beforeBottom && !firstLoad) ensureUnreadMarker(firstVisibleAdded);
-      const focusedHash = focusHashTarget(!firstLoad);
-      if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
-      if(beforeBottom || firstLoad){
-        if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
-        firstLoad = false;
-      } else {
-        unseenCount += visibleAdded;
-      }
-    }
-    updateBottomButton();
+    renderMessageBatch(data, {beforeBottom});
   }catch(e){
+    if(myEpoch !== channelEpoch || channelSwitchInProgress) return;
     showConnectionProblem('messages', e);
   }finally{
     pollInFlight = false;
-    log.classList.remove('channel-switching');
+    if(!staleEpoch && myEpoch === channelEpoch && !channelSwitchInProgress) log.classList.remove('channel-switching');
   }
 }
 function setChip(id,on){
@@ -5486,27 +5504,40 @@ function closeChannelMenu(){
   if(channelMenu) channelMenu.setAttribute('aria-hidden', 'true');
   if(channelBtn) channelBtn.setAttribute('aria-expanded', 'false');
 }
+async function reloadMessagesForChannel(expectedEpoch){
+  const data = await fetchJson('/api/messages?since=0');
+  if(expectedEpoch !== channelEpoch) return false;
+
+  [...log.querySelectorAll('.msg,.day-sep,.unread-marker')].forEach(n => n.remove());
+  clearUnreadMarker();
+  lastSeq = 0;
+  lastRenderedDay = '';
+  firstLoad = true;
+  unseenCount = 0;
+  renderMessageBatch(data, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
+  return true;
+}
 async function switchChannel(slug){
+  if(channelSwitchInProgress) return;
+  channelSwitchInProgress = true;
+  log.classList.add('channel-switching');
   try{
     const r = await fetchJson('/api/channels/active', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})});
     if(r && r.ok){
       closeChannelMenu();
-      // Reload everything: messages, plan, backlog, etc. now point at the new channel.
-      // IMPORTANT: don't wipe log.innerHTML wholesale -- #emptyState and #working are
-      // children of #log, and poll() relies on `working` as the insertBefore reference.
-      // Mirror the same surgical reset that status()'s rewind branch uses.
-      log.classList.add('channel-switching');
-      lastSeq = 0;
-      [...log.querySelectorAll('.msg,.day-sep,.unread-marker')].forEach(n => n.remove());
-      lastRenderedDay = '';
-      firstLoad = true;
+      channelEpoch++;
       channelsCache.active = slug;
+      await reloadMessagesForChannel(channelEpoch);
       renderChannels();
-      poll(); status(); pollPlan(); pollMetrics();
+      status(); pollPlan(); pollMetrics();
     } else {
       alert('Не получилось переключиться: ' + (r && r.error ? r.error : 'unknown'));
     }
   }catch(e){ alert('Ошибка переключения канала: ' + e.message); }
+  finally{
+    channelSwitchInProgress = false;
+    log.classList.remove('channel-switching');
+  }
 }
 async function archiveChannel(slug){
   if(!confirm('Архивировать канал "' + slug + '"? Данные сохранятся, канал просто скроется из списка.')) return;
