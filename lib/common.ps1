@@ -1064,6 +1064,9 @@ function Initialize-Bridge {
       autonomous_count = 0
       active_jobs      = @()
       task_base_commit = ''
+      chunk_progress    = ''
+      chunk_base_commit = ''
+      force_coder       = $false
       critic_retry_count = 0
       current_agent      = $null
       current_agent_pid  = 0
@@ -1092,7 +1095,7 @@ function Initialize-Bridge {
       heartbeat=$null; driver_started=$null; claimed_at=$null
       current_backlog_id=$null
       autonomous_day=$null; autonomous_count=0
-      active_jobs=@(); task_base_commit=''; critic_retry_count=0
+      active_jobs=@(); task_base_commit=''; chunk_progress=''; chunk_base_commit=''; force_coder=$false; critic_retry_count=0
       current_agent=$null; current_agent_pid=0; current_agent_ticks=0; current_agent_since=$null
       coder_fired=$false; coder_bypass_retry_count=0
       held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null

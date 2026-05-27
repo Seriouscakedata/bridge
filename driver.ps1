@@ -99,6 +99,20 @@ function Get-FastLaneSettings {
   return $out
 }
 
+function Get-ChunkingSettings {
+  $out = @{ enabled = $true; maxChunksPerTask = 10 }
+  try {
+    $cfgC = Get-BridgeConfig
+    if ($cfgC -and ($cfgC.PSObject.Properties.Name -contains 'chunking') -and $cfgC.chunking) {
+      $ch = $cfgC.chunking
+      if (($ch.PSObject.Properties.Name -contains 'enabled') -and $null -ne $ch.enabled) { $out.enabled = [bool]$ch.enabled }
+      if (($ch.PSObject.Properties.Name -contains 'maxChunksPerTask') -and $ch.maxChunksPerTask) { $out.maxChunksPerTask = [int]$ch.maxChunksPerTask }
+    }
+  } catch {}
+  if ([int]$out.maxChunksPerTask -le 0) { $out.maxChunksPerTask = 10 }
+  return $out
+}
+
 function Test-IsTrivialTask {
   param([string]$TaskText, [int]$MinChars = 0)
   $t = ([string]$TaskText -replace '\[\[FAST\]\]', '').Trim()
@@ -139,6 +153,14 @@ function Clear-FastLaneFlags {
   $State | Add-Member -NotePropertyName skip_critic -NotePropertyValue $false -Force
   $State | Add-Member -NotePropertyName skip_reflect -NotePropertyValue $false -Force
   $State | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue '' -Force
+}
+
+function Clear-ChunkingState {
+  param($State)
+  if (-not $State) { return }
+  $State | Add-Member -NotePropertyName chunk_progress -NotePropertyValue '' -Force
+  $State | Add-Member -NotePropertyName chunk_base_commit -NotePropertyValue '' -Force
+  $State | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
 }
 $null = Initialize-Bridge
 
@@ -560,6 +582,7 @@ $claudeActionBlock
 - STATUS: CONTINUE -- СЛОЖНОЕ -> Codex: написание/правка кода, многошаговое, сборка фич, итерации с тестами, рефакторинг, рискованное/необратимое в больших масштабах. Дай Codex конкретную инструкцию (что, где, критерий готовности).
 - STATUS: DISCUSS -- разобрать ИДЕЮ вместе с Codex (без правок): поставь ему тезис/вопрос.
 - STATUS: RESEARCH -- нужен отдельный web-ход Claude: поиск/чтение внешних источников без Bash. Дай краткую причину, особенно если это второй research-ход по задаче.
+- Codex может вернуть STATUS: CONTINUE-CHUNK:N/M -- это знак, что многоэтапная задача продолжается следующим этапом без участия Claude. Драйвер сам удержит ход за Codex, ты не обязан реагировать.
 
 🔁 ПРАВИЛО CODER-DELEGATION (КРИТИЧНО): если задача потребовала изменения файлов в репо (`.ps1`/`.html`/`.css`/`.js`/`config.json`/новые файлы) — это работа Codex, НЕ твоя. Сам внести правку ОК ТОЛЬКО для тривиального (1-2 строки, явный фикс опечатки/одного флага). Для остального обязателен STATUS: CONTINUE с конкретной инструкцией Codex'у (что менять, где, критерий приёмки). Это потому, что: (а) у Codex code-fine-tuning, он лучше пишет; (б) критик ревьюит ТОЛЬКО Codex-diff, твой собственный diff проходит без независимой проверки — слепое пятно; (в) Opus-турны дорогие, их надо тратить на планирование, а не на редактирование. Гейт в драйвере: если ты выдал STATUS: DONE с file-правками БЕЗ привлечения Codex — DONE отклоняется и тебя заворачивают на CONTINUE. Это уже случалось (probe 2: Opus сам поправил web/index.html, обошёл критика).
 ПРАВИЛО ВЕРИФИКАЦИИ: перед STATUS: DONE -- если Codex выполнял действия (файлы/команды), ты ОБЯЗАН явно показать результат проверки и добавить отдельной строкой маркер [[VERIFIED: что проверено | результат]]. Без [[VERIFIED:]] DONE отклоняется.
@@ -644,11 +667,40 @@ $codexStudyDetail
 $snapBlock
 "@
   } else {
+    $chunkBlock = ''
+    try {
+      $cp = [string]$promptState.chunk_progress
+      if (-not [string]::IsNullOrWhiteSpace($cp)) {
+        $cbc = [string]$promptState.chunk_base_commit
+        $shortBase = if ($cbc.Length -gt 7) { $cbc.Substring(0,7) } else { $cbc }
+        $stageText = "ты только что закрыл чанк $cp"
+        $pm = [regex]::Match($cp, '^\s*(\d+)\s*/\s*(\d+)\s*$')
+        if ($pm.Success) {
+          $prevN = [int]$pm.Groups[1].Value
+          $totalM = [int]$pm.Groups[2].Value
+          if ($prevN -lt $totalM) {
+            $stageText = "ты выполняешь чанк $($prevN + 1) из $totalM. Прошлый чанк ($prevN/$totalM) закрыт"
+          } else {
+            $stageText = "ты только что закрыл финальный чанк $prevN/$totalM"
+          }
+        }
+        $chunkBlock = "`n`nЭТАП ЗАДАЧИ: $stageText. Предыдущий коммит: $shortBase. Продолжай со следующего этапа. Если вся работа готова -- STATUS: DONE. Если впереди ещё этап -- закоммить его и заверши ответ маркером STATUS: CONTINUE-CHUNK:N/M (N -- номер этого только что завершённого этапа)."
+      }
+    } catch {}
     $suffix = @"
 
 ТВОЙ ХОД как КОДЕР (Codex). Выполни последнюю инструкцию ПЛАНИРОВЩИКА и любое сообщение [USER].
 Делай реальные действия (файлы/команды) в рамках задачи. Кратко отчитайся по-русски, что сделал и каков результат.
 ПЛАН ЗАДАЧИ: для сложных задач (3+ шага) в первом ответе пиши нумерованный чеклист шагов. Обновляй при каждом ходе: ✅ готово, 🔄 текущий, ⬜ впереди.
+
+МНОГОЭТАПНЫЕ ЗАДАЧИ (опционально): если задача явно требует 3+ независимых коммитов и грозит таймаутом одного хода -- разбей её на этапы. После завершения этапа N из M:
+  1. ОБЯЗАТЕЛЬНО сделай git commit по этому этапу.
+  2. Заверши ответ ровно строкой STATUS: CONTINUE-CHUNK:N/M (N -- номер только что закрытого этапа, 1-based; M -- общее число этапов).
+  3. Драйвер сверит HEAD: если коммит есть, ты получишь следующий ход с тем же current_task и контекстом следующего чанка; если коммита нет -- попросит закоммитить и повторить.
+Лимит: 10 чанков на задачу (защита от runaway). Когда всё готово -- обычный STATUS: DONE, и тогда chunk_progress очистится автоматически.
+Chunking -- опция, а не обязательство: для тривиальных задач (1 коммит) используй обычный STATUS: DONE.
+$chunkBlock
+
 КАЧЕСТВО, А НЕ «ЛИШЬ БЫ РАБОТАЛО» (это важно — на этом уже лажали):
 - ПРОВЕРЯЙ СВОЙ ВЫВОД ЗАПУСКОМ: написал скрипт/функцию — САМ запусти и убедись, что вывод осмысленный и верный на РЕАЛЬНОМ примере, а не «код вроде правильный». Сообщать о готовности исполняемого без фактического запуска — нельзя.
 - Думай о КОРРЕКТНОСТИ, а не о «счастливом пути»: краевые случаи, пустые/битые данные, кодировки. Сомневаешься в API/парсинге (напр. как достать текст из XML/JSON) — ПРОВЕРЬ на примере, не угадывай.
@@ -1271,7 +1323,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -1341,7 +1393,7 @@ while ($true) {
     if ([bool](Read-State).doctor_active) {
       try { Abort-Doctor -Reason 'manual abort by operator' } catch {}
     }
-      Update-State { param($s) Complete-TaskAgentDuration $s; $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+      Update-State { param($s) Complete-TaskAgentDuration $s; $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -1394,6 +1446,7 @@ while ($true) {
         $s.task_start_seq   = [int]$s.lastSeq
         Clear-AuditorSuppressedHashes -State $s
         Clear-FastLaneFlags $s
+        Clear-ChunkingState $s
         $s.doctor_attempts  = [int]$s.doctor_attempts + 1
         $s.status           = 'working'
         $s.heartbeat        = (Get-Date).ToString('o')
@@ -1497,6 +1550,7 @@ while ($true) {
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
         Clear-AuditorSuppressedHashes -State $s
+        Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
         Reset-TaskAgentDuration $s
@@ -1564,6 +1618,7 @@ while ($true) {
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           Clear-AuditorSuppressedHashes -State $s
+          Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
           $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
           Reset-TaskAgentDuration $s
@@ -1591,14 +1646,18 @@ while ($true) {
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
   $forcePlanner = [bool]$state.force_planner
+  $forceCoder = $false
+  try { $forceCoder = [bool]$state.force_coder } catch {}
   $skipPlanner = [bool]$state.skip_planner
-  $speaker = if ($forcePlanner) { 'claude' }
+  $speaker = if ($forceCoder) { 'codex' }
+              elseif ($forcePlanner) { 'claude' }
               elseif ($mode -eq 'research') { 'claude' }
               elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
               elseif ($skipPlanner -and $mode -eq 'normal' -and $tt -eq 0) { 'codex' }
               elseif ($tt -eq 0) { 'claude' }
               else { Next-Speaker }
   if ($forcePlanner) { Update-State { param($s) $s.force_planner=$false } | Out-Null }
+  if ($forceCoder) { Update-State { param($s) $s.force_coder=$false } | Out-Null }
   $plannerEscalate = $false
   try { $plannerEscalate = ([int](Read-State).timeout_retry_count -ge 1) } catch {}
   $plannerModel = Select-PlannerModel -TaskText $task -Mode $mode -Escalate $plannerEscalate
@@ -1718,7 +1777,7 @@ while ($true) {
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
       try { Send-PushEvent -Kind gate -Text $safetyDesc } catch {}
       try { Invoke-PostMortem -FailureType 'safety' -Task $task -Context "SAFETY: $safetyDesc" } catch {}
-        Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -2008,6 +2067,60 @@ while ($true) {
 
   $plannerStatus = 'CONTINUE'
   $fastLaneDone = $false
+  if ($speaker -eq 'codex') {
+    $chunkSettings = Get-ChunkingSettings
+    $cm = [regex]::Match($reply, '(?im)^\s*STATUS:\s*CONTINUE-CHUNK\s*:\s*(\d+)\s*/\s*(\d+)\s*$')
+    if ([bool]$chunkSettings.enabled -and $cm.Success) {
+      $chunkN = [int]$cm.Groups[1].Value
+      $chunkM = [int]$cm.Groups[2].Value
+      $maxChunks = [int]$chunkSettings.maxChunksPerTask
+      $headNow = ''
+      try { $headNow = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch {}
+      $stChunk = Read-State
+      $chunkBase = [string]$stChunk.chunk_base_commit
+      if ([string]::IsNullOrWhiteSpace($chunkBase)) { $chunkBase = [string]$stChunk.task_base_commit }
+      $baseLabel = if ([string]::IsNullOrWhiteSpace($chunkBase)) { '<empty>' } elseif ($chunkBase.Length -gt 7) { $chunkBase.Substring(0,7) } else { $chunkBase }
+      $headAdvanced = (-not [string]::IsNullOrWhiteSpace($headNow)) -and ($headNow -ne $chunkBase)
+      if (-not $headAdvanced) {
+        Add-Message -From system -Text "Чанк $chunkN/$chunkM помечен, но коммит не зафиксирован (HEAD не сдвинулся с $baseLabel). Закоммить и повтори с тем же STATUS: CONTINUE-CHUNK:$chunkN/$chunkM." -Kind event | Out-Null
+        Update-State { param($s) $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        continue
+      }
+      $shortSha = if ($headNow.Length -gt 7) { $headNow.Substring(0,7) } else { $headNow }
+      $newProgress = "$chunkN/$chunkM"
+      if ($chunkN -ge $maxChunks) {
+        Add-Message -From system -Text "Достигнут лимит чанков на задачу ($chunkN/$maxChunks, последний коммит $shortSha). Принудительно закрываю задачу. Если работа не завершена — раздели на отдельные задачи." -Kind event | Out-Null
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName chunk_progress -NotePropertyValue $newProgress -Force
+          $s | Add-Member -NotePropertyName chunk_base_commit -NotePropertyValue $headNow -Force
+          $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+          $s | Add-Member -NotePropertyName skip_critic -NotePropertyValue $true -Force
+          $s.task_did_actions=$true; $s.no_progress_count=0; $s.verify_retry_count=2
+        }.GetNewClosure()) | Out-Null
+        $plannerStatus = 'DONE'
+        $fastLaneDone = $true
+      } else {
+        Add-Message -From system -Text "Чанк $chunkN/$chunkM завершён: commit $shortSha. Продолжаю на следующий чанк." -Kind event | Out-Null
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName chunk_progress -NotePropertyValue $newProgress -Force
+          $s | Add-Member -NotePropertyName chunk_base_commit -NotePropertyValue $headNow -Force
+          $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+          $s.task_did_actions=$true; $s.no_progress_count=0
+          $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+        }.GetNewClosure()) | Out-Null
+        continue
+      }
+    } elseif ([bool]$chunkSettings.enabled) {
+      $stChunkDone = Read-State
+      $hasChunkProgress = -not [string]::IsNullOrWhiteSpace([string]$stChunkDone.chunk_progress)
+      $doneHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*DONE\s*$')
+      if ($hasChunkProgress -and $doneHits.Count -gt 0) {
+        $plannerStatus = 'DONE'
+        $fastLaneDone = $true
+        Update-State { param($s) $s.task_did_actions=$true; $s.no_progress_count=0 } | Out-Null
+      }
+    }
+  }
   if ($fastLaneActiveForTurn) {
     $coderStatusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(DONE|CONTINUE)\s*$')
     if ($coderStatusHits.Count -gt 0) {
@@ -2088,7 +2201,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
@@ -2480,13 +2593,13 @@ $diff
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
     try { Send-PushEvent -Kind need_you -Text "Достигнут лимит ходов ($maxTurns): $(Get-PushSnippet -Text $task)" } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay
