@@ -82,3 +82,7 @@
 {"ts":"2026-05-27T16:37:36.0694905Z","speaker":"codex","model":"codex","sec":154.82,"status":"ok","mode":"discuss"}
 {"ts":"2026-05-27T16:41:05.5633530Z","speaker":"claude","model":"sonnet","sec":190.079,"status":"ok","mode":"discuss"}
 {"ts":"2026-05-27T17:01:04.1720150Z","speaker":"claude","model":"sonnet","sec":117.88,"status":"ok","mode":"normal"}
+{"ts":"2026-05-27T17:04:42.6361083Z","speaker":"codex","model":"codex","sec":60.411,"status":"ok","mode":"normal"}
+{"ts":"2026-05-27T17:06:47.5990468Z","speaker":"claude","model":"sonnet","sec":102.073,"status":"ok","mode":"normal"}
+{"ts":"2026-05-27T17:39:15.9987080Z","speaker":"claude","model":"opus","sec":288.726,"status":"ok","mode":"study"}
+{"ts":"2026-05-27T17:55:36.2371142Z","speaker":"claude","model":"sonnet","sec":80.489,"status":"ok","mode":"normal"}
