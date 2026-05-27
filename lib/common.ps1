@@ -1448,6 +1448,7 @@ function Initialize-Bridge {
       auditor            = @{ suppressed_hashes = @() }
       task_checkpoints   = @()
       task_last_failure  = $null
+      agent_telemetry    = $null
     }
     Write-State -State $state -AllowPartial   # initial create; guard skip OK
   } else {
@@ -1467,6 +1468,7 @@ function Initialize-Bridge {
       held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null
       auditor=@{ suppressed_hashes=@() }
       task_checkpoints=@(); task_last_failure=$null
+      agent_telemetry=$null
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
