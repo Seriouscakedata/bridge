@@ -3,6 +3,7 @@
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 . (Join-Path $PSScriptRoot 'lib\radar.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
+. (Join-Path $PSScriptRoot 'lib\replay.ps1')
 
 $cfg  = Get-BridgeConfig
 $port = [int]$cfg.port

@@ -4,6 +4,7 @@ conversation.jsonl
 summary.txt
 auth.json
 secrets.json
+replay/
 settings.json
 control/
 files/

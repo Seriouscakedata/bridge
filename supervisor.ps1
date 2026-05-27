@@ -3,6 +3,7 @@
 # WITHOUT a new UAC prompt. Never exits on its own (its job keeps children alive).
 # Instrumented: captures child stdout/stderr to control/*.log for diagnosis.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\replay.ps1')
 $ErrorActionPreference = 'Continue'
 $enc = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = $enc
 try { [Console]::OutputEncoding = $enc } catch {}
