@@ -1453,11 +1453,32 @@ function Wait-AgentProcess {
   # Wait for an agent process up to $TimeoutMs, refreshing the heartbeat every ~5s so a
   # long turn doesn't look "dead" to the watchdog (which else false-positive rolls back).
   # Returns $true if the process exited within the timeout.
-  param($Proc, [int]$TimeoutMs)
+  # MsgFile/ErrFile/OutFile: optional temp-file paths; used for 60s telemetry ticks
+  # (stagnation observability — no hard abort, data only).
+  param($Proc, [int]$TimeoutMs, [string]$MsgFile='', [string]$ErrFile='', [string]$OutFile='')
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $lastTelemetrySec = -1
   while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
     if ($Proc.WaitForExit(5000)) { return $true }
     try { Update-State { param($s) $s.heartbeat=(Get-Date).ToString('o') } | Out-Null } catch {}
+    $elapsedSec = [int]$sw.Elapsed.TotalSeconds
+    if ($elapsedSec - $lastTelemetrySec -ge 60) {
+      $lastTelemetrySec = $elapsedSec
+      try {
+        $cpuSec = $null
+        try { $cpuSec = [math]::Round((Get-Process -Id $Proc.Id -ErrorAction Stop).TotalProcessorTime.TotalSeconds, 2) } catch {}
+        $fInfo = [ordered]@{}
+        foreach ($pair in @(,@('msgF',$MsgFile),@('errF',$ErrFile),@('outF',$OutFile))) {
+          $label = $pair[0]; $fpath = $pair[1]
+          if (-not [string]::IsNullOrWhiteSpace($fpath)) {
+            $fi = Get-Item $fpath -ErrorAction SilentlyContinue
+            $fInfo[$label] = if ($fi) { [ordered]@{ len=[long]$fi.Length; mtime=$fi.LastWriteTime.ToString('o') } } else { [ordered]@{ len=0; mtime=$null } }
+          }
+        }
+        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; files=$fInfo }
+        Update-State ({ param($s) $s | Add-Member -NotePropertyName agent_telemetry -NotePropertyValue $telem -Force }.GetNewClosure()) | Out-Null
+      } catch {}
+    }
   }
   return $Proc.WaitForExit(0)
 }
@@ -1518,7 +1539,7 @@ function Invoke-Planner {
     # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
     # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000)) {
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
@@ -1757,7 +1778,7 @@ function Invoke-Coder {
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
     # mandatory visit.ps1 invocations on top of edits, ui_audit, verification, and
     # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000)) {
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
@@ -1809,7 +1830,7 @@ $NewBlock
     $p = Start-Process -FilePath $claudeExe -ArgumentList '-p','--model',$triageModel `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Register-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000)) { Stop-AgentTree $p.Id; return $null }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000 -ErrFile $errF -OutFile $outF)) { Stop-AgentTree $p.Id; return $null }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
   } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { return $null }
@@ -2015,7 +2036,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='working'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." -Kind event | Out-Null
@@ -2023,7 +2044,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   Update-State {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
+    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
     $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
