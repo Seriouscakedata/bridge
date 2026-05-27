@@ -390,7 +390,8 @@
   body.plan-open #panelsArea,
   body.code-open #panelsArea,
   body.dash-open #panelsArea,
-  body.usage-open #panelsArea{display:flex}
+  body.usage-open #panelsArea,
+  body.backlog-open #panelsArea{display:flex}
   .panels-tabs{
     position:sticky;
     top:0;
@@ -429,7 +430,8 @@
   #planPanel,
   #codePanel,
   #dashPanel,
-  #usagePanel{
+  #usagePanel,
+  #backlogPanel{
     position:static;
     width:100%;
     min-height:0;
@@ -460,6 +462,7 @@
   body.code-open #codePanel{display:flex}
   body.dash-open #dashPanel{display:flex}
   body.usage-open #usagePanel{display:flex}
+  body.backlog-open #backlogPanel{display:flex}
   body.has-health-banner #panelsArea{top:188px}
   #searchPanel.open ~ #panelsArea{top:198px}
   body.has-health-banner #searchPanel.open ~ #panelsArea{top:238px}
@@ -468,7 +471,8 @@
     body.plan-open #log,
     body.code-open #log,
     body.dash-open #log,
-    body.usage-open #log{padding-right:calc(var(--content-pad) + 344px)}
+    body.usage-open #log,
+    body.backlog-open #log{padding-right:calc(var(--content-pad) + 344px)}
   }
   @media (min-width:1181px) and (max-width:1359px){
     #panelsArea{
@@ -482,6 +486,78 @@
   #codeToggle.on{border-color:rgba(255,209,102,.58);color:#f8df9a;background:#2b2618}
   #dashToggle.on{border-color:rgba(104,211,145,.58);color:#c2f5d3;background:#14251b}
   #usageToggle.on{border-color:rgba(114,183,255,.58);color:#b9dcff;background:#172333}
+  #backlogToggle.on{border-color:rgba(255,107,107,.48);color:#ffa8a8;background:#2a1818}
+  /* curator status dots */
+  .curator-dot{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:20px;
+    height:20px;
+    border-radius:50%;
+    font-size:12px;
+    line-height:1;
+    flex-shrink:0;
+    cursor:default;
+    user-select:none;
+  }
+  .curator-dot-green{color:#4ade80}
+  .curator-dot-yellow{color:#e8b923}
+  .curator-dot-gray{color:#5a6478}
+  .curator-dot-resolved{background:#16a34a;color:#fff;font-size:10px;font-weight:700}
+  .curator-dot-done{color:#22c55e;font-weight:700}
+  .curator-dot-new{color:#3d4a5c;font-size:14px}
+  .similar-badge{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:18px;
+    height:18px;
+    border-radius:9px;
+    background:#252b36;
+    border:1px solid var(--border);
+    color:var(--muted);
+    font-size:10px;
+    padding:0 4px;
+    cursor:default;
+    user-select:none;
+  }
+  /* backlog panel styles */
+  .backlog-item{
+    display:flex;
+    align-items:flex-start;
+    gap:8px;
+    padding:8px 10px;
+    border-radius:8px;
+    background:rgba(10,14,20,.48);
+    border:1px solid var(--border-soft);
+    font-size:12px;
+    line-height:1.5;
+    transition:background .14s;
+  }
+  .backlog-item:hover{background:rgba(22,30,42,.75)}
+  .backlog-item-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+  .backlog-item-text{color:var(--soft);word-break:break-word}
+  .backlog-item-meta{color:var(--muted);font-size:11px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .backlog-item-btns{display:flex;gap:4px;flex-shrink:0;align-items:flex-start;padding-top:1px}
+  .backlog-item-btns button{padding:3px 7px;font-size:11px;min-height:0}
+  .backlog-empty{padding:16px 10px;color:var(--muted);text-align:center;font-size:13px}
+  .backlog-filter{display:flex;gap:4px;flex-wrap:wrap;padding:8px 10px 6px;border-bottom:1px solid var(--border-soft)}
+  .backlog-filter button{
+    padding:3px 8px;
+    border-radius:6px;
+    font-size:11px;
+    min-height:0;
+    color:var(--muted);
+    background:#141922;
+    border-color:var(--border-soft);
+  }
+  .backlog-filter button.active{
+    color:#d9ecff;
+    background:#12263d;
+    border-color:rgba(114,183,255,.48);
+  }
+  .backlog-list{display:flex;flex-direction:column;gap:6px;padding:8px}
   .overview-head{
     display:flex;
     align-items:center;
@@ -1603,7 +1679,8 @@
     body.plan-open #log,
     body.code-open #log,
     body.dash-open #log,
-    body.usage-open #log{padding-right:var(--content-pad)}
+    body.usage-open #log,
+    body.backlog-open #log{padding-right:var(--content-pad)}
     #panelsArea{
       left:12px; right:12px; width:auto; max-width:none;
       background:rgba(13,17,23,.98); z-index:40;
@@ -1612,7 +1689,8 @@
     body.plan-open #panelScrim,
     body.code-open #panelScrim,
     body.dash-open #panelScrim,
-    body.usage-open #panelScrim{display:block}
+    body.usage-open #panelScrim,
+    body.backlog-open #panelScrim{display:block}
   }
   @media (min-width:1360px){
     .msg{max-width:min(1120px,88%)}
@@ -1960,6 +2038,7 @@
     <button id="codeToggle" class="panels-tab" type="button" data-panel="code" role="tab" aria-controls="codePanel" aria-selected="false" aria-pressed="false" title="Код-память">{ } <span>Код</span></button>
     <button id="dashToggle" class="panels-tab" type="button" data-panel="dash" role="tab" aria-controls="dashPanel" aria-selected="false" aria-pressed="false" title="Дашборд">📊 <span>Дашборд</span></button>
     <button id="usageToggle" class="panels-tab" type="button" data-panel="usage" role="tab" aria-controls="usagePanel" aria-selected="false" aria-pressed="false" title="Расход">💸 <span>Расход</span></button>
+    <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей">📋 <span>Backlog</span></button>
   </div>
   <div class="panels-content">
 <aside id="overviewPanel" class="panel" data-panel="overview" aria-label="Обзор сеанса" aria-hidden="true">
@@ -2095,6 +2174,27 @@
     <h2>Провайдеры</h2>
     <div id="usageProviders" class="usage-list">
       <div class="overview-empty">Расход пока не загружен</div>
+    </div>
+  </section>
+</aside>
+
+<aside id="backlogPanel" class="panel" data-panel="backlog" aria-label="Backlog идей" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
+  <div class="overview-head">
+    <strong>📋 Backlog</strong>
+    <button id="backlogClose" class="mini-btn overview-close" type="button" title="Скрыть backlog" aria-label="Скрыть backlog">×</button>
+  </div>
+  <section class="overview-section" aria-label="Backlog items">
+    <h2>Идеи</h2>
+    <div class="backlog-filter">
+      <button class="active" data-bfilter="all" type="button">Все</button>
+      <button data-bfilter="new" type="button">Новые</button>
+      <button data-bfilter="approved" type="button">Одобренные</button>
+      <button data-bfilter="held" type="button">На паузе</button>
+      <button data-bfilter="done" type="button">Готово</button>
+    </div>
+    <div id="backlogList" class="backlog-list">
+      <div class="backlog-empty">Backlog пуст</div>
     </div>
   </section>
 </aside>
@@ -2235,6 +2335,10 @@ const dashSparkSuccess = document.getElementById('dashSparkSuccess');
 const usageToggle = document.getElementById('usageToggle');
 const usagePanel = document.getElementById('usagePanel');
 const usageClose = document.getElementById('usageClose');
+const backlogToggle = document.getElementById('backlogToggle');
+const backlogPanel = document.getElementById('backlogPanel');
+const backlogClose = document.getElementById('backlogClose');
+const backlogList = document.getElementById('backlogList');
 const usageBurn24 = document.getElementById('usageBurn24');
 const usageTotalCost = document.getElementById('usageTotalCost');
 const usagePrepaidCalls = document.getElementById('usagePrepaidCalls');
@@ -2322,6 +2426,15 @@ if(usageOpen && (overviewOpen || planOpen || codeOpen || dashOpen)){
   codeOpen = false;
   dashOpen = false;
 }
+let backlogOpen = localStorage.getItem('bridgeBacklog') === '1';
+if(backlogOpen && (overviewOpen || planOpen || codeOpen || dashOpen || usageOpen)){
+  overviewOpen = false;
+  planOpen = false;
+  codeOpen = false;
+  dashOpen = false;
+  usageOpen = false;
+}
+let _backlogFilter = 'all';
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
@@ -2482,6 +2595,7 @@ function activePanelId(){
   if(codeOpen) return 'code';
   if(dashOpen) return 'dash';
   if(usageOpen) return 'usage';
+  if(backlogOpen) return 'backlog';
   return '';
 }
 function syncPanelTabs(){
@@ -2514,6 +2628,7 @@ function persistPanelState(){
   localStorage.setItem('bridgeCode', codeOpen ? '1' : '0');
   localStorage.setItem('bridgeDash', dashOpen ? '1' : '0');
   localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
+  localStorage.setItem('bridgeBacklog', backlogOpen ? '1' : '0');
 }
 function applyAllPanelStates(){
   applyOverviewState();
@@ -2521,10 +2636,11 @@ function applyAllPanelStates(){
   applyCodeState();
   applyDashState();
   applyUsageState();
+  applyBacklogState();
   syncPanelTabs();
 }
 function openPanels(panelId){
-  const validPanels = ['overview','plan','code','dash','usage'];
+  const validPanels = ['overview','plan','code','dash','usage','backlog'];
   const stored = localStorage.getItem('bridgeLastPanel') || activePanelId() || 'overview';
   const fallback = validPanels.includes(stored) ? stored : 'overview';
   const next = validPanels.includes(panelId || '') ? panelId : fallback;
@@ -2533,12 +2649,14 @@ function openPanels(panelId){
   codeOpen = next === 'code';
   dashOpen = next === 'dash';
   usageOpen = next === 'usage';
+  backlogOpen = next === 'backlog';
   persistPanelState();
   applyAllPanelStates();
   if(next === 'plan') pollPlan();
   if(next === 'code' && codeQuery) requestAnimationFrame(() => codeQuery.focus());
   if(next === 'dash') pollMetrics();
   if(next === 'usage') pollUsage();
+  if(next === 'backlog') pollBacklog();
 }
 function closePanels(){
   overviewOpen = false;
@@ -2546,6 +2664,7 @@ function closePanels(){
   codeOpen = false;
   dashOpen = false;
   usageOpen = false;
+  backlogOpen = false;
   persistPanelState();
   applyAllPanelStates();
 }
@@ -2623,6 +2742,20 @@ function applyUsageState(){
     usageToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     usageToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
     usageToggle.title = enabled ? 'Скрыть расход' : 'Показать расход';
+  }
+  syncPanelTabs();
+  requestAnimationFrame(updateBottomButton);
+}
+function applyBacklogState(){
+  const enabled = Boolean(backlogOpen);
+  document.body.classList.toggle('backlog-open', enabled);
+  if(backlogPanel) backlogPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(backlogToggle){
+    backlogToggle.classList.toggle('on', enabled);
+    backlogToggle.classList.toggle('active', enabled);
+    backlogToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    backlogToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
+    backlogToggle.title = enabled ? 'Скрыть backlog' : 'Backlog идей';
   }
   syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
@@ -2745,6 +2878,123 @@ async function pollUsage(){
     if(usageProviders) usageProviders.innerHTML = '<div class="overview-empty">Расход недоступен: ' + esc(e.message || e) + '</div>';
   }finally{
     usageInFlight = false;
+  }
+}
+let backlogInFlight = false;
+let _backlogItems = [];
+async function pollBacklog(){
+  if(backlogInFlight) return;
+  backlogInFlight = true;
+  try{
+    const data = await fetchJson('/api/backlog');
+    _backlogItems = Array.isArray(data.items) ? data.items : [];
+    renderBacklog(_backlogItems, _backlogFilter);
+  }catch(e){
+    if(backlogList) backlogList.innerHTML = '<div class="backlog-empty">Backlog недоступен: ' + esc(e.message || e) + '</div>';
+  }finally{
+    backlogInFlight = false;
+  }
+}
+function backlogStatusDot(item){
+  const st = String(item.status || 'new');
+  const ac = item.auto_curator;
+  const verdict = ac ? String(ac.verdict || '') : '';
+  let cls = 'curator-dot';
+  let sym = '';
+  let title = '';
+  if(ac){
+    title = 'Verdict: ' + (ac.verdict||'') + ' | Confidence: ' + (ac.confidence||'') + ' | Model: ' + (ac.model||'') + ' | Reason: ' + (ac.reason||'');
+  }
+  if(st === 'approved'){
+    if(ac && verdict === 'approve'){
+      cls += ' curator-dot-green';
+      sym = '&#9679;&#9733;';
+      if(!title) title = 'Одобрено (авто-куратор)';
+    } else {
+      cls += ' curator-dot-green';
+      sym = '&#9679;';
+      if(!title) title = 'Одобрено';
+    }
+  } else if(st === 'held'){
+    cls += ' curator-dot-yellow';
+    sym = '&#9679;';
+    if(!title) title = 'На паузе';
+  } else if(st === 'auto-dropped'){
+    cls += ' curator-dot-gray';
+    sym = '&#9679;';
+    if(!title) title = 'Авто-удалено';
+  } else if(st === 'auto-resolved'){
+    cls += ' curator-dot-resolved';
+    sym = '&#10003;';
+    if(!title) title = 'Авто-решено';
+  } else if(st === 'done'){
+    cls += ' curator-dot-done';
+    sym = '&#10003;';
+    if(!title) title = 'Выполнено';
+  } else {
+    cls += ' curator-dot-new';
+    sym = '&#9675;';
+    if(!title) title = 'Новое (ожидает куратора)';
+  }
+  return '<span class="' + cls + '" title="' + esc(title) + '" aria-label="' + esc(title) + '">' + sym + '</span>';
+}
+function backlogItemHtml(item){
+  const st = String(item.status || 'new');
+  const id = String(item.id || '');
+  const text = String(item.text || '');
+  const from = String(item.from || '');
+  const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+  let dotTitle = '';
+  if(item.auto_curator){
+    const ac = item.auto_curator;
+    dotTitle = 'Verdict: ' + (ac.verdict||'') + ' | Confidence: ' + (ac.confidence||'') + ' | Model: ' + (ac.model||'') + ' | Reason: ' + (ac.reason||'');
+  }
+  const dot = backlogStatusDot(item);
+  let similarBadge = '';
+  if(item.similar_to && Array.isArray(item.similar_to) && item.similar_to.length > 0){
+    const simTitle = item.similar_to.map(s => String(s)).join(', ');
+    similarBadge = ' <span class="similar-badge" title="Похожие: ' + esc(simTitle) + '">~' + item.similar_to.length + '</span>';
+  }
+  let meta = '<span>' + esc(st) + '</span>';
+  if(from) meta += '<span>' + esc(from) + '</span>';
+  if(tags) meta += '<span>' + esc(tags) + '</span>';
+  let btnHtml = '';
+  if(st === 'auto-dropped' || st === 'auto-resolved'){
+    btnHtml = '<button class="backlog-restore-btn" data-id="' + esc(id) + '" title="Восстановить в очередь" type="button">&#8617; Restore</button>';
+  } else if(st === 'approved'){
+    btnHtml = '<button class="backlog-drop-btn" data-id="' + esc(id) + '" title="Удалить из очереди" type="button">&#128683; Drop</button>';
+  }
+  return '<div class="backlog-item status-dot" data-id="' + esc(id) + '" data-status="' + esc(st) + '">' +
+    dot +
+    '<div class="backlog-item-body">' +
+      '<div class="backlog-item-text">' + esc(text) + similarBadge + '</div>' +
+      '<div class="backlog-item-meta">' + meta + '</div>' +
+    '</div>' +
+    (btnHtml ? '<div class="backlog-item-btns">' + btnHtml + '</div>' : '') +
+  '</div>';
+}
+function renderBacklog(items, filter){
+  if(!backlogList) return;
+  const f = filter || 'all';
+  const filtered = f === 'all' ? items : items.filter(i => String(i.status||'new') === f);
+  if(!filtered.length){
+    backlogList.innerHTML = '<div class="backlog-empty">Нет элементов</div>';
+    return;
+  }
+  backlogList.innerHTML = filtered.map(backlogItemHtml).join('');
+}
+async function backlogUpdate(id, status, clearAuto){
+  const body = {id, status};
+  if(clearAuto) body.clear_auto_curator = true;
+  try{
+    await fetchJson('/api/backlog/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    await pollBacklog();
+  }catch(e){
+    setComposerStatus('Backlog update failed: ' + esc(e.message||e), 'bad');
   }
 }
 function renderCodeResults(items, note){
@@ -4645,7 +4895,7 @@ if(panelsToggleMobileBtn) panelsToggleMobileBtn.addEventListener('click', toggle
 panelTabs.forEach(tab => {
   tab.addEventListener('click', () => selectTab(tab.dataset.panel));
 });
-[overviewClose, planClose, codeClose, dashClose, usageClose].forEach(btn => {
+[overviewClose, planClose, codeClose, dashClose, usageClose, backlogClose].forEach(btn => {
   if(btn) btn.addEventListener('click', closePanels);
 });
 // Scrim tap + swipe-down: close active panel
@@ -4656,7 +4906,7 @@ const panelScrim = document.getElementById('panelScrim');
 if(panelScrim) panelScrim.addEventListener('click', closeActivePanel);
 {
   let _sy = 0;
-  document.querySelectorAll('#overviewPanel .drag-handle,#planPanel .drag-handle,#codePanel .drag-handle,#dashPanel .drag-handle,#usagePanel .drag-handle').forEach(h => {
+  document.querySelectorAll('#overviewPanel .drag-handle,#planPanel .drag-handle,#codePanel .drag-handle,#dashPanel .drag-handle,#usagePanel .drag-handle,#backlogPanel .drag-handle').forEach(h => {
     h.addEventListener('touchstart', e => { _sy = e.touches[0].clientY; }, {passive:true});
     h.addEventListener('touchend', e => {
       if(e.changedTouches[0].clientY - _sy > 40) closeActivePanel();
@@ -4669,6 +4919,31 @@ if(codeQuery){
     if(e.key === 'Enter'){
       e.preventDefault();
       runCodeSearch();
+    }
+  });
+}
+if(backlogPanel){
+  backlogPanel.addEventListener('click', e => {
+    const filterBtn = e.target.closest('[data-bfilter]');
+    if(filterBtn){
+      _backlogFilter = filterBtn.dataset.bfilter || 'all';
+      backlogPanel.querySelectorAll('[data-bfilter]').forEach(b => b.classList.toggle('active', b.dataset.bfilter === _backlogFilter));
+      renderBacklog(_backlogItems, _backlogFilter);
+      return;
+    }
+    const restoreBtn = e.target.closest('.backlog-restore-btn');
+    if(restoreBtn){
+      const id = restoreBtn.dataset.id;
+      restoreBtn.disabled = true;
+      backlogUpdate(id, 'approved', true);
+      return;
+    }
+    const dropBtn = e.target.closest('.backlog-drop-btn');
+    if(dropBtn){
+      const id = dropBtn.dataset.id;
+      dropBtn.disabled = true;
+      backlogUpdate(id, 'auto-dropped', false);
+      return;
     }
   });
 }
