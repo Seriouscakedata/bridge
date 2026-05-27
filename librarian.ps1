@@ -47,6 +47,11 @@ $removed = 0
 try { $removed = Invoke-MemoryDedup } catch { Write-LibLog "dedup error: $($_.Exception.Message)" }
 Write-LibLog "dedup removed: $removed"
 
+# 2b) Age prune: drop old, low-importance, unused, non-pinned records.
+$pruned = 0
+try { $pruned = Invoke-MemoryAgePrune } catch { Write-LibLog "age-prune error: $($_.Exception.Message)" }
+Write-LibLog "age-prune removed: $pruned"
+
 # 3) Regenerate per-channel + shared maps; legacy map.md stays as concatenation for backward compat.
 $mems = @(Get-AllMemories)
 if ($mems.Count -eq 0) {
