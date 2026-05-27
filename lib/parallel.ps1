@@ -286,7 +286,20 @@ function Select-WorkerForStream {
   if ($strictDomain.Count -gt 0) { $candidates = $strictDomain }
 
   # 6. Pick cheapest + fastest
-  $pick = $candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true} | Select-Object -First 1
+  # 2026-05-27v6: tie-breaker visibility (audit #11). Sort by cost asc, then speed
+  # desc, then id alphabetic for deterministic tie-break. If multiple candidates
+  # have equal (cost, speed) after sort, log the tie so we can detect routing surprises.
+  $sorted = @($candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+  $pick = $sorted | Select-Object -First 1
+  if ($pick -and $sorted.Count -ge 2) {
+    $second = $sorted[1]
+    if ([int]$pick.cost -eq [int]$second.cost -and [int]$pick.speed -eq [int]$second.speed) {
+      try {
+        $tieIds = ($sorted | Where-Object { [int]$_.cost -eq [int]$pick.cost -and [int]$_.speed -eq [int]$pick.speed } | ForEach-Object { $_.id }) -join ','
+        Add-Message -From system -Text ("🔀 Router tie-break: picked " + $pick.id + " from equal candidates [" + $tieIds + "] (cost=" + $pick.cost + ", speed=" + $pick.speed + ", id-alphabet).") -Kind event | Out-Null
+      } catch {}
+    }
+  }
   return $pick
 }
 

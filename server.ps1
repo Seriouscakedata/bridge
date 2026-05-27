@@ -711,7 +711,14 @@ try {
               else { $advUpd[$k] = [string]$raw }
             }
           }
-          if ($advUpd.Count -gt 0) { Set-AdvancedSetting -Updates $advUpd | Out-Null }
+          if ($advUpd.Count -gt 0) {
+            $advRes = Set-AdvancedSetting -Updates $advUpd
+            if ($advRes -and $advRes.rejected -and @($advRes.rejected).Count -gt 0) {
+              foreach ($rj in @($advRes.rejected)) {
+                try { Add-Message -From system -Text ("⚠ Настройка `"" + $rj.key + "`" отклонена: " + $rj.reason) -Kind event | Out-Null } catch {}
+              }
+            }
+          }
         }
 
         [void](Add-Message -From system -Text "⚙ Настройки моста обновлены пользователем." -Kind event)

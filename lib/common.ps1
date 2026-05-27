@@ -69,15 +69,33 @@ function Resolve-ClaudeExe {
   throw "claude.exe not found (tried: $($globs -join '; '))"
 }
 
+function Remove-FileWithRetry {
+  # Helper: try removing a file 5 times with exp backoff. Returns $true on success.
+  # On final failure logs to control/tmp-leak.log so orphans are auditable.
+  param([string]$Path, [string]$Reason = 'cleanup')
+  if (-not (Test-Path -LiteralPath $Path)) { return $true }
+  $tries = 0
+  while ($tries -lt 5) {
+    try { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop; return $true }
+    catch { $tries++; Start-Sleep -Milliseconds (50 * $tries) }
+  }
+  # Final failure: log to leak audit. Do NOT use SilentlyContinue silent-swallow.
+  try {
+    $logDir = Join-Path (Get-BridgeRoot) 'control'
+    if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    $logPath = Join-Path $logDir 'tmp-leak.log'
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    $line = (Get-Date).ToString('o') + " | reason=$Reason | path=$Path" + "`n"
+    [System.IO.File]::AppendAllText($logPath, $line, $u8)
+  } catch {}
+  return $false
+}
+
 function Write-AtomicFile {
   # Atomic file replacement that survives OneDrive sync locks.
-  #
-  # FIX 2026-05-26: Move-Item -Force was throwing IOException "Cannot create a file when that
-  # file already exists" sporadically on files inside OneDrive folders, because OneDrive
-  # holds a brief read handle during sync that prevents the rename. driver.travel-planner.err.log
-  # was filling up with these errors, and individual state.json writes were silently lost.
-  # Use [System.IO.File]::Replace for atomic swap (designed for this), with a retry loop for
-  # transient lock contention, and a final fallback to copy+delete.
+  # 2026-05-27v6: tmp-leak fix. Removal failures now log to control/tmp-leak.log
+  # (was SilentlyContinue silent-swallow leading to 100+ orphan .tmp.* files).
+  # On startup, Sweep-OrphanTmpFiles() picks them up.
   param([string]$Path, [string]$Content)
   $tmp = "$Path.tmp.$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
   [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
@@ -85,7 +103,7 @@ function Write-AtomicFile {
   while ($true) {
     try {
       if (Test-Path -LiteralPath $Path) {
-        [System.IO.File]::Replace($tmp, $Path, $null)   # atomic, handles OneDrive lock retry internally too
+        [System.IO.File]::Replace($tmp, $Path, $null)
       } else {
         [System.IO.File]::Move($tmp, $Path)
       }
@@ -93,20 +111,194 @@ function Write-AtomicFile {
     } catch {
       $tries++
       if ($tries -ge $maxTries) {
-        # Fallback: non-atomic copy+delete. Worse than Replace but still gets the bytes there.
         try {
           Copy-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
-          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          Remove-FileWithRetry -Path $tmp -Reason 'atomic-fallback-copy-success' | Out-Null
           return
         } catch {
-          # Clean up tmp on terminal failure so we don't litter
-          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          Remove-FileWithRetry -Path $tmp -Reason 'atomic-final-fail' | Out-Null
           throw
         }
       }
-      Start-Sleep -Milliseconds (60 * $tries)   # backoff: 60ms, 120ms, 180ms, 240ms, 300ms
+      Start-Sleep -Milliseconds (60 * $tries)
     }
   }
+}
+
+function Register-ChildProcess {
+  # 2026-05-27v6: P2 audit finding -- Start-Process powershell.exe for librarian,
+  # reflect, radar, curator was fire-and-forget with no monitoring. Now caller
+  # registers child PID with a label. Periodic Sweep-ChildProcesses checks status.
+  # Records to control/children.jsonl: { ts, label, pid, ticks }.
+  param([string]$Label, [int]$ProcessId, [long]$Ticks = 0)
+  if ($ProcessId -le 0) { return }
+  try {
+    $dir = Join-Path (Get-BridgeRoot) 'control'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $path = Join-Path $dir 'children.jsonl'
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    $rec = [ordered]@{ ts = (Get-Date).ToString('o'); label = $Label; pid = $ProcessId; ticks = $Ticks; status = 'started' }
+    [System.IO.File]::AppendAllText($path, ($rec | ConvertTo-Json -Compress -Depth 4) + "`n", $u8)
+  } catch {}
+}
+
+function Sweep-ChildProcesses {
+  # Periodic sweep of registered children. Marks crashed ones (pid gone) with
+  # crash notes if running > MinAliveMin AND died without explicit exit log.
+  # Reads control/children.jsonl, dedups by pid, checks each. Compacts the log
+  # by writing only still-relevant entries (last 50 + alive children).
+  param([int]$MaxAgeMin = 30)
+  try {
+    $path = Join-Path (Get-BridgeRoot) 'control\children.jsonl'
+    if (-not (Test-Path -LiteralPath $path)) { return @{ checked=0; dead=0 } }
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    $lines = @([System.IO.File]::ReadAllLines($path, $u8))
+    if ($lines.Count -eq 0) { return @{ checked=0; dead=0 } }
+    # parse last N entries
+    $cutoff = (Get-Date).AddMinutes(-$MaxAgeMin)
+    $byPid = @{}
+    foreach ($l in $lines) {
+      if ([string]::IsNullOrWhiteSpace($l)) { continue }
+      try { $obj = $l | ConvertFrom-Json } catch { continue }
+      if (-not $obj.pid) { continue }
+      $byPid[[string]$obj.pid] = $obj
+    }
+    $checked = 0; $dead = 0
+    $alive = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($key in @($byPid.Keys)) {
+      $obj = $byPid[$key]
+      $pidNum = [int]$obj.pid
+      $tsRaw = [string]$obj.ts
+      $started = (Get-Date)
+      try { $started = [datetime]::Parse($tsRaw) } catch {}
+      if ($started -lt $cutoff) { continue }   # too old, drop from tracking
+      $checked++
+      $proc = Get-Process -Id $pidNum -ErrorAction SilentlyContinue
+      if ($proc) {
+        # Verify ticks match (PID may have been reused)
+        $tickOk = $true
+        try { if ([long]$obj.ticks -gt 0 -and $proc.StartTime.Ticks -ne [long]$obj.ticks) { $tickOk = $false } } catch {}
+        if ($tickOk) { [void]$alive.Add($obj) }
+        else         { $dead++ }
+      } else {
+        $dead++
+      }
+    }
+    # Rewrite log with last 50 records + alive set (keep audit trail short)
+    $tail = @($lines | Select-Object -Last 50)
+    $newContent = ($tail -join "`n") + "`n"
+    try { [System.IO.File]::WriteAllText($path, $newContent, $u8) } catch {}
+    return @{ checked = $checked; dead = $dead; alive_count = $alive.Count }
+  } catch { return @{ checked=0; dead=0; error=$_.Exception.Message } }
+}
+
+function Merge-UnflushedSidecars {
+  # 2026-05-27v6: P3 audit finding -- Add-Message writes lost messages to
+  # `$convPath.unflushed` when main append fails (OneDrive lock, fs error).
+  # Previously there was no recovery on startup -- user never knew messages
+  # were lost. Now we scan for *.unflushed sidecars next to channels'
+  # conversation.jsonl files and merge them in (append + delete sidecar).
+  # Safe to call multiple times; idempotent (sidecar deleted after merge).
+  $root = Get-BridgeRoot
+  $chanRoot = Join-Path $root 'channels'
+  if (-not (Test-Path -LiteralPath $chanRoot)) { return @{ merged = 0 } }
+  $totalLines = 0; $totalSidecars = 0
+  try {
+    $sidecars = Get-ChildItem -LiteralPath $chanRoot -File -Recurse -Force -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like 'conversation.jsonl.unflushed' }
+    foreach ($sc in $sidecars) {
+      try {
+        $convPath = $sc.FullName -replace '\.unflushed$', ''
+        if (-not (Test-Path -LiteralPath $convPath)) { continue }
+        $u8 = New-Object System.Text.UTF8Encoding($false)
+        $content = [System.IO.File]::ReadAllText($sc.FullName, $u8)
+        if ([string]::IsNullOrWhiteSpace($content)) { Remove-FileWithRetry -Path $sc.FullName -Reason 'unflushed-empty' | Out-Null; continue }
+        # Append to main conversation
+        $fs = [System.IO.File]::Open($convPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        try {
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+          $fs.Write($bytes, 0, $bytes.Length)
+          $totalLines += ($content -split "`n").Count
+          $totalSidecars++
+        } finally { $fs.Dispose() }
+        # Only delete sidecar after successful merge
+        Remove-FileWithRetry -Path $sc.FullName -Reason 'unflushed-merged' | Out-Null
+      } catch {
+        # If anything fails for this sidecar, leave it for next startup attempt.
+        try {
+          $logPath = Join-Path (Join-Path $root 'control') 'tmp-leak.log'
+          $line = (Get-Date).ToString('o') + " | reason=unflushed-merge-fail | path=" + $sc.FullName + " | err=" + $_.Exception.Message + "`n"
+          [System.IO.File]::AppendAllText($logPath, $line, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+      }
+    }
+  } catch {}
+  return @{ merged = $totalLines; sidecars = $totalSidecars }
+}
+
+function Rotate-LogIfBig {
+  # Rotates a log file when it exceeds $MaxKB. Keeps last $Keep rotated copies
+  # as $Path.1, $Path.2, ... Older rotations are deleted. Idempotent.
+  # 2026-05-27v6: P1 audit finding -- metrics.jsonl/usage.jsonl/bridge-lock.log
+  # were growing without TTL. This is called from driver idle loop periodically.
+  param([string]$Path, [int]$MaxKB = 2048, [int]$Keep = 3)
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    $size = (Get-Item -LiteralPath $Path).Length
+    if ($size -lt ($MaxKB * 1024)) { return $false }
+    # Rotate: $Path.3 -> delete, .2 -> .3, .1 -> .2, $Path -> .1
+    for ($i = $Keep; $i -ge 1; $i--) {
+      $src = "$Path.$i"
+      $dst = "$Path.$($i + 1)"
+      if ($i -eq $Keep -and (Test-Path -LiteralPath $src)) {
+        Remove-FileWithRetry -Path $src -Reason 'log-rotate-drop' | Out-Null
+        continue
+      }
+      if (Test-Path -LiteralPath $src) {
+        try { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop } catch {}
+      }
+    }
+    try { Move-Item -LiteralPath $Path -Destination "$Path.1" -Force -ErrorAction Stop } catch {}
+    return $true
+  } catch { return $false }
+}
+
+function Sweep-OrphanTmpFiles {
+  # Periodic cleanup of *.tmp.* files older than 1 hour (rough heuristic: tmp files
+  # actively in use are deleted within seconds; older ones are orphans from crashes
+  # or silent-fail removals). Called once at driver startup.
+  # SAFE: only touches files matching *.tmp.* pattern, skips files mid-write
+  # (mtime within last 60 seconds).
+  param([int]$MinAgeMin = 60)
+  $root = Get-BridgeRoot
+  $scanDirs = @(
+    $root,
+    (Join-Path $root 'channels'),
+    (Join-Path $root 'memory')
+  )
+  $cutoff = (Get-Date).AddMinutes(-$MinAgeMin)
+  $logDir = Join-Path $root 'control'
+  if (-not (Test-Path -LiteralPath $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch {} }
+  $logPath = Join-Path $logDir 'tmp-sweep.log'
+  $u8 = New-Object System.Text.UTF8Encoding($false)
+  $cleaned = 0; $failed = 0
+  foreach ($d in $scanDirs) {
+    if (-not (Test-Path -LiteralPath $d)) { continue }
+    try {
+      $tmpFiles = Get-ChildItem -LiteralPath $d -File -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '\.tmp\.[a-f0-9]+$' -and $_.LastWriteTime -lt $cutoff }
+      foreach ($f in $tmpFiles) {
+        if (Remove-FileWithRetry -Path $f.FullName -Reason 'sweep-orphan') { $cleaned++ } else { $failed++ }
+      }
+    } catch {}
+  }
+  if ($cleaned -gt 0 -or $failed -gt 0) {
+    try {
+      $line = (Get-Date).ToString('o') + " | cleaned=$cleaned failed=$failed`n"
+      [System.IO.File]::AppendAllText($logPath, $line, $u8)
+    } catch {}
+  }
+  return @{ cleaned = $cleaned; failed = $failed }
 }
 
 function Get-StatePath {

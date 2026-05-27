@@ -650,7 +650,11 @@ function Start-LibrarianIfDue {
     [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
   try {
-    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden | Out-Null
+    $libProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden -PassThru
+    if ($libProc) {
+      $libTicks = 0L; try { $libTicks = (Get-Process -Id $libProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+      try { Register-ChildProcess -Label 'librarian' -ProcessId $libProc.Id -Ticks $libTicks } catch {}
+    }
     Add-Message -From system -Text "🧠 Запущен библиотекарь памяти (консолидация в фоне)." -Kind event | Out-Null
   } catch {}
 }
@@ -696,7 +700,13 @@ function Start-ReflectIfDue {
   $rf = Join-Path $bridgeRoot 'reflect.ps1'
   if (-not (Test-Path $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
-  try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
+  try {
+    $rfProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    if ($rfProc) {
+      $rfTicks = 0L; try { $rfTicks = (Get-Process -Id $rfProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+      try { Register-ChildProcess -Label 'reflect' -ProcessId $rfProc.Id -Ticks $rfTicks } catch {}
+    }
+  } catch {}
 }
 
 function Start-TechRadarIfDue {
@@ -714,7 +724,11 @@ function Start-TechRadarIfDue {
   if (-not (Test-Path -LiteralPath $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
   try {
-    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+    $rdProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    if ($rdProc) {
+      $rdTicks = 0L; try { $rdTicks = (Get-Process -Id $rdProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+      try { Register-ChildProcess -Label 'tech-radar' -ProcessId $rdProc.Id -Ticks $rdTicks } catch {}
+    }
     Add-Message -From system -Text "📡 Тех-радар запущен в фоне (еженедельный обход Хабра)." -Kind event | Out-Null
   } catch {}
 }
@@ -769,7 +783,11 @@ function Start-CanaryIfDue {
     $canaryScript = Join-Path $PSScriptRoot 'canary.ps1'
     if (-not (Test-Path -LiteralPath $canaryScript)) { return }
     [System.IO.File]::WriteAllText($launchMarker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden | Out-Null
+    $caProc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden -PassThru
+    if ($caProc) {
+      $caTicks = 0L; try { $caTicks = (Get-Process -Id $caProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+      try { Register-ChildProcess -Label 'canary' -ProcessId $caProc.Id -Ticks $caTicks } catch {}
+    }
   } catch {}
 }
 
@@ -1877,6 +1895,22 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
+  # 2026-05-27v6: startup cleanup tasks (P0/P3 audit findings):
+  #   - Sweep orphan *.tmp.* files (was 100+ leak from silent Remove failures)
+  #   - Merge any *.unflushed sidecars from failed Add-Message writes
+  try {
+    $sweep = Sweep-OrphanTmpFiles -MinAgeMin 60
+    if ($sweep -and (([int]$sweep.cleaned -gt 0) -or ([int]$sweep.failed -gt 0))) {
+      $stuckPart = if ([int]$sweep.failed -gt 0) { ", " + $sweep.failed + " stuck (see control/tmp-leak.log)" } else { '' }
+      Add-Message -From system -Text ("🧹 Tmp-sweep on startup: cleaned " + $sweep.cleaned + " orphan .tmp files" + $stuckPart) -Kind event | Out-Null
+    }
+  } catch {}
+  try {
+    $unflush = Merge-UnflushedSidecars
+    if ($unflush -and [int]$unflush.sidecars -gt 0) {
+      Add-Message -From system -Text ("📥 Восстановлено " + $unflush.merged + " потерянных строк из " + $unflush.sidecars + " sidecar-файлов (сообщения, не дописанные в прошлый рестарт).") -Kind event | Out-Null
+    }
+  } catch {}
 }
 
 # Doctor restart-loop guard (FIX: 2026-05-26).
@@ -2235,6 +2269,20 @@ while ($true) {
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}
+        # 2026-05-27v6: log rotation every idle tick (cheap — Rotate-LogIfBig
+        # is O(1) when file is under limit). 2MB cap = ~1 month of metrics.
+        try {
+          $brRoot = Get-BridgeRoot
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'metrics.jsonl')      -MaxKB 2048 -Keep 3 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'usage.jsonl')        -MaxKB 2048 -Keep 3 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'bridge-lock.log')    -MaxKB 512  -Keep 2 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'critic.log')         -MaxKB 1024 -Keep 3 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'control\tmp-leak.log')  -MaxKB 256  -Keep 1 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'control\tmp-sweep.log') -MaxKB 256  -Keep 1 | Out-Null
+          Rotate-LogIfBig -Path (Join-Path $brRoot 'control\children.jsonl') -MaxKB 256 -Keep 1 | Out-Null
+        } catch {}
+        # 2026-05-27v6: sweep registered child processes (audit P2 -- detect crashed children)
+        try { Sweep-ChildProcesses -MaxAgeMin 30 | Out-Null } catch {}
         Start-Sleep -Seconds $idlePoll; continue
       }
     }

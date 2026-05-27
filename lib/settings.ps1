@@ -94,8 +94,56 @@ function Get-AdvancedSettings {
   return $defaults
 }
 
+function Test-AdvancedSettingValue {
+  # 2026-05-27v6: range-check a single setting value. Returns @{ ok=$true; value=$coerced }
+  # or @{ ok=$false; reason='...' }. Used by Set-AdvancedSetting AND startup validator
+  # to catch bad values (audit P3 finding -- silent default fallback was hiding bugs).
+  param([string]$Key, $Value)
+  $ranges = @{
+    'parallel.maxStreams'           = @{ type='int';   min=1;   max=12  }
+    'chunking.maxChunksPerTask'     = @{ type='int';   min=1;   max=50  }
+    'criticMaxRetries'              = @{ type='int';   min=0;   max=5   }
+    'auditor.intervalMin'           = @{ type='int';   min=1;   max=1440 }
+    'auditor.cooldownMin'           = @{ type='int';   min=1;   max=1440 }
+    'auditor.doctorRecidivismHours' = @{ type='int';   min=1;   max=720  }
+    'auditor.doctorRecidivismMax'   = @{ type='int';   min=1;   max=100  }
+    'canary.enabled'                = @{ type='bool'                    }
+    'canary.intervalHours'          = @{ type='int';   min=1;   max=168  }
+    'canary.cooldownMinutes'        = @{ type='int';   min=1;   max=1440 }
+    'fastLane.autoDetect'           = @{ type='bool'                    }
+    'fastLane.minChars'             = @{ type='int';   min=0;   max=10000 }
+    'memory.recallTopK'             = @{ type='int';   min=1;   max=30   }
+    'memory.recallMinScore'         = @{ type='float'; min=0.0; max=1.0  }
+    'memory.dedupThreshold'         = @{ type='float'; min=0.0; max=1.0  }
+    'memory.ageDaysPrune'           = @{ type='int';   min=1;   max=3650 }
+    'librarian.deltaTriggerCount'   = @{ type='int';   min=1;   max=1000 }
+    'librarian.ceilingHours'        = @{ type='int';   min=1;   max=720  }
+    'reflect.minTaskDurationSec'    = @{ type='int';   min=0;   max=86400 }
+  }
+  if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
+  $r = $ranges[$Key]
+  if ($r.type -eq 'bool') {
+    try {
+      if ($Value -is [bool]) { return @{ ok=$true; value=$Value } }
+      $s = ([string]$Value).Trim().ToLowerInvariant()
+      if (@('true','1','yes','on','enabled') -contains $s) { return @{ ok=$true; value=$true } }
+      if (@('false','0','no','off','disabled','') -contains $s) { return @{ ok=$true; value=$false } }
+      return @{ ok=$false; reason="not a bool ($Value)" }
+    } catch { return @{ ok=$false; reason="cast bool failed" } }
+  }
+  $v = 0.0
+  if (-not [double]::TryParse([string]$Value, [ref]$v)) { return @{ ok=$false; reason="not a number ($Value)" } }
+  if ($v -lt $r.min) { return @{ ok=$false; reason="below min ($($r.min))" } }
+  if ($v -gt $r.max) { return @{ ok=$false; reason="above max ($($r.max))" } }
+  if ($r.type -eq 'int') { return @{ ok=$true; value=[int][Math]::Round($v) } }
+  return @{ ok=$true; value=$v }
+}
+
 function Set-AdvancedSetting {
-  # Writes flat dotted-path keys to settings.json. Whitelisted by key allowlist.
+  # Writes flat dotted-path keys to settings.json. Whitelisted by key allowlist
+  # AND range-validated via Test-AdvancedSettingValue. Returns @{ ok; rejected=@(...) }.
+  # 2026-05-27v6: added range validation -- audit P3 finding (bad config values
+  # were silently accepted and falling back to defaults, hiding bugs).
   param([hashtable]$Updates)
   $allow = @(
     'parallel.maxStreams',
@@ -111,11 +159,21 @@ function Set-AdvancedSetting {
   $h = @{}
   $s = Get-Settings
   if ($s) { foreach ($p in $s.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+  $rejected = New-Object 'System.Collections.Generic.List[object]'
   foreach ($k in $Updates.Keys) {
-    if ($allow -contains $k) { $h[$k] = $Updates[$k] }
+    if ($allow -notcontains $k) {
+      [void]$rejected.Add(@{ key = $k; reason = 'not in allowlist' })
+      continue
+    }
+    $check = Test-AdvancedSettingValue -Key $k -Value $Updates[$k]
+    if ($check.ok) {
+      $h[$k] = $check.value
+    } else {
+      [void]$rejected.Add(@{ key = $k; reason = $check.reason; value = $Updates[$k] })
+    }
   }
   Save-Settings ([pscustomobject]$h)
-  return $true
+  return @{ ok = $true; rejected = @($rejected.ToArray()) }
 }
 
 function Get-ExternalProjects {
