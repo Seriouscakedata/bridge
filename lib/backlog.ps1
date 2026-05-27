@@ -53,6 +53,30 @@ function Write-LastAddIdeaMarker {
   } catch {}
 }
 
+function Start-BacklogCuratorJob {
+  param([string]$ItemId)
+  if ([string]::IsNullOrWhiteSpace($ItemId)) { return $false }
+  try {
+    $root = Get-BacklogFallbackBridgeRoot
+    $lib = Join-Path $PSScriptRoot 'backlog.ps1'
+    $log = Join-Path (Get-BacklogControlDir) 'curator.log'
+    $escapedItemId = $ItemId.Replace("'", "''")
+    $escapedLib = $lib.Replace("'", "''")
+    $escapedLog = $log.Replace("'", "''")
+    $command = ". '$escapedLib'; Invoke-BacklogCurator -ItemId '$escapedItemId' 2>&1 | Out-File -Encoding utf8 -Append '$escapedLog'"
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$command) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+    return $true
+  } catch {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      action = 'judge-launch-error'
+      item_id = $ItemId
+      error = [string]$_.Exception.Message
+    })
+    return $false
+  }
+}
+
 function Ensure-BacklogMemoryLoaded {
   if (-not (Get-Command Get-Embedding -ErrorAction SilentlyContinue)) {
     $p = Join-Path $PSScriptRoot 'memory.ps1'
@@ -229,16 +253,16 @@ function Add-Idea {
   $line = ($rec | ConvertTo-Json -Compress -Depth 10)
   Invoke-BacklogLocked ({ Add-Content -LiteralPath (Get-BacklogPath) -Value $line -Encoding UTF8 }.GetNewClosure()) | Out-Null
 
-  $judge = $null
+  $curatorStarted = $false
   if (-not $SkipCurator) {
-    try { $judge = Invoke-BacklogCurator -ItemId ([string]$rec.id) } catch {}
+    $curatorStarted = Start-BacklogCuratorJob -ItemId ([string]$rec.id)
   }
   Write-LastAddIdeaMarker ([ordered]@{
     ts = (Get-Date).ToUniversalTime().ToString('o')
     deduped = $false
     id = [string]$rec.id
     similar_to = @($rec.similar_to)
-    curator = $judge
+    curator_started = [bool]$curatorStarted
   })
   return [string]$rec.id
 }
@@ -264,14 +288,38 @@ function Save-Backlog {
 
 function Set-Idea {
   # Edit a backlog item. Pass $null to leave a field unchanged.
-  param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false)
+  param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false, [bool]$ClearAutoCurator = $false, [string]$Reason = $null)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
   $items = @(Get-Backlog)
   $found = $false
   foreach ($i in $items) {
     if ([string]$i.id -ne $Id) { continue }
     $found = $true
-    if ($null -ne $Status) { $i | Add-Member -NotePropertyName status -NotePropertyValue ([string]$Status) -Force }
+    if ($ClearAutoCurator) {
+      foreach ($prop in @('auto_curator', 'resolved_by_sha', 'resolved_reason')) {
+        try {
+          if ($i.PSObject.Properties.Name -contains $prop) { $i.PSObject.Properties.Remove($prop) }
+        } catch {}
+      }
+    }
+    if ($null -ne $Status) {
+      $statusText = [string]$Status
+      $i | Add-Member -NotePropertyName status -NotePropertyValue $statusText -Force
+      if ($statusText -eq 'approved') {
+        $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+        $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (Get-BacklogCurrentSha) -Force
+      } elseif ($statusText -eq 'auto-dropped' -and -not [string]::IsNullOrWhiteSpace($Reason)) {
+        $manual = [ordered]@{
+          verdict = 'drop'
+          confidence = 1.0
+          reason = [string]$Reason
+          model = 'manual'
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          judged_at_sha = (Get-BacklogCurrentSha)
+        }
+        $i | Add-Member -NotePropertyName auto_curator -NotePropertyValue ([pscustomobject]$manual) -Force
+      }
+    }
     if ($null -ne $Text -and -not [string]::IsNullOrWhiteSpace([string]$Text)) { $i | Add-Member -NotePropertyName text -NotePropertyValue ([string]$Text) -Force }
     if ($IncrementAttempts) {
       $a = 0; try { $a = [int]$i.attempts } catch {}
@@ -380,6 +428,7 @@ $gitLog
       ts = (Get-Date).ToUniversalTime().ToString('o')
       action = 'judge'
       item_id = $ItemId
+      text = [string]$item.text
       verdict = $verdict
       confidence = $confidence
       reason = $reason
@@ -519,8 +568,9 @@ function Get-NextApprovedIdea {
       [void]$skipped.Add([string]$candidate.id)
       Write-BacklogJsonLine ([ordered]@{
         ts = (Get-Date).ToUniversalTime().ToString('o')
-        action = 'freshness-auto-resolved'
+        action = 'freshness-skip'
         item_id = [string]$candidate.id
+        text = [string]$candidate.text
         sha = $result.sha
         reason = [string]$result.reason
       })

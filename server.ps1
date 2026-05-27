@@ -625,7 +625,9 @@ try {
         $body = Read-Body $ctx | ConvertFrom-Json
         $st = $null; if ($null -ne $body.status) { $st = [string]$body.status }
         $tx = $null; if ($null -ne $body.text) { $tx = [string]$body.text }
-        $ok = Set-Idea -Id ([string]$body.id) -Status $st -Text $tx
+        $clearAuto = $false; if ($null -ne $body.clear_auto_curator) { $clearAuto = [bool]$body.clear_auto_curator }
+        $reason = $null; if ($null -ne $body.reason) { $reason = [string]$body.reason }
+        $ok = Set-Idea -Id ([string]$body.id) -Status $st -Text $tx -ClearAutoCurator $clearAuto -Reason $reason
         Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/delete') {

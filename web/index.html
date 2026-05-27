@@ -2983,9 +2983,10 @@ function renderBacklog(items, filter){
   }
   backlogList.innerHTML = filtered.map(backlogItemHtml).join('');
 }
-async function backlogUpdate(id, status, clearAuto){
+async function backlogUpdate(id, status, clearAuto, reason){
   const body = {id, status};
   if(clearAuto) body.clear_auto_curator = true;
+  if(reason) body.reason = reason;
   try{
     await fetchJson('/api/backlog/update', {
       method: 'POST',
@@ -4942,7 +4943,7 @@ if(backlogPanel){
     if(dropBtn){
       const id = dropBtn.dataset.id;
       dropBtn.disabled = true;
-      backlogUpdate(id, 'auto-dropped', false);
+      backlogUpdate(id, 'auto-dropped', false, 'manual user drop');
       return;
     }
   });

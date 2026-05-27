@@ -430,8 +430,8 @@ function Publish-CuratorDecisionEvents {
     $reason = [string](Get-ObjectValue $decision @('reason','why'))
     $preview = Get-PushSnippet -Text $text -Max 80
 
-    if ($action -eq 'freshness-skip') {
-      $skipId = [string](Get-ObjectValue $decision @('itemId','id','ideaId'))
+    if ($action -eq 'freshness-skip' -or $action -eq 'freshness-auto-resolved') {
+      $skipId = [string](Get-ObjectValue $decision @('item_id','itemId','id','ideaId'))
       $skipSha = [string](Get-ObjectValue $decision @('sha','commit','commitSha'))
       if ($skipSha.Length -gt 7) { $skipSha = $skipSha.Substring(0, 7) }
       if ([string]::IsNullOrWhiteSpace($skipId)) { $skipId = $preview }
@@ -2324,9 +2324,6 @@ while ($true) {
         Add-Message -From system -Text "💡 Идея уже в беклоге (cosine $cosineText): id=$dedupId" -Kind event | Out-Null
       } elseif ($ideaOutcome.created -and -not [string]::IsNullOrWhiteSpace([string]$ideaOutcome.itemId)) {
         [void]$proposedIdeas.Add($idea)
-        try { [void](Start-BacklogCuratorAsync -ItemId ([string]$ideaOutcome.itemId)) } catch {
-          try { Add-Message -From system -Text ("⚠ Не удалось запустить curator для идеи " + [string]$ideaOutcome.itemId + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-        }
       } elseif ($addIdeaResult) {
         [void]$proposedIdeas.Add($idea)
       }
