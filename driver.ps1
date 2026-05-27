@@ -727,9 +727,12 @@ function Get-CoderReasoningEffort {
   try { $crc = [int]$st.critic_retry_count } catch {}
   $instr = Get-LastClaudeInstruction
   $plen = if ($null -eq $instr) { 0 } else { ([string]$instr).Length }
-  if ($mode -eq 'discuss' -or $instr -match '\[\[REASONING:high\]\]' -or $crc -ge 1) {
+  if ($instr -match '\[\[REASONING:high\]\]' -or $crc -ge 1) {
     $wtLabel = 'n/a'
     return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
+  }
+  if ($mode -eq 'discuss') {
+    return [pscustomobject]@{ effort='high'; plen=$plen; mode=$mode; crc=$crc; wt='discuss-high' }
   }
 
   $wtClean = $true
