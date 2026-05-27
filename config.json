@@ -41,6 +41,11 @@
       "refactor"
     ]
   },
+  "fastLane": {
+    "autoDetect": false,
+    "minChars": 100,
+    "embedBatchEnabled": true
+  },
   "memory": {
     "enabled": true,
     "embedModel": "gemini-embedding-001",
@@ -50,6 +55,7 @@
     "recallMinScore": 0.62,
     "dedupThreshold": 0.93,
     "maxInjectChars": 1200,
+    "embedCacheEnabled": false,
     "antiSkillTopK": 2,
     "antiSkillMinScore": 0.55,
     "antiSkillMaxInjectChars": 600

@@ -83,6 +83,63 @@ function Get-PlannerModel {
 
   return $triageModel
 }
+
+function Get-FastLaneSettings {
+  $out = @{ autoDetect = $false; minChars = 100; embedBatchEnabled = $true }
+  try {
+    $cfgF = Get-BridgeConfig
+    if ($cfgF -and ($cfgF.PSObject.Properties.Name -contains 'fastLane') -and $cfgF.fastLane) {
+      $fl = $cfgF.fastLane
+      if (($fl.PSObject.Properties.Name -contains 'autoDetect') -and $null -ne $fl.autoDetect) { $out.autoDetect = [bool]$fl.autoDetect }
+      if (($fl.PSObject.Properties.Name -contains 'minChars') -and $fl.minChars) { $out.minChars = [int]$fl.minChars }
+      if (($fl.PSObject.Properties.Name -contains 'embedBatchEnabled') -and $null -ne $fl.embedBatchEnabled) { $out.embedBatchEnabled = [bool]$fl.embedBatchEnabled }
+    }
+  } catch {}
+  if ([int]$out.minChars -le 0) { $out.minChars = 100 }
+  return $out
+}
+
+function Test-IsTrivialTask {
+  param([string]$TaskText, [int]$MinChars = 0)
+  $t = ([string]$TaskText -replace '\[\[FAST\]\]', '').Trim()
+  if ($MinChars -le 0) {
+    try { $MinChars = [int](Get-FastLaneSettings).minChars } catch { $MinChars = 100 }
+  }
+  if ($MinChars -le 0) { $MinChars = 100 }
+  if ($t.Length -ge $MinChars) { return $false }
+  if ($t -match '\[\[REASONING:high\]\]') { return $false }
+  if ($t -match '(?m)^#+\s') { return $false }
+  if ($t -match '(?m)^\d+\.\s') { return $false }
+  if ($t -match '```') { return $false }
+  if ($t -match '(?i)(архитектур|разбер|исследу|спроектир|design|refactor|audit)') { return $false }
+  if ($t -match '(?i)\b(поправ|обнов|убер|добав|fix|update|remove|add|set|replace|rename)\w*') { return $true }
+  return $false
+}
+
+function Set-FastLaneFlags {
+  param($State, [string]$Reason = '')
+  if (-not $State) { return }
+  $State | Add-Member -NotePropertyName skip_planner -NotePropertyValue $true -Force
+  $State | Add-Member -NotePropertyName skip_critic -NotePropertyValue $true -Force
+  $State | Add-Member -NotePropertyName skip_reflect -NotePropertyValue $true -Force
+  $State | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue ([string]$Reason) -Force
+}
+
+function Clear-FastLaneFlags {
+  param($State, [switch]$PreserveReflectSkip)
+  if (-not $State) { return }
+  $lastSkip = $false
+  try { $lastSkip = [bool]$State.skip_reflect } catch {}
+  if ($PreserveReflectSkip) {
+    $State | Add-Member -NotePropertyName last_task_skip_reflect -NotePropertyValue $lastSkip -Force
+  } else {
+    $State | Add-Member -NotePropertyName last_task_skip_reflect -NotePropertyValue $false -Force
+  }
+  $State | Add-Member -NotePropertyName skip_planner -NotePropertyValue $false -Force
+  $State | Add-Member -NotePropertyName skip_critic -NotePropertyValue $false -Force
+  $State | Add-Member -NotePropertyName skip_reflect -NotePropertyValue $false -Force
+  $State | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue '' -Force
+}
 $null = Initialize-Bridge
 
 # ---------- helpers ----------
@@ -150,12 +207,20 @@ function Start-LibrarianIfDue {
 
 function Start-ReflectIfDue {
   # Launch idle self-reflection at most once per autonomy.reflectEveryHours, detached.
+  $marker = Join-Path $bridgeRoot 'reflect.last'
+  try {
+    $stSkipReflect = Read-State
+    if ([bool]$stSkipReflect.skip_reflect -or [bool]$stSkipReflect.last_task_skip_reflect) {
+      try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      try { Update-State { param($s) $s | Add-Member -NotePropertyName last_task_skip_reflect -NotePropertyValue $false -Force } | Out-Null } catch {}
+      return
+    }
+  } catch {}
   $auto = $null
   try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $auto = $cfgA.autonomy } } catch { return }
   $enabled = if ($auto -and $null -ne $auto.enabled) { [bool]$auto.enabled } else { $true }
   if (-not $enabled) { return }
   $everyH = if ($auto -and $auto.reflectEveryHours) { [double]$auto.reflectEveryHours } else { 6 }
-  $marker = Join-Path $bridgeRoot 'reflect.last'
   if (Test-Path $marker) {
     try {
       $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim())
@@ -364,7 +429,43 @@ function Format-Transcript {
 }
 
 function Build-Prompt {
-  param([string]$Role, [string]$Task, [string]$Mode = 'normal')
+  param([string]$Role, [string]$Task, [string]$Mode = 'normal', [switch]$FastLane)
+  if ($FastLane -and $Role -eq 'codex') {
+    $taskText = [string]$Task
+    $skillSect = ''
+    try { $skillSect = Get-SkillRecall -TaskText $taskText } catch { $skillSect = '' }
+    $skillAppend = if ($skillSect) { "`n`n$skillSect" } else { '' }
+    $autoScopeLine = ''
+    try {
+      $promptStateFast = Read-State
+      if ([string]$promptStateFast.current_backlog_id) {
+        $sc = (Get-AutonomySettings).scope
+        if ($sc -eq 'projects') { $autoScopeLine = "ОБЛАСТЬ АВТОНОМНОЙ ЗАДАЧИ: сам мост И его проекты под $workRoot. НЕ трогай личные/системные файлы вне проектов." }
+        else { $autoScopeLine = "ОБЛАСТЬ АВТОНОМНОЙ ЗАДАЧИ: ТОЛЬКО сам мост ($bridgeRoot). НЕ меняй другие проекты/файлы вне bridge." }
+      }
+    } catch {}
+    return @"
+Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
+Рабочий корень: $workRoot
+
+FAST-LANE: Planner пропущен. Выполни пользовательскую задачу напрямую как Codex.
+
+ТЕКУЩАЯ ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:
+$taskText
+$autoScopeLine
+
+ПРАВИЛА:
+- Пиши кратко и ПО-РУССКИ. Технические токены, пути, команды и строку STATUS не переводи.
+- Делай только явно нужную маленькую правку; не расширяй scope.
+- НЕ трогай `watchdog.ps1`, `supervisor.ps1`, `.git/*`, `secrets.json`, `auth.json`.
+- Для `.ps1`: сохраняй UTF-8 с BOM, затем проверь ParseFile. Если менял `.ps1`, запусти smoke перед коммитом.
+- Проверяй результат реальным запуском/helper-тестом, затем сделай один commit.
+- restart.flag создавай только если `git diff --name-only HEAD` перед созданием показывает хотя бы один `.ps1`.
+- В конце дай краткий отчёт и отдельную строку `[[VERIFIED: что проверено | результат]]`.
+- Последняя строка должна быть ровно: `STATUS: DONE`.
+$skillAppend
+"@
+  }
   $transcript = Format-Transcript
   $promptState = Read-State
   $dt = [int]$promptState.discuss_turn
@@ -727,6 +828,9 @@ function Get-CoderReasoningEffort {
   try { $crc = [int]$st.critic_retry_count } catch {}
   $instr = Get-LastClaudeInstruction
   $plen = if ($null -eq $instr) { 0 } else { ([string]$instr).Length }
+  if ([bool]$st.skip_planner -and [bool]$st.skip_critic) {
+    return [pscustomobject]@{ effort='medium'; plen=$plen; mode=$mode; crc=$crc; wt='fast-lane' }
+  }
   if ($instr -match '\[\[REASONING:high\]\]' -or $crc -ge 1) {
     $wtLabel = 'n/a'
     return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
@@ -1167,7 +1271,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -1208,6 +1312,7 @@ try {
         $s.task_turn = 0
         $s.task_mode = 'normal'
         Clear-AuditorSuppressedHashes -State $s
+        Clear-FastLaneFlags $s
         $s.status = 'idle'
         $s.active_agent = $null
         $s.active_model = $null
@@ -1236,7 +1341,7 @@ while ($true) {
     if ([bool](Read-State).doctor_active) {
       try { Abort-Doctor -Reason 'manual abort by operator' } catch {}
     }
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+      Update-State { param($s) Complete-TaskAgentDuration $s; $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -1288,6 +1393,7 @@ while ($true) {
         $s.task_mode        = 'normal'
         $s.task_start_seq   = [int]$s.lastSeq
         Clear-AuditorSuppressedHashes -State $s
+        Clear-FastLaneFlags $s
         $s.doctor_attempts  = [int]$s.doctor_attempts + 1
         $s.status           = 'working'
         $s.heartbeat        = (Get-Date).ToString('o')
@@ -1371,11 +1477,23 @@ while ($true) {
       # 🧭 [[DEEP-THINK]] marker forces discuss-mode dialog (Claude↔Codex back-and-forth)
       # instead of normal planner->coder. Used by Start-DeepThinkDialog on Sat/Sun nights.
       $deepThinkMark = [bool]([regex]::IsMatch($taskMsg, '\[\[DEEP-THINK\]\]'))
+      $fastLaneCfg = Get-FastLaneSettings
+      $fastMark = [bool]([regex]::IsMatch($taskMsg, '\[\[FAST\]\]'))
+      $reasoningHighMark = [bool]([regex]::IsMatch($taskMsg, '\[\[REASONING:high\]\]'))
+      $autoFastLane = $false
+      if (-not $fastMark -and -not $reasoningHighMark -and [bool]$fastLaneCfg.autoDetect) {
+        $autoFastLane = Test-IsTrivialTask -TaskText $taskMsg -MinChars ([int]$fastLaneCfg.minChars)
+      }
+      $fastLaneReason = ''
+      if ($fastMark -and -not $reasoningHighMark) { $fastLaneReason = 'marker' }
+      elseif ($autoFastLane) { $fastLaneReason = 'auto' }
       $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
-        if ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        Clear-FastLaneFlags $s
+        if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
+        elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
         Clear-AuditorSuppressedHashes -State $s
@@ -1386,8 +1504,10 @@ while ($true) {
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
-      if ($deepThinkMark) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
-      if ($studyDetect -and -not $deepThinkMark) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
+      if ($fastLaneReason -eq 'marker') { Add-Message -From system -Text "🚀 Fast-lane активирован ([[FAST]])" -Kind event | Out-Null }
+      elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
+      if ($deepThinkMark -and -not $fastLaneReason) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
+      if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       $state = Read-State
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
@@ -1440,6 +1560,7 @@ while ($true) {
         $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
+          Clear-FastLaneFlags $s
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           Clear-AuditorSuppressedHashes -State $s
@@ -1470,11 +1591,13 @@ while ($true) {
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
   $forcePlanner = [bool]$state.force_planner
+  $skipPlanner = [bool]$state.skip_planner
   $speaker = if ($forcePlanner) { 'claude' }
-             elseif ($mode -eq 'research') { 'claude' }
-             elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
-             elseif ($tt -eq 0) { 'claude' }
-             else { Next-Speaker }
+              elseif ($mode -eq 'research') { 'claude' }
+              elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
+              elseif ($skipPlanner -and $mode -eq 'normal' -and $tt -eq 0) { 'codex' }
+              elseif ($tt -eq 0) { 'claude' }
+              else { Next-Speaker }
   if ($forcePlanner) { Update-State { param($s) $s.force_planner=$false } | Out-Null }
   $plannerEscalate = $false
   try { $plannerEscalate = ([int](Read-State).timeout_retry_count -ge 1) } catch {}
@@ -1483,10 +1606,11 @@ while ($true) {
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 
+  $fastLaneTurn = ($speaker -eq 'codex' -and $mode -eq 'normal' -and [bool](Read-State).skip_planner)
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'summary' -TaskText $task)
-  Update-ContextSummary   # compress old history if it grew beyond the hot window
+  if (-not $fastLaneTurn) { Update-ContextSummary }   # compress old history if it grew beyond the hot window
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt' -TaskText $task)
-  $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode
+  $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode -FastLane:$fastLaneTurn
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
   $headBeforeTurn = ''
@@ -1594,13 +1718,14 @@ while ($true) {
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
       try { Send-PushEvent -Kind gate -Text $safetyDesc } catch {}
       try { Invoke-PostMortem -FailureType 'safety' -Task $task -Context "SAFETY: $safetyDesc" } catch {}
-      Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
 
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post' -TaskText $task)
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
+  $fastLaneActiveForTurn = ($speaker -eq 'codex' -and $mode -eq 'normal' -and [bool](Read-State).skip_planner)
   $attachmentMetas = @()
   $failedAttachmentPaths = @()
   $fileMarkerPaths = @()
@@ -1751,7 +1876,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $planBlockPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepPattern, '')
-  if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
+  if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder' -or $fastLaneActiveForTurn) {
     $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '')
   }
   $visibleReply = $visibleReply.Trim()
@@ -1882,6 +2007,17 @@ while ($true) {
   }
 
   $plannerStatus = 'CONTINUE'
+  $fastLaneDone = $false
+  if ($fastLaneActiveForTurn) {
+    $coderStatusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(DONE|CONTINUE)\s*$')
+    if ($coderStatusHits.Count -gt 0) {
+      $coderStatus = $coderStatusHits[$coderStatusHits.Count - 1].Groups[1].Value.ToUpper()
+      if ($coderStatus -eq 'DONE') {
+        $plannerStatus = 'DONE'
+        $fastLaneDone = $true
+      }
+    }
+  }
   if ($speaker -eq 'claude') {
     $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE|RESEARCH)\s*$')
     if ($statusHits.Count -gt 0) { $plannerStatus = $statusHits[$statusHits.Count - 1].Groups[1].Value.ToUpper() }
@@ -1952,7 +2088,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
@@ -2009,12 +2145,12 @@ while ($true) {
       Update-State { param($s) $s.task_mode='study'; $s.study_phase='synthesis' } | Out-Null
     }
   }
-  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     $didActions = [bool](Read-State).task_did_actions
     $hasVerify  = $reply -imatch '(?im)^\s*\[\[VERIFIED:\s*.+?\]\]\s*$'
     $vrc        = [int](Read-State).verify_retry_count
     if ($didActions -and -not $hasVerify -and $vrc -lt 2) {
-      Add-Message -From system -Text "🔍 Фаза верификации: задача меняла файлы, но проверки нет. Claude, ВЫПОЛНИ через Bash проверочную команду/тест/чтение файла/скриншот, покажи результат и добавь строку [[VERIFIED: что проверено | результат]], затем STATUS: DONE." -Kind event | Out-Null
+      Add-Message -From system -Text "🔍 Фаза верификации: задача меняла файлы, но проверки нет. Агент, ВЫПОЛНИ проверочную команду/тест/чтение файла/скриншот, покажи результат и добавь строку [[VERIFIED: что проверено | результат]], затем STATUS: DONE." -Kind event | Out-Null
       $plannerStatus = 'VERIFY'
       Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$true } | Out-Null
     } elseif ($didActions -and -not $hasVerify -and $vrc -ge 2) {
@@ -2051,12 +2187,15 @@ while ($true) {
       }
     }
   }
-  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     # Независимый критик: перед закрытием ревьюим git-дифф задачи на другой модели.
     # Серьёзное -> возврат Codex на доработку; сбои критика не блокируют завершение.
     try {
       $stC = Read-State
       if ([bool]$stC.task_did_actions) {
+        if ([bool]$stC.skip_critic) {
+          Add-Message -From system -Text "⏭ Critic пропущен (fast-lane)" -Kind event | Out-Null
+        } else {
         $criticMaxRetries = 2
         try { $cfgCr = Get-BridgeConfig; if ($cfgCr.PSObject.Properties.Name -contains 'criticMaxRetries') { $criticMaxRetries = [int]$cfgCr.criticMaxRetries } } catch {}
         $crc  = [int]$stC.critic_retry_count
@@ -2185,6 +2324,7 @@ $diff
             }
           }
         }
+        }
       }
     } catch {
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + '  critic-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
@@ -2192,7 +2332,7 @@ $diff
   }
   # Fast ParseFile gate: syntax-check each changed .ps1 individually before slow smoke.
   # Gives specific file+line errors instantly; also catches newly-created .ps1 not yet in smoke list.
-  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     try {
       if ([bool](Read-State).task_did_actions) {
         $pfFiles = @()
@@ -2222,7 +2362,7 @@ $diff
   # Auto-smoke gate: after critic passes, if .ps1 files changed vs HEAD, run smoke.ps1 to catch
   # broken masts before accepting DONE. Reuses verify_retry_count so no new state field needed.
   # Catches cases where [[VERIFIED: smoke OK]] is claimed but smoke actually fails.
-  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     try {
       if ([bool](Read-State).task_did_actions) {
         $psChanged = $false
@@ -2269,7 +2409,7 @@ $diff
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  auto-smoke-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
-  if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE') {
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
       try {
         $startSeqD = [int](Read-State).task_start_seq
@@ -2340,13 +2480,13 @@ $diff
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
     try { Send-PushEvent -Kind need_you -Text "Достигнут лимит ходов ($maxTurns): $(Get-PushSnippet -Text $task)" } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay

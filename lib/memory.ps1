@@ -137,6 +137,69 @@ function Get-Embedding {
   } catch { return $null }
 }
 
+function Get-EmbeddingBatch {
+  # Emits one double[] vector per input text, preserving order. Falls back to Get-Embedding
+  # sequentially if the Gemini batch endpoint is unavailable.
+  param([string[]]$Texts, [string]$TaskType = 'RETRIEVAL_QUERY')
+  if (-not $Texts -or $Texts.Count -eq 0) { return @() }
+  if ($Texts.Count -eq 1) {
+    Write-Output -NoEnumerate (Get-Embedding -Text ([string]$Texts[0]) -TaskType $TaskType)
+    return
+  }
+  $batchEnabled = $true
+  try {
+    $cfgB = Get-BridgeConfig
+    if ($cfgB -and ($cfgB.PSObject.Properties.Name -contains 'fastLane') -and $cfgB.fastLane) {
+      $fl = $cfgB.fastLane
+      if (($fl.PSObject.Properties.Name -contains 'embedBatchEnabled') -and $null -ne $fl.embedBatchEnabled) { $batchEnabled = [bool]$fl.embedBatchEnabled }
+    }
+  } catch {}
+  $cleanTexts = @($Texts | ForEach-Object {
+    $t = [string]$_
+    if ($t.Length -gt 8000) { $t.Substring(0, 8000) } else { $t }
+  })
+  if (-not $batchEnabled) {
+    foreach ($txt in $cleanTexts) { Write-Output -NoEnumerate (Get-Embedding -Text $txt -TaskType $TaskType) }
+    return
+  }
+  $key = Get-Secret 'geminiApiKey'
+  if (-not $key) { $key = Get-Secret 'GEMINI_API_KEY' }
+  if (-not $key) {
+    foreach ($txt in $cleanTexts) { Write-Output -NoEnumerate (Get-Embedding -Text $txt -TaskType $TaskType) }
+    return
+  }
+  $mc = Get-MemoryConfig
+  $model = [string]$mc.embedModel
+  $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):batchEmbedContents?key=$key"
+  $reqs = @($cleanTexts | ForEach-Object {
+    $r = @{
+      model    = "models/$model"
+      content  = @{ parts = @(@{ text = [string]$_ }) }
+      taskType = $TaskType
+    }
+    if ($mc.embedDim) { $r.outputDimensionality = [int]$mc.embedDim }
+    $r
+  })
+  $body = @{ requests = $reqs }
+  try {
+    $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec 30
+    $embs = @($r.embeddings)
+    if ($embs.Count -ne $cleanTexts.Count) { throw "batch embedding count mismatch: got $($embs.Count), expected $($cleanTexts.Count)" }
+    $estTokens = 0
+    foreach ($txt in $cleanTexts) { $estTokens += [int][Math]::Ceiling([Math]::Max(1, ([string]$txt).Length) / 4.0) }
+    try { $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $model -Purpose 'embed_batch' -PromptTokens $estTokens -CompletionTokens 0 -Status 'ok' } catch {}
+    foreach ($emb in $embs) {
+      if (-not $emb.values) { throw 'batch embedding missing values' }
+      $vec = @($emb.values | ForEach-Object { [double]$_ })
+      Write-Output -NoEnumerate $vec
+    }
+  } catch {
+    foreach ($txt in $cleanTexts) {
+      Write-Output -NoEnumerate (Get-Embedding -Text $txt -TaskType $TaskType)
+    }
+  }
+}
+
 function Invoke-GeminiChat {
   # Returns the model's text, or $null on any failure.
   param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.2, [string]$Purpose = '')
