@@ -15,6 +15,7 @@ function Get-LLMConfig {
     postmortem = 'deepseek-v4-flash'
     deep      = 'deepseek-v4-pro'
     critic    = 'deepseek-v4-pro'
+    criticHeavy = 'deepseek-v4-pro'
     fallback  = 'gemini-2.5-flash'
   }
   $m = $null

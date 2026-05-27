@@ -47,14 +47,29 @@ $studyMaxTurns     = if ($cfg.studyMaxTurns)     { [int]$cfg.studyMaxTurns }    
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
 
-  if ($Mode -eq 'discuss' -or $Mode -eq 'study') { return $deepModel }
-
+  $cfgR = $null
+  try { $cfgR = Get-BridgeConfig } catch {}
+  $pr = $null
+  if ($cfgR -and ($cfgR.PSObject.Properties.Name -contains 'plannerRouting')) { $pr = $cfgR.plannerRouting }
+  $opusOnLong = if ($pr -and ($pr.PSObject.Properties.Name -contains 'opusOnLongPrompts') -and $null -ne $pr.opusOnLongPrompts) { [bool]$pr.opusOnLongPrompts } else { $false }
+  $opusOnDisc = if ($pr -and ($pr.PSObject.Properties.Name -contains 'opusOnDiscuss') -and $null -ne $pr.opusOnDiscuss) { [bool]$pr.opusOnDiscuss } else { $false }
+  $opusOnStudy = if ($pr -and ($pr.PSObject.Properties.Name -contains 'opusOnStudy') -and $null -ne $pr.opusOnStudy) { [bool]$pr.opusOnStudy } else { $true }
+  $complexKeywords = @('архитектур','рефактор','перераб','redesign','мигр','интеграц','масштаб','overhaul','сложн','многошаг','разбер','исследуй','спроектируй','design','refactor')
+  if ($pr -and ($pr.PSObject.Properties.Name -contains 'opusKeywords') -and $pr.opusKeywords) {
+    $complexKeywords = @($pr.opusKeywords | ForEach-Object { [string]$_ })
+  }
   $text = if ($null -eq $TaskText) { '' } else { [string]$TaskText }
 
   if ($text -imatch '(^|[^\p{L}\p{N}_])(opus|опус)([^\p{L}\p{N}_]|$)') { return $deepModel }
+  if ($text -match '\[\[DEEP-THINK\]\]') { return $deepModel }
 
-  $wordCount = ($text -split '\s+' | Where-Object { $_ }).Count
-  if ($wordCount -gt 300) { return $deepModel }
+  if ($Mode -eq 'study' -and $opusOnStudy) { return $deepModel }
+  if ($Mode -eq 'discuss' -and $opusOnDisc) { return $deepModel }
+
+  if ($opusOnLong) {
+    $wordCount = ($text -split '\s+' | Where-Object { $_ }).Count
+    if ($wordCount -gt 300) { return $deepModel }
+  }
 
   $numberedSteps = ([regex]::Matches($text, '(?m)^\s*\d+[\.\)]')).Count
   if ($numberedSteps -ge 3) { return $deepModel }
@@ -62,9 +77,8 @@ function Get-PlannerModel {
   $stageWords = ([regex]::Matches($text, '(?i)(фаз[аыеу]?|этап\w*|шаг\w*)')).Count
   if ($stageWords -ge 2) { return $deepModel }
 
-  $complexKeywords = @('архитектур','рефактор','перераб','redesign','мигр','интеграц','масштаб','overhaul','сложн','многошаг')
   foreach ($kw in $complexKeywords) {
-    if ($text -imatch $kw) { return $deepModel }
+    if ($kw -and ($text -imatch [regex]::Escape($kw))) { return $deepModel }
   }
 
   return $triageModel
@@ -95,6 +109,15 @@ function Start-LibrarianIfDue {
   # memory grew 50+ entries). User noticed: "карта памяти сутки не обновлялась". 2026-05-26.
   try { $mc = Get-MemoryConfig } catch { return }
   if (-not $mc.enabled) { return }
+  $deltaTrigger = 10
+  $ceilingHours = 6
+  try {
+    $cfgLib = Get-BridgeConfig
+    if ($cfgLib -and ($cfgLib.PSObject.Properties.Name -contains 'librarian') -and $cfgLib.librarian) {
+      if (($cfgLib.librarian.PSObject.Properties.Name -contains 'deltaTriggerCount') -and $cfgLib.librarian.deltaTriggerCount) { $deltaTrigger = [int]$cfgLib.librarian.deltaTriggerCount }
+      if (($cfgLib.librarian.PSObject.Properties.Name -contains 'ceilingHours') -and $cfgLib.librarian.ceilingHours) { $ceilingHours = [int]$cfgLib.librarian.ceilingHours }
+    }
+  } catch {}
   $marker = Join-Path $bridgeRoot 'memory\librarian.last'
   $countMarker = Join-Path $bridgeRoot 'memory\librarian.count.last'
   $lastTs = $null
@@ -102,13 +125,13 @@ function Start-LibrarianIfDue {
   if ($lastTs) {
     $age = (Get-Date) - $lastTs
     if ($age -lt [TimeSpan]::FromMinutes(30)) { return }     # hard floor
-    if ($age -lt [TimeSpan]::FromHours(6)) {
+    if ($age -lt [TimeSpan]::FromHours($ceilingHours)) {
       # within the soft ceiling: only run if enough new memories accumulated
       $lastCount = -1
       if (Test-Path $countMarker) { try { $lastCount = [int]((Get-Content $countMarker -Raw -Encoding UTF8).Trim()) } catch {} }
       $curCount = 0
       try { $curCount = @(Get-AllMemories).Count } catch {}
-      if ($lastCount -ge 0 -and ($curCount - $lastCount) -lt 5) { return }
+      if ($lastCount -ge 0 -and ($curCount - $lastCount) -lt $deltaTrigger) { return }
     }
   }
   $lib = Join-Path $bridgeRoot 'librarian.ps1'
@@ -139,6 +162,22 @@ function Start-ReflectIfDue {
       if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($everyH)) { return }
     } catch {}
   }
+  try {
+    $cfgReflect = Get-BridgeConfig
+    $minSec = 60
+    if ($cfgReflect -and ($cfgReflect.PSObject.Properties.Name -contains 'reflect') -and $cfgReflect.reflect) {
+      if (($cfgReflect.reflect.PSObject.Properties.Name -contains 'minTaskDurationSec') -and $cfgReflect.reflect.minTaskDurationSec) { $minSec = [int]$cfgReflect.reflect.minTaskDurationSec }
+    }
+    $stReflect = Read-State
+    $totalSec = 0
+    try { $totalSec = [int]$stReflect.task_agent_duration_sec } catch {}
+    if ($totalSec -le 0) { try { $totalSec = [int]$stReflect.last_task_agent_duration_sec } catch {} }
+    if ($totalSec -gt 0 -and $totalSec -lt $minSec) {
+      try { Write-Host "[reflect skipped: task duration $totalSec s < $minSec s]" } catch {}
+      try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      return
+    }
+  } catch {}
   $rf = Join-Path $bridgeRoot 'reflect.ps1'
   if (-not (Test-Path $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
@@ -671,6 +710,48 @@ function Invoke-Planner {
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
+function Get-LastClaudeInstruction {
+  try {
+    $msgs = @(Get-Messages -Since 0)
+    $lastClaude = ($msgs | Where-Object { [string]$_.from -eq 'claude' } | Select-Object -Last 1)
+    if ($lastClaude) { return [string]$lastClaude.text }
+  } catch {}
+  return ''
+}
+
+function Get-CoderReasoningEffort {
+  param([string]$CoderCwd)
+  $st = Read-State
+  $mode = if ($st.task_mode) { [string]$st.task_mode } else { 'normal' }
+  $crc = 0
+  try { $crc = [int]$st.critic_retry_count } catch {}
+  $instr = Get-LastClaudeInstruction
+  $plen = if ($null -eq $instr) { 0 } else { ([string]$instr).Length }
+  if ($mode -eq 'discuss' -or $instr -match '\[\[REASONING:high\]\]' -or $crc -ge 1) {
+    $wtLabel = 'n/a'
+    return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
+  }
+
+  $wtClean = $true
+  try {
+    $lines = @(& git -C $CoderCwd status --porcelain 2>$null)
+    foreach ($ln in $lines) {
+      if ([string]::IsNullOrWhiteSpace($ln) -or $ln.Length -lt 3) { continue }
+      $p = $ln.Substring(3).Trim()
+      if ($p -match '^(memory|decisions|control|runtime|dispatcher|channels|snapshots|reports|skills)/') { continue }
+      if ($p -match '\.(jsonl|log|tmp)$') { continue }
+      if ($p -match '^study-[^/\\]+\.md$') { continue }
+      if ($p -match '\.(ps1|psm1|html|css|js|json|md)$') { $wtClean = $false; break }
+    }
+  } catch {}
+
+  $wtLabel = if ($wtClean) { 'clean' } else { 'dirty' }
+  if ($wtClean -and $plen -gt 0 -and $plen -lt 800) {
+    return [pscustomobject]@{ effort='medium'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
+  }
+  return [pscustomobject]@{ effort='high'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
+}
+
 function Invoke-Coder {
   param([string]$Prompt, [string]$Mode = 'code', [switch]$NoFallback)
   if (-not $NoFallback) {
@@ -807,8 +888,17 @@ function Invoke-Coder {
     $codexLockWaitSec += 5
   }
   try {
+    $effRes = Get-CoderReasoningEffort -CoderCwd $coderCwd
+    $effort = [string]$effRes.effort
+    if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
+    $reasonArg = "model_reasoning_effort=`"$effort`""
+    try {
+      Add-Content -LiteralPath (Join-Path $bridgeRoot 'driver.out.log') -Value (
+        (Get-Date).ToString('s') + " codex effort=$effort plen=$($effRes.plen) mode=$($effRes.mode) crc=$($effRes.crc) wt=$($effRes.wt)"
+      ) -Encoding UTF8
+    } catch {}
     $p = Start-Process -FilePath $codexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
+      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'codex'
@@ -1006,6 +1096,19 @@ function Write-TurnLog {
   } catch {}
 }
 
+function Reset-TaskAgentDuration {
+  param($State)
+  $State | Add-Member -NotePropertyName task_agent_duration_sec -NotePropertyValue 0 -Force
+}
+
+function Complete-TaskAgentDuration {
+  param($State)
+  $totalSec = 0
+  try { $totalSec = [int]$State.task_agent_duration_sec } catch {}
+  $State | Add-Member -NotePropertyName last_task_agent_duration_sec -NotePropertyValue $totalSec -Force
+  $State | Add-Member -NotePropertyName task_agent_duration_sec -NotePropertyValue 0 -Force
+}
+
 function Get-PushSnippet {
   param([string]$Text, [int]$Max = 120)
   $s = ([string]$Text).Trim() -replace '\s+', ' '
@@ -1061,7 +1164,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     param($s)
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null
-    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s
+    $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
@@ -1130,7 +1233,7 @@ while ($true) {
     if ([bool](Read-State).doctor_active) {
       try { Abort-Doctor -Reason 'manual abort by operator' } catch {}
     }
-    Update-State { param($s) $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.abort=$false; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle' } | Out-Null
     Start-Sleep -Seconds 1; continue
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
@@ -1186,6 +1289,7 @@ while ($true) {
         $s.status           = 'working'
         $s.heartbeat        = (Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
+        Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
       try { Add-Message -From system -Text "🩺 Доктор приступает к диагностике и фиксу." -Kind event | Out-Null } catch {}
       $state = Read-State
@@ -1274,6 +1378,7 @@ while ($true) {
         Clear-AuditorSuppressedHashes -State $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
+        Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
@@ -1337,6 +1442,7 @@ while ($true) {
           Clear-AuditorSuppressedHashes -State $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
           $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
+          Reset-TaskAgentDuration $s
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
@@ -1396,6 +1502,17 @@ while ($true) {
   }
   $reply = [string]$turnResult.text
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
+  try {
+    $turnSec = 0
+    try { $turnSec = [int]$turnResult.duration } catch {}
+    if ($turnSec -gt 0) {
+      Update-State ({ param($s)
+        $curSec = 0
+        try { $curSec = [int]$s.task_agent_duration_sec } catch {}
+        $s | Add-Member -NotePropertyName task_agent_duration_sec -NotePropertyValue ($curSec + $turnSec) -Force
+      }.GetNewClosure()) | Out-Null
+    }
+  } catch {}
   if ($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
     try {
       $headAfterTurn = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim()
@@ -1474,7 +1591,7 @@ while ($true) {
       Add-Message -From system -Text "🛡 SAFETY GATE: Codex запрашивает разрешение:`n`n**$safetyDesc**`n`nНапиши «да, выполни» для подтверждения, или дай иную инструкцию." -Kind event | Out-Null
       try { Send-PushEvent -Kind gate -Text $safetyDesc } catch {}
       try { Invoke-PostMortem -FailureType 'safety' -Task $task -Context "SAFETY: $safetyDesc" } catch {}
-      Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+      Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       continue
     }
   }
@@ -1832,7 +1949,7 @@ while ($true) {
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {
     Add-Message -From system -Text "💬 Ответ без Codex. Жду следующее сообщение." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
@@ -1953,6 +2070,36 @@ while ($true) {
             Add-Message -From system -Text "🔎 Критик: лимит доработок ($criticMaxRetries) исчерпан — закрываю задачу как есть, нужно внимание оператора." -Kind event | Out-Null
             try { Send-PushEvent -Kind need_you -Text "Критик исчерпал лимит доработок: $(Get-PushSnippet -Text $task)" } catch {}
           } else {
+            $llmCfg = $null
+            try { $llmCfg = Get-LLMConfig } catch {}
+            $criticLight = if ($llmCfg -and $llmCfg.ContainsKey('critic')) { [string]$llmCfg['critic'] } else { 'deepseek-v4-flash' }
+            $criticHeavy = if ($llmCfg -and $llmCfg.ContainsKey('criticHeavy')) { [string]$llmCfg['criticHeavy'] } else { 'deepseek-v4-pro' }
+            $diffNames = @()
+            try {
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $diffNames = @(& git -C $bridgeRoot diff --name-only $base -- 2>$null) }
+              if (@($diffNames).Count -eq 0) { $diffNames = @(& git -C $bridgeRoot diff --name-only HEAD -- 2>$null) }
+            } catch {}
+            $linesChanged = 0
+            try {
+              $numstat = @()
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $numstat = @(& git -C $bridgeRoot diff --numstat $base -- 2>$null) }
+              if (@($numstat).Count -eq 0) { $numstat = @(& git -C $bridgeRoot diff --numstat HEAD -- 2>$null) }
+              foreach ($lnStat in @($numstat)) {
+                $parts = @(([string]$lnStat) -split '\s+')
+                if ($parts.Count -ge 2) {
+                  $adds = 0; $dels = 0
+                  [int]::TryParse($parts[0], [ref]$adds) | Out-Null
+                  [int]::TryParse($parts[1], [ref]$dels) | Out-Null
+                  $linesChanged += ($adds + $dels)
+                }
+              }
+            } catch {}
+            $heavyRegex = '(?i)security|auth|secret|crypto|race|mutex|lock|concurr(en|ency)?|sql\s*injection|inject(ion)?|csrf|xss'
+            $isHeavyCritic = (@($diffNames).Count -gt 3) -or ($linesChanged -gt 100) -or ($diff -match $heavyRegex)
+            $crcNow = 0
+            try { $crcNow = [int](Read-State).critic_retry_count } catch {}
+            if ($crcNow -ge 1) { $isHeavyCritic = $true }
+            $criticModelName = if ($isHeavyCritic) { $criticHeavy } else { $criticLight }
             $diffWasTruncated = $false
             if ($diff.Length -gt 16000) {
               $diffWasTruncated = $true
@@ -1961,8 +2108,6 @@ while ($true) {
             $truncationNote = if ($diffWasTruncated) {
               "ВАЖНО: diff ниже обрезан по лимиту контекста. Не считай сам факт обрезки синтаксической ошибкой, потерей кода или доказательством обрезанной функции; проверяй только реально видимые изменения. Синтаксис .ps1 и BOM проверяются отдельными командами."
             } else { "" }
-            $criticModelName = ''
-            try { $criticModelName = [string](Get-LLMConfig)['critic'] } catch {}
             $criticPrompt = @"
 Ты — независимый код-критик. Другой ИИ (Codex) внёс изменения в проект на PowerShell (автономный мост Claude<->Codex на Windows). Проверь git-дифф на СЕРЬЁЗНЫЕ проблемы: баги, уязвимости безопасности, регрессии, потеря данных, падения, синтаксические ошибки, нарушение инвариантов (каждый .ps1 в UTF-8 с BOM; не трогать watchdog/supervisor/.git; не выводить секреты).
 НЕ придирайся к стилю, именованию и форматированию — отмечай только то, что реально сломает работу или создаёт риск.
@@ -1984,7 +2129,7 @@ $diff
 {"verdict":"OK","severity":"none","issues":[],"summary":"одна фраза по-русски"}
 Где severity = "serious" ТОЛЬКО если есть баг/уязвимость/регрессия, которую обязательно исправить до закрытия; иначе "minor" или "none".
 "@
-            $rawC = Invoke-LLM -Purpose 'critic' -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+            $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
             $verdict='OK'; $severity='none'; $summary=''; $issuesText=''
             if (-not [string]::IsNullOrWhiteSpace($rawC)) {
               $cleanC = ($rawC -replace '```json','' -replace '```','').Trim()
@@ -2192,13 +2337,13 @@ $diff
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
     try { Send-PushEvent -Kind need_you -Text "Достигнут лимит ходов ($maxTurns): $(Get-PushSnippet -Text $task)" } catch {}
-    Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay

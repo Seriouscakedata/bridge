@@ -19,6 +19,28 @@
     "minSamples": 5,
     "windowHours": 24
   },
+  "plannerRouting": {
+    "opusOnLongPrompts": false,
+    "opusOnDiscuss": false,
+    "opusOnStudy": true,
+    "opusKeywords": [
+      "архитектур",
+      "рефактор",
+      "перераб",
+      "redesign",
+      "мигр",
+      "интеграц",
+      "масштаб",
+      "overhaul",
+      "сложн",
+      "многошаг",
+      "разбер",
+      "исследуй",
+      "спроектируй",
+      "design",
+      "refactor"
+    ]
+  },
   "memory": {
     "enabled": true,
     "embedModel": "gemini-embedding-001",
@@ -37,6 +59,8 @@
     "librarian": "deepseek-v4-flash",
     "reflect": "deepseek-v4-flash",
     "deep": "deepseek-v4-pro",
+    "critic": "deepseek-v4-flash",
+    "criticHeavy": "deepseek-v4-pro",
     "fallback": "gemini-2.5-flash"
   },
   "usage": {
@@ -99,6 +123,13 @@
     "reflectEveryHours": 6,
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
+  },
+  "reflect": {
+    "minTaskDurationSec": 60
+  },
+  "librarian": {
+    "deltaTriggerCount": 10,
+    "ceilingHours": 6
   },
   "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"

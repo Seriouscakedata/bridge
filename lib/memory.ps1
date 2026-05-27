@@ -3,6 +3,22 @@
 # Dot-sourced from common.ps1. EVERY network path is wrapped so a failure here can
 # NEVER kill the engine -- memory is best-effort: if Gemini is down, the bridge runs as before.
 
+$script:EmbedCache = $null
+$script:EmbedCacheOrder = $null
+$script:EmbedCacheMax = 500
+
+function Get-EmbedCacheKey {
+  param([string]$Text, [string]$TaskType)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(([string]$TaskType) + "`0" + ([string]$Text))
+    $hash = $sha.ComputeHash($bytes)
+    return [BitConverter]::ToString($hash).Replace('-', '')
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 # ---- paths ----
 function Get-MemoryDir { Join-Path (Get-BridgeRoot) 'memory' }
 function Get-MemoryStorePath { Join-Path (Get-MemoryDir) 'memory.jsonl' }
@@ -85,6 +101,16 @@ function Get-Embedding {
   # cap very long text so a single huge memory doesn't blow the request
   $t = [string]$Text
   if ($t.Length -gt 8000) { $t = $t.Substring(0, 8000) }
+  if ($null -eq $script:EmbedCache) {
+    $script:EmbedCache = @{}
+    $script:EmbedCacheOrder = New-Object System.Collections.Generic.List[string]
+  }
+  $ck = Get-EmbedCacheKey -Text $t -TaskType $TaskType
+  if ($script:EmbedCache.ContainsKey($ck)) {
+    [void]$script:EmbedCacheOrder.Remove($ck)
+    [void]$script:EmbedCacheOrder.Add($ck)
+    return ,$script:EmbedCache[$ck]
+  }
   $estTokens = [int][Math]::Ceiling([Math]::Max(1, $t.Length) / 4.0)
   $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):embedContent?key=$key"
   $body = @{
@@ -99,7 +125,15 @@ function Get-Embedding {
     try {
       $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $model -Purpose 'embed' -PromptTokens $estTokens -CompletionTokens 0 -Status 'ok'
     } catch {}
-    return ,@($r.embedding.values | ForEach-Object { [double]$_ })
+    $vec = @($r.embedding.values | ForEach-Object { [double]$_ })
+    $script:EmbedCache[$ck] = $vec
+    [void]$script:EmbedCacheOrder.Add($ck)
+    while ($script:EmbedCacheOrder.Count -gt $script:EmbedCacheMax) {
+      $evict = $script:EmbedCacheOrder[0]
+      $script:EmbedCacheOrder.RemoveAt(0)
+      if ($script:EmbedCache.ContainsKey($evict)) { [void]$script:EmbedCache.Remove($evict) }
+    }
+    return ,$vec
   } catch { return $null }
 }
 
