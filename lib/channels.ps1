@@ -47,23 +47,164 @@ function Get-EffectiveChannel {
   return (Get-ActiveChannel)
 }
 
+function Normalize-ChannelSlug {
+  param([string]$Slug)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { return 'main' }
+  $s = $Slug.Trim().ToLowerInvariant()
+  $s = ($s -replace '\s+', '-' -replace '[^a-z0-9-]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($s)) { return 'main' }
+  return $s
+}
+
+function Get-ChannelSettingsProjectConfig {
+  param([string]$Slug = $null)
+  $Slug = Normalize-ChannelSlug $Slug
+  $settingsPath = Join-Path (Get-BridgeRoot) 'settings.json'
+  if (-not (Test-Path -LiteralPath $settingsPath)) { return $null }
+
+  try {
+    $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+  if (-not $settings) { return $null }
+
+  $entry = $null
+  try {
+    if ($settings.PSObject.Properties['channels'] -and $settings.channels) {
+      $ch = $settings.channels
+      if ($ch.PSObject.Properties[$Slug]) {
+        $entry = $ch.PSObject.Properties[$Slug].Value
+      }
+    }
+  } catch {}
+
+  if ($null -eq $entry) {
+    foreach ($k in @(
+      "channels.$Slug.projectPath",
+      "channels.$Slug.project_root",
+      "channels.$Slug.path"
+    )) {
+      try {
+        if ($settings.PSObject.Properties[$k]) {
+          $entry = [pscustomobject]@{ projectPath = $settings.PSObject.Properties[$k].Value }
+          break
+        }
+      } catch {}
+    }
+  }
+
+  if ($null -eq $entry) { return $null }
+
+  $path = ''
+  foreach ($k in @('projectPath','project_root','path')) {
+    try {
+      if ($entry.PSObject.Properties[$k] -and -not [string]::IsNullOrWhiteSpace([string]$entry.$k)) {
+        $path = [string]$entry.$k
+        break
+      }
+    } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+
+  $ptype = ''
+  foreach ($k in @('projectType','type')) {
+    try {
+      if ($entry.PSObject.Properties[$k]) { $ptype = [string]$entry.$k; break }
+    } catch {}
+  }
+
+  $pdesc = ''
+  foreach ($k in @('projectDescription','description')) {
+    try {
+      if ($entry.PSObject.Properties[$k]) { $pdesc = [string]$entry.$k; break }
+    } catch {}
+  }
+
+  return [pscustomobject]@{
+    project_root        = $path
+    project_type        = $ptype
+    project_description = $pdesc
+    source              = 'settings.json'
+  }
+}
+
+function Get-ChannelProjectBinding {
+  param([string]$Slug = $null)
+  $Slug = Normalize-ChannelSlug $Slug
+  $bridgeRoot = Get-BridgeRoot
+
+  if ($Slug -eq 'main') {
+    return [pscustomobject]@{
+      slug                = $Slug
+      project_root        = $bridgeRoot
+      project_type        = 'bridge (self)'
+      project_description = 'Default bridge development channel'
+      source              = 'main-default'
+      ok                  = $true
+      error               = ''
+    }
+  }
+
+  $cfg = Get-ChannelSettingsProjectConfig -Slug $Slug
+  if (-not $cfg) {
+    $ch = Get-ChannelConfig -Slug $Slug
+    if ($ch -and $ch.PSObject.Properties['project_root'] -and -not [string]::IsNullOrWhiteSpace([string]$ch.project_root)) {
+      $chDesc = ''
+      try { if ($ch.PSObject.Properties['description']) { $chDesc = [string]$ch.description } } catch {}
+      $cfg = [pscustomobject]@{
+        project_root        = [string]$ch.project_root
+        project_type        = ''
+        project_description = $chDesc
+        source              = 'channel.json'
+      }
+    }
+  }
+
+  if (-not $cfg -or [string]::IsNullOrWhiteSpace([string]$cfg.project_root)) {
+    return [pscustomobject]@{
+      slug                = $Slug
+      project_root        = ''
+      project_type        = ''
+      project_description = ''
+      source              = ''
+      ok                  = $false
+      error               = "Канал '$Slug' не привязан к проекту"
+    }
+  }
+
+  $pr = [string]$cfg.project_root
+  if (-not (Test-Path -LiteralPath $pr -PathType Container)) {
+    return [pscustomobject]@{
+      slug                = $Slug
+      project_root        = $pr
+      project_type        = [string]$cfg.project_type
+      project_description = [string]$cfg.project_description
+      source              = [string]$cfg.source
+      ok                  = $false
+      error               = "projectPath канала '$Slug' не найден: $pr"
+    }
+  }
+
+  try { $pr = [System.IO.Path]::GetFullPath($pr) } catch {}
+  return [pscustomobject]@{
+    slug                = $Slug
+    project_root        = $pr
+    project_type        = [string]$cfg.project_type
+    project_description = [string]$cfg.project_description
+    source              = [string]$cfg.source
+    ok                  = $true
+    error               = ''
+  }
+}
+
 function Get-EffectiveProjectRoot {
-  # Channel-specific project_root (Codex's -C target) with fallback to bridge config workRoot.
-  # Used by the driver so each channel can drive a different codebase.
+  # Channel-specific project root. main is the bridge; non-main has no silent fallback.
   param([string]$Slug = $null)
   if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
-  $cfg = Get-ChannelConfig -Slug $Slug
-  if ($cfg -and $cfg.PSObject.Properties['project_root']) {
-    $pr = [string]$cfg.project_root
-    if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr)) { return $pr }
-  }
-  # Fallback to global workRoot from config.json.
-  try {
-    $bcfg = Get-BridgeConfig
-    $wr = [string]$bcfg.workRoot
-    if (-not [string]::IsNullOrWhiteSpace($wr)) { return $wr }
-  } catch {}
-  return (Get-BridgeRoot)
+  $binding = Get-ChannelProjectBinding -Slug $Slug
+  if ($binding -and [bool]$binding.ok) { return [string]$binding.project_root }
+  return ''
 }
 
 function Set-ActiveChannel {

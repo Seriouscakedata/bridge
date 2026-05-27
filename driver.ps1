@@ -950,8 +950,105 @@ function Format-Transcript {
   return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend
 }
 
+function Get-ActiveProjectBinding {
+  $slug = [string]$Channel
+  try {
+    if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $slug = Normalize-ChannelSlug $slug }
+  } catch {}
+  try {
+    if (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue) {
+      return (Get-ChannelProjectBinding -Slug $slug)
+    }
+  } catch {}
+  return [pscustomobject]@{
+    slug                = $slug
+    project_root        = $(if ($slug -eq 'main') { $bridgeRoot } else { '' })
+    project_type        = $(if ($slug -eq 'main') { 'bridge (self)' } else { '' })
+    project_description = ''
+    source              = 'driver-fallback'
+    ok                  = ($slug -eq 'main')
+    error               = $(if ($slug -eq 'main') { '' } else { "Канал '$slug' не привязан к проекту" })
+  }
+}
+
+function Get-ActiveProjectRoot {
+  $binding = Get-ActiveProjectBinding
+  if ($binding -and [bool]$binding.ok -and -not [string]::IsNullOrWhiteSpace([string]$binding.project_root)) {
+    return [string]$binding.project_root
+  }
+  return ''
+}
+
+function Get-ProjectFocusPromptBlock {
+  $binding = Get-ActiveProjectBinding
+  $slug = if ($binding -and $binding.slug) { [string]$binding.slug } else { [string]$Channel }
+  $root = if ($binding -and $binding.project_root) { [string]$binding.project_root } else { '' }
+  $ptype = if ($binding -and $binding.project_type) { [string]$binding.project_type } else { '' }
+  $pdesc = if ($binding -and $binding.project_description) { [string]$binding.project_description } else { '' }
+  $source = if ($binding -and $binding.source) { [string]$binding.source } else { '' }
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = '<не привязан>' }
+  if ([string]::IsNullOrWhiteSpace($ptype)) { $ptype = 'не задан' }
+  if ([string]::IsNullOrWhiteSpace($pdesc)) { $pdesc = 'не задано' }
+
+  $guard = ''
+  if ($slug -ne 'main') {
+    $guard = @"
+
+ФОКУС-КАНАЛА:
+- Все аудиты, чтение проекта, команды, правки и git-операции относятся к этому проекту.
+- НЕ использовать bridge (`$bridgeRoot`) как целевой проект и НЕ менять файлы bridge без прямой просьбы пользователя.
+- Если задача явно требует менять bridge из этого канала -- сначала объясни конфликт фокуса и запроси подтверждение.
+"@
+  } else {
+    $guard = @"
+
+ФОКУС-КАНАЛА:
+- Канал `main` предназначен для улучшений самого bridge.
+"@
+  }
+
+  return @"
+⚠ АКТИВНЫЙ ПРОЕКТ: $slug
+Путь: $root
+Тип: $ptype
+Описание: $pdesc
+Источник привязки: $source$guard
+"@
+}
+
 function Build-Prompt {
   param([string]$Role, [string]$Task, [string]$Mode = 'normal', [switch]$FastLane)
+  $projectBinding = Get-ActiveProjectBinding
+  $activeProjectRoot = if ($projectBinding -and [bool]$projectBinding.ok) { [string]$projectBinding.project_root } else { $bridgeRoot }
+  if ([string]::IsNullOrWhiteSpace($activeProjectRoot)) { $activeProjectRoot = $bridgeRoot }
+  $activeProjectBlock = Get-ProjectFocusPromptBlock
+  $channelIsMain = ($projectBinding -and ([string]$projectBinding.slug -eq 'main'))
+  $bridgeScopeRules = if ($channelIsMain) {
+@'
+- САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
+  1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
+  2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
+  3) Применить правки .ps1-файлов движка: создай файл `bridge\control\restart.flag` -- супервизор перезапустит мост (без UAC). ⛔ СТРОГИЙ ЗАПРЕТ: restart.flag создавать ТОЛЬКО если изменён хотя бы один `.ps1`-файл. Перед созданием флага ОБЯЗАТЕЛЬНО проверь: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" diff --name-only HEAD` -- если в выводе НЕТ ни одного `.ps1`, флаг НЕ создавай (мост перезапустится зря).
+  4) После КАЖДОЙ проверенной рабочей правки: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" add -A; git -C "..." commit -m "что сделал"`. Это фиксирует прогресс (watchdog откатит на последний коммит при поломке).
+  5) `web\index.html` (UI) можно править свободно -- применяется без перезапуска (просто обнови вкладку). ⛔ НЕ создавай restart.flag ради HTML-правок -- это лишние перезапуски и шум в истории.
+  6) НЕ ТРОГАЙ: `watchdog.ps1`, `supervisor.ps1` без крайней нужды, папку `.git`, задачи Планировщика; НЕ убивай процессы моста/watchdog; НЕ удаляй файлы движка.
+  7) `secrets.json` содержит API-ключи (Gemini и др.). НИКОГДА не выводи его содержимое в чат и не коммить — он в .gitignore. Память: `lib\memory.ps1` (embeddings+поиск), `librarian.ps1` (ночная консолидация), хранилище `memory\` (gitignored).
+'@
+  } else {
+@"
+- BRIDGE-ОГРАНИЧЕНИЕ ДЛЯ ЭТОГО КАНАЛА: bridge (`$bridgeRoot`) является инфраструктурой моста, а НЕ активным проектом. Не читай/не аудируй/не меняй bridge как цель задачи без прямой просьбы пользователя.
+"@
+  }
+  $restartReminder = if ($channelIsMain) {
+    "⛔ НАПОМИНАНИЕ: restart.flag -- ТОЛЬКО если изменён `.ps1`-файл. Проверь перед созданием: `git diff --name-only HEAD`. Для `web\index.html` флаг НЕ нужен."
+  } else {
+    "⛔ НАПОМИНАНИЕ: не создавай `bridge\control\restart.flag` в этом канале. Активный проект находится вне bridge."
+  }
+  $safetyGateRule = if ($channelIsMain) {
+    'SAFETY GATE: перед удалением файлов/папок ВНЕ директории bridge, массовой перезаписью чужих данных, убийством процессов пользователя, внешними сетевыми запросами — напиши строку [[SAFETY: <что именно>]] и НЕ ВЫПОЛНЯЙ. Драйвер остановится и спросит пользователя.'
+  } else {
+    "SAFETY GATE: перед удалением файлов/папок ВНЕ активного проекта ($activeProjectRoot), массовой перезаписью чужих данных, убийством процессов пользователя, внешними сетевыми запросами — напиши строку [[SAFETY: <что именно>]] и НЕ ВЫПОЛНЯЙ. Драйвер остановится и спросит пользователя."
+  }
   if ($FastLane -and $Role -eq 'codex') {
     $taskText = [string]$Task
     $skillSect = ''
@@ -968,7 +1065,9 @@ function Build-Prompt {
     } catch {}
     return @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
-Рабочий корень: $workRoot
+Рабочий корень: $activeProjectRoot
+
+$activeProjectBlock
 
 FAST-LANE: Planner пропущен. Выполни пользовательскую задачу напрямую как Codex.
 
@@ -982,7 +1081,8 @@ $autoScopeLine
 - НЕ трогай `watchdog.ps1`, `supervisor.ps1`, `.git/*`, `secrets.json`, `auth.json`.
 - Для `.ps1`: сохраняй UTF-8 с BOM, затем проверь ParseFile. Если менял `.ps1`, запусти smoke перед коммитом.
 - Проверяй результат реальным запуском/helper-тестом, затем сделай один commit.
-- restart.flag создавай только если `git diff --name-only HEAD` перед созданием показывает хотя бы один `.ps1`.
+- $restartReminder
+$bridgeScopeRules
 - В конце дай краткий отчёт и отдельную строку `[[VERIFIED: что проверено | результат]]`.
 - Последняя строка должна быть ровно: `STATUS: DONE`.
 $skillAppend
@@ -1040,7 +1140,9 @@ STUDY-ХОД -- выполняй текущую фазу изучения. Мо�
   } catch {}
   $shared = @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
-Рабочий корень: $workRoot
+Рабочий корень: $activeProjectRoot
+
+$activeProjectBlock
 
 ТЕКУЩАЯ ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:
 $Task
@@ -1108,14 +1210,7 @@ $autoScopeLine
   STATUS: CONTINUE
   ```
   В этом примере: A → codex-high/xhigh (complex+backend), B → claude-sonnet (moderate+frontend), C → codex-medium или alt (simple+docs).
-- САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
-  1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
-  2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.
-  3) Применить правки .ps1-файлов движка: создай файл `bridge\control\restart.flag` -- супервизор перезапустит мост (без UAC). ⛔ СТРОГИЙ ЗАПРЕТ: restart.flag создавать ТОЛЬКО если изменён хотя бы один `.ps1`-файл. Перед созданием флага ОБЯЗАТЕЛЬНО проверь: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" diff --name-only HEAD` -- если в выводе НЕТ ни одного `.ps1`, флаг НЕ создавай (мост перезапустится зря).
-  4) После КАЖДОЙ проверенной рабочей правки: `git -C "C:\Users\rafie\OneDrive\Documents\bridge" add -A; git -C "..." commit -m "что сделал"`. Это фиксирует прогресс (watchdog откатит на последний коммит при поломке).
-  5) `web\index.html` (UI) можно править свободно -- применяется без перезапуска (просто обнови вкладку). ⛔ НЕ создавай restart.flag ради HTML-правок -- это лишние перезапуски и шум в истории.
-  6) НЕ ТРОГАЙ: `watchdog.ps1`, `supervisor.ps1` без крайней нужды, папку `.git`, задачи Планировщика; НЕ убивай процессы моста/watchdog; НЕ удаляй файлы движка.
-  7) `secrets.json` содержит API-ключи (Gemini и др.). НИКОГДА не выводи его содержимое в чат и не коммить — он в .gitignore. Память: `lib\memory.ps1` (embeddings+поиск), `librarian.ps1` (ночная консолидация), хранилище `memory\` (gitignored).
+$bridgeScopeRules
 
 ДИАЛОГ:
 $transcript$taskCheckpointPromptBlock$planPromptBlock
@@ -1247,7 +1342,7 @@ $snapBlock
     } catch {}
     $resumeWarningBlock = ''
     if ($studyTurn -gt 0) {
-      $resumeWarningBlock = "`n`n⚠ ВОЗОБНОВЛЕНИЕ ЗАДАЧИ: у тебя в репо могут быть незакоммиченные правки от ДРУГОЙ задачи. ДО начала работы выполни: ``git -C '$bridgeRoot' status --short``. Если найдёшь изменения, НЕ относящиеся к текущей задаче — ЗАКОММИТЬ их ОТДЕЛЬНО (отдельный коммит, отдельная тема) перед тем, как начинать. НЕ смешивай темы разных задач в одном коммите."
+      $resumeWarningBlock = "`n`n⚠ ВОЗОБНОВЛЕНИЕ ЗАДАЧИ: у тебя в репо могут быть незакоммиченные правки от ДРУГОЙ задачи. ДО начала работы выполни: ``git -C '$activeProjectRoot' status --short``. Если найдёшь изменения, НЕ относящиеся к текущей задаче — ЗАКОММИТЬ их ОТДЕЛЬНО (отдельный коммит, отдельная тема) перед тем, как начинать. НЕ смешивай темы разных задач в одном коммите."
     }
     $suffix = @"
 
@@ -1274,8 +1369,8 @@ $chunkBlock
 Шаблон: «Заявление: N=51. Проверка: `<команда>` → `<вывод>` (фактически N=51 ✓)». Если команда показала ДРУГОЕ число — НЕ закрывай DONE, исправь и пере-проверь.
 БЕЗ proof'а планировщик RЕЖEКТИТ твой STATUS: DONE и возвращает тебя на доработку (это и есть verify-loop). Каждый отвергнутый DONE = ещё 5-10 минут на ход. ПРОВЕРЯЙ СЕБЯ САМ перед заявлением.
 Это правило родилось после curator-задачи 2026-05-27: «backfill всех 51 items» был заявлен 3 раза подряд при фактических 3 / 19 / 35 — каждый цикл = ещё один ход планировщика на проверку.
-SAFETY GATE: перед удалением файлов/папок ВНЕ директории bridge, массовой перезаписью чужих данных, убийством процессов пользователя, внешними сетевыми запросами — напиши строку [[SAFETY: <что именно>]] и НЕ ВЫПОЛНЯЙ. Драйвер остановится и спросит пользователя.
-⛔ НАПОМИНАНИЕ: restart.flag -- ТОЛЬКО если изменён `.ps1`-файл. Проверь перед созданием: `git diff --name-only HEAD`. Для `web\index.html` флаг НЕ нужен.
+$safetyGateRule
+$restartReminder
 "@
   }
   return ($shared + $suffix)
@@ -1401,19 +1496,20 @@ function Invoke-Planner {
   # Opus -> maximum thinking budget ('ultrathink' = top tier in Claude Code). They write code.
   $effPrompt = if ($Model -match 'opus') { $Prompt + "`n`nultrathink" } else { $Prompt }
   [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
-  # Narrow --add-dir to the bridge folder (faster startup); Bash already gives full read access.
+  $plannerCwd = Get-ActiveProjectRoot
+  if ([string]::IsNullOrWhiteSpace($plannerCwd)) { $plannerCwd = $bridgeRoot }
   $allowedTools = if ($Mode -eq 'advisory') { @('Read','Grep','Glob') }
                   elseif ($Mode -eq 'coder-fallback') { @('Read','Grep','Glob','Bash','Edit','MultiEdit','Write') }
                   elseif ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
                   else { @('Read','Grep','Glob','Bash') }
-  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$bridgeRoot,'--allowedTools') + $allowedTools
+  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
   if ($Model) { $claudeArgs += @('--model', $Model) }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
-      -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+      -WorkingDirectory $plannerCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'claude'
     # Planner cap history: 240s -> 600s (probe 2 ultrathink audit), -> 900s (2026-05-26
@@ -1508,8 +1604,23 @@ function Invoke-Coder {
       return [pscustomobject]@{ text=$plannerRes.text; status=$plannerRes.status; duration=$plannerRes.duration; errorType=$plannerRes.errorType; fallback='claude_as_coder' }
     }
   }
+  $coderBinding = Get-ActiveProjectBinding
+  if ($coderBinding -and ([string]$coderBinding.slug -ne 'main') -and -not [bool]$coderBinding.ok) {
+    $reason = [string]$coderBinding.error
+    if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "Канал '$([string]$coderBinding.slug)' не привязан к проекту" }
+    return [pscustomobject]@{
+      text             = "PREFLIGHT_BLOCKED: $reason"
+      status           = 'preflight_blocked'
+      duration         = 0
+      errorType        = 'preflight_blocked'
+      preflightBlocked = $true
+      reason           = $reason
+    }
+  }
+  $coderCwd = if ($coderBinding -and [bool]$coderBinding.ok) { [string]$coderBinding.project_root } else { $bridgeRoot }
+  if ([string]::IsNullOrWhiteSpace($coderCwd)) { $coderCwd = $bridgeRoot }
   if (Get-Command Get-PreflightBlockers -ErrorAction SilentlyContinue) {
-    $pf = Get-PreflightBlockers -Channel $Channel
+    $pf = Get-PreflightBlockers -Channel $Channel -ProjectRoot $coderCwd
   } else {
     $pf = [pscustomobject]@{ Hard = @(); Soft = @('pre-flight helper Get-PreflightBlockers не загружен') }
   }
@@ -1529,7 +1640,7 @@ function Invoke-Coder {
     $Prompt = $warn + $Prompt
   }
   $ctxBlock = ''
-  try { $ctxBlock = Get-CoderRuntimeContextBlock } catch { $ctxBlock = '' }
+  try { $ctxBlock = Get-CoderRuntimeContextBlock -RepoRoot $coderCwd } catch { $ctxBlock = '' }
   if ($ctxBlock) {
     $Prompt = $ctxBlock + "`n`n" + $Prompt
   }
@@ -1540,15 +1651,7 @@ function Invoke-Coder {
   $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { 'danger-full-access' }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  # Phase 5 (channels): per-channel project_root routes Codex -C to the actual codebase of
-  # the active channel. Falls back to config.workRoot when the channel has none.
-  $coderCwd = $workRoot
-  try {
-    if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
-      $pr = [string](Get-EffectiveProjectRoot)
-      if (-not [string]::IsNullOrWhiteSpace($pr)) { $coderCwd = $pr }
-    }
-  } catch {}
+  # Per-channel project root routes Codex -C to the active project. No non-main fallback.
   # Global Codex instance mutex: Codex MSIX supports only one exec session at a time.
   # When another channel's driver is running Codex, wait up to 120s for it to finish.
   $codexLockFile = Join-Path $bridgeRoot 'runtime\codex.lock'
@@ -1626,7 +1729,7 @@ function Invoke-Coder {
     } catch {}
     $p = Start-Process -FilePath $codexExe `
       -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
-      -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+      -WorkingDirectory $coderCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'codex'
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
@@ -2130,6 +2233,41 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
+      $projectBindingForTask = Get-ActiveProjectBinding
+      if ($projectBindingForTask -and ([string]$projectBindingForTask.slug -ne 'main') -and -not [bool]$projectBindingForTask.ok) {
+        $slugForTask = [string]$projectBindingForTask.slug
+        $reasonForTask = [string]$projectBindingForTask.error
+        if ([string]::IsNullOrWhiteSpace($reasonForTask)) { $reasonForTask = "Канал '$slugForTask' не привязан к проекту" }
+        $msg = @"
+⚠ Канал '$slugForTask' не привязан к проекту. Задачу не запускаю, чтобы не уйти в bridge.
+
+Добавь привязку в settings.json:
+{
+  "channels": {
+    "$slugForTask": {
+      "projectPath": "C:\\путь\\к\\проекту",
+      "projectType": "тип проекта",
+      "projectDescription": "краткое описание"
+    }
+  }
+}
+
+Причина: $reasonForTask
+Затем повтори задачу.
+"@
+        Add-Message -From system -Text $msg -Kind event | Out-Null
+        Update-State ({ param($s)
+          $s.last_user_seq=$maxUser
+          $s.current_task=$null
+          $s.status='idle'
+          $s.active_agent=$null
+          $s.active_model=$null
+          $s.status_text=$null
+          $s.heartbeat=(Get-Date).ToString('o')
+        }.GetNewClosure()) | Out-Null
+        Start-Sleep -Seconds $loopDelay
+        continue
+      }
       $studyDetect = Detect-StudyMode -TaskText $taskMsg
       # 🧭 [[DEEP-THINK]] marker forces discuss-mode dialog (Claude↔Codex back-and-forth)
       # instead of normal planner->coder. Used by Start-DeepThinkDialog on Sat/Sun nights.
@@ -2153,7 +2291,9 @@ while ($true) {
       $fastLaneReason = ''
       if ($fastMark -and -not $reasoningHighMark) { $fastLaneReason = 'marker' }
       elseif ($autoFastLane) { $fastLaneReason = 'auto' }
-      $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+      $taskProjectRoot = Get-ActiveProjectRoot
+      if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
+      $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
@@ -2336,6 +2476,22 @@ while ($true) {
   }
   $reply = [string]$turnResult.text
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and [string]$Channel -ne 'main') {
+    try {
+      $bridgeHeadAfterGuard = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
+      $bridgeDirtyAfterGuard = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+      if (($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard) -or @($bridgeDirtyAfterGuard).Count -gt 0) {
+        $changed = if (@($bridgeDirtyAfterGuard).Count -gt 0) { @($bridgeDirtyAfterGuard) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
+        $guardMsg = "⚠ Project-focus guard: канал '$Channel' не является main, но после coder-хода изменился bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
+        try { Set-TaskLastFailure -Kind bridge_guard -Text $guardMsg } catch {}
+        Add-Message -From system -Text $guardMsg -Kind event | Out-Null
+        Update-State { param($s) $s.force_planner=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        continue
+      }
+    } catch {
+      Add-Message -From system -Text ("⚠ Project-focus guard не смог проверить bridge diff: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+  }
   try {
     $turnSec = 0
     try { $turnSec = [int]$turnResult.duration } catch {}
@@ -2637,7 +2793,9 @@ while ($true) {
     $pmatch = [regex]::Match($reply, '(?s)\[\[PARALLEL:\s*((?:(?!\[\[).)+?\|\|(?:(?!\[\[).)+?)\s*\]\]')
     if ($pmatch.Success) {
       $pspec = $pmatch.Groups[1].Value.Trim()
-      $prepo = $workRoot; $psubsRaw = $pspec
+      $prepo = Get-ActiveProjectRoot
+      if ([string]::IsNullOrWhiteSpace($prepo)) { $prepo = $workRoot }
+      $psubsRaw = $pspec
       if ($pspec -match '(?s)^(.*?)\|\|(.*)$') { $prepo = $matches[1].Trim(); $psubsRaw = $matches[2].Trim() }
       $psubs = @($psubsRaw -split '\s*;;\s*' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
       if ($psubs.Count -lt 2) {

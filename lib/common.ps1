@@ -601,8 +601,17 @@ function Get-TaskCheckpointBlock {
 
 function Get-CoderRuntimeContextBlock {
   [CmdletBinding()]
-  param([string]$RepoRoot = 'C:\Users\rafie\OneDrive\Documents\bridge')
+  param([string]$RepoRoot = '')
 
+  $bridgeRoot = Get-BridgeRoot
+  if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    try {
+      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+        $RepoRoot = [string](Get-EffectiveProjectRoot)
+      }
+    } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = $bridgeRoot }
   $lines = New-Object System.Collections.Generic.List[string]
   [void]$lines.Add('=== RUNTIME CONTEXT (только чтение, для ориентации) ===')
   [void]$lines.Add("repo: $RepoRoot")
@@ -610,7 +619,11 @@ function Get-CoderRuntimeContextBlock {
   $st = $null
   try {
     $st = Read-State
-    $ch = if ($st.current_channel) { [string]$st.current_channel } else { 'main' }
+    $ch = ''
+    try {
+      if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $ch = [string](Get-EffectiveChannel) }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($ch)) { $ch = if ($st.current_channel) { [string]$st.current_channel } else { 'main' } }
     [void]$lines.Add("channel: $ch")
   } catch {
     [void]$lines.Add('channel: n/a')
@@ -645,7 +658,7 @@ function Get-CoderRuntimeContextBlock {
   }
 
   try {
-    $lockPath = Join-Path $RepoRoot 'runtime\codex.lock'
+    $lockPath = Join-Path $bridgeRoot 'runtime\codex.lock'
     if (Test-Path $lockPath) {
       $lockInfo = (Get-Content $lockPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).Trim()
       if ($lockInfo) {
@@ -814,7 +827,7 @@ function Set-CurrentAgent {
 }
 
 function Get-PreflightBlockers {
-  param([string]$Channel = '')
+  param([string]$Channel = '', [string]$ProjectRoot = '')
 
   $hard = New-Object 'System.Collections.Generic.List[string]'
   $soft = New-Object 'System.Collections.Generic.List[string]'
@@ -828,6 +841,30 @@ function Get-PreflightBlockers {
     }
   }
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $channelSlug = $Channel
+  try {
+    if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $channelSlug = Normalize-ChannelSlug $Channel }
+  } catch {}
+
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    try {
+      if (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue) {
+        $binding = Get-ChannelProjectBinding -Slug $channelSlug
+        if ($binding -and [bool]$binding.ok) {
+          $ProjectRoot = [string]$binding.project_root
+        } elseif ($channelSlug -ne 'main') {
+          $berr = if ($binding) { [string]$binding.error } else { "Канал '$channelSlug' не привязан к проекту" }
+          if ([string]::IsNullOrWhiteSpace($berr)) { $berr = "Канал '$channelSlug' не привязан к проекту" }
+          [void]$hard.Add($berr)
+        }
+      } elseif (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+        $ProjectRoot = [string](Get-EffectiveProjectRoot -Slug $channelSlug)
+      }
+    } catch {
+      [void]$soft.Add("не удалось определить проект канала '$channelSlug': $($_.Exception.Message)")
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = $root }
 
   $channelState = $null
   try {
@@ -910,12 +947,12 @@ function Get-PreflightBlockers {
     [void]$soft.Add("не удалось проверить Doctor на канале '$Channel': $($_.Exception.Message)")
   }
 
-  $gitDir = Join-Path $root '.git'
+  $gitDir = Join-Path $ProjectRoot '.git'
   try {
-    $gitDirRaw = @(& git -C $root rev-parse --git-dir 2>$null | Select-Object -First 1)
+    $gitDirRaw = @(& git -C $ProjectRoot rev-parse --git-dir 2>$null | Select-Object -First 1)
     if ($gitDirRaw -and -not [string]::IsNullOrWhiteSpace([string]$gitDirRaw[0])) {
       $gd = [string]$gitDirRaw[0]
-      if ([System.IO.Path]::IsPathRooted($gd)) { $gitDir = $gd } else { $gitDir = Join-Path $root $gd }
+      if ([System.IO.Path]::IsPathRooted($gd)) { $gitDir = $gd } else { $gitDir = Join-Path $ProjectRoot $gd }
     }
   } catch {
     [void]$soft.Add("не удалось определить .git каталог: $($_.Exception.Message)")
@@ -929,7 +966,7 @@ function Get-PreflightBlockers {
   }
 
   try {
-    $dirty = @(& git -C $root status --porcelain 2>$null)
+    $dirty = @(& git -C $ProjectRoot status --porcelain 2>$null)
     $dirtyCount = @($dirty | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
     if ($dirtyCount -gt 0) { [void]$soft.Add("worktree dirty: $dirtyCount изменённых/untracked файлов") }
   } catch {
