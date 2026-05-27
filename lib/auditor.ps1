@@ -519,6 +519,55 @@ function Get-AuditorHashPrefix {
   }
 }
 
+function Get-AuditorSuppressionFilePath {
+  Join-Path (Get-BridgeRoot) 'control\auditor.suppressed.json'
+}
+
+function Test-AuditorUnsolvableSuppressed {
+  param([string]$Hash)
+  if ([string]::IsNullOrWhiteSpace($Hash)) { return $false }
+  $path = Get-AuditorSuppressionFilePath
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
+  try {
+    $obj = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $arr = @($obj.hashes) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    return ($arr -contains $Hash)
+  } catch {
+    Write-AuditorLog ("suppression read error: {0}" -f $_.Exception.Message)
+    return $false
+  }
+}
+
+function Save-AuditorUnsolvableSuppressionFile {
+  param([string]$Hash, [int]$Max = 100)
+  if ([string]::IsNullOrWhiteSpace($Hash)) { return }
+  if ($Max -lt 1) { $Max = 100 }
+  $path = Get-AuditorSuppressionFilePath
+  $arr = @()
+  try {
+    if (Test-Path -LiteralPath $path) {
+      $obj = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      $arr = @($obj.hashes) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    }
+  } catch {
+    Write-AuditorLog ("suppression load error: {0}" -f $_.Exception.Message)
+    $arr = @()
+  }
+  if ($arr -notcontains $Hash) { $arr = @($arr) + @($Hash) }
+  if ($arr.Count -gt $Max) {
+    $start = [Math]::Max(0, $arr.Count - $Max)
+    $arr = @($arr[$start..($arr.Count - 1)])
+  }
+  $newObj = [ordered]@{ updated = (Get-Date).ToString('o'); hashes = @($arr) }
+  try {
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [System.IO.File]::WriteAllText($path, ($newObj | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {
+    Write-AuditorLog ("suppression write error: {0}" -f $_.Exception.Message)
+  }
+}
+
 function Get-AuditorReasonHash {
   param([string]$TaskKey, [string]$TriggerName, [string]$Detail)
   $norm = ([string]$Detail).ToLowerInvariant()
@@ -711,11 +760,18 @@ function Dispatch-AuditorVerdict {
   }
 
   if ($class -eq 'unsolvable') {
+    if (Test-AuditorUnsolvableSuppressed -Hash $reasonHash) {
+      Write-AuditorLog ("auditor:suppressed(unsolvable) hash={0}" -f $reasonHash)
+      return [pscustomobject]@{ class=$class; action='suppressed'; reason=$reason; hash=$reasonHash }
+    }
     $msg = "⚠ Auditor: unsolvable -- $reason"
     Add-AuditorMainMessage -Text $msg
     Write-AuditorLog ("unsolvable: pause requested but not written by Auditor; {0}" -f $reason)
     Add-AuditorVerdictMemory -Class $class -Reason $reason
-    if (-not $DryRun) { Save-AuditorSuppressedHash -Channel $targetChannel -Hash $reasonHash }
+    if (-not $DryRun) {
+      Save-AuditorUnsolvableSuppressionFile -Hash $reasonHash
+      Save-AuditorSuppressedHash -Channel $targetChannel -Hash $reasonHash
+    }
     return [pscustomobject]@{ class=$class; action='notify_pause_requested'; reason=$reason }
   }
 
@@ -724,6 +780,16 @@ function Dispatch-AuditorVerdict {
 }
 
 function Should-RunAuditor {
+  $lockPath = Join-Path (Get-BridgeRoot) 'control\auditor.lock'
+  if (Test-Path -LiteralPath $lockPath) {
+    try {
+      $lockAge = ((Get-Date) - (Get-Item -LiteralPath $lockPath -ErrorAction Stop).LastWriteTime).TotalMinutes
+      if ($lockAge -lt 5) { return $false }
+    } catch {
+      Write-AuditorLog ("lock stat error: {0}" -f $_.Exception.Message)
+    }
+  }
+
   $cfg = Get-AuditorConfig
   try { if (-not [bool]$cfg.enabled) { return $false } } catch {}
   try {
@@ -756,7 +822,60 @@ function Save-AuditorMarker {
   } catch {}
 }
 
+function New-AuditorLockToken {
+  [guid]::NewGuid().ToString('n')
+}
+
+function Try-EnterAuditorLock {
+  param([string]$Token, [int]$StaleMinutes = 5)
+  $path = Join-Path (Get-BridgeRoot) 'control\auditor.lock'
+  $dir = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  if (Test-Path -LiteralPath $path) {
+    try {
+      $lockAge = ((Get-Date) - (Get-Item -LiteralPath $path -ErrorAction Stop).LastWriteTime).TotalMinutes
+      if ($lockAge -ge $StaleMinutes) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+    } catch {
+      Write-AuditorLog ("stale lock cleanup error: {0}" -f $_.Exception.Message)
+    }
+  }
+
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    $payload = "{0}`n{1}" -f $Token, (Get-Date).ToString('o')
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $stream.Write($bytes, 0, $bytes.Length)
+    return $true
+  } catch [System.IO.IOException] {
+    return $false
+  } catch {
+    Write-AuditorLog ("lock acquire error: {0}" -f $_.Exception.Message)
+    return $false
+  } finally {
+    if ($stream) { $stream.Dispose() }
+  }
+}
+
+function Exit-AuditorLock {
+  param([string]$Token)
+  $path = Join-Path (Get-BridgeRoot) 'control\auditor.lock'
+  if (-not (Test-Path -LiteralPath $path)) { return }
+  try {
+    $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+    $firstLine = ([string]$raw -split "\r?\n", 2)[0]
+    if ($firstLine -eq $Token) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+  } catch {
+    Write-AuditorLog ("lock release error: {0}" -f $_.Exception.Message)
+  }
+}
+
 function Invoke-Auditor {
+  $lockToken = New-AuditorLockToken
+  if (-not (Try-EnterAuditorLock -Token $lockToken)) {
+    Write-AuditorLog 'auditor:lock busy'
+    return [pscustomobject]@{ class='normal'; action='lock_busy' }
+  }
   try {
     $snapshot = Get-AuditorSnapshot
     $triggers = @(Test-AuditorTriggers -Snapshot $snapshot)
@@ -773,6 +892,8 @@ function Invoke-Auditor {
     Write-AuditorLog ("error: " + $_.Exception.Message)
     Save-AuditorMarker
     return [pscustomobject]@{ class='transient'; action='error'; reason=$_.Exception.Message }
+  } finally {
+    Exit-AuditorLock -Token $lockToken
   }
 }
 
