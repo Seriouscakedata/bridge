@@ -21,6 +21,13 @@ if (Test-Path $authPath) {
 
 $null = Initialize-Bridge   # ensure files exist
 $serverStartTime = Get-Date
+$healthMemoryStamp = [datetime]::MinValue
+$healthMemoryCount = 0
+$healthConversationStamp = [datetime]::MinValue
+$healthConversationLastSeq = 0
+$healthConversationErrorCount = 0
+$healthGitStamp = [datetime]::MinValue
+$healthGitHead = ''
 
 # Try to listen on ALL interfaces (LAN access). Needs a urlacl reservation
 # (see setup-lan.ps1). Fall back to localhost-only if that isn't set up yet.
@@ -146,54 +153,92 @@ try {
         if ($mStateSeq.Success) { [void][int]::TryParse($mStateSeq.Groups[1].Value, [ref]$hLastSeq) }
         $psActive = 0
         foreach ($mRun in [regex]::Matches($stateRaw, '"status"\s*:\s*"running"')) { $psActive++ }
-        $gitHead = ''
+        $gitHead = $healthGitHead
         try {
           $headFile = Join-Path $root '.git\HEAD'
-          if (Test-Path -LiteralPath $headFile) {
+          $gitStamp = if (Test-Path -LiteralPath $headFile) { (Get-Item -LiteralPath $headFile).LastWriteTimeUtc } else { [datetime]::MinValue }
+          $refFile = $null
+          if ($gitStamp -ne [datetime]::MinValue) {
             $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
             if ($headLine -like 'ref: *') {
               $refName = $headLine.Substring(5).Trim() -replace '/', '\'
               $refFile = Join-Path (Join-Path $root '.git') $refName
-              if (Test-Path -LiteralPath $refFile) {
-                $sha = [System.IO.File]::ReadAllText($refFile, [System.Text.Encoding]::UTF8).Trim()
-                if ($sha.Length -ge 7) { $gitHead = $sha.Substring(0,7) }
-              }
-            } elseif ($headLine.Length -ge 7) {
-              $gitHead = $headLine.Substring(0,7)
+              if (Test-Path -LiteralPath $refFile) { $gitStamp = (Get-Item -LiteralPath $refFile).LastWriteTimeUtc }
             }
           }
-        } catch {}
-        if ([string]::IsNullOrWhiteSpace($gitHead)) {
-          try { $gitHead = (& git -C $root rev-parse --short=7 HEAD 2>$null).Trim() } catch {}
-        }
+          if ($gitStamp -ne $healthGitStamp) {
+            $newHead = ''
+            if (Test-Path -LiteralPath $headFile) {
+              $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
+              if ($headLine -like 'ref: *') {
+                $refName = $headLine.Substring(5).Trim() -replace '/', '\'
+                $refFile = Join-Path (Join-Path $root '.git') $refName
+                if (Test-Path -LiteralPath $refFile) {
+                  $sha = [System.IO.File]::ReadAllText($refFile, [System.Text.Encoding]::UTF8).Trim()
+                  if ($sha.Length -ge 7) { $newHead = $sha.Substring(0,7) }
+                }
+              } elseif ($headLine.Length -ge 7) {
+                $newHead = $headLine.Substring(0,7)
+              }
+            }
+            $healthGitStamp = $gitStamp
+            $healthGitHead = $newHead
+          }
+          $gitHead = $healthGitHead
+        } catch { $gitHead = $healthGitHead }
         $memCount = 0
         $memPath  = Join-Path $root 'memory\memory.jsonl'
         if (Test-Path -LiteralPath $memPath) {
-          $srMem = $null
-          try {
-            $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
-            while ($null -ne $srMem.ReadLine()) { $memCount++ }
-          } finally {
-            if ($null -ne $srMem) { $srMem.Close(); $srMem.Dispose() }
+          $memStamp = (Get-Item -LiteralPath $memPath).LastWriteTimeUtc
+          if ($memStamp -ne $healthMemoryStamp) {
+            $newMemCount = 0
+            $srMem = $null
+            try {
+              $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
+              while ($null -ne $srMem.ReadLine()) { $newMemCount++ }
+              $healthMemoryCount = $newMemCount
+              $healthMemoryStamp = $memStamp
+            } finally {
+              if ($null -ne $srMem) { $srMem.Close(); $srMem.Dispose() }
+            }
           }
+          $memCount = $healthMemoryCount
+        } else {
+          $healthMemoryStamp = [datetime]::MinValue
+          $healthMemoryCount = 0
         }
-        $errCount = 0
+        $errCount = $healthConversationErrorCount
         $convPath = Join-Path $root 'channels\main\conversation.jsonl'
         if (Test-Path -LiteralPath $convPath) {
-          $cutoff24 = $now.AddHours(-24)
-          $lines = [System.IO.File]::ReadLines($convPath) | Select-Object -Last 500
-          foreach ($ln in $lines) {
-            $mSeq = [regex]::Match($ln, '"seq"\s*:\s*(\d+)')
-            if ($mSeq.Success) {
-              $seqTmp = 0
-              if ([int]::TryParse($mSeq.Groups[1].Value, [ref]$seqTmp) -and $seqTmp -gt $hLastSeq) { $hLastSeq = $seqTmp }
+          $convStamp = (Get-Item -LiteralPath $convPath).LastWriteTimeUtc
+          if ($convStamp -ne $healthConversationStamp) {
+            $newErrCount = 0
+            $newLastSeq = 0
+            $cutoff24 = $now.AddHours(-24)
+            $lines = [System.IO.File]::ReadLines($convPath) | Select-Object -Last 500
+            foreach ($ln in $lines) {
+              $mSeq = [regex]::Match($ln, '"seq"\s*:\s*(\d+)')
+              if ($mSeq.Success) {
+                $seqTmp = 0
+                if ([int]::TryParse($mSeq.Groups[1].Value, [ref]$seqTmp) -and $seqTmp -gt $newLastSeq) { $newLastSeq = $seqTmp }
+              }
+              if ($ln.IndexOf('"from":"system"') -lt 0) { continue }
+              if ($ln -notmatch '[❌⚠💥]') { continue }
+              $mTs = [regex]::Match($ln, '"ts"\s*:\s*"([^"]+)"')
+              if (-not $mTs.Success) { $newErrCount++; continue }
+              try { if ([datetime]::Parse($mTs.Groups[1].Value) -ge $cutoff24) { $newErrCount++ } } catch { $newErrCount++ }
             }
-            if ($ln.IndexOf('"from":"system"') -lt 0) { continue }
-            if ($ln -notmatch '[❌⚠💥]') { continue }
-            $mTs = [regex]::Match($ln, '"ts"\s*:\s*"([^"]+)"')
-            if (-not $mTs.Success) { $errCount++; continue }
-            try { if ([datetime]::Parse($mTs.Groups[1].Value) -ge $cutoff24) { $errCount++ } } catch { $errCount++ }
+            $healthConversationStamp = $convStamp
+            $healthConversationLastSeq = $newLastSeq
+            $healthConversationErrorCount = $newErrCount
           }
+          if ($healthConversationLastSeq -gt $hLastSeq) { $hLastSeq = $healthConversationLastSeq }
+          $errCount = $healthConversationErrorCount
+        } else {
+          $healthConversationStamp = [datetime]::MinValue
+          $healthConversationLastSeq = 0
+          $healthConversationErrorCount = 0
+          $errCount = 0
         }
         $hOk = ($hbAge -lt 120) -and (-not $hPaused) -and ($errCount -lt 10)
         $hJson = '{"ok":' + ($hOk.ToString().ToLower()) + `
