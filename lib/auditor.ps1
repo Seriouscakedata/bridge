@@ -371,7 +371,7 @@ function Test-AuditorTriggers {
       [void]$items.Add((New-AuditorTrigger -Name 'critic_pingpong' -Channel $slug -Detail ("critic_retry_count={0}, max={1}" -f [int]$c.critic_retry_count, $criticMax)))
     }
     $active = ([string]$c.status -ne 'idle' -and -not [string]::IsNullOrWhiteSpace([string]$c.current_task_short))
-    if ($active -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30) {
+    if ($active -and -not $inDiscussion -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30) {
       [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min)))
     }
   }
