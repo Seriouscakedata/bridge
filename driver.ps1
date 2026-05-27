@@ -11,6 +11,7 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 . (Join-Path $PSScriptRoot 'lib\auditor.ps1')
+. (Join-Path $PSScriptRoot 'lib\canary.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
@@ -290,6 +291,60 @@ function Start-TechRadarIfDue {
   try {
     Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
     Add-Message -From system -Text "📡 Тех-радар запущен в фоне (еженедельный обход Хабра)." -Kind event | Out-Null
+  } catch {}
+}
+
+function Start-CanaryIfDue {
+  try {
+    $ccfg = Get-BridgeConfig
+    $canaryCfg = $null
+    if ($ccfg.PSObject.Properties.Name -contains 'canary') { $canaryCfg = $ccfg.canary }
+    if ($canaryCfg -and ($canaryCfg.PSObject.Properties.Name -contains 'enabled') -and -not [bool]$canaryCfg.enabled) { return }
+
+    $ivH = 6.0
+    try {
+      if ($canaryCfg -and ($canaryCfg.PSObject.Properties.Name -contains 'intervalHours') -and $canaryCfg.intervalHours) {
+        $ivH = [double]$canaryCfg.intervalHours
+      }
+    } catch {}
+
+    $ctlDir = Join-Path $bridgeRoot 'control'
+    if (-not (Test-Path -LiteralPath $ctlDir)) { New-Item -ItemType Directory -Path $ctlDir -Force | Out-Null }
+    $launchMarker = Join-Path $ctlDir 'canary-launch.last'
+    if (Test-Path -LiteralPath $launchMarker) {
+      try {
+        $lastLaunch = [DateTime]::Parse((Get-Content -LiteralPath $launchMarker -Raw -Encoding UTF8).Trim(), $null, [Globalization.DateTimeStyles]::RoundtripKind)
+        if (((Get-Date).ToUniversalTime() - $lastLaunch.ToUniversalTime()).TotalMinutes -lt 30) { return }
+      } catch {}
+    }
+
+    $lastRun = $null
+    $runsPath = Join-Path $ctlDir 'canary-runs.jsonl'
+    if (Test-Path -LiteralPath $runsPath) {
+      try {
+        $lastLine = Get-Content -LiteralPath $runsPath -Tail 1 -Encoding UTF8
+        if ($lastLine) {
+          $lastObj = $lastLine | ConvertFrom-Json
+          if ($lastObj.timestamp) {
+            $lastRun = [DateTime]::Parse([string]$lastObj.timestamp, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+          }
+        }
+      } catch {}
+    }
+    if (-not $lastRun) {
+      try {
+        $cst = Get-CanaryState
+        if ($cst.last_heartbeat_at) {
+          $lastRun = [DateTime]::Parse([string]$cst.last_heartbeat_at, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+        }
+      } catch {}
+    }
+    if ($lastRun -and (((Get-Date).ToUniversalTime() - $lastRun.ToUniversalTime()).TotalHours -lt $ivH)) { return }
+
+    $canaryScript = Join-Path $PSScriptRoot 'canary.ps1'
+    if (-not (Test-Path -LiteralPath $canaryScript)) { return }
+    [System.IO.File]::WriteAllText($launchMarker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden | Out-Null
   } catch {}
 }
 
@@ -1576,6 +1631,8 @@ while ($true) {
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+        $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
+        $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
         Clear-AuditorSuppressedHashes -State $s
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -1645,6 +1702,8 @@ while ($true) {
           Clear-FastLaneFlags $s
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
+          $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -1663,6 +1722,7 @@ while ($true) {
         try { Start-LibrarianIfDue } catch {}
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
+        try { Start-CanaryIfDue } catch {}
         Start-Sleep -Seconds $idlePoll; continue
       }
     }
@@ -2094,6 +2154,64 @@ while ($true) {
     Add-Message -From system -Text "🔍 Research-ход не дал маркер [[EVIDENCE: ...]]. Дальнейший web-доступ по этой задаче заблокирован до новой задачи." -Kind event | Out-Null
     $researchBlockValue = $researchMaxTurns
     Update-State ({ param($s) $s.research_count=$researchBlockValue }.GetNewClosure()) | Out-Null
+  }
+
+  # Loop detector: three identical non-empty progress fingerprints in one task -> Doctor.
+  try {
+    $fpDiff  = ((& git -C $bridgeRoot diff --stat HEAD 2>$null) -join '|').Trim()
+    $fpReply = if ($null -eq $reply) { '' } else { ([string]$reply).Trim() }
+    $fpInput = ($fpDiff + '|||' + $fpReply).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($fpInput)) {
+      $fpBytes = [System.Text.Encoding]::UTF8.GetBytes($fpInput)
+      $fpHash  = ([System.Security.Cryptography.SHA256]::Create().ComputeHash($fpBytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+      $fp8     = $fpHash.Substring(0, 8)
+
+      $stFp   = Read-State
+      $fpList = @()
+      try { if ($null -ne $stFp.progress_fingerprints) { $fpList = @($stFp.progress_fingerprints) } } catch {}
+      $fpList = @($fpList) + @($fp8)
+      if ($fpList.Count -gt 3) { $fpList = @($fpList[($fpList.Count - 3)..($fpList.Count - 1)]) }
+
+      $isLoop = ($fpList.Count -eq 3) -and (($fpList | Select-Object -Unique).Count -eq 1)
+      $curLoopCount = 0
+      try { $curLoopCount = [int]$stFp.task_loop_count } catch {}
+      if ($isLoop) { $curLoopCount++ }
+
+      $newFpList = @($fpList)
+      $newLoopCount = $curLoopCount
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue $newFpList -Force
+        $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue $newLoopCount -Force
+      }.GetNewClosure()) | Out-Null
+
+      if ($isLoop) {
+        Add-Message -From system -Text '🔁 Loop detected: 3× same fingerprint — переключаю в Doctor' -Kind event | Out-Null
+        $stLoop = Read-State
+        $isAlreadyDoctor = ([bool]$stLoop.doctor_active) -or ([string]$stLoop.task_mode -eq 'doctor')
+        if ($isAlreadyDoctor) {
+          Add-Message -From system -Text '🛑 Loop в режиме Doctor — прерываю задачу.' -Kind event | Out-Null
+          Update-State { param($s)
+            Complete-TaskAgentDuration $s
+            $s.current_task = $null; $s.task_turn = 0; $s.status = 'idle'; $s.active_agent = $null; $s.active_model = $null; $s.status_text = $null
+            $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
+            $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
+          } | Out-Null
+        } else {
+          try {
+            Activate-Doctor -Reason 'loop_detected' -Detail '3x same progress fingerprint' | Out-Null
+          } catch {
+            Add-Message -From system -Text ("⚠ Activate-Doctor failed in loop-detector: " + $_.Exception.Message) -Kind event | Out-Null
+          }
+          Update-State { param($s)
+            $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
+            $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
+          } | Out-Null
+        }
+        continue
+      }
+    }
+  } catch {
+    Add-Message -From system -Text ("⚠ Loop-detector error: " + $_.Exception.Message) -Kind event | Out-Null
   }
 
   $plannerStatus = 'CONTINUE'

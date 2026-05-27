@@ -13,7 +13,7 @@ function New-DefaultCanaryState {
 
 function Get-CanaryConfig {
   $def = [ordered]@{
-    enabled            = $false
+    enabled            = $true
     intervalHours      = 6
     cooldownMinutes    = 30
     llmModel           = 'gemini-2.5-flash-lite'
@@ -322,6 +322,82 @@ function Add-CanaryStateCounters {
   }
 }
 
+function Write-CanaryRun {
+  param(
+    [bool]$Ok,
+    [long]$DurationMs,
+    [string[]]$Errors = @(),
+    [bool]$Skipped = $false
+  )
+
+  $entry = [ordered]@{
+    timestamp   = (Get-Date).ToUniversalTime().ToString('o')
+    ok          = $Ok
+    duration_ms = $DurationMs
+    errors      = @($Errors)
+  }
+  if ($Skipped) { $entry.skipped = $true }
+  $path = Join-Path (Get-BridgeRoot) 'control\canary-runs.jsonl'
+  $dir = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  [System.IO.File]::AppendAllText($path, (($entry | ConvertTo-Json -Compress -Depth 5) + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Get-CanaryHealthUri {
+  try {
+    $cfg = Get-BridgeConfig
+    $port = if ($cfg.port) { [int]$cfg.port } else { 8787 }
+    return "http://localhost:$port/api/health"
+  } catch {
+    return 'http://localhost:8787/api/health'
+  }
+}
+
+function Invoke-CanarySmokeChecks {
+  param([string]$RepoRoot)
+
+  $errors = New-Object 'System.Collections.Generic.List[string]'
+
+  try {
+    foreach ($file in @(Get-ChildItem -LiteralPath $RepoRoot -Recurse -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
+      $full = [string]$file.FullName
+      if ($full -match '\\\.git\\' -or $full -match '\\worktrees\\') { continue }
+      $tokens = $null; $parseErrors = $null
+      [void][System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$tokens, [ref]$parseErrors)
+      if ($parseErrors -and $parseErrors.Count -gt 0) {
+        [void]$errors.Add(("parse {0}: {1}" -f $file.Name, [string]$parseErrors[0].Message))
+      }
+    }
+  } catch {
+    [void]$errors.Add("parse sweep failed: $($_.Exception.Message)")
+  }
+
+  $uri = Get-CanaryHealthUri
+  try {
+    $before = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
+    if ($before.StatusCode -ne 200) { [void]$errors.Add("health before HTTP $($before.StatusCode)") }
+    $beforeObj = $before.Content | ConvertFrom-Json
+    $beforeSeq = 0
+    try { $beforeSeq = [int]$beforeObj.lastSeq } catch {}
+
+    [void](Add-Message -From system -Kind event -Text ("🧪 Canary smoke heartbeat " + (Get-Date).ToUniversalTime().ToString('o')))
+
+    Start-Sleep -Milliseconds 200
+    $after = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
+    if ($after.StatusCode -ne 200) { [void]$errors.Add("health after HTTP $($after.StatusCode)") }
+    $afterObj = $after.Content | ConvertFrom-Json
+    $afterSeq = 0
+    try { $afterSeq = [int]$afterObj.lastSeq } catch {}
+    if ($afterSeq -le $beforeSeq) {
+      [void]$errors.Add("lastSeq did not advance ($beforeSeq -> $afterSeq)")
+    }
+  } catch {
+    [void]$errors.Add("health/lastSeq check failed: $($_.Exception.Message)")
+  }
+
+  return @($errors.ToArray())
+}
+
 function Invoke-CanaryCycle {
   [CmdletBinding()]
   param(
@@ -333,6 +409,7 @@ function Invoke-CanaryCycle {
     $gate = Test-CanaryIdleGate
     if (-not $gate.idle) {
       Write-CanaryHeartbeat @{ outcome = 'skip'; reason = $gate.reason; manual = $false }
+      Write-CanaryRun -Ok $true -DurationMs 0 -Errors @("skipped: $($gate.reason)") -Skipped $true
       return [pscustomobject]@{ ok = $true; skipped = $true; reason = $gate.reason; manual = $false }
     }
   }
@@ -360,6 +437,9 @@ function Invoke-CanaryCycle {
     $commitResult = Invoke-CanaryGit -RepoPath $wtPath -GitArgs @('commit', '-m', "canary heartbeat $ts")
     if ($commitResult.ExitCode -ne 0) { throw "git commit failed: $($commitResult.Output -join ' ')" }
 
+    $smokeErrors = @(Invoke-CanarySmokeChecks -RepoRoot $repoRoot)
+    if ($smokeErrors.Count -gt 0) { throw ("smoke failed: " + ($smokeErrors -join '; ')) }
+
     $sw.Stop()
     if (-not $NoStateUpdate) {
       $state.last_heartbeat_at = $ts
@@ -375,6 +455,7 @@ function Invoke-CanaryCycle {
       synced_from = $syncedFrom
       manual      = [bool]$Force
     }
+    Write-CanaryRun -Ok $true -DurationMs $sw.ElapsedMilliseconds -Errors @()
     return [pscustomobject]@{ ok = $true; skipped = $false; duration_ms = $sw.ElapsedMilliseconds; manual = [bool]$Force }
   } catch {
     $sw.Stop()
@@ -392,6 +473,13 @@ function Invoke-CanaryCycle {
       error       = $err
       manual      = [bool]$Force
     }
+    Write-CanaryRun -Ok $false -DurationMs $sw.ElapsedMilliseconds -Errors @($err)
+    try {
+      $cst2 = Get-CanaryState
+      if ([int]$cst2.consecutive_failures -ge 2) {
+        try { Send-PushEvent -Kind need_you -Text "Canary: 2 consecutive failures. Last error: $err" } catch {}
+      }
+    } catch {}
     return [pscustomobject]@{ ok = $false; skipped = $false; error = $err; manual = [bool]$Force }
   }
 }
