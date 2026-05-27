@@ -44,6 +44,7 @@ function Activate-Doctor {
     $s.verify_retry_count = 0
     $s.critic_retry_count = 0
     $s.force_planner     = $false
+    Clear-AuditorSuppressedHashes -State $s
     $s.active_agent = $null; $s.active_model = $null; $s.status_text = $null
   }.GetNewClosure()) | Out-Null
   $snippet = $cur
@@ -157,6 +158,7 @@ function Complete-Doctor {
       $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.critic_retry_count=0
       $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''
       $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
+      Clear-AuditorSuppressedHashes -State $s
       $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
       $s.status='idle'
     }.GetNewClosure()) | Out-Null
@@ -179,6 +181,7 @@ function Complete-Doctor {
     $s.verify_retry_count   = 0
     $s.critic_retry_count   = 0
     $s.force_planner        = $false
+    Clear-AuditorSuppressedHashes -State $s
   }.GetNewClosure()) | Out-Null
   $snippet = $held; if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0,80) + '...' }
   try { Add-Message -From system -Text ("🩺 Доктор закончил — фикс применён и проверен. Возобновляю приостановленную задачу: «" + $snippet + "».") -Kind event | Out-Null } catch {}
@@ -189,7 +192,7 @@ function Abort-Doctor {
   # Called when Doctor attempts are exhausted or Doctor itself fails. Keep held_task in
   # state (operator decides what to do); clear active/attempts so loop won't retry.
   param([string]$Reason = 'attempts exhausted')
-  Update-State { param($s) $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.current_task=$null; $s.task_turn=0 } | Out-Null
+  Update-State { param($s) $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.current_task=$null; $s.task_turn=0; Clear-AuditorSuppressedHashes -State $s } | Out-Null
   try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
   try { Append-DoctorEvent -Event 'abort' -Reason $Reason } catch {}

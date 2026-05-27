@@ -319,6 +319,8 @@ function Get-AuditorSnapshot {
       task_turn = Get-AuditorStateInt -State $st -Names @('task_turn','current_task_turn') -Default 0
       task_mode = if ($st -and $st.PSObject.Properties.Name -contains 'task_mode') { [string]$st.task_mode } else { 'normal' }
       discuss_turn = Get-AuditorStateInt -State $st -Names @('discuss_turn') -Default 0
+      task_id = if ($st -and $st.PSObject.Properties.Name -contains 'task_id') { [string]$st.task_id } else { '' }
+      task_start_seq = Get-AuditorStateInt -State $st -Names @('task_start_seq') -Default 0
       critic_retry_count = Get-AuditorStateInt -State $st -Names @('critic_retry_count') -Default 0
       current_task_short = if ($st) { Get-AuditorCurrentTaskShort -State $st } else { '' }
       restart_events_20min = [int]$restartCount
@@ -475,6 +477,120 @@ function Add-AuditorVerdictMemory {
   } catch {}
 }
 
+function Get-AuditorObjectProperty {
+  param($Object, [string]$Name)
+  if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
+  try {
+    if ($Object -is [System.Collections.IDictionary]) {
+      if ($Object.Contains($Name)) { return $Object[$Name] }
+      return $null
+    }
+    if ($Object.PSObject.Properties.Name -contains $Name) { return $Object.$Name }
+  } catch {}
+  return $null
+}
+
+function Set-AuditorObjectProperty {
+  param($Object, [string]$Name, $Value)
+  if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) { return }
+  try {
+    if ($Object -is [System.Collections.IDictionary]) {
+      $Object[$Name] = $Value
+    } elseif ($Object.PSObject.Properties.Name -contains $Name) {
+      $Object.$Name = $Value
+    } else {
+      $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    }
+  } catch {}
+}
+
+function Get-AuditorHashPrefix {
+  param([string]$Text, [int]$Length = 12)
+  if ($Length -lt 1) { $Length = 12 }
+  $md5 = [System.Security.Cryptography.MD5]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+    $hash = $md5.ComputeHash($bytes)
+    $hex = ($hash | ForEach-Object { $_.ToString('x2') }) -join ''
+    if ($Length -gt $hex.Length) { $Length = $hex.Length }
+    return $hex.Substring(0, $Length)
+  } finally {
+    $md5.Dispose()
+  }
+}
+
+function Get-AuditorReasonHash {
+  param([string]$TaskKey, [string]$TriggerName, [string]$Detail)
+  $norm = ([string]$Detail).ToLowerInvariant()
+  $norm = [regex]::Replace($norm, '\s+', ' ').Trim()
+  $norm = [regex]::Replace($norm, '\d+', '#')
+  $raw = "{0}|{1}|{2}" -f $TaskKey, $TriggerName, $norm
+  return (Get-AuditorHashPrefix -Text $raw -Length 12)
+}
+
+function Test-AuditorSuppressed {
+  param($State, [string]$Hash)
+  if (-not $State -or [string]::IsNullOrWhiteSpace($Hash)) { return $false }
+  $node = Get-AuditorObjectProperty -Object $State -Name 'auditor'
+  if (-not $node) { return $false }
+  $arr = @(Get-AuditorObjectProperty -Object $node -Name 'suppressed_hashes') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+  return ($arr -contains $Hash)
+}
+
+function Add-AuditorSuppressedHash {
+  param($State, [string]$Hash, [int]$Max = 50)
+  if (-not $State -or [string]::IsNullOrWhiteSpace($Hash)) { return }
+  if ($Max -lt 1) { $Max = 50 }
+  $node = Get-AuditorObjectProperty -Object $State -Name 'auditor'
+  if (-not $node) {
+    $node = [ordered]@{ suppressed_hashes = @() }
+    Set-AuditorObjectProperty -Object $State -Name 'auditor' -Value $node
+  }
+  $arr = @(Get-AuditorObjectProperty -Object $node -Name 'suppressed_hashes') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+  $arr = @($arr) + @($Hash)
+  if ($arr.Count -gt $Max) {
+    $start = [Math]::Max(0, $arr.Count - $Max)
+    $arr = @($arr[$start..($arr.Count - 1)])
+  }
+  Set-AuditorObjectProperty -Object $node -Name 'suppressed_hashes' -Value @($arr)
+}
+
+function Get-AuditorSnapshotChannel {
+  param($Snapshot, [string]$Channel)
+  if (-not $Snapshot -or [string]::IsNullOrWhiteSpace($Channel)) { return $null }
+  try {
+    $channels = Get-AuditorObjectProperty -Object $Snapshot -Name 'channels'
+    if ($channels -is [System.Collections.IDictionary]) {
+      if ($channels.Contains($Channel)) { return $channels[$Channel] }
+      return $null
+    }
+    return (Get-AuditorObjectProperty -Object $channels -Name $Channel)
+  } catch { return $null }
+}
+
+function Get-AuditorTaskKey {
+  param($State, $Snapshot = $null, [string]$Channel = 'main')
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $snapChannel = Get-AuditorSnapshotChannel -Snapshot $Snapshot -Channel $Channel
+
+  $taskId = [string](Get-AuditorObjectProperty -Object $State -Name 'task_id')
+  if ([string]::IsNullOrWhiteSpace($taskId)) { $taskId = [string](Get-AuditorObjectProperty -Object $snapChannel -Name 'task_id') }
+  if (-not [string]::IsNullOrWhiteSpace($taskId)) { return ("task_id:{0}" -f $taskId) }
+
+  $seq = 0
+  try { $seq = [int](Get-AuditorObjectProperty -Object $State -Name 'task_start_seq') } catch { $seq = 0 }
+  if ($seq -le 0) {
+    try { $seq = [int](Get-AuditorObjectProperty -Object $snapChannel -Name 'task_start_seq') } catch { $seq = 0 }
+  }
+  if ($seq -gt 0) { return ("seq:{0}:{1}" -f $Channel, $seq) }
+
+  $task = [string](Get-AuditorObjectProperty -Object $State -Name 'current_task')
+  if ([string]::IsNullOrWhiteSpace($task)) { $task = [string](Get-AuditorObjectProperty -Object $snapChannel -Name 'current_task_short') }
+  if (-not [string]::IsNullOrWhiteSpace($task)) { return ("task:{0}:{1}" -f $Channel, (Get-AuditorHashPrefix -Text $task -Length 8)) }
+
+  return ("unknown:{0}" -f $Channel)
+}
+
 function Invoke-AuditorInChannel {
   param([string]$Slug, [scriptblock]$Body)
   $old = $null
@@ -498,6 +614,32 @@ function Add-AuditorMainMessage {
   try {
     Invoke-AuditorInChannel -Slug 'main' -Body { Add-Message -From system -Text $Text -Kind event | Out-Null }
   } catch {}
+}
+
+function Get-AuditorStateForChannel {
+  param([string]$Channel)
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $script:AuditorTargetState = $null
+  try {
+    Invoke-AuditorInChannel -Slug $Channel -Body { $script:AuditorTargetState = Read-State }
+    return $script:AuditorTargetState
+  } catch {
+    try { return (Read-State) } catch { return $null }
+  }
+}
+
+function Save-AuditorSuppressedHash {
+  param([string]$Channel, [string]$Hash)
+  if ([string]::IsNullOrWhiteSpace($Hash)) { return }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $body = {
+    Update-State ({ param($s) Add-AuditorSuppressedHash -State $s -Hash $Hash -Max 50 }.GetNewClosure()) | Out-Null
+  }.GetNewClosure()
+  try {
+    Invoke-AuditorInChannel -Slug $Channel -Body $body
+  } catch {
+    try { Update-State ({ param($s) Add-AuditorSuppressedHash -State $s -Hash $Hash -Max 50 }.GetNewClosure()) | Out-Null } catch {}
+  }
 }
 
 function Dispatch-AuditorVerdict {
@@ -524,6 +666,15 @@ function Dispatch-AuditorVerdict {
     return [pscustomobject]@{ class=$class; action='none'; reason=$reason }
   }
 
+  $primaryDetail = [string]$primary.detail
+  $targetState = Get-AuditorStateForChannel -Channel $targetChannel
+  $taskKey = Get-AuditorTaskKey -State $targetState -Snapshot $Snapshot -Channel $targetChannel
+  $reasonHash = Get-AuditorReasonHash -TaskKey $taskKey -TriggerName $primaryName -Detail $primaryDetail
+  if (Test-AuditorSuppressed -State $targetState -Hash $reasonHash) {
+    Write-AuditorLog ("auditor:suppressed task_key={0} trigger={1} hash={2} detail={3}" -f $taskKey, $primaryName, $reasonHash, $primaryDetail)
+    return [pscustomobject]@{ class=$class; action='suppressed'; reason=$reason; task_key=$taskKey; trigger=$primaryName; hash=$reasonHash; channel=$targetChannel }
+  }
+
   if ($class -eq 'hung') {
     $cfg = Get-AuditorConfig
     $max = [int]$cfg.doctorRecidivismMax
@@ -545,6 +696,7 @@ function Dispatch-AuditorVerdict {
       } catch { $activated = $false }
       Write-AuditorLog ("hung: doctor={0}; reason={1}; detail={2}; channel={3}" -f $activated, $doctorReason, $reason, $targetChannel)
       Add-AuditorVerdictMemory -Class 'hung' -Reason $reason
+      if ($activated -and -not $DryRun) { Save-AuditorSuppressedHash -Channel $targetChannel -Hash $reasonHash }
       return [pscustomobject]@{ class='hung'; action='Activate-Doctor'; activated=$activated; reason=$doctorReason; detail=$reason; channel=$targetChannel }
     }
   }
@@ -554,6 +706,7 @@ function Dispatch-AuditorVerdict {
     Add-AuditorMainMessage -Text $msg
     Write-AuditorLog ("corrupted_state: {0}" -f $reason)
     Add-AuditorVerdictMemory -Class $class -Reason $reason
+    if (-not $DryRun) { Save-AuditorSuppressedHash -Channel $targetChannel -Hash $reasonHash }
     return [pscustomobject]@{ class=$class; action='notify'; reason=$reason }
   }
 
@@ -562,6 +715,7 @@ function Dispatch-AuditorVerdict {
     Add-AuditorMainMessage -Text $msg
     Write-AuditorLog ("unsolvable: pause requested but not written by Auditor; {0}" -f $reason)
     Add-AuditorVerdictMemory -Class $class -Reason $reason
+    if (-not $DryRun) { Save-AuditorSuppressedHash -Channel $targetChannel -Hash $reasonHash }
     return [pscustomobject]@{ class=$class; action='notify_pause_requested'; reason=$reason }
   }
 

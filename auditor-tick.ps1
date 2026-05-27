@@ -4,4 +4,4 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\auditor.ps1')
 
-Invoke-Auditor | Out-Null
+Start-AuditorIfDue

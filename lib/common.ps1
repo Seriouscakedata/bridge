@@ -171,6 +171,37 @@ function Update-State {
   }
 }
 
+function Clear-AuditorSuppressedHashes {
+  param($State)
+  if (-not $State) { return }
+  $node = $null
+  try {
+    if ($State -is [System.Collections.IDictionary]) {
+      if (-not $State.Contains('auditor') -or $null -eq $State['auditor']) {
+        $State['auditor'] = [ordered]@{ suppressed_hashes = @() }
+        return
+      }
+      $node = $State['auditor']
+    } else {
+      if (-not ($State.PSObject.Properties.Name -contains 'auditor') -or $null -eq $State.auditor) {
+        $State | Add-Member -NotePropertyName auditor -NotePropertyValue ([ordered]@{ suppressed_hashes = @() }) -Force
+        return
+      }
+      $node = $State.auditor
+    }
+
+    if ($node -is [System.Collections.IDictionary]) {
+      $node['suppressed_hashes'] = @()
+    } else {
+      if ($node.PSObject.Properties.Name -contains 'suppressed_hashes') {
+        $node.suppressed_hashes = @()
+      } else {
+        $node | Add-Member -NotePropertyName suppressed_hashes -NotePropertyValue @() -Force
+      }
+    }
+  } catch {}
+}
+
 function Get-CheckpointKey {
   param([string]$Kind, [string]$Text)
 
@@ -887,6 +918,7 @@ function Initialize-Bridge {
       doctor_attempts    = 0
       doctor_reason      = ''
       doctor_started_at  = $null
+      auditor            = @{ suppressed_hashes = @() }
       task_checkpoints   = @()
       task_last_failure  = $null
     }
@@ -906,6 +938,7 @@ function Initialize-Bridge {
       current_agent=$null; current_agent_pid=0; current_agent_ticks=0; current_agent_since=$null
       coder_fired=$false; coder_bypass_retry_count=0
       held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null
+      auditor=@{ suppressed_hashes=@() }
       task_checkpoints=@(); task_last_failure=$null
     }
     $changed = $false
