@@ -309,6 +309,8 @@ function New-ParallelWorkerPrompt {
 - Не откатывай чужие изменения и не меняй соседние parallel streams.
 - После правок запусти короткую проверку, затем сделай git add/commit в своей ветке.
 - Финальная строка должна быть STATUS: DONE, STATUS: FAILED или STATUS: PARTIAL.
+- ЗАПРЕЩЕНО создавать файл control/restart.flag (ни в своём worktree, ни в основном репо по любому пути). Это убивает соседние параллельные потоки. Драйвер решит про restart сам после merge.
+- ЗАПРЕЩЕНО менять файлы вне своего worktree (даже если путь технически доступен).
 
 Разрешённые файлы:
 $fileText
@@ -348,7 +350,7 @@ function Spawn-Worker {
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
   } else {
     $claude = Resolve-ClaudeExe $cfg
-    $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$Worktree,'--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write')
+    $claudeArgs = @('-p','--permission-mode','acceptEdits','--cwd',$Worktree,'--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write')
     if (-not [string]::IsNullOrWhiteSpace($Model)) { $claudeArgs += @('--model', $Model) }
     $proc = Start-Process -FilePath $claude -ArgumentList $claudeArgs `
       -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru

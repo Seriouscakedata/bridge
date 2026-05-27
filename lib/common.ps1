@@ -1166,6 +1166,19 @@ function Initialize-Bridge {
     }
     if ($changed) { Write-State -State $state }
   }
+  # Sanity-check: abort dead parallel streams on startup
+  if ($state.PSObject.Properties['parallel_streams'] -and $state.parallel_streams.Count -gt 0) {
+    $allAborted = $true
+    foreach ($stream in $state.parallel_streams) {
+      $proc = Get-Process -Id $stream.pid -ErrorAction SilentlyContinue
+      $isDead = (-not $proc)
+      if (-not $isDead -and $stream.PSObject.Properties['pidTicks'] -and $stream.pidTicks -gt 0) {
+        $isDead = ($proc.StartTime.Ticks -ne $stream.pidTicks)
+      }
+      if ($isDead) { $stream.status = 'aborted' } else { $allAborted = $false }
+    }
+    if ($allAborted) { $state.parallel_streams = @() }
+  }
   return (Read-State)
 }
 
