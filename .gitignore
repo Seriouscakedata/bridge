@@ -24,6 +24,11 @@ notify.log
 notify.last
 *.log
 *.tmp.*
+# 2026-05-27v6: explicit guards (already covered by files/, but defensive)
+tmp_*.png
+visit_*.png
+bridge_shot_*.png
+_archive_*.tmp*
 .git/
 turns.jsonl
 reports/

@@ -515,16 +515,12 @@ function Resolve-AddIdeaOutcome {
   return [pscustomobject]$out
 }
 
-function Start-BacklogCuratorAsync {
-  param([string]$ItemId)
-  if ([string]::IsNullOrWhiteSpace($ItemId)) { return $false }
-  $escapedItemId = $ItemId.Replace("'", "''")
-  $escapedLib = $script:CuratorLibPath.Replace("'", "''")
-  $escapedLog = $script:CuratorLogPath.Replace("'", "''")
-  $command = ". '$escapedLib'; Invoke-BacklogCurator -ItemId '$escapedItemId' 2>&1 | Out-File -Encoding utf8 -Append '$escapedLog'"
-  Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$command) -WindowStyle Hidden | Out-Null
-  return $true
-}
+# 2026-05-27v6: Start-BacklogCuratorAsync REMOVED.
+# Was: dead-code duplicate of lib/backlog.ps1:Start-BacklogCuratorJob with
+# `Start-Process -Command $string` (shell-injection risk if ItemId contained
+# ';', '`', '$(' or newlines). No callers (grep confirmed). The live code path
+# is lib/backlog.ps1:Start-BacklogCuratorJob which uses a temp .ps1 launcher
+# (no -Command injection surface). Removal closes the audit P1 finding.
 
 function Get-NewCuratorDecisions {
   $items = New-Object System.Collections.Generic.List[object]
