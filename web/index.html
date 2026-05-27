@@ -28,7 +28,9 @@
     --model:#ffd166;
     --danger:#ff6b6b;
     --shadow:0 18px 50px rgba(0,0,0,.32);
-    --content-pad:max(16px, calc((100vw - 1720px)/2));
+    /* 2026-05-27: content cap raised 1720 -> 1880 so on standard 1920px screens
+       padding shrinks from ~100px to ~20px each side. Less "wasted space near window". */
+    --content-pad:max(16px, calc((100vw - 1880px)/2));
   }
   *{box-sizing:border-box}
   html,body{height:100%;width:100%;max-width:100%;overflow:hidden}
