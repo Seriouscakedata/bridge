@@ -678,12 +678,46 @@ function Get-SessionLedgerBlock {
 function Save-StateSnapshot {
   param([string]$Reason = 'risky', [string]$Channel = '')
   try {
-    $s = Read-State -ErrorAction SilentlyContinue
-    if ($null -eq $s) { return $null }
     $ch = $Channel
+    $s = $null
+    if (-not [string]::IsNullOrWhiteSpace($ch)) {
+      $statePath = Join-Path (Get-BridgeRoot) "channels\$ch\state.json"
+      if (Test-Path -LiteralPath $statePath) {
+        try { $s = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $s = $null }
+      }
+    }
+    if ($null -eq $s) { $s = Read-State -ErrorAction SilentlyContinue }
+    if ($null -eq $s) { return $null }
     if ([string]::IsNullOrWhiteSpace($ch)) {
       if ($s.current_channel) { $ch = [string]$s.current_channel } else { $ch = 'main' }
     }
+    $taskId = ''
+    if ($s.PSObject.Properties.Name -contains 'task_id') { $taskId = [string]$s.task_id }
+    if ([string]::IsNullOrWhiteSpace($taskId) -and $s.PSObject.Properties.Name -contains 'current_backlog_id') { $taskId = [string]$s.current_backlog_id }
+    if ([string]::IsNullOrWhiteSpace($taskId) -and $s.PSObject.Properties.Name -contains 'task_start_seq') {
+      $seq = [string]$s.task_start_seq
+      if (-not [string]::IsNullOrWhiteSpace($seq) -and $seq -ne '0') { $taskId = "seq:${ch}:$seq" }
+    }
+    if ([string]::IsNullOrWhiteSpace($taskId) -and $s.PSObject.Properties.Name -contains 'current_task') {
+      $taskText = [string]$s.current_task
+      if (-not [string]::IsNullOrWhiteSpace($taskText)) {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+          $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($taskText))
+          $taskId = "task:${ch}:" + (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0,12)
+        } finally {
+          try { $sha.Dispose() } catch {}
+        }
+      }
+    }
+    try {
+      $s | Add-Member -NotePropertyName 'snapshot_meta' -NotePropertyValue ([ordered]@{
+        ts      = (Get-Date).ToString('o')
+        reason  = $Reason
+        channel = $ch
+        task_id = $taskId
+      }) -Force
+    } catch {}
     $dir = Join-Path (Get-BridgeRoot) "channels\$ch\snapshots"
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
