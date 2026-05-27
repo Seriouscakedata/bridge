@@ -1018,6 +1018,7 @@
     gap:13px;
     scroll-behavior:smooth;
   }
+  #log.channel-switching{visibility:hidden;}
   #log::-webkit-scrollbar{width:11px}
   #log::-webkit-scrollbar-track{background:transparent}
   #log::-webkit-scrollbar-thumb{background:#323946;border:3px solid var(--bg);border-radius:999px}
@@ -4216,7 +4217,6 @@ async function poll(){
     showConnectionProblem('messages', e);
   }finally{
     pollInFlight = false;
-    if(!staleEpoch && myEpoch === channelEpoch && !channelSwitchInProgress) log.classList.remove('channel-switching');
   }
 }
 function setChip(id,on){
@@ -5532,6 +5532,8 @@ async function switchChannel(slug){
       await reloadMessagesForChannel(channelEpoch);
       renderChannels();
       status(); pollPlan(); pollMetrics();
+      // Wait two frames so layout and paint commit before #log becomes visible again.
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     } else {
       alert('Не получилось переключиться: ' + (r && r.error ? r.error : 'unknown'));
     }
