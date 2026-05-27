@@ -121,43 +121,79 @@ try {
       $path   = $ctx.Request.Url.AbsolutePath
       $method = $ctx.Request.HttpMethod
       if ($method -eq 'GET' -and $path -eq '/api/health') {
-        $hState   = Read-State
-        $uptimeSec = [int]([Math]::Floor(((Get-Date) - $serverStartTime).TotalSeconds))
-        $hbAge    = 9999
-        $hbRaw    = $hState.heartbeat
-        if ($hbRaw) {
-          try { $hbAge = [int]([Math]::Floor(((Get-Date) - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
+        $now = Get-Date
+        $uptimeSec = [int]([Math]::Floor(($now - $serverStartTime).TotalSeconds))
+        $statePath = Join-Path $root 'channels\main\state.json'
+        $stateRaw = ''
+        if (Test-Path -LiteralPath $statePath) {
+          try { $stateRaw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) } catch {}
         }
-        $hPaused  = [bool]$hState.paused
-        $hStatus  = [string]$hState.status
-        $hLastSeq = [int]$hState.lastSeq
+        $hbAge    = 9999
+        $hbRaw    = ''
+        $mHb = [regex]::Match($stateRaw, '"heartbeat"\s*:\s*"([^"]*)"')
+        if ($mHb.Success) { $hbRaw = $mHb.Groups[1].Value }
+        if (-not [string]::IsNullOrWhiteSpace($hbRaw)) {
+          try { $hbAge = [int]([Math]::Floor(($now - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
+        }
+        $hPaused = $false
+        $mPaused = [regex]::Match($stateRaw, '"paused"\s*:\s*(true|false)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($mPaused.Success) { $hPaused = ([string]$mPaused.Groups[1].Value).ToLowerInvariant() -eq 'true' }
+        $hStatus = ''
+        $mStatus = [regex]::Match($stateRaw, '"status"\s*:\s*"([^"]*)"')
+        if ($mStatus.Success) { $hStatus = $mStatus.Groups[1].Value }
+        $hLastSeq = 0
+        $mStateSeq = [regex]::Match($stateRaw, '"lastSeq"\s*:\s*(\d+)')
+        if ($mStateSeq.Success) { [void][int]::TryParse($mStateSeq.Groups[1].Value, [ref]$hLastSeq) }
+        $psActive = 0
+        foreach ($mRun in [regex]::Matches($stateRaw, '"status"\s*:\s*"running"')) { $psActive++ }
+        $gitHead = ''
+        try {
+          $headFile = Join-Path $root '.git\HEAD'
+          if (Test-Path -LiteralPath $headFile) {
+            $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
+            if ($headLine -like 'ref: *') {
+              $refName = $headLine.Substring(5).Trim() -replace '/', '\'
+              $refFile = Join-Path (Join-Path $root '.git') $refName
+              if (Test-Path -LiteralPath $refFile) {
+                $sha = [System.IO.File]::ReadAllText($refFile, [System.Text.Encoding]::UTF8).Trim()
+                if ($sha.Length -ge 7) { $gitHead = $sha.Substring(0,7) }
+              }
+            } elseif ($headLine.Length -ge 7) {
+              $gitHead = $headLine.Substring(0,7)
+            }
+          }
+        } catch {}
+        if ([string]::IsNullOrWhiteSpace($gitHead)) {
+          try { $gitHead = (& git -C $root rev-parse --short=7 HEAD 2>$null).Trim() } catch {}
+        }
         $memCount = 0
         $memPath  = Join-Path $root 'memory\memory.jsonl'
         if (Test-Path -LiteralPath $memPath) {
-          $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
-          while ($null -ne $srMem.ReadLine()) { $memCount++ }
-          $srMem.Close(); $srMem.Dispose()
+          $srMem = $null
+          try {
+            $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
+            while ($null -ne $srMem.ReadLine()) { $memCount++ }
+          } finally {
+            if ($null -ne $srMem) { $srMem.Close(); $srMem.Dispose() }
+          }
         }
         $errCount = 0
         $convPath = Join-Path $root 'channels\main\conversation.jsonl'
         if (Test-Path -LiteralPath $convPath) {
-          $cutoff24 = (Get-Date).AddHours(-24)
+          $cutoff24 = $now.AddHours(-24)
           $lines = [System.IO.File]::ReadLines($convPath) | Select-Object -Last 500
           foreach ($ln in $lines) {
+            $mSeq = [regex]::Match($ln, '"seq"\s*:\s*(\d+)')
+            if ($mSeq.Success) {
+              $seqTmp = 0
+              if ([int]::TryParse($mSeq.Groups[1].Value, [ref]$seqTmp) -and $seqTmp -gt $hLastSeq) { $hLastSeq = $seqTmp }
+            }
+            if ($ln.IndexOf('"from":"system"') -lt 0) { continue }
             if ($ln -notmatch '[❌⚠💥]') { continue }
-            try {
-              $mo = $ln | ConvertFrom-Json -ErrorAction Stop
-              if ($mo.timestamp) {
-                if ([datetime]::Parse([string]$mo.timestamp) -ge $cutoff24) { $errCount++ }
-              } else { $errCount++ }
-            } catch { $errCount++ }
+            $mTs = [regex]::Match($ln, '"ts"\s*:\s*"([^"]+)"')
+            if (-not $mTs.Success) { $errCount++; continue }
+            try { if ([datetime]::Parse($mTs.Groups[1].Value) -ge $cutoff24) { $errCount++ } } catch { $errCount++ }
           }
-        }
-        $gitHead = ''
-        try { $gitHead = (& git -C $root rev-parse --short=7 HEAD 2>$null).Trim() } catch {}
-        $psActive = 0
-        if ($hState.parallel_streams) {
-          $psActive = @($hState.parallel_streams | Where-Object { [string]$_.status -eq 'running' }).Count
         }
         $hOk = ($hbAge -lt 120) -and (-not $hPaused) -and ($errCount -lt 10)
         $hJson = '{"ok":' + ($hOk.ToString().ToLower()) + `

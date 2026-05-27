@@ -327,6 +327,46 @@
   }
   .health-banner.bad .health-title{color:#ffd7da}
   body.has-health-banner #scrollProgress{top:174px}
+  #healthBadge{
+    position:fixed;
+    top:8px;
+    right:8px;
+    width:12px;
+    height:12px;
+    border-radius:50%;
+    background:#647082;
+    z-index:9999;
+    cursor:pointer;
+    border:2px solid rgba(0,0,0,.35);
+    box-shadow:0 0 0 1px rgba(255,255,255,.08);
+    transition:background .3s,box-shadow .3s;
+  }
+  #healthBadge.green{background:#4caf50;box-shadow:0 0 8px rgba(76,175,80,.5)}
+  #healthBadge.yellow{background:#ffd166;box-shadow:0 0 8px rgba(255,209,102,.5)}
+  #healthBadge.red{background:#ff6b6b;box-shadow:0 0 8px rgba(255,107,107,.5);animation:pulse 1.5s infinite}
+  #healthPopup{
+    display:none;
+    position:fixed;
+    top:28px;
+    right:8px;
+    min-width:260px;
+    max-width:min(340px, calc(100vw - 16px));
+    max-height:min(520px, calc(100vh - 40px));
+    overflow:auto;
+    background:rgba(18,22,29,.97);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:10px 12px;
+    z-index:10000;
+    font-size:11px;
+    line-height:1.5;
+    color:var(--txt);
+    font-family:Consolas, "SFMono-Regular", monospace;
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    box-shadow:var(--shadow);
+  }
+  #healthPopup.show{display:block}
 
   #panelsArea{
     position:fixed;
@@ -2097,6 +2137,9 @@
     </div>
   </div>
 </div>
+
+<span id="healthBadge" role="status" aria-label="Статус системы" title="Статус системы"></span>
+<div id="healthPopup" role="tooltip" aria-live="polite"></div>
 
 <script>
 let lastSeq = 0;
@@ -5014,6 +5057,62 @@ document.addEventListener('click', (e) => {
   if(!channelSelector) return;
   if(!channelSelector.contains(e.target)) closeChannelMenu();
 });
+(function(){
+  const badge = document.getElementById('healthBadge');
+  const popup = document.getElementById('healthPopup');
+  if(!badge || !popup) return;
+  let popupVisible = false;
+
+  function applyColor(data){
+    badge.classList.remove('green', 'yellow', 'red');
+    if(!data){
+      badge.classList.add('red');
+      return;
+    }
+    const heartbeatAge = Number(data.heartbeat_age_sec || 0);
+    const recentErrors = Number(data.recent_error_count_24h || 0);
+    if(data.ok === true && heartbeatAge <= 60 && recentErrors === 0){
+      badge.classList.add('green');
+    } else if(data.ok === true){
+      badge.classList.add('yellow');
+    } else {
+      badge.classList.add('red');
+    }
+  }
+
+  function setPopup(data){
+    popup.textContent = data ? JSON.stringify(data, null, 2) : 'нет данных';
+  }
+
+  async function pollHealth(){
+    try{
+      const res = await fetch('/api/health', {cache:'no-store'});
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      applyColor(data);
+      setPopup(data);
+    } catch(e){
+      applyColor(null);
+      popup.textContent = 'Ошибка соединения: ' + e.message;
+    }
+  }
+
+  function showPopup(){ popup.classList.add('show'); popupVisible = true; }
+  function hidePopup(){ popup.classList.remove('show'); popupVisible = false; }
+
+  badge.addEventListener('mouseenter', showPopup);
+  badge.addEventListener('mouseleave', hidePopup);
+  badge.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if(popupVisible) hidePopup(); else showPopup();
+  });
+  document.addEventListener('click', (e) => {
+    if(popupVisible && !popup.contains(e.target) && e.target !== badge) hidePopup();
+  });
+
+  pollHealth();
+  setInterval(pollHealth, 10000);
+})();
 </script>
 </body>
 </html>
