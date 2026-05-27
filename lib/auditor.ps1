@@ -382,19 +382,27 @@ function Test-AuditorTriggers {
   if ([int]$Snapshot.supervisor_restarts_20min -gt 4) {
     [void]$items.Add((New-AuditorTrigger -Name 'restart_frequency' -Detail ("supervisor_restarts_20min={0}" -f [int]$Snapshot.supervisor_restarts_20min)))
   }
-  # FIX 2026-05-27: recidivism trigger ONLY when at least one channel has Doctor active RIGHT NOW.
-  # The historical 24h count alone is informational; alarming on it every 15min for 24 hours
-  # (regardless of whether the system has recovered) produced 100+ false-positive "unsolvable"
-  # verdicts overnight. Pair the historical count with current activity to keep the signal actionable.
+  # Recidivism is actionable only while Doctor is currently active.
+  # The historical 24h count alone can keep firing after the system recovers.
   $recMax = [int]$cfg.doctorRecidivismMax
   if ([int]$Snapshot.doctor_activations_24h -ge $recMax) {
     $anyDoctorActiveNow = $false
     try {
-      foreach ($k in @($Snapshot.channels.PSObject.Properties.Name)) {
-        $chSlot = $Snapshot.channels.$k
-        if ($chSlot -and [bool]$chSlot.doctor_active) { $anyDoctorActiveNow = $true; break }
+      $channels = $Snapshot.channels
+      if ($channels -is [System.Collections.IDictionary]) {
+        foreach ($k in @($channels.Keys)) {
+          $chSlot = $channels[$k]
+          if ($chSlot -and [bool](Get-AuditorObjectProperty -Object $chSlot -Name 'doctor_active')) { $anyDoctorActiveNow = $true; break }
+        }
+      } else {
+        foreach ($p in @($channels.PSObject.Properties)) {
+          $chSlot = $p.Value
+          if ($chSlot -and [bool](Get-AuditorObjectProperty -Object $chSlot -Name 'doctor_active')) { $anyDoctorActiveNow = $true; break }
+        }
       }
-    } catch {}
+    } catch {
+      Write-AuditorLog ("doctor recidivism active-check error: {0}" -f $_.Exception.Message)
+    }
     if ($anyDoctorActiveNow) {
       [void]$items.Add((New-AuditorTrigger -Name 'doctor_recidivism' -Detail ("doctor_activations_24h={0}, max={1}, doctor_currently_active=true" -f [int]$Snapshot.doctor_activations_24h, $recMax)))
     }
