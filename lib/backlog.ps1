@@ -527,8 +527,17 @@ Item беклога: $([string]$item.text)
 Commits с момента создания/одобрения:
 $gitLog
 
-Сделано ли это уже одним из коммитов? Верни СТРОГО JSON:
-{"done": true|false, "sha": "<sha если done>" или null, "reason": "короткая фраза"}
+Сделано ли это уже одним из коммитов?
+
+Жёсткие правила:
+- Коммит считается реализующим item ТОЛЬКО если в commit message явно упоминается конкретный элемент из item.text: имя функции, файла, класса, эндпоинта, точная фича или чёткая концепция.
+- Recency сама по себе НЕ сигнал. Самый свежий или последний коммит нельзя считать доказательством выполнения.
+- Если есть только пересечение общих слов вроде "backlog", "driver", "fix", "task", "agent", "bridge" без специфики item.text — верни done=false.
+- При сомнении — done=false.
+- Если done=true, sha должен быть SHA конкретного коммита из списка выше, а reason должен быть не короче 30 символов и цитировать связанную фразу из commit message.
+
+Верни СТРОГО JSON:
+{"done": true|false, "sha": "<sha если done>" или null, "reason": "фраза >=30 символов с цитатой commit message"}
 "@
     $raw = Invoke-LLM -Purpose 'backlog-freshness' -Model $script:BacklogCuratorModel -Prompt $prompt -TimeoutSec 60 -Temperature 0.1
     $obj = ConvertFrom-BacklogStrictJson -Text ([string]$raw)
@@ -539,6 +548,11 @@ $gitLog
     if ($obj.PSObject.Properties.Name -contains 'sha' -and $null -ne $obj.sha) { $sha = [string]$obj.sha }
     $reason = ([string]$obj.reason).Trim()
     if ([string]::IsNullOrWhiteSpace($reason)) { $reason = if ($done) { 'done' } else { 'not done' } }
+    if ($done) {
+      if ([string]::IsNullOrWhiteSpace($sha) -or -not $lowerLog.Contains(([string]$sha).ToLowerInvariant()) -or $reason.Length -lt 30) {
+        return [pscustomobject]@{ done = $false; sha = $null; reason = 'freshness LLM returned weak done evidence' }
+      }
+    }
     return [pscustomobject]@{ done = $done; sha = $sha; reason = $reason }
   } catch {
     return $failOpen
