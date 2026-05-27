@@ -1,0 +1,363 @@
+﻿# canary.ps1 -- idle-safe bridge heartbeat foundation.
+
+function New-DefaultCanaryState {
+  [pscustomobject]@{
+    last_heartbeat_at    = $null
+    last_outcome         = 'unknown'
+    consecutive_failures = 0
+    quarantine_until     = $null
+    total_heartbeats     = 0
+    total_failures       = 0
+  }
+}
+
+function Get-CanaryConfig {
+  $def = [ordered]@{
+    enabled            = $false
+    intervalHours      = 6
+    cooldownMinutes    = 30
+    llmModel           = 'gemini-2.5-flash-lite'
+    quarantineFailures = 2
+    quarantineHours    = 12
+    worktreePath       = 'C:\Users\rafie\OneDrive\Documents\bridge-canary-worktree'
+    branchName         = 'canary/heartbeat'
+  }
+
+  $cfg = $null
+  try { $cfg = Get-BridgeConfig } catch {}
+  if ($cfg -and $cfg.canary) {
+    foreach ($k in $def.Keys) {
+      if (-not ($cfg.canary.PSObject.Properties.Name -contains $k)) {
+        $cfg.canary | Add-Member -NotePropertyName $k -NotePropertyValue $def[$k] -Force
+      }
+    }
+    return $cfg.canary
+  }
+
+  return [pscustomobject]$def
+}
+
+function Get-CanaryState {
+  $st = $null
+  try { $st = Read-State } catch {}
+  if (-not $st -or -not $st.canary_state) { return (New-DefaultCanaryState) }
+
+  $state = $st.canary_state
+  $def = New-DefaultCanaryState
+  foreach ($p in $def.PSObject.Properties.Name) {
+    if (-not ($state.PSObject.Properties.Name -contains $p)) {
+      $state | Add-Member -NotePropertyName $p -NotePropertyValue $def.$p -Force
+    }
+  }
+  return $state
+}
+
+function Set-CanaryState {
+  param($State)
+
+  if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+    Update-State {
+      param($s)
+      $s | Add-Member -NotePropertyName canary_state -NotePropertyValue $State -Force
+    } | Out-Null
+    return
+  }
+
+  $st = Read-State
+  if (-not $st) { throw 'state.json missing; cannot persist canary_state' }
+  $st | Add-Member -NotePropertyName canary_state -NotePropertyValue $State -Force
+  Write-State $st
+}
+
+function Test-CanaryStateBusy {
+  param($State, [string]$Label = 'current')
+
+  if (-not $State) { return $null }
+
+  if ($State.task_mode -and ([string]$State.task_mode -in @('active', 'discuss', 'code', 'running'))) {
+    return "$Label task_mode=$($State.task_mode)"
+  }
+  if ($State.auditor_state -and $State.auditor_state.status -eq 'active') {
+    return "$Label auditor active"
+  }
+  if ($State.doctor_state -and ([string]$State.doctor_state.status -in @('active', 'running'))) {
+    return "$Label doctor $($State.doctor_state.status)"
+  }
+  if ($State.doctor_active -eq $true) {
+    return "$Label doctor_active=true"
+  }
+
+  return $null
+}
+
+function Test-CanaryIdleGate {
+  $cfg = Get-CanaryConfig
+  if (-not $cfg.enabled) {
+    return [pscustomobject]@{ idle = $false; reason = 'disabled in config' }
+  }
+
+  $state = Get-CanaryState
+  $now = Get-Date
+
+  if ($state.quarantine_until) {
+    try {
+      $quarantineUntil = [datetime]$state.quarantine_until
+      if ($now -lt $quarantineUntil) {
+        return [pscustomobject]@{ idle = $false; reason = "quarantine until $($quarantineUntil.ToString('o'))" }
+      }
+    } catch {
+      return [pscustomobject]@{ idle = $false; reason = 'invalid quarantine_until' }
+    }
+  }
+
+  if ($state.last_heartbeat_at) {
+    try {
+      $last = [datetime]$state.last_heartbeat_at
+      $sinceHours = ($now - $last).TotalHours
+      if ($sinceHours -lt [double]$cfg.intervalHours) {
+        return [pscustomobject]@{ idle = $false; reason = "interval not elapsed ($([math]::Round($sinceHours, 2))h < $($cfg.intervalHours)h)" }
+      }
+    } catch {
+      return [pscustomobject]@{ idle = $false; reason = 'invalid last_heartbeat_at' }
+    }
+  }
+
+  $root = Get-BridgeRoot
+  $lockPath = Join-Path $root 'control\codex.lock'
+  if (Test-Path -LiteralPath $lockPath) {
+    return [pscustomobject]@{ idle = $false; reason = 'codex.lock held' }
+  }
+
+  $currentState = $null
+  try { $currentState = Read-State } catch {}
+  $busyReason = Test-CanaryStateBusy -State $currentState -Label 'current channel'
+  if ($busyReason) {
+    return [pscustomobject]@{ idle = $false; reason = $busyReason }
+  }
+
+  if (Get-Command Get-OtherChannelsAgents -ErrorAction SilentlyContinue) {
+    try {
+      $agents = Get-OtherChannelsAgents
+      if ($agents -and $agents.Count -gt 0) {
+        $pairs = @($agents.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
+        return [pscustomobject]@{ idle = $false; reason = "other channel agents active: $($pairs -join ', ')" }
+      }
+    } catch {}
+  }
+
+  $channelsRoot = Join-Path $root 'channels'
+  if (Test-Path -LiteralPath $channelsRoot) {
+    foreach ($dir in @(Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue)) {
+      if ($dir.Name -eq '_archive') { continue }
+      $statePath = Join-Path $dir.FullName 'state.json'
+      if (-not (Test-Path -LiteralPath $statePath)) { continue }
+      try {
+        $channelState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $busyReason = Test-CanaryStateBusy -State $channelState -Label "channel $($dir.Name)"
+        if ($busyReason) {
+          return [pscustomobject]@{ idle = $false; reason = $busyReason }
+        }
+      } catch {
+        return [pscustomobject]@{ idle = $false; reason = "cannot read channel $($dir.Name) state" }
+      }
+    }
+  }
+
+  return [pscustomobject]@{ idle = $true; reason = 'all clear' }
+}
+
+function ConvertTo-CanaryFullPath {
+  param([string]$Path)
+  return ([System.IO.Path]::GetFullPath($Path)).TrimEnd('\', '/')
+}
+
+function Test-CanaryPathInside {
+  param([string]$ChildPath, [string]$ParentPath)
+
+  $child = ConvertTo-CanaryFullPath -Path $ChildPath
+  $parent = ConvertTo-CanaryFullPath -Path $ParentPath
+  if ($child.Equals($parent, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  $parentWithSlash = $parent + [System.IO.Path]::DirectorySeparatorChar
+  return $child.StartsWith($parentWithSlash, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-CanaryRegisteredWorktrees {
+  param([string]$RepoRoot)
+
+  $paths = New-Object System.Collections.Generic.List[string]
+  $raw = @(& git -C $RepoRoot worktree list --porcelain 2>$null)
+  foreach ($line in $raw) {
+    if ($line -like 'worktree *') {
+      $p = $line.Substring('worktree '.Length).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($p)) {
+        [void]$paths.Add((ConvertTo-CanaryFullPath -Path $p))
+      }
+    }
+  }
+  return @($paths)
+}
+
+function Invoke-CanaryGit {
+  param(
+    [string]$RepoPath,
+    [string[]]$GitArgs
+  )
+
+  $oldPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = @(& git -C $RepoPath @GitArgs 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output   = $output
+  }
+}
+
+function Initialize-CanaryWorktree {
+  param([string]$RepoRoot = 'C:\Users\rafie\OneDrive\Documents\bridge')
+
+  $cfg = Get-CanaryConfig
+  $wtPath = [string]$cfg.worktreePath
+  $branch = [string]$cfg.branchName
+  if ([string]::IsNullOrWhiteSpace($wtPath)) { throw 'canary worktreePath is empty' }
+  if ([string]::IsNullOrWhiteSpace($branch)) { throw 'canary branchName is empty' }
+
+  $repoFull = ConvertTo-CanaryFullPath -Path (Resolve-Path -LiteralPath $RepoRoot).Path
+  $wtFull = ConvertTo-CanaryFullPath -Path $wtPath
+  if (Test-CanaryPathInside -ChildPath $wtFull -ParentPath $repoFull) {
+    throw "canary worktreePath must be outside repo root: $wtFull is inside $repoFull"
+  }
+
+  $registered = @(Get-CanaryRegisteredWorktrees -RepoRoot $repoFull)
+  foreach ($p in $registered) {
+    if ($p.Equals($wtFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $wtFull }
+  }
+
+  if (Test-Path -LiteralPath $wtFull) {
+    throw "canary worktree path exists but is not registered: $wtFull"
+  }
+
+  $branchResult = Invoke-CanaryGit -RepoPath $repoFull -GitArgs @('branch', '--list', $branch)
+  if ($branchResult.ExitCode -ne 0) {
+    throw "git branch --list failed: $($branchResult.Output -join ' ')"
+  }
+  $branchExists = ($branchResult.Output -join "`n").Trim()
+  if (-not $branchExists) {
+    $branchCreate = Invoke-CanaryGit -RepoPath $repoFull -GitArgs @('branch', $branch, 'HEAD')
+    if ($branchCreate.ExitCode -ne 0) { throw "git branch failed: $($branchCreate.Output -join ' ')" }
+  }
+
+  $addResult = Invoke-CanaryGit -RepoPath $repoFull -GitArgs @('worktree', 'add', $wtFull, $branch)
+  if ($addResult.ExitCode -ne 0) { throw "git worktree add failed: $($addResult.Output -join ' ')" }
+  if (-not (Test-Path -LiteralPath $wtFull)) { throw "worktree provisioning failed: $wtFull" }
+  return $wtFull
+}
+
+function Write-CanaryHeartbeat {
+  param([hashtable]$Record)
+
+  $logDir = Join-Path (Get-BridgeRoot) 'logs'
+  if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+  }
+  $logPath = Join-Path $logDir 'heartbeat.jsonl'
+  $Record['timestamp'] = (Get-Date).ToString('o')
+  $line = ($Record | ConvertTo-Json -Compress -Depth 5)
+  [System.IO.File]::AppendAllText($logPath, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Add-CanaryStateCounters {
+  param($State, [bool]$Success)
+
+  if ($Success) {
+    $State.last_outcome = 'ok'
+    $State.consecutive_failures = 0
+    $State.total_heartbeats = [int]$State.total_heartbeats + 1
+    return
+  }
+
+  $State.last_outcome = 'fail'
+  $State.consecutive_failures = [int]$State.consecutive_failures + 1
+  $State.total_failures = [int]$State.total_failures + 1
+
+  $cfg = Get-CanaryConfig
+  if ([int]$State.consecutive_failures -ge [int]$cfg.quarantineFailures) {
+    $State.quarantine_until = (Get-Date).AddHours([double]$cfg.quarantineHours).ToString('o')
+  }
+}
+
+function Invoke-CanaryCycle {
+  [CmdletBinding()]
+  param(
+    [switch]$Force,
+    [switch]$NoStateUpdate
+  )
+
+  if (-not $Force) {
+    $gate = Test-CanaryIdleGate
+    if (-not $gate.idle) {
+      Write-CanaryHeartbeat @{ outcome = 'skip'; reason = $gate.reason; manual = $false }
+      return [pscustomobject]@{ ok = $true; skipped = $true; reason = $gate.reason; manual = $false }
+    }
+  }
+
+  $state = Get-CanaryState
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $wtPath = $null
+
+  try {
+    $wtPath = Initialize-CanaryWorktree
+    $markerDir = Join-Path $wtPath 'canary'
+    if (-not (Test-Path -LiteralPath $markerDir)) {
+      New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
+    }
+
+    $markerFile = Join-Path $markerDir 'marker.md'
+    $ts = (Get-Date).ToString('o')
+    [System.IO.File]::WriteAllText($markerFile, "heartbeat $ts`n", (New-Object System.Text.UTF8Encoding($false)))
+
+    $addResult = Invoke-CanaryGit -RepoPath $wtPath -GitArgs @('add', '--', 'canary/marker.md')
+    if ($addResult.ExitCode -ne 0) { throw "git add failed: $($addResult.Output -join ' ')" }
+
+    $commitResult = Invoke-CanaryGit -RepoPath $wtPath -GitArgs @('commit', '-m', "canary heartbeat $ts")
+    if ($commitResult.ExitCode -ne 0) { throw "git commit failed: $($commitResult.Output -join ' ')" }
+
+    $sw.Stop()
+    if (-not $NoStateUpdate) {
+      $state.last_heartbeat_at = $ts
+      Add-CanaryStateCounters -State $state -Success $true
+      Set-CanaryState -State $state
+    }
+
+    Write-CanaryHeartbeat @{
+      outcome     = 'ok'
+      phase       = 1
+      duration_ms = $sw.ElapsedMilliseconds
+      worktree    = $wtPath
+      manual      = [bool]$Force
+    }
+    return [pscustomobject]@{ ok = $true; skipped = $false; duration_ms = $sw.ElapsedMilliseconds; manual = [bool]$Force }
+  } catch {
+    $sw.Stop()
+    $err = $_.Exception.Message
+
+    if (-not $NoStateUpdate) {
+      Add-CanaryStateCounters -State $state -Success $false
+      Set-CanaryState -State $state
+    }
+
+    Write-CanaryHeartbeat @{
+      outcome     = 'fail'
+      phase       = 1
+      duration_ms = $sw.ElapsedMilliseconds
+      error       = $err
+      manual      = [bool]$Force
+    }
+    return [pscustomobject]@{ ok = $false; skipped = $false; error = $err; manual = [bool]$Force }
+  }
+}

@@ -79,7 +79,17 @@
     "cooldownMin": 30,
     "model": "gemini-2.5-flash-lite",
     "doctorRecidivismHours": 24,
-    "doctorRecidivismMax": 2
+    "doctorRecidivismMax": 5
+  },
+  "canary": {
+    "enabled": false,
+    "intervalHours": 6,
+    "cooldownMinutes": 30,
+    "llmModel": "gemini-2.5-flash-lite",
+    "quarantineFailures": 2,
+    "quarantineHours": 12,
+    "worktreePath": "C:\\Users\\rafie\\OneDrive\\Documents\\bridge-canary-worktree",
+    "branchName": "canary/heartbeat"
   },
   "autonomy": {
     "enabled": true,

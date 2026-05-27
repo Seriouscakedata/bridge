@@ -27,3 +27,5 @@ notify.last
 .git/
 turns.jsonl
 reports/
+channels/_archive/
+logs/heartbeat.jsonl
