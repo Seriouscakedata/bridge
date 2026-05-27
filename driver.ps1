@@ -615,27 +615,53 @@ $autoScopeLine
 - ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
 - ПАРАЛЛЕЛЬ (только планировщик): если задачу можно разбить на 2+ НЕЗАВИСИМЫЕ части — есть ДВЕ формы:
   • Для ВНЕШНЕГО репо (другой проект пользователя, НЕ мост): отдельной строкой `[[PARALLEL: <путь_к_репо> || под-задача 1 ;; под-задача 2 ;; под-задача 3]]`. Каждая уйдёт отдельному Codex-воркеру в изолированной копии репо параллельно, результаты вольются обратно (конфликты придут тебе на разрешение). Путь репозитория ОБЯЗАТЕЛЕН (НЕ сам мост — мост этой формой запретит).
-  • Для самого моста (bridge): обрамляй каждый поток парой `[[PARALLEL:<id>]] ... [[/PARALLEL:<id>]]`. Внутри блока ОБЯЗАТЕЛЬНА строка `files: путь1, путь2` (файлы, которые этот поток правит — НЕ должны пересекаться между потоками, иначе движок откажет). Опционально `complexity: simple|moderate|complex` и `[[OPUS]]` если нужен Opus. Минимум 2 блока. Драйвер распараллелит между Claude и Codex в отдельных git worktrees, ff-merge назад в master.
+  • Для самого моста (bridge): обрамляй каждый поток парой `[[PARALLEL:<id>]] ... [[/PARALLEL:<id>]]`. Внутри блока ОБЯЗАТЕЛЬНЫ две строки:
+      `files: путь1, путь2` — файлы которые этот поток правит. НЕ должны пересекаться между потоками.
+      `complexity: simple|moderate|complex|architectural` — насколько сложна работа в этом потоке. От этого зависит какой воркер получит задачу (см. ниже).
+  Минимум 2 блока. До 6 одновременно (см. `parallel.maxStreams`). Драйвер сам выбирает подходящего воркера из пула.
+
+  ⚙ ПУЛ ВОРКЕРОВ И РОУТИНГ:
+  В `config.json -> parallel.workers` лежит список воркеров с метаданными (strength 1-5, speed, cost, domains, model, reasoning). Драйвер для каждого блока подбирает воркера автоматически:
+    - `complexity: simple`        → strength ≥ 2 (любой подходит, обычно codex-medium/codex-alt/sonnet)
+    - `complexity: moderate`      → strength ≥ 3 (codex-high, codex-medium, codex-alt, codex-specialist, sonnet)
+    - `complexity: complex`       → strength ≥ 4 (codex-xhigh, codex-high, opus)
+    - `complexity: architectural` → strength ≥ 5 (codex-xhigh, opus — opus открыт только здесь или с `[[OPUS]]`)
+  Среди подходящих по силе — выбирается аффинный к домену файлов (.html/.css/.js → sonnet; .ps1/.py/.go → codex-варианты) и самый дешёвый.
+  Воркеры не дублируются в одной диспетчеризации (один bucket → один поток), что позволяет до 6 параллельных потоков на разных моделях/ризонингах.
+
+  Можно перебить выбор: добавь в блок строку `worker: <id>` (например `worker: codex-xhigh`) — драйвер возьмёт именно его. Используй редко (auto-route обычно лучше).
+  Опционально `[[OPUS]]` в теле блока — разблокирует opus для не-architectural задач, ЕСЛИ реально нужен.
+
   ⚠ КРИТИЧНО — иначе движок не задетектит:
     1) Финальная отдельная строка ВСЕГО твоего ответа = `STATUS: CONTINUE` (драйвер сам поднимет до DONE после успешного merge всех воркеров). НЕ пиши STATUS: DONE.
     2) Внутри блоков `[[PARALLEL:N]]...[[/PARALLEL:N]]` лежит ПРОМПТ ВОРКЕРА (что он должен сделать). НЕ ставь там `STATUS: ...` и `[[VERIFIED:]]` — это сгенерит сам воркер.
     3) Открывающий `[[PARALLEL:N]]` И закрывающий `[[/PARALLEL:N]]` ОБА ОБЯЗАТЕЛЬНЫ, id совпадают.
-  ПРИМЕР правильного ответа:
+
+  ПРИМЕР правильного ответа (3 потока, разная сложность → разные воркеры авто):
   ```
-  Разбиваю на 2 потока: A=server, B=UI. Файлы не пересекаются.
+  Разбиваю на 3 потока. Файлы не пересекаются.
 
   [[PARALLEL:A]]
   files: server.ps1
-  Добавь GET-эндпоинт /api/foo, возвращающий {ok:true}. Тест: Invoke-WebRequest http://localhost:8787/api/foo → 200. Коммить в свою ветку.
+  complexity: complex
+  Добавь GET-эндпоинт /api/foo с агрегацией из 3 файлов state. Тест HTTP 200 + latency. Коммить в свою ветку.
   [[/PARALLEL:A]]
 
   [[PARALLEL:B]]
   files: web/index.html
-  Добавь в правый верхний угол span id="fooBadge" — зелёная точка. Прогони ui_audit -RequireId fooBadge desktop+mobile. Коммить в свою ветку.
+  complexity: moderate
+  Добавь в правый верхний угол span id="fooBadge" — зелёная точка, polling /api/foo. ui_audit -RequireId fooBadge desktop+mobile.
   [[/PARALLEL:B]]
+
+  [[PARALLEL:C]]
+  files: docs/foo.md
+  complexity: simple
+  Создай 1-страничный README про /api/foo: что возвращает, пример вызова.
+  [[/PARALLEL:C]]
 
   STATUS: CONTINUE
   ```
+  В этом примере: A → codex-high/xhigh (complex+backend), B → claude-sonnet (moderate+frontend), C → codex-medium или alt (simple+docs).
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
   1) Каждый `.ps1` сохраняй СТРОГО в UTF-8 С BOM. Без BOM PowerShell 5.1 не распарсит русский/эмодзи -> мост умрёт. В PowerShell записать с BOM: `[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($true)))`.
   2) После записи любого `.ps1` ПРОВЕРЬ синтаксис: `powershell -NoProfile -Command "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('<путь>',[ref]$t,[ref]$e)|Out-Null;if($e.Count){'ERR'}else{'OK'}"`. Применяй, ТОЛЬКО если 'OK'.

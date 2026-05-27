@@ -147,10 +147,33 @@
   },
   "parallel": {
     "enabled": true,
-    "maxStreams": 2,
+    "maxStreams": 6,
     "claudeCoderModel": "sonnet",
     "drainingTimeoutSec": 30,
-    "wipBranchPrefix": "wip/parallel"
+    "wipBranchPrefix": "wip/parallel",
+    "complexityFloor": {
+      "simple": 2,
+      "moderate": 3,
+      "complex": 4,
+      "architectural": 5
+    },
+    "domainHints": {
+      "frontend": ["html","css","js","jsx","tsx","vue","svelte"],
+      "scripts":  ["ps1","sh","bash","cmd","bat"],
+      "backend":  ["py","go","rs","java","cs","rb","ts","cpp","c"],
+      "docs":     ["md","txt","rst","adoc"],
+      "config":   ["json","yaml","yml","toml","ini","xml"]
+    },
+    "fallbackWorkerId": "codex-high",
+    "workers": [
+      { "id": "codex-xhigh",      "cli": "codex",  "model": "gpt-5.5",         "reasoning": "xhigh",  "strength": 5, "speed": 1, "cost": 5, "domains": ["any","backend","scripts"], "purpose": "Architectural changes, multi-file refactors, complex algorithms, deep reasoning."           },
+      { "id": "codex-high",       "cli": "codex",  "model": "gpt-5.5",         "reasoning": "high",   "strength": 4, "speed": 2, "cost": 4, "domains": ["any","backend","scripts"], "purpose": "Default coder. Moderate to complex feature work, multi-step fixes, careful refactoring." },
+      { "id": "codex-medium",     "cli": "codex",  "model": "gpt-5.5",         "reasoning": "medium", "strength": 3, "speed": 3, "cost": 3, "domains": ["any","backend","scripts","config"], "purpose": "Mid-sized changes, single-file features, well-scoped fixes."                          },
+      { "id": "codex-alt",        "cli": "codex",  "model": "gpt-5.4",         "reasoning": "high",   "strength": 3, "speed": 3, "cost": 2, "domains": ["any","backend","scripts"], "purpose": "Alternative when 5.5 is saturated; balanced quality."                                   },
+      { "id": "codex-specialist", "cli": "codex",  "model": "gpt-5.3-codex",   "reasoning": "high",   "strength": 3, "speed": 2, "cost": 3, "domains": ["backend","scripts"], "purpose": "Code-tuned specialist for routine code generation, precise edits."                            },
+      { "id": "claude-sonnet",    "cli": "claude", "model": "sonnet",          "strength": 3, "speed": 3, "cost": 3, "domains": ["frontend","docs","config","any"], "purpose": "UI work (HTML/CSS/JS), narrative/markdown, mixed natural-language+code tasks."                                                },
+      { "id": "claude-opus",      "cli": "claude", "model": "opus",            "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs"], "purpose": "Heavy architectural work, design decisions. RESERVE: only for complexity=architectural or explicit [[OPUS]] marker. Expensive quota."  }
+    ]
   },
   "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"

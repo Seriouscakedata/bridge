@@ -116,6 +116,224 @@ function Invoke-CodexParallel {
   return @{ results = @($results.ToArray()); merged = $merged; conflicts = $conflicts; error = '' }
 }
 
+# ============================================================================
+# WORKER POOL + ROUTER (extensible)
+# Config-driven worker pool with strength-floor routing. To add a new CLI
+# backend (gemini, deepseek, etc.):
+#   1. Add Invoke-XxxCli function below (signature: param($Worker,$Worktree,$InFile,$MsgFile,$OutFile,$ErrFile) -> System.Diagnostics.Process)
+#   2. Register it in $Script:ParallelCliRegistry
+#   3. Add worker entries with cli='xxx' to config.json -> parallel.workers
+# Routing rules: Select-WorkerForStream filters by complexity-floor (no weak
+# model on complex code), then by domain affinity (claude→frontend, codex→
+# scripts), then by cost (cheapest available wins). Same bucket isn't double-
+# booked unless pool is exhausted.
+# ============================================================================
+
+# CLI registry: dispatch table. Each handler must accept the same params and
+# return a System.Diagnostics.Process. Keep -Script scope so we can extend
+# at runtime if needed.
+$Script:ParallelCliRegistry = @{
+  'codex'  = 'Invoke-ParallelCodexCli'
+  'claude' = 'Invoke-ParallelClaudeCli'
+  # 'gemini'   = 'Invoke-ParallelGeminiCli'    # future
+  # 'deepseek' = 'Invoke-ParallelDeepSeekCli'  # future
+}
+
+function Get-ParallelWorkerPool {
+  # Returns @($worker, ...) read from config.json. Each worker is a hashtable:
+  #   { id; cli; model; reasoning?; strength; speed; cost; domains[]; purpose? }
+  # If config.parallel.workers is missing or empty, returns a built-in default
+  # pool (back-compat: equivalent to old round-robin sonnet+codex-high).
+  $cfg = $null
+  try { $cfg = Get-BridgeConfig } catch {}
+  $workers = @()
+  try {
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'parallel')) {
+      $pcfg = $cfg.parallel
+      if ($pcfg -and ($pcfg.PSObject.Properties.Name -contains 'workers')) {
+        $workers = @($pcfg.workers)
+      }
+    }
+  } catch {}
+  if (-not $workers -or $workers.Count -eq 0) {
+    # Built-in default (matches old behaviour: sonnet + codex-high)
+    return @(
+      [pscustomobject]@{ id='claude-sonnet'; cli='claude'; model='sonnet'; strength=3; speed=3; cost=3; domains=@('frontend','docs','any'); purpose='Default Claude coder.' },
+      [pscustomobject]@{ id='codex-high';    cli='codex';  model='gpt-5.5'; reasoning='high'; strength=4; speed=2; cost=4; domains=@('any','backend','scripts'); purpose='Default Codex coder.' }
+    )
+  }
+  return $workers
+}
+
+function Get-ParallelComplexityFloor {
+  param([string]$Complexity)
+  $cfg = $null
+  try { $cfg = Get-BridgeConfig } catch {}
+  $defaults = @{ simple=2; moderate=3; complex=4; architectural=5 }
+  try {
+    if ($cfg -and $cfg.parallel -and $cfg.parallel.complexityFloor) {
+      $cf = $cfg.parallel.complexityFloor
+      $name = ([string]$Complexity).ToLowerInvariant()
+      if ($cf.PSObject.Properties.Name -contains $name) { return [int]$cf.$name }
+    }
+  } catch {}
+  $name = ([string]$Complexity).ToLowerInvariant()
+  if ($defaults.ContainsKey($name)) { return [int]$defaults[$name] }
+  return 3
+}
+
+function Get-StreamDomain {
+  # Heuristic: pick the domain whose file-extension hint set best matches the
+  # stream's declared files. Returns 'any' if nothing matches or no files.
+  param([object]$Stream)
+  $files = @()
+  try { $files = @($Stream.files) } catch {}
+  if ($files.Count -eq 0) { return 'any' }
+
+  $exts = @($files | ForEach-Object {
+    $e = [System.IO.Path]::GetExtension([string]$_)
+    if ($e) { $e.TrimStart('.').ToLowerInvariant() }
+  } | Where-Object { $_ } | Sort-Object -Unique)
+  if ($exts.Count -eq 0) { return 'any' }
+
+  $hints = $null
+  try { $hints = (Get-BridgeConfig).parallel.domainHints } catch {}
+  if (-not $hints) { return 'any' }
+
+  $best = 'any'; $bestScore = 0
+  foreach ($dom in $hints.PSObject.Properties.Name) {
+    $hintExts = @($hints.$dom)
+    $score = 0
+    foreach ($ext in $exts) { if ($hintExts -contains $ext) { $score++ } }
+    if ($score -gt $bestScore) { $bestScore = $score; $best = $dom }
+  }
+  return $best
+}
+
+function Get-StreamComplexity {
+  # complexity comes from the planner's body line `complexity: ...`. If missing
+  # we infer 'moderate' as a safe middle.
+  param([object]$Stream)
+  $c = ''
+  try { $c = [string]$Stream.complexity } catch {}
+  if ([string]::IsNullOrWhiteSpace($c)) { $c = 'moderate' }
+  return $c.ToLowerInvariant()
+}
+
+function Get-StreamExplicitWorkerId {
+  # Planner can override routing with `worker: <id>` on its own line in body.
+  param([object]$Stream)
+  $body = ''
+  try { $body = [string]$Stream.body } catch {}
+  $m = [regex]::Match($body, '(?im)^\s*worker\s*:\s*([A-Za-z0-9_.-]+)\s*$')
+  if ($m.Success) { return $m.Groups[1].Value.Trim() }
+  return ''
+}
+
+function Select-WorkerForStream {
+  # Returns the best worker for a stream given an already-used set (no double
+  # booking unless pool is exhausted). Algorithm:
+  #   1. Explicit `worker: ID` override wins immediately if id exists in pool.
+  #   2. Filter pool by strength >= complexityFloor[complexity].
+  #   3. Remove already-used buckets (unless pool gets empty).
+  #   4. Protect opus: skip claude+opus unless complexity=architectural OR
+  #      stream has [[OPUS]] marker.
+  #   5. Prefer workers whose `domains` array contains the detected domain.
+  #   6. Sort: cheapest cost asc, then fastest speed desc.
+  # Returns $null only if pool is completely empty (caller falls back).
+  param([object]$Stream, [string[]]$AlreadyUsedIds = @())
+
+  $pool = @(Get-ParallelWorkerPool)
+  if ($pool.Count -eq 0) { return $null }
+
+  # 1. Explicit override
+  $explicitId = Get-StreamExplicitWorkerId $Stream
+  if (-not [string]::IsNullOrWhiteSpace($explicitId)) {
+    $w = $pool | Where-Object { [string]$_.id -eq $explicitId } | Select-Object -First 1
+    if ($w) { return $w }
+    try { Add-Message -From system -Text ("⚠ parallel: explicit worker '" + $explicitId + "' not in pool, falling back to auto-route") -Kind event | Out-Null } catch {}
+  }
+
+  $complexity = Get-StreamComplexity $Stream
+  $floor = Get-ParallelComplexityFloor -Complexity $complexity
+  $domain = Get-StreamDomain $Stream
+  $opusOk = ($complexity -eq 'architectural') -or ([bool]$Stream.opus)
+
+  # 2. Strength floor
+  $candidates = @($pool | Where-Object { [int]$_.strength -ge $floor })
+  if ($candidates.Count -eq 0) {
+    # No worker meets the floor — caller asked for too much. Fall back to the
+    # strongest workers we have (don't reject).
+    $maxStr = ($pool | Measure-Object -Property strength -Maximum).Maximum
+    $candidates = @($pool | Where-Object { [int]$_.strength -eq [int]$maxStr })
+  }
+
+  # 4. Opus guard
+  if (-not $opusOk) {
+    $woOpus = @($candidates | Where-Object { -not (([string]$_.cli -eq 'claude') -and ([string]$_.model -eq 'opus')) })
+    if ($woOpus.Count -gt 0) { $candidates = $woOpus }
+  }
+
+  # 3. Avoid double-booking
+  $unused = @($candidates | Where-Object { $AlreadyUsedIds -notcontains [string]$_.id })
+  if ($unused.Count -gt 0) { $candidates = $unused }
+
+  # 5. Domain preference
+  $domainMatch = @($candidates | Where-Object { @($_.domains) -contains $domain -or @($_.domains) -contains 'any' })
+  if ($domainMatch.Count -gt 0) { $candidates = $domainMatch }
+  # Also try a stricter domain match (without 'any') to prefer specialists
+  $strictDomain = @($candidates | Where-Object { @($_.domains) -contains $domain })
+  if ($strictDomain.Count -gt 0) { $candidates = $strictDomain }
+
+  # 6. Pick cheapest + fastest
+  $pick = $candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true} | Select-Object -First 1
+  return $pick
+}
+
+# --- Per-CLI invocation functions ---
+
+function Invoke-ParallelCodexCli {
+  # Launch codex.exe with -m <model> -c model_reasoning_effort="<level>".
+  param([object]$Worker, [string]$Worktree, [string]$InFile, [string]$MsgFile, [string]$OutFile, [string]$ErrFile)
+  $cfg = Get-BridgeConfig
+  $codex = Resolve-CodexExe $cfg
+  $model = [string]$Worker.model
+  $effort = [string]$Worker.reasoning
+  if ([string]::IsNullOrWhiteSpace($model)) { $model = 'gpt-5.5' }
+  if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
+  $cliArgs = @(
+    'exec','--color','never','--skip-git-repo-check',
+    '-c', "model=`"$model`"",
+    '-c', "model_reasoning_effort=`"$effort`"",
+    '-s','danger-full-access','-C',$Worktree,'-o',$MsgFile,'-'
+  )
+  return Start-Process -FilePath $codex -ArgumentList $cliArgs `
+    -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
+    -NoNewWindow -PassThru
+}
+
+function Invoke-ParallelClaudeCli {
+  # Launch claude.exe with --model and --cwd $Worktree.
+  param([object]$Worker, [string]$Worktree, [string]$InFile, [string]$MsgFile, [string]$OutFile, [string]$ErrFile)
+  $cfg = Get-BridgeConfig
+  $claude = Resolve-ClaudeExe $cfg
+  $model = [string]$Worker.model
+  if ([string]::IsNullOrWhiteSpace($model)) { $model = 'sonnet' }
+  $cliArgs = @(
+    '-p','--permission-mode','acceptEdits',
+    '--cwd', $Worktree,
+    '--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write',
+    '--model', $model
+  )
+  return Start-Process -FilePath $claude -ArgumentList $cliArgs `
+    -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
+    -NoNewWindow -PassThru
+}
+
+# To add Gemini/DeepSeek/etc: implement Invoke-ParallelXxxCli with the same
+# signature (returns System.Diagnostics.Process), then add to
+# $Script:ParallelCliRegistry above and add worker entries to config.json.
+
 function Get-ParallelRoot {
   Join-Path (Get-BridgeRoot) 'worktrees\parallel'
 }
@@ -198,10 +416,20 @@ function Get-ParallelFilesFromBody {
 }
 
 function Get-ParallelComplexityFromBody {
+  # Accepts: simple, moderate, complex, architectural (English) or
+  #          простая, умеренная, сложная, архитектурная (Russian, mapped).
+  # Default 'moderate' if not specified.
   param([string]$Body)
-  $m = [regex]::Match([string]$Body, '^\s*(?:complexity|сложность)\s*:\s*(?<c>simple|moderate|complex)\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($m.Success) { return $m.Groups['c'].Value.ToLowerInvariant() }
-  return 'moderate'
+  $m = [regex]::Match([string]$Body, '^\s*(?:complexity|сложность)\s*:\s*(?<c>simple|moderate|complex|architectural|простая|умеренная|сложная|архитектурная)\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if (-not $m.Success) { return 'moderate' }
+  $c = $m.Groups['c'].Value.ToLowerInvariant()
+  switch ($c) {
+    'простая'       { return 'simple' }
+    'умеренная'     { return 'moderate' }
+    'сложная'       { return 'complex' }
+    'архитектурная' { return 'architectural' }
+    default         { return $c }
+  }
 }
 
 function Test-CanParallelize {
@@ -321,17 +549,52 @@ $Body
 }
 
 function Spawn-Worker {
-  param([string]$StreamId, [string]$Coder, [string]$Model, [string]$Body, [string]$Worktree, [string]$BranchName)
+  # Refactored 2026-05-27: now takes a $WorkerSpec object (one entry from
+  # Get-ParallelWorkerPool) and dispatches via $Script:ParallelCliRegistry.
+  # Old signature (-Coder $name -Model $name) kept as a thin shim for any
+  # callers we missed -- it synthesizes a minimal WorkerSpec.
+  [CmdletBinding(DefaultParameterSetName='Spec')]
+  param(
+    [Parameter(Mandatory=$true)] [string]$StreamId,
+    [Parameter(Mandatory=$true)] [string]$Body,
+    [Parameter(Mandatory=$true)] [string]$Worktree,
+    [Parameter(Mandatory=$true)] [string]$BranchName,
+    [Parameter(ParameterSetName='Spec',  Position=4)] [object]$WorkerSpec,
+    [Parameter(ParameterSetName='Legacy')] [string]$Coder,
+    [Parameter(ParameterSetName='Legacy')] [string]$Model
+  )
+
+  # Back-compat shim: synthesize a WorkerSpec from -Coder/-Model
+  if ($PSCmdlet.ParameterSetName -eq 'Legacy') {
+    $cName = ([string]$Coder).ToLowerInvariant()
+    if ($cName -ne 'claude' -and $cName -ne 'codex') { throw "parallel: unsupported coder '$Coder'" }
+    $effort = if ([string]$Model -match 'complex|xhigh') { 'xhigh' } else { 'high' }
+    $synthModel = if ($cName -eq 'codex') { 'gpt-5.5' } else { [string]$Model }
+    if ([string]::IsNullOrWhiteSpace($synthModel)) { $synthModel = if ($cName -eq 'codex') { 'gpt-5.5' } else { 'sonnet' } }
+    $WorkerSpec = [pscustomobject]@{
+      id        = "$cName-legacy"
+      cli       = $cName
+      model     = $synthModel
+      reasoning = if ($cName -eq 'codex') { $effort } else { '' }
+      strength  = 3; speed = 3; cost = 3
+      domains   = @('any')
+    }
+  }
+
+  if (-not $WorkerSpec) { throw 'parallel: Spawn-Worker requires -WorkerSpec' }
   $sid = Normalize-ParallelId $StreamId
-  $coderName = ([string]$Coder).ToLowerInvariant()
-  if ($coderName -ne 'claude' -and $coderName -ne 'codex') { throw "parallel: unsupported coder '$Coder'" }
-  if ([string]::IsNullOrWhiteSpace($Worktree) -or -not (Test-Path -LiteralPath $Worktree)) { throw "parallel: worktree not found for stream $sid" }
+  if ([string]::IsNullOrWhiteSpace($Worktree) -or -not (Test-Path -LiteralPath $Worktree)) {
+    throw "parallel: worktree not found for stream $sid"
+  }
+  $cli = ([string]$WorkerSpec.cli).ToLowerInvariant()
+  $handler = $Script:ParallelCliRegistry[$cli]
+  if (-not $handler) { throw "parallel: no CLI handler registered for '$cli' (worker $($WorkerSpec.id))" }
 
   $files = @(Get-ParallelFilesFromBody $Body)
   $jobs = Get-ParallelJobsDir
   $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,8))
   $prefix = Join-Path $jobs ("worker_${sid}_$stamp")
-  $inF = "$prefix.in.txt"
+  $inF  = "$prefix.in.txt"
   $msgF = "$prefix.msg.txt"
   $outF = "$prefix.out.txt"
   $errF = "$prefix.err.txt"
@@ -339,42 +602,32 @@ function Spawn-Worker {
   $u8 = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($inF, $prompt, $u8)
 
-  $cfg = Get-BridgeConfig
-  $proc = $null
-  if ($coderName -eq 'codex') {
-    $codex = Resolve-CodexExe $cfg
-    $effort = if ($Model -match 'complex|xhigh') { 'xhigh' } else { 'high' }
-    $reasonArg = "model_reasoning_effort=`"$effort`""
-    $proc = Start-Process -FilePath $codex `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','danger-full-access','-C',$Worktree,'-o',$msgF,'-' `
-      -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-  } else {
-    $claude = Resolve-ClaudeExe $cfg
-    $claudeArgs = @('-p','--permission-mode','acceptEdits','--cwd',$Worktree,'--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write')
-    if (-not [string]::IsNullOrWhiteSpace($Model)) { $claudeArgs += @('--model', $Model) }
-    $proc = Start-Process -FilePath $claude -ArgumentList $claudeArgs `
-      -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-  }
+  # Dispatch to the CLI-specific handler
+  $proc = & $handler -Worker $WorkerSpec -Worktree $Worktree -InFile $inF -MsgFile $msgF -OutFile $outF -ErrFile $errF
+  if (-not $proc) { throw "parallel: CLI handler '$handler' returned no process for worker $($WorkerSpec.id)" }
 
   $ticks = [long]0
   try { $ticks = (Get-Process -Id $proc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
   return [pscustomobject]@{
-    id        = $sid
-    coder     = $coderName
-    model     = [string]$Model
-    status    = 'running'
-    branch    = [string]$BranchName
-    worktree  = [System.IO.Path]::GetFullPath($Worktree)
-    pid       = $proc.Id
-    pidTicks  = $ticks
-    process   = $proc
-    inFile    = $inF
-    msgFile   = $msgF
-    outFile   = $outF
-    errFile   = $errF
-    body      = [string]$Body
-    files     = @($files)
-    startedAt = (Get-Date).ToString('o')
+    id         = $sid
+    coder      = $cli                       # back-compat field (= CLI)
+    cli        = $cli
+    workerId   = [string]$WorkerSpec.id
+    model      = [string]$WorkerSpec.model
+    reasoning  = [string]$WorkerSpec.reasoning
+    status     = 'running'
+    branch     = [string]$BranchName
+    worktree   = [System.IO.Path]::GetFullPath($Worktree)
+    pid        = $proc.Id
+    pidTicks   = $ticks
+    process    = $proc
+    inFile     = $inF
+    msgFile    = $msgF
+    outFile    = $outF
+    errFile    = $errF
+    body       = [string]$Body
+    files      = @($files)
+    startedAt  = (Get-Date).ToString('o')
   }
 }
 
@@ -511,39 +764,49 @@ function Invoke-ParallelDispatch {
     $taskHash = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0,12)
   } catch {}
 
-  # Spawn workers round-robin: stream[0]=claude, stream[1]=codex, stream[2]=claude, ...
-  # This evenly distributes load between the two coder pools. opus flag overrides model.
-  $cfg = $null
-  try { $cfg = Get-BridgeConfig } catch {}
-  $claudeModelDefault = 'sonnet'
-  try {
-    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'parallel')) {
-      $pcfg = $cfg.parallel
-      if ($pcfg -and ($pcfg.PSObject.Properties.Name -contains 'claudeCoderModel')) { $claudeModelDefault = [string]$pcfg.claudeCoderModel }
-    }
-  } catch {}
-
+  # 2026-05-27 refactor: route each stream through Select-WorkerForStream
+  # (strength-floor + domain affinity + no double-booking). Falls back to
+  # built-in default pool if config.parallel.workers is missing.
   $workers = New-Object 'System.Collections.Generic.List[object]'
-  $idx = 0
+  $usedIds = New-Object 'System.Collections.Generic.List[string]'
   foreach ($s in @($Streams)) {
-    $coder = if (($idx % 2) -eq 0) { 'claude' } else { 'codex' }
-    $model = if ([bool]$s.opus) { 'opus' } elseif ($coder -eq 'claude') { $claudeModelDefault } else { 'codex' }
+    $spec = $null
+    try { $spec = Select-WorkerForStream -Stream $s -AlreadyUsedIds @($usedIds.ToArray()) } catch {
+      try { Add-Message -From system -Text ("⚠ parallel: router error for stream " + $s.id + ": " + $_.Exception.Message + " -- using fallback") -Kind event | Out-Null } catch {}
+    }
+    if (-not $spec) {
+      # Total fallback: first item from pool (or built-in default)
+      $pool = @(Get-ParallelWorkerPool)
+      if ($pool.Count -gt 0) { $spec = $pool[0] }
+    }
+    if (-not $spec) {
+      try { Add-Message -From system -Text ("❌ parallel: no worker pool available for stream " + $s.id) -Kind event } catch {}
+      foreach ($w0 in $workers) {
+        try { if ($w0.process -and -not $w0.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
+        try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $taskHash } catch {}
+      }
+      return @{ ok=$false; merged=0; reason='no worker pool' }
+    }
+
     $branch = "wip/parallel/$taskHash/$($s.id)"
     try {
       $worktree = Get-WorkerWorktree -StreamId $s.id -TaskHash $taskHash
-      $w = Spawn-Worker -StreamId $s.id -Coder $coder -Model $model -Body $s.body -Worktree $worktree -BranchName $branch
+      $w = Spawn-Worker -StreamId $s.id -Body $s.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
       [void]$workers.Add($w)
-      try { Add-Message -From system -Text ("🔀 Spawned worker: stream=" + $s.id + " coder=" + $coder + " model=" + $model + " files=[" + (($s.files) -join ',') + "]") -Kind event } catch {}
+      [void]$usedIds.Add([string]$spec.id)
+      try {
+        $complexity = Get-StreamComplexity $s
+        $domain = Get-StreamDomain $s
+        Add-Message -From system -Text ("🔀 Spawned worker: stream=" + $s.id + " worker=" + $spec.id + " (" + $spec.cli + "/" + $spec.model + ($(if($spec.reasoning){'/' + $spec.reasoning}else{''})) + ") complexity=" + $complexity + " domain=" + $domain + " files=[" + (($s.files) -join ',') + "]") -Kind event
+      } catch {}
     } catch {
       try { Add-Message -From system -Text ("❌ Parallel spawn failed for stream " + $s.id + ": " + $_.Exception.Message) -Kind event } catch {}
-      # Cleanup already-spawned workers
       foreach ($w0 in $workers) {
         try { if ($w0.process -and -not $w0.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
         try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $taskHash } catch {}
       }
       return @{ ok=$false; merged=0; reason="spawn failed: $($_.Exception.Message)" }
     }
-    $idx++
   }
 
   # Persist to state (channel-aware via current Read-State)
