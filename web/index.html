@@ -190,6 +190,7 @@
   .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
+  /* 2026-05-27v4: desktop dropdown — fixed 220px width + force buttons full width */
   .btns-secondary{
     position:absolute;
     right:0;
@@ -198,10 +199,10 @@
     display:none;
     flex-direction:column;
     gap:6px;
-    width:max-content;
-    min-width:176px;
-    max-width:min(320px,calc(100vw - 24px));
-    padding:7px;
+    width:220px;
+    min-width:220px;
+    max-width:min(280px,calc(100vw - 24px));
+    padding:8px;
     background:var(--panel);
     border:1px solid rgba(255,255,255,.12);
     border-radius:10px;
@@ -212,9 +213,19 @@
   .mobile-actions{display:none}
   .sec-group + .sec-group{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
   .sec-group-title{display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:0 2px 2px}
-  .sec-label{display:inline}
-  .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
-  .btns-secondary button.icon{height:auto}
+  .sec-label{display:inline;font-size:13px}
+  .btns-secondary button,
+  .btns-secondary button.icon{
+    width:100% !important;
+    height:auto;
+    display:flex;
+    align-items:center;
+    justify-content:flex-start;
+    gap:10px;
+    min-height:38px;
+    padding:7px 12px;
+    text-align:left;
+  }
   #moreMenu{display:inline-flex;align-items:center;justify-content:center}
   .hbtn-mobile-only{display:none!important}
   #searchToggle{order:1}
@@ -1812,6 +1823,7 @@
     .hbtn-mobile-only{display:flex!important}
     .mobile-actions{display:flex}
     #moreMenu{display:inline-flex;align-items:center;justify-content:center;min-height:40px}
+    /* 2026-05-27v4: mobile dropdown — fixed wider width + force buttons full width (icon class was capping at 38px) */
     .btns-secondary{
       position:absolute;
       right:0;
@@ -1820,10 +1832,10 @@
       display:none;
       flex-direction:column;
       gap:6px;
-      width:max-content;
+      width:220px;
       max-width:calc(100vw - 24px);
-      min-width:164px;
-      padding:6px;
+      min-width:220px;
+      padding:8px;
       background:var(--panel);
       border:1px solid rgba(255,255,255,.12);
       border-radius:10px;
@@ -1834,8 +1846,19 @@
     .btns-secondary.open .sec-group + .sec-group{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
     .btns-secondary.open .sec-group-title{display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:0 2px 2px}
     .btns-secondary.open .sec-label{display:inline}
-    .btns-secondary button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;text-align:left}
-    .btns-secondary button.icon{height:auto}
+    .btns-secondary button,
+    .btns-secondary button.icon{
+      width:100% !important;
+      height:auto;
+      display:flex;
+      align-items:center;
+      justify-content:flex-start;
+      gap:10px;
+      min-height:38px;
+      padding:7px 12px;
+      text-align:left;
+    }
+    .btns-secondary .sec-label{font-size:13px}
     #inp{max-height:40vh}
     .filterbar{padding:7px 10px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
     .filterbar::-webkit-scrollbar{display:none}
