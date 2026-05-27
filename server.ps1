@@ -20,6 +20,7 @@ if (Test-Path $authPath) {
 }
 
 $null = Initialize-Bridge   # ensure files exist
+$serverStartTime = Get-Date
 
 # Try to listen on ALL interfaces (LAN access). Needs a urlacl reservation
 # (see setup-lan.ps1). Fall back to localhost-only if that isn't set up yet.
@@ -117,6 +118,62 @@ try {
   while ($listener.IsListening) {
     $ctx = $listener.GetContext()
     try {
+      $path   = $ctx.Request.Url.AbsolutePath
+      $method = $ctx.Request.HttpMethod
+      if ($method -eq 'GET' -and $path -eq '/api/health') {
+        $hState   = Read-State
+        $uptimeSec = [int]([Math]::Floor(((Get-Date) - $serverStartTime).TotalSeconds))
+        $hbAge    = 9999
+        $hbRaw    = $hState.heartbeat
+        if ($hbRaw) {
+          try { $hbAge = [int]([Math]::Floor(((Get-Date) - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
+        }
+        $hPaused  = [bool]$hState.paused
+        $hStatus  = [string]$hState.status
+        $hLastSeq = [int]$hState.lastSeq
+        $memCount = 0
+        $memPath  = Join-Path $root 'memory\memory.jsonl'
+        if (Test-Path -LiteralPath $memPath) {
+          $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
+          while ($null -ne $srMem.ReadLine()) { $memCount++ }
+          $srMem.Close(); $srMem.Dispose()
+        }
+        $errCount = 0
+        $convPath = Join-Path $root 'channels\main\conversation.jsonl'
+        if (Test-Path -LiteralPath $convPath) {
+          $cutoff24 = (Get-Date).AddHours(-24)
+          $lines = [System.IO.File]::ReadLines($convPath) | Select-Object -Last 500
+          foreach ($ln in $lines) {
+            if ($ln -notmatch '[❌⚠💥]') { continue }
+            try {
+              $mo = $ln | ConvertFrom-Json -ErrorAction Stop
+              if ($mo.timestamp) {
+                if ([datetime]::Parse([string]$mo.timestamp) -ge $cutoff24) { $errCount++ }
+              } else { $errCount++ }
+            } catch { $errCount++ }
+          }
+        }
+        $gitHead = ''
+        try { $gitHead = (& git -C $root rev-parse --short=7 HEAD 2>$null).Trim() } catch {}
+        $psActive = 0
+        if ($hState.parallel_streams) {
+          $psActive = @($hState.parallel_streams | Where-Object { [string]$_.status -eq 'running' }).Count
+        }
+        $hOk = ($hbAge -lt 120) -and (-not $hPaused) -and ($errCount -lt 10)
+        $hJson = '{"ok":' + ($hOk.ToString().ToLower()) + `
+          ',"uptime_sec":' + $uptimeSec + `
+          ',"heartbeat_age_sec":' + $hbAge + `
+          ',"paused":' + ($hPaused.ToString().ToLower()) + `
+          ',"status":' + (("" + $hStatus) | ConvertTo-Json -Compress) + `
+          ',"lastSeq":' + $hLastSeq + `
+          ',"memory_count":' + $memCount + `
+          ',"recent_error_count_24h":' + $errCount + `
+          ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Compress) + `
+          ',"parallel_streams_active":' + $psActive + '}'
+        $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
+        Send-Text $ctx $hJson 'application/json; charset=utf-8'
+        continue
+      }
       if (-not (Test-Auth $ctx)) { continue }
       $path   = $ctx.Request.Url.AbsolutePath
       $method = $ctx.Request.HttpMethod
