@@ -2430,6 +2430,7 @@ while ($true) {
         Update-State ({ param($s)
           $s.last_user_seq=$maxUser
           $s.current_task=$null
+          $s.current_task_id=$null
           $s.status='idle'
           $s.active_agent=$null
           $s.active_model=$null
