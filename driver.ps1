@@ -181,6 +181,14 @@ function Test-CliFlagsInDiff {
     # line starts with optional whitespace + '#'.
     if ($line -match '^\s*#') { continue }
 
+    # CSS custom properties look like long CLI flags (`--codex`) in git diffs,
+    # but they are not process arguments. Ignore both declarations and var()
+    # usages before applying CLI-specific detectors.
+    if ($line -match '^\s*--[A-Za-z][A-Za-z0-9-]*\s*:' -or
+        $line -match '\bvar\(\s*--[A-Za-z][A-Za-z0-9-]*\s*\)') {
+      continue
+    }
+
     foreach ($det in $cliDetectors) {
       if ($line -notmatch $det.linePattern) { continue }
       foreach ($fm in $flagRegex.Matches($line)) {
