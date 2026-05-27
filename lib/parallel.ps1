@@ -313,7 +313,11 @@ function Invoke-ParallelCodexCli {
 }
 
 function Invoke-ParallelClaudeCli {
-  # Launch claude.exe with --model and --cwd $Worktree.
+  # Launch claude.exe in the worktree. Claude CLI has NO --cwd flag; use
+  # Start-Process -WorkingDirectory to set the process cwd, then --add-dir
+  # to grant tool access to that path (in case CLAUDE.md/AGENTS.md lookup
+  # cares). 2026-05-27 fix: previous version used --cwd which Claude CLI
+  # rejected with "unknown option" → every claude-* worker failed silently.
   param([object]$Worker, [string]$Worktree, [string]$InFile, [string]$MsgFile, [string]$OutFile, [string]$ErrFile)
   $cfg = Get-BridgeConfig
   $claude = Resolve-ClaudeExe $cfg
@@ -321,11 +325,12 @@ function Invoke-ParallelClaudeCli {
   if ([string]::IsNullOrWhiteSpace($model)) { $model = 'sonnet' }
   $cliArgs = @(
     '-p','--permission-mode','acceptEdits',
-    '--cwd', $Worktree,
+    '--add-dir', $Worktree,
     '--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write',
     '--model', $model
   )
   return Start-Process -FilePath $claude -ArgumentList $cliArgs `
+    -WorkingDirectory $Worktree `
     -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
     -NoNewWindow -PassThru
 }
