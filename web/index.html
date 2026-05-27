@@ -1017,7 +1017,9 @@
     flex-direction:column;
     gap:13px;
     scroll-behavior:smooth;
+    transition:opacity 0.15s;
   }
+  #log.channel-switching{opacity:0.3;transition:opacity 0.15s;}
   #log::-webkit-scrollbar{width:11px}
   #log::-webkit-scrollbar-track{background:transparent}
   #log::-webkit-scrollbar-thumb{background:#323946;border:3px solid var(--bg);border-radius:999px}
@@ -4198,6 +4200,7 @@ async function poll(){
     showConnectionProblem('messages', e);
   }finally{
     pollInFlight = false;
+    log.classList.remove('channel-switching');
   }
 }
 function setChip(id,on){
@@ -5492,6 +5495,7 @@ async function switchChannel(slug){
       // IMPORTANT: don't wipe log.innerHTML wholesale -- #emptyState and #working are
       // children of #log, and poll() relies on `working` as the insertBefore reference.
       // Mirror the same surgical reset that status()'s rewind branch uses.
+      log.classList.add('channel-switching');
       lastSeq = 0;
       [...log.querySelectorAll('.msg,.day-sep,.unread-marker')].forEach(n => n.remove());
       lastRenderedDay = '';
