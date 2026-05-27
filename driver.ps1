@@ -2648,6 +2648,9 @@ while ($true) {
     Update-State { param($s) $s.study_subtype='external'; $s.study_phase='gather-web' } | Out-Null
     Add-Message -From system -Text "📚 Study: путь не является репозиторием — переключаюсь на external." -Kind event | Out-Null
   }
+  $pbForMarkers = Get-ActiveProjectBinding
+  $channelIsMainMarkers = ($pbForMarkers -and ([string]$pbForMarkers.slug -eq 'main'))
+
   # [[REMEMBER: fact]] -> agent deliberately pushes a durable memory (no gate -- the agent chose).
   $rememberPattern = '(?m)^\s*\[\[REMEMBER:\s*(.+?)\s*\]\]\s*$'
   $rememberedFacts = @()
@@ -2655,7 +2658,7 @@ while ($true) {
     $fact = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($fact)) { continue }
     try {
-      $rid = Add-Memory -Text $fact -Tags @('explicit', $speaker) -Source ('explicit:' + $speaker) -Importance 0.75 -Channel ([string]$projectBinding.slug)
+      $rid = Add-Memory -Text $fact -Tags @('explicit', $speaker) -Source ('explicit:' + $speaker) -Importance 0.75 -Channel ([string]$pbForMarkers.slug)
       if ($rid) { $rememberedFacts += $fact }
     } catch {}
   }
@@ -2666,8 +2669,8 @@ while ($true) {
     $idea = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($idea)) { continue }
     try {
-      $ideaScope = if ($channelIsMain) { 'bridge' } else { 'project' }
-      $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new' -Project ([string]$projectBinding.slug) -Scope $ideaScope
+      $ideaScope = if ($channelIsMainMarkers) { 'bridge' } else { 'project' }
+      $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new' -Project ([string]$pbForMarkers.slug) -Scope $ideaScope
       $ideaOutcome = Resolve-AddIdeaOutcome -AddResult $addIdeaResult -IdeaText $idea -From $speaker
       if ($ideaOutcome.deduped) {
         $cosineText = 'n/a'
@@ -3177,12 +3180,13 @@ while ($true) {
     # tag=architect+deep-think. These are the ideas that survived the Claude<->Codex critique.
     if (($converged -or $ceiling) -and ($task -match '\[\[DEEP-THINK\]\]')) {
       try {
+        $pbForDeepThink = Get-ActiveProjectBinding
         $ideaLines = [regex]::Matches($reply, '(?im)^\s*[*_> \t#-]*IDEA:\s*(.+)$')
         $filed = 0
         foreach ($im in $ideaLines) {
           $itext = $im.Groups[1].Value.Trim() -replace '\*+$',''
           if ([string]::IsNullOrWhiteSpace($itext)) { continue }
-          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new' -Project ([string]$projectBinding.slug) -Scope 'bridge'
+          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new' -Project ([string]$pbForDeepThink.slug) -Scope 'bridge'
           if ($id) { $filed++ }
         }
         if ($filed -gt 0) {
