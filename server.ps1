@@ -611,6 +611,12 @@ try {
           $ok = Archive-Channel -Slug $slug
           if ($ok) {
             [void](Add-Message -From system -Text ("🗂 Канал в архив: " + $slug) -Kind event)
+            try {
+              $purged = Purge-MemoryForChannel -Slug $slug
+              if ($purged -gt 0) {
+                try { Add-Message -From system -Kind event -Text ("Auto-purge: удалено " + $purged + " memory-записей архивированного канала " + $slug) | Out-Null } catch {}
+              }
+            } catch {}
             Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
           } else {
             Send-Text $ctx '{"ok":false,"error":"cannot archive (main/active/missing)"}' 'application/json; charset=utf-8' 400

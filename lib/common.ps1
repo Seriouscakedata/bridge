@@ -800,6 +800,12 @@ function Archive-TestChannelIfIdle {
 
   try {
     Move-Item -LiteralPath $chDir -Destination $dest -ErrorAction Stop
+    try {
+      $purged = Purge-MemoryForChannel -Slug $Name
+      if ($purged -gt 0) {
+        try { Add-Message -From system -Kind event -Text ("Auto-purge: удалено " + $purged + " memory-записей архивированного канала " + $Name) | Out-Null } catch {}
+      }
+    } catch {}
     return [pscustomobject]@{ Name=$Name; Archived=$dest; AgeMinutes=[int]$ageMin }
   } catch {
     return [pscustomobject]@{ Name=$Name; Archived=$null; Error=$_.Exception.Message }

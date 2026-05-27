@@ -644,6 +644,26 @@ function Save-AllMemories {
   Use-BridgeLock ({ Write-AtomicFile -Path (Get-MemoryStorePath) -Content $content }.GetNewClosure())
 }
 
+function Purge-MemoryForChannel {
+  # Remove only non-shared memories for an archived channel; shared knowledge survives.
+  param([string]$Slug)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { return 0 }
+  try {
+    $mems = @(Get-AllMemories)
+    if ($mems.Count -eq 0) { return 0 }
+    $kept = @($mems | Where-Object {
+      $isShared = Test-MemoryShared $_
+      $ch = Get-MemoryChannel $_
+      -not (($ch -eq $Slug) -and (-not $isShared))
+    })
+    $removed = $mems.Count - $kept.Count
+    if ($removed -gt 0) { Save-AllMemories $kept }
+    return $removed
+  } catch {
+    return 0
+  }
+}
+
 function Get-MemoriesView {
   # All memories WITHOUT the heavy vec arrays, for the API/UI.
   # -Channel: '' or $null = active; '__all__' = all channels (admin view).
