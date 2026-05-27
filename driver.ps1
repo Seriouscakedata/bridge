@@ -3067,6 +3067,7 @@ while ($true) {
           if ($parResult.ok) {
             Add-Message -From system -Text ("✅ Parallel completed: " + $parResult.merged + " streams merged into main") -Kind event | Out-Null
             $plannerStatus = 'DONE'   # work landed via workers; let verify+critic gates run
+            $modeBeforeIncrement = 'normal'  # parallel delivered real implementation; force normal-mode so verify+critic+smoke gates run
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
           } else {
             Add-Message -From system -Text ("⚠ Parallel failed: " + $parResult.reason + " -- fallback to sequential Codex") -Kind event | Out-Null
