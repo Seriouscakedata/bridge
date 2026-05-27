@@ -32,13 +32,18 @@ function Get-BacklogControlDir {
 }
 
 function Write-BacklogJsonLine {
+  # 2026-05-27: critic-flagged fix. Add-Content -Encoding UTF8 on PS 5.1 writes
+  # UTF-8 WITH BOM on first call (when file is created), breaking strict JSONL
+  # parsers. ConvertTo-Json -Depth 10 on a hashtable Record is shallow-safe but
+  # we reduce to Depth 6 (matches memory rule "Depth<=10 OK, prefer flat DTOs").
   param($Record)
   try {
     $dir = Get-BacklogControlDir
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $path = Join-Path $dir 'curator-decisions.jsonl'
-    $line = $Record | ConvertTo-Json -Compress -Depth 10
-    Invoke-BacklogLocked ({ Add-Content -LiteralPath $path -Value $line -Encoding UTF8 }.GetNewClosure()) | Out-Null
+    $line = $Record | ConvertTo-Json -Compress -Depth 6
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText($path, ($line + "`n"), $u8NoBom) }.GetNewClosure()) | Out-Null
   } catch {}
 }
 
@@ -48,7 +53,7 @@ function Write-LastAddIdeaMarker {
     $dir = Get-BacklogControlDir
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $path = Join-Path $dir 'last-add-idea.json'
-    $json = ($Record | ConvertTo-Json -Compress -Depth 10) + "`n"
+    $json = ($Record | ConvertTo-Json -Compress -Depth 6) + "`n"
     Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $path -Content $json }.GetNewClosure()) | Out-Null
   } catch {}
 }
@@ -60,11 +65,29 @@ function Start-BacklogCuratorJob {
     $root = Get-BacklogFallbackBridgeRoot
     $lib = Join-Path $PSScriptRoot 'backlog.ps1'
     $log = Join-Path (Get-BacklogControlDir) 'curator.log'
-    $escapedItemId = $ItemId.Replace("'", "''")
-    $escapedLib = $lib.Replace("'", "''")
-    $escapedLog = $log.Replace("'", "''")
-    $command = ". '$escapedLib'; Invoke-BacklogCurator -ItemId '$escapedItemId' 2>&1 | Out-File -Encoding utf8 -Append '$escapedLog'"
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$command) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+    # 2026-05-27: critic-flagged fix. Embedded -Command string with `2>&1` and
+    # `Out-File -Encoding utf8` was fragile (PS 5.1 wraps stderr as NativeCommandError
+    # objects, Out-File utf8 writes BOM). Switch to a temp launcher .ps1 file with
+    # explicit no-BOM append. Cleaner, deterministic, no quoting risks.
+    $launcherDir = Join-Path (Get-BacklogControlDir) 'curator-launchers'
+    if (-not (Test-Path -LiteralPath $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null }
+    $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
+    $launcher = Join-Path $launcherDir ("curator_" + $stamp + ".ps1")
+    $launcherBody = @"
+`$ErrorActionPreference = 'Continue'
+try {
+  . '$($lib.Replace("'", "''"))'
+  `$result = Invoke-BacklogCurator -ItemId '$($ItemId.Replace("'", "''"))' 2>`$null
+  `$line = (Get-Date).ToString('o') + " | item=$($ItemId.Replace("'", "''")) | result=" + (`$result | ConvertTo-Json -Compress -Depth 4) + "`n"
+  [System.IO.File]::AppendAllText('$($log.Replace("'", "''"))', `$line, (New-Object System.Text.UTF8Encoding(`$false)))
+} catch {
+  `$err = (Get-Date).ToString('o') + " | item=$($ItemId.Replace("'", "''")) | error=" + `$_.Exception.Message + "`n"
+  [System.IO.File]::AppendAllText('$($log.Replace("'", "''"))', `$err, (New-Object System.Text.UTF8Encoding(`$false)))
+}
+"@
+    $u8Bom = New-Object System.Text.UTF8Encoding($true)
+    [System.IO.File]::WriteAllText($launcher, $launcherBody, $u8Bom)
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
     return $true
   } catch {
     Write-BacklogJsonLine ([ordered]@{
@@ -251,8 +274,13 @@ function Add-Idea {
   if (-not $SkipCurator -and $keep -and [string]$keep.action -eq 'similar') {
     $rec.similar_to = @($keep.similar_to)
   }
-  $line = ($rec | ConvertTo-Json -Compress -Depth 10)
-  Invoke-BacklogLocked ({ Add-Content -LiteralPath (Get-BacklogPath) -Value $line -Encoding UTF8 }.GetNewClosure()) | Out-Null
+  # 2026-05-27: critic-flagged fix. Same BOM issue as in Write-BacklogJsonLine
+  # plus a real risk: $rec is a hashtable here (fresh, not from ConvertFrom-Json
+  # so no ETS-graph), but consumers re-read via Get-Backlog → PSCustomObject;
+  # downstream Save-Backlog also uses Depth 10 — both lowered to 6.
+  $line = ($rec | ConvertTo-Json -Compress -Depth 6)
+  $u8NoBomA = New-Object System.Text.UTF8Encoding($false)
+  Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText((Get-BacklogPath), ($line + "`n"), $u8NoBomA) }.GetNewClosure()) | Out-Null
 
   $curatorStarted = $false
   if (-not $SkipCurator) {
@@ -281,8 +309,12 @@ function Get-Backlog {
 }
 
 function Save-Backlog {
+  # 2026-05-27: Depth 10 → 6. Items here come from Get-Backlog (PSCustomObject
+  # from ConvertFrom-Json) — depth 10 on PSCO can recurse into ETS graph. Item
+  # schema actual depth ≤ 3 (id/text/status/auto_curator{verdict/reason/...}),
+  # so 6 is safe and gives margin.
   param($Items)
-  $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 })
+  $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
   Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path (Get-BacklogPath) -Content $content }.GetNewClosure()) | Out-Null
 }
