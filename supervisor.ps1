@@ -104,6 +104,7 @@ while ($true) {
         Remove-Item $flagRestart -Force -ErrorAction SilentlyContinue
         Log "restart flag -> recycle"
         Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
+        try { foreach ($_slug in (Get-ActiveSlugs)) { try { Save-StateSnapshot -Reason 'restart_flag' -Channel $_slug } catch {} } } catch {}
         Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
         $lastRecycleTs = Get-Date
       }

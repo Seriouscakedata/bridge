@@ -2122,6 +2122,18 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
 # the loop happening again (changes are recoverable via `git stash list`).
 try {
   $startupState = Read-State
+  try {
+    if ($startupState) {
+      $_bootCh = if ($startupState.current_channel) { [string]$startupState.current_channel } else { $Channel }
+      $_lastSnap = Get-LastSnapshot -Channel $_bootCh
+      if ($_lastSnap -and [string]::IsNullOrWhiteSpace([string]$startupState.held_task) -and [string]::IsNullOrWhiteSpace([string]$startupState.current_task)) {
+        $_snapAge = ((Get-Date) - (Get-Item $_lastSnap).LastWriteTime).TotalMinutes
+        if ($_snapAge -lt 60) {
+          try { Add-Message -From system -Text ("♻ Снимок state до рестарта (<60мин): " + $_lastSnap + ". Если задача потеряна — снимок содержит прежний контекст.") -Kind event | Out-Null } catch {}
+        }
+      }
+    }
+  } catch {}
   if ([bool]$startupState.doctor_active) {
     $newAtt = [int]$startupState.doctor_attempts + 1
     $maxA = 3   # initial + 2 restarts; beyond that the loop is real and we escalate
