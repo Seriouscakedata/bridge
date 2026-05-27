@@ -662,13 +662,25 @@ try {
         } else { Send-Text $ctx '{"ok":false,"error":"reflect.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/settings') {
+        # 2026-05-27v5: now returns BOTH autonomy + advanced settings (dotted-path keys).
         $s = Get-AutonomySettings
+        $adv = Get-AdvancedSettings
         $cfg2 = Get-BridgeConfig
         $sJson = ($s | ConvertTo-Json -Compress -Depth 4)
-        $payload = '{"ok":true,"settings":' + $sJson + ',"workRoot":' + (("" + $cfg2.workRoot) | ConvertTo-Json -Compress) + '}'
+        # Serialize ordered dictionary manually so JSON has stable shape
+        $advPairs = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($key in $adv.Keys) {
+          $val = $adv[$key]
+          $jv = ($val | ConvertTo-Json -Compress -Depth 2)
+          [void]$advPairs.Add(('"' + ($key -replace '"','\"') + '":' + $jv))
+        }
+        $advJson = '{' + ([string]::Join(',', $advPairs.ToArray())) + '}'
+        $payload = '{"ok":true,"settings":' + $sJson + ',"advanced":' + $advJson + ',"workRoot":' + (("" + $cfg2.workRoot) | ConvertTo-Json -Compress) + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/settings') {
+        # Accepts both autonomy fields (flat names) AND advanced fields (under "advanced" key
+        # as map of dotted-path -> value).
         $body = Read-Body $ctx | ConvertFrom-Json
         $upd = @{}
         if ($null -ne $body.enabled)                  { $upd['enabled'] = [bool]$body.enabled }
@@ -678,9 +690,36 @@ try {
         if ($null -ne $body.maxAutonomousTasksPerDay) { $v=0;   if([int]::TryParse([string]$body.maxAutonomousTasksPerDay,[ref]$v)){ if($v -lt 0){$v=0}; $upd['maxAutonomousTasksPerDay'] = $v } }
         if ($null -ne $body.scope)                    { $sc=[string]$body.scope; if($sc -eq 'bridge' -or $sc -eq 'projects'){ $upd['scope'] = $sc } }
         if ($upd.Count -gt 0) { Set-AutonomySetting -Updates $upd | Out-Null }
-        [void](Add-Message -From system -Text "⚙ Настройки автономии обновлены пользователем." -Kind event)
+
+        # Advanced fields: body.advanced = { 'parallel.maxStreams': 8, ... }
+        if ($null -ne $body.advanced) {
+          $advUpd = @{}
+          foreach ($p in $body.advanced.PSObject.Properties) {
+            $k = [string]$p.Name; $raw = $p.Value
+            # Coerce by key type heuristic: enabled-like keys -> bool, *Min*/*Hours*/*Sec*/*MaxX -> int/double
+            if ($k -match '\.(enabled|autoDetect)$') {
+              try { $advUpd[$k] = [bool]$raw } catch {}
+            } elseif ($k -match '(Score|Threshold)$') {
+              $d=0.0; if([double]::TryParse([string]$raw,[ref]$d)){ if($d -lt 0){$d=0}; if($d -gt 1){$d=1}; $advUpd[$k] = $d }
+            } elseif ($k -match '(Hours|Minutes|Sec|Min|Max|Count|Streams|TopK|Days|Chars|Chunks|Retries|Effort|Per)') {
+              $v=0; if([int]::TryParse([string]$raw,[ref]$v)){ if($v -lt 0){$v=0}; $advUpd[$k] = $v }
+            } else {
+              # Default: try int, then double, then string
+              $vi=0; $vd=0.0
+              if([int]::TryParse([string]$raw,[ref]$vi)) { $advUpd[$k] = $vi }
+              elseif([double]::TryParse([string]$raw,[ref]$vd)) { $advUpd[$k] = $vd }
+              else { $advUpd[$k] = [string]$raw }
+            }
+          }
+          if ($advUpd.Count -gt 0) { Set-AdvancedSetting -Updates $advUpd | Out-Null }
+        }
+
+        [void](Add-Message -From system -Text "⚙ Настройки моста обновлены пользователем." -Kind event)
         $s2 = Get-AutonomySettings
-        Send-Text $ctx ('{"ok":true,"settings":' + ($s2 | ConvertTo-Json -Compress -Depth 4) + '}') 'application/json; charset=utf-8'
+        $adv2 = Get-AdvancedSettings
+        $advPairs2 = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($key in $adv2.Keys) { [void]$advPairs2.Add(('"' + ($key -replace '"','\"') + '":' + (($adv2[$key]) | ConvertTo-Json -Compress -Depth 2))) }
+        Send-Text $ctx ('{"ok":true,"settings":' + ($s2 | ConvertTo-Json -Compress -Depth 4) + ',"advanced":{' + ([string]::Join(',', $advPairs2.ToArray())) + '}}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/projects') {
         $projs = @(Get-ExternalProjects)

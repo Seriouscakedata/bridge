@@ -52,6 +52,72 @@ function Set-AutonomySetting {
   return $true
 }
 
+function Get-AdvancedSettings {
+  # Returns ALL user-editable advanced settings as flat dotted-path map.
+  # Resolved order: hardcoded defaults <- config.json <- settings.json (live overlay
+  # already applied by Get-BridgeConfig). 2026-05-27v5: extended settings UI in /memory.
+  $defaults = [ordered]@{
+    'parallel.maxStreams'            = 6
+    'chunking.maxChunksPerTask'      = 10
+    'criticMaxRetries'               = 2
+    'auditor.intervalMin'            = 15
+    'auditor.cooldownMin'            = 30
+    'auditor.doctorRecidivismHours'  = 24
+    'auditor.doctorRecidivismMax'    = 5
+    'canary.enabled'                 = $false
+    'canary.intervalHours'           = 6
+    'canary.cooldownMinutes'         = 30
+    'fastLane.autoDetect'            = $false
+    'fastLane.minChars'              = 100
+    'memory.recallTopK'              = 5
+    'memory.recallMinScore'          = 0.62
+    'memory.dedupThreshold'          = 0.93
+    'memory.ageDaysPrune'            = 30
+    'librarian.deltaTriggerCount'    = 10
+    'librarian.ceilingHours'         = 6
+    'reflect.minTaskDurationSec'     = 60
+  }
+  try {
+    $cfg = Get-BridgeConfig
+    foreach ($k in @($defaults.Keys)) {
+      $parts = $k -split '\.', 2
+      $section = $parts[0]; $field = if ($parts.Count -gt 1) { $parts[1] } else { $null }
+      if (-not $field) {
+        if ($cfg.PSObject.Properties.Name -contains $section -and $null -ne $cfg.$section) { $defaults[$k] = $cfg.$section }
+      } else {
+        if ($cfg.PSObject.Properties.Name -contains $section -and $cfg.$section -and ($cfg.$section).PSObject.Properties.Name -contains $field -and $null -ne $cfg.$section.$field) {
+          $defaults[$k] = $cfg.$section.$field
+        }
+      }
+    }
+  } catch {}
+  return $defaults
+}
+
+function Set-AdvancedSetting {
+  # Writes flat dotted-path keys to settings.json. Whitelisted by key allowlist.
+  param([hashtable]$Updates)
+  $allow = @(
+    'parallel.maxStreams',
+    'chunking.maxChunksPerTask',
+    'criticMaxRetries',
+    'auditor.intervalMin','auditor.cooldownMin','auditor.doctorRecidivismHours','auditor.doctorRecidivismMax',
+    'canary.enabled','canary.intervalHours','canary.cooldownMinutes',
+    'fastLane.autoDetect','fastLane.minChars',
+    'memory.recallTopK','memory.recallMinScore','memory.dedupThreshold','memory.ageDaysPrune',
+    'librarian.deltaTriggerCount','librarian.ceilingHours',
+    'reflect.minTaskDurationSec'
+  )
+  $h = @{}
+  $s = Get-Settings
+  if ($s) { foreach ($p in $s.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+  foreach ($k in $Updates.Keys) {
+    if ($allow -contains $k) { $h[$k] = $Updates[$k] }
+  }
+  Save-Settings ([pscustomobject]$h)
+  return $true
+}
+
 function Get-ExternalProjects {
   # Project folders (containing .git) under workRoot, excluding the bridge itself, so the
   # user can see what the bridge considers an "external project". Depth-limited; skips

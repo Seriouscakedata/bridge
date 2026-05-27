@@ -71,6 +71,14 @@
   }
   .card textarea:focus{border-color:rgba(114,183,255,.6)}
   .card .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  /* 2026-05-27v5: advanced settings grid */
+  .adv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+  .adv-row{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 10px;background:rgba(20,23,29,.5);border:1px solid var(--border-soft);border-radius:8px}
+  .adv-row span{font-size:12px;color:var(--soft);flex:1;min-width:0}
+  .adv-row input[type=number]{width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:6px;color:var(--txt);padding:5px 8px;outline:none;font-size:13px}
+  .adv-row.adv-row-check{justify-content:flex-start}
+  .adv-row.adv-row-check input[type=checkbox]{width:16px;height:16px;accent-color:var(--codex);flex:none}
+  .adv-row.adv-row-check span{flex:1}
   .imp{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
   .imp input[type=range]{width:120px;accent-color:var(--model)}
   .imp b{color:var(--model);font-variant-numeric:tabular-nums;min-width:30px;text-align:right}
@@ -131,9 +139,9 @@
   <!-- 2026-05-27v2: Бэклог restored here -- single source of truth, wider grid view -->
   <!-- with curator badges. chat-panel backlog (cramped column) hidden in index.html. -->
   <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
-  <!-- Radar/Settings still hidden until feature activation / settings dialog moved -->
+  <!-- Radar still hidden (no live data); Settings restored 2026-05-27v5 with extended config controls -->
   <div class="tab" data-tab="radar" id="tabRadar" hidden>Радар</div>
-  <div class="tab" data-tab="settings" id="tabSettings" hidden>Настройки</div>
+  <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
 </div>
 
 <div class="wrap">
@@ -217,6 +225,79 @@
       <div class="row" style="display:flex;gap:10px;align-items:center">
         <button class="primary" id="setSave" type="button">Сохранить настройки</button>
         <span id="setStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <!-- 2026-05-27v5: advanced settings (parallel, chunking, critic, auditor, canary, memory, librarian, fast-lane, reflect) -->
+    <div class="card" style="gap:14px;margin-top:14px">
+      <div style="font-weight:700;font-size:14px">Расширенные настройки моста</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Хранятся в settings.json (вне git, переживут rollback). Применяются на лету, без рестарта моста.</div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Параллель и чанки</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="parallel.maxStreams"><span>Макс одновременных потоков (параллель)</span><input type="number" min="1" max="12" step="1"></label>
+          <label class="adv-row" data-key="chunking.maxChunksPerTask"><span>Лимит чанков на задачу</span><input type="number" min="1" max="50" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Критик и верификация</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="criticMaxRetries"><span>Сколько раз критик может откатить DONE</span><input type="number" min="0" max="5" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Аудитор и Doctor</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="auditor.intervalMin"><span>Интервал аудитора (мин)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.cooldownMin"><span>Cooldown аудитора (мин)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.doctorRecidivismHours"><span>Окно рецидива Doctor (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.doctorRecidivismMax"><span>Макс рецидивов Doctor в окне</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Канарейка</b></div>
+        <div class="adv-grid">
+          <label class="adv-row adv-row-check" data-key="canary.enabled"><input type="checkbox"><span>Канарейка включена</span></label>
+          <label class="adv-row" data-key="canary.intervalHours"><span>Интервал запуска (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="canary.cooldownMinutes"><span>Cooldown (мин)</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Быстрый трек (fast-lane)</b></div>
+        <div class="adv-grid">
+          <label class="adv-row adv-row-check" data-key="fastLane.autoDetect"><input type="checkbox"><span>Авто-детект тривиальных задач</span></label>
+          <label class="adv-row" data-key="fastLane.minChars"><span>Мин длина задачи для fast-lane (символов)</span><input type="number" min="0" step="10"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Память</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="memory.recallTopK"><span>Сколько фактов вспоминать на запрос (top-K)</span><input type="number" min="1" max="30" step="1"></label>
+          <label class="adv-row" data-key="memory.recallMinScore"><span>Мин cosine для recall (0..1)</span><input type="number" min="0" max="1" step="0.01"></label>
+          <label class="adv-row" data-key="memory.dedupThreshold"><span>Cosine-порог дедупа (0..1)</span><input type="number" min="0" max="1" step="0.01"></label>
+          <label class="adv-row" data-key="memory.ageDaysPrune"><span>Удалять старше N дней (если не использовалось)</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Библиотекарь и рефлексия</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="librarian.deltaTriggerCount"><span>Сколько новых memory-записей запускает librarian</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="librarian.ceilingHours"><span>Макс интервал между запусками librarian (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="reflect.minTaskDurationSec"><span>Мин длительность задачи чтобы reflect её рассматривал (сек)</span><input type="number" min="0" step="10"></label>
+        </div>
+      </div>
+
+      <div class="row" style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="primary" id="advSave" type="button">Сохранить расширенные</button>
+        <button id="advReset" type="button" title="Перечитать с сервера">Перезагрузить</button>
+        <span id="advStatus" style="font-size:12px;color:var(--muted)"></span>
       </div>
     </div>
   </div>
@@ -449,6 +530,16 @@ async function loadSettings(){
     $('#setCap').value = s.maxAutonomousTasksPerDay!=null ? s.maxAutonomousTasksPerDay : 0;
     const sc = s.scope||'bridge';
     document.querySelectorAll('input[name="scope"]').forEach(r=>{ r.checked = (r.value===sc); });
+    // 2026-05-27v5: populate advanced rows
+    const adv = d.advanced || {};
+    document.querySelectorAll('.adv-row').forEach(row=>{
+      const key = row.dataset.key; if(!key) return;
+      const v = adv[key];
+      const input = row.querySelector('input');
+      if(!input || v == null) return;
+      if(input.type === 'checkbox') input.checked = !!v;
+      else input.value = String(v);
+    });
   }catch(e){ toast('Ошибка загрузки настроек: '+e,'bad'); }
   if(!projectsLoaded) loadProjects();
 }
@@ -480,6 +571,34 @@ $('#setSave').addEventListener('click', async ()=>{
   b.disabled=false;
   setTimeout(()=>{ $('#setStatus').textContent=''; }, 4000);
 });
+
+// 2026-05-27v5: advanced settings save
+const advSaveBtn = document.getElementById('advSave');
+const advResetBtn = document.getElementById('advReset');
+if(advSaveBtn) advSaveBtn.addEventListener('click', async ()=>{
+  const adv = {};
+  document.querySelectorAll('.adv-row').forEach(row=>{
+    const key = row.dataset.key; if(!key) return;
+    const input = row.querySelector('input');
+    if(!input) return;
+    if(input.type === 'checkbox') adv[key] = input.checked;
+    else adv[key] = input.value;
+  });
+  const status = document.getElementById('advStatus');
+  advSaveBtn.disabled = true;
+  if(status) status.textContent = 'сохраняю…';
+  try{
+    const r = await api('/api/settings', { method:'POST', body: JSON.stringify({ advanced: adv }) });
+    if(status) status.textContent = r.ok ? 'сохранено ✓' : 'ошибка';
+    toast(r.ok ? 'Расширенные настройки сохранены' : 'Ошибка', r.ok ? 'ok' : 'bad');
+  } catch(e){
+    if(status) status.textContent = 'ошибка';
+    toast('Ошибка: ' + e, 'bad');
+  }
+  advSaveBtn.disabled = false;
+  setTimeout(()=>{ if(status) status.textContent=''; }, 4000);
+});
+if(advResetBtn) advResetBtn.addEventListener('click', loadSettings);
 
 // ---- backlog ----
 let BL = [];

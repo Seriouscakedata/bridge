@@ -1205,18 +1205,27 @@
   }
   .system-bundle button:hover{color:#d8e0eb;border-color:#536072;background:#171d26}
   body.hide-system .from-system:not(.search-hit){display:none}
+  /* 2026-05-27v5 compact-mode fix: explicit width:100% with computed max-width
+     so .msg doesn't collapse to min-content (was rendering 1-char wide vertical
+     text when bubble had `overflow-wrap:anywhere` and grid 1fr column shrank). */
   body.compact-mode #log{gap:8px;padding:14px var(--content-pad) 18px}
   body.compact-mode .msg{
+    width:100%;
     grid-template-columns:26px minmax(0,1fr);
     gap:8px;
     max-width:min(1040px,88%);
   }
   body.compact-mode .from-user{
+    width:100%;
     grid-template-columns:minmax(0,1fr) 26px;
     max-width:min(980px,88%);
   }
+  body.compact-mode .from-system{
+    width:100%;
+    max-width:min(980px,92%);
+  }
   body.compact-mode .avatar{width:26px;height:26px;border-radius:8px;font-size:11px}
-  body.compact-mode .bubble{padding:7px 9px;border-radius:10px}
+  body.compact-mode .bubble{padding:7px 9px;border-radius:10px;min-width:0}
   body.compact-mode .msg-head{margin-bottom:3px}
   body.compact-mode .md{font-size:13px;line-height:1.45}
   body.compact-mode .from-system .bubble{padding:4px 8px}

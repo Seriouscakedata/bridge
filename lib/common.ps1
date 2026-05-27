@@ -9,8 +9,34 @@ function Get-BridgeRoot {
 }
 
 function Get-BridgeConfig {
+  # Loads config.json then overlays settings.json (gitignored, survives rollbacks).
+  # Keys: flat ("maxAutonomousTasksPerDay") or dotted ("parallel.maxStreams").
+  # Dotted-path goes into nested config; flat key overlays only if cfg has root key.
   $root = Get-BridgeRoot
   $cfg = Get-Content (Join-Path $root 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  try {
+    $sp = Join-Path $root 'settings.json'
+    if (Test-Path $sp) {
+      $s = Get-Content $sp -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($s) {
+        foreach ($p in $s.PSObject.Properties) {
+          $k = [string]$p.Name; $v = $p.Value
+          if ($k -match '\.') {
+            $parts = $k -split '\.', 2
+            $section = $parts[0]; $field = $parts[1]
+            if ($cfg.PSObject.Properties.Name -notcontains $section) {
+              $cfg | Add-Member -NotePropertyName $section -NotePropertyValue ([pscustomobject]@{}) -Force
+            }
+            $cfg.$section | Add-Member -NotePropertyName $field -NotePropertyValue $v -Force
+          } else {
+            if ($cfg.PSObject.Properties.Name -contains $k) {
+              $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $v -Force
+            }
+          }
+        }
+      }
+    }
+  } catch {}
   return $cfg
 }
 
