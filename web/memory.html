@@ -474,16 +474,31 @@ $('#setSave').addEventListener('click', async ()=>{
 
 // ---- backlog ----
 let BL = [];
+let BL_SHOW_ARCHIVED = false;
+let BL_ARCHIVED_COUNT = 0;
 const BL_STATUS = {
-  'new':      {label:'новая',       cls:'src-task'},
-  'approved': {label:'одобрена',    cls:'src-manual'},
-  'running':  {label:'выполняется', cls:'src-decision'},
-  'done':     {label:'готово',      cls:'src-task'},
-  'rejected': {label:'отклонена',   cls:''},
-  'failed':   {label:'ошибка',      cls:''}
+  'new':           {label:'новая',         cls:'src-task',     dot:'gray'},
+  'approved':      {label:'одобрена',      cls:'src-manual',   dot:'green'},
+  'held':          {label:'на паузе',      cls:'',             dot:'yellow'},
+  'running':       {label:'выполняется',   cls:'src-decision', dot:'blue'},
+  'done':          {label:'готово',        cls:'src-task',     dot:'green-done'},
+  'rejected':      {label:'отклонена',     cls:'',             dot:'gray'},
+  'failed':        {label:'ошибка',        cls:'',             dot:'red'},
+  'auto-dropped':  {label:'авто-сброс',    cls:'',             dot:'gray-x'},
+  'auto-resolved': {label:'авто-решено',   cls:'src-task',     dot:'green-check'}
 };
 async function loadBacklog(){
-  try{ const d = await api('/api/backlog'); BL = d.items||[]; renderBacklog(); }
+  try{
+    const url = BL_SHOW_ARCHIVED ? '/api/backlog?include=archived' : '/api/backlog';
+    const d = await api(url);
+    BL = d.items||[];
+    BL_ARCHIVED_COUNT = Number(d.archived_count||0);
+    const cntEl = document.getElementById('blArchiveCount');
+    if(cntEl) cntEl.textContent = String(BL_ARCHIVED_COUNT);
+    const tglEl = document.getElementById('blArchiveToggle');
+    if(tglEl) tglEl.style.borderColor = BL_SHOW_ARCHIVED ? 'rgba(255,183,114,.6)' : '';
+    renderBacklog();
+  }
   catch(e){ toast('Ошибка загрузки бэклога: '+e,'bad'); }
 }
 function renderBacklog(){
