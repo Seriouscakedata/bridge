@@ -20,6 +20,7 @@ if ([string]::IsNullOrWhiteSpace($Channel)) {
   $Channel = (Get-ActiveChannel)
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
 }
+$Channel = Normalize-ChannelSlug $Channel
 Set-PinnedChannel $Channel
 Write-Host ("driver pinned to channel: " + $Channel)
 
@@ -2476,13 +2477,15 @@ while ($true) {
   }
   $reply = [string]$turnResult.text
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
-  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and [string]$Channel -ne 'main') {
+  $guardChannelSlug = [string]$Channel
+  try { $guardChannelSlug = Normalize-ChannelSlug $guardChannelSlug } catch {}
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and $guardChannelSlug -ne 'main') {
     try {
       $bridgeHeadAfterGuard = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
       $bridgeDirtyAfterGuard = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
       if (($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard) -or @($bridgeDirtyAfterGuard).Count -gt 0) {
         $changed = if (@($bridgeDirtyAfterGuard).Count -gt 0) { @($bridgeDirtyAfterGuard) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
-        $guardMsg = "⚠ Project-focus guard: канал '$Channel' не является main, но после coder-хода изменился bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
+        $guardMsg = "⚠ Project-focus guard: канал '$guardChannelSlug' не является main, но после coder-хода изменился bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
         try { Set-TaskLastFailure -Kind bridge_guard -Text $guardMsg } catch {}
         Add-Message -From system -Text $guardMsg -Kind event | Out-Null
         Update-State { param($s) $s.force_planner=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null

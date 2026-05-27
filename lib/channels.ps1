@@ -38,7 +38,7 @@ function Get-ActiveChannel {
 # channel via UI mid-task doesn't yank data out from under it. The server process
 # does NOT pin -- it always operates on Get-ActiveChannel for fresh user requests.
 $script:PinnedChannel = $null
-function Set-PinnedChannel { param([string]$Slug) $script:PinnedChannel = $Slug }
+function Set-PinnedChannel { param([string]$Slug) $script:PinnedChannel = (Normalize-ChannelSlug $Slug) }
 function Clear-PinnedChannel { $script:PinnedChannel = $null }
 function Get-PinnedChannel { return $script:PinnedChannel }
 function Get-EffectiveChannel {
@@ -53,6 +53,32 @@ function Normalize-ChannelSlug {
   $s = $Slug.Trim().ToLowerInvariant()
   $s = ($s -replace '\s+', '-' -replace '[^a-z0-9-]+', '-').Trim('-')
   if ([string]::IsNullOrWhiteSpace($s)) { return 'main' }
+  try {
+    $channelsRoot = Get-ChannelsRoot
+    if (Test-Path -LiteralPath (Join-Path $channelsRoot $s) -PathType Container) { return $s }
+    $lookupKey = ($s -replace '[^a-z0-9]+', '')
+    if (-not [string]::IsNullOrWhiteSpace($lookupKey) -and (Test-Path -LiteralPath $channelsRoot -PathType Container)) {
+      foreach ($dir in @(Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue)) {
+        if ($dir.Name -eq '_archive') { continue }
+        $candidates = New-Object System.Collections.Generic.List[string]
+        [void]$candidates.Add([string]$dir.Name)
+        $cfgPath = Join-Path $dir.FullName 'channel.json'
+        if (Test-Path -LiteralPath $cfgPath) {
+          try {
+            $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($cfg) {
+              if ($cfg.PSObject.Properties['slug']) { [void]$candidates.Add([string]$cfg.slug) }
+              if ($cfg.PSObject.Properties['name']) { [void]$candidates.Add([string]$cfg.name) }
+            }
+          } catch {}
+        }
+        foreach ($cand in @($candidates.ToArray())) {
+          $candKey = (([string]$cand).Trim().ToLowerInvariant() -replace '[^a-z0-9]+', '')
+          if ($candKey -eq $lookupKey) { return [string]$dir.Name }
+        }
+      }
+    }
+  } catch {}
   return $s
 }
 
@@ -210,6 +236,7 @@ function Get-EffectiveProjectRoot {
 function Set-ActiveChannel {
   param([string]$Slug)
   if ([string]::IsNullOrWhiteSpace($Slug)) { return $false }
+  $Slug = Normalize-ChannelSlug $Slug
   $cdir = Get-ChannelDir -Slug $Slug
   if (-not (Test-Path $cdir)) { return $false }
   try {
@@ -225,6 +252,7 @@ function Get-ChannelDir {
   # $Slug=$null -> effective channel (pinned-in-driver overrides active marker; see Get-EffectiveChannel).
   param([string]$Slug = $null)
   if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
+  $Slug = Normalize-ChannelSlug $Slug
   return (Join-Path (Get-ChannelsRoot) $Slug)
 }
 
