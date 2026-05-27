@@ -117,7 +117,8 @@
     <button id="addToggle" type="button">＋ Добавить</button>
     <select id="chanFilter" title="Канал" style="background:#0b0f15;border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:6px 9px;outline:none;font-size:13px"></select>
     <button id="allChannelsBtn" type="button" title="Показать память всех каналов">все каналы</button>
-    <button id="reindexBtn" type="button" title="Запустить библиотекаря: ингест решений, дедуп, пересборка карты">↻ Пересобрать карту</button>
+    <!-- 2026-05-27: «Пересобрать карту» (reindexBtn) hidden — rare action (librarian heavy). Kept in DOM (some keybinds may invoke). -->
+    <button id="reindexBtn" type="button" title="Запустить библиотекаря: ингест решений, дедуп, пересборка карты" hidden>↻ Пересобрать карту</button>
     <button id="refreshBtn" type="button">⟳ Обновить</button>
   </div>
 </header>

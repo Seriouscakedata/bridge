@@ -2248,12 +2248,13 @@
     <textarea id="inp" placeholder="Сообщение агентам. Enter — отправить, Shift+Enter — новая строка"></textarea>
     <div id="composerStatus" class="composer-status" role="status" aria-live="polite"></div>
     <div id="uploadQueue" class="upload-queue" aria-live="polite"></div>
+    <!-- 2026-05-27 redesign: composer-meta cleaned. Removed rare-use restoreLast/composerExpand buttons (kept hidden for back-compat JS). Only enterMode + clearDraft remain visible. -->
     <div id="composerMeta" class="composer-meta" aria-live="polite">
       <span id="draftState" class="draft-state"></span>
       <button id="enterMode" class="mini-btn composer-mode" type="button" title="Enter отправляет. Нажмите, чтобы Enter добавлял новую строку." aria-label="Режим Enter">↵</button>
-      <button id="composerExpand" class="mini-btn composer-expand" type="button" title="Расширить поле ввода" aria-label="Расширить поле ввода" aria-pressed="false">⇵</button>
+      <button id="composerExpand" class="mini-btn composer-expand" type="button" title="Расширить поле ввода" aria-label="Расширить поле ввода" aria-pressed="false" hidden>⇵</button>
       <button id="clearDraft" class="mini-btn composer-clear" type="button" title="Очистить черновик" aria-label="Очистить черновик">×</button>
-      <button id="restoreLast" class="mini-btn composer-restore" type="button" title="Вернуть последнее отправленное сообщение" aria-label="Вернуть последнее отправленное сообщение">↺</button>
+      <button id="restoreLast" class="mini-btn composer-restore" type="button" title="Вернуть последнее отправленное сообщение" aria-label="Вернуть последнее отправленное сообщение" hidden>↺</button>
       <span id="charCount" class="char-count"></span>
     </div>
   </div>
