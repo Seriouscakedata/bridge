@@ -2999,12 +2999,15 @@ function renderMetrics(data){
 async function pollMetrics(){
   if(dashInFlight) return;
   dashInFlight = true;
+  const myEpoch = channelEpoch;
   try{
     const r = await fetch('/api/metrics');
     if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
     const data = await r.json();
+    if(myEpoch !== channelEpoch) return;
     renderMetrics(data);
   }catch(e){
+    if(myEpoch !== channelEpoch) return;
     if(dashSeriesNote){
       dashSeriesNote.style.display = 'block';
       dashSeriesNote.textContent = 'Дашборд недоступен: ' + (e.message || e);
@@ -3353,10 +3356,13 @@ function renderPlan(data){
 async function pollPlan(){
   if(planInFlight) return;
   planInFlight = true;
+  const myEpoch = channelEpoch;
   try{
     const data = await fetchJson('/api/plan');
+    if(myEpoch !== channelEpoch) return;
     renderPlan(data);
   }catch(e){
+    if(myEpoch !== channelEpoch) return;
     if(planTree) planTree.innerHTML = '<div class="overview-empty">План недоступен: ' + esc(e.message || e) + '</div>';
   }finally{
     planInFlight = false;
