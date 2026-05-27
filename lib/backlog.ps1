@@ -225,6 +225,8 @@ function Add-Idea {
     [string[]]$Tags = @(),
     [string]$Status = 'new',
     [double]$Score = 0.0,
+    [string]$Project = '',
+    [string]$Scope = 'bridge',
     [switch]$SkipCurator
   )
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
@@ -269,6 +271,8 @@ function Add-Idea {
     tags     = @($Tags)
     attempts = 0
     score    = $Score
+    project  = $Project
+    scope    = $Scope
     text     = [string]$Text
   }
   if (-not $SkipCurator -and $keep -and [string]$keep.action -eq 'similar') {
@@ -598,6 +602,14 @@ function Get-NextApprovedIdea {
     $items = @(Get-Backlog | Where-Object { [string]$_.status -eq 'approved' } |
       Sort-Object @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
+    try {
+      $autoScopeSettings = Get-AutonomySettings
+      if ([string]$autoScopeSettings.scope -ne 'projects') {
+        $items = @($items | Where-Object {
+          -not ($_.PSObject.Properties.Name -contains 'scope') -or ([string]$_.scope -ne 'project')
+        })
+      }
+    } catch {}
     if ($items.Count -eq 0) { return $null }
 
     $candidate = $items[0]
