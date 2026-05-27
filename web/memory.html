@@ -127,9 +127,13 @@
 <div class="tabs">
   <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
   <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
-  <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
-  <div class="tab" data-tab="radar" id="tabRadar">Радар</div>
-  <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
+  <!-- 2026-05-27: Backlog/Radar/Settings tabs hidden -->
+  <!-- Backlog: duplicate of chat-panel backlog (curator integrated there) -->
+  <!-- Radar: feature currently inactive, no live data -->
+  <!-- Settings: autonomy settings will move to chat-side gear menu -->
+  <div class="tab" data-tab="backlog" id="tabBacklog" hidden>Бэклог</div>
+  <div class="tab" data-tab="radar" id="tabRadar" hidden>Радар</div>
+  <div class="tab" data-tab="settings" id="tabSettings" hidden>Настройки</div>
 </div>
 
 <div class="wrap">

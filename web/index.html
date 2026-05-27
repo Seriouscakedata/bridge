@@ -125,21 +125,40 @@
   .chip.model.on{display:inline-flex;color:var(--model);background:#2b2618;border-color:rgba(255,209,102,.7)}
   .chip.model.on .dot{background:var(--model);box-shadow:0 0 12px var(--model);animation:pulse 1.25s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
-  .meta{
-    min-width:0;
+  /* 2026-05-27 redesign: compact single-line status pill replaces 4 meta-lines */
+  .status-pill{
     display:flex;
-    flex-direction:column;
-    gap:2px;
-    color:var(--muted);
+    align-items:center;
+    gap:8px;
+    min-width:0;
+    padding:6px 12px;
+    background:#1a1f29;
+    border:1px solid var(--border-soft);
+    border-radius:999px;
     font-size:12px;
+    color:var(--muted);
+    overflow:hidden;
+    max-width:100%;
   }
-  .meta-line{display:flex;gap:6px;align-items:center;min-width:0}
-  .meta-line span{flex:none}
-  .meta-line b{min-width:0}
-  .meta b{color:var(--soft);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .meta b.ok{color:var(--codex)}
-  .meta b.warn{color:var(--model)}
-  .meta b.bad{color:var(--danger)}
+  .status-pill b{color:var(--soft);font-weight:600;white-space:nowrap}
+  .status-pill b.ok{color:var(--codex)}
+  .status-pill b.warn{color:var(--model)}
+  .status-pill b.bad{color:var(--danger)}
+  .status-pill .status-task{
+    color:var(--soft);
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    flex:1 1 auto;
+    max-width:280px;
+  }
+  .status-pill .status-extra{color:var(--muted);white-space:nowrap;font-size:11px}
+  .status-pill .status-sep{color:#3a4150;flex:none}
+  /* Hide chips entirely when no agent is active (idle state). Toggled by JS via body.agents-idle. */
+  body.agents-idle .chips{display:none}
+  /* Legacy aliases for any old JS that still touches .meta-line */
+  .meta,.meta-line{display:none}
   .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
@@ -1933,10 +1952,7 @@
 <header>
   <div class="brand">
     <div class="mark">CC</div>
-    <div>
-      <h1>Claude &lt;-&gt; Codex</h1>
-      <div class="subtitle">локальный мост агентов</div>
-    </div>
+    <h1>Claude &lt;-&gt; Codex</h1>
   </div>
   <div class="channel-selector" id="channelSelector">
     <button id="channelBtn" class="channel-btn" type="button" title="Активный канал — клик для переключения" aria-haspopup="true" aria-expanded="false">
@@ -1953,17 +1969,22 @@
     </div>
   </div>
   <div class="centerbar">
+    <!-- 2026-05-27 redesign: chips hidden when no active agent (body.agents-idle); -->
+    <!-- 4 meta-lines collapsed into single compact status pill. -->
     <div class="chips" aria-label="Активные агенты">
       <span id="chipClaude" class="chip claude"><span class="dot"></span><span class="lbl">Claude</span></span>
       <span id="chipCodex" class="chip codex"><span class="dot"></span><span class="lbl">Codex</span></span>
       <span id="chipModel" class="chip model"><span class="dot"></span><span class="lbl">модель</span></span>
     </div>
-    <div class="meta">
-      <div class="meta-line"><span>сейчас:</span><b id="st">ожидание</b></div>
-      <div class="meta-line"><span>задача:</span><b id="task">нет активной задачи</b></div>
-      <div class="meta-line"><span>активность:</span><b id="beat">обновляется</b></div>
-      <div class="meta-line"><span>сеанс:</span><b id="sessionStats">загрузка</b></div>
+    <div class="status-pill" id="statusPill" title="Текущая активность моста">
+      <b id="st">ожидание</b>
+      <span class="status-sep" aria-hidden="true">·</span>
+      <span class="status-task" id="task">нет активной задачи</span>
+      <span class="status-sep status-sep-extra" aria-hidden="true">·</span>
+      <span class="status-extra" id="sessionStats">—</span>
     </div>
+    <!-- Hidden but kept for back-compat JS that references them: -->
+    <span id="beat" hidden></span>
   </div>
   <div id="btnsPrimary" class="btns btns-primary">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)" aria-label="Поиск по истории">⌕</button>
@@ -2043,9 +2064,10 @@
 <section id="panelsArea" class="panels-area" aria-label="Панели" hidden>
   <div class="panels-tabs" role="tablist" aria-label="Панели">
     <button id="overviewToggle" class="panels-tab" type="button" data-panel="overview" role="tab" aria-controls="overviewPanel" aria-selected="false" aria-pressed="false" title="Обзор сеанса">▦ <span>Обзор</span></button>
-    <button id="planToggle" class="panels-tab" type="button" data-panel="plan" role="tab" aria-controls="planPanel" aria-selected="false" aria-pressed="false" title="План-доска">☷ <span>План</span></button>
-    <button id="codeToggle" class="panels-tab" type="button" data-panel="code" role="tab" aria-controls="codePanel" aria-selected="false" aria-pressed="false" title="Код-память">{ } <span>Код</span></button>
-    <button id="dashToggle" class="panels-tab" type="button" data-panel="dash" role="tab" aria-controls="dashPanel" aria-selected="false" aria-pressed="false" title="Дашборд">📊 <span>Дашборд</span></button>
+    <button id="planToggle" class="panels-tab panels-tab-conditional" type="button" data-panel="plan" role="tab" aria-controls="planPanel" aria-selected="false" aria-pressed="false" title="План-доска" hidden>☷ <span>План</span></button>
+    <!-- Code/Dash tabs hidden 2026-05-27: legacy, not used. HTML + JS retained for now (cleanup in followup commit). -->
+    <button id="codeToggle" class="panels-tab" type="button" data-panel="code" role="tab" aria-controls="codePanel" aria-selected="false" aria-pressed="false" title="Код-память" hidden>{ } <span>Код</span></button>
+    <button id="dashToggle" class="panels-tab" type="button" data-panel="dash" role="tab" aria-controls="dashPanel" aria-selected="false" aria-pressed="false" title="Дашборд" hidden>📊 <span>Дашборд</span></button>
     <button id="usageToggle" class="panels-tab" type="button" data-panel="usage" role="tab" aria-controls="usagePanel" aria-selected="false" aria-pressed="false" title="Расход">💸 <span>Расход</span></button>
     <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей">📋 <span>Backlog</span></button>
   </div>
@@ -3145,6 +3167,13 @@ function renderPlan(data){
   const done = Number(progress.done) || 0;
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
   const hasPlan = Boolean(data && data.meta && nodes.length);
+  // 2026-05-27: auto-show/hide Plan tab based on actual plan presence.
+  // Tab is born hidden; appears only when a plan exists, disappears when emptied.
+  const planTabBtn = document.getElementById('planToggle');
+  if(planTabBtn){
+    if(hasPlan){ planTabBtn.hidden = false; planTabBtn.removeAttribute('hidden'); }
+    else { planTabBtn.hidden = true; planTabBtn.setAttribute('hidden',''); }
+  }
   if(planProgressText) planProgressText.textContent = hasPlan ? (done + '/' + total + ' ' + pluralRu(total, 'шаг', 'шага', 'шагов')) : 'План-доска пуста';
   if(planProgressPct) planProgressPct.textContent = percent + '%';
   if(planProgressFill) planProgressFill.style.width = percent + '%';
@@ -4097,12 +4126,17 @@ async function status(){
     taskEl.textContent = taskText.length > 62 ? taskText.slice(0, 62) + '...' : taskText;
     taskEl.title = taskText;
 
+    // 2026-05-27 redesign: compact session info — only show extras when meaningful
+    // (non-normal mode, or active turn count > 0). When idle in normal mode, show nothing.
     const sessionEl = document.getElementById('sessionStats');
-    const mode = s.task_mode && s.task_mode !== 'normal' ? String(s.task_mode) : 'normal';
+    const mode = s.task_mode && s.task_mode !== 'normal' ? String(s.task_mode) : '';
     const turn = Number(s.turn || s.task_turn || 0);
     const seq = Number(s.lastSeq || lastSeq || 0);
-    sessionEl.textContent = 'ход ' + turn + ' · #' + seq + ' · ' + mode;
-    sessionEl.title = 'turn=' + turn + ', lastSeq=' + seq + ', mode=' + mode;
+    let sessionParts = [];
+    if(turn > 0) sessionParts.push('ход ' + turn);
+    if(mode) sessionParts.push(mode);
+    sessionEl.textContent = sessionParts.length ? sessionParts.join(' · ') : '#' + seq;
+    sessionEl.title = 'turn=' + turn + ', lastSeq=' + seq + ', mode=' + (mode || 'normal');
 
     setChip('chipClaude', act === 'claude');
     setChip('chipCodex', act === 'codex');
@@ -4110,6 +4144,8 @@ async function status(){
     document.querySelector('#chipClaude .lbl').textContent = 'Claude';
     document.querySelector('#chipCodex .lbl').textContent = 'Codex';
     document.querySelector('#chipModel .lbl').textContent = mdl ? 'модель: ' + mdl : 'модель';
+    // Hide whole chips row when no agent is active (idle in normal mode)
+    document.body.classList.toggle('agents-idle', !act);
 
     if(act === 'claude' || act === 'codex'){
       const text = statusText;
