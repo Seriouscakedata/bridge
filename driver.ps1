@@ -2015,6 +2015,48 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       Add-Message -From system -Text ("📥 Восстановлено " + $unflush.merged + " потерянных строк из " + $unflush.sidecars + " sidecar-файлов (сообщения, не дописанные в прошлый рестарт).") -Kind event | Out-Null
     }
   } catch {}
+  # 2026-05-27v7: zombie-job recovery (audit deferred -- but came up live with
+  # be073b57/774d71ed visit.ps1 jobs stuck after restart). At startup, re-check
+  # active_jobs in state: if PID is dead and no .done marker -- write fake .done
+  # with exit=-1 so polling loop closes them next iteration. Without this, driver
+  # waits jobMaxH (6h default) blocking ALL new user tasks meanwhile.
+  try {
+    $bootState = Read-State
+    $bootJobs = @()
+    try { if ($bootState.PSObject.Properties.Name -contains 'active_jobs') { $bootJobs = @($bootState.active_jobs) } } catch {}
+    if ($bootJobs.Count -gt 0) {
+      $recovered = 0
+      foreach ($bj in $bootJobs) {
+        $jp = 0; try { $jp = [int]$bj.pid } catch {}
+        $alive = $false
+        if ($jp -gt 0) {
+          try {
+            $bp = Get-Process -Id $jp -ErrorAction SilentlyContinue
+            if ($bp) {
+              $ticks = 0L; try { $ticks = [long]$bj.startTicks } catch {}
+              if ($ticks -le 0) { $alive = $true }
+              else { try { if ($bp.StartTime.Ticks -eq $ticks) { $alive = $true } } catch {} }
+            }
+          } catch {}
+        }
+        if (-not $alive) {
+          # Write a .done marker so the polling loop's Test-JobDone returns true.
+          # exit-code -1 indicates "process died, no clean exit" — orphan classification.
+          $jobsDir = Join-Path (Get-BridgeRoot) 'jobs'
+          $donePath = Join-Path $jobsDir (([string]$bj.id) + '.done')
+          try {
+            if (-not (Test-Path -LiteralPath $donePath)) {
+              [System.IO.File]::WriteAllText($donePath, '-1', (New-Object System.Text.UTF8Encoding($false)))
+              $recovered++
+            }
+          } catch {}
+        }
+      }
+      if ($recovered -gt 0) {
+        Add-Message -From system -Text ("⚠ Zombie-jobs recovered: " + $recovered + " фоновых задач после рестарта помечены как orphan (процесс умер до записи .done). Драйвер не залипнет в ожидании.") -Kind event | Out-Null
+      }
+    }
+  } catch {}
 }
 
 # Doctor restart-loop guard (FIX: 2026-05-26).
