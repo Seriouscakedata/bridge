@@ -145,6 +145,13 @@
     "enabled": true,
     "maxChunksPerTask": 10
   },
+  "parallel": {
+    "enabled": true,
+    "maxStreams": 2,
+    "claudeCoderModel": "sonnet",
+    "drainingTimeoutSec": 30,
+    "wipBranchPrefix": "wip/parallel"
+  },
   "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }
