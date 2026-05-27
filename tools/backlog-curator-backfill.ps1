@@ -126,6 +126,40 @@ function Invoke-FreshnessWithTimeout {
   }
 }
 
+function Invoke-CuratorWithTimeout {
+  param([string]$ItemId, [int]$TimeoutSec)
+  $job = $null
+  try {
+    $job = Start-Job -ArgumentList $Root, $Channel, $ItemId -ScriptBlock {
+      param($JobRoot, $JobChannel, $JobItemId)
+      $lib = Join-Path $JobRoot 'lib'
+      . (Join-Path $lib 'common.ps1')
+      . (Join-Path $lib 'channels.ps1')
+      . (Join-Path $lib 'backlog.ps1')
+      try { Set-PinnedChannel -Slug $JobChannel } catch {}
+      Invoke-BacklogCurator -ItemId $JobItemId
+    }
+    $completed = Wait-Job -Job $job -Timeout $TimeoutSec
+    if (-not $completed) {
+      Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+      return [pscustomobject]@{ timed_out = $true; verdict = $null; confidence = $null; reason = "timeout after ${TimeoutSec}s" }
+    }
+    $result = Receive-Job -Job $job -ErrorAction Stop
+    if ($result -is [array]) { $result = $result | Select-Object -Last 1 }
+    if (-not $result) { return [pscustomobject]@{ timed_out = $false; verdict = $null; confidence = $null; reason = 'empty-result' } }
+    return [pscustomobject]@{
+      timed_out = $false
+      verdict = if ($result.PSObject.Properties.Name -contains 'verdict') { [string]$result.verdict } else { $null }
+      confidence = if ($result.PSObject.Properties.Name -contains 'confidence') { $result.confidence } else { $null }
+      reason = if ($result.PSObject.Properties.Name -contains 'reason') { [string]$result.reason } else { 'no reason' }
+    }
+  } catch {
+    return [pscustomobject]@{ timed_out = $false; verdict = $null; confidence = $null; reason = ('error: ' + [string]$_.Exception.Message) }
+  } finally {
+    if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null }
+  }
+}
+
 function Set-ItemAutoResolved {
   param([string]$ItemId, [string]$Sha, [string]$Reason)
   if ($DryRun) { return $false }
@@ -187,6 +221,9 @@ $rejudgeTotal = 0
 $rejudgeSkipped = 0
 $rejudgeFixed = 0
 $rejudgeFailed = 0
+$judgeBackfillTotal = 0
+$judgeTimeouts = 0
+$judgeResults = New-Object 'System.Collections.Generic.List[object]'
 
 Write-Host "Backlog curator full backfill"
 Write-Host "channel=$Channel dry_run=$DryRun threshold=$Threshold"
@@ -348,8 +385,47 @@ for ($i = 0; $i -lt $items.Count; $i++) {
   }
 }
 
+$items = @(Get-Backlog)
+$judgeTargets = @($items | Where-Object {
+  ([string]$_.status -in @('approved', 'new')) -and -not ($_.PSObject.Properties.Name -contains 'auto_curator')
+})
+foreach ($item in $judgeTargets) {
+  $id = [string]$item.id
+  if ([string]::IsNullOrWhiteSpace($id)) { continue }
+  $judgeBackfillTotal++
+  Write-Host "judge_backfill[$judgeBackfillTotal/$($judgeTargets.Count)]: $id"
+  if ($DryRun) {
+    [void]$judgeResults.Add([pscustomobject]@{ id = $id; verdict = 'dry-run'; confidence = $null; reason = 'dry-run' })
+    continue
+  }
+
+  $result = Invoke-CuratorWithTimeout -ItemId $id -TimeoutSec 12
+  if ([bool]$result.timed_out) {
+    $judgeTimeouts++
+    Write-Decision ([ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      action = 'backfill-judge-timeout'
+      item_id = $id
+      reason = [string]$result.reason
+    })
+    [void]$judgeResults.Add([pscustomobject]@{ id = $id; verdict = 'timeout'; confidence = $null; reason = [string]$result.reason })
+    continue
+  }
+  $updated = Get-ItemByIdLocal -ItemId $id
+  $statusNow = if ($updated) { [string]$updated.status } else { $null }
+  $verdict = if (-not [string]::IsNullOrWhiteSpace([string]$result.verdict)) { [string]$result.verdict } elseif ($statusNow -eq 'held') { 'hold' } elseif ($statusNow -eq 'auto-dropped') { 'drop' } elseif ($statusNow -eq 'approved') { 'approve' } else { 'unknown' }
+  [void]$judgeResults.Add([pscustomobject]@{
+    id = $id
+    status = $statusNow
+    verdict = $verdict
+    confidence = $result.confidence
+    reason = [string]$result.reason
+  })
+}
+
 $itemsFinal = @(Get-Backlog)
 $finalCounts = Get-StatusCountsText -Items $itemsFinal
+$withAutoCurator = @($itemsFinal | Where-Object { $_.PSObject.Properties.Name -contains 'auto_curator' -and $null -ne $_.auto_curator }).Count
 $lineCountAfter = $lineCountBefore
 if (Test-Path -LiteralPath $DecisionPath) {
   $lineCountAfter = (Get-Content -LiteralPath $DecisionPath -Encoding UTF8 | Measure-Object).Count
@@ -376,6 +452,19 @@ $reportLines = New-Object 'System.Collections.Generic.List[string]'
 [void]$reportLines.Add("- rejudge_skipped_already_done: $rejudgeSkipped")
 [void]$reportLines.Add("- rejudge_fixed: $rejudgeFixed")
 [void]$reportLines.Add("- rejudge_failed: $rejudgeFailed")
+[void]$reportLines.Add("")
+[void]$reportLines.Add('Pass 3 (after $Args fix + freshness prompt tightening + LLM-judge backfill):')
+[void]$reportLines.Add("- false_positive_freshness_reverted: 3 (a264b2c7a9dd4a10ac740a518fd9b780, fdbba68265bb482cbdf7c9eb866ef218, 9a355b81ca8e4839b8038a4627c1da82)")
+[void]$reportLines.Add("- llm_judge_backfill_total: $judgeBackfillTotal")
+[void]$reportLines.Add("- approved_kept: $(@($judgeResults | Where-Object { [string]$_.status -eq 'approved' -or [string]$_.verdict -eq 'approve' }).Count)")
+[void]$reportLines.Add("- held: $(@($judgeResults | Where-Object { [string]$_.status -eq 'held' -or [string]$_.verdict -eq 'hold' }).Count)")
+[void]$reportLines.Add("- auto_dropped: $(@($judgeResults | Where-Object { [string]$_.status -eq 'auto-dropped' -or [string]$_.verdict -eq 'drop' }).Count)")
+[void]$reportLines.Add("- timeouts: $judgeTimeouts")
+[void]$reportLines.Add("- final_status_counts: $finalCounts")
+[void]$reportLines.Add("- with_auto_curator: $withAutoCurator/$($itemsFinal.Count)")
+foreach ($r in $judgeResults) {
+  [void]$reportLines.Add("- judge $($r.id): verdict=$($r.verdict) status=$($r.status) confidence=$($r.confidence) reason=$($r.reason)")
+}
 [void]$reportLines.Add("")
 [void]$reportLines.Add("Freshness pass 2:")
 [void]$reportLines.Add("- checked: $freshnessTotal")
@@ -419,7 +508,13 @@ Write-Host "freshness_not_done=$($freshnessNotDone.Count)"
 Write-Host "rejudged_broken_sha=$rejudgeTotal"
 Write-Host "rejudge_fixed=$rejudgeFixed"
 Write-Host "rejudge_failed=$rejudgeFailed"
+Write-Host "llm_judge_backfill_total=$judgeBackfillTotal"
+Write-Host "llm_judge_timeouts=$judgeTimeouts"
+Write-Host "llm_judge_approved_kept=$(@($judgeResults | Where-Object { [string]$_.status -eq 'approved' -or [string]$_.verdict -eq 'approve' }).Count)"
+Write-Host "llm_judge_held=$(@($judgeResults | Where-Object { [string]$_.status -eq 'held' -or [string]$_.verdict -eq 'hold' }).Count)"
+Write-Host "llm_judge_auto_dropped=$(@($judgeResults | Where-Object { [string]$_.status -eq 'auto-dropped' -or [string]$_.verdict -eq 'drop' }).Count)"
 Write-Host "dedup_pairs_found=$($dedupPairs.Count)"
 Write-Host "embedding_errors=$($embeddingErrors.Count)"
 Write-Host "new_decisions_logged=$newDecisions"
 Write-Host "final_status_counts={$finalCounts}"
+Write-Host "with_auto_curator=$withAutoCurator/$($itemsFinal.Count)"
