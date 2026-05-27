@@ -269,7 +269,196 @@ function Clear-ChunkingState {
 }
 $null = Initialize-Bridge
 
+$script:CuratorLibPath = 'C:\Users\rafie\OneDrive\Documents\bridge\lib\backlog.ps1'
+$script:CuratorControlPath = 'C:\Users\rafie\OneDrive\Documents\bridge\control'
+$script:CuratorLogPath = Join-Path $script:CuratorControlPath 'curator.log'
+$script:CuratorDecisionsPath = Join-Path $script:CuratorControlPath 'curator-decisions.jsonl'
+$script:LastAddIdeaPath = Join-Path $script:CuratorControlPath 'last-add-idea.json'
+$script:CuratorDecisionLineCount = 0
+
 # ---------- helpers ----------
+function Get-ObjectValue {
+  param($Object, [string[]]$Names)
+  if ($null -eq $Object) { return $null }
+  foreach ($name in @($Names)) {
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    try {
+      $prop = $Object.PSObject.Properties[$name]
+      if ($prop -and $null -ne $prop.Value) { return $prop.Value }
+    } catch {}
+  }
+  return $null
+}
+
+function Normalize-ComparisonText {
+  param([string]$Text)
+  return (([string]$Text -replace '\s+', ' ').Trim().ToLowerInvariant())
+}
+
+function Read-JsonFileSafe {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
+  try {
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    return ($raw | ConvertFrom-Json -Depth 20)
+  } catch {
+    return $null
+  }
+}
+
+function Resolve-AddIdeaOutcome {
+  param(
+    $AddResult,
+    [string]$IdeaText,
+    [string]$From = ''
+  )
+
+  $out = [ordered]@{
+    itemId  = ''
+    deduped = $false
+    cosine  = $null
+    created = $false
+  }
+
+  if ($AddResult -is [string]) {
+    $out.itemId = ([string]$AddResult).Trim()
+    $out.created = -not [string]::IsNullOrWhiteSpace($out.itemId)
+  } elseif ($AddResult) {
+    $out.itemId = [string](Get-ObjectValue $AddResult @('itemId','id','existingId','existingItemId'))
+    $dedupFlag = Get-ObjectValue $AddResult @('deduped','isDuplicate','duplicate')
+    if ($null -ne $dedupFlag) {
+      try { $out.deduped = [bool]$dedupFlag } catch {}
+    }
+    $status = [string](Get-ObjectValue $AddResult @('status','result','action'))
+    if (-not $out.deduped -and $status -imatch '^(deduped|duplicate)$') { $out.deduped = $true }
+    $createdFlag = Get-ObjectValue $AddResult @('created','isNew','newItemCreated','wasCreated')
+    if ($null -ne $createdFlag) {
+      try { $out.created = [bool]$createdFlag } catch {}
+    }
+    $out.cosine = Get-ObjectValue $AddResult @('cosine','similarity','score')
+    if (-not $out.created -and -not $out.deduped -and -not [string]::IsNullOrWhiteSpace($out.itemId)) {
+      $out.created = $true
+    }
+  }
+
+  $fallback = Read-JsonFileSafe -Path $script:LastAddIdeaPath
+  if ($fallback) {
+    $recentEnough = $true
+    try {
+      $tsRaw = [string](Get-ObjectValue $fallback @('ts','timestamp'))
+      if (-not [string]::IsNullOrWhiteSpace($tsRaw)) {
+        $ts = [datetime]$tsRaw
+        $recentEnough = ([math]::Abs(((Get-Date).ToUniversalTime() - $ts.ToUniversalTime()).TotalSeconds) -le 30)
+      }
+    } catch {}
+    $matchText = $true
+    $fallbackText = [string](Get-ObjectValue $fallback @('text','idea','inputText'))
+    if (-not [string]::IsNullOrWhiteSpace($fallbackText) -and -not [string]::IsNullOrWhiteSpace($IdeaText)) {
+      $matchText = ((Normalize-ComparisonText $fallbackText) -eq (Normalize-ComparisonText $IdeaText))
+    }
+    $matchFrom = $true
+    $fallbackFrom = [string](Get-ObjectValue $fallback @('from','speaker','source'))
+    if (-not [string]::IsNullOrWhiteSpace($fallbackFrom) -and -not [string]::IsNullOrWhiteSpace($From)) {
+      $matchFrom = ((Normalize-ComparisonText $fallbackFrom) -eq (Normalize-ComparisonText $From))
+    }
+    if ($recentEnough -and $matchText -and $matchFrom) {
+      $fallbackId = [string](Get-ObjectValue $fallback @('itemId','id','existingId','existingItemId'))
+      if (-not [string]::IsNullOrWhiteSpace($fallbackId)) { $out.itemId = $fallbackId }
+      $fallbackDedup = Get-ObjectValue $fallback @('deduped','isDuplicate','duplicate')
+      if ($null -ne $fallbackDedup) {
+        try { $out.deduped = [bool]$fallbackDedup } catch {}
+      }
+      $fallbackAction = [string](Get-ObjectValue $fallback @('status','result','action'))
+      if (-not $out.deduped -and $fallbackAction -imatch '^(deduped|duplicate)$') { $out.deduped = $true }
+      $fallbackCosine = Get-ObjectValue $fallback @('cosine','similarity','score')
+      if ($null -ne $fallbackCosine) { $out.cosine = $fallbackCosine }
+      $fallbackCreated = Get-ObjectValue $fallback @('created','isNew','newItemCreated','wasCreated')
+      if ($null -ne $fallbackCreated) {
+        try { $out.created = [bool]$fallbackCreated } catch {}
+      } elseif (-not $out.deduped -and -not [string]::IsNullOrWhiteSpace($out.itemId)) {
+        $out.created = $true
+      }
+    }
+  }
+
+  return [pscustomobject]$out
+}
+
+function Start-BacklogCuratorAsync {
+  param([string]$ItemId)
+  if ([string]::IsNullOrWhiteSpace($ItemId)) { return $false }
+  $escapedItemId = $ItemId.Replace("'", "''")
+  $escapedLib = $script:CuratorLibPath.Replace("'", "''")
+  $escapedLog = $script:CuratorLogPath.Replace("'", "''")
+  $command = ". '$escapedLib'; Invoke-BacklogCurator -ItemId '$escapedItemId' 2>&1 | Out-File -Encoding utf8 -Append '$escapedLog'"
+  Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$command) -WindowStyle Hidden | Out-Null
+  return $true
+}
+
+function Get-NewCuratorDecisions {
+  $items = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path -LiteralPath $script:CuratorDecisionsPath)) { return @() }
+  $lines = @()
+  try { $lines = @(Get-Content -LiteralPath $script:CuratorDecisionsPath -Encoding UTF8) } catch { return @() }
+  if ($lines.Count -lt [int]$script:CuratorDecisionLineCount) { $script:CuratorDecisionLineCount = 0 }
+  if ($lines.Count -le [int]$script:CuratorDecisionLineCount) {
+    $script:CuratorDecisionLineCount = $lines.Count
+    return @()
+  }
+  $start = [int]$script:CuratorDecisionLineCount
+  for ($i = $start; $i -lt $lines.Count; $i++) {
+    $line = [string]$lines[$i]
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try {
+      $obj = $line | ConvertFrom-Json -Depth 20
+      if ($obj) { [void]$items.Add($obj) }
+    } catch {}
+  }
+  $script:CuratorDecisionLineCount = $lines.Count
+  return @($items.ToArray())
+}
+
+function Publish-CuratorDecisionEvents {
+  param([object[]]$Decisions = @())
+
+  foreach ($decision in @($Decisions)) {
+    if (-not $decision) { continue }
+    $verdict = [string](Get-ObjectValue $decision @('verdict'))
+    $action = [string](Get-ObjectValue $decision @('action'))
+    $text = [string](Get-ObjectValue $decision @('text','idea','itemText','preview'))
+    $reason = [string](Get-ObjectValue $decision @('reason','why'))
+    $preview = Get-PushSnippet -Text $text -Max 80
+
+    if ($action -eq 'freshness-skip') {
+      $skipId = [string](Get-ObjectValue $decision @('itemId','id','ideaId'))
+      $skipSha = [string](Get-ObjectValue $decision @('sha','commit','commitSha'))
+      if ($skipSha.Length -gt 7) { $skipSha = $skipSha.Substring(0, 7) }
+      if ([string]::IsNullOrWhiteSpace($skipId)) { $skipId = $preview }
+      if ([string]::IsNullOrWhiteSpace($skipSha)) { $skipSha = 'unknown' }
+      Add-Message -From system -Text "✓ Идея $skipId уже сделана в SHA $skipSha — пропускаю" -Kind event | Out-Null
+      continue
+    }
+
+    switch ($verdict) {
+      'approve' {
+        Add-Message -From system -Text "✅ Куратор одобрил: $preview" -Kind event | Out-Null
+      }
+      'hold' {
+        $msg = "⏸ Куратор просит твоё решение: $text"
+        if (-not [string]::IsNullOrWhiteSpace($reason)) { $msg += " — $reason" }
+        Add-Message -From system -Text $msg -Kind event | Out-Null
+        try { Send-PushEvent -Kind need_you -Text $msg } catch {}
+      }
+      'drop' {
+        $msg = "🚫 Куратор отклонил: $text"
+        if (-not [string]::IsNullOrWhiteSpace($reason)) { $msg += " — $reason" }
+        Add-Message -From system -Text $msg -Kind event | Out-Null
+      }
+    }
+  }
+}
+
 function Get-MessageAttachmentPaths {
   param($Message)
   if (-not $Message.PSObject.Properties['attachments'] -or $null -eq $Message.attachments) { return @() }
@@ -282,6 +471,14 @@ function Get-MessageAttachmentPaths {
     $paths += [System.IO.Path]::GetFullPath((Join-Path (Get-FilesPath) $storedName))
   }
   return $paths
+}
+
+try {
+  if (Test-Path -LiteralPath $script:CuratorDecisionsPath) {
+    $script:CuratorDecisionLineCount = @(Get-Content -LiteralPath $script:CuratorDecisionsPath -Encoding UTF8).Count
+  }
+} catch {
+  $script:CuratorDecisionLineCount = 0
 }
 
 function Start-LibrarianIfDue {
@@ -1682,6 +1879,13 @@ while ($true) {
     }
   }
 
+  try {
+    $curatorDecisions = @(Get-NewCuratorDecisions)
+    if ($curatorDecisions.Count -gt 0) { Publish-CuratorDecisionEvents -Decisions $curatorDecisions }
+  } catch {
+    try { Add-Message -From system -Text ("⚠ Curator decision poll failed: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+  }
+
   # --- BACKGROUND JOBS: if any are running, WAIT (poll) instead of running an agent turn,
   #     so long commands (e.g. hour-long project runs) don't time out and the bridge is
   #     neither "idle" (no autonomy grab) nor killed. Results are fed back when done.
@@ -1835,10 +2039,24 @@ while ($true) {
         }
       } catch {}
 
-      # Autonomy: after enough idle quiet, take the next runnable backlog idea and run it
-      # as a self-task. With requireApproval=false, 'new' ideas run too (approved first).
+      # Autonomy: after enough idle quiet, take the next approved backlog idea and run it
+      # as a self-task. Freshness skips are logged by backlog/curator and surfaced via poll.
       $claimedIdea = $null
-      if (Test-AutonomyReady) { try { $claimedIdea = Get-NextRunnableIdea -IncludeNew (-not (Get-AutonomyRequireApproval)) } catch {} }
+      $claimedIdeaSelection = $null
+      if (Test-AutonomyReady) {
+        try {
+          $claimedIdeaSelection = Get-NextApprovedIdea
+          if ($claimedIdeaSelection -and ($claimedIdeaSelection.PSObject.Properties.Name -contains 'skipped')) {
+            $skipDecisions = @($claimedIdeaSelection.skipped)
+            if ($skipDecisions.Count -gt 0) { Publish-CuratorDecisionEvents -Decisions $skipDecisions }
+          }
+          if ($claimedIdeaSelection -and (($claimedIdeaSelection.PSObject.Properties.Name -contains 'idea') -or ($claimedIdeaSelection.PSObject.Properties.Name -contains 'item'))) {
+            $claimedIdea = Get-ObjectValue $claimedIdeaSelection @('idea','item')
+          } elseif ($claimedIdeaSelection -and (($claimedIdeaSelection.PSObject.Properties.Name -contains 'id') -or ($claimedIdeaSelection.PSObject.Properties.Name -contains 'text'))) {
+            $claimedIdea = $claimedIdeaSelection
+          }
+        } catch {}
+      }
       if ($claimedIdea) {
         $bid = [string]$claimedIdea.id
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
@@ -2090,11 +2308,31 @@ while ($true) {
   }
   # [[IDEA: ...]] -> agent raises a self-improvement idea into the backlog (status 'new').
   $ideaPattern = '(?m)^\s*\[\[IDEA:\s*(.+?)\s*\]\]\s*$'
-  $proposedIdeas = @()
+  $proposedIdeas = New-Object System.Collections.Generic.List[string]
   foreach ($m in [regex]::Matches($reply, $ideaPattern)) {
     $idea = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($idea)) { continue }
-    try { $iid = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new'; if ($iid) { $proposedIdeas += $idea } } catch {}
+    try {
+      $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new'
+      $ideaOutcome = Resolve-AddIdeaOutcome -AddResult $addIdeaResult -IdeaText $idea -From $speaker
+      if ($ideaOutcome.deduped) {
+        $cosineText = 'n/a'
+        if ($null -ne $ideaOutcome.cosine) {
+          try { $cosineText = ('{0:N2}' -f ([double]$ideaOutcome.cosine)) } catch {}
+        }
+        $dedupId = if ([string]::IsNullOrWhiteSpace([string]$ideaOutcome.itemId)) { 'unknown' } else { [string]$ideaOutcome.itemId }
+        Add-Message -From system -Text "💡 Идея уже в беклоге (cosine $cosineText): id=$dedupId" -Kind event | Out-Null
+      } elseif ($ideaOutcome.created -and -not [string]::IsNullOrWhiteSpace([string]$ideaOutcome.itemId)) {
+        [void]$proposedIdeas.Add($idea)
+        try { [void](Start-BacklogCuratorAsync -ItemId ([string]$ideaOutcome.itemId)) } catch {
+          try { Add-Message -From system -Text ("⚠ Не удалось запустить curator для идеи " + [string]$ideaOutcome.itemId + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+        }
+      } elseif ($addIdeaResult) {
+        [void]$proposedIdeas.Add($idea)
+      }
+    } catch {
+      try { Add-Message -From system -Text ("⚠ Add-Idea failed: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
   }
   # [[RUNJOB: команда | папка]] -> запустить долгую команду в фоне (без таймаута хода).
   $runjobPattern = '(?m)^\s*\[\[RUNJOB:\s*(.+?)\s*\]\]\s*$'
