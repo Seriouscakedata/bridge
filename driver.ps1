@@ -1745,12 +1745,20 @@ function Invoke-Coder {
     Set-CurrentAgent $null
     if ($codexLockAcquired) { Remove-Item $codexLockFile -Force -ErrorAction SilentlyContinue }
     if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
-    # Capture stderr BEFORE cleanup if reply is empty (diagnostic for silent exits).
+    # Capture process output BEFORE cleanup if reply is empty (diagnostic for silent exits/timeouts).
     if ([string]::IsNullOrWhiteSpace($reply)) {
       $se = Get-Content $errF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+      $so = Get-Content $outF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
       if (-not [string]::IsNullOrWhiteSpace($se)) {
-        $seShort = if ($se.Length -gt 500) { $se.Substring(0,500) + '...(truncated)' } else { $se }
-        Add-Message -From system -Text ("⚠ [Codex stderr]:`n" + $seShort) -Kind event | Out-Null
+        $seTail = if ($se.Length -gt 2000) { '...(truncated, last 2000)' + $se.Substring($se.Length - 2000) } else { $se }
+        Add-Message -From system -Text ("⚠ [Codex stderr tail]:`n" + $seTail) -Kind event | Out-Null
+      }
+      if (-not [string]::IsNullOrWhiteSpace($so)) {
+        $soTail = if ($so.Length -gt 2000) { '...(truncated, last 2000)' + $so.Substring($so.Length - 2000) } else { $so }
+        Add-Message -From system -Text ("⚠ [Codex stdout tail]:`n" + $soTail) -Kind event | Out-Null
+      }
+      if ([string]::IsNullOrWhiteSpace($se) -and [string]::IsNullOrWhiteSpace($so)) {
+        Add-Message -From system -Text "⚠ [Codex silent exit]: stdout+stderr пусты (агент завис без вывода)" -Kind event | Out-Null
       }
     }
     Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
@@ -2605,7 +2613,8 @@ while ($true) {
       } else {
         $reasonMsg = if ($trc -ge 1) { "повторился (${dur}с)" } elseif ($isLongTimeout) { "длинный (${dur}с) — retry почти наверняка снова упрётся" } else { "(${dur}с)" }
         Add-Message -From system -Text "⏱ Таймаут $who $reasonMsg. Передаю Доктору на саморемонт." -Kind event | Out-Null
-        try { Activate-Doctor -Reason ([string]$turnResult.errorType) -Detail "${dur}с после retry" | Out-Null } catch {}
+        $activationDetail = if ($trc -ge 1) { "${dur}с после retry" } elseif ($isLongTimeout) { "${dur}с — длинный, без retry" } else { "${dur}с" }
+        try { Activate-Doctor -Reason ([string]$turnResult.errorType) -Detail $activationDetail | Out-Null } catch {}
         Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
       }
       continue
