@@ -114,7 +114,7 @@ function Get-ArchitectContext {
   # 6) recent metrics snapshot
   [void]$sb.AppendLine('=== METRICS (last snapshot) ===')
   try {
-    $snap = Get-LastSnapshot
+    $snap = Get-LastMetricsSnapshot
     if ($snap) {
       $bPct = [Math]::Round([double]$snap.timeout_pct * 100, 1)
       $sPct = [Math]::Round([double]$snap.success_pct * 100, 1)

@@ -120,7 +120,7 @@ function Get-MetricsForApi {
   }
 }
 
-function Get-LastSnapshot {
+function Get-LastMetricsSnapshot {
   $records = Read-MetricsJsonl
   $snaps = $records | Where-Object { $_.type -eq 'snapshot' }
   if (-not $snaps) { return $null }

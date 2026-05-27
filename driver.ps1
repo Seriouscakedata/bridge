@@ -2435,7 +2435,7 @@ while ($true) {
         $state = Read-State
       }
       # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
-      $_lastSnap = try { Get-LastSnapshot } catch { $null }
+      $_lastSnap = try { Get-LastMetricsSnapshot } catch { $null }
       $_snapAgeH = if ($_lastSnap) { ([DateTime]::UtcNow - [DateTime]$_lastSnap.ts).TotalHours } else { 999 }
       # Snapshot every 3h (cheap, just stats from turns.jsonl).
       if ($_snapAgeH -ge 3) { try { Write-MetricsSnapshot } catch {} }
