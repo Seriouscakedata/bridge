@@ -271,6 +271,37 @@ function Write-CanaryHeartbeat {
   [System.IO.File]::AppendAllText($logPath, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Sync-CanaryWorktreeFromMain {
+  param(
+    [string]$RepoRoot,
+    [string]$WorktreePath
+  )
+
+  $sourceBranchResult = Invoke-CanaryGit -RepoPath $RepoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')
+  if ($sourceBranchResult.ExitCode -ne 0) {
+    throw "git rev-parse main branch failed: $($sourceBranchResult.Output -join ' ')"
+  }
+  $sourceBranch = ($sourceBranchResult.Output | Select-Object -First 1).ToString().Trim()
+  if ([string]::IsNullOrWhiteSpace($sourceBranch) -or $sourceBranch -eq 'HEAD') {
+    throw "cannot sync canary from detached source branch: $sourceBranch"
+  }
+
+  $statusResult = Invoke-CanaryGit -RepoPath $WorktreePath -GitArgs @('status', '--porcelain')
+  if ($statusResult.ExitCode -ne 0) {
+    throw "git status failed in canary worktree: $($statusResult.Output -join ' ')"
+  }
+  $dirty = @($statusResult.Output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($dirty.Count -gt 0) {
+    throw "canary worktree dirty before sync: $($dirty -join '; ')"
+  }
+
+  $mergeResult = Invoke-CanaryGit -RepoPath $WorktreePath -GitArgs @('merge', '--no-edit', $sourceBranch)
+  if ($mergeResult.ExitCode -ne 0) {
+    throw "git merge $sourceBranch into canary failed: $($mergeResult.Output -join ' ')"
+  }
+  return $sourceBranch
+}
+
 function Add-CanaryStateCounters {
   param($State, [bool]$Success)
 
@@ -311,7 +342,9 @@ function Invoke-CanaryCycle {
   $wtPath = $null
 
   try {
-    $wtPath = Initialize-CanaryWorktree
+    $repoRoot = Get-BridgeRoot
+    $wtPath = Initialize-CanaryWorktree -RepoRoot $repoRoot
+    $syncedFrom = Sync-CanaryWorktreeFromMain -RepoRoot $repoRoot -WorktreePath $wtPath
     $markerDir = Join-Path $wtPath 'canary'
     if (-not (Test-Path -LiteralPath $markerDir)) {
       New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
@@ -339,6 +372,7 @@ function Invoke-CanaryCycle {
       phase       = 1
       duration_ms = $sw.ElapsedMilliseconds
       worktree    = $wtPath
+      synced_from = $syncedFrom
       manual      = [bool]$Force
     }
     return [pscustomobject]@{ ok = $true; skipped = $false; duration_ms = $sw.ElapsedMilliseconds; manual = [bool]$Force }
