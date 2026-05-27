@@ -626,15 +626,16 @@ function Add-SessionDecisionEvent {
     [string]$Channel = ''
   )
   try {
+    if (@('task_start','convergence','verified_commit','doctor_fix') -notcontains $EventType) { return }
     $ch = $Channel
     if ([string]::IsNullOrWhiteSpace($ch)) {
       $s = Read-State -ErrorAction SilentlyContinue
       if ($s -and $s.current_channel) { $ch = [string]$s.current_channel } else { $ch = 'main' }
     }
-    $dir = Join-Path $script:RepoRoot "channels\$ch"
-    if (-not (Test-Path $dir)) { return }
+    $dir = Get-DecisionsPath
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $ledger = Join-Path $dir 'session-ledger.jsonl'
-    $entry = [ordered]@{ ts=(Get-Date).ToString('o'); event=$EventType }
+    $entry = [ordered]@{ ts=(Get-Date).ToString('o'); event=$EventType; channel=$ch }
     foreach ($k in $Meta.Keys) { $entry[$k] = $Meta[$k] }
     $line = $entry | ConvertTo-Json -Compress -Depth 5
     Add-Content -Path $ledger -Value $line -Encoding UTF8
@@ -644,18 +645,21 @@ function Add-SessionDecisionEvent {
 function Get-SessionLedgerBlock {
   param([string]$Channel='main', [int]$LastN=5)
   try {
-    $ledger = Join-Path $script:RepoRoot "channels\$Channel\session-ledger.jsonl"
+    $ledger = Join-Path (Get-DecisionsPath) 'session-ledger.jsonl'
     if (-not (Test-Path $ledger)) { return '' }
     $all = Get-Content $ledger -Encoding UTF8 -ErrorAction SilentlyContinue
     if (-not $all -or $all.Count -eq 0) { return '' }
-    $recent = $all | Select-Object -Last $LastN
-    $items = $recent | ForEach-Object {
+    $items = @()
+    foreach ($line in ($all | Select-Object -Last ([Math]::Max($LastN * 4, $LastN)))) {
       try {
-        $e = $_ | ConvertFrom-Json
+        $e = $line | ConvertFrom-Json
+        if ($e.PSObject.Properties.Name -contains 'channel' -and -not [string]::IsNullOrWhiteSpace([string]$Channel) -and [string]$e.channel -ne [string]$Channel) { continue }
         $suffix = if ($e.task) { ': ' + [string]$e.task.Substring(0,[Math]::Min(60,[string]$e.task.Length)) } else { '' }
-        "$($e.event) @ $([string]$e.ts.Substring(0,16))$suffix"
-      } catch { [string]$_ }
+        $items += "$($e.event) @ $([string]$e.ts.Substring(0,[Math]::Min(16,[string]$e.ts.Length)))$suffix"
+      } catch { $items += [string]$line }
     }
+    $items = @($items | Select-Object -Last $LastN)
+    if (-not $items -or $items.Count -eq 0) { return '' }
     return ($items -join ' | ')
   } catch { return '' }
 }

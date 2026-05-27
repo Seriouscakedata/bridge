@@ -8,7 +8,8 @@ settings.json
 control/
 files/
 runtime/
-decisions/
+decisions/*
+!decisions/session-ledger.jsonl
 sandbox/
 memory/
 jobs/
