@@ -1017,9 +1017,7 @@
     flex-direction:column;
     gap:13px;
     scroll-behavior:smooth;
-    transition:opacity 0.15s;
   }
-  #log.channel-switching{opacity:0.3;transition:opacity 0.15s;}
   #log::-webkit-scrollbar{width:11px}
   #log::-webkit-scrollbar-track{background:transparent}
   #log::-webkit-scrollbar-thumb{background:#323946;border:3px solid var(--bg);border-radius:999px}
@@ -4263,6 +4261,7 @@ function fallbackStatus(s, mdl){
 async function status(){
   if(statusInFlight) return;
   statusInFlight = true;
+  const myEpoch = channelEpoch;
   try{
     // Phase 3 (full): each channel has its own driver + state.json. Ask for THIS channel's
     // status so the "agent thinking" indicator reflects what THIS tab's driver is doing,
@@ -4270,8 +4269,9 @@ async function status(){
     const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
     const url = ch ? ('/api/status?channel=' + encodeURIComponent(ch)) : '/api/status';
     const s = await fetchJson(url);
+    if(myEpoch !== channelEpoch) return;
     noteConnectionOk();
-    if(typeof s.lastSeq === 'number' && s.lastSeq < lastSeq){
+    if(!channelSwitchInProgress && typeof s.lastSeq === 'number' && s.lastSeq < lastSeq){
       [...log.querySelectorAll('.msg,.day-sep')].forEach(n => n.remove());
       lastSeq = 0;
       lastRenderedDay = '';
@@ -5417,8 +5417,10 @@ const channelNewBtn   = document.getElementById('channelNewBtn');
 let channelsCache = { active: 'main', items: [] };
 
 async function pollChannels(){
+  const myEpoch = channelEpoch;
   try{
     const data = await fetchJson('/api/channels');
+    if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
     channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [] };
     renderChannels();
