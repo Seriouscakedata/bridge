@@ -2160,6 +2160,32 @@ while ($true) {
   if ($speaker -eq 'claude') {
     $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE|RESEARCH)\s*$')
     if ($statusHits.Count -gt 0) { $plannerStatus = $statusHits[$statusHits.Count - 1].Groups[1].Value.ToUpper() }
+
+    # FIX 2026-05-27: parallel coder dispatch. If planner reply contains >= 2 [[PARALLEL:N]]
+    # blocks with file-disjoint workloads, fan out to worker pool (Claude+Codex round-robin
+    # in separate worktrees) instead of normal Codex-only flow. After merge, treat as if
+    # planner had said STATUS: DONE so verify gate + critic proceed normally on combined diff.
+    if ($plannerStatus -eq 'CONTINUE' -and ($modeBeforeIncrement -eq 'normal' -or $modeBeforeIncrement -eq 'discuss')) {
+      $parStreams = $null
+      try { $parStreams = Test-CanParallelize -PlanText $reply } catch { $parStreams = $null }
+      if ($parStreams -and $parStreams.Count -ge 2) {
+        try {
+          Add-Message -From system -Text ("🔀 Parallel dispatch: " + $parStreams.Count + " streams detected in planner reply") -Kind event | Out-Null
+          $parResult = Invoke-ParallelDispatch -Streams $parStreams -TimeoutMin 25 -PollSec 10
+          if ($parResult.ok) {
+            Add-Message -From system -Text ("✅ Parallel completed: " + $parResult.merged + " streams merged into main") -Kind event | Out-Null
+            $plannerStatus = 'DONE'   # work landed via workers; let verify+critic gates run
+            Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
+          } else {
+            Add-Message -From system -Text ("⚠ Parallel failed: " + $parResult.reason + " -- fallback to sequential Codex") -Kind event | Out-Null
+            # leave $plannerStatus as CONTINUE -- normal Codex turn next iteration
+          }
+        } catch {
+          Add-Message -From system -Text ("⚠ Parallel exception: " + $_.Exception.Message + " -- fallback to sequential") -Kind event | Out-Null
+        }
+      }
+    }
+
     if ($plannerStatus -eq 'DISCUSS') {
       if ($modeBeforeIncrement -ne 'discuss') {
         Update-State { param($s) $s.task_mode='discuss'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot='' } | Out-Null

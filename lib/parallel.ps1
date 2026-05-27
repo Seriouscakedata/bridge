@@ -466,3 +466,137 @@ function Load-ParallelStreams {
   if (-not $State -or -not ($State.PSObject.Properties.Name -contains 'parallel_streams') -or $null -eq $State.parallel_streams) { return @() }
   return @($State.parallel_streams)
 }
+
+function Invoke-ParallelDispatch {
+  # End-to-end orchestration for a parallel split detected in planner reply.
+  # FIX 2026-05-27 (manual implementation, replaces Codex's chunk-2 that state-wiped).
+  # Spawns workers in worktrees, polls until all done or timeout, fast-forward merges
+  # their wip-branches into main, cleans up. Returns @{ok=$bool; merged=$count; reason=...}.
+  param(
+    [object[]]$Streams,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10
+  )
+  if (-not $Streams -or $Streams.Count -lt 2) {
+    return @{ ok=$false; merged=0; reason='need >= 2 streams' }
+  }
+
+  # Use task_base_commit as starting point. Each worker gets its own worktree off this.
+  $base = Get-ParallelTaskBaseCommit
+  if ([string]::IsNullOrWhiteSpace($base)) {
+    return @{ ok=$false; merged=0; reason='no task_base_commit' }
+  }
+
+  # Stable task hash from current_task text so worktree paths are reproducible across
+  # restarts (resume-safe).
+  $taskHash = 'task'
+  try {
+    $st = Read-State
+    $taskText = if ($st -and $st.current_task) { [string]$st.current_task } else { 'task' }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($taskText)
+    $hash = $sha.ComputeHash($bytes)
+    $taskHash = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0,12)
+  } catch {}
+
+  # Spawn workers round-robin: stream[0]=claude, stream[1]=codex, stream[2]=claude, ...
+  # This evenly distributes load between the two coder pools. opus flag overrides model.
+  $cfg = $null
+  try { $cfg = Get-BridgeConfig } catch {}
+  $claudeModelDefault = 'sonnet'
+  try {
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'parallel')) {
+      $pcfg = $cfg.parallel
+      if ($pcfg -and ($pcfg.PSObject.Properties.Name -contains 'claudeCoderModel')) { $claudeModelDefault = [string]$pcfg.claudeCoderModel }
+    }
+  } catch {}
+
+  $workers = New-Object 'System.Collections.Generic.List[object]'
+  $idx = 0
+  foreach ($s in @($Streams)) {
+    $coder = if (($idx % 2) -eq 0) { 'claude' } else { 'codex' }
+    $model = if ([bool]$s.opus) { 'opus' } elseif ($coder -eq 'claude') { $claudeModelDefault } else { 'codex' }
+    $branch = "wip/parallel/$taskHash/$($s.id)"
+    try {
+      $worktree = Get-WorkerWorktree -StreamId $s.id -TaskHash $taskHash
+      $w = Spawn-Worker -StreamId $s.id -Coder $coder -Model $model -Body $s.body -Worktree $worktree -BranchName $branch
+      [void]$workers.Add($w)
+      try { Add-Message -From system -Text ("🔀 Spawned worker: stream=" + $s.id + " coder=" + $coder + " model=" + $model + " files=[" + (($s.files) -join ',') + "]") -Kind event } catch {}
+    } catch {
+      try { Add-Message -From system -Text ("❌ Parallel spawn failed for stream " + $s.id + ": " + $_.Exception.Message) -Kind event } catch {}
+      # Cleanup already-spawned workers
+      foreach ($w0 in $workers) {
+        try { if ($w0.process -and -not $w0.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
+        try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $taskHash } catch {}
+      }
+      return @{ ok=$false; merged=0; reason="spawn failed: $($_.Exception.Message)" }
+    }
+    $idx++
+  }
+
+  # Persist to state (channel-aware via current Read-State)
+  try { Save-ParallelStreams -State (Read-State) -Streams $workers } catch {}
+
+  # Poll until all done or timeout
+  $deadline = (Get-Date).AddMinutes($TimeoutMin)
+  $completed = @{}
+  while ($completed.Count -lt $workers.Count) {
+    if ((Get-Date) -ge $deadline) {
+      # Timeout: kill remaining, report partial
+      foreach ($w in $workers) {
+        if ($completed.ContainsKey($w.id)) { continue }
+        try { if ($w.process -and -not $w.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
+      }
+      try { Add-Message -From system -Text ("⏱ Parallel timeout (" + $TimeoutMin + " min) -- killing in-flight workers") -Kind event } catch {}
+      break
+    }
+    Start-Sleep -Seconds $PollSec
+    foreach ($w in $workers) {
+      if ($completed.ContainsKey($w.id)) { continue }
+      $res = Get-WorkerResult $w
+      if ($res.status -ne 'running') {
+        $completed[$w.id] = $res
+        try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count) -Kind event } catch {}
+      }
+    }
+  }
+
+  # Merge phase: fast-forward each wip-branch into HEAD on main worktree
+  $merged = 0
+  $bridgeRoot = Get-BridgeRoot
+  foreach ($w in $workers) {
+    if (-not $completed.ContainsKey($w.id)) { continue }
+    $res = $completed[$w.id]
+    if ($res.status -ne 'done' -or $res.commits.Count -eq 0) {
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      continue
+    }
+    try {
+      # ff-only merge
+      $mergeOut = & git -C $bridgeRoot merge --ff-only $w.branch 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $merged++
+        Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (" + $res.commits.Count + " commits, branch " + $w.branch + ")") -Kind event | Out-Null
+      } else {
+        # Fallback: non-ff merge with no-edit message
+        $mergeOut2 = & git -C $bridgeRoot merge --no-ff -m ("merge parallel stream " + $w.id) $w.branch 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          $merged++
+          Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (non-ff fallback)") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text ("❌ Merge failed for stream " + $w.id + ": " + ($mergeOut2 -join '; ')) -Kind event | Out-Null
+        }
+      }
+    } catch {
+      Add-Message -From system -Text ("❌ Merge exception for stream " + $w.id + ": " + $_.Exception.Message) -Kind event | Out-Null
+    }
+    try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+  }
+
+  # Clear parallel_streams from state -- via Update-State (Add-Member preserves other fields)
+  try {
+    Update-State { param($s) $s | Add-Member -NotePropertyName parallel_streams -NotePropertyValue @() -Force } | Out-Null
+  } catch {}
+
+  return @{ ok=($merged -ge 1); merged=$merged; reason='' }
+}
