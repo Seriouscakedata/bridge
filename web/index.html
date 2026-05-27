@@ -2088,6 +2088,7 @@
       <div class="sec-group">
         <div class="sec-group-title">Система</div>
         <button id="restart" class="icon" type="button" onclick="restartBridge()" title="Перезапустить мост через supervisor">↻ <span class="sec-label">Рестарт</span></button>
+        <button id="runbookBtn" class="icon" type="button" title="Собрать диагностику — zip с git status, health, логами">📦 <span class="sec-label">Диагностика</span></button>
       </div>
     </div>
   </div>
@@ -4825,6 +4826,32 @@ async function restartBridge(){
   if(!confirm('Перезапустить мост через supervisor? Текущая задача будет возобновлена после рестарта.')) return;
   await ctl('restart');
 }
+document.getElementById('runbookBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('runbookBtn');
+  btn.disabled = true;
+  const label = btn.querySelector('.sec-label');
+  if(label) label.textContent = 'Сборка...';
+  btn.firstChild.textContent = '⏳ ';
+  try{
+    const resp = await requestOk('/api/runbook', {method:'GET'}, 60000);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    a.href = url;
+    a.download = 'bridge-runbook-' + ts + '.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }catch(e){
+    alert('Ошибка сборки диагностики: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    if(label) label.textContent = 'Диагностика';
+    btn.firstChild.textContent = '📦 ';
+  }
+});
 function readDataUrl(file){
   return new Promise((resolve,reject) => {
     const fr = new FileReader();
