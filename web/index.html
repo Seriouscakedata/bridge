@@ -634,6 +634,12 @@
     background:rgba(255,255,255,.08); border-radius:7px; color:var(--soft);
   }
   .backlog-list{display:flex;flex-direction:column;gap:6px;padding:8px}
+  .backlog-scope-badge { font-size:10px; padding:1px 5px; border-radius:3px; font-weight:600; }
+  .backlog-scope-badge.project { background:rgba(114,183,255,.15); color:var(--user); border:1px solid rgba(114,183,255,.3); }
+  .backlog-scope-badge.bridge { background:rgba(140,150,165,.1); color:#7a8899; border:1px solid rgba(140,150,165,.2); }
+  .setting-row { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; gap:8px; }
+  .setting-label { font-size:12px; color:var(--soft); }
+  .setting-row select { font-size:12px; background:var(--panel-2); color:var(--soft); border:1px solid var(--border-soft); border-radius:6px; padding:3px 6px; }
   .overview-head{
     display:flex;
     align-items:center;
@@ -2142,6 +2148,7 @@
     <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей" hidden>📋 <span>Backlog</span></button>
     <!-- Direct link to /memory#backlog for users who want backlog -->
     <a id="backlogMemoryLink" href="/memory#backlog" target="_blank" class="panels-tab panels-tab-link" title="Открыть бэклог на странице памяти (шире, удобнее)" style="text-decoration:none">📋 <span>Бэклог</span> <span style="font-size:9px;opacity:.6">↗</span></a>
+    <button id="settingsToggle" class="panels-tab" type="button" data-panel="settings" role="tab" aria-controls="settingsPanel" aria-selected="false" aria-pressed="false" title="Настройки">⚙ <span>Настройки</span></button>
   </div>
   <div class="panels-content">
 <aside id="overviewPanel" class="panel" data-panel="overview" aria-label="Обзор сеанса" aria-hidden="true">
@@ -2302,6 +2309,24 @@
     </div>
   </section>
 </aside>
+
+<aside id="settingsPanel" class="panel" data-panel="settings" aria-label="Настройки" aria-hidden="true">
+  <div class="drag-handle" aria-hidden="true"></div>
+  <div class="overview-head">
+    <strong>⚙ Настройки</strong>
+    <button id="settingsClose" class="mini-btn overview-close" type="button" title="Закрыть настройки" aria-label="Закрыть настройки">×</button>
+  </div>
+  <section class="overview-section" aria-label="Автономия">
+    <h2>Автономия</h2>
+    <label class="setting-row">
+      <span class="setting-label">Задачи проектов в авто-выборку</span>
+      <select id="settingAutonomyScope">
+        <option value="bridge">Только мост (bridge)</option>
+        <option value="projects">Мост + все проекты</option>
+      </select>
+    </label>
+  </section>
+</aside>
   </div>
 </section>
 
@@ -2444,6 +2469,10 @@ const backlogToggle = document.getElementById('backlogToggle');
 const backlogPanel = document.getElementById('backlogPanel');
 const backlogClose = document.getElementById('backlogClose');
 const backlogList = document.getElementById('backlogList');
+const settingsToggle = document.getElementById('settingsToggle');
+const settingsPanel = document.getElementById('settingsPanel');
+const settingsClose = document.getElementById('settingsClose');
+const settingAutonomyScope = document.getElementById('settingAutonomyScope');
 const usageBurn24 = document.getElementById('usageBurn24');
 const usageTotalCost = document.getElementById('usageTotalCost');
 const usagePrepaidCalls = document.getElementById('usagePrepaidCalls');
@@ -2538,6 +2567,15 @@ if(backlogOpen && (overviewOpen || planOpen || codeOpen || dashOpen || usageOpen
   codeOpen = false;
   dashOpen = false;
   usageOpen = false;
+}
+let settingsOpen = localStorage.getItem('bridgeSettings') === '1';
+if(settingsOpen && (overviewOpen || planOpen || codeOpen || dashOpen || usageOpen || backlogOpen)){
+  overviewOpen = false;
+  planOpen = false;
+  codeOpen = false;
+  dashOpen = false;
+  usageOpen = false;
+  backlogOpen = false;
 }
 let _backlogFilter = 'all';
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
@@ -2701,6 +2739,7 @@ function activePanelId(){
   if(dashOpen) return 'dash';
   if(usageOpen) return 'usage';
   if(backlogOpen) return 'backlog';
+  if(settingsOpen) return 'settings';
   return '';
 }
 function syncPanelTabs(){
@@ -2734,6 +2773,7 @@ function persistPanelState(){
   localStorage.setItem('bridgeDash', dashOpen ? '1' : '0');
   localStorage.setItem('bridgeUsage', usageOpen ? '1' : '0');
   localStorage.setItem('bridgeBacklog', backlogOpen ? '1' : '0');
+  localStorage.setItem('bridgeSettings', settingsOpen ? '1' : '0');
 }
 function applyAllPanelStates(){
   applyOverviewState();
@@ -2742,10 +2782,11 @@ function applyAllPanelStates(){
   applyDashState();
   applyUsageState();
   applyBacklogState();
+  applySettingsState();
   syncPanelTabs();
 }
 function openPanels(panelId){
-  const validPanels = ['overview','plan','code','dash','usage','backlog'];
+  const validPanels = ['overview','plan','code','dash','usage','backlog','settings'];
   const stored = localStorage.getItem('bridgeLastPanel') || activePanelId() || 'overview';
   const fallback = validPanels.includes(stored) ? stored : 'overview';
   const next = validPanels.includes(panelId || '') ? panelId : fallback;
@@ -2755,6 +2796,7 @@ function openPanels(panelId){
   dashOpen = next === 'dash';
   usageOpen = next === 'usage';
   backlogOpen = next === 'backlog';
+  settingsOpen = next === 'settings';
   persistPanelState();
   applyAllPanelStates();
   if(next === 'plan') pollPlan();
@@ -2762,6 +2804,7 @@ function openPanels(panelId){
   if(next === 'dash') pollMetrics();
   if(next === 'usage') pollUsage();
   if(next === 'backlog') pollBacklog();
+  if(next === 'settings') loadSettings();
 }
 function closePanels(){
   overviewOpen = false;
@@ -2770,6 +2813,7 @@ function closePanels(){
   dashOpen = false;
   usageOpen = false;
   backlogOpen = false;
+  settingsOpen = false;
   persistPanelState();
   applyAllPanelStates();
 }
@@ -2864,6 +2908,36 @@ function applyBacklogState(){
   }
   syncPanelTabs();
   requestAnimationFrame(updateBottomButton);
+}
+function applySettingsState(){
+  const enabled = Boolean(settingsOpen);
+  document.body.classList.toggle('settings-open', enabled);
+  if(settingsPanel) settingsPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+  if(settingsToggle){
+    settingsToggle.classList.toggle('on', enabled);
+    settingsToggle.classList.toggle('active', enabled);
+    settingsToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    settingsToggle.setAttribute('aria-selected', enabled ? 'true' : 'false');
+    settingsToggle.title = enabled ? 'Закрыть настройки' : 'Настройки';
+  }
+  syncPanelTabs();
+  requestAnimationFrame(updateBottomButton);
+}
+async function loadSettings(){
+  try{
+    const data = await fetchJson('/api/settings');
+    const scope = (data && data.autonomy && data.autonomy.scope) || 'bridge';
+    if(settingAutonomyScope) settingAutonomyScope.value = scope;
+  }catch(e){}
+}
+async function saveSettingAutonomyScope(val){
+  try{
+    await fetchJson('/api/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({autonomy:{scope:val}})
+    });
+  }catch(e){}
 }
 function fmtMoney(n, digits){
   const value = Number(n) || 0;
@@ -3072,6 +3146,15 @@ function backlogItemHtml(item){
   let meta = '<span>' + esc(st) + '</span>';
   if(from) meta += '<span>' + esc(from) + '</span>';
   if(tags) meta += '<span>' + esc(tags) + '</span>';
+  const scope = String(item.scope || '');
+  const project = String(item.project || '');
+  let scopeBadge = '';
+  if(scope === 'project' && project) {
+    scopeBadge = '<span class="backlog-scope-badge project" title="Задача проекта: ' + esc(project) + '">🔷 ' + esc(project) + '</span>';
+  } else if(scope === 'bridge') {
+    scopeBadge = '<span class="backlog-scope-badge bridge" title="Bridge задача">bridge</span>';
+  }
+  if(scopeBadge) meta += scopeBadge;
   let btnHtml = '';
   if(st === 'auto-dropped' || st === 'auto-resolved'){
     btnHtml = '<button class="backlog-restore-btn" data-id="' + esc(id) + '" title="Восстановить в очередь" type="button">&#8617; Restore</button>';
@@ -5030,7 +5113,7 @@ if(panelsToggleMobileBtn) panelsToggleMobileBtn.addEventListener('click', toggle
 panelTabs.forEach(tab => {
   tab.addEventListener('click', () => selectTab(tab.dataset.panel));
 });
-[overviewClose, planClose, codeClose, dashClose, usageClose, backlogClose].forEach(btn => {
+[overviewClose, planClose, codeClose, dashClose, usageClose, backlogClose, settingsClose].forEach(btn => {
   if(btn) btn.addEventListener('click', closePanels);
 });
 // Scrim tap + swipe-down: close active panel
@@ -5041,7 +5124,7 @@ const panelScrim = document.getElementById('panelScrim');
 if(panelScrim) panelScrim.addEventListener('click', closeActivePanel);
 {
   let _sy = 0;
-  document.querySelectorAll('#overviewPanel .drag-handle,#planPanel .drag-handle,#codePanel .drag-handle,#dashPanel .drag-handle,#usagePanel .drag-handle,#backlogPanel .drag-handle').forEach(h => {
+  document.querySelectorAll('#overviewPanel .drag-handle,#planPanel .drag-handle,#codePanel .drag-handle,#dashPanel .drag-handle,#usagePanel .drag-handle,#backlogPanel .drag-handle,#settingsPanel .drag-handle').forEach(h => {
     h.addEventListener('touchstart', e => { _sy = e.touches[0].clientY; }, {passive:true});
     h.addEventListener('touchend', e => {
       if(e.changedTouches[0].clientY - _sy > 40) closeActivePanel();
@@ -5056,6 +5139,9 @@ if(codeQuery){
       runCodeSearch();
     }
   });
+}
+if(settingAutonomyScope){
+  settingAutonomyScope.addEventListener('change', () => saveSettingAutonomyScope(settingAutonomyScope.value));
 }
 if(backlogPanel){
   backlogPanel.addEventListener('click', e => {
