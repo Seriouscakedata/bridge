@@ -1523,7 +1523,28 @@ function Invoke-Planner {
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
-  } finally { Set-CurrentAgent $null; if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
+  } finally {
+    Set-CurrentAgent $null
+    if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
+    # Capture process output BEFORE cleanup if reply is empty (diagnostic for silent exits/timeouts).
+    # Symmetric to Run-Codex finally (driver.ps1:1748-1763, commit 779761c).
+    if ([string]::IsNullOrWhiteSpace($reply)) {
+      $se = Get-Content $errF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+      $so = Get-Content $outF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+      if (-not [string]::IsNullOrWhiteSpace($se)) {
+        $seTail = if ($se.Length -gt 2000) { '...(truncated, last 2000)' + $se.Substring($se.Length - 2000) } else { $se }
+        Add-Message -From system -Text ("⚠ [Claude stderr tail]:`n" + $seTail) -Kind event | Out-Null
+      }
+      if (-not [string]::IsNullOrWhiteSpace($so)) {
+        $soTail = if ($so.Length -gt 2000) { '...(truncated, last 2000)' + $so.Substring($so.Length - 2000) } else { $so }
+        Add-Message -From system -Text ("⚠ [Claude stdout tail]:`n" + $soTail) -Kind event | Out-Null
+      }
+      if ([string]::IsNullOrWhiteSpace($se) -and [string]::IsNullOrWhiteSpace($so)) {
+        Add-Message -From system -Text "⚠ [Claude silent exit]: stdout+stderr пусты (планировщик завис без вывода)" -Kind event | Out-Null
+      }
+    }
+    Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue
+  }
   if ($null -eq $reply) { $reply = '' }
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
