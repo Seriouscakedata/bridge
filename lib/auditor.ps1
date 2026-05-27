@@ -286,6 +286,47 @@ function Get-AuditorChannelProjectRoot {
   return (Get-BridgeRoot)
 }
 
+function Get-AuditorLastSeqAge {
+  # 2026-05-27v7: track lastSeq per channel + return minutes since it last advanced.
+  # Uses control/auditor-seqtrack.json. Each call updates the tracker. If seq has
+  # advanced since last call, returns 0. If unchanged, returns minutes-since-last-advance.
+  # Used by 'wait_state_stuck' trigger -- detects driver in waiting state with no
+  # message activity (zombie-job freeze, stuck agent, lost background work).
+  param([string]$Slug, [int]$CurrentSeq)
+  if ([string]::IsNullOrWhiteSpace($Slug) -or $CurrentSeq -le 0) { return 0 }
+  $now = Get-Date
+  $trackPath = Join-Path (Get-BridgeRoot) 'control\auditor-seqtrack.json'
+  $track = @{}
+  if (Test-Path -LiteralPath $trackPath) {
+    try {
+      $raw = Get-Content -LiteralPath $trackPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($raw) {
+        foreach ($p in $raw.PSObject.Properties) {
+          $track[$p.Name] = @{ seq = [int]$p.Value.seq; ts = [string]$p.Value.ts }
+        }
+      }
+    } catch {}
+  }
+  $ageMin = 0
+  if ($track.ContainsKey($Slug)) {
+    $prev = $track[$Slug]
+    if ([int]$prev.seq -eq $CurrentSeq) {
+      try { $ageMin = [int](($now - [datetime]$prev.ts).TotalMinutes) } catch { $ageMin = 0 }
+    } else {
+      $track[$Slug] = @{ seq = $CurrentSeq; ts = $now.ToString('o') }
+      $ageMin = 0
+    }
+  } else {
+    $track[$Slug] = @{ seq = $CurrentSeq; ts = $now.ToString('o') }
+  }
+  try {
+    $obj = [pscustomobject]@{}
+    foreach ($k in $track.Keys) { $obj | Add-Member -NotePropertyName $k -NotePropertyValue ([pscustomobject]$track[$k]) -Force }
+    [System.IO.File]::WriteAllText($trackPath, ($obj | ConvertTo-Json -Compress -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  return $ageMin
+}
+
 function Get-AuditorSnapshot {
   $cfg = Get-AuditorConfig
   $channels = [ordered]@{}
@@ -311,6 +352,13 @@ function Get-AuditorSnapshot {
       if ($st.PSObject.Properties.Name -contains 'progress_fingerprint_repeats') { $progressRepeats = [int]$st.progress_fingerprint_repeats }
       elseif ($st.PSObject.Properties.Name -contains 'no_progress_count') { $progressRepeats = [int]$st.no_progress_count }
     } catch { $progressRepeats = 0 }
+    # 2026-05-27v7: extra fields for 'wait_state_stuck' trigger detection
+    $lastSeq = Get-AuditorStateInt -State $st -Names @('lastSeq') -Default 0
+    $lastSeqAge = Get-AuditorLastSeqAge -Slug $slug -CurrentSeq $lastSeq
+    $statusText = if ($st -and $st.PSObject.Properties.Name -contains 'status_text') { [string]$st.status_text } else { '' }
+    $activeJobsCount = 0
+    try { if ($st -and $st.PSObject.Properties.Name -contains 'active_jobs') { $activeJobsCount = @($st.active_jobs).Count } } catch {}
+    $activeAgent = if ($st -and $st.PSObject.Properties.Name -contains 'active_agent') { [string]$st.active_agent } else { '' }
     $channels[$slug] = [ordered]@{
       status = if ($st) { [string]$st.status } else { 'missing_state' }
       doctor_active = if ($st) { [bool]$st.doctor_active } else { $false }
@@ -329,6 +377,11 @@ function Get-AuditorSnapshot {
       empty_reply_streak = [int](Get-AuditorEmptyReplyStreak -Slug $slug)
       progress_fingerprint_repeats = [int]$progressRepeats
       task_age_min = [int]$taskAge
+      last_seq = [int]$lastSeq
+      last_seq_age_min = [int]$lastSeqAge
+      status_text = $statusText
+      active_jobs_count = [int]$activeJobsCount
+      active_agent = $activeAgent
     }
   }
 
@@ -360,6 +413,31 @@ function Test-AuditorTriggers {
 
   foreach ($slug in @($Snapshot.channels.Keys)) {
     $c = $Snapshot.channels[$slug]
+
+    # 2026-05-27v7: wait_state_stuck — driver claims working + heartbeat fresh,
+    # but lastSeq hasn't moved for >= 5 min. Real cases: zombie .done jobs,
+    # dead agent process not noticed by polling, lost background work after
+    # restart. AUTOMATIC remediation: call Recover-ZombieJobs to write fake
+    # .done markers for jobs with dead PIDs. Then if still stuck after 10 min,
+    # escalate to full Doctor activation.
+    $isWorking = ([string]$c.status -eq 'working')
+    $hbFresh   = ([int]$c.hb_age_sec -lt 60)
+    $seqAge    = [int]$c.last_seq_age_min
+    $waitsBg   = ([int]$c.active_jobs_count -gt 0) -or ([string]$c.status_text -match 'Жду фоновую|waiting|stuck|pending')
+    $noAgent   = [string]::IsNullOrWhiteSpace([string]$c.active_agent) -and [int]$c.task_turn -eq 0
+    if ($isWorking -and $hbFresh -and $seqAge -ge 5 -and ($waitsBg -or $noAgent)) {
+      # First try the cheap fix: recover zombie jobs in-place.
+      $rec = $null
+      try { $rec = Recover-ZombieJobs -Slug $slug } catch {}
+      $recCount = if ($rec) { [int]$rec.recovered } else { 0 }
+      if ($recCount -gt 0) {
+        try { Invoke-AuditorInChannel -Slug $slug -Body { Add-Message -From system -Text ("🔧 Auditor: разморозил " + $recCount + " zombie-jobs (seq stuck " + $seqAge + " min). Driver продолжит.") -Kind event | Out-Null } } catch {}
+      } else {
+        # No jobs to fix -- something else is stuck. Raise trigger for Doctor.
+        [void]$items.Add((New-AuditorTrigger -Name 'wait_state_stuck' -Channel $slug -Detail ("last_seq_age_min={0}, status_text={1}, active_jobs={2}, active_agent={3}" -f $seqAge, [string]$c.status_text, [int]$c.active_jobs_count, [string]$c.active_agent)))
+      }
+    }
+
     if ([int]$c.empty_reply_streak -ge 2) {
       [void]$items.Add((New-AuditorTrigger -Name 'empty_reply_streak' -Channel $slug -Detail ("{0} consecutive empty agent replies" -f [int]$c.empty_reply_streak)))
     }

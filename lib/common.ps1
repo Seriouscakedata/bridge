@@ -125,6 +125,62 @@ function Write-AtomicFile {
   }
 }
 
+function Recover-ZombieJobs {
+  # 2026-05-27v7: callable remediation for stuck active_jobs. For each job in
+  # state.active_jobs, if its PID is dead (or startTicks mismatch), write a
+  # fake .done marker (exit=-1) so polling loop closes the job next iteration.
+  # Returns @{ recovered = N } so caller can log/report.
+  # Used by: driver startup AND auditor 'wait_state_stuck' trigger.
+  param([string]$Slug = 'main')
+  $recovered = 0
+  try {
+    $sp = $null
+    try {
+      if (Get-Command Get-StatePath -ErrorAction SilentlyContinue) {
+        $oldPin = $null; $had = $false
+        try {
+          if (Get-Command Get-PinnedChannel -ErrorAction SilentlyContinue) { $oldPin = Get-PinnedChannel; $had = $true }
+          if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel $Slug }
+          $sp = Get-StatePath
+        } finally {
+          if ($had -and (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue)) { Set-PinnedChannel $oldPin }
+        }
+      }
+    } catch {}
+    if (-not $sp -or -not (Test-Path -LiteralPath $sp)) { return @{ recovered = 0 } }
+    $st = $null
+    try { $st = Get-Content -LiteralPath $sp -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return @{ recovered = 0 } }
+    if (-not $st -or -not ($st.PSObject.Properties.Name -contains 'active_jobs')) { return @{ recovered = 0 } }
+    $jobs = @($st.active_jobs)
+    if ($jobs.Count -eq 0) { return @{ recovered = 0 } }
+    $jobsDir = Join-Path (Get-BridgeRoot) 'jobs'
+    foreach ($bj in $jobs) {
+      $jp = 0; try { $jp = [int]$bj.pid } catch {}
+      $alive = $false
+      if ($jp -gt 0) {
+        try {
+          $bp = Get-Process -Id $jp -ErrorAction SilentlyContinue
+          if ($bp) {
+            $ticks = 0L; try { $ticks = [long]$bj.startTicks } catch {}
+            if ($ticks -le 0) { $alive = $true }
+            else { try { if ($bp.StartTime.Ticks -eq $ticks) { $alive = $true } } catch {} }
+          }
+        } catch {}
+      }
+      if (-not $alive) {
+        $donePath = Join-Path $jobsDir (([string]$bj.id) + '.done')
+        try {
+          if (-not (Test-Path -LiteralPath $donePath)) {
+            [System.IO.File]::WriteAllText($donePath, '-1', (New-Object System.Text.UTF8Encoding($false)))
+            $recovered++
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return @{ recovered = $recovered }
+}
+
 function Register-ChildProcess {
   # 2026-05-27v6: P2 audit finding -- Start-Process powershell.exe for librarian,
   # reflect, radar, curator was fire-and-forget with no monitoring. Now caller
