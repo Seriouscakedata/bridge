@@ -27,6 +27,7 @@ function Activate-Doctor {
     return $false
   }
   $now = (Get-Date).ToString('o')
+  try { Save-StateSnapshot -Reason 'doctor_activate' } catch {}
   Update-State ({ param($s)
     $s.held_task         = $cur
     $s.doctor_active     = $true

@@ -675,6 +675,37 @@ function Get-SessionLedgerBlock {
   } catch { return '' }
 }
 
+function Save-StateSnapshot {
+  param([string]$Reason = 'risky', [string]$Channel = '')
+  try {
+    $s = Read-State -ErrorAction SilentlyContinue
+    if ($null -eq $s) { return $null }
+    $ch = $Channel
+    if ([string]::IsNullOrWhiteSpace($ch)) {
+      if ($s.current_channel) { $ch = [string]$s.current_channel } else { $ch = 'main' }
+    }
+    $dir = Join-Path (Get-BridgeRoot) "channels\$ch\snapshots"
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
+    $snapPath = Join-Path $dir "state.${ts}.${Reason}.json"
+    $json = $s | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($snapPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+    $all = Get-ChildItem $dir -Filter 'state.*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+    if ($all -and $all.Count -gt 10) { $all | Select-Object -Skip 10 | Remove-Item -Force -ErrorAction SilentlyContinue }
+    return $snapPath
+  } catch { return $null }
+}
+
+function Get-LastSnapshot {
+  param([string]$Channel = 'main')
+  try {
+    $dir = Join-Path (Get-BridgeRoot) "channels\$Channel\snapshots"
+    if (-not (Test-Path $dir)) { return $null }
+    $snap = Get-ChildItem $dir -Filter 'state.*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($snap) { return $snap.FullName } else { return $null }
+  } catch { return $null }
+}
+
 function Get-TaskCheckpointBlock {
   $st = Read-State
   if ($null -eq $st) { return '' }

@@ -36,3 +36,4 @@ turns.jsonl
 reports/
 channels/_archive/
 logs/heartbeat.jsonl
+channels/*/snapshots/
