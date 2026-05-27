@@ -133,13 +133,62 @@ function Save-Decision {
 }
 
 function Read-State {
+  # FIX 2026-05-27: if state.json exists but is structurally broken (missing critical fields,
+  # e.g. after a buggy partial-write), return $null so Initialize-Bridge recreates defaults.
+  # Before: a broken state was returned as PSCustomObject with 1-2 fields, driver crashed
+  # silently trying to access $state.status etc. Now broken state == "no state", auto-recover.
   $p = Get-StatePath
   if (-not (Test-Path $p)) { return $null }
-  Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+  $state = $null
+  try { $state = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+  if ($null -eq $state) { return $null }
+  $check = Test-StateShape -State $state
+  if (-not $check.ok) {
+    try {
+      $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+      Add-Content -LiteralPath $alog -Value ("{0}  BROKEN-DETECTED {1} (auto-recover via Initialize-Bridge defaults)" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $check.reason) -Encoding utf8 -ErrorAction SilentlyContinue
+    } catch {}
+    return $null   # forces Initialize-Bridge to recreate defaults
+  }
+  return $state
+}
+
+function Test-StateShape {
+  # Verify a state object has the minimum critical fields. Used as gate by Write-State to
+  # reject partial/replacement-style writes that would wipe runtime state.
+  # FIX 2026-05-27: yesterday a Codex-experimental script wrote @{parallel_streams=@()} as
+  # FULL state replacement -- nuked status/lastSeq/heartbeat/current_task. Driver couldn't
+  # boot. State.json now only accepts writes that PRESERVE these critical fields.
+  param($State)
+  if ($null -eq $State) { return @{ ok=$false; reason='null state' } }
+  $required = @('status','lastSeq','paused','stop','abort','heartbeat')
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($f in $required) {
+    $has = $false
+    try { $has = ($State.PSObject.Properties.Name -contains $f) } catch {}
+    if (-not $has) { [void]$missing.Add($f) }
+  }
+  if ($missing.Count -gt 0) {
+    return @{ ok=$false; reason=('missing critical fields: ' + ($missing -join ',')) }
+  }
+  return @{ ok=$true; reason='' }
 }
 
 function Write-State {
-  param($State)
+  param($State, [switch]$AllowPartial)
+  # FIX 2026-05-27: guard against state-wipe. Reject writes that lack the minimum runtime
+  # fields, UNLESS explicit -AllowPartial (used only by Initialize-Bridge default-create branch).
+  if (-not $AllowPartial) {
+    $check = Test-StateShape -State $State
+    if (-not $check.ok) {
+      $msg = "Write-State refused: $($check.reason). Use Update-State+Add-Member for mutations; only Initialize-Bridge -Reset may use -AllowPartial."
+      try {
+        $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+        Add-Content -LiteralPath $alog -Value ("{0}  REFUSED {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $check.reason) -Encoding utf8 -ErrorAction SilentlyContinue
+      } catch {}
+      throw $msg
+    }
+  }
   $json = $State | ConvertTo-Json -Depth 10
   Write-AtomicFile -Path (Get-StatePath) -Content $json
 }
@@ -1089,7 +1138,7 @@ function Initialize-Bridge {
       task_checkpoints   = @()
       task_last_failure  = $null
     }
-    Write-State -State $state
+    Write-State -State $state -AllowPartial   # initial create; guard skip OK
   } else {
     # migrate older state.json: add any fields introduced later
     $defaults = @{

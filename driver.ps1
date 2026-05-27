@@ -1384,6 +1384,19 @@ while ($true) {
   # Phase 3 (full): channel is hard-pinned at process startup. No per-iteration re-evaluation
   # -- each driver lives in its own channel for its entire lifetime.
   $state = Read-State
+  # FIX 2026-05-27: Read-State now returns $null on structurally-broken state.json
+  # (Test-StateShape failure). Self-heal: re-run Initialize-Bridge to restore defaults,
+  # then re-read. Without this, a state-wipe accident (like yesterday's) would just hang
+  # the driver silently on subsequent iterations.
+  if ($null -eq $state) {
+    try { Add-Message -From system -Text "⚠ Driver: state.json повреждён — auto-recover через Initialize-Bridge defaults." -Kind event } catch {}
+    try { $null = Initialize-Bridge } catch {}
+    $state = Read-State
+    if ($null -eq $state) {
+      # Recovery itself failed — sleep + retry. Never hard-crash the loop.
+      Start-Sleep -Seconds 5; continue
+    }
+  }
 
   if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }
 
