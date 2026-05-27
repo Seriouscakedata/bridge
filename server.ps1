@@ -222,6 +222,22 @@ function Get-RunbookPropertyValue {
   } catch {}
   return $null
 }
+function ConvertTo-RunbookSummaryValue {
+  param($Value)
+  if ($null -eq $Value) { return $null }
+  if ($Value -is [string]) { return [string]$Value }
+  if ($Value -is [bool]) { return [bool]$Value }
+  if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [int] -or $Value -is [long] -or $Value -is [single] -or $Value -is [double] -or $Value -is [decimal]) { return $Value }
+  if ($Value -is [datetime]) { return ([datetime]$Value).ToString('o') }
+  try {
+    $json = [string]($Value | ConvertTo-Json -Compress -Depth 4)
+    if ([string]::IsNullOrWhiteSpace($json)) { return [string]$Value }
+    if ($json.Length -gt 2000) { return ($json.Substring(0, 2000) + '...<truncated>') }
+    return $json
+  } catch {
+    return [string]$Value
+  }
+}
 function Test-Auth {
   param($ctx)
   if (-not $authPass -and -not $authToken) { return $true }   # no credentials configured -> open
@@ -786,9 +802,10 @@ try {
             paused = $hPaused
             status = $hStatus
             lastSeq = $hLastSeq
+            state_available = ($null -ne $stateObj)
             generated_at = $now.ToString('o')
           }
-          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 8
+          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 4
 
           $smokePath = Join-Path $runbookRoot 'smoke.ps1'
           if (Test-Path -LiteralPath $smokePath -PathType Leaf) {
@@ -827,11 +844,12 @@ try {
           $logsTail = $logParts -join "`r`n"
 
           $stateSummary = [ordered]@{}
+          $stateSummary['state_available'] = ($null -ne $stateObj)
           foreach ($field in @('current_channel','current_task','held_task','status','paused','doctor_active','session_mission')) {
             $value = Get-RunbookPropertyValue $stateObj $field
-            $stateSummary[$field] = $value
+            $stateSummary[$field] = ConvertTo-RunbookSummaryValue $value
           }
-          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 8
+          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 4
 
           $worktrees = Convert-RunbookProcessResultToText (Invoke-RunbookProcess -FileName 'git.exe' -ArgsList @('-C', $runbookRoot, 'worktree', 'list') -WorkingDirectory $runbookRoot -TimeoutMs 15000)
 

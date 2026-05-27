@@ -8,4 +8,6 @@
 {"ts":"2026-05-28T01:18:58.8869270+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 + lib/doctor.ps1 + supervisor.ps1 + driver.ps1 — все 4 OK (err=0) | grep Sa"}
 {"ts":"2026-05-28T01:34:18.4688017+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X5 Runbook button — кнопка «Собрать диагностику» в UI и tray-меню: создаёт zip с sanitized git s"}
 {"ts":"2026-05-28T01:49:26.5378819+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 OK | /api/runbook найден | runbookBtn найден | Invoke-WebRequest -UseBasicParsi"}
-{"ts":"2026-05-28T01:57:51.3973071+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 → OK | grep api/runbook → server.ps1:L616 | HTTP Status=200 Size=1845 | ZIP 6 ф"}
+{"ts":"2026-05-28T01:57:51.3973071+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
+{"ts":"2026-05-28T02:08:18.9084697+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
+{"ts":"2026-05-28T02:11:01.7889041+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
