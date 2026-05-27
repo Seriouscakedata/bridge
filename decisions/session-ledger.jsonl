@@ -1,3 +1,11 @@
 {"ts":"2026-05-28T00:22:27.2781703+03:00","event":"task_start","channel":"main","task":"Mission Card + Decision Ledger verification"}
 {"ts":"2026-05-28T00:28:32.1534287+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 OK; ParseFile driver.ps1 OK; smoke.ps1 OK; hooks/fields found by Select-Str"}
 {"ts":"2026-05-28T00:31:48.5830956+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 → OK; ParseFile driver.ps1 → OK; все 4 паттерна в lib/common.ps1 (строки 62"}
+{"ts":"2026-05-28T00:39:45.9306686+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1/driver.ps1 OK; smoke OK; decisions/session-ledger.jsonl tracked, not ignore"}
+{"ts":"2026-05-28T00:40:55.7527596+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1+driver.ps1=OK | все 4 паттерна в common.ps1 (L622/648/837/1519) | 6 хуков в"}
+{"ts":"2026-05-28T00:56:22.9262259+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] Snapshot before risky — авто-снимок state.json + task_id в snapshots/ перед Doctor-activation / "}
+{"ts":"2026-05-28T01:17:12.0543837+03:00","event":"verified_commit","channel":"main","what":"ParseFile OK для lib/common.ps1, lib/doctor.ps1, supervisor.ps1, driver.ps1 | Save-StateSnapshot/Get"}
+{"ts":"2026-05-28T01:18:58.8869270+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 + lib/doctor.ps1 + supervisor.ps1 + driver.ps1 — все 4 OK (err=0) | grep Sa"}
+{"ts":"2026-05-28T01:34:18.4688017+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X5 Runbook button — кнопка «Собрать диагностику» в UI и tray-меню: создаёт zip с sanitized git s"}
+{"ts":"2026-05-28T01:49:26.5378819+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 OK | /api/runbook найден | runbookBtn найден | Invoke-WebRequest -UseBasicParsi"}
+{"ts":"2026-05-28T01:57:51.3973071+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 → OK | grep api/runbook → server.ps1:L616 | HTTP Status=200 Size=1845 | ZIP 6 ф"}
