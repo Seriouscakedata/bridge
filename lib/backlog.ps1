@@ -102,17 +102,18 @@ function ConvertFrom-BacklogStrictJson {
 }
 
 function Get-BacklogGitOutput {
-  param([string[]]$Args)
+  param([string[]]$GitArgs)
   try {
+    if ($null -eq $GitArgs -or $GitArgs.Count -eq 0) { return '' }
     $root = Get-BacklogFallbackBridgeRoot
-    $out = & git -C $root @Args 2>$null
+    $out = & git -C $root @GitArgs 2>$null
     if ($null -eq $out) { return '' }
     return (($out | Out-String).Trim())
   } catch { return '' }
 }
 
 function Get-BacklogCurrentSha {
-  $sha = Get-BacklogGitOutput -Args @('rev-parse', 'HEAD')
+  $sha = Get-BacklogGitOutput -GitArgs @('rev-parse', 'HEAD')
   return ([string]$sha).Trim()
 }
 
@@ -364,7 +365,7 @@ function Invoke-BacklogCurator {
     Ensure-BacklogLLMLoaded
     if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) { throw 'Invoke-LLM unavailable' }
 
-    $gitLog = Get-BacklogGitOutput -Args @('log', '-5', '--oneline')
+    $gitLog = Get-BacklogGitOutput -GitArgs @('log', '-5', '--oneline')
     if ([string]::IsNullOrWhiteSpace($gitLog)) { $gitLog = '(no git log)' }
     $status = Get-BacklogStatusSummary
     $prompt = @"
@@ -497,7 +498,7 @@ function Test-IdeaStillRelevant {
       if ([string]::IsNullOrWhiteSpace($since)) { $since = (Get-Date).ToUniversalTime().AddDays(-30).ToString('o') }
       $logArgs = @('log', "--since=$since", '--oneline', '-50')
     }
-    $gitLog = Get-BacklogGitOutput -Args $logArgs
+    $gitLog = Get-BacklogGitOutput -GitArgs $logArgs
     if ([string]::IsNullOrWhiteSpace($gitLog)) {
       return [pscustomobject]@{ done = $false; sha = $null; reason = 'no-commits' }
     }
