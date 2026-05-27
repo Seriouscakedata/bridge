@@ -856,7 +856,36 @@ function Add-Message {
       $msg.attachments = @($Attachments)
     }
     $line = ($msg | ConvertTo-Json -Compress -Depth 10)
-    Add-Content -LiteralPath (Get-ConversationPath) -Value $line -Encoding UTF8
+    # FIX 2026-05-27: Add-Content fails when another process briefly holds an exclusive write
+    # handle on conversation.jsonl (OneDrive sync, parallel driver writes). Retry with backoff
+    # because losing a message is far worse than waiting 300ms. After max retries, append via
+    # FileStream with FileShare.ReadWrite as last resort.
+    $convPath = Get-ConversationPath
+    $appended = $false
+    $attempts = 0
+    while (-not $appended -and $attempts -lt 6) {
+      try {
+        Add-Content -LiteralPath $convPath -Value $line -Encoding UTF8 -ErrorAction Stop
+        $appended = $true
+      } catch {
+        $attempts++
+        Start-Sleep -Milliseconds (50 * $attempts)
+      }
+    }
+    if (-not $appended) {
+      # Fallback: use FileStream with FileShare.ReadWrite (more forgiving than Add-Content).
+      try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + "`r`n")
+        $fs = [System.IO.File]::Open($convPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        try { $fs.Write($bytes, 0, $bytes.Length); $appended = $true } finally { $fs.Dispose() }
+      } catch {
+        # Last resort: write to a sidecar so the line isn't lost; recovery script can merge later.
+        try {
+          $sidecar = "$convPath.unflushed"
+          [System.IO.File]::AppendAllText($sidecar, $line + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+      }
+    }
     $state.lastSeq = $seq
     Write-State -State $state
     return $seq
