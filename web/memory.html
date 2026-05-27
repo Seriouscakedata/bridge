@@ -128,11 +128,10 @@
 <div class="tabs">
   <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
   <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
-  <!-- 2026-05-27: Backlog/Radar/Settings tabs hidden -->
-  <!-- Backlog: duplicate of chat-panel backlog (curator integrated there) -->
-  <!-- Radar: feature currently inactive, no live data -->
-  <!-- Settings: autonomy settings will move to chat-side gear menu -->
-  <div class="tab" data-tab="backlog" id="tabBacklog" hidden>Бэклог</div>
+  <!-- 2026-05-27v2: Бэклог restored here -- single source of truth, wider grid view -->
+  <!-- with curator badges. chat-panel backlog (cramped column) hidden in index.html. -->
+  <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
+  <!-- Radar/Settings still hidden until feature activation / settings dialog moved -->
   <div class="tab" data-tab="radar" id="tabRadar" hidden>Радар</div>
   <div class="tab" data-tab="settings" id="tabSettings" hidden>Настройки</div>
 </div>
@@ -163,6 +162,7 @@
       <button id="addIdeaToggle" type="button">＋ Идея</button>
       <button id="reflectBtn" type="button" title="Запустить саморефлексию: агент предложит улучшения на основе данных">🤔 Подумать сейчас</button>
       <button id="refreshBl" type="button">⟳ Обновить</button>
+      <button id="blArchiveToggle" type="button" title="Показать архив (done/auto-resolved)">📦 Архив <span id="blArchiveCount" style="font-size:11px;color:var(--muted);margin-left:3px">0</span></button>
       <span id="blCount" style="color:var(--muted);font-size:12px"></span>
     </div>
     <div class="addbox" id="addIdeaBox">
