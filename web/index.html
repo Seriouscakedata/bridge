@@ -77,15 +77,16 @@
   button.primary{background:var(--user);border-color:var(--user);color:#06182d;font-weight:700}
   button.primary:hover{background:#8ac4ff;border-color:#8ac4ff}
   header{
+    /* 2026-05-27v3: symmetric 5-col grid -- brand(auto) | channel(auto) | centerbar(1fr,fills) | buttons(auto) | toggle(auto). */
     width:100%;
     max-width:100%;
-    min-height:62px;
-    padding:10px 16px;
+    min-height:48px;
+    padding:8px 16px;
     background:rgba(23,26,33,.92);
     border-bottom:1px solid var(--border);
     display:grid;
-    grid-template-columns:minmax(0,auto) minmax(220px,1fr) minmax(0,auto) auto;
-    gap:14px;
+    grid-template-columns:auto auto minmax(0,1fr) auto auto;
+    gap:10px;
     align-items:center;
     backdrop-filter:blur(14px);
     box-shadow:0 1px 0 rgba(255,255,255,.03);
@@ -127,13 +128,41 @@
   .chip.model.on{display:inline-flex;color:var(--model);background:#2b2618;border-color:rgba(255,209,102,.7)}
   .chip.model.on .dot{background:var(--model);box-shadow:0 0 12px var(--model);animation:pulse 1.25s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
-  /* 2026-05-27 redesign: compact single-line status pill replaces 4 meta-lines */
+  /* 2026-05-27v3 redesign: single agent-pill (active agent + model) + single status-pill (current task). */
+  .agent-pill{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    padding:5px 11px;
+    background:#1a1f29;
+    border:1px solid var(--border-soft);
+    border-radius:999px;
+    font-size:12px;
+    color:var(--soft);
+    white-space:nowrap;
+    flex:none;
+  }
+  .agent-pill .agent-dot{
+    width:8px;height:8px;border-radius:50%;background:#647082;
+    box-shadow:0 0 8px currentColor;
+    animation:pulse 1.25s infinite;
+  }
+  .agent-pill.claude{color:var(--claude); border-color:rgba(184,140,255,.45); background:var(--claude-bg)}
+  .agent-pill.claude .agent-dot{background:var(--claude)}
+  .agent-pill.codex{color:var(--codex); border-color:rgba(104,211,145,.45); background:var(--codex-bg)}
+  .agent-pill.codex .agent-dot{background:var(--codex)}
+  .agent-pill .agent-name{font-weight:600}
+  .agent-pill .agent-model{color:var(--muted); font-size:11px}
+  .agent-pill .agent-model:empty{display:none}
+  .agent-pill .agent-model:before{content:'· '; color:#3a4150}
+  .agent-pill .agent-model:empty:before{content:''}
+
   .status-pill{
     display:flex;
     align-items:center;
-    gap:8px;
+    gap:10px;
     min-width:0;
-    padding:6px 12px;
+    padding:6px 14px;
     background:#1a1f29;
     border:1px solid var(--border-soft);
     border-radius:999px;
@@ -141,8 +170,9 @@
     color:var(--muted);
     overflow:hidden;
     max-width:100%;
+    flex:1 1 auto;
   }
-  .status-pill b{color:var(--soft);font-weight:600;white-space:nowrap}
+  .status-pill b{color:var(--soft);font-weight:600;white-space:nowrap;flex:none}
   .status-pill b.ok{color:var(--codex)}
   .status-pill b.warn{color:var(--model)}
   .status-pill b.bad{color:var(--danger)}
@@ -153,14 +183,10 @@
     text-overflow:ellipsis;
     white-space:nowrap;
     flex:1 1 auto;
-    max-width:280px;
+    opacity:.85;
   }
-  .status-pill .status-extra{color:var(--muted);white-space:nowrap;font-size:11px}
-  .status-pill .status-sep{color:#3a4150;flex:none}
-  /* Hide chips entirely when no agent is active (idle state). Toggled by JS via body.agents-idle. */
-  body.agents-idle .chips{display:none}
-  /* Legacy aliases for any old JS that still touches .meta-line */
-  .meta,.meta-line{display:none}
+  /* Legacy dead selectors retained for older browsers/JS to no-op */
+  .meta,.meta-line,.chips{display:none}
   .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
   .btns button{white-space:nowrap}
   .btns button.on{border-color:var(--model);color:var(--model);background:#2b2618}
@@ -1980,22 +2006,22 @@
     </div>
   </div>
   <div class="centerbar">
-    <!-- 2026-05-27 redesign: chips hidden when no active agent (body.agents-idle); -->
-    <!-- 4 meta-lines collapsed into single compact status pill. -->
-    <div class="chips" aria-label="Активные агенты">
-      <span id="chipClaude" class="chip claude"><span class="dot"></span><span class="lbl">Claude</span></span>
-      <span id="chipCodex" class="chip codex"><span class="dot"></span><span class="lbl">Codex</span></span>
-      <span id="chipModel" class="chip model"><span class="dot"></span><span class="lbl">модель</span></span>
+    <!-- 2026-05-27v3 redesign: single compact agent-pill (which agent + model active) + single status pill (current task only). No more 3 disparate chips. -->
+    <div class="agent-pill" id="agentPill" aria-label="Активный агент" hidden>
+      <span class="agent-dot" id="agentDot"></span>
+      <span class="agent-name" id="agentName">—</span>
+      <span class="agent-model" id="agentModel"></span>
     </div>
     <div class="status-pill" id="statusPill" title="Текущая активность моста">
       <b id="st">ожидание</b>
-      <span class="status-sep" aria-hidden="true">·</span>
       <span class="status-task" id="task">нет активной задачи</span>
-      <span class="status-sep status-sep-extra" aria-hidden="true">·</span>
-      <span class="status-extra" id="sessionStats">—</span>
     </div>
-    <!-- Hidden but kept for back-compat JS that references them: -->
+    <!-- Hidden back-compat for JS that still references old IDs: -->
+    <span id="chipClaude" hidden><span class="dot"></span><span class="lbl">Claude</span></span>
+    <span id="chipCodex" hidden><span class="dot"></span><span class="lbl">Codex</span></span>
+    <span id="chipModel" hidden><span class="dot"></span><span class="lbl">модель</span></span>
     <span id="beat" hidden></span>
+    <span id="sessionStats" hidden>—</span>
   </div>
   <div id="btnsPrimary" class="btns btns-primary">
     <button id="searchToggle" class="icon" type="button" title="Поиск по истории (Ctrl+F)" aria-label="Поиск по истории">⌕</button>
@@ -4141,25 +4167,31 @@ async function status(){
     taskEl.textContent = taskText.length > 62 ? taskText.slice(0, 62) + '...' : taskText;
     taskEl.title = taskText;
 
-    // 2026-05-27 redesign: compact session info — only show extras when meaningful
-    // (non-normal mode, or active turn count > 0). When idle in normal mode, show nothing.
+    // 2026-05-27v3: agent-pill shows active agent + model only when there IS an active agent.
+    // No more 3 separate chips. Hidden in idle.
+    const agentPill = document.getElementById('agentPill');
+    const agentNameEl = document.getElementById('agentName');
+    const agentModelEl = document.getElementById('agentModel');
+    if(agentPill){
+      if(act === 'claude' || act === 'codex'){
+        agentPill.classList.remove('claude','codex');
+        agentPill.classList.add(act);
+        if(agentNameEl) agentNameEl.textContent = act === 'claude' ? 'Claude' : 'Codex';
+        if(agentModelEl) agentModelEl.textContent = mdl || '';
+        agentPill.hidden = false;
+      } else {
+        agentPill.hidden = true;
+      }
+    }
+    // Legacy session info kept in hidden span for back-compat (not displayed in new layout)
     const sessionEl = document.getElementById('sessionStats');
-    const mode = s.task_mode && s.task_mode !== 'normal' ? String(s.task_mode) : '';
-    const turn = Number(s.turn || s.task_turn || 0);
-    const seq = Number(s.lastSeq || lastSeq || 0);
-    let sessionParts = [];
-    if(turn > 0) sessionParts.push('ход ' + turn);
-    if(mode) sessionParts.push(mode);
-    sessionEl.textContent = sessionParts.length ? sessionParts.join(' · ') : '#' + seq;
-    sessionEl.title = 'turn=' + turn + ', lastSeq=' + seq + ', mode=' + (mode || 'normal');
-
-    setChip('chipClaude', act === 'claude');
-    setChip('chipCodex', act === 'codex');
-    setChip('chipModel', Boolean(act && mdl));
-    document.querySelector('#chipClaude .lbl').textContent = 'Claude';
-    document.querySelector('#chipCodex .lbl').textContent = 'Codex';
-    document.querySelector('#chipModel .lbl').textContent = mdl ? 'модель: ' + mdl : 'модель';
-    // Hide whole chips row when no agent is active (idle in normal mode)
+    if(sessionEl){
+      const mode = s.task_mode && s.task_mode !== 'normal' ? String(s.task_mode) : '';
+      const turn = Number(s.turn || s.task_turn || 0);
+      const seq = Number(s.lastSeq || lastSeq || 0);
+      sessionEl.textContent = 'turn=' + turn + ' seq=' + seq + ' mode=' + (mode || 'normal');
+      sessionEl.title = sessionEl.textContent;
+    }
     document.body.classList.toggle('agents-idle', !act);
 
     if(act === 'claude' || act === 'codex'){
