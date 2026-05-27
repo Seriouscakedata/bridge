@@ -2077,7 +2077,7 @@ while ($true) {
   # new [[PARALLEL:N]]...[[/PARALLEL:N]] (which has no '||' and is handled later via
   # Test-CanParallelize/Invoke-ParallelDispatch).
   if ($speaker -eq 'claude') {
-    $pmatch = [regex]::Match($reply, '(?s)\[\[PARALLEL:\s*(.+?\|\|.+?)\s*\]\]')
+    $pmatch = [regex]::Match($reply, '(?s)\[\[PARALLEL:\s*((?:(?!\[\[).)+?\|\|(?:(?!\[\[).)+?)\s*\]\]')
     if ($pmatch.Success) {
       $pspec = $pmatch.Groups[1].Value.Trim()
       $prepo = $workRoot; $psubsRaw = $pspec
