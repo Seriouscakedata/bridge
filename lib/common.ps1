@@ -636,26 +636,37 @@ function Add-SessionDecisionEvent {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $ledger = Join-Path $dir 'session-ledger.jsonl'
     $entry = [ordered]@{ ts=(Get-Date).ToString('o'); event=$EventType; channel=$ch }
-    foreach ($k in $Meta.Keys) { $entry[$k] = $Meta[$k] }
+    if ($Meta) {
+      foreach ($k in $Meta.Keys) { $entry[$k] = $Meta[$k] }
+    }
     $line = $entry | ConvertTo-Json -Compress -Depth 5
-    Add-Content -Path $ledger -Value $line -Encoding UTF8
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText($ledger, ($line + [Environment]::NewLine), $u8NoBom)
   } catch {}
 }
 
 function Get-SessionLedgerBlock {
   param([string]$Channel='main', [int]$LastN=5)
   try {
+    if ($LastN -le 0) { return '' }
     $ledger = Join-Path (Get-DecisionsPath) 'session-ledger.jsonl'
     if (-not (Test-Path $ledger)) { return '' }
-    $all = Get-Content $ledger -Encoding UTF8 -ErrorAction SilentlyContinue
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $all = [System.IO.File]::ReadAllLines($ledger, $u8NoBom)
     if (-not $all -or $all.Count -eq 0) { return '' }
     $items = @()
-    foreach ($line in ($all | Select-Object -Last ([Math]::Max($LastN * 4, $LastN)))) {
+    foreach ($rawLine in ($all | Select-Object -Last ([Math]::Max($LastN * 4, 1)))) {
       try {
+        $line = ([string]$rawLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line.Length -gt 0 -and [int][char]$line[0] -eq 0xFEFF) { $line = $line.Substring(1) }
         $e = $line | ConvertFrom-Json
         if ($e.PSObject.Properties.Name -contains 'channel' -and -not [string]::IsNullOrWhiteSpace([string]$Channel) -and [string]$e.channel -ne [string]$Channel) { continue }
-        $suffix = if ($e.task) { ': ' + [string]$e.task.Substring(0,[Math]::Min(60,[string]$e.task.Length)) } else { '' }
-        $items += "$($e.event) @ $([string]$e.ts.Substring(0,[Math]::Min(16,[string]$e.ts.Length)))$suffix"
+        $taskText = if ($e.PSObject.Properties.Name -contains 'task' -and $null -ne $e.task) { [string]$e.task } else { '' }
+        $suffix = if ($taskText.Length -gt 0) { ': ' + $taskText.Substring(0,[Math]::Min(60,$taskText.Length)) } else { '' }
+        $tsText = if ($e.PSObject.Properties.Name -contains 'ts' -and $null -ne $e.ts) { [string]$e.ts } else { '' }
+        $tsShort = if ($tsText.Length -gt 16) { $tsText.Substring(0,16) } else { $tsText }
+        $items += "$($e.event) @ $tsShort$suffix"
       } catch { $items += [string]$line }
     }
     $items = @($items | Select-Object -Last $LastN)

@@ -2492,10 +2492,12 @@ while ($true) {
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
         }.GetNewClosure()) | Out-Null
         try {
-          Add-SessionDecisionEvent -EventType 'task_start' -Meta @{ task=$btext.Substring(0,[Math]::Min(120,$btext.Length)) } -Channel $Channel
-          $mGoal = $btext.Substring(0,[Math]::Min(600,$btext.Length))
+          $taskText = [string]$btext
+          $taskForLedger = if ($taskText.Length -gt 120) { $taskText.Substring(0,120) } else { $taskText }
+          Add-SessionDecisionEvent -EventType 'task_start' -Meta @{ task=$taskForLedger } -Channel $Channel
+          $mGoal = if ($taskText.Length -gt 600) { $taskText.Substring(0,600) } else { $taskText }
           Update-State ({ param($s)
-            $s.session_mission = [ordered]@{ goal=$mGoal; next_step=''; accepted_decisions=@(); constraints=@(); recent_done=@(); blockers=@() }
+            $s.session_mission = [pscustomobject]@{ goal=$mGoal; next_step=''; accepted_decisions=@(); constraints=@(); recent_done=@(); blockers=@() }
           }.GetNewClosure()) | Out-Null
         } catch {}
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }

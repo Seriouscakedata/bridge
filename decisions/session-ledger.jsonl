@@ -1,1 +1,3 @@
-﻿{"ts":"2026-05-28T00:22:27.2781703+03:00","event":"task_start","channel":"main","task":"Mission Card + Decision Ledger verification"}
+{"ts":"2026-05-28T00:22:27.2781703+03:00","event":"task_start","channel":"main","task":"Mission Card + Decision Ledger verification"}
+{"ts":"2026-05-28T00:28:32.1534287+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 OK; ParseFile driver.ps1 OK; smoke.ps1 OK; hooks/fields found by Select-Str"}
+{"ts":"2026-05-28T00:31:48.5830956+03:00","event":"verified_commit","channel":"main","what":"ParseFile lib/common.ps1 → OK; ParseFile driver.ps1 → OK; все 4 паттерна в lib/common.ps1 (строки 62"}
