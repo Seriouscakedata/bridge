@@ -557,6 +557,15 @@
     background:#12263d;
     border-color:rgba(114,183,255,.48);
   }
+  .backlog-filter .backlog-archive-btn{ margin-left:auto; }
+  .backlog-filter .backlog-archive-btn.active{
+    color:#ffd9b3; background:#3d2c12; border-color:rgba(255,183,114,.48);
+  }
+  .backlog-archive-count{
+    display:inline-block; min-width:18px; padding:0 4px; margin-left:4px;
+    font-size:10px; line-height:14px; text-align:center;
+    background:rgba(255,255,255,.08); border-radius:7px; color:var(--soft);
+  }
   .backlog-list{display:flex;flex-direction:column;gap:6px;padding:8px}
   .overview-head{
     display:flex;
@@ -2192,6 +2201,7 @@
       <button data-bfilter="approved" type="button">Одобренные</button>
       <button data-bfilter="held" type="button">На паузе</button>
       <button data-bfilter="done" type="button">Готово</button>
+      <button id="backlogArchiveToggle" class="backlog-archive-btn" type="button" title="Показать архив (done/auto-resolved)">📦 Архив <span id="backlogArchiveCount" class="backlog-archive-count">0</span></button>
     </div>
     <div id="backlogList" class="backlog-list">
       <div class="backlog-empty">Backlog пуст</div>
@@ -2882,12 +2892,21 @@ async function pollUsage(){
 }
 let backlogInFlight = false;
 let _backlogItems = [];
+let _backlogShowArchived = false;
+let _backlogArchivedCount = 0;
 async function pollBacklog(){
   if(backlogInFlight) return;
   backlogInFlight = true;
   try{
-    const data = await fetchJson('/api/backlog');
+    const url = _backlogShowArchived ? '/api/backlog?include=archived' : '/api/backlog';
+    const data = await fetchJson(url);
     _backlogItems = Array.isArray(data.items) ? data.items : [];
+    _backlogArchivedCount = (typeof data.archived_count === 'number') ? data.archived_count : 0;
+    // Update archive button badge
+    const cntEl = document.getElementById('backlogArchiveCount');
+    if(cntEl) cntEl.textContent = String(_backlogArchivedCount);
+    const tglEl = document.getElementById('backlogArchiveToggle');
+    if(tglEl) tglEl.classList.toggle('active', _backlogShowArchived);
     renderBacklog(_backlogItems, _backlogFilter);
   }catch(e){
     if(backlogList) backlogList.innerHTML = '<div class="backlog-empty">Backlog недоступен: ' + esc(e.message || e) + '</div>';
@@ -4925,6 +4944,12 @@ if(codeQuery){
 }
 if(backlogPanel){
   backlogPanel.addEventListener('click', e => {
+    const archiveBtn = e.target.closest('#backlogArchiveToggle');
+    if(archiveBtn){
+      _backlogShowArchived = !_backlogShowArchived;
+      pollBacklog();
+      return;
+    }
     const filterBtn = e.target.closest('[data-bfilter]');
     if(filterBtn){
       _backlogFilter = filterBtn.dataset.bfilter || 'all';

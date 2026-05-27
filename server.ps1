@@ -541,14 +541,27 @@ try {
         } else { Send-Text $ctx '{"ok":false,"error":"librarian.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/backlog') {
-        $items = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
-        foreach ($item in $items) {
+        # 2026-05-27: by default exclude terminal statuses (done/auto-resolved)
+        # from the response — they accumulate forever and clutter the UI.
+        # Opt-in via ?include=done|archived|all to fetch the full archive.
+        $includeParam = (Get-QueryParamUtf8 $ctx 'include')
+        $includeArchived = (-not [string]::IsNullOrWhiteSpace($includeParam)) -and ($includeParam -imatch '^(done|archived|all|true|1)$')
+        $allItems = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
+        $archivedCount = 0
+        $itemsFiltered = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($item in $allItems) {
           if (-not ($item.PSObject.Properties.Name -contains 'auto_curator')) { $item | Add-Member -NotePropertyName auto_curator -NotePropertyValue $null -Force }
           if (-not ($item.PSObject.Properties.Name -contains 'similar_to')) { $item | Add-Member -NotePropertyName similar_to -NotePropertyValue @() -Force }
           if (-not ($item.PSObject.Properties.Name -contains 'seen_again_count')) { $item | Add-Member -NotePropertyName seen_again_count -NotePropertyValue 0 -Force }
+          $st = [string]$item.status
+          if (-not $includeArchived -and ($st -eq 'done' -or $st -eq 'auto-resolved')) {
+            $archivedCount++
+            continue
+          }
+          [void]$itemsFiltered.Add($item)
         }
-        $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
+        $itemsJson = '[' + ((@($itemsFiltered.ToArray()) | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + ',"archived_count":' + $archivedCount + ',"total":' + $allItems.Count + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/plan') {
         $p = Get-PlanForApi
