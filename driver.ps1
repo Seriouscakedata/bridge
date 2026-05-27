@@ -1763,6 +1763,7 @@ function Invoke-Coder {
   $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { 'danger-full-access' }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $replayCoderModel = 'codex-cli'
   # Per-channel project root routes Codex -C to the active project. No non-main fallback.
   # Global Codex instance mutex: Codex MSIX supports only one exec session at a time.
   # When another channel's driver is running Codex, wait up to 120s for it to finish.
@@ -1833,6 +1834,7 @@ function Invoke-Coder {
     $effRes = Get-CoderReasoningEffort -CoderCwd $coderCwd
     $effort = [string]$effRes.effort
     if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
+    $replayCoderModel = "codex-cli/$effort"
     $reasonArg = "model_reasoning_effort=`"$effort`""
     try {
       Add-Content -LiteralPath (Join-Path $bridgeRoot 'driver.out.log') -Value (
@@ -1849,7 +1851,7 @@ function Invoke-Coder {
     # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
-      Add-ReplayRecordForCurrentTask -Role 'coder' -Model 'codex-cli' -Mode $Mode -Prompt $Prompt -Response '' `
+      Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response '' `
         -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'coder_timeout' -Provider 'codex'
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
@@ -1877,7 +1879,7 @@ function Invoke-Coder {
     Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
   }
   if ($null -eq $reply) { $reply = '' }
-  Add-ReplayRecordForCurrentTask -Role 'coder' -Model 'codex-cli' -Mode $Mode -Prompt $Prompt -Response $reply `
+  Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response $reply `
     -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'codex'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
