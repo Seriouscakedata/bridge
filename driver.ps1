@@ -2655,7 +2655,7 @@ while ($true) {
     $fact = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($fact)) { continue }
     try {
-      $rid = Add-Memory -Text $fact -Tags @('explicit', $speaker) -Source ('explicit:' + $speaker) -Importance 0.75
+      $rid = Add-Memory -Text $fact -Tags @('explicit', $speaker) -Source ('explicit:' + $speaker) -Importance 0.75 -Channel ([string]$projectBinding.slug)
       if ($rid) { $rememberedFacts += $fact }
     } catch {}
   }
@@ -2666,7 +2666,8 @@ while ($true) {
     $idea = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($idea)) { continue }
     try {
-      $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new'
+      $ideaScope = if ($channelIsMain) { 'bridge' } else { 'project' }
+      $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new' -Project ([string]$projectBinding.slug) -Scope $ideaScope
       $ideaOutcome = Resolve-AddIdeaOutcome -AddResult $addIdeaResult -IdeaText $idea -From $speaker
       if ($ideaOutcome.deduped) {
         $cosineText = 'n/a'
@@ -3181,7 +3182,7 @@ while ($true) {
         foreach ($im in $ideaLines) {
           $itext = $im.Groups[1].Value.Trim() -replace '\*+$',''
           if ([string]::IsNullOrWhiteSpace($itext)) { continue }
-          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new'
+          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new' -Project ([string]$projectBinding.slug) -Scope 'bridge'
           if ($id) { $filed++ }
         }
         if ($filed -gt 0) {
