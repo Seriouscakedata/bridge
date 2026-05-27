@@ -11,3 +11,6 @@
 {"ts":"2026-05-28T01:57:51.3973071+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
 {"ts":"2026-05-28T02:08:18.9084697+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
 {"ts":"2026-05-28T02:11:01.7889041+03:00","event":"verified_commit","channel":"main","what":"SUPERSEDED: early runbook verification was rejected by critic; see later hardening commit and live verification."}
+{"ts":"2026-05-28T02:23:24.3113765+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 OK | /api/runbook вернул application/zip | expected ZIP entries открыты | healt"}
+{"ts":"2026-05-28T02:25:22.8945608+03:00","event":"verified_commit","channel":"main","what":"GET /api/runbook HTTP live call | Status=200, Content-Type=application/zip, Len=1806; ConvertTo-Json"}
+{"ts":"2026-05-28T02:40:41.1128242+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X3 Replay mode — большой эпик: рефакторинг всех agent-вызовов на запись {prompt, model, response"}
