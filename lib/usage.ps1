@@ -49,6 +49,27 @@ function Get-UsagePrice {
   return $null
 }
 
+function Get-UsageCostUsd {
+  param(
+    [string]$Model,
+    $PromptTokens = 0,
+    $CompletionTokens = 0
+  )
+  try {
+    $pt = 0; $ct = 0
+    try { $pt = [int]$PromptTokens } catch { $pt = 0 }
+    try { $ct = [int]$CompletionTokens } catch { $ct = 0 }
+    $pt = [Math]::Max(0, $pt)
+    $ct = [Math]::Max(0, $ct)
+    $price = Get-UsagePrice -Model $Model
+    $inRate = Get-UsagePriceNumber -Price $price -Name 'in'
+    $outRate = Get-UsagePriceNumber -Price $price -Name 'out'
+    return [Math]::Round((($inRate * $pt) + ($outRate * $ct)) / 1000000.0, 8)
+  } catch {
+    return $null
+  }
+}
+
 function Add-UsageRecord {
   param(
     [string]$Kind,
@@ -72,10 +93,7 @@ function Add-UsageRecord {
     $ct = [Math]::Max(0, $ct)
     $cost = $null
     if ($Kind -eq 'paid') {
-      $price = Get-UsagePrice -Model $Model
-      $inRate = Get-UsagePriceNumber -Price $price -Name 'in'
-      $outRate = Get-UsagePriceNumber -Price $price -Name 'out'
-      $cost = [Math]::Round((($inRate * $pt) + ($outRate * $ct)) / 1000000.0, 8)
+      $cost = Get-UsageCostUsd -Model $Model -PromptTokens $pt -CompletionTokens $ct
     }
     $rec = [ordered]@{
       ts                = [DateTime]::UtcNow.ToString('o')

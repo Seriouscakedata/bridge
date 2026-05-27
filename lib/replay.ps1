@@ -192,3 +192,31 @@ function Add-ReplayRecord {
     Write-ReplayInternalError ("Add-ReplayRecord: " + $_.Exception.Message)
   }
 }
+
+function Add-ReplayRecordForCurrentTask {
+  param(
+    [string]$Role,
+    [string]$Model,
+    [AllowNull()][string]$Mode,
+    [AllowNull()][object]$Prompt,
+    [AllowNull()][object]$Response,
+    [int]$LatencyMs,
+    [AllowNull()][object]$CostUsd,
+    [string]$Status,
+    [AllowNull()][string]$ErrorType,
+    [string]$Provider
+  )
+  try {
+    $state = Read-State
+    if (-not $state) { return }
+    $taskId = [string]$state.current_task_id
+    if ([string]::IsNullOrWhiteSpace($taskId)) { return }
+    $turn = 0
+    try { $turn = [int]$state.task_turn } catch { $turn = 0 }
+    Add-ReplayRecord -TaskId $taskId -Turn $turn -Role $Role -Model $Model -Mode $Mode `
+      -Prompt $Prompt -Response $Response -LatencyMs $LatencyMs -CostUsd $CostUsd `
+      -Status $Status -ErrorType $ErrorType -Provider $Provider
+  } catch {
+    Write-ReplayInternalError ("Add-ReplayRecordForCurrentTask: " + $_.Exception.Message)
+  }
+}

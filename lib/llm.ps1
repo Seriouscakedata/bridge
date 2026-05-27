@@ -37,6 +37,7 @@ function Invoke-DeepSeekChat {
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
   $key = Get-Secret 'deepseekApiKey'
   if (-not $key) { return $null }
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $body = [ordered]@{
     model       = $Model
@@ -53,16 +54,30 @@ function Invoke-DeepSeekChat {
       -ContentType 'application/json' -Body $bytes -UseBasicParsing -TimeoutSec $TimeoutSec
     $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     $obj = $txt | ConvertFrom-Json
+    $pt = 0; $ct = 0; $costUsd = $null
     try {
-      $pt = 0; $ct = 0
       if ($obj.usage) {
         if ($null -ne $obj.usage.prompt_tokens) { $pt = [int]$obj.usage.prompt_tokens }
         if ($null -ne $obj.usage.completion_tokens) { $ct = [int]$obj.usage.completion_tokens }
       }
+      if (Get-Command Get-UsageCostUsd -ErrorAction SilentlyContinue) {
+        $costUsd = Get-UsageCostUsd -Model $Model -PromptTokens $pt -CompletionTokens $ct
+      }
       $null = Add-UsageRecord -Kind paid -Provider 'deepseek' -Model $Model -Purpose $Purpose -PromptTokens $pt -CompletionTokens $ct -Status 'ok'
-    } catch {}
-    return [string]$obj.choices[0].message.content
-  } catch { return $null }
+    } catch {
+      Write-Warning ("DeepSeek usage accounting failed: " + $_.Exception.Message)
+    }
+    $responseText = [string]$obj.choices[0].message.content
+    $replayPurpose = if ([string]::IsNullOrWhiteSpace($Purpose)) { 'general' } else { $Purpose }
+    Add-ReplayRecordForCurrentTask -Role ("deepseek-" + $replayPurpose) -Model $Model -Mode $Purpose -Prompt $Prompt -Response $responseText `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $costUsd -Status 'ok' -ErrorType $null -Provider 'deepseek'
+    return $responseText
+  } catch {
+    $replayPurpose = if ([string]::IsNullOrWhiteSpace($Purpose)) { 'general' } else { $Purpose }
+    Add-ReplayRecordForCurrentTask -Role ("deepseek-" + $replayPurpose) -Model $Model -Mode $Purpose -Prompt $Prompt -Response '' `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'error' -ErrorType 'deepseek_error' -Provider 'deepseek'
+    return $null
+  }
 }
 
 function Invoke-LLMProvider {

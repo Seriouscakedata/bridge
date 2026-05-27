@@ -1641,6 +1641,9 @@ function Initialize-Bridge {
   return (Read-State)
 }
 
+# Replay capture is loaded before memory/LLM helpers so background chat calls can
+# write records when a task is active. Best-effort and non-fatal.
+try { . (Join-Path $PSScriptRoot 'replay.ps1') } catch { Write-Warning "replay.ps1 failed to load: $($_.Exception.Message)" }
 # Long-term vector memory (Gemini embeddings + Flash librarian). Best-effort: if this
 # layer fails to load or Gemini is unreachable, the engine keeps running unchanged.
 try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.ps1 failed to load: $($_.Exception.Message)" }

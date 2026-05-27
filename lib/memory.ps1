@@ -221,6 +221,7 @@ function Invoke-GeminiChat {
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
   $key = Get-Secret 'geminiApiKey'
   if (-not $key) { return $null }
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $url = "https://generativelanguage.googleapis.com/v1beta/models/$($Model):generateContent?key=$key"
   $body = @{
     contents         = @(@{ parts = @(@{ text = $Prompt }) })
@@ -228,16 +229,30 @@ function Invoke-GeminiChat {
   }
   try {
     $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec $TimeoutSec
+    $pt = 0; $ct = 0; $costUsd = $null
     try {
-      $pt = 0; $ct = 0
       if ($r.usageMetadata) {
         if ($null -ne $r.usageMetadata.promptTokenCount) { $pt = [int]$r.usageMetadata.promptTokenCount }
         if ($null -ne $r.usageMetadata.candidatesTokenCount) { $ct = [int]$r.usageMetadata.candidatesTokenCount }
       }
+      if (Get-Command Get-UsageCostUsd -ErrorAction SilentlyContinue) {
+        $costUsd = Get-UsageCostUsd -Model $Model -PromptTokens $pt -CompletionTokens $ct
+      }
       $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $Model -Purpose $Purpose -PromptTokens $pt -CompletionTokens $ct -Status 'ok'
-    } catch {}
-    return [string]$r.candidates[0].content.parts[0].text
-  } catch { return $null }
+    } catch {
+      Write-Warning ("Gemini usage accounting failed: " + $_.Exception.Message)
+    }
+    $responseText = [string]$r.candidates[0].content.parts[0].text
+    $replayPurpose = if ([string]::IsNullOrWhiteSpace($Purpose)) { 'general' } else { $Purpose }
+    Add-ReplayRecordForCurrentTask -Role ("gemini-" + $replayPurpose) -Model $Model -Mode $Purpose -Prompt $Prompt -Response $responseText `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $costUsd -Status 'ok' -ErrorType $null -Provider 'gemini'
+    return $responseText
+  } catch {
+    $replayPurpose = if ([string]::IsNullOrWhiteSpace($Purpose)) { 'general' } else { $Purpose }
+    Add-ReplayRecordForCurrentTask -Role ("gemini-" + $replayPurpose) -Model $Model -Mode $Purpose -Prompt $Prompt -Response '' `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'error' -ErrorType 'gemini_error' -Provider 'gemini'
+    return $null
+  }
 }
 
 # ---- vector math ----

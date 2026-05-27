@@ -1604,6 +1604,9 @@ function Invoke-Planner {
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
+      $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
+      Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response '' `
+        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'planner_timeout' -Provider 'claude'
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
     }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
@@ -1630,6 +1633,9 @@ function Invoke-Planner {
     Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue
   }
   if ($null -eq $reply) { $reply = '' }
+  $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
+  Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response $reply `
+    -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'claude'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
@@ -1843,6 +1849,8 @@ function Invoke-Coder {
     # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
+      Add-ReplayRecordForCurrentTask -Role 'coder' -Model 'codex-cli' -Mode $Mode -Prompt $Prompt -Response '' `
+        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'coder_timeout' -Provider 'codex'
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
@@ -1869,6 +1877,8 @@ function Invoke-Coder {
     Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
   }
   if ($null -eq $reply) { $reply = '' }
+  Add-ReplayRecordForCurrentTask -Role 'coder' -Model 'codex-cli' -Mode $Mode -Prompt $Prompt -Response $reply `
+    -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'codex'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
 }
 
