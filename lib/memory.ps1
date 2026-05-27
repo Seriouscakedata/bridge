@@ -23,6 +23,15 @@ function Get-EmbedCacheKey {
 function Get-MemoryDir { Join-Path (Get-BridgeRoot) 'memory' }
 function Get-MemoryStorePath { Join-Path (Get-MemoryDir) 'memory.jsonl' }
 function Get-MemoryMapPath { Join-Path (Get-MemoryDir) 'map.md' }
+function Get-MemoryMapPathForChannel { param([string]$Slug) Join-Path (Get-MemoryDir) ("map." + $Slug + ".md") }
+function Get-MemorySharedMapPath { Join-Path (Get-MemoryDir) 'map.shared.md' }
+function Get-MemoryMapPathsForChannel {
+  param([string]$Slug)
+  return [pscustomobject]@{
+    Channel = (Get-MemoryMapPathForChannel -Slug $Slug)
+    Shared  = (Get-MemorySharedMapPath)
+  }
+}
 function Get-MemoryLogPath { Join-Path (Get-MemoryDir) 'librarian.log' }
 function Get-MemoryMarkerPath { Join-Path (Get-MemoryDir) 'librarian.last' }
 

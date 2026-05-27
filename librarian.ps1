@@ -47,17 +47,37 @@ $removed = 0
 try { $removed = Invoke-MemoryDedup } catch { Write-LibLog "dedup error: $($_.Exception.Message)" }
 Write-LibLog "dedup removed: $removed"
 
-# 3) Regenerate the human-readable memory map via Flash.
+# 3) Regenerate per-channel + shared maps; legacy map.md stays as concatenation for backward compat.
 $mems = @(Get-AllMemories)
-if ($mems.Count -gt 0) {
-  $listing = ($mems | Sort-Object { [double]$_.importance } -Descending | ForEach-Object {
-    "- [$($_.source)] (важн. $([Math]::Round([double]$_.importance,2))) $(($_.text -replace '\s+',' ').Trim())"
-  }) -join "`n"
-  if ($listing.Length -gt 18000) { $listing = $listing.Substring(0, 18000) }
-  $prompt = @"
+if ($mems.Count -eq 0) {
+  Write-LibLog 'no memories yet; map skipped'
+} else {
+  # Group: shared (cross-channel) + per-channel (NOT shared). Legacy records (no channel) -> 'main'.
+  $sharedMems = @($mems | Where-Object { Test-MemoryShared $_ })
+  $localMems  = @($mems | Where-Object { -not (Test-MemoryShared $_) })
+  $perChannel = @{}
+  foreach ($m in $localMems) {
+    $ch = Get-MemoryChannel $m
+    if (-not $perChannel.ContainsKey($ch)) { $perChannel[$ch] = New-Object 'System.Collections.Generic.List[object]' }
+    [void]$perChannel[$ch].Add($m)
+  }
+
+  function _GenMapSection {
+    param($GroupMems, [string]$Label, [string]$TargetPath)
+    if (-not $GroupMems -or @($GroupMems).Count -eq 0) {
+      $stub = "# Карта памяти ($Label)`n`n_Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm') · записей: 0_`n`n_(нет записей)_`n"
+      Write-AtomicFile -Path $TargetPath -Content $stub
+      return $stub
+    }
+    $listing = ($GroupMems | Sort-Object { [double]$_.importance } -Descending | ForEach-Object {
+      "- [$($_.source)] (важн. $([Math]::Round([double]$_.importance,2))) $(($_.text -replace '\s+',' ').Trim())"
+    }) -join "`n"
+    if ($listing.Length -gt 18000) { $listing = $listing.Substring(0, 18000) }
+    $prompt = @"
 Ты — библиотекарь долговременной памяти ИИ-моста (Claude+Codex, разработка на ПК пользователя).
+КОНТЕКСТ ЭТОЙ СЕКЦИИ: $Label.
 Ниже — сырые записи памяти. Собери из них компактную организованную «карту памяти» на русском в Markdown:
-- сгруппируй по темам (например: О пользователе, Архитектура моста, Грабли/gotchas, Решения, Настройки и пути);
+- сгруппируй по темам;
 - объедини дубли и близкое по смыслу, убери явный мусор;
 - пиши кратко, маркерами, только то, что реально полезно помнить надолго;
 - не выдумывай факты, опирайся ТОЛЬКО на записи ниже.
@@ -66,20 +86,40 @@ if ($mems.Count -gt 0) {
 ЗАПИСИ ПАМЯТИ:
 $listing
 "@
-  $map = Invoke-LLM -Purpose 'librarian' -Prompt $prompt -TimeoutSec 180 -Temperature 0.3
-  if (-not [string]::IsNullOrWhiteSpace($map)) {
+    $map = $null
+    try { $map = Invoke-LLM -Purpose 'librarian' -Prompt $prompt -TimeoutSec 180 -Temperature 0.3 } catch { $map = $null }
+    if ([string]::IsNullOrWhiteSpace($map)) {
+      Write-LibLog "map section '$Label' generation failed (empty reply) -- keeping previous if exists"
+      if (Test-Path $TargetPath) { return (Get-Content $TargetPath -Raw -Encoding UTF8) }
+      $stub = "# Карта памяти ($Label)`n`n_(генерация не удалась)_`n"
+      Write-AtomicFile -Path $TargetPath -Content $stub
+      return $stub
+    }
     # strip a wrapping ```markdown ... ``` fence if the model added one
     $map = ($map -replace '(?s)^\s*```(?:markdown|md)?\s*\r?\n','' -replace '(?s)\r?\n```\s*$','').Trim()
-    $header = "# Карта памяти моста`n`n_Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm') · записей: $($mems.Count)_`n`n"
-    Write-AtomicFile -Path (Get-MemoryMapPath) -Content ($header + $map.Trim() + "`n")
-    Write-LibLog "map regenerated; memories: $($mems.Count)"
-    # Save current count -> the driver's delta-trigger uses this to decide when to wake us early.
-    try { [System.IO.File]::WriteAllText((Join-Path (Get-MemoryDir) 'librarian.count.last'), [string]$mems.Count, $Utf8NoBom) } catch {}
-  } else {
-    Write-LibLog 'map generation failed (empty reply)'
+    $header = "# Карта памяти ($Label)`n`n_Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm') · записей: $(@($GroupMems).Count)_`n`n"
+    $full = $header + $map.Trim() + "`n"
+    Write-AtomicFile -Path $TargetPath -Content $full
+    return $full
   }
-} else {
-  Write-LibLog 'no memories yet; map skipped'
+
+  $sections = New-Object 'System.Collections.Generic.List[string]'
+  $channelSlugs = @($perChannel.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+  foreach ($slug in $channelSlugs) {
+    $group = @($perChannel[$slug].ToArray())
+    $sectionTxt = _GenMapSection -GroupMems $group -Label "канал $slug" -TargetPath (Get-MemoryMapPathForChannel -Slug $slug)
+    [void]$sections.Add("## map.$slug.md`n`n$sectionTxt")
+  }
+  $sharedTxt = _GenMapSection -GroupMems $sharedMems -Label 'общая память (shared, cross-channel)' -TargetPath (Get-MemorySharedMapPath)
+  [void]$sections.Add("## map.shared.md`n`n$sharedTxt")
+
+  # Legacy concat: existing tools/scripts still read memory/map.md.
+  $legacyHeader = "# Карта памяти моста (legacy concat)`n`n_Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm') · записей: $($mems.Count)_`n`n"
+  $legacy = $legacyHeader + ($sections -join "`n`n")
+  Write-AtomicFile -Path (Get-MemoryMapPath) -Content $legacy
+  Write-LibLog "maps regenerated; channels=$($perChannel.Count) shared=$(@($sharedMems).Count) total=$($mems.Count)"
+  # Save current count -> the driver's delta-trigger uses this to decide when to wake us early.
+  try { [System.IO.File]::WriteAllText((Join-Path (Get-MemoryDir) 'librarian.count.last'), [string]$mems.Count, $Utf8NoBom) } catch {}
 }
 
 try { [System.IO.File]::WriteAllText((Get-MemoryMarkerPath), (Get-Date).ToString('o'), $Utf8NoBom) } catch {}
