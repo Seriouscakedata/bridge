@@ -223,7 +223,7 @@ try {
                 if ([int]::TryParse($mSeq.Groups[1].Value, [ref]$seqTmp) -and $seqTmp -gt $newLastSeq) { $newLastSeq = $seqTmp }
               }
               if ($ln.IndexOf('"from":"system"') -lt 0) { continue }
-              if ($ln -notmatch '[❌💥]') { continue }
+              if ($ln -notmatch '(?:❌|💥)') { continue }
               $mTs = [regex]::Match($ln, '"ts"\s*:\s*"([^"]+)"')
               if (-not $mTs.Success) { $newErrCount++; continue }
               try { if ([datetime]::Parse($mTs.Groups[1].Value) -ge $cutoff24) { $newErrCount++ } } catch { $newErrCount++ }
