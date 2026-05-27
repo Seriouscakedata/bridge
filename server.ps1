@@ -542,6 +542,11 @@ try {
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/backlog') {
         $items = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
+        foreach ($item in $items) {
+          if (-not ($item.PSObject.Properties.Name -contains 'auto_curator')) { $item | Add-Member -NotePropertyName auto_curator -NotePropertyValue $null -Force }
+          if (-not ($item.PSObject.Properties.Name -contains 'similar_to')) { $item | Add-Member -NotePropertyName similar_to -NotePropertyValue @() -Force }
+          if (-not ($item.PSObject.Properties.Name -contains 'seen_again_count')) { $item | Add-Member -NotePropertyName seen_again_count -NotePropertyValue 0 -Force }
+        }
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
       }
