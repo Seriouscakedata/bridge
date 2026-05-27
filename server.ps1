@@ -788,7 +788,7 @@ try {
             lastSeq = $hLastSeq
             generated_at = $now.ToString('o')
           }
-          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 32
+          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 8
 
           $smokePath = Join-Path $runbookRoot 'smoke.ps1'
           if (Test-Path -LiteralPath $smokePath -PathType Leaf) {
@@ -831,7 +831,7 @@ try {
             $value = Get-RunbookPropertyValue $stateObj $field
             $stateSummary[$field] = $value
           }
-          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 32
+          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 8
 
           $worktrees = Convert-RunbookProcessResultToText (Invoke-RunbookProcess -FileName 'git.exe' -ArgsList @('-C', $runbookRoot, 'worktree', 'list') -WorkingDirectory $runbookRoot -TimeoutMs 15000)
 
