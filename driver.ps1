@@ -116,6 +116,108 @@ function Get-ChunkingSettings {
   return $out
 }
 
+$Script:CliHelpCache = @{}
+
+function Get-CliHelpText {
+  # Cached --help fetcher. Returns lowercase help text (we match
+  # case-insensitively) or '' if CLI not resolvable / failed.
+  param([string]$Cli)
+  if ($Script:CliHelpCache.ContainsKey($Cli)) { return $Script:CliHelpCache[$Cli] }
+  $text = ''
+  try {
+    $cfg = Get-BridgeConfig
+    if ($Cli -eq 'claude') {
+      $exe = Resolve-ClaudeExe $cfg
+      if ($exe -and (Test-Path -LiteralPath $exe)) {
+        $text = (& $exe --help 2>$null | Out-String).ToLowerInvariant()
+      }
+    } elseif ($Cli -eq 'codex') {
+      $exe = Resolve-CodexExe $cfg
+      if ($exe -and (Test-Path -LiteralPath $exe)) {
+        $main = (& $exe --help 2>$null | Out-String)
+        $execHelp = (& $exe exec --help 2>$null | Out-String)
+        $text = ($main + "`n" + $execHelp).ToLowerInvariant()
+      }
+    }
+  } catch { $text = '' }
+  $Script:CliHelpCache[$Cli] = $text
+  return $text
+}
+
+function Test-CliFlagsInDiff {
+  # Deterministic pre-critic check: scan ADDED lines in a git diff for
+  # claude.exe / codex.exe invocations and verify every --flag actually
+  # exists in the CLI's --help output. Returns @() if clean, or array of
+  # @{ cli; flag; sample } describing unknown flags. The 2026-05-27 --cwd
+  # incident (the LLM critic approved a non-existent Claude flag) is the
+  # reason this guard exists: deterministic checks where the LLM cannot
+  # hallucinate. To extend (gemini, deepseek): add a case in Get-CliHelpText
+  # and a detection pattern below.
+  param([string]$Diff)
+  if ([string]::IsNullOrWhiteSpace($Diff)) { return @() }
+
+  $issues = New-Object 'System.Collections.Generic.List[object]'
+
+  # Per-CLI detection: each tuple = @{ name; linePattern; }. linePattern
+  # decides whether a diff line is "calling" this CLI.
+  $cliDetectors = @(
+    @{ name = 'claude'; linePattern = '(?i)claude(?:\.exe)?|Resolve-ClaudeExe|\$claude\b|claudeExe|claudeGlob|Invoke-ParallelClaudeCli' },
+    @{ name = 'codex';  linePattern = '(?i)codex(?:\.exe)?|Resolve-CodexExe|\$codex\b|codexExe|Invoke-ParallelCodexCli' }
+  )
+
+  $flagRegex = [regex]'(--[A-Za-z][A-Za-z0-9-]+)'
+
+  # Track seen flags per CLI to dedupe; also keep one example line per flag
+  $seen = @{}
+  foreach ($det in $cliDetectors) { $seen[$det.name] = @{} }
+
+  foreach ($rawLine in @($Diff -split "`r?`n")) {
+    # Only ADDED lines (start with single + but not +++ which is the file header).
+    if ($rawLine.Length -lt 2 -or $rawLine[0] -ne '+' -or $rawLine[1] -eq '+') { continue }
+    $line = $rawLine.Substring(1)
+
+    # Skip comment lines (PowerShell # comments) -- the CLI exe name in a
+    # comment is not a real invocation. Be conservative: only skip if the
+    # line starts with optional whitespace + '#'.
+    if ($line -match '^\s*#') { continue }
+
+    foreach ($det in $cliDetectors) {
+      if ($line -notmatch $det.linePattern) { continue }
+      foreach ($fm in $flagRegex.Matches($line)) {
+        $flag = $fm.Groups[1].Value
+        if ($seen[$det.name].ContainsKey($flag)) { continue }
+        $seen[$det.name][$flag] = $line.Trim()
+      }
+    }
+  }
+
+  foreach ($det in $cliDetectors) {
+    if ($seen[$det.name].Count -eq 0) { continue }
+    $help = Get-CliHelpText -Cli $det.name
+    if ([string]::IsNullOrWhiteSpace($help)) {
+      # CLI not resolvable -- skip silently, can't validate.
+      continue
+    }
+    foreach ($flag in $seen[$det.name].Keys) {
+      $flagLow = $flag.ToLowerInvariant()
+      # Flag must appear in help with a word boundary AFTER it -- followed
+      # by space, newline, '<' (for "<arg>"), '=' or end of string. Without
+      # this we'd false-pass '--add' when only '--add-dir' exists.
+      $needle = [regex]::Escape($flagLow)
+      $ok = ($help -match ($needle + '(?:[\s<=,]|$)'))
+      if (-not $ok) {
+        [void]$issues.Add(@{
+          cli    = $det.name
+          flag   = $flag
+          sample = $seen[$det.name][$flag]
+        })
+      }
+    }
+  }
+
+  return @($issues.ToArray())
+}
+
 function Test-IsTrivialTask {
   param([string]$TaskText, [int]$MinChars = 0)
   $t = ([string]$TaskText -replace '\[\[FAST\]\]', '').Trim()
@@ -2581,6 +2683,28 @@ while ($true) {
             try { $crcNow = [int](Read-State).critic_retry_count } catch {}
             if ($crcNow -ge 1) { $isHeavyCritic = $true }
             $criticModelName = if ($isHeavyCritic) { $criticHeavy } else { $criticLight }
+
+            # 2026-05-27: deterministic CLI-flag check BEFORE the LLM critic.
+            # The LLM critic (deepseek) approved a non-existent --cwd flag for
+            # claude.exe in the prior Wave-C-tails task because it has no way
+            # to run the CLI. This pre-check actually invokes `cli --help` and
+            # rejects diffs that introduce unknown flags. Findings here are
+            # treated as serious and prepended to LLM issues -- they cannot be
+            # talked away by the LLM.
+            $cliFlagIssues = @()
+            try { $cliFlagIssues = @(Test-CliFlagsInDiff -Diff $diff) } catch {
+              Add-Message -From system -Text ("⚠ CLI-flag check failed: " + $_.Exception.Message) -Kind event | Out-Null
+            }
+            $cliFlagIssuesText = ''
+            if ($cliFlagIssues.Count -gt 0) {
+              $parts = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($iss in $cliFlagIssues) {
+                [void]$parts.Add(("$($iss.cli).exe не знает флага '$($iss.flag)' (в --help отсутствует). Пример строки: " + ($iss.sample -replace '\s+',' ')))
+              }
+              $cliFlagIssuesText = [string]::Join(' ; ', $parts.ToArray())
+              Add-Message -From system -Text ("🔎 CLI-flag-check: " + $cliFlagIssuesText) -Kind event | Out-Null
+            }
+
             $diffWasTruncated = $false
             if ($diff.Length -gt 16000) {
               $diffWasTruncated = $true
@@ -2648,6 +2772,18 @@ $diff
               }
             }
             if ([string]::IsNullOrWhiteSpace($issuesText) -and -not [string]::IsNullOrWhiteSpace($summary)) { $issuesText = $summary }
+
+            # 2026-05-27: CLI-flag findings ALWAYS escalate to 'serious' regardless
+            # of what the LLM critic decided. Deterministic checks override LLM
+            # opinion (the LLM cannot run the CLI, so trust ground truth).
+            if ($cliFlagIssues.Count -gt 0) {
+              $severity = 'serious'
+              $verdict = 'NEEDS_FIX'
+              $prefix = "Неверные CLI-флаги (ground-truth check, --help проверен реально): " + $cliFlagIssuesText
+              if ([string]::IsNullOrWhiteSpace($issuesText)) { $issuesText = $prefix }
+              else { $issuesText = $prefix + ' ; ' + $issuesText }
+            }
+
             $taskShort = ($task -replace '\s+',' ').Trim()
             if ($taskShort.Length -gt 80) { $taskShort = $taskShort.Substring(0,80) }
             try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'critic.log') -Value ((Get-Date).ToString('s') + "  model=$criticModelName verdict=$verdict severity=$severity crc=$crc | $taskShort | $summary | $issuesText") -Encoding UTF8 } catch {}
