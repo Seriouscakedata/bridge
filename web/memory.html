@@ -74,11 +74,22 @@
   /* 2026-05-27v5: advanced settings grid */
   .adv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
   .adv-row{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 10px;background:rgba(20,23,29,.5);border:1px solid var(--border-soft);border-radius:8px}
-  .adv-row span{font-size:12px;color:var(--soft);flex:1;min-width:0}
+  .adv-row .lbl{font-size:12px;color:var(--soft);flex:1;min-width:0;display:flex;align-items:center;gap:6px}
   .adv-row input[type=number]{width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:6px;color:var(--txt);padding:5px 8px;outline:none;font-size:13px}
   .adv-row.adv-row-check{justify-content:flex-start}
   .adv-row.adv-row-check input[type=checkbox]{width:16px;height:16px;accent-color:var(--codex);flex:none}
-  .adv-row.adv-row-check span{flex:1}
+  /* Info-icon (i) — hover shows native tooltip + light visual cue */
+  .info-i{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:14px;height:14px;
+    border:1px solid rgba(255,255,255,.22);border-radius:50%;
+    font-family:Georgia,serif;font-size:10px;font-style:italic;font-weight:700;
+    color:var(--muted);
+    cursor:help;flex:none;
+    line-height:1;
+    transition:color .15s,border-color .15s,background .15s;
+  }
+  .info-i:hover{color:var(--user);border-color:var(--user);background:rgba(114,183,255,.12)}
   .imp{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
   .imp input[type=range]{width:120px;accent-color:var(--model)}
   .imp b{color:var(--model);font-variant-numeric:tabular-nums;min-width:30px;text-align:right}
@@ -520,6 +531,29 @@ setTimeout(applyHashTab, 0);
 
 // ---- settings ----
 let projectsLoaded = false;
+// 2026-05-27v5: per-key info tooltips (plain Russian, explains what each setting controls)
+const ADV_INFO = {
+  'parallel.maxStreams': 'Максимум сколько воркеров (Claude / Codex / ...) могут работать одновременно в рамках одной задачи. Больше = быстрее на широких задачах, но больше расхода токенов и API.',
+  'chunking.maxChunksPerTask': 'Максимум на сколько этапов один воркер может разбить свою работу через CONTINUE-CHUNK:N/M. Защита от бесконечного дробления.',
+  'criticMaxRetries': 'Сколько раз критик может вернуть задачу на доработку (когда видит баг или нарушение правил), прежде чем закрыть «как есть» с пометкой для оператора.',
+  'auditor.intervalMin': 'Как часто аудитор автоматически проверяет здоровье моста (проверка таймеров, watchdog'+"'"+'ов, heartbeat).',
+  'auditor.cooldownMin': 'Минимальная пауза между двумя последовательными активациями Doctor mode — чтобы не зацикливаться.',
+  'auditor.doctorRecidivismHours': 'Окно в часах, в котором считаются повторные активации Doctor. Если их слишком много (см ниже) — мост поднимает флаг «нужно вмешательство».',
+  'auditor.doctorRecidivismMax': 'Сколько раз Doctor может активироваться в окне рецидива, прежде чем мост позовёт оператора.',
+  'canary.enabled': 'Включена ли канарейка — регулярная самодиагностика (parse всех .ps1 + smoke-проверка endpoint-ов + heartbeat). Полезно ловить деградации заранее.',
+  'canary.intervalHours': 'Как часто запускать canary-цикл (только если канарейка включена).',
+  'canary.cooldownMinutes': 'Минимальная пауза между запусками canary, защита от слишком частого срабатывания.',
+  'fastLane.autoDetect': 'Автодетект тривиальных задач (короткое сообщение без явных действий) — пропустить планировщика, сразу к Codex. Экономит turn-bill при простых вопросах.',
+  'fastLane.minChars': 'Задачи короче этого числа символов считаются тривиальными (если auto-detect включён).',
+  'memory.recallTopK': 'Сколько похожих фактов из памяти инжектится в каждый запрос к агенту. Больше = больше контекста, но дороже токены.',
+  'memory.recallMinScore': 'Минимальная косинусная похожесть (0..1) чтобы факт попал в recall. Низкое = больше шума, высокое = меньше попаданий.',
+  'memory.dedupThreshold': 'Если новый факт похож на старый с косинусом ≥ этого порога (0..1) — он считается дубликатом и не добавляется отдельно.',
+  'memory.ageDaysPrune': 'Удалять факты старше N дней, если ими давно не пользовались. Защита от засорения памяти.',
+  'librarian.deltaTriggerCount': 'Сколько новых memory-записей накопилось — librarian запускается на консолидацию (дедуп, обновление карты памяти).',
+  'librarian.ceilingHours': 'Максимальный интервал между запусками librarian (даже если новых записей мало).',
+  'reflect.minTaskDurationSec': 'Минимальная длительность задачи (в секундах), чтобы reflect-агент рассматривал её как материал для self-improvement идей.'
+};
+
 async function loadSettings(){
   try{
     const d = await api('/api/settings'); const s = d.settings||{};
@@ -530,14 +564,33 @@ async function loadSettings(){
     $('#setCap').value = s.maxAutonomousTasksPerDay!=null ? s.maxAutonomousTasksPerDay : 0;
     const sc = s.scope||'bridge';
     document.querySelectorAll('input[name="scope"]').forEach(r=>{ r.checked = (r.value===sc); });
-    // 2026-05-27v5: populate advanced rows
+    // 2026-05-27v5: populate advanced rows + inject info-icons on first load
     const adv = d.advanced || {};
     document.querySelectorAll('.adv-row').forEach(row=>{
       const key = row.dataset.key; if(!key) return;
+      // wrap raw <span> label in <span class="lbl"> + append info-icon (idempotent)
+      const rawLabel = row.querySelector('span:not(.lbl):not(.info-i)');
+      if(rawLabel && !rawLabel.classList.contains('lbl')){
+        const txt = rawLabel.textContent;
+        rawLabel.classList.add('lbl');
+        rawLabel.textContent = '';
+        const txtSpan = document.createElement('span');
+        txtSpan.textContent = txt;
+        rawLabel.appendChild(txtSpan);
+        if(ADV_INFO[key]){
+          const icon = document.createElement('span');
+          icon.className = 'info-i';
+          icon.textContent = 'i';
+          icon.title = ADV_INFO[key];
+          icon.setAttribute('aria-label', ADV_INFO[key]);
+          rawLabel.appendChild(icon);
+        }
+      }
+      // populate value
       const v = adv[key];
       const input = row.querySelector('input');
       if(!input || v == null) return;
-      if(input.type === 'checkbox') input.checked = !!v;
+      if(input.type === 'checkbox') input.checked = (v === true || v === 'true' || v === 'True');
       else input.value = String(v);
     });
   }catch(e){ toast('Ошибка загрузки настроек: '+e,'bad'); }
