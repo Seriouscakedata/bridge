@@ -150,11 +150,26 @@ function Use-BridgeLock {
   $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeLock')
   $got = $false
   try {
-    $got = $mutex.WaitOne(15000)
+    # FIX 2026-05-27: handle AbandonedMutexException. When the previous holder PROCESS died
+    # without releasing the mutex, WaitOne THROWS AbandonedMutexException -- but the lock
+    # IS acquired by this thread (.NET semantics: the exception is a WARNING that previous
+    # state may be corrupt, not a failure). Before this fix, $got stayed $false, the
+    # finally block skipped ReleaseMutex, and the mutex remained abandoned for the NEXT
+    # caller too -- chain of silent Update-State failures. Observed overnight: Auditor's
+    # pause action failed 52 consecutive times exactly via this path, never landing.
+    try {
+      $got = $mutex.WaitOne(15000)
+    } catch [System.Threading.AbandonedMutexException] {
+      $got = $true   # we DO own the mutex; release in finally as usual
+      try {
+        $alog = Join-Path (Get-BridgeRoot) 'control\bridge-lock.log'
+        Add-Content -LiteralPath $alog -Value ("{0}  abandoned mutex recovered by PID {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $PID) -Encoding utf8 -ErrorAction SilentlyContinue
+      } catch {}
+    }
     if (-not $got) { throw 'Could not acquire bridge lock within 15s' }
     & $Body
   } finally {
-    if ($got) { $mutex.ReleaseMutex() }
+    if ($got) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()
   }
 }
