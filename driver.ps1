@@ -71,11 +71,13 @@ function Get-PlannerModel {
     if ($wordCount -gt 300) { return $deepModel }
   }
 
-  $numberedSteps = ([regex]::Matches($text, '(?m)^\s*\d+[\.\)]')).Count
-  if ($numberedSteps -ge 3) { return $deepModel }
-
-  $stageWords = ([regex]::Matches($text, '(?i)(фаз[аыеу]?|этап\w*|шаг\w*)')).Count
-  if ($stageWords -ge 2) { return $deepModel }
+  # FIX 2026-05-27 (root-cause): removed numberedSteps + stageWords triggers.
+  # Structure of a task spec (numbered points, "wave 1/2/3", "phase A/B") does NOT mean it
+  # needs Opus -- it just means it's well-organized. A clear 10-step implementation spec
+  # is EASIER for Sonnet, not harder. These triggers were the main reason every "structured"
+  # task was getting routed to Opus + discuss-mode + xhigh reasoning, burning prepaid quota.
+  # Use opusKeywords (architectural intent) and explicit [[OPUS]] / [[DEEP-THINK]] markers
+  # for routing instead.
 
   foreach ($kw in $complexKeywords) {
     if ($kw -and ($text -imatch [regex]::Escape($kw))) { return $deepModel }
@@ -1529,7 +1531,16 @@ while ($true) {
       $studyDetect = Detect-StudyMode -TaskText $taskMsg
       # 🧭 [[DEEP-THINK]] marker forces discuss-mode dialog (Claude↔Codex back-and-forth)
       # instead of normal planner->coder. Used by Start-DeepThinkDialog on Sat/Sun nights.
-      $deepThinkMark = [bool]([regex]::IsMatch($taskMsg, '\[\[DEEP-THINK\]\]'))
+      #
+      # FIX 2026-05-27: anchor the marker to its own line at start (multi-line ^). Previously
+      # the regex matched the literal anywhere in the task text -- so if a spec MENTIONED the
+      # marker in an example or referenced it in instructions to Codex, the task itself
+      # got routed to discuss-mode. Now requires marker to be alone on a line (with optional
+      # leading whitespace) -- can't be inside code blocks, quotes, or prose.
+      $deepThinkMark = [bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[DEEP-THINK\]\]\s*$'))
+      # [[NORMAL]] override forces task_mode=normal even if other auto-detect would route
+      # elsewhere (study/discuss). For operators who know "obsuzhdat' nechego, delay".
+      $normalOverride = [bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[NORMAL\]\]\s*$'))
       $fastLaneCfg = Get-FastLaneSettings
       $fastMark = [bool]([regex]::IsMatch($taskMsg, '\[\[FAST\]\]'))
       $reasoningHighMark = [bool]([regex]::IsMatch($taskMsg, '\[\[REASONING:high\]\]'))
@@ -1546,6 +1557,7 @@ while ($true) {
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         Clear-FastLaneFlags $s
         if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
+        elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
@@ -1560,8 +1572,9 @@ while ($true) {
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       if ($fastLaneReason -eq 'marker') { Add-Message -From system -Text "🚀 Fast-lane активирован ([[FAST]])" -Kind event | Out-Null }
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
-      if ($deepThinkMark -and -not $fastLaneReason) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
-      if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
+      if ($normalOverride -and -not $fastLaneReason) { Add-Message -From system -Text "📐 [[NORMAL]] override -- task_mode=normal forced (auto-detect bypassed)." -Kind event | Out-Null }
+      if ($deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
+      if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       $state = Read-State
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
@@ -2144,8 +2157,12 @@ while ($true) {
     elseif ($plannerStatus -eq 'CONTINUE') {
       if ($modeBeforeIncrement -eq 'discuss') {
         $dtNow = [int](Read-State).discuss_turn
-        $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*Решение:[ \t]*\S'
-        $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*Риски:[ \t]*\S'
+        # FIX 2026-05-27: accept synonyms for the convergence-check keywords. Claude often
+        # writes "Согласовано:" / "Decision:" / "Решено:" instead of literal "Решение:" —
+        # technically a converged plan, but the pedantic gate kept rejecting it (12-min
+        # ping-pong observed today on a 12-point task). Same for Риски/Risks/Risk.
+        $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*(Решение|Решено|Decision|Согласовано):[ \t]*\S'
+        $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*(Риски|Риск|Risks|Risk):[ \t]*\S'
         $openMatch   = [regex]::Match($reply, '(?im)^[*_> \t#-]*Открыто:[ \t]*(.*)$')
         # FIX 2026-05-26 (Codex's Doctor fix, applied manually after restart-loop incident):
         # TrimEnd punctuation so "Открыто: нет." matches the "no open blockers" regex.
@@ -2207,8 +2224,9 @@ while ($true) {
   # Guard: в discuss DONE разрешён только при конвергенции (по состоянию), с полом и потолком по ходам
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'discuss') {
     $dtNow = [int](Read-State).discuss_turn
-    $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*Решение:[ \t]*\S'
-    $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*Риски:[ \t]*\S'
+    # FIX 2026-05-27: same synonyms accepted here (DONE-in-discuss path), see CONTINUE branch above.
+    $hasDecision = $reply -imatch '(?im)^[*_> \t#-]*(Решение|Решено|Decision|Согласовано):[ \t]*\S'
+    $hasRisks    = $reply -imatch '(?im)^[*_> \t#-]*(Риски|Риск|Risks|Risk):[ \t]*\S'
     $openMatch   = [regex]::Match($reply, '(?im)^[*_> \t#-]*Открыто:[ \t]*(.*)$')
     # Same TrimEnd punctuation fix as above (2026-05-26): keeps "нет." from being treated
     # as unresolved open question.
