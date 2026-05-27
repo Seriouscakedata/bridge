@@ -619,6 +619,47 @@ function Clear-TaskCheckpoint {
   } | Out-Null
 }
 
+function Add-SessionDecisionEvent {
+  param(
+    [string]$EventType,
+    [hashtable]$Meta = @{},
+    [string]$Channel = ''
+  )
+  try {
+    $ch = $Channel
+    if ([string]::IsNullOrWhiteSpace($ch)) {
+      $s = Read-State -ErrorAction SilentlyContinue
+      if ($s -and $s.current_channel) { $ch = [string]$s.current_channel } else { $ch = 'main' }
+    }
+    $dir = Join-Path $script:RepoRoot "channels\$ch"
+    if (-not (Test-Path $dir)) { return }
+    $ledger = Join-Path $dir 'session-ledger.jsonl'
+    $entry = [ordered]@{ ts=(Get-Date).ToString('o'); event=$EventType }
+    foreach ($k in $Meta.Keys) { $entry[$k] = $Meta[$k] }
+    $line = $entry | ConvertTo-Json -Compress -Depth 5
+    Add-Content -Path $ledger -Value $line -Encoding UTF8
+  } catch {}
+}
+
+function Get-SessionLedgerBlock {
+  param([string]$Channel='main', [int]$LastN=5)
+  try {
+    $ledger = Join-Path $script:RepoRoot "channels\$Channel\session-ledger.jsonl"
+    if (-not (Test-Path $ledger)) { return '' }
+    $all = Get-Content $ledger -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $all -or $all.Count -eq 0) { return '' }
+    $recent = $all | Select-Object -Last $LastN
+    $items = $recent | ForEach-Object {
+      try {
+        $e = $_ | ConvertFrom-Json
+        $suffix = if ($e.task) { ': ' + [string]$e.task.Substring(0,[Math]::Min(60,[string]$e.task.Length)) } else { '' }
+        "$($e.event) @ $([string]$e.ts.Substring(0,16))$suffix"
+      } catch { [string]$_ }
+    }
+    return ($items -join ' | ')
+  } catch { return '' }
+}
+
 function Get-TaskCheckpointBlock {
   $st = Read-State
   if ($null -eq $st) { return '' }
@@ -777,6 +818,17 @@ function Get-CoderRuntimeContextBlock {
   } catch {
     [void]$lines.Add('last_failure: n/a')
   }
+
+  # current_decisions: last events from session ledger
+  try {
+    $_ch = if ($st -and $st.current_channel) { [string]$st.current_channel } else { 'main' }
+    $_decBlock = Get-SessionLedgerBlock -Channel $_ch -LastN 5
+    if (-not [string]::IsNullOrWhiteSpace($_decBlock)) {
+      [void]$lines.Add('')
+      [void]$lines.Add('## current_decisions')
+      [void]$lines.Add($_decBlock)
+    }
+  } catch {}
 
   [void]$lines.Add('=== END RUNTIME CONTEXT ===')
   return ($lines -join "`n")
@@ -1449,6 +1501,7 @@ function Initialize-Bridge {
       task_checkpoints   = @()
       task_last_failure  = $null
       agent_telemetry    = $null
+      session_mission    = $null
     }
     Write-State -State $state -AllowPartial   # initial create; guard skip OK
   } else {
@@ -1469,6 +1522,7 @@ function Initialize-Bridge {
       auditor=@{ suppressed_hashes=@() }
       task_checkpoints=@(); task_last_failure=$null
       agent_telemetry=$null
+      session_mission=$null
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {
