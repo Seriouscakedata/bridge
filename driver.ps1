@@ -218,6 +218,128 @@ function Test-CliFlagsInDiff {
   return @($issues.ToArray())
 }
 
+function Test-CoderClaims {
+  # Deterministic gate: scan Codex reply for verifiable claims (HTTP status,
+  # ParseFile OK assertions, git SHA references) and check each against ground
+  # truth (actually call endpoint, actually parse file, actually look up SHA).
+  # Returns @{ violations=@(); checks=@() } — mismatches go to violations,
+  # confirmed claims to checks. Output is purely informational (synthesized
+  # into a system message for the next planner turn) — NEVER blocks the flow.
+  # Born from curator-задача 2026-05-27: Codex 3x claimed "backfill для 51"
+  # at actual 3/19/35. With this gate, planner would see the discrepancy on
+  # the same turn instead of after a 30s LLM verify round.
+  # To extend: add new claim-class patterns + verifier blocks below.
+  param([string]$Reply, [string]$BridgeRoot)
+
+  $violations = New-Object 'System.Collections.Generic.List[object]'
+  $checks = New-Object 'System.Collections.Generic.List[object]'
+  $result = @{ violations = @(); checks = @() }
+  if ([string]::IsNullOrWhiteSpace($Reply) -or [string]::IsNullOrWhiteSpace($BridgeRoot)) { return $result }
+
+  # --- 1. HTTP status claims ---
+  # Patterns: "/api/foo → 200", "GET /api/foo  200", "HTTP 200 from /api/foo".
+  # Separator class permits arrows (->, =>, →), pipes, colons, and whitespace.
+  # The "+" makes it match the whole " -> " sequence in one shot.
+  $httpPatterns = @(
+    '(?im)(/api/[A-Za-z0-9_/-]+)(?:[\s\-=→>|:])+(?:HTTP\s+|status\s*[:=]?\s*)?(\d{3})\b',
+    '(?im)HTTP\s+(\d{3})\s+(?:from|on|по)?\s*(/api/[A-Za-z0-9_/-]+)',
+    '(?im)`?Invoke-WebRequest[^\n]*?(/api/[A-Za-z0-9_/-]+)[^\n]*?(?:StatusCode|статус)\s*[=:]\s*(\d{3})'
+  )
+  $httpClaims = @{}
+  foreach ($pat in $httpPatterns) {
+    foreach ($m in [regex]::Matches($Reply, $pat)) {
+      # Need to handle pattern with endpoint-first vs status-first
+      $g1 = $m.Groups[1].Value; $g2 = $m.Groups[2].Value
+      if ($g1 -match '^/api/') { $endpoint = $g1; $status = $g2 }
+      else                       { $endpoint = $g2; $status = $g1 }
+      $tmpInt = 0
+      if (-not [int]::TryParse($status, [ref]$tmpInt)) { continue }
+      $key = "$endpoint=$status"
+      if ($httpClaims.ContainsKey($key)) { continue }
+      $httpClaims[$key] = $true
+    }
+  }
+  if ($httpClaims.Count -gt 0) {
+    $auth = $null
+    try { $auth = Get-Content (Join-Path $BridgeRoot 'auth.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+    $basic = ''
+    if ($auth) { try { $basic = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($auth.user + ':' + $auth.password)) } catch {} }
+    foreach ($key in $httpClaims.Keys) {
+      $parts = $key -split '='; $endpoint = $parts[0]; $claimed = [int]$parts[1]
+      $url = "http://localhost:8787$endpoint"
+      $actualStatus = 0
+      try {
+        $headers = if ($basic) { @{ Authorization = "Basic $basic" } } else { @{} }
+        $resp = Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        $actualStatus = [int]$resp.StatusCode
+      } catch {
+        try { $actualStatus = [int]$_.Exception.Response.StatusCode } catch {}
+      }
+      if ($actualStatus -eq $claimed) {
+        [void]$checks.Add(@{ kind='http-status'; claim="$endpoint → $claimed"; actual="$actualStatus" })
+      } else {
+        $actualText = if ($actualStatus -gt 0) { "$actualStatus" } else { 'no response' }
+        [void]$violations.Add(@{ kind='http-status'; claim="$endpoint → $claimed"; actual=$actualText })
+      }
+    }
+  }
+
+  # --- 2. ParseFile OK claims ---
+  # Patterns: "ParseFile lib/foo.ps1 → OK", "ParseFile `lib/foo.ps1`: OK".
+  $parseClaims = @{}
+  foreach ($m in [regex]::Matches($Reply, '(?im)ParseFile\s+[`"'']*([A-Za-z0-9_./\\-]+\.ps1)[`"'']*\s*(?:[→\->|→]|:)?\s*(?:OK|УСПЕХ|✓|без\s+ошибок)\b')) {
+    $f = ($m.Groups[1].Value -replace '\\','/').Trim('"','''','`')
+    if (-not $parseClaims.ContainsKey($f)) { $parseClaims[$f] = $true }
+  }
+  foreach ($f in $parseClaims.Keys) {
+    $fullPath = if ([System.IO.Path]::IsPathRooted($f)) { $f } else { Join-Path $BridgeRoot $f }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+      [void]$violations.Add(@{ kind='parse-file'; claim="$f = OK"; actual='файл не найден' })
+      continue
+    }
+    $pTokens = $null; $pErrs = $null
+    try {
+      [void][System.Management.Automation.Language.Parser]::ParseFile($fullPath, [ref]$pTokens, [ref]$pErrs)
+      if ($pErrs -and $pErrs.Count -gt 0) {
+        $first = $pErrs[0]
+        [void]$violations.Add(@{ kind='parse-file'; claim="$f = OK"; actual="$($pErrs.Count) ошибок (например: " + ([string]$first.Message).Substring(0,[Math]::Min(80,([string]$first.Message).Length)) + ')' })
+      } else {
+        [void]$checks.Add(@{ kind='parse-file'; claim="$f = OK"; actual='действительно OK' })
+      }
+    } catch {
+      [void]$violations.Add(@{ kind='parse-file'; claim="$f = OK"; actual="parse failed: " + $_.Exception.Message })
+    }
+  }
+
+  # --- 3. Git SHA references ---
+  # Patterns: "commit abc1234", "коммит abc1234", "merged abc1234", "HEAD abc1234".
+  # Only flag short-hexes adjacent to commit/sha keywords (avoid noise from
+  # random hex like file hashes or numbers).
+  $shaClaims = @{}
+  foreach ($m in [regex]::Matches($Reply, '(?i)(?:commit|коммит|merge[ds]?|HEAD|SHA|hash)\s*[:=]?\s*[`"'']?([0-9a-f]{7,40})[`"'']?\b')) {
+    $sha = $m.Groups[1].Value.ToLowerInvariant()
+    # Skip all-digit "shas" (e.g. years like "2026")
+    if ($sha -match '^\d+$') { continue }
+    if (-not $shaClaims.ContainsKey($sha)) { $shaClaims[$sha] = $true }
+  }
+  foreach ($sha in $shaClaims.Keys) {
+    $exists = $false
+    try {
+      $null = & git -C $BridgeRoot cat-file -e $sha 2>$null
+      $exists = ($LASTEXITCODE -eq 0)
+    } catch {}
+    if ($exists) {
+      [void]$checks.Add(@{ kind='git-sha'; claim="commit $sha"; actual='существует' })
+    } else {
+      [void]$violations.Add(@{ kind='git-sha'; claim="commit $sha"; actual='нет такого объекта в репо' })
+    }
+  }
+
+  $result.violations = @($violations.ToArray())
+  $result.checks = @($checks.ToArray())
+  return $result
+}
+
 function Test-IsTrivialTask {
   param([string]$TaskText, [int]$MinChars = 0)
   $t = ([string]$TaskText -replace '\[\[FAST\]\]', '').Trim()
@@ -2664,6 +2786,33 @@ while ($true) {
         $fastLaneDone = $true
         Update-State { param($s) $s.task_did_actions=$true; $s.no_progress_count=0 } | Out-Null
       }
+    }
+
+    # 2026-05-27: Deterministic claim verification for Codex reply. Parses
+    # the reply for verifiable assertions (HTTP status, ParseFile OK, git SHA)
+    # and checks each against ground truth. NEVER blocks the flow — only
+    # synthesizes a system event so the next planner turn sees the discrepancy
+    # alongside Codex's claim. Catches the over-claim pattern (curator-задача
+    # 2026-05-27) before the LLM verify gate spends a 30s round.
+    try {
+      $gateReport = Test-CoderClaims -Reply $reply -BridgeRoot $bridgeRoot
+      if ($gateReport.violations.Count -gt 0) {
+        $vparts = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($v in $gateReport.violations) {
+          [void]$vparts.Add("• [$($v.kind)] Codex заявил: $($v.claim) → реальность: $($v.actual)")
+        }
+        $okText = if ($gateReport.checks.Count -gt 0) { " (попутно $($gateReport.checks.Count) утверждений сверены OK)" } else { '' }
+        Add-Message -From system -Text ("🔢 Gate-check: " + $gateReport.violations.Count + " несоответствий в reply Codex" + $okText + ":`n" + [string]::Join("`n", $vparts.ToArray()) + "`n`nПланировщик: учти эти разрывы при ревью STATUS — Codex заявил неточно, нужна доработка.") -Kind event | Out-Null
+      } elseif ($gateReport.checks.Count -gt 0) {
+        $kparts = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($c in ($gateReport.checks | Select-Object -First 5)) {
+          [void]$kparts.Add("[$($c.kind)] $($c.claim)")
+        }
+        $more = if ($gateReport.checks.Count -gt 5) { " (+ $($gateReport.checks.Count - 5) more)" } else { '' }
+        Add-Message -From system -Text ("✓ Gate-check Codex'а: " + $gateReport.checks.Count + " утверждений сверены с фактами OK — " + [string]::Join('; ', $kparts.ToArray()) + $more) -Kind event | Out-Null
+      }
+    } catch {
+      Add-Message -From system -Text ("⚠ Gate-check exception: " + $_.Exception.Message) -Kind event | Out-Null
     }
   }
   if ($fastLaneActiveForTurn) {
