@@ -87,6 +87,141 @@ function Get-QueryParamUtf8 {
   }
   try { return [string]$ctx.Request.QueryString[$Name] } catch { return '' }
 }
+function Quote-RunbookProcessArgument {
+  param([AllowNull()][string]$Value)
+  if ($null -eq $Value) { $Value = '' }
+  $s = [string]$Value
+  if ($s.Length -eq 0) { return '""' }
+  if ($s -notmatch '[\s"]') { return $s }
+
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  $slashes = 0
+  foreach ($ch in $s.ToCharArray()) {
+    if ($ch -eq [char]92) {
+      $slashes++
+      continue
+    }
+    if ($ch -eq [char]34) {
+      if ($slashes -gt 0) { [void]$sb.Append(('\' * ($slashes * 2))) }
+      [void]$sb.Append('\"')
+      $slashes = 0
+      continue
+    }
+    if ($slashes -gt 0) {
+      [void]$sb.Append(('\' * $slashes))
+      $slashes = 0
+    }
+    [void]$sb.Append($ch)
+  }
+  if ($slashes -gt 0) { [void]$sb.Append(('\' * ($slashes * 2))) }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+function Join-RunbookProcessArguments {
+  param([string[]]$ArgsList)
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($arg in @($ArgsList)) {
+    [void]$parts.Add((Quote-RunbookProcessArgument -Value $arg))
+  }
+  return [string]::Join(' ', $parts.ToArray())
+}
+function Invoke-RunbookProcess {
+  param(
+    [string]$FileName,
+    [string[]]$ArgsList = @(),
+    [string]$WorkingDirectory = '',
+    [int]$TimeoutMs = 15000
+  )
+  $result = [ordered]@{
+    fileName = $FileName
+    exitCode = $null
+    timedOut = $false
+    stdout = ''
+    stderr = ''
+    error = ''
+  }
+  $proc = New-Object System.Diagnostics.Process
+  try {
+    if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) { $WorkingDirectory = Get-BridgeRoot }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FileName
+    $psi.Arguments = Join-RunbookProcessArguments -ArgsList $ArgsList
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+      $result.timedOut = $true
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit(5000) | Out-Null } catch {}
+    } else {
+      $result.exitCode = $proc.ExitCode
+    }
+    try {
+      if ($stdoutTask.Wait(1000)) { $result.stdout = [string]$stdoutTask.Result }
+    } catch {}
+    try {
+      if ($stderrTask.Wait(1000)) { $result.stderr = [string]$stderrTask.Result }
+    } catch {}
+  } catch {
+    $result.error = [string]$_.Exception.Message
+  } finally {
+    if ($null -ne $proc) { $proc.Dispose() }
+  }
+  return [pscustomobject]$result
+}
+function Convert-RunbookProcessResultToText {
+  param($Result)
+  if ($null -eq $Result) { return 'ERROR: process did not return a result' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  if (-not [string]::IsNullOrWhiteSpace([string]$Result.error)) {
+    [void]$parts.Add("ERROR: $($Result.error)")
+  } elseif ([bool]$Result.timedOut) {
+    [void]$parts.Add('ERROR: timeout')
+  } elseif ($null -ne $Result.exitCode -and [int]$Result.exitCode -ne 0) {
+    [void]$parts.Add("ERROR: exit code $($Result.exitCode)")
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Result.stdout)) {
+    [void]$parts.Add(([string]$Result.stdout).TrimEnd())
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Result.stderr)) {
+    [void]$parts.Add("STDERR`r`n$(([string]$Result.stderr).TrimEnd())")
+  }
+  if ($parts.Count -eq 0) { return '' }
+  return [string]::Join("`r`n", $parts.ToArray())
+}
+function Get-RunbookStateObject {
+  $stateObj = $null
+  try { $stateObj = Read-State } catch { $stateObj = $null }
+  if ($null -ne $stateObj) { return $stateObj }
+
+  $statePath = $null
+  try { $statePath = Get-StatePath } catch { $statePath = $null }
+  if ([string]::IsNullOrWhiteSpace([string]$statePath)) { return $null }
+  if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $null }
+  try {
+    $raw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    return ($raw | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+function Get-RunbookPropertyValue {
+  param($InputObject, [string]$Name)
+  if ($null -eq $InputObject) { return $null }
+  try {
+    $prop = $InputObject.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+  } catch {}
+  return $null
+}
 function Test-Auth {
   param($ctx)
   if (-not $authPass -and -not $authToken) { return $true }   # no credentials configured -> open
@@ -140,28 +275,33 @@ try {
         $now = Get-Date
         $uptimeSec = [int]([Math]::Floor(($now - $serverStartTime).TotalSeconds))
         $statePath = Join-Path $root 'channels\main\state.json'
-        $stateRaw = ''
+        $stateObj = $null
         if (Test-Path -LiteralPath $statePath) {
-          try { $stateRaw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) } catch {}
+          try {
+            $stateText = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+            if (-not [string]::IsNullOrWhiteSpace($stateText)) { $stateObj = $stateText | ConvertFrom-Json }
+          } catch { $stateObj = $null }
         }
         $hbAge    = 9999
-        $hbRaw    = ''
-        $mHb = [regex]::Match($stateRaw, '"heartbeat"\s*:\s*"([^"]*)"')
-        if ($mHb.Success) { $hbRaw = $mHb.Groups[1].Value }
+        $hbRaw    = [string](Get-RunbookPropertyValue $stateObj 'heartbeat')
         if (-not [string]::IsNullOrWhiteSpace($hbRaw)) {
           try { $hbAge = [int]([Math]::Floor(($now - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
         }
         $hPaused = $false
-        $mPaused = [regex]::Match($stateRaw, '"paused"\s*:\s*(true|false)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        if ($mPaused.Success) { $hPaused = ([string]$mPaused.Groups[1].Value).ToLowerInvariant() -eq 'true' }
-        $hStatus = ''
-        $mStatus = [regex]::Match($stateRaw, '"status"\s*:\s*"([^"]*)"')
-        if ($mStatus.Success) { $hStatus = $mStatus.Groups[1].Value }
+        $pausedValue = Get-RunbookPropertyValue $stateObj 'paused'
+        if ($null -ne $pausedValue) {
+          try { $hPaused = [System.Convert]::ToBoolean($pausedValue) } catch { $hPaused = $false }
+        }
+        $hStatus = [string](Get-RunbookPropertyValue $stateObj 'status')
         $hLastSeq = 0
-        $mStateSeq = [regex]::Match($stateRaw, '"lastSeq"\s*:\s*(\d+)')
-        if ($mStateSeq.Success) { [void][int]::TryParse($mStateSeq.Groups[1].Value, [ref]$hLastSeq) }
+        $lastSeqValue = Get-RunbookPropertyValue $stateObj 'lastSeq'
+        if ($null -ne $lastSeqValue) { [void][int]::TryParse([string]$lastSeqValue, [ref]$hLastSeq) }
         $psActive = 0
-        foreach ($mRun in [regex]::Matches($stateRaw, '"status"\s*:\s*"running"')) { $psActive++ }
+        $parallelStreams = Get-RunbookPropertyValue $stateObj 'parallel_streams'
+        foreach ($stream in @($parallelStreams)) {
+          if ($null -eq $stream) { continue }
+          if ([string](Get-RunbookPropertyValue $stream 'status') -eq 'running') { $psActive++ }
+        }
         $gitHead = $healthGitHead
         try {
           $headFile = Join-Path $root '.git\HEAD'
@@ -424,14 +564,14 @@ try {
           Send-Text $ctx '{"ok":false,"error":"screenshot tool missing"}' 'application/json; charset=utf-8' 500
           continue
         }
-        $shotOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $toolPath 2>&1)
-        if ($LASTEXITCODE -ne 0) {
-          $err = 'screenshot failed: ' + (($shotOutput | Out-String).Trim())
+        $shotResult = Invoke-RunbookProcess -FileName 'powershell.exe' -ArgsList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$toolPath) -WorkingDirectory $root -TimeoutMs 60000
+        if ([bool]$shotResult.timedOut -or -not [string]::IsNullOrWhiteSpace([string]$shotResult.error) -or ($null -ne $shotResult.exitCode -and [int]$shotResult.exitCode -ne 0)) {
+          $err = 'screenshot failed: ' + (Convert-RunbookProcessResultToText $shotResult)
           $json = ([ordered]@{ ok = $false; error = $err } | ConvertTo-Json -Compress -Depth 5)
           Send-Text $ctx $json 'application/json; charset=utf-8' 500
           continue
         }
-        $shotPath = [string]($shotOutput | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)
+        $shotPath = [string](([string]$shotResult.stdout -split '\r?\n') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)
         if (-not $shotPath) {
           Send-Text $ctx '{"ok":false,"error":"screenshot path missing"}' 'application/json; charset=utf-8' 500
           continue
@@ -617,44 +757,28 @@ try {
         try {
           $runbookRoot = Get-BridgeRoot
 
-          $runGit = {
-            param([string[]]$ArgsList)
-            try {
-              $out = & git @ArgsList 2>&1 | Out-String
-              return $out.TrimEnd()
-            } catch {
-              return "ERROR: $($_.Exception.Message)"
-            }
-          }
-
-          $gitStatusShort = & $runGit -ArgsList @('-C', $runbookRoot, 'status', '-s')
+          $gitStatusShort = Convert-RunbookProcessResultToText (Invoke-RunbookProcess -FileName 'git.exe' -ArgsList @('-C', $runbookRoot, 'status', '-s') -WorkingDirectory $runbookRoot -TimeoutMs 15000)
           if ([string]::IsNullOrWhiteSpace($gitStatusShort)) { $gitStatusShort = '(clean)' }
-          $gitLog = & $runGit -ArgsList @('-C', $runbookRoot, 'log', '--oneline', '-10')
+          $gitLog = Convert-RunbookProcessResultToText (Invoke-RunbookProcess -FileName 'git.exe' -ArgsList @('-C', $runbookRoot, 'log', '--oneline', '-10') -WorkingDirectory $runbookRoot -TimeoutMs 15000)
           $gitStatus = "## git -C <bridgeRoot> status -s`r`n$gitStatusShort`r`n`r`n## git log --oneline -10`r`n$gitLog`r`n"
 
           $now = Get-Date
           $uptimeSec = [int]([Math]::Floor(($now - $serverStartTime).TotalSeconds))
-          $statePath = Join-Path $runbookRoot 'channels\main\state.json'
-          $stateRaw = ''
-          if (Test-Path -LiteralPath $statePath) {
-            try { $stateRaw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) } catch {}
-          }
+          $stateObj = Get-RunbookStateObject
           $hbAge = 9999
-          $hbRaw = ''
-          $mHb = [regex]::Match($stateRaw, '"heartbeat"\s*:\s*"([^"]*)"')
-          if ($mHb.Success) { $hbRaw = $mHb.Groups[1].Value }
+          $hbRaw = [string](Get-RunbookPropertyValue $stateObj 'heartbeat')
           if (-not [string]::IsNullOrWhiteSpace($hbRaw)) {
             try { $hbAge = [int]([Math]::Floor(($now - [datetime]::Parse($hbRaw)).TotalSeconds)) } catch {}
           }
           $hPaused = $false
-          $mPaused = [regex]::Match($stateRaw, '"paused"\s*:\s*(true|false)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-          if ($mPaused.Success) { $hPaused = ([string]$mPaused.Groups[1].Value).ToLowerInvariant() -eq 'true' }
-          $hStatus = ''
-          $mStatus = [regex]::Match($stateRaw, '"status"\s*:\s*"([^"]*)"')
-          if ($mStatus.Success) { $hStatus = $mStatus.Groups[1].Value }
+          $pausedValue = Get-RunbookPropertyValue $stateObj 'paused'
+          if ($null -ne $pausedValue) {
+            try { $hPaused = [System.Convert]::ToBoolean($pausedValue) } catch { $hPaused = $false }
+          }
+          $hStatus = [string](Get-RunbookPropertyValue $stateObj 'status')
           $hLastSeq = 0
-          $mStateSeq = [regex]::Match($stateRaw, '"lastSeq"\s*:\s*(\d+)')
-          if ($mStateSeq.Success) { [void][int]::TryParse($mStateSeq.Groups[1].Value, [ref]$hLastSeq) }
+          $lastSeqValue = Get-RunbookPropertyValue $stateObj 'lastSeq'
+          if ($null -ne $lastSeqValue) { [void][int]::TryParse([string]$lastSeqValue, [ref]$hLastSeq) }
           $healthSnapshot = [ordered]@{
             ok = (($hbAge -lt 120) -and (-not $hPaused))
             uptime_sec = $uptimeSec
@@ -664,35 +788,17 @@ try {
             lastSeq = $hLastSeq
             generated_at = $now.ToString('o')
           }
-          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 8
+          $healthJson = $healthSnapshot | ConvertTo-Json -Depth 32
 
           $smokePath = Join-Path $runbookRoot 'smoke.ps1'
           if (Test-Path -LiteralPath $smokePath -PathType Leaf) {
-            $proc = New-Object System.Diagnostics.Process
-            try {
-              $psi = New-Object System.Diagnostics.ProcessStartInfo
-              $psi.FileName = 'powershell.exe'
-              $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + ($smokePath -replace '"','\"') + '"'
-              $psi.WorkingDirectory = $runbookRoot
-              $psi.UseShellExecute = $false
-              $psi.RedirectStandardOutput = $true
-              $psi.RedirectStandardError = $true
-              $psi.CreateNoWindow = $true
-              $proc.StartInfo = $psi
-              [void]$proc.Start()
-              $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-              $stderrTask = $proc.StandardError.ReadToEndAsync()
-              if (-not $proc.WaitForExit(30000)) {
-                try { $proc.Kill() } catch {}
-                try { $proc.WaitForExit(5000) | Out-Null } catch {}
-                $smokeSummary = 'SMOKE: timeout'
-              } else {
-                $stdout = $stdoutTask.Result
-                $stderr = $stderrTask.Result
-                $smokeSummary = "ExitCode=$($proc.ExitCode)`r`n`r`nSTDOUT`r`n$stdout`r`nSTDERR`r`n$stderr"
-              }
-            } finally {
-              if ($null -ne $proc) { $proc.Dispose() }
+            $smokeResult = Invoke-RunbookProcess -FileName 'powershell.exe' -ArgsList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$smokePath) -WorkingDirectory $runbookRoot -TimeoutMs 30000
+            if ([bool]$smokeResult.timedOut) {
+              $smokeSummary = 'SMOKE: timeout'
+            } elseif (-not [string]::IsNullOrWhiteSpace([string]$smokeResult.error)) {
+              $smokeSummary = "SMOKE: ERROR`r`n$($smokeResult.error)"
+            } else {
+              $smokeSummary = "ExitCode=$($smokeResult.exitCode)`r`n`r`nSTDOUT`r`n$($smokeResult.stdout)`r`nSTDERR`r`n$($smokeResult.stderr)"
             }
           } else {
             $smokeSummary = 'SMOKE: smoke.ps1 missing'
@@ -720,19 +826,14 @@ try {
           }
           $logsTail = $logParts -join "`r`n"
 
-          $stateObj = $null
-          try { $stateObj = Read-State } catch {}
           $stateSummary = [ordered]@{}
           foreach ($field in @('current_channel','current_task','held_task','status','paused','doctor_active','session_mission')) {
-            $value = $null
-            if ($null -ne $stateObj -and $null -ne $stateObj.PSObject.Properties[$field]) {
-              $value = $stateObj.PSObject.Properties[$field].Value
-            }
+            $value = Get-RunbookPropertyValue $stateObj $field
             $stateSummary[$field] = $value
           }
-          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 8
+          $stateSummaryJson = $stateSummary | ConvertTo-Json -Depth 32
 
-          $worktrees = & $runGit -ArgsList @('-C', $runbookRoot, 'worktree', 'list')
+          $worktrees = Convert-RunbookProcessResultToText (Invoke-RunbookProcess -FileName 'git.exe' -ArgsList @('-C', $runbookRoot, 'worktree', 'list') -WorkingDirectory $runbookRoot -TimeoutMs 15000)
 
           Add-Type -AssemblyName System.IO.Compression
           $msOut = New-Object System.IO.MemoryStream
@@ -766,8 +867,13 @@ try {
           $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
           $response.Headers.Add('Content-Disposition', "attachment; filename=`"bridge-runbook-${ts}.zip`"")
           $response.ContentLength64 = $zipBytes.Length
-          $response.OutputStream.Write($zipBytes, 0, $zipBytes.Length)
-          $response.OutputStream.Close()
+          try {
+            $response.OutputStream.Write($zipBytes, 0, $zipBytes.Length)
+          } catch {
+            try { $response.Abort() } catch {}
+          } finally {
+            try { $response.OutputStream.Close() } catch {}
+          }
         } catch {
           $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
           Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
