@@ -115,6 +115,8 @@
   </div>
   <div class="head-actions">
     <button id="addToggle" type="button">＋ Добавить</button>
+    <select id="chanFilter" title="Канал" style="background:#0b0f15;border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:6px 9px;outline:none;font-size:13px"></select>
+    <button id="allChannelsBtn" type="button" title="Показать память всех каналов">все каналы</button>
     <button id="reindexBtn" type="button" title="Запустить библиотекаря: ингест решений, дедуп, пересборка карты">↻ Пересобрать карту</button>
     <button id="refreshBtn" type="button">⟳ Обновить</button>
   </div>
@@ -221,6 +223,8 @@
 let ITEMS = [];
 let MAP = '';
 let RADAR = null;
+let CURRENT_CHAN = null; // null = active default; '__all__' = admin view
+let CHANNELS = [];
 const $ = s => document.querySelector(s);
 const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -250,11 +254,40 @@ async function api(path, opts){
   return r.json();
 }
 
+async function loadChannels(){
+  try{
+    const d = await api('/api/channels');
+    CHANNELS = d.items || [];
+    if(!CURRENT_CHAN && d.active){ CURRENT_CHAN = d.active; }
+    renderChanFilter();
+  }catch(e){
+    renderChanFilter();
+  }
+}
+function renderChanFilter(){
+  const sel = $('#chanFilter');
+  if(!sel) return;
+  const opts = [];
+  for(const c of CHANNELS){
+    const slug = c.slug || c.name || '';
+    if(!slug) continue;
+    const label = c.name && c.name !== slug ? (c.name+' ('+slug+')') : slug;
+    opts.push(`<option value="${esc(slug)}" ${slug===CURRENT_CHAN?'selected':''}>${esc(label)}</option>`);
+  }
+  opts.push(`<option value="__all__" ${CURRENT_CHAN==='__all__'?'selected':''}>все каналы</option>`);
+  sel.innerHTML = opts.join('');
+}
+
 async function load(){
   try{
-    const d = await api('/api/memory');
+    let url = '/api/memory';
+    if(CURRENT_CHAN === '__all__'){ url += '?channel=__all__'; }
+    else if(CURRENT_CHAN){ url += '?channel=' + encodeURIComponent(CURRENT_CHAN); }
+    else { url += '?channel=__active__'; }
+    const d = await api(url);
     ITEMS = d.items || [];
     MAP = d.map || '';
+    if(!CURRENT_CHAN && d.activeChannel){ CURRENT_CHAN = d.activeChannel; renderChanFilter(); }
     renderStats(d.stats||{});
     renderGrid();
     renderMap();
@@ -558,6 +591,15 @@ $('#runRadarBtn').addEventListener('click', async ()=>{
 
 $('#filter').addEventListener('input', renderGrid);
 $('#refreshBtn').addEventListener('click', load);
+$('#chanFilter').addEventListener('change', e=>{
+  CURRENT_CHAN = e.target.value;
+  load();
+});
+$('#allChannelsBtn').addEventListener('click', ()=>{
+  CURRENT_CHAN = '__all__';
+  renderChanFilter();
+  load();
+});
 $('#reindexBtn').addEventListener('click', async ()=>{
   const b=$('#reindexBtn'); b.disabled=true; b.textContent='запущено…';
   const r = await api('/api/memory/reindex',{method:'POST',body:'{}'});
@@ -582,7 +624,7 @@ $('#addSave').addEventListener('click', async ()=>{
   else toast('Ошибка: '+(r.error||''),'bad');
 });
 
-load();
+(async ()=>{ await loadChannels(); await load(); })();
 </script>
 </body>
 </html>

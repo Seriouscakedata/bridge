@@ -344,8 +344,17 @@ try {
         $stats = Get-MemoryStats
         $items = @(Get-MemoriesView -Channel $chParam)
         $mapTxt = ''
-        $mp = Get-MemoryMapPath
-        if (Test-Path $mp) { $mapTxt = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) }
+        if ($chParam -eq '__all__') {
+          $mp = Get-MemoryMapPath
+          if (Test-Path $mp) { $mapTxt = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) }
+        } else {
+          $perCh = Get-MemoryMapPathForChannel -Slug $chParam
+          $shared = Get-MemorySharedMapPath
+          $parts = New-Object 'System.Collections.Generic.List[string]'
+          if (Test-Path $perCh)  { [void]$parts.Add([System.IO.File]::ReadAllText($perCh, [System.Text.Encoding]::UTF8)) }
+          if (Test-Path $shared) { [void]$parts.Add([System.IO.File]::ReadAllText($shared, [System.Text.Encoding]::UTF8)) }
+          $mapTxt = ($parts -join "`n`n---`n`n")
+        }
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
         # ReadAllText returns a plain CLR string, so ConvertTo-Json cannot serialize
         # PowerShell provider ETS properties as a {"value":...} object.
