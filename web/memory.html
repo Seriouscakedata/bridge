@@ -428,6 +428,15 @@ $('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
 $('#tabRadar').addEventListener('click',()=>switchTab('radar'));
 $('#tabSettings').addEventListener('click',()=>switchTab('settings'));
 
+// 2026-05-27v2: deep-link support /memory#backlog -> auto-open backlog tab
+function applyHashTab(){
+  const h = String(window.location.hash || '').replace(/^#/, '');
+  if(h && ['records','map','backlog','radar','settings'].indexOf(h) >= 0) switchTab(h);
+}
+window.addEventListener('hashchange', applyHashTab);
+// initial: try hash, fall through to default records tab
+setTimeout(applyHashTab, 0);
+
 // ---- settings ----
 let projectsLoaded = false;
 async function loadSettings(){
@@ -501,15 +510,39 @@ async function loadBacklog(){
   }
   catch(e){ toast('Ошибка загрузки бэклога: '+e,'bad'); }
 }
+function curatorDotHtml(it){
+  const s = String(it.status||'new');
+  const ac = it.auto_curator;
+  let color='#647082', sym='&#9679;'; // default grey dot
+  let title = '';
+  if(ac){
+    title = `Curator: ${ac.verdict||'?'} | confidence: ${ac.confidence??'?'} | model: ${ac.model||'?'} | ${ac.reason||''}`;
+  }
+  if(s==='approved' && ac && ac.verdict==='approve'){ color='#4caf50'; sym='&#9679;&#9733;'; if(!title) title='Auto-approved'; }
+  else if(s==='approved'){ color='#4caf50'; sym='&#9679;'; if(!title) title='Approved (manual)'; }
+  else if(s==='held'){ color='#ffc107'; sym='&#9679;'; if(!title) title='Held — needs review'; }
+  else if(s==='auto-dropped'){ color='#888'; sym='&#10006;'; if(!title) title='Auto-dropped'; }
+  else if(s==='auto-resolved'){ color='#4caf50'; sym='&#10004;'; if(!title) title='Auto-resolved'; }
+  else if(s==='done'){ color='#2e7d32'; sym='&#10004;'; if(!title) title='Done'; }
+  else if(s==='running'){ color='#72b7ff'; sym='&#9679;'; if(!title) title='Running'; }
+  else if(s==='failed' || s==='rejected'){ color='#f44336'; sym='&#10006;'; }
+  return `<span class="curator-dot" title="${esc(title)}" style="color:${color};font-size:14px;line-height:1;display:inline-block;width:18px;text-align:center">${sym}</span>`;
+}
+function similarBadgeHtml(it){
+  if(!it.similar_to || !it.similar_to.length) return '';
+  const ids = it.similar_to.map(x=>String(x).substring(0,8)).join(', ');
+  return `<span class="tag" title="Похожие идеи: ${esc(ids)}" style="background:rgba(255,209,102,.12);color:#ffd166;border:1px solid rgba(255,209,102,.3)">~${it.similar_to.length}</span>`;
+}
 function renderBacklog(){
   const g = $('#blGrid');
-  const order = {running:0,approved:1,'new':2,failed:3,rejected:4,done:5};
+  const order = {running:0, approved:1, 'new':2, held:3, failed:4, rejected:5, 'auto-resolved':6, 'auto-dropped':7, done:8};
   const list = BL.slice().sort((a,b)=>{
     const oa=order[a.status]??9, ob=order[b.status]??9;
     if(oa!==ob) return oa-ob;
     return (b.ts||'').localeCompare(a.ts||'');
   });
-  $('#blCount').textContent = `${BL.length} всего`;
+  const totalText = `${BL.length} видно${BL_ARCHIVED_COUNT?` · ${BL_ARCHIVED_COUNT} в архиве`:''}`;
+  $('#blCount').textContent = totalText;
   if(list.length===0){ g.innerHTML='<div class="empty">Бэклог пуст. Идеи появятся от агентов ([[IDEA]]), от саморефлексии, или добавь свою.</div>'; return; }
   g.innerHTML='';
   for(const it of list){
@@ -519,32 +552,46 @@ function renderBacklog(){
     let actions='';
     if(it.status==='new'){ actions=`<button class="approveBtn primary">Одобрить</button><button class="rejectBtn">Отклонить</button>`; }
     else if(it.status==='approved'){ actions=`<button class="unapproveBtn">Снять одобрение</button>`; }
+    else if(it.status==='held'){ actions=`<button class="approveBtn primary">Одобрить</button><button class="rejectBtn">Отклонить</button>`; }
     else if(it.status==='running'){ actions=`<span style="color:var(--model);font-size:12px">выполняется…</span>`; }
+    else if(it.status==='auto-dropped' || it.status==='auto-resolved'){
+      actions=`<button class="restoreBtn">↩ Restore</button>`;
+    }
     else { actions=`<button class="reopenBtn">Вернуть в новые</button>`; }
+    const reasonRow = it.auto_curator && it.auto_curator.reason
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;padding:4px 6px;background:rgba(255,255,255,.03);border-radius:4px;border-left:2px solid rgba(255,255,255,.1)">${esc(String(it.auto_curator.reason))}</div>`
+      : '';
     card.innerHTML =
-      `<div class="meta">`+
+      `<div class="meta" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">`+
+        curatorDotHtml(it)+
         `<span class="src-pill ${s.cls}">${esc(s.label)}</span>`+
+        similarBadgeHtml(it)+
         `<span class="tag">от ${esc(it.from||'?')}</span>`+
         (it.attempts>0?`<span class="tag">попыток: ${it.attempts}</span>`:'')+
         `<span style="margin-left:auto">${esc(ago(it.ts))}</span>`+
       `</div>`+
       `<textarea>${esc(it.text)}</textarea>`+
+      reasonRow+
       `<div class="row">${actions}<span class="spacer"></span><button class="saveBtn" disabled>Сохранить текст</button><button class="danger delBtn">Удалить</button></div>`;
     const ta=card.querySelector('textarea'); const saveBtn=card.querySelector('.saveBtn'); const orig=it.text;
     ta.addEventListener('input',()=>{ saveBtn.disabled = (ta.value===orig); });
     const upd = async (body, okMsg)=>{ const r=await api('/api/backlog/update',{method:'POST',body:JSON.stringify(Object.assign({id:it.id},body))}); if(r.ok){toast(okMsg||'Готово','ok'); loadBacklog();} else toast('Ошибка','bad'); };
     saveBtn.addEventListener('click',()=>upd({text:ta.value},'Текст сохранён'));
     const b = sel=>card.querySelector(sel);
-    if(b('.approveBtn')) b('.approveBtn').addEventListener('click',()=>upd({status:'approved'},'Одобрено — выполнится на простое'));
+    if(b('.approveBtn')) b('.approveBtn').addEventListener('click',()=>upd({status:'approved', clear_auto_curator:true},'Одобрено — выполнится на простое'));
     if(b('.rejectBtn')) b('.rejectBtn').addEventListener('click',()=>upd({status:'rejected'},'Отклонено'));
     if(b('.unapproveBtn')) b('.unapproveBtn').addEventListener('click',()=>upd({status:'new'},'Одобрение снято'));
     if(b('.reopenBtn')) b('.reopenBtn').addEventListener('click',()=>upd({status:'new'},'Возвращено'));
+    if(b('.restoreBtn')) b('.restoreBtn').addEventListener('click',()=>upd({status:'approved', clear_auto_curator:true},'Восстановлено в approved'));
     b('.delBtn').addEventListener('click', async ()=>{ if(!confirm('Удалить идею?'))return; const r=await api('/api/backlog/delete',{method:'POST',body:JSON.stringify({id:it.id})}); if(r.ok){toast('Удалено','ok'); loadBacklog();} else toast('Ошибка','bad'); });
     g.appendChild(card);
   }
 }
 $('#refreshBl').addEventListener('click', loadBacklog);
 $('#addIdeaToggle').addEventListener('click', ()=> $('#addIdeaBox').classList.toggle('show'));
+// 2026-05-27v2: archive toggle — load with include=archived to show done/auto-resolved items
+const blArchBtn = document.getElementById('blArchiveToggle');
+if(blArchBtn) blArchBtn.addEventListener('click', ()=>{ BL_SHOW_ARCHIVED = !BL_SHOW_ARCHIVED; loadBacklog(); });
 $('#ideaCancel').addEventListener('click', ()=>{ $('#addIdeaBox').classList.remove('show'); $('#ideaText').value=''; });
 $('#ideaSave').addEventListener('click', async ()=>{
   const text=$('#ideaText').value.trim(); if(!text){ toast('Введите текст','bad'); return; }

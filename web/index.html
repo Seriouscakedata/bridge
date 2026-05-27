@@ -441,6 +441,15 @@
     color:#d9ecff;
     background:#12263d;
   }
+  /* 2026-05-27v2: external link-tab (deep-link to /memory#backlog) */
+  .panels-tab-link{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    border:1px solid var(--border-soft);
+    font-size:12px;
+  }
+  .panels-tab-link:hover{ background:#1a2030; color:var(--soft) }
   .panels-content{
     flex:1;
     min-height:0;
@@ -2071,7 +2080,10 @@
     <button id="codeToggle" class="panels-tab" type="button" data-panel="code" role="tab" aria-controls="codePanel" aria-selected="false" aria-pressed="false" title="Код-память" hidden>{ } <span>Код</span></button>
     <button id="dashToggle" class="panels-tab" type="button" data-panel="dash" role="tab" aria-controls="dashPanel" aria-selected="false" aria-pressed="false" title="Дашборд" hidden>📊 <span>Дашборд</span></button>
     <button id="usageToggle" class="panels-tab" type="button" data-panel="usage" role="tab" aria-controls="usagePanel" aria-selected="false" aria-pressed="false" title="Расход">💸 <span>Расход</span></button>
-    <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей">📋 <span>Backlog</span></button>
+    <!-- 2026-05-27v2: Backlog moved to /memory page (wider grid view). Tab hidden here. -->
+    <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей" hidden>📋 <span>Backlog</span></button>
+    <!-- Direct link to /memory#backlog for users who want backlog -->
+    <a id="backlogMemoryLink" href="/memory#backlog" target="_blank" class="panels-tab panels-tab-link" title="Открыть бэклог на странице памяти (шире, удобнее)" style="text-decoration:none">📋 <span>Бэклог</span> <span style="font-size:9px;opacity:.6">↗</span></a>
   </div>
   <div class="panels-content">
 <aside id="overviewPanel" class="panel" data-panel="overview" aria-label="Обзор сеанса" aria-hidden="true">
