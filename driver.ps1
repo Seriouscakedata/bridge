@@ -2042,6 +2042,51 @@ function Get-LastClaudeInstruction {
   return ''
 }
 
+function Get-AllowedCoderRoots {
+  # Independent allowlist of filesystem roots a coder turn may operate in.
+  # Deliberately does NOT trust the computed $coderCwd -- that is the value being validated.
+  # Union of: bridgeRoot (+ sandbox scratch) and the active channel's project_root.
+  # Being a superset is intentional: precise per-task write confinement is enforced at the
+  # OS level by Codex -s workspace-write (Gate A); this allowlist is a fail-closed tripwire
+  # that only fires when cwd is genuinely wild (outside bridge, project, and sandbox).
+  $roots = New-Object System.Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace($bridgeRoot)) {
+    $roots.Add($bridgeRoot)
+    $roots.Add((Join-Path $bridgeRoot 'sandbox'))
+  }
+  try {
+    $bind = Get-ActiveProjectBinding
+    if ($bind -and -not [string]::IsNullOrWhiteSpace([string]$bind.project_root)) { $roots.Add([string]$bind.project_root) }
+  } catch {}
+  try {
+    $scope = Get-EffectiveScope
+    if ($scope -and -not [string]::IsNullOrWhiteSpace([string]$scope.project_root)) { $roots.Add([string]$scope.project_root) }
+  } catch {}
+  return ($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Test-PathInAllowedRoot {
+  # Fail-closed containment check: $true only if $Path resolves inside one of $AllowedRoots.
+  # Resolves to absolute form first so '..' traversal and relative paths cannot escape.
+  param([string]$Path, [string[]]$AllowedRoots)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  if (-not $AllowedRoots -or @($AllowedRoots).Count -eq 0) { return $false }
+  $full = $null
+  try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return $false }
+  $pathNorm = $full.TrimEnd('\','/')
+  $sep = [System.IO.Path]::DirectorySeparatorChar
+  foreach ($r in $AllowedRoots) {
+    if ([string]::IsNullOrWhiteSpace($r)) { continue }
+    $rootFull = $null
+    try { $rootFull = [System.IO.Path]::GetFullPath($r) } catch { continue }
+    $rootNorm = $rootFull.TrimEnd('\','/')
+    if ($pathNorm.Equals($rootNorm, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($pathNorm.StartsWith($rootNorm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($pathNorm.StartsWith($rootNorm + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
 function Get-CoderSandboxMode {
   # Resolves the Codex CLI sandbox mode passed via -s for a coder turn.
   # Precedence: config 'coder.sandboxMode' (overlaid by settings.json) -> safe default.
@@ -2147,6 +2192,27 @@ function Invoke-Coder {
   }
   $coderCwd = if ($coderBinding -and [bool]$coderBinding.ok) { [string]$coderBinding.project_root } else { $bridgeRoot }
   if ([string]::IsNullOrWhiteSpace($coderCwd)) { $coderCwd = $bridgeRoot }
+  # Path-confinement tripwire (fail-closed): refuse to launch the coder if its working
+  # directory is not inside an allowlisted root (bridge / sandbox / bound project). Under
+  # normal operation cwd is always one of these; this only fires on a corrupted binding or
+  # a path-traversal escape. Defense-in-depth beneath the OS sandbox (Gate A workspace-write).
+  $allowedCoderRoots = Get-AllowedCoderRoots
+  if (-not (Test-PathInAllowedRoot -Path $coderCwd -AllowedRoots $allowedCoderRoots)) {
+    Add-Message -From system -Text ("🛑 Path-confinement: coder cwd вне allowlisted-корня → отказ. cwd='$coderCwd'") -Kind event | Out-Null
+    try {
+      Add-Content -LiteralPath (Join-Path $bridgeRoot 'driver.out.log') -Value (
+        (Get-Date).ToString('s') + " path-confinement BLOCK cwd='$coderCwd' allowed='" + (@($allowedCoderRoots) -join ';') + "'"
+      ) -Encoding UTF8
+    } catch {}
+    return [pscustomobject]@{
+      text             = "PATH_CONFINEMENT_BLOCKED: coder cwd вне разрешённого корня: $coderCwd"
+      status           = 'preflight_blocked'
+      duration         = 0
+      errorType        = 'path_confinement'
+      preflightBlocked = $true
+      reason           = "coder cwd вне allowlisted-корня: $coderCwd"
+    }
+  }
   if (Get-Command Get-PreflightBlockers -ErrorAction SilentlyContinue) {
     $pf = Get-PreflightBlockers -Channel $Channel -ProjectRoot $coderCwd
   } else {
