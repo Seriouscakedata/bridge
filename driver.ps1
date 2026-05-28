@@ -1190,20 +1190,6 @@ function Format-Transcript {
       if ($stIntent) { $intentSect = Format-IntentForPrompt -Intent $stIntent }
     }
   } catch { $intentSect = '' }
-  # 2026-05-28 Phase 2: semantic dedup gate. When user's task is non-trivial,
-  # surface top-3 most-similar registered features so planner can extend
-  # existing feature rather than create a duplicate. Cheap (one gemini-embedding
-  # call), silent on borderline matches (only emits if top sim >= 0.85).
-  $dedupSect = ''
-  try {
-    if (Get-Command Test-FeatureSimilarity -ErrorAction SilentlyContinue) {
-      $simMatches = $null
-      try { $simMatches = Test-FeatureSimilarity -TaskText $TaskText -Threshold 0.7 -TopK 3 } catch { $simMatches = $null }
-      if ($simMatches -and @($simMatches).Count -gt 0 -and (Get-Command Format-FeatureSimilarityForPrompt -ErrorAction SilentlyContinue)) {
-        $dedupSect = Format-FeatureSimilarityForPrompt -Matches $simMatches
-      }
-    }
-  } catch { $dedupSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
@@ -1212,11 +1198,10 @@ function Format-Transcript {
   $codeAppend = if ($codeSect) { "`n`n$codeSect" } else { '' }
   $recurrenceAppend = if ($recurrenceSect) { "`n`n$recurrenceSect" } else { '' }
   $intentAppend = if ($intentSect) { "`n`n$intentSect" } else { '' }
-  $dedupAppend = if ($dedupSect) { "`n`n$dedupSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend)
   }
-  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend
+  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend
 }
 
 function Get-ActiveProjectBinding {
