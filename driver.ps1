@@ -1857,6 +1857,8 @@ function Invoke-Planner {
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
   if ($Model) { $claudeArgs += @('--model', $Model) }
   $reply = ''
+  $claudeTimedOut = $false
+  $claudeSilentExit = $false
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
@@ -1873,9 +1875,15 @@ function Invoke-Planner {
       $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
       Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response '' `
         -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'planner_timeout' -Provider 'claude'
-      return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='planner_timeout' }
+      # 2026-05-28: NO longer early-return on timeout — fall through to Codex
+      # then Gemini-3-flash fallback ladder below. The old behavior bubbled up
+      # 'planner_timeout' which triggered Doctor, which then ran ANOTHER hung
+      # claude.exe and timed out again — two 15-min hangs per task. Now we
+      # try alternates first.
+      $claudeTimedOut = $true
+    } elseif (Test-Path $outF) {
+      $reply = Get-Content $outF -Raw -Encoding UTF8
     }
-    if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
   } finally {
     Set-CurrentAgent $null
     if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
@@ -1894,12 +1902,95 @@ function Invoke-Planner {
       }
       if ([string]::IsNullOrWhiteSpace($se) -and [string]::IsNullOrWhiteSpace($so)) {
         Add-Message -From system -Text "⚠ [Claude silent exit]: stdout+stderr пусты (планировщик завис без вывода)" -Kind event | Out-Null
+        $claudeSilentExit = $true
       }
     }
     Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue
   }
   if ($null -eq $reply) { $reply = '' }
   $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
+
+  # === Post-Claude fallback ladder (2026-05-28) =========================
+  # If Claude timed out OR returned silent/empty, walk down the ladder:
+  #   1. Codex (-Mode planner-fallback, read-only) — has tools, can inspect
+  #      the codebase before writing the plan. ~1-3min reliable.
+  #   2. gemini-3-flash via Invoke-LLM — text-only reserve, ~30-60s.
+  # Both alternates are skipped when -NoFallback is set (e.g. when planner
+  # is itself being called as a coder-fallback to avoid recursion).
+  $claudeUsable = (-not [string]::IsNullOrWhiteSpace($reply)) -and (-not $claudeTimedOut) -and (-not $claudeSilentExit)
+  if ((-not $claudeUsable) -and (-not $NoFallback)) {
+    # ---- Ladder step 1: Codex as planner ----
+    $reason = if ($claudeTimedOut) { 'timeout (900с)' } elseif ($claudeSilentExit) { 'silent exit' } else { 'пустой ответ' }
+    Add-Message -From system -Text ("🔀 Fallback ladder 1/2: Claude — " + $reason + " → Codex берёт planner-турн.") -Kind event | Out-Null
+    $fallbackPrefix = @"
+⚠ FALLBACK MODE: Ты сейчас замещаешь Claude-планировщика (он завис/silent-exit). Твоя роль — ПЛАНИРОВЩИК, не кодер. Разбери задачу, при необходимости прочитай файлы для контекста, дай инструкции/решение, заверши маркером STATUS (DONE / CHAT / CONTINUE / DISCUSS / RESEARCH). НЕ редактируй файлы и не запускай git-команд. Будь короче обычного — это резервный ход.
+
+ЗАДАЧА ОТ ОПЕРАТОРА:
+"@
+    try {
+      $codexRes = Invoke-Coder -Prompt ($fallbackPrefix + "`n" + $Prompt) -Mode 'planner-fallback' -NoFallback
+      if ($codexRes -and -not [string]::IsNullOrWhiteSpace([string]$codexRes.text)) {
+        Add-ReplayRecordForCurrentTask -Role 'planner' -Model 'codex' -Mode ($Mode + '+codex-fallback') -Prompt $Prompt -Response ([string]$codexRes.text) `
+          -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'codex'
+        return [pscustomobject]@{
+          text = ([string]$codexRes.text).Trim()
+          status = 'ok'
+          duration = [int]$sw.Elapsed.TotalSeconds
+          errorType = $null
+          fallback = 'codex'
+        }
+      }
+      Add-Message -From system -Text "⚠ Codex-fallback тоже вернул пусто" -Kind event | Out-Null
+    } catch {
+      Add-Message -From system -Text ("⚠ Codex-fallback упал: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+
+    # ---- Ladder step 2: gemini-3-flash (text-only reserve) ----
+    Add-Message -From system -Text "🔀 Fallback ladder 2/2: Codex не справился → gemini-3-flash (резерв)." -Kind event | Out-Null
+    try {
+      # Ensure Invoke-LLM is in scope (driver.ps1 dot-sources common.ps1 at the
+      # top, so it should already be — but be defensive).
+      if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
+        $llmLib = Join-Path $bridgeRoot 'lib\llm.ps1'
+        if (Test-Path -LiteralPath $llmLib) { . $llmLib }
+      }
+      $geminiPrompt = @"
+Ты резервный планировщик автономного моста (Claude+Codex+Gemini). Прошлые две попытки (Claude через claude.exe, потом Codex) не дали ответа.
+
+У тебя НЕТ доступа к файлам — только текст ниже. Выдай короткий план словами, не более 10 шагов. Заверши маркером STATUS: DONE.
+
+ЗАДАЧА:
+$Prompt
+"@
+      $geminiReply = Invoke-LLM -Purpose 'planner-reserve' -Model 'gemini-3-flash' -Prompt $geminiPrompt -TimeoutSec 90 -Temperature 0.2
+      if (-not [string]::IsNullOrWhiteSpace([string]$geminiReply)) {
+        Add-ReplayRecordForCurrentTask -Role 'planner' -Model 'gemini-3-flash' -Mode ($Mode + '+gemini-reserve') -Prompt $Prompt -Response ([string]$geminiReply) `
+          -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'gemini'
+        return [pscustomobject]@{
+          text = ([string]$geminiReply).Trim()
+          status = 'ok'
+          duration = [int]$sw.Elapsed.TotalSeconds
+          errorType = $null
+          fallback = 'gemini-3-flash'
+        }
+      }
+      Add-Message -From system -Text "⚠ gemini-3-flash тоже вернул пусто — все три уровня лестницы провалены" -Kind event | Out-Null
+    } catch {
+      Add-Message -From system -Text ("⚠ gemini-3-flash резерв упал: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+
+    # All three failed — return the original Claude failure for Doctor escalation.
+    $finalError = if ($claudeTimedOut) { 'planner_timeout' } elseif ($claudeSilentExit) { 'planner_silent_exit' } else { 'planner_empty' }
+    return [pscustomobject]@{
+      text = ''
+      status = 'timeout'
+      duration = [int]$sw.Elapsed.TotalSeconds
+      errorType = $finalError
+      fallback = 'all_exhausted'
+    }
+  }
+
+  # === Claude success path ===============================================
   Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response $reply `
     -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'claude'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
