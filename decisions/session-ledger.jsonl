@@ -44,3 +44,8 @@
 {"ts":"2026-05-28T14:04:15.9041480+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] auditor: ���祢�� �� \u0027�㤨��\u0027 (auditor), �⢥���� �� �����ਭ� ���஢�� ��⥬�, �� ���"}
 {"ts":"2026-05-28T14:13:15.0167947+03:00","event":"verified_commit","channel":"main","what":"registry.json — 0 escaped pipes осталось, все 8 regex-паттернов корректны | PASS; driver.ps1 — импор"}
 {"ts":"2026-05-28T14:44:01.4545130+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] doctor: ��� ᠬ�६��� \u0027�����\u0027 (doctor) �� ࠧ� �� ��⨢�஢�����. ���뢠�, �� �㤨�� (�"}
+{"ts":"2026-05-28T15:12:26.8616728+03:00","event":"verified_commit","channel":"main","what":"registry embeddings не пишутся в runtime, doctor.log wiring есть, PS1 parse/BOM OK, channel metadata"}
+{"ts":"2026-05-28T15:14:34.2553510+03:00","event":"verified_commit","channel":"main","what":"lib/doctor.ps1 синтаксис + Write-DoctorLog x3 + registry activation_signal path/regex + embeddings=0"}
+{"ts":"2026-05-28T15:30:38.3995196+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/trend] backlog-curator: � audit.log �������� ���ᮢ�� ����������� �訡�� (����� 15 ࠧ):"}
+{"ts":"2026-05-28T15:46:20.7203034+03:00","event":"doctor_fix","channel":"main","what":"doctor_activated"}
+{"ts":"2026-05-28T16:17:07.3963843+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] auth-bypass (server.ps1:292) -- ���� handler GET /api/health ��ࠡ��뢠���� ��"}
