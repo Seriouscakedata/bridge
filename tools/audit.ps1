@@ -436,6 +436,10 @@ function Invoke-BridgeAudit {
     [string]$FunctionalAgent = 'gemini-only'
   )
   $root = Get-AuditBridgeRoot -Hint $BridgePath
+  try {
+    $commonLib = Join-Path $root 'lib\common.ps1'
+    if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+  } catch {}
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
   # Resolve target project root: explicit -ProjectRoot > Get-EffectiveProjectRoot($Channel) > $root.
@@ -461,6 +465,10 @@ function Invoke-BridgeAudit {
       }
     } catch {}
   }
+  if ([string]::IsNullOrWhiteSpace($resolvedChannel) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
+    try { $resolvedChannel = [string](Get-EffectiveChannel) } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel = 'main' }
 
   # 1. lock
   $existing = Test-AuditLock -BridgePath $root
@@ -570,10 +578,12 @@ function Invoke-BridgeAudit {
           # add -Sequential to fall back to back-to-back execution.
           # Also pass -FunctionalAgent (auto/gemini-only) for A/B testing.
           $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent,'-OutputFile',$deepResultPath)
-          $deepProc = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList $deepArgs `
-            -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
-            -WindowStyle Hidden -PassThru
+          $deepProc = Invoke-WithChannelEnv -Slug $resolvedChannel -Action {
+            Start-Process -FilePath 'powershell.exe' `
+              -ArgumentList $deepArgs `
+              -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
+              -WindowStyle Hidden -PassThru
+          }
           $deepProc.WaitForExit()
           try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
           # Prefer the explicit result file (UTF-8 guaranteed). Fall back to

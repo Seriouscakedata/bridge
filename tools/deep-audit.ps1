@@ -228,9 +228,16 @@ function Start-CodexSecurityAsync {
   Write-Host "[deep-audit] codex: spawning codex.exe (timeout ${TimeoutSec}s, project=$ProjRoot)..."
   try {
     $reasonArg = 'model_reasoning_effort="medium"'
-    $p = Start-Process -FilePath $CodexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','read-only','-C',$ProjRoot,'-o',$msgF,'-' `
-      -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $spawn = {
+      Start-Process -FilePath $CodexExe `
+        -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','read-only','-C',$ProjRoot,'-o',$msgF,'-' `
+        -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    }
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action $spawn
+    } else {
+      $p = & $spawn
+    }
     return [pscustomobject]@{
       kind = 'codex'; proc = $p; preResult = $null
       msgF = $msgF; inF = $inF; outF = $outF; errF = $errF
@@ -373,8 +380,15 @@ function Start-ClaudeFunctionalAsync {
   $allowedTools = @('Read','Grep','Glob')
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$ProjRoot,'--allowedTools') + $allowedTools + @('--model','sonnet')
   try {
-    $p = Start-Process -FilePath $ClaudeExe -ArgumentList $claudeArgs `
-      -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $spawn = {
+      Start-Process -FilePath $ClaudeExe -ArgumentList $claudeArgs `
+        -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    }
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action $spawn
+    } else {
+      $p = & $spawn
+    }
     return [pscustomobject]@{
       kind = 'claude'; proc = $p; preResult = $null
       promptText = $promptBuilder.ToString()
@@ -477,6 +491,10 @@ function Invoke-ClaudeFunctionalPass {
 $bridgeRoot = Get-DeepAuditBridgeRoot
 $projRoot = if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot } else { $bridgeRoot }
 $cfg = Get-DeepAuditConfig
+try {
+  $commonLib = Join-Path $bridgeRoot 'lib\common.ps1'
+  if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib 2>$null | Out-Null }
+} catch {}
 
 $codexResult = @{ skipped = $true; reason = 'no_codex_flag'; findings = @() }
 $claudeResult = @{ skipped = $true; reason = 'no_claude_flag'; findings = @() }

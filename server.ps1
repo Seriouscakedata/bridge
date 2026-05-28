@@ -154,6 +154,7 @@ function Invoke-RunbookProcess {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
+    try { $psi.EnvironmentVariables['BRIDGE_CHANNEL'] = [string](Get-EffectiveChannel) } catch {}
     $proc.StartInfo = $psi
     [void]$proc.Start()
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
@@ -844,7 +845,11 @@ try {
       elseif ($method -eq 'POST' -and $path -eq '/api/memory/reindex') {
         $lib = Join-Path $root 'librarian.ps1'
         if (Test-Path $lib) {
-          try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden | Out-Null } catch {}
+          try {
+            Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+              Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden | Out-Null
+            }
+          } catch {}
           Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
         } else { Send-Text $ctx '{"ok":false,"error":"librarian.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }
@@ -1126,7 +1131,9 @@ try {
         $rf = Join-Path $root 'techradar.ps1'
         if (Test-Path -LiteralPath $rf) {
           try {
-            Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+            Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+              Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+            }
             Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
           } catch {
             $err = ("" + $_.Exception.Message) | ConvertTo-Json -Depth 10 -Compress
@@ -1170,7 +1177,11 @@ try {
         $rf = Join-Path $root 'reflect.ps1'
         if (Test-Path $rf) {
           try { [System.IO.File]::WriteAllText((Join-Path $root 'reflect.last'), '2000-01-01T00:00:00.0000000Z', (New-Object System.Text.UTF8Encoding($false))) } catch {}
-          try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null } catch {}
+          try {
+            Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+              Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
+            }
+          } catch {}
           Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
         } else { Send-Text $ctx '{"ok":false,"error":"reflect.ps1 missing"}' 'application/json; charset=utf-8' 500 }
       }

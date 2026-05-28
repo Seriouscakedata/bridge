@@ -106,7 +106,9 @@ try {
 "@
     $u8Bom = New-Object System.Text.UTF8Encoding($true)
     [System.IO.File]::WriteAllText($launcher, $launcherBody, $u8Bom)
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+    Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+    }
     return $true
   } catch {
     Write-BacklogJsonLine ([ordered]@{

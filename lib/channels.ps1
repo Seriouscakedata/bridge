@@ -42,9 +42,30 @@ function Set-PinnedChannel { param([string]$Slug) $script:PinnedChannel = (Norma
 function Clear-PinnedChannel { $script:PinnedChannel = $null }
 function Get-PinnedChannel { return $script:PinnedChannel }
 function Get-EffectiveChannel {
-  # Channel to actually read/write from. Pinned wins, else active marker.
+  # Channel to actually read/write from. Pinned wins, then inherited env, else active marker.
   if (-not [string]::IsNullOrWhiteSpace([string]$script:PinnedChannel)) { return [string]$script:PinnedChannel }
+  if ($env:BRIDGE_CHANNEL) {
+    $envSlug = [string]$env:BRIDGE_CHANNEL
+    if ($envSlug -match '^[a-z0-9][a-z0-9_-]*$') {
+      $channelDir = Join-Path (Get-BridgeRoot) "channels/$envSlug"
+      if ($envSlug -eq 'main' -or (Test-Path -LiteralPath $channelDir -PathType Container)) { return $envSlug }
+    }
+  }
   return (Get-ActiveChannel)
+}
+
+function Invoke-WithChannelEnv {
+  param(
+    [Parameter(Mandatory=$true)][string]$Slug,
+    [Parameter(Mandatory=$true)][scriptblock]$Action
+  )
+  $prevSlug = $env:BRIDGE_CHANNEL
+  try {
+    [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $Slug, 'Process')
+    & $Action
+  } finally {
+    [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $prevSlug, 'Process')
+  }
 }
 
 function Normalize-ChannelSlug {
@@ -231,6 +252,56 @@ function Get-EffectiveProjectRoot {
   $binding = Get-ChannelProjectBinding -Slug $Slug
   if ($binding -and [bool]$binding.ok) { return [string]$binding.project_root }
   return ''
+}
+
+function Get-EffectiveScope {
+  param([string]$Slug = $null)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
+  if ($Slug -notmatch '^[a-z0-9][a-z0-9_-]*$') {
+    throw "Get-EffectiveScope: invalid slug '$Slug' (must match ^[a-z0-9][a-z0-9_-]*$)"
+  }
+
+  $bridgeRoot = Get-BridgeRoot
+  $isBridge = ($Slug -eq 'main')
+  $channelDir = Join-Path $bridgeRoot "channels/$Slug"
+  if (-not $isBridge -and -not (Test-Path -LiteralPath $channelDir -PathType Container)) {
+    throw "Get-EffectiveScope: channel '$Slug' does not exist at $channelDir"
+  }
+
+  if ($isBridge) {
+    $featuresRoot = Join-Path $bridgeRoot 'features'
+    $memoryRoot = Join-Path $bridgeRoot 'memory'
+    $projectRoot = $bridgeRoot
+    $backlogPath = Join-Path $bridgeRoot 'backlog.jsonl'
+  } else {
+    $featuresRoot = Join-Path $channelDir 'features'
+    $memoryRoot = Join-Path $channelDir 'memory'
+    $projectRoot = Get-EffectiveProjectRoot -Slug $Slug
+    $backlogPath = Join-Path $channelDir 'backlog.jsonl'
+  }
+
+  [pscustomobject]@{
+    slug                     = $Slug
+    is_bridge                = $isBridge
+    bridge_root              = $bridgeRoot
+    project_root             = $projectRoot
+    features_root            = $featuresRoot
+    features_registry        = (Join-Path $featuresRoot 'registry.json')
+    features_state           = (Join-Path $featuresRoot 'state.json')
+    features_exists          = (Test-Path -LiteralPath $featuresRoot -PathType Container)
+    memory_root              = $memoryRoot
+    memory_store             = (Join-Path $memoryRoot 'memory.jsonl')
+    memory_exists            = (Test-Path -LiteralPath $memoryRoot -PathType Container)
+    backlog_path             = $backlogPath
+    bridge_features_registry = (Join-Path $bridgeRoot 'features/registry.json')
+    bridge_memory_root       = (Join-Path $bridgeRoot 'memory')
+    bridge_memory_store      = (Join-Path $bridgeRoot 'memory/memory.jsonl')
+  }
+}
+
+function Get-ChannelFeatureRegistryPath {
+  param([string]$Slug = $null)
+  return [string]((Get-EffectiveScope -Slug $Slug).features_registry)
 }
 
 function Set-ActiveChannel {

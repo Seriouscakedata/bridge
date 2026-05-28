@@ -716,7 +716,9 @@ function Start-LibrarianIfDue {
     [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
   try {
-    $libProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden -PassThru
+    $libProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden -PassThru
+    }
     if ($libProc) {
       $libTicks = 0L; try { $libTicks = (Get-Process -Id $libProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
       try { Register-ChildProcess -Label 'librarian' -ProcessId $libProc.Id -Ticks $libTicks } catch {}
@@ -820,7 +822,9 @@ function Start-AuditIfDue {
       '-MaxWaitMinutes', [string]$maxWait,
       '-WaitMarker', $waitMarker
     )
-    $auditProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    $auditProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    }
     if (-not $auditProc) { throw 'Start-Process did not return an audit process' }
     $auditTicks = 0L
     try { $auditTicks = (Get-Process -Id $auditProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -860,7 +864,9 @@ function Start-FeatureVerifierIfDue {
   if (-not (Test-Path -LiteralPath $verifierScript)) { return }
   try {
     $vArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $verifierScript, '-BridgePath', $bridgeRoot)
-    $vp = Start-Process -FilePath 'powershell.exe' -ArgumentList $vArgs -WindowStyle Hidden -PassThru
+    $vp = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList $vArgs -WindowStyle Hidden -PassThru
+    }
     if ($vp) {
       $vpTicks = 0L
       try { $vpTicks = (Get-Process -Id $vp.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -913,7 +919,9 @@ function Start-ReflectIfDue {
   if (-not (Test-Path $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
   try {
-    $rfProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    $rfProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    }
     if ($rfProc) {
       $rfTicks = 0L; try { $rfTicks = (Get-Process -Id $rfProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
       try { Register-ChildProcess -Label 'reflect' -ProcessId $rfProc.Id -Ticks $rfTicks } catch {}
@@ -936,7 +944,9 @@ function Start-TechRadarIfDue {
   if (-not (Test-Path -LiteralPath $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
   try {
-    $rdProc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    $rdProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    }
     if ($rdProc) {
       $rdTicks = 0L; try { $rdTicks = (Get-Process -Id $rdProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
       try { Register-ChildProcess -Label 'tech-radar' -ProcessId $rdProc.Id -Ticks $rdTicks } catch {}
@@ -995,7 +1005,9 @@ function Start-CanaryIfDue {
     $canaryScript = Join-Path $PSScriptRoot 'canary.ps1'
     if (-not (Test-Path -LiteralPath $canaryScript)) { return }
     [System.IO.File]::WriteAllText($launchMarker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-    $caProc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden -PassThru
+    $caProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden -PassThru
+    }
     if ($caProc) {
       $caTicks = 0L; try { $caTicks = (Get-Process -Id $caProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
       try { Register-ChildProcess -Label 'canary' -ProcessId $caProc.Id -Ticks $caTicks } catch {}
@@ -1861,8 +1873,10 @@ function Invoke-Planner {
   $claudeSilentExit = $false
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
-    $p = Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
-      -WorkingDirectory $plannerCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
+        -WorkingDirectory $plannerCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    }
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'claude'
     # Planner cap history: 240s -> 600s (probe 2 ultrathink audit), -> 900s (2026-05-26
@@ -2198,9 +2212,11 @@ function Invoke-Coder {
         (Get-Date).ToString('s') + " codex effort=$effort plen=$($effRes.plen) mode=$($effRes.mode) crc=$($effRes.crc) wt=$($effRes.wt)"
       ) -Encoding UTF8
     } catch {}
-    $p = Start-Process -FilePath $codexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
-      -WorkingDirectory $coderCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath $codexExe `
+        -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
+        -WorkingDirectory $coderCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    }
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'codex'
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
@@ -2259,8 +2275,10 @@ $NewBlock
   [System.IO.File]::WriteAllText($inF, $prompt, $Utf8NoBom)
   $reply = ''
   try {
-    $p = Start-Process -FilePath $claudeExe -ArgumentList '-p','--model',$triageModel `
-      -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath $claudeExe -ArgumentList '-p','--model',$triageModel `
+        -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    }
     $null = $p.Handle; Register-AgentPid $p.Id
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000 -ErrFile $errF -OutFile $outF)) { Stop-AgentTree $p.Id; return $null }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
@@ -4361,7 +4379,9 @@ $diff
         if ($psChanged) {
           $smokeFile = Join-Path $bridgeRoot 'smoke.ps1'
           if (Test-Path $smokeFile) {
-            $smokeOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $smokeFile 2>&1 | Out-String
+            $smokeOut = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+              & powershell -NoProfile -ExecutionPolicy Bypass -File $smokeFile 2>&1 | Out-String
+            }
             $smokeOk  = $smokeOut -imatch 'SMOKE OK'
             $smokeVrc = [int](Read-State).verify_retry_count
             if (-not $smokeOk) {

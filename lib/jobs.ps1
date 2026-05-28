@@ -31,7 +31,9 @@ try { & `$env:ComSpec /c `$c *>> '$log' 2>&1 } catch { `$_ | Out-File -Append -L
 "@
   [System.IO.File]::WriteAllText($run, $runner, (New-Object System.Text.UTF8Encoding($true)))
   try {
-    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$run -WindowStyle Hidden -PassThru
+    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$run -WindowStyle Hidden -PassThru
+    }
     $null = $p.Handle
     $ticks = 0; try { $ticks = $p.StartTime.Ticks } catch {}
     return [ordered]@{

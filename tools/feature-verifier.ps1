@@ -20,6 +20,10 @@ param(
 #   inconclusive -- scenario errored before producing a result
 
 $ErrorActionPreference = 'Stop'
+try {
+  $commonLib = Join-Path $BridgePath 'lib\common.ps1'
+  if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+} catch {}
 
 function Get-AuthHeaders {
   $authPath = Join-Path $BridgePath 'auth.json'
@@ -100,7 +104,13 @@ foreach ($f in $registry) {
     }
     $stdout = $null
     try {
-      $stdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerPath -Name $scenarioName -TimeoutSec $ScenarioTimeoutSec 2>&1 | Out-String
+      if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+        $stdout = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerPath -Name $scenarioName -TimeoutSec $ScenarioTimeoutSec 2>&1 | Out-String
+        }
+      } else {
+        $stdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerPath -Name $scenarioName -TimeoutSec $ScenarioTimeoutSec 2>&1 | Out-String
+      }
       $exitCode = $LASTEXITCODE
     } catch {
       $stdout = $_.Exception.Message

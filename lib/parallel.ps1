@@ -31,7 +31,12 @@ try { & `$env:ComSpec /c `$c *>> '$out' 2>&1 } catch { `$_ | Out-File -Append -L
 "@
     [System.IO.File]::WriteAllText($runner, $rs, (New-Object System.Text.UTF8Encoding($true)))
     $proc = $null
-    try { $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$runner -WindowStyle Hidden -PassThru; $null = $proc.Handle } catch {}
+    try {
+      $proc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$runner -WindowStyle Hidden -PassThru
+      }
+      $null = $proc.Handle
+    } catch {}
     $units += @{ w=$w; wt=$wt; proc=$proc; out=$out }
   }
   # 2) wait for ALL to finish (heartbeat via OnTick so the watchdog stays calm)
@@ -85,8 +90,10 @@ function Invoke-CodexParallel {
     [System.IO.File]::WriteAllText($inF, $wprompt, $u8)
     $proc = $null
     try {
-      $proc = Start-Process -FilePath $codex -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s','danger-full-access','-C',$wt.path,'-o',$msgF,'-' `
-        -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+      $proc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+        Start-Process -FilePath $codex -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s','danger-full-access','-C',$wt.path,'-o',$msgF,'-' `
+          -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+      }
       $null = $proc.Handle
     } catch {}
     $units += @{ name="w$idx"; wt=$wt; proc=$proc; inF=$inF; msgF=$msgF; outF=$outF; errF=$errF; subtask=$st }
@@ -320,9 +327,11 @@ function Invoke-ParallelCodexCli {
     '-c', "model_reasoning_effort=`"$effort`"",
     '-s','danger-full-access','-C',$Worktree,'-o',$MsgFile,'-'
   )
-  return Start-Process -FilePath $codex -ArgumentList $cliArgs `
-    -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
-    -NoNewWindow -PassThru
+  return Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+    Start-Process -FilePath $codex -ArgumentList $cliArgs `
+      -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
+      -NoNewWindow -PassThru
+  }
 }
 
 function Invoke-ParallelClaudeCli {
@@ -342,10 +351,12 @@ function Invoke-ParallelClaudeCli {
     '--allowedTools','Read','Grep','Glob','Bash','Edit','MultiEdit','Write',
     '--model', $model
   )
-  return Start-Process -FilePath $claude -ArgumentList $cliArgs `
-    -WorkingDirectory $Worktree `
-    -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
-    -NoNewWindow -PassThru
+  return Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+    Start-Process -FilePath $claude -ArgumentList $cliArgs `
+      -WorkingDirectory $Worktree `
+      -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
+      -NoNewWindow -PassThru
+  }
 }
 
 # To add Gemini/DeepSeek/etc: implement Invoke-ParallelXxxCli with the same
