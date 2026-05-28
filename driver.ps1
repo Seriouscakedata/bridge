@@ -1508,6 +1508,14 @@ $claudeActionBlock
 
 ⏹ ПРАВИЛО «КРИТЕРИЙ ОСТАНОВКИ»: для любой многошаговой задачи — сформулируй чёткий критерий DONE до начала работы (что конкретно должно работать/вернуть/не сломаться). Для открытых задач вида «делай что считаешь нужным» — первым ходом напиши план (2–4 пункта) с явным критерием завершения. Без критерия остановки — потенциальный бесконечный цикл анализа.
 
+🗣 ПРАВИЛО «ГЛАГОЛ ОБСУЖДЕНИЯ» (КРИТИЧНО): если в тексте задачи (где угодно — в начале, в середине, в секции «обсудить») есть глаголы «обсуди», «обсудим», «обсудите», «посоветуйся», «согласуй(те)», «давайте обсудим», «подумайте вместе», «перед тем как делать обсудите» — это **императивное требование пользователя** услышать мнение Codex'а до реализации. Твой ПЕРВЫЙ ход ОБЯЗАН быть STATUS: DISCUSS с конкретными вопросами Codex'у по дизайну. НЕ «разрешаю сам», НЕ «хватает контекста, запускаю воркеров», НЕ «принимаю решение единолично» — это **нарушение протокола**.
+
+Если ты уверен, что обсуждать действительно нечего и контекста хватает — всё равно сделай STATUS: DISCUSS в формате: «Мой план: [3-5 пунктов]. Codex, есть возражения по дизайну? Согласен с приоритетами? Если у тебя нет добавок — на следующем ходе перейду к реализации.» Это даёт Codex'у возможность возразить или дополнить (и не выглядит как обход пользовательского запроса).
+
+Признак, что правило сработало: на следующий ход driver запустит Codex'а с твоим discuss-промптом, и он либо одобрит, либо предложит правки. Только после его ответа — STATUS: CONTINUE с реализацией.
+
+Урок 2026-05-28: на задаче Phase 1 Feature Registry пользователь явно прописал «ОБСУДИТЬ КОРОТКО: ...», но планировщик ответил «Хватает контекста. Разрешаю design-вопросы и запускаю 3 параллельных потока» — обошёл обсуждение. Пользователь это заметил: «ты дал задачу мосту обсудить, но этого не произошло и вообще кодекс мало используется». Это правило — фикс этой ошибки.
+
 🧭 ПРАВИЛО CROSS-LAYER ДИАГНОСТИКИ (КРИТИЧНО для багов вида «X не работает»):
 Если задача описывает СИМПТОМ от пользователя (UI мигает / API возвращает не то / агент завис / медленно / не сохраняется), ДО первой правки кода проверь ВСЕ слои, через которые течёт данные. Не оставайся в файле, где симптом проявился — там почти никогда нет корня.
 - UI-симптом → проверь HTTP-эндпоинты, которые этот UI дёргает (читай server.ps1, найди обработчик). Симптом «UI показывает не то» = «либо server вернул не то, либо клиент неправильно отрендерил». Если сервер 200 + правильный JSON — корень в клиенте. Если сервер 200 + НЕправильный JSON — корень в сервере.
@@ -2665,6 +2673,14 @@ while ($true) {
       # got routed to discuss-mode. Now requires marker to be alone on a line (with optional
       # leading whitespace) -- can't be inside code blocks, quotes, or prose.
       $deepThinkMark = [bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[DEEP-THINK\]\]\s*$'))
+      # 2026-05-28: ALSO trigger discuss-mode if task contains explicit discussion
+      # verbs anywhere in text. This is a deterministic override BEFORE the LLM
+      # intent classifier — was needed because classifier weighs by overall
+      # task topic and silently drops "обсудите коротко" sections in mostly-
+      # implementation tasks. Forces discuss when user explicitly asks for it,
+      # regardless of how much implementation spec is attached.
+      $discussVerbRegex = '(?im)\b(обсуди(?:м|те|ть)?|обсудим(?:те)?|посоветуйс(?:я|е)|согласуй(?:те|тесь)?|давайте\s+обсудим|подумайте\s+вместе|перед(?:\s+тем)?\s+(?:чем|как)[^.]{0,80}обсуд|coordinate\s+with\s+codex|discuss\s+with\s+codex)'
+      $discussVerbMark = [bool]([regex]::IsMatch($taskMsg, $discussVerbRegex))
       # [[NORMAL]] override forces task_mode=normal even if other auto-detect would route
       # elsewhere (study/discuss). For operators who know "obsuzhdat' nechego, delay".
       $normalOverride = [bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[NORMAL\]\]\s*$'))
@@ -2723,16 +2739,22 @@ while ($true) {
       $intentForcedFastLaneClosure = $intentForcedFastLane
       $intentForcedDiscussClosure  = $intentForcedDiscuss
       $intentForcedStudyClosure    = $intentForcedStudy
+      $discussVerbClosure          = $discussVerbMark
 
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         Start-ReplayForStateTask -State $s -TaskText $taskMsg -ChannelName $Channel
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         Clear-FastLaneFlags $s
-        # Precedence: explicit markers > LLM intent (high conf) > legacy detection.
+        # Precedence: explicit markers > discuss-verb regex > LLM intent (high conf) > legacy detection.
+        # discuss-verb is BEFORE the LLM intent fork: deterministic catch for
+        # "обсуди" в любом месте текста, не зависит от того что классификатор
+        # решил по доминирующей теме задачи (он часто прозевает discuss-секции
+        # в задачах с большим implementation-спеком).
         if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
         elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($discussVerbClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedFastLaneClosure) { Set-FastLaneFlags -State $s -Reason 'llm-intent'; $s.task_mode='normal' }
         elseif ($intentForcedDiscussClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedStudyClosure) { $s.task_mode='study'; $s.study_subtype='external'; $s.study_phase='plan' }
@@ -2755,6 +2777,7 @@ while ($true) {
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
       if ($normalOverride -and -not $fastLaneReason) { Add-Message -From system -Text "📐 [[NORMAL]] override -- task_mode=normal forced (auto-detect bypassed)." -Kind event | Out-Null }
       if ($deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
+      if ($discussVerbMark -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🗣 Discuss-verb detected (обсуди/согласуйте/...) — режим: discuss (Claude↔Codex до сходимости, max 6 ходов). Хочешь обычный режим без обсуждения — добавь [[NORMAL]] в начало задачи." -Kind event | Out-Null }
       if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentForcedDiscuss -and -not $intentForcedStudy -and -not $intentForcedFastLane) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       # 2026-05-28: announce LLM-classifier verdict so user sees what mode was inferred and why.
       if ($taskIntent -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
