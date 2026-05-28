@@ -28,7 +28,7 @@ if (-not (Is-Running 'driver.ps1')) { $drv = Start-Hidden (Join-Path $root 'driv
 else { Write-Host "Driver already running; skipping." }
 
 $pids = [ordered]@{ server = ($(if ($srv) { $srv.Id })); driver = ($(if ($drv) { $drv.Id })); ts = (Get-Date).ToString('o') }
-Write-AtomicFile -Path (Join-Path $runtime 'pids.json') -Content ($pids | ConvertTo-Json)
+Write-AtomicFile -Path (Join-Path $runtime 'pids.json') -Content ($pids | ConvertTo-Json -Depth 10)
 
 if (-not $NoBrowser) {
   Start-Sleep -Seconds 2

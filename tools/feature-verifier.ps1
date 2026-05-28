@@ -205,5 +205,5 @@ if ($brokenCount -gt 0) {
 $summary = [ordered]@{
   ts = $now; total = $results.Count; passing = $passingCount; broken = $brokenCount; untested = $untestedCount; digest = $digestPath
 }
-$summary | ConvertTo-Json -Compress
+$summary | ConvertTo-Json -Depth 10 -Compress
 if ($brokenCount -gt 0) { exit 1 } else { exit 0 }

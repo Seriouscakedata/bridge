@@ -2310,7 +2310,7 @@ function Write-TurnLog {
       status  = $turnStatus
       mode    = $Mode
     }
-    Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+    Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Depth 10 -Compress) -Encoding UTF8
     try {
       $null = Add-UsageRecord -Kind prepaid -Provider $Speaker -Model $Model -Purpose $Mode -Sec $sec -Status $turnStatus
     } catch {}
@@ -2356,7 +2356,7 @@ function Write-EvidenceLog {
       summary    = $Summary
       confidence = $Confidence
     }
-    Add-Content -LiteralPath (Join-Path $bridgeRoot 'evidence.jsonl') -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+    Add-Content -LiteralPath (Join-Path $bridgeRoot 'evidence.jsonl') -Value ($entry | ConvertTo-Json -Depth 10 -Compress) -Encoding UTF8
     return $true
   } catch {
     return $false
