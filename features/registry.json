@@ -128,9 +128,6 @@
                                   "path":  "control/auditor.log",
                                   "regex":  "^\\[.*\\] audit"
                               },
-        "scenarios":  [
-
-                      ],
         "dependencies":  [
                              "doctor",
                              "librarian"
@@ -140,7 +137,10 @@
         "scenario_recommended":  true,
         "created_at":  "2026-05-28",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "scenarios":  [
+                          "features-registry.js"
+                      ]
     },
     {
         "id":  "recurrence-detection",
@@ -267,9 +267,6 @@
                                   "path":  "control/backlog.log",
                                   "regex":  "^\\[.*\\] (curator\\|approved\\|rejected\\|duplicate)"
                               },
-        "scenarios":  [
-
-                      ],
         "dependencies":  [
                              "llm-router"
                          ],
@@ -278,7 +275,10 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "scenarios":  [
+                          "backlog-add.js"
+                      ]
     },
     {
         "id":  "postmortem",
@@ -592,9 +592,6 @@
         "activation_signal":  {
                                   "kind":  "none"
                               },
-        "scenarios":  [
-
-                      ],
         "dependencies":  [
                              "channel-switch"
                          ],
@@ -603,7 +600,10 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "scenarios":  [
+                          "message-send.js"
+                      ]
     },
     {
         "id":  "channel-switch",
@@ -619,9 +619,6 @@
                                   "kind":  "state-path",
                                   "path":  "active_channel"
                               },
-        "scenarios":  [
-
-                      ],
         "dependencies":  [
 
                          ],
@@ -630,7 +627,10 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "scenarios":  [
+                          "channel-switch.js"
+                      ]
     },
     {
         "id":  "zombie-job-recovery",

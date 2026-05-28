@@ -830,6 +830,46 @@ function Start-AuditIfDue {
   }
 }
 
+function Start-FeatureVerifierIfDue {
+  # 2026-05-28 Phase 4: daily feature verifier. Walks features/registry.json,
+  # runs scenarios from each feature's `scenarios` field via tools/scenario.ps1
+  # (headless Chrome user-flow tests), records pass/fail to features/state.json
+  # + audit/feature-verifier-YYYY-MM-DD.md. Broken features post chat alert.
+  $vCfg = $null
+  try {
+    $cfgF = Get-BridgeConfig
+    if ($cfgF -and ($cfgF.PSObject.Properties.Name -contains 'featureVerifier') -and $cfgF.featureVerifier) { $vCfg = $cfgF.featureVerifier }
+  } catch {}
+  $enabled = if ($vCfg -and $null -ne $vCfg.enabled) { [bool]$vCfg.enabled } else { $true }
+  if (-not $enabled) { return }
+  $startH = if ($vCfg -and $null -ne $vCfg.windowStartHour) { [int]$vCfg.windowStartHour } else { 2 }
+  $endH   = if ($vCfg -and $null -ne $vCfg.windowEndHour)   { [int]$vCfg.windowEndHour }   else { 6 }
+  $floorH = if ($vCfg -and $null -ne $vCfg.floorHours)      { [int]$vCfg.floorHours }      else { 20 }
+  $hourNow = (Get-Date).Hour
+  $inWindow = if ($startH -le $endH) { ($hourNow -ge $startH -and $hourNow -le $endH) } else { ($hourNow -ge $startH -or $hourNow -le $endH) }
+  if (-not $inWindow) { return }
+  $marker = Join-Path $bridgeRoot 'features\verifier.last'
+  if (Test-Path -LiteralPath $marker) {
+    try {
+      $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
+      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($floorH)) { return }
+    } catch {}
+  }
+  $verifierScript = Join-Path $bridgeRoot 'tools\feature-verifier.ps1'
+  if (-not (Test-Path -LiteralPath $verifierScript)) { return }
+  try {
+    $vArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $verifierScript, '-BridgePath', $bridgeRoot)
+    $vp = Start-Process -FilePath 'powershell.exe' -ArgumentList $vArgs -WindowStyle Hidden -PassThru
+    if ($vp) {
+      $vpTicks = 0L
+      try { $vpTicks = (Get-Process -Id $vp.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+      try { Register-ChildProcess -Label 'feature-verifier' -ProcessId $vp.Id -Ticks $vpTicks } catch {}
+      try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      Add-Message -From system -Text "🩻 Запущен Feature Verifier (проверка сценариев на живом UI)." -Kind event | Out-Null
+    }
+  } catch {}
+}
+
 function Start-ReflectIfDue {
   # Launch idle self-reflection at most once per autonomy.reflectEveryHours, detached.
   $marker = Join-Path $bridgeRoot 'reflect.last'
@@ -1190,6 +1230,19 @@ function Format-Transcript {
       if ($stIntent) { $intentSect = Format-IntentForPrompt -Intent $stIntent }
     }
   } catch { $intentSect = '' }
+  # 2026-05-28 Phase 2: semantic dedup gate. Surface top-3 most-similar
+  # registered features when a non-trivial task arrives, so the planner can
+  # decide "extend feature X" vs "create new Y" with eyes open.
+  $dedupSect = ''
+  try {
+    if (Get-Command Test-FeatureSimilarity -ErrorAction SilentlyContinue) {
+      $simMatches = $null
+      try { $simMatches = Test-FeatureSimilarity -TaskText $TaskText -Threshold 0.7 -TopK 3 } catch { $simMatches = $null }
+      if ($simMatches -and @($simMatches).Count -gt 0 -and (Get-Command Format-FeatureSimilarityForPrompt -ErrorAction SilentlyContinue)) {
+        $dedupSect = Format-FeatureSimilarityForPrompt -Matches $simMatches
+      }
+    }
+  } catch { $dedupSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
@@ -1198,10 +1251,11 @@ function Format-Transcript {
   $codeAppend = if ($codeSect) { "`n`n$codeSect" } else { '' }
   $recurrenceAppend = if ($recurrenceSect) { "`n`n$recurrenceSect" } else { '' }
   $intentAppend = if ($intentSect) { "`n`n$intentSect" } else { '' }
+  $dedupAppend = if ($dedupSect) { "`n`n$dedupSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
   }
-  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend
+  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend
 }
 
 function Get-ActiveProjectBinding {
@@ -2891,6 +2945,7 @@ while ($true) {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
         try { Start-LibrarianIfDue } catch {}
         try { Start-AuditIfDue } catch {}
+        try { Start-FeatureVerifierIfDue } catch {}
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}

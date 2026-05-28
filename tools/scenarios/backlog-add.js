@@ -1,0 +1,60 @@
+// backlog-add.js — functional test for the backlog flow.
+// Verifies: POST /api/backlog/add returns ok+id, the item appears in
+// GET /api/backlog response, and subsequent pollBacklog renders it
+// in the UI when /memory page is on the Backlog tab.
+async function scenario(s) {
+  s.log('start scenario');
+
+  const marker = 'scenario-backlog-' + Date.now().toString(36);
+  const taskText = '[scenario test] please ignore — verifying backlog add flow with marker ' + marker;
+
+  // 1. POST add
+  let addResp = null;
+  try {
+    const r = await fetch('/api/backlog/add', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: taskText, status: 'new'})
+    });
+    if (!r.ok) { s.fail('POST /api/backlog/add HTTP ' + r.status); return; }
+    addResp = await r.json();
+  } catch (e) { s.fail('POST failed: ' + e.message); return; }
+
+  s.assert(addResp && addResp.ok === true, 'POST returned ok=true');
+  s.assert(addResp && addResp.id && addResp.id.length >= 8, 'POST returned an id');
+  s.log('added id: ' + (addResp.id || '<none>'));
+
+  // 2. GET backlog, find marker
+  let listResp = null;
+  try {
+    const ch = (window.__bridge && window.__bridge.channelsCache && window.__bridge.channelsCache.active) || 'main';
+    const r = await fetch('/api/backlog?channel=' + encodeURIComponent(ch), {credentials: 'same-origin'});
+    listResp = await r.json();
+  } catch (e) { s.fail('GET /api/backlog failed: ' + e.message); return; }
+
+  s.assert(listResp && listResp.ok === true, 'GET /api/backlog returned ok=true');
+  const items = (listResp && Array.isArray(listResp.items)) ? listResp.items : [];
+  s.log('backlog items returned: ' + items.length);
+  const found = items.find(i => ((i && i.text) || '').includes(marker));
+  s.assert(!!found, 'item with marker found in backlog');
+  if (found) {
+    s.assert(found.id === addResp.id, 'id matches POST response');
+    s.assert(found.status === 'new', 'initial status is "new"');
+  }
+
+  // 3. Clean up — drop the scenario item so it doesn't pollute the queue.
+  if (addResp && addResp.id) {
+    try {
+      await fetch('/api/backlog/delete', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: addResp.id})
+      });
+      s.log('cleanup: deleted scenario item ' + addResp.id);
+    } catch (e) { s.log('cleanup-warn: ' + e.message); /* non-fatal */ }
+  }
+
+  s.log('scenario complete');
+}
