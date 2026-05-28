@@ -61,3 +61,10 @@
 {"ts":"2026-05-28T17:51:23.4782087+03:00","event":"verified_commit","channel":"main","what":"canary registry fix f3b8c1a | owner_function=Invoke-CanaryCycle, path=control/canary-runs.jsonl суще"}
 {"ts":"2026-05-28T19:19:51.5477013+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/undocumented] architect-agent: Git log (75cbc5f) indicates a new \u0027Architect agent ("}
 {"ts":"2026-05-28T19:26:50.6371693+03:00","event":"verified_commit","channel":"main","what":"features/registry.json содержит запись id=architect с human_review=True, owner_function=Start-Archit"}
+{"ts":"2026-05-28T19:33:16.8690070+03:00","event":"verified_commit","channel":"main","what":"features/registry.json — запись architect добавлена корректно (id, status=active, human_review=True,"}
+{"ts":"2026-05-28T20:53:27.4932132+03:00","event":"convergence","channel":"main","source":"planner"}
+{"ts":"2026-05-28T21:02:16.0793851+03:00","event":"verified_commit","channel":"main","what":"6 фаз per-channel isolation | Phase 1 scope-резолвер 9/9 (main/travel/throw/ENV); Phase 2 features f"}
+{"ts":"2026-05-28T21:16:33.8636871+03:00","event":"verified_commit","channel":"main","what":"critic repair for per-channel isolation | commit 95f5c05; parser/BOM OK; env child inheritance trave"}
+{"ts":"2026-05-28T21:16:40.7359300+03:00","event":"convergence","channel":"main","source":"planner"}
+{"ts":"2026-05-28T21:29:29.1637843+03:00","event":"verified_commit","channel":"main","what":"architect scope cleanup | commit c4c06d5; parser/BOM OK; Get-ArchitectScope == Get-EffectiveScope; s"}
+{"ts":"2026-05-28T21:29:35.9864487+03:00","event":"convergence","channel":"main","source":"planner"}

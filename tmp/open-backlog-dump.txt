@@ -1,0 +1,189 @@
+﻿1	id=11b18142	from=audit	sev=(none)
+    [audit/security] authentication-bypass (lib\canary.ps1:352) — API route block does not include an obvious authentication check.
+
+2	id=32cfb41d	from=audit	sev=(none)
+    [audit/security] authentication-bypass (lib\canary.ps1:350) — API route block does not include an obvious authentication check.
+
+3	id=00d959f0	from=audit	sev=(none)
+    [audit/security] authentication-bypass (watchdog.ps1:88) — API route block does not include an obvious authentication check.
+
+4	id=1fa64d45	from=audit	sev=(none)
+    [audit/security] command-injection (tools\wave-a-helper-tests.ps1:15) — Dynamic command execution via Invoke-Expression/iex.
+
+5	id=c265b32a	from=audit	sev=(none)
+    [audit/security] command-injection (tools\audit-security.ps1:138) — Dynamic command execution via Invoke-Expression/iex.
+
+6	id=8a8ea359	from=audit	sev=(none)
+    [audit/security] command-injection (tools\audit-security.ps1:136) — Dynamic command execution via Invoke-Expression/iex.
+
+7	id=d45a9d0d	from=audit	sev=(none)
+    [audit/security] authentication-bypass (smoke.ps1:74) — API route block does not include an obvious authentication check.
+
+8	id=2860cd09	from=audit	sev=(none)
+    [audit/security] authentication-bypass (smoke.ps1:60) — API route block does not include an obvious authentication check.
+
+9	id=fd83c8a9	from=audit	sev=(none)
+    [audit/security] path-traversal (server.ps1:429) — File read/write uses request-derived path without nearby GetFullPath and root StartsWith validation.
+
+10	id=962cd092	from=audit	sev=(none)
+    [audit/security] authentication-bypass (driver.ps1:1445) — API route block does not include an obvious authentication check.
+
+11	id=bfecc0a8	from=audit	sev=(none)
+    [audit/security] authentication-bypass (smoke.ps1:72) — API route block does not include an obvious authentication check.
+
+12	id=14560d59	from=audit	sev=(none)
+    [audit/security] authentication-bypass (smoke.ps1:68) — API route block does not include an obvious authentication check.
+
+13	id=bff02763	from=audit	sev=(none)
+    [audit/security] authentication-bypass (smoke.ps1:64) — API route block does not include an obvious authentication check.
+
+14	id=76827028	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] tech-radar: Git log (982f637) indicates a 'techradar.ps1' for AI/ML trends was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Tech Radar' to the registry. Mark for human-review.
+
+15	id=bf35b75d	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] learning-loop: Git log (c6d9f12, 766e779) indicates a 'learning loop' system with metrics snapshots, hypothesis, and reflection was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Learning Loop System' to the regi
+
+16	id=ba583062	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] semantic-code-memory: Git log (77c64d1) indicates 'semantic code memory' was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Semantic Code Memory' to the registry. Mark for human-review.
+
+17	id=f9cf2dec	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] architect-agent: Git log (75cbc5f) indicates a new 'Architect agent (meta-improvement layer)' was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Architect Agent' to the registry. Mark for human-review.
+
+18	id=131d48fe	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] llm-router-feature: Git log (cc9f453) indicates 'model routing and usage accounting' was added, and 'llm-router' is a dependency for many features, but it's not a feature itself in the registry. | Предлагает: Add a new feature entry for 'LLM Router' or 
+
+19	id=ef344fef	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] multi-channel-parallel-drivers: Git log (87901bd) indicates 'true per-channel parallel drivers' were added as part of a multi-channel system, but this core functionality is not explicitly a feature. | Предлагает: Add a new feature entry for 'Multi-Chann
+
+20	id=1822afbe	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] self-improvement-system: Git log (5237763) indicates a 'self-improvement system (with safety rules)' was enabled, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Self-Improvement System' to the registry. Mark for human-r
+
+21	id=993938b4	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] health-endpoint: Git log (f93f199) indicates a '/api/health endpoint' was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Health Endpoint' to the registry. Mark for human-review.
+
+22	id=2286932b	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] watchdog-auto-rollback: Git log (984531d) indicates 'watchdog + auto-rollback safety net' was added, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Watchdog and Auto-Rollback' to the registry. Mark for human-review.
+
+23	id=e4e8c1d4	from=audit-deep-claude	sev=critical
+    [deep-claude/undocumented] project-scoping: Git log (67c30f0, 3db7fe4, c8e3d44) indicates 'project/scope fields' and 'autonomy scope toggle' were added for backlog/memory/tasks, but it's not in the feature registry. | Предлагает: Add a new feature entry for 'Project Scoping' to t
+
+24	id=5349fba3	from=audit-deep-claude	sev=info
+    [deep-claude/drift] discuss-mode: Git log (6810f55) indicates trigger mechanism was refined ('kill structure-based Opus/discuss triggers + accept synonyms'), which is not explicitly detailed in the general description. | Предлагает: Consider updating the description to include de
+
+25	id=9fceb8cf	from=audit-deep-claude	sev=info
+    [deep-claude/trend] deep-audit-filing: The audit log shows 8 instances of 'deep-audit filing: source=claude sev=info outcome=filed' within the last 30 lines, indicating a recurring pattern of informational findings from Claude's deep audit. | Предлагает: Review the nature of thes
+
+26	id=b6d35e1f	from=audit-deep-claude	sev=info
+    [deep-claude/drift] doctor: Git log (a137b96) indicates 'Doctor event metrics' were added, which is not mentioned in the description. | Предлагает: Update the feature description to include the collection of 'Doctor event metrics'. Mark for human-review.
+
+27	id=9454e1db	from=audit-deep-claude	sev=info
+    [deep-claude/drift] study-mode: Git log (7fb06ed) indicates 'research mode with budget' was added, but the description only mentions 'исследовательский режим'. | Предлагает: Update the feature description to include the 'budget' aspect of the study mode. Mark for human-review.
+
+28	id=5586f8f7	from=audit-deep-claude	sev=info
+    [deep-claude/drift] worker-pool: Git log (cc9f453) indicates 'usage accounting' for models was added, which is not mentioned in the description. | Предлагает: Update the feature description to include 'model usage accounting'. Mark for human-review.
+
+29	id=8a6a17be	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] memory-recall: Description is too narrow, missing significant memory enhancements like 'skill playbooks', 'study lessons', 'tag filters', 'tag-aware dedup', and 'relevant recall scoring' (f39ae9e, 1c2c614). | Предлагает: Expand the feature description to cover
+
+30	id=54822c16	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] postmortem: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+31	id=775493ec	from=audit-deep-claude	sev=warning
+    [deep-claude/coverage] feature-dedup-gate: Feature is user-facing ('scenario_recommended: true') but has no defined scenarios. | Предлагает: Create scenarios for this feature to ensure its functional verification. Mark for human-review.
+
+32	id=e45d742e	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] backlog-curator: Git log (c71855d) shows 'goals.md' in reflection, scoring (value*confidence/effort), and sorting by score were added, which are not mentioned in the description. | Предлагает: Update the feature description to include the enhanced backlog mana
+
+33	id=f73b4eef	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] message-cache: Description focuses on UI aspects, but git log (d76e836, 635fb25, 87901bd) indicates a broader 'multi-channel' system with parallel drivers and memory namespaces. The description is too narrow. | Предлагает: Expand the description to reflect the
+
+34	id=07e683ec	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] librarian: Description states 'Ночная консолидация', but git log (1cdb9a1) shows a 'hybrid schedule' (6h ceiling + delta-trigger + 30min floor) was implemented. | Предлагает: Update the feature description to accurately reflect the 'hybrid schedule' for memory
+
+35	id=67f491b7	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] replay-system: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+36	id=77f7db00	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] backlog-curator: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+37	id=f4d2b825	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] scenario-runner: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+38	id=6f5fc626	from=audit-deep-claude	sev=warning
+    [deep-claude/trend] deep-audit-filing: The audit log shows 17 instances of 'deep-audit filing: source=claude sev=warning outcome=filed' within the last 30 lines, indicating a recurring pattern of warnings from Claude's deep audit. | Предлагает: Investigate the root causes of thes
+
+39	id=ebd13d64	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] study-mode: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+40	id=fa222f9d	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] audit-self-diag: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+41	id=da4a10bf	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] librarian: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+42	id=97aabb3f	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] critic: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+43	id=cc590a83	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] recurrence-detection: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+44	id=49851bff	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] channel-switch: Description focuses on UI aspects, but git log (d76e836, 635fb25, 87901bd) indicates a broader 'multi-channel' system with parallel drivers and memory namespaces. The description is too narrow. | Предлагает: Expand the description to reflect th
+
+45	id=22ce785b	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] memory-recall: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+46	id=3cabbbb9	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] message-cache: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+47	id=37f1943e	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] channel-switch: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+48	id=b3be9284	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] runbook-diagnostics: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+49	id=41ab7587	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] worker-pool: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+50	id=383f1045	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] parallel-chunks: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+51	id=b8d849cf	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] fast-lane: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+52	id=404f0659	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] zombie-job-recovery: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+53	id=d58d42d8	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] mission-card: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+54	id=83ee3ae4	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] state-snapshots: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+55	id=32d0d59b	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] auditor: Git log (0f50038) shows 'respect-idle gate and per-task suppression by stable reason hash' was added, which is not mentioned in the description. | Предлагает: Update the feature description to include the 'respect-idle gate' and 'per-task suppression'
+
+56	id=74f7df06	from=audit-deep-claude	sev=warning
+    [deep-claude/drift] orphan-codex-sweep: Description states 'НЕ трогает claude.exe (IDE юзера)', but git log (d862ec1) shows it was fixed to also 'never kill user's external codex.exe'. The description is incomplete. | Предлагает: Update the feature description to reflect the full
+
+57	id=48b78347	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] feature-dedup-gate: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+58	id=e739b3b5	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] feature-verifier: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+59	id=10ca5806	from=audit-deep-claude	sev=warning
+    [deep-claude/dormant] task-restart-cap: Feature status is 'active' but 'last_activated_at' is null (never activated or not recorded in state). | Предлагает: Review if this feature is still needed or if its activation signal is misconfigured. Mark for human-review.
+
+60	id=08a5206c	from=claude	sev=(none)
+    создать отдельную smoke-диагностику для `lastSeq did not advance` — canary периодически фейлится с этой ошибкой, нужно понять причину (race condition или проблема с конкурентным доступом к state)
+
+61	id=4e41c481	from=postmortem	sev=(none)
+    Добавить в пайплайн обработки audit.log шаг предварительного сжатия и чанкования с жестким таймаутом на каждый чанк.
+
+62	id=f4440a97	from=postmortem	sev=(none)
+    Добавить в планировщик watchdog с таймером (например, 30с) и механизм «circuit breaker» для прерывания зависших цепочек вызовов.
+
+63	id=d350b755	from=reflect	sev=(none)
+    Добавить проверку на 'dirty state' перед стартом автономной задачи: если git-рабочее дерево не чистое, отложить задачу до ручного коммита — это предотвратит потерю изменений при перезапусках и повысит надёжность (цель 1). Добавить в карту памяти автоматический сбор и хранение 'ур
+
