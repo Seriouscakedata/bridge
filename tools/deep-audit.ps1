@@ -335,7 +335,15 @@ function Start-ClaudeFunctionalAsync {
   [void]$promptBuilder.AppendLine('- UNDOCUMENTED: какие паттерны в git log не отражены в реестре? (новый функционал без записи)')
   [void]$promptBuilder.AppendLine('- TREND: видны ли в audit.log повторяющиеся проблемы (одна и та же категория > 3 раза)?')
   [void]$promptBuilder.AppendLine('')
-  [void]$promptBuilder.AppendLine('НЕ ПРЕДЛАГАЙ удалять — только маркируй для human-review. Цель: дайджест на еженедельное ревью пользователем.')
+  # 2026-05-28: was 'НЕ ПРЕДЛАГАЙ удалять — только маркируй для human-review'.
+  # That default made every finding land in the backlog with an explicit
+  # 'Mark for human-review' tail, which neutered the bridge's autonomy — it
+  # treated each item as 'wait for operator' instead of attempting a fix.
+  # Now LLM is told to write actionable recommendations; ONLY irreversible
+  # actions (deletion, billing, drop) get the [HUMAN-REVIEW] prefix.
+  [void]$promptBuilder.AppendLine('Для каждого finding выдай actionable recommendation, которую мост может выполнить сам.')
+  [void]$promptBuilder.AppendLine('ИСКЛЮЧЕНИЕ: если действие НЕОБРАТИМОЕ (удаление кода/фич/файлов, изменение биллинга, drop таблиц, force-push) — начни recommendation с префикса "[HUMAN-REVIEW]".')
+  [void]$promptBuilder.AppendLine('Не предлагай удалять активно используемые фичи без явных доказательств что они мертвы.')
   [void]$promptBuilder.AppendLine('')
   [void]$promptBuilder.AppendLine('=== РЕЕСТР ФИЧ ===')
   [void]$promptBuilder.AppendLine($registryRaw)
@@ -527,7 +535,11 @@ function Invoke-GeminiOnlyFunctional {
   [void]$sb.AppendLine('- UNDOCUMENTED: какие паттерны в git log не отражены в реестре? (новый функционал без записи)')
   [void]$sb.AppendLine('- TREND: видны ли в audit.log повторяющиеся проблемы (одна и та же категория > 3 раза)?')
   [void]$sb.AppendLine('')
-  [void]$sb.AppendLine('НЕ ПРЕДЛАГАЙ удалять — только маркируй для human-review.')
+  # 2026-05-28: same change as in Start-ClaudeFunctionalAsync — actionable
+  # by default, [HUMAN-REVIEW] prefix only for irreversible operations.
+  [void]$sb.AppendLine('Для каждого finding выдай actionable recommendation, которую мост может выполнить сам.')
+  [void]$sb.AppendLine('ИСКЛЮЧЕНИЕ: если действие НЕОБРАТИМОЕ (удаление кода/фич/файлов, изменение биллинга, drop таблиц, force-push) — начни recommendation с префикса "[HUMAN-REVIEW]".')
+  [void]$sb.AppendLine('Не предлагай удалять активно используемые фичи без явных доказательств что они мертвы.')
   [void]$sb.AppendLine('')
   [void]$sb.AppendLine('=== РЕЕСТР ФИЧ ===')
   [void]$sb.AppendLine($registryRaw)
