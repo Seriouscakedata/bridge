@@ -2716,7 +2716,7 @@ while ($true) {
           try {
             $pmState = Read-State
             if ($pmState -and ($pmState.PSObject.Properties.Name -contains 'task_last_failure') -and $null -ne $pmState.task_last_failure) {
-              $pmPath = Invoke-PostMortem -CommitSha $sha -State $pmState -RepoRoot $bridgeRoot
+              $pmPath = Invoke-PostMortem -CommitSha $sha -State $pmState -RepoRoot $bridgeRoot -TimeoutSec 30
               if ($pmPath) { Add-Message -From system -Text ("📋 Post-mortem создан: " + $pmPath) -Kind event | Out-Null }
             }
           } catch {

@@ -18,6 +18,132 @@ function Limit-PostMortemText {
   return $text
 }
 
+function ConvertTo-PostMortemJsonString {
+  param([AllowNull()][string]$Value)
+  if ($null -eq $Value) { return '""' }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  foreach ($ch in $Value.ToCharArray()) {
+    $code = [int][char]$ch
+    if ($ch -eq '"') {
+      [void]$sb.Append('\"')
+    } elseif ($ch -eq '\') {
+      [void]$sb.Append('\\')
+    } elseif ($ch -eq "`b") {
+      [void]$sb.Append('\b')
+    } elseif ($ch -eq "`f") {
+      [void]$sb.Append('\f')
+    } elseif ($ch -eq "`n") {
+      [void]$sb.Append('\n')
+    } elseif ($ch -eq "`r") {
+      [void]$sb.Append('\r')
+    } elseif ($ch -eq "`t") {
+      [void]$sb.Append('\t')
+    } elseif ($code -lt 0x20) {
+      [void]$sb.Append('\u')
+      [void]$sb.Append($code.ToString('x4'))
+    } else {
+      [void]$sb.Append($ch)
+    }
+  }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+
+function ConvertFrom-PostMortemJsonString {
+  param([AllowNull()][string]$Token)
+  if ([string]::IsNullOrEmpty($Token)) { return '' }
+  $text = $Token.Trim()
+  if ($text.Length -ge 2 -and $text[0] -eq '"' -and $text[$text.Length - 1] -eq '"') {
+    $text = $text.Substring(1, $text.Length - 2)
+  }
+  $sb = New-Object System.Text.StringBuilder
+  for ($i = 0; $i -lt $text.Length; $i++) {
+    $ch = $text[$i]
+    if ($ch -ne '\' -or $i -ge ($text.Length - 1)) {
+      [void]$sb.Append($ch)
+      continue
+    }
+    $i++
+    $esc = $text[$i]
+    switch ($esc) {
+      '"' { [void]$sb.Append('"'); continue }
+      '\' { [void]$sb.Append('\'); continue }
+      '/' { [void]$sb.Append('/'); continue }
+      'b' { [void]$sb.Append([char]0x08); continue }
+      'f' { [void]$sb.Append([char]0x0C); continue }
+      'n' { [void]$sb.Append("`n"); continue }
+      'r' { [void]$sb.Append("`r"); continue }
+      't' { [void]$sb.Append("`t"); continue }
+      'u' {
+        if ($i + 4 -lt $text.Length) {
+          $hex = $text.Substring($i + 1, 4)
+          try {
+            [void]$sb.Append([char][Convert]::ToInt32($hex, 16))
+            $i += 4
+            continue
+          } catch {}
+        }
+        [void]$sb.Append('\u')
+        continue
+      }
+      default {
+        [void]$sb.Append($esc)
+        continue
+      }
+    }
+  }
+  return $sb.ToString()
+}
+
+function Get-PostMortemFlatJsonValue {
+  param(
+    [AllowNull()][string]$Json,
+    [string]$Name
+  )
+  if ([string]::IsNullOrWhiteSpace($Json) -or [string]::IsNullOrWhiteSpace($Name)) { return '' }
+  $pattern = '"' + [regex]::Escape($Name) + '"\s*:\s*("(?:\\.|[^"\\])*"|[-+]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)'
+  $m = [regex]::Match($Json, $pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+  if (-not $m.Success) { return '' }
+  $token = $m.Groups[1].Value.Trim()
+  if ($token -ieq 'null') { return '' }
+  if ($token.Length -gt 0 -and $token[0] -eq '"') { return ConvertFrom-PostMortemJsonString -Token $token }
+  return $token
+}
+
+function Invoke-PostMortemGitText {
+  param(
+    [string]$RepoRoot,
+    [string[]]$Arguments
+  )
+  $oldPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    return ((& git -C $RepoRoot @Arguments 2>$null) | Out-String).Trim()
+  } catch {
+    return ''
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+}
+
+function Test-PostMortemGitSuccess {
+  param(
+    [string]$RepoRoot,
+    [string[]]$Arguments
+  )
+  $oldPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $null = & git -C $RepoRoot @Arguments 2>$null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    return $false
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+}
+
 function Get-PostMortemFailureInfo {
   param([AllowNull()][object]$State)
   $kind = 'не зафиксирована'
@@ -53,12 +179,13 @@ function Get-PostMortemTurnsTail {
       if ([string]::IsNullOrWhiteSpace($line)) { continue }
       try {
         if ($line.Length -gt 0 -and [int][char]$line[0] -eq 0xFEFF) { $line = $line.Substring(1) }
-        $o = $line | ConvertFrom-Json
-        $ts = if ($o.PSObject.Properties.Name -contains 'ts') { [string]$o.ts } else { '' }
-        $speaker = if ($o.PSObject.Properties.Name -contains 'speaker') { [string]$o.speaker } elseif ($o.PSObject.Properties.Name -contains 'role') { [string]$o.role } else { '' }
-        $model = if ($o.PSObject.Properties.Name -contains 'model') { [string]$o.model } else { '' }
-        $sec = if ($o.PSObject.Properties.Name -contains 'sec') { [string]$o.sec } elseif ($o.PSObject.Properties.Name -contains 'duration') { [string]$o.duration } else { '' }
-        $status = if ($o.PSObject.Properties.Name -contains 'status') { [string]$o.status } else { '' }
+        $ts = Get-PostMortemFlatJsonValue -Json $line -Name 'ts'
+        $speaker = Get-PostMortemFlatJsonValue -Json $line -Name 'speaker'
+        if ([string]::IsNullOrWhiteSpace($speaker)) { $speaker = Get-PostMortemFlatJsonValue -Json $line -Name 'role' }
+        $model = Get-PostMortemFlatJsonValue -Json $line -Name 'model'
+        $sec = Get-PostMortemFlatJsonValue -Json $line -Name 'sec'
+        if ([string]::IsNullOrWhiteSpace($sec)) { $sec = Get-PostMortemFlatJsonValue -Json $line -Name 'duration' }
+        $status = Get-PostMortemFlatJsonValue -Json $line -Name 'status'
         [void]$items.Add("[$ts] $speaker | $model | ${sec}s | $status")
         $count++
       } catch {
@@ -81,19 +208,18 @@ function Get-PostMortemGitContext {
   $stat = ''
   $diff = ''
   try {
-    $stat = ((& git -C $RepoRoot show --stat $CommitSha 2>$null) | Out-String).Trim()
+    $stat = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('show','--stat',$CommitSha)
   } catch {
     $stat = "Не удалось прочитать git stat: " + $_.Exception.Message
   }
   try {
-    $null = & git -C $RepoRoot rev-parse "$CommitSha^" 2>$null
-    if ($LASTEXITCODE -eq 0) {
-      $diff = ((& git -C $RepoRoot diff "$CommitSha^..$CommitSha" -- '*.ps1' '*.js' '*.html' 2>$null) | Out-String).Trim()
+    if (Test-PostMortemGitSuccess -RepoRoot $RepoRoot -Arguments @('rev-parse', "$CommitSha^")) {
+      $diff = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('diff', "$CommitSha^..$CommitSha", '--', '*.ps1', '*.js', '*.html')
     } else {
-      $diff = ((& git -C $RepoRoot show $CommitSha 2>$null) | Out-String).Trim()
+      $diff = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('show', $CommitSha)
     }
   } catch {
-    try { $diff = ((& git -C $RepoRoot show $CommitSha 2>$null) | Out-String).Trim() } catch { $diff = "Не удалось прочитать git diff: " + $_.Exception.Message }
+    try { $diff = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('show', $CommitSha) } catch { $diff = "Не удалось прочитать git diff: " + $_.Exception.Message }
   }
   return [pscustomobject]@{
     stat = (Limit-PostMortemText -Value $stat -MaxChars 500)
@@ -102,14 +228,18 @@ function Get-PostMortemGitContext {
 }
 
 function Invoke-GeminiPostMortem {
-  param([string]$Prompt)
+  param(
+    [string]$Prompt,
+    [int]$TimeoutSec = 30
+  )
+  if ($TimeoutSec -le 0) { $TimeoutSec = 30 }
   if ($env:POSTMORTEM_TEST -eq '1') {
     return "FAKE_LLM_RESPONSE`n`n## Корневая причина`nТестовая причина.`n`n## Что исправлено`nТестовое исправление.`n`n## Рекомендации`n- Тестовая рекомендация.`n`n## Идея в бэклог`nno"
   }
   $model = 'gemini-2.0-flash-lite'
   try {
     if (Get-Command Invoke-GeminiChat -ErrorAction SilentlyContinue) {
-      return Invoke-GeminiChat -Model $model -Prompt $Prompt -TimeoutSec 30 -Temperature 0.2 -Purpose 'postmortem'
+      return Invoke-GeminiChat -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature 0.2 -Purpose 'postmortem'
     }
   } catch {
     Write-Warning ("Invoke-GeminiChat post-mortem failed: " + $_.Exception.Message)
@@ -117,18 +247,13 @@ function Invoke-GeminiPostMortem {
   try {
     $secretPath = Join-Path (Get-BridgeRoot) 'secrets.json'
     if (-not (Test-Path -LiteralPath $secretPath)) { Write-Warning 'secrets.json не найден'; return $null }
-    $secrets = [System.IO.File]::ReadAllText($secretPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-    $key = ''
-    if ($secrets.PSObject.Properties.Name -contains 'geminiApiKey') { $key = [string]$secrets.geminiApiKey }
-    if ([string]::IsNullOrWhiteSpace($key) -and ($secrets.PSObject.Properties.Name -contains 'GEMINI_API_KEY')) { $key = [string]$secrets.GEMINI_API_KEY }
+    $secretsText = [System.IO.File]::ReadAllText($secretPath, [System.Text.Encoding]::UTF8)
+    $key = Get-PostMortemFlatJsonValue -Json $secretsText -Name 'geminiApiKey'
+    if ([string]::IsNullOrWhiteSpace($key)) { $key = Get-PostMortemFlatJsonValue -Json $secretsText -Name 'GEMINI_API_KEY' }
     if ([string]::IsNullOrWhiteSpace($key)) { Write-Warning 'Gemini API key не найден'; return $null }
     $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):generateContent?key=$key"
-    $body = @{
-      contents = @(@{ parts = @(@{ text = $Prompt }) })
-      generationConfig = @{ maxOutputTokens = 1024; temperature = 0.2 }
-    }
-    $json = $body | ConvertTo-Json -Depth 8
-    $response = Invoke-RestMethod -Method Post -Uri $url -ContentType 'application/json; charset=utf-8' -Body $json -TimeoutSec 30
+    $json = '{"contents":[{"parts":[{"text":' + (ConvertTo-PostMortemJsonString -Value $Prompt) + '}]}],"generationConfig":{"maxOutputTokens":1024,"temperature":0.2}}'
+    $response = Invoke-RestMethod -Method Post -Uri $url -ContentType 'application/json; charset=utf-8' -Body $json -TimeoutSec $TimeoutSec
     return [string]$response.candidates[0].content.parts[0].text
   } catch {
     Write-Warning ("Gemini post-mortem failed: " + $_.Exception.Message)
@@ -151,20 +276,17 @@ function Add-PostMortemLedgerEvent {
   } catch {
     Write-PostMortemWarning ("channel resolve failed: " + $_.Exception.Message)
   }
-  $meta = @{ sha=$CommitSha; path=$RelativePath; failure_kind=$FailureKind }
-  try {
-    if (Get-Command Add-SessionDecisionEvent -ErrorAction SilentlyContinue) {
-      Add-SessionDecisionEvent -EventType 'post_mortem' -Meta $meta -Channel $channel
-      return
-    }
-  } catch {
-    Write-Warning ("Add-SessionDecisionEvent post_mortem failed: " + $_.Exception.Message)
-  }
   try {
     $dir = Join-Path $RepoRoot 'decisions'
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $entry = [ordered]@{ ts=(Get-Date).ToString('o'); event='post_mortem'; channel=$channel; sha=$CommitSha; path=$RelativePath; failure_kind=$FailureKind }
-    $line = $entry | ConvertTo-Json -Compress -Depth 5
+    $pairs = New-Object 'System.Collections.Generic.List[string]'
+    [void]$pairs.Add('"ts":' + (ConvertTo-PostMortemJsonString -Value (Get-Date).ToString('o')))
+    [void]$pairs.Add('"event":"post_mortem"')
+    [void]$pairs.Add('"channel":' + (ConvertTo-PostMortemJsonString -Value $channel))
+    [void]$pairs.Add('"sha":' + (ConvertTo-PostMortemJsonString -Value $CommitSha))
+    [void]$pairs.Add('"path":' + (ConvertTo-PostMortemJsonString -Value $RelativePath))
+    [void]$pairs.Add('"failure_kind":' + (ConvertTo-PostMortemJsonString -Value $FailureKind))
+    $line = '{' + [string]::Join(',', $pairs.ToArray()) + '}'
     $u8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::AppendAllText((Join-Path $dir 'session-ledger.jsonl'), $line + [Environment]::NewLine, $u8NoBom)
   } catch {
@@ -176,13 +298,14 @@ function Invoke-RepairCommitPostMortem {
   param(
     [string]$CommitSha,
     [AllowNull()][object]$State,
-    [string]$RepoRoot
+    [string]$RepoRoot,
+    [int]$TimeoutSec = 30
   )
   if ([string]::IsNullOrWhiteSpace($CommitSha)) { return $null }
   if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = Get-BridgeRoot }
   $fullSha = $CommitSha
   try {
-    $resolved = ((& git -C $RepoRoot rev-parse $CommitSha 2>$null) | Select-Object -First 1)
+    $resolved = (Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('rev-parse', $CommitSha))
     if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) { $fullSha = ([string]$resolved).Trim() }
   } catch {
     Write-PostMortemWarning ("commit resolve failed: " + $_.Exception.Message)
@@ -224,7 +347,7 @@ $($turns.text)
 
 Формат ответа: markdown, 4 секции: ## Корневая причина / ## Что исправлено / ## Рекомендации / ## Идея в бэклог
 "@
-  $llmResponse = Invoke-GeminiPostMortem -Prompt $prompt
+  $llmResponse = Invoke-GeminiPostMortem -Prompt $prompt -TimeoutSec $TimeoutSec
   if ([string]::IsNullOrWhiteSpace($llmResponse)) { return $null }
   $stamp = (Get-Date).ToString('o')
   $content = @"
@@ -290,13 +413,14 @@ function Invoke-PostMortem {
     [string]$CommitSha,
     [AllowNull()][object]$State,
     [string]$RepoRoot,
+    [int]$TimeoutSec = 30,
     [string]$FailureType,
     [string]$Task = '',
     [string]$Context = '',
     [string]$Channel = $null
   )
   if (-not [string]::IsNullOrWhiteSpace($CommitSha)) {
-    return Invoke-RepairCommitPostMortem -CommitSha $CommitSha -State $State -RepoRoot $RepoRoot
+    return Invoke-RepairCommitPostMortem -CommitSha $CommitSha -State $State -RepoRoot $RepoRoot -TimeoutSec $TimeoutSec
   }
   return Invoke-LegacyFailurePostMortem -FailureType $FailureType -Task $Task -Context $Context -Channel $Channel
 }
