@@ -17,6 +17,13 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\features.ps1')
 $ErrorActionPreference = 'Continue'
 
+# Tool Foundry (Фаза 1): load every GREEN (status=active) self-built tool from
+# tools/auto/. MUST stay at TOP LEVEL -- dot-sourcing inside a function would trap the
+# tool functions in that function's local scope instead of the engine's script scope.
+# Get-ActiveAutoToolPaths is pure + best-effort: broken/missing tools are silently
+# dropped (re-validated names, parse-checked) so a bad tool can never block the engine.
+try { foreach ($p in (Get-ActiveAutoToolPaths)) { . $p } } catch {}
+
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
 # (legacy single-driver mode or supervisor before update), fall back to active marker.
 if ([string]::IsNullOrWhiteSpace($Channel)) {
