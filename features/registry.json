@@ -195,7 +195,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Критик кода",
-        "description":  "После Codex-фикса независимый deepseek читает diff + HEAD-контекст и выносит вердикт. Серьёзный finding → задача возвращается на доработку. Лимит 2 ретрая."
+        "description":  "После Codex-фикса независимый deepseek читает diff + HEAD-контекст и выносит вердикт; серьёзный finding возвращает задачу на доработку, лимит 2 ретрая. Перед LLM-критиком deterministic CLI-flag check сверяет новые claude/codex-флаги с --help, а verify gate сопоставляет DONE-отчёт с реальным git diff и ловит over-claim. Промпт критика включает DIFF_META (base, diff_truncated, diff_bytes), CHANGED_FILES, TASK_HISTORY и bounded SYMBOL_EVIDENCE для cross-file функций, чтобы не флагировать отсутствующие фазы или уже существующие функции из-за обрезанного diff."
     },
     {
         "id":  "canary",
