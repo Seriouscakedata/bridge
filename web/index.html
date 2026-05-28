@@ -2046,12 +2046,12 @@
     border:1px solid var(--border);background:rgba(255,255,255,.04);
     color:var(--text);font-size:13px;font-weight:500;cursor:pointer;
     transition:background .15s,border-color .15s;
-    max-width:220px;
+    max-width:280px;
   }
   .channel-btn:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
   .channel-btn .channel-glyph{font-size:14px;opacity:.85}
   .channel-btn .channel-name{
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;
   }
   .channel-btn .channel-caret{opacity:.55;font-size:11px;margin-left:2px}
   .channel-selector.open .channel-btn{background:rgba(114,183,255,.12);border-color:rgba(114,183,255,.42);color:#cfe5ff}
@@ -2093,8 +2093,8 @@
   }
   .channel-action:hover{background:rgba(255,255,255,.06);color:var(--text);border-style:solid}
   @media(max-width:640px){
-    .channel-btn .channel-name{max-width:90px}
-    .channel-btn{max-width:160px}
+    .channel-btn .channel-name{max-width:120px}
+    .channel-btn{max-width:190px}
     .channel-menu{left:auto;right:0;min-width:240px}
   }
 </style>
@@ -2472,7 +2472,7 @@ let channelSwitchInProgress = false;
 // 2026-05-28: hoisted from later in the file -- pollers below this point now
 // reference channelsCache.active to attach ?channel=X to API calls, so we need
 // the binding live BEFORE the first poll() call near script end.
-let channelsCache = { active: 'main', items: [] };
+let channelsCache = { active: 'main', items: [], scope: null };
 // Per-channel message cache for instant switching. Each entry:
 // { msgs: [array of message objects], lastSeq: max seq we've seen for this channel,
 //   loadedFull: did we ever do since=0 for this channel? }.
@@ -5718,6 +5718,7 @@ const channelSelector = document.getElementById('channelSelector');
 const channelBtn      = document.getElementById('channelBtn');
 const channelMenu     = document.getElementById('channelMenu');
 const channelNameEl   = document.getElementById('channelName');
+const channelGlyphEl  = channelBtn ? channelBtn.querySelector('.channel-glyph') : null;
 const channelListEl   = document.getElementById('channelList');
 const channelNewBtn   = document.getElementById('channelNewBtn');
 // 2026-05-28: `channelsCache` declaration moved up next to channelEpoch -- it's
@@ -5731,16 +5732,29 @@ async function pollChannels(){
     const data = await fetchJson('/api/channels');
     if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
-    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [] };
+    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
     renderChannels();
   }catch(e){ /* keep last cache */ }
+}
+function channelProjectName(projectRoot){
+  const raw = String(projectRoot || '').replace(/[\\\/]+$/g, '');
+  if(!raw) return '';
+  const parts = raw.split(/[\\\/]+/);
+  return parts[parts.length - 1] || raw;
 }
 function renderChannels(){
   const active = channelsCache.active;
   const items  = channelsCache.items;
   const activeItem = items.find(x => String(x.slug) === active);
-  if(channelNameEl) channelNameEl.textContent = activeItem ? (activeItem.name || activeItem.slug) : active;
-  if(channelBtn) channelBtn.title = 'Активный канал: ' + (activeItem ? (activeItem.name || activeItem.slug) : active) + ' — клик для переключения';
+  const scope = channelsCache.scope || {};
+  const isBridge = (typeof scope.is_bridge === 'boolean') ? scope.is_bridge : (active === 'main');
+  const projectRoot = scope.project_root || (activeItem && activeItem.project_root) || '';
+  const projectName = channelProjectName(projectRoot) || (activeItem ? (activeItem.name || activeItem.slug) : active);
+  const displayChannel = activeItem ? (activeItem.name || activeItem.slug) : active;
+  const scopeLabel = isBridge ? '\u041C\u043E\u0441\u0442' : ('\u041F\u0440\u043E\u0435\u043A\u0442: ' + projectName);
+  if(channelGlyphEl) channelGlyphEl.textContent = isBridge ? '\uD83C\uDF09' : '\uD83D\uDCC1';
+  if(channelNameEl) channelNameEl.textContent = scopeLabel;
+  if(channelBtn) channelBtn.title = scopeLabel + ' (' + displayChannel + ')';
   if(!channelListEl) return;
   channelListEl.innerHTML = '';
   if(!items.length){

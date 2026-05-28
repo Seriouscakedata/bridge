@@ -89,6 +89,27 @@ function Get-QueryParamUtf8 {
   }
   try { return [string]$ctx.Request.QueryString[$Name] } catch { return '' }
 }
+function Get-ActiveScopeDto {
+  param([string]$Slug = $null)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-ActiveChannel }
+  try {
+    $scope = Get-EffectiveScope -Slug $Slug
+    return [pscustomobject]@{
+      slug         = [string]$scope.slug
+      is_bridge    = [bool]$scope.is_bridge
+      project_root = [string]$scope.project_root
+      bridge_root  = [string]$scope.bridge_root
+    }
+  } catch {
+    return [pscustomobject]@{
+      slug         = [string]$Slug
+      is_bridge    = ([string]$Slug -eq 'main')
+      project_root = if ([string]$Slug -eq 'main') { Get-BridgeRoot } else { '' }
+      bridge_root  = Get-BridgeRoot
+      error        = [string]$_.Exception.Message
+    }
+  }
+}
 function Quote-RunbookProcessArgument {
   param([AllowNull()][string]$Value)
   if ($null -eq $Value) { $Value = '' }
@@ -1257,14 +1278,20 @@ try {
         $arr = '[' + (($projs | ForEach-Object { (("" + $_) | ConvertTo-Json -Depth 10 -Compress) }) -join ',') + ']'
         Send-Text $ctx ('{"ok":true,"projects":' + $arr + ',"bridge":' + (("" + (Get-BridgeRoot)) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/state') {
+        $active = Get-ActiveChannel
+        $scopeDto = Get-ActiveScopeDto -Slug $active
+        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Depth 10 -Compress) + ',"is_bridge":' + ([bool]$scopeDto.is_bridge | ConvertTo-Json -Compress) + ',"project_root":' + (("" + [string]$scopeDto.project_root) | ConvertTo-Json -Depth 10 -Compress) + ',"scope":' + ($scopeDto | ConvertTo-Json -Compress -Depth 5) + '}') 'application/json; charset=utf-8'
+      }
       # ----- multi-channel endpoints (phase 2) -----
       elseif ($method -eq 'GET' -and $path -eq '/api/channels') {
         # List non-archived channels + which one is active. ?includeArchived=1 includes them too.
         $inclArch = (Get-QueryParamUtf8 $ctx 'includeArchived') -eq '1'
         $list = if ($inclArch) { Get-ChannelList -IncludeArchived } else { Get-ChannelList }
         $active = Get-ActiveChannel
+        $activeScope = Get-ActiveScopeDto -Slug $active
         $items = '[' + (($list | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Depth 10 -Compress) + ',"items":' + $items + '}') 'application/json; charset=utf-8'
+        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Depth 10 -Compress) + ',"active_scope":' + ($activeScope | ConvertTo-Json -Compress -Depth 5) + ',"items":' + $items + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/channels') {
         # Create a new channel. Body: { slug, name?, description?, project_root? }
