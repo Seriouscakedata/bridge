@@ -426,6 +426,82 @@
   }
   #healthPopup.show{display:block}
 
+  .audit-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    padding:4px 10px;
+    border-radius:999px;
+    background:#1a1f29;
+    border:1px solid var(--border-soft);
+    font-size:12px;
+    color:var(--soft);
+    cursor:pointer;
+    white-space:nowrap;
+    flex:none;
+    user-select:none;
+    transition:background .2s,border-color .2s;
+  }
+  .audit-badge:hover{opacity:.85}
+  #auditModal{
+    display:none;
+    position:fixed;
+    inset:0;
+    z-index:10001;
+    background:rgba(0,0,0,.65);
+    align-items:center;
+    justify-content:center;
+  }
+  #auditModal.show{display:flex}
+  .audit-modal-box{
+    position:relative;
+    width:min(760px, calc(100vw - 32px));
+    max-height:min(80vh, calc(100vh - 64px));
+    display:flex;
+    flex-direction:column;
+    background:rgba(18,22,29,.97);
+    border:1px solid var(--border);
+    border-radius:12px;
+    box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+  .audit-modal-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 14px;
+    border-bottom:1px solid var(--border-soft);
+    font-size:13px;
+    font-weight:700;
+    color:var(--txt);
+    flex:none;
+  }
+  .audit-modal-close{
+    background:none;
+    border:none;
+    color:var(--muted);
+    font-size:18px;
+    cursor:pointer;
+    padding:2px 6px;
+    border-radius:6px;
+    line-height:1;
+  }
+  .audit-modal-close:hover{color:var(--txt);background:rgba(255,255,255,.08)}
+  .audit-modal-body{
+    flex:1;
+    overflow:auto;
+    padding:14px 16px;
+  }
+  .audit-modal-body pre{
+    margin:0;
+    font-family:Consolas,"Cascadia Mono","Courier New",monospace;
+    font-size:12.5px;
+    line-height:1.55;
+    color:#dfe7f3;
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+
   #panelsArea{
     position:fixed;
     top:148px;
@@ -2055,6 +2131,10 @@
       <b id="st">ожидание</b>
       <span class="status-task" id="task">нет активной задачи</span>
     </div>
+    <div id="auditBadge" class="audit-badge" title="Last audit — click for full report">
+      <span id="auditIcon">🔍</span>
+      <span id="auditStatus">—</span>
+    </div>
     <!-- Hidden back-compat for JS that still references old IDs: -->
     <span id="chipClaude" hidden><span class="dot"></span><span class="lbl">Claude</span></span>
     <span id="chipCodex" hidden><span class="dot"></span><span class="lbl">Codex</span></span>
@@ -2372,6 +2452,17 @@
 </div>
 
 <span id="healthBadge" role="status" aria-label="Статус системы" title="Статус системы"></span>
+<div id="auditModal" role="dialog" aria-modal="true" aria-label="Отчёт аудита">
+  <div class="audit-modal-box">
+    <div class="audit-modal-head">
+      <span id="auditModalTitle">Audit Report</span>
+      <button class="audit-modal-close" id="auditModalClose" type="button" aria-label="Закрыть">×</button>
+    </div>
+    <div class="audit-modal-body">
+      <pre id="auditModalContent"></pre>
+    </div>
+  </div>
+</div>
 <div id="healthPopup" role="tooltip" aria-live="polite"></div>
 
 <script>
@@ -3075,6 +3166,62 @@ async function pollUsage(){
     if(usageProviders) usageProviders.innerHTML = '<div class="overview-empty">Расход недоступен: ' + esc(e.message || e) + '</div>';
   }finally{
     usageInFlight = false;
+  }
+}
+function showAuditModal(reportMd, date){
+  const modal = document.getElementById('auditModal');
+  const title = document.getElementById('auditModalTitle');
+  const content = document.getElementById('auditModalContent');
+  if(!modal) return;
+  if(title) title.textContent = 'Audit Report — ' + (date || '');
+  if(content) content.textContent = reportMd || '(нет данных)';
+  modal.classList.add('show');
+  modal.addEventListener('click', function handler(e){
+    if(e.target === modal){ modal.classList.remove('show'); modal.removeEventListener('click', handler); }
+  }, {once: false});
+}
+(function initAuditModal(){
+  const closeBtn = document.getElementById('auditModalClose');
+  if(closeBtn) closeBtn.addEventListener('click', () => {
+    const modal = document.getElementById('auditModal');
+    if(modal) modal.classList.remove('show');
+  });
+  document.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape'){
+      const modal = document.getElementById('auditModal');
+      if(modal && modal.classList.contains('show')) modal.classList.remove('show');
+    }
+  });
+})();
+async function pollAudit(){
+  const badge = document.getElementById('auditBadge');
+  const statusEl = document.getElementById('auditStatus');
+  if(!badge || !statusEl) return;
+  try{
+    const r = await fetch('/api/audit/latest', {cache:'no-store'});
+    if(r.status === 404){
+      statusEl.textContent = 'no audit';
+      badge.style.background = '';
+      badge.style.borderColor = '';
+      badge.onclick = null;
+      return;
+    }
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if(d.total_critical > 0){
+      badge.style.background = '#f44336';
+      badge.style.borderColor = 'rgba(244,67,54,.6)';
+      statusEl.textContent = (d.date || '?') + ' ⚠' + d.total_critical;
+    } else {
+      const warnings = (d.security && d.security.warning ? d.security.warning : 0)
+                     + (d.functional && d.functional.warning ? d.functional.warning : 0);
+      badge.style.background = warnings > 0 ? '#ff9800' : '#4caf50';
+      badge.style.borderColor = warnings > 0 ? 'rgba(255,152,0,.6)' : 'rgba(76,175,80,.6)';
+      statusEl.textContent = d.date || '?';
+    }
+    badge.onclick = () => showAuditModal(d.report_md || '', d.date || '');
+  }catch(e){
+    // silent — audit is optional
   }
 }
 let backlogInFlight = false;
@@ -5477,6 +5624,8 @@ setInterval(pollMetrics, 5000);
 setInterval(pollUsage, 5000);
 setInterval(pollChannels, 15000);
 setInterval(refreshTimes, 30000);
+pollAudit();
+setInterval(pollAudit, 600000);
 
 // 2026-05-28: Expose select internals so scenario JS (and ad-hoc debugging)
 // can interact with them. `let` at script scope isn't visible on `window`,
