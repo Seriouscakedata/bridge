@@ -432,9 +432,11 @@ function Invoke-BridgeAudit {
     [string]$BridgePath = $null,
     [string]$Channel = $null,
     [string]$ProjectRoot = $null,
+    [int]$DeepAuditTimeoutSec = 420,
     [ValidateSet('auto','gemini-only')]
     [string]$FunctionalAgent = 'gemini-only'
   )
+  if ($DeepAuditTimeoutSec -lt 1) { $DeepAuditTimeoutSec = 1 }
   $root = Get-AuditBridgeRoot -Hint $BridgePath
   try {
     $commonLib = Join-Path $root 'lib\common.ps1'
@@ -566,10 +568,14 @@ function Invoke-BridgeAudit {
     # individually skippable on timeout/spawn-fail — graceful degradation.
     $deepCodexResult = $null
     $deepClaudeResult = $null
+    $deepStatus = 'skipped'
+    $deepRuntimeSec = 0.0
+    $deepWatchdogFired = $false
     try {
       $deepScript = Join-Path $root 'tools\deep-audit.ps1'
       if (Test-Path -LiteralPath $deepScript -PathType Leaf) {
-        Write-AuditLog -BridgePath $root -Message 'deep-audit start (Codex+Claude phase)'
+        Write-AuditLog -BridgePath $root -Message "deep-audit start (Codex+Claude phase, watchdog=${DeepAuditTimeoutSec}s)"
+        $deepSw = [System.Diagnostics.Stopwatch]::StartNew()
         $deepStdout = ''
         $deepStderr = ''
         $deepExitCode = 0
@@ -592,14 +598,28 @@ function Invoke-BridgeAudit {
           # add -Sequential to fall back to back-to-back execution.
           # Also pass -FunctionalAgent (auto/gemini-only) for A/B testing.
           $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent,'-OutputFile',$deepResultPath)
-          $deepProc = Invoke-WithChannelEnv -Slug $resolvedChannel -Action {
+          $startDeepProcess = {
             Start-Process -FilePath 'powershell.exe' `
               -ArgumentList $deepArgs `
               -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
               -WindowStyle Hidden -PassThru
           }
-          $deepProc.WaitForExit()
-          try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
+          if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+            $deepProc = Invoke-WithChannelEnv -Slug $resolvedChannel -Action $startDeepProcess
+          } else {
+            $deepProc = & $startDeepProcess
+          }
+          $deepWaited = $deepProc.WaitForExit([int]($DeepAuditTimeoutSec * 1000))
+          if (-not $deepWaited) {
+            $deepWatchdogFired = $true
+            $deepStatus = 'deep_failed'
+            try { $deepProc.Kill() } catch {}
+            try { $deepProc.WaitForExit(5000) | Out-Null } catch {}
+            [void]$errors.Add("deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; process killed")
+            Write-AuditLog -BridgePath $root -Message "deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; pid=$($deepProc.Id) killed"
+          } else {
+            try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
+          }
           # Prefer the explicit result file (UTF-8 guaranteed). Fall back to
           # stdout for older deep-audit.ps1 versions that don't write the file.
           if (Test-Path -LiteralPath $deepResultPath) {
@@ -609,9 +629,16 @@ function Invoke-BridgeAudit {
           }
           if (Test-Path -LiteralPath $deepErrPath) { $deepStderr = [System.IO.File]::ReadAllText($deepErrPath, [System.Text.Encoding]::UTF8) }
         } finally {
+          try {
+            if ($deepSw) {
+              $deepSw.Stop()
+              $deepRuntimeSec = [math]::Round($deepSw.Elapsed.TotalSeconds, 2)
+            }
+          } catch {}
           try { Remove-Item -LiteralPath $deepOutPath,$deepErrPath,$deepResultPath -Force -ErrorAction SilentlyContinue } catch {}
         }
-        if ($deepExitCode -ne 0) {
+        if (-not $deepWatchdogFired -and $deepExitCode -ne 0) {
+          $deepStatus = 'deep_failed'
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           [void]$errors.Add(("deep-audit exited with code {0}: {1}" -f $deepExitCode, $stderrTail))
         }
@@ -626,18 +653,24 @@ function Invoke-BridgeAudit {
             $deepParsed = $deepJson | ConvertFrom-Json
             $deepCodexResult  = $deepParsed.codex_security
             $deepClaudeResult = $deepParsed.claude_functional
+            if (-not $deepWatchdogFired -and $deepExitCode -eq 0) { $deepStatus = 'ok' }
           } catch {
+            $deepStatus = 'deep_failed'
             $jsonSnippet = $deepJson
             if ($jsonSnippet.Length -gt 500) { $jsonSnippet = $jsonSnippet.Substring(0,500) + '...' }
             [void]$errors.Add('deep-audit JSON parse failed: ' + $_.Exception.Message + '; json_snippet=' + $jsonSnippet)
           }
-        } else {
+        } elseif (-not $deepWatchdogFired) {
+          $deepStatus = 'deep_failed'
           $stdoutTail = (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           [void]$errors.Add('deep-audit: no JSON in stdout; stdout_tail=' + $stdoutTail + '; stderr_tail=' + $stderrTail)
         }
+      } else {
+        $deepStatus = 'skipped'
       }
     } catch {
+      $deepStatus = 'deep_failed'
       [void]$errors.Add('deep-audit invocation failed: ' + $_.Exception.Message)
     }
 
@@ -763,6 +796,11 @@ function Invoke-BridgeAudit {
         $mdExisting = [System.IO.File]::ReadAllText($paths.md, [System.Text.Encoding]::UTF8)
         $deepBlock = New-Object 'System.Text.StringBuilder'
         [void]$deepBlock.AppendLine('')
+        [void]$deepBlock.AppendLine("## Deep Audit Status")
+        [void]$deepBlock.AppendLine("- Status: $deepStatus")
+        [void]$deepBlock.AppendLine("- Runtime: ${deepRuntimeSec}s")
+        if ($deepWatchdogFired) { [void]$deepBlock.AppendLine("- Watchdog: timeout after ${DeepAuditTimeoutSec}s") }
+        [void]$deepBlock.AppendLine('')
         [void]$deepBlock.AppendLine('## 🤖 Codex Security (deep)')
         if (-not $deepCodexResult -or $deepCodexResult.skipped) {
           $reason = if ($deepCodexResult) { [string]$deepCodexResult.reason } else { 'не запущено' }
@@ -813,18 +851,37 @@ function Invoke-BridgeAudit {
       }
     }
 
-    Write-AuditLog -BridgePath $root -Message ("audit done in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[codex={7} claude={8}] backlog+={9}+{10}" -f `
+    $finalStatus = if ($deepStatus -eq 'deep_failed') { 'partial' } else { 'ok' }
+    try {
+      $report | Add-Member -NotePropertyName status -NotePropertyValue $finalStatus -Force
+      $report | Add-Member -NotePropertyName errors -NotePropertyValue @($errors.ToArray()) -Force
+      if ($report.metadata) {
+        $report.metadata['deep_status'] = $deepStatus
+        $report.metadata['deep_runtime_sec'] = $deepRuntimeSec
+        $report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec
+        $report.metadata['deep_watchdog_fired'] = $deepWatchdogFired
+      }
+      if ($paths -and $paths.json) {
+        Write-AuditAtomicFile -Path $paths.json -Content ($report | ConvertTo-Json -Depth 8)
+      }
+    } catch {
+      [void]$errors.Add('audit report deep-status update failed: ' + $_.Exception.Message)
+    }
+
+    Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8}] backlog+={9}+{10}" -f `
       $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, `
-      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled)
+      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus)
 
     return [pscustomobject]@{
-      status            = 'ok'
+      status            = $finalStatus
+      deep_status       = $deepStatus
       report_json       = $paths.json
       report_md         = $paths.md
       security_counts   = $secCounts
       functional_counts = $fncCounts
       deep_codex_count  = $deepCodexCount
       deep_claude_count = $deepClaudeCount
+      deep_runtime_sec  = $deepRuntimeSec
       backlog_added     = $filed + $deepFiled
       runtime_sec       = $report.runtime_sec
       errors            = @($errors.ToArray())
