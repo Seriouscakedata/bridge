@@ -2373,14 +2373,65 @@ Sweep-AgentOrphans
 $boot = Read-State
 $resumeTask = if ($boot -and $boot.current_task) { [string]$boot.current_task } else { '' }
 if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
-  Update-State {
-    param($s)
-    Start-ReplayForStateTask -State $s -TaskText $resumeTask -ChannelName $Channel
-    $s.status='working'; $s.stop=$false; $s.abort=$false
-    $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
-    $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
-  } | Out-Null
-  Add-Message -From system -Text "♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." -Kind event | Out-Null
+  # 2026-05-28: detect "stuck task" — if we've already resumed this task N times
+  # without it closing, give up and mark failed. Real incident: Phase 1 task
+  # survived 7+ restarts in 20 min while verify-loop and unrelated commits kept
+  # triggering supervisor recycles. Auditor flagged "Supervisor restarts exceed
+  # limit (7/5)" but bridge kept re-resuming with no escape valve.
+  $prevRestartCount = 0
+  try { if ($boot.PSObject.Properties.Name -contains 'task_restart_count') { $prevRestartCount = [int]$boot.task_restart_count } } catch {}
+  $maxRestarts = 3
+  try {
+    $cfgRC = Get-BridgeConfig
+    if ($cfgRC -and $cfgRC.PSObject.Properties.Name -contains 'taskRestartCap' -and $cfgRC.taskRestartCap) { $maxRestarts = [int]$cfgRC.taskRestartCap }
+  } catch {}
+  if ($maxRestarts -lt 2) { $maxRestarts = 2 }
+  if ($maxRestarts -gt 10) { $maxRestarts = 10 }
+
+  if ($prevRestartCount -ge $maxRestarts) {
+    # Stuck task: bail out. Mark backlog failed if linked, clear state, post msg.
+    $stuckTaskShort = $resumeTask
+    if ($stuckTaskShort.Length -gt 100) { $stuckTaskShort = $stuckTaskShort.Substring(0, 100) + '…' }
+    $stuckBacklogId = if ($boot.current_backlog_id) { [string]$boot.current_backlog_id } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($stuckBacklogId)) {
+      try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $prevRestartCount) | Out-Null } catch {}
+    }
+    Update-State {
+      param($s)
+      $s.current_task = $null
+      $s.current_task_id = $null
+      $s.task_turn = 0
+      $s.task_mode = 'normal'
+      $s.task_did_actions = $false
+      $s.coder_fired = $false
+      $s.verify_retry_count = 0
+      $s.critic_retry_count = 0
+      $s.status = 'idle'
+      $s.active_agent = $null
+      $s.active_model = $null
+      $s.status_text = $null
+      $s.agent_pid = $null
+      $s.current_agent = $null
+      $s.current_agent_pid = 0
+      $s.driver_started = (Get-Date).ToString('o')
+      $s.heartbeat = (Get-Date).ToString('o')
+      $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
+    } | Out-Null
+    Add-Message -From system -Text ("⚠ Задача пережила " + $prevRestartCount + " рестартов без закрытия — помечаю как failed и перехожу к следующей. Текст: «" + $stuckTaskShort + "»") -Kind event | Out-Null
+  } else {
+    Update-State {
+      param($s)
+      Start-ReplayForStateTask -State $s -TaskText $resumeTask -ChannelName $Channel
+      $s.status='working'; $s.stop=$false; $s.abort=$false
+      $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
+      $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
+      $newCount = $prevRestartCount + 1
+      $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue $newCount -Force
+    } | Out-Null
+    $remaining = $maxRestarts - $prevRestartCount - 1
+    $tail = if ($remaining -le 0) { '' } else { " (осталось $remaining попыток до auto-fail)" }
+    Add-Message -From system -Text ("♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." + $tail) -Kind event | Out-Null
+  }
 } else {
   Update-State {
     param($s)
@@ -2816,6 +2867,10 @@ while ($true) {
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
         $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
+        # 2026-05-28: reset restart-counter when a new task arrives. Counter
+        # tracks "this task survived N driver restarts without closing" and
+        # auto-fails the task at $maxRestarts (boot.ps1 resume block).
+        $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
         Clear-AuditorSuppressedHashes -State $s
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -2963,6 +3018,24 @@ while ($true) {
         } catch {}
         # 2026-05-27v6: sweep registered child processes (audit P2 -- detect crashed children)
         try { Sweep-ChildProcesses -MaxAgeMin 30 | Out-Null } catch {}
+        # 2026-05-28: sweep orphan codex.exe processes (real incident: 11 zombies
+        # accumulated, one 22h old, 360MB resident). NEVER touches claude.exe
+        # (user IDE is also claude.exe). Configurable cutoff via config.json
+        # orphanSweep.codexMaxIdleMin, default 30 minutes.
+        try {
+          $orphMax = 30
+          try {
+            $cfgO = Get-BridgeConfig
+            if ($cfgO -and $cfgO.PSObject.Properties.Name -contains 'orphanSweep' -and $cfgO.orphanSweep -and $cfgO.orphanSweep.codexMaxIdleMin) {
+              $orphMax = [int]$cfgO.orphanSweep.codexMaxIdleMin
+            }
+          } catch {}
+          if ($orphMax -lt 5) { $orphMax = 5 }
+          $ores = Sweep-OrphanAgentProcesses -MaxIdleMin $orphMax
+          if ($ores -and [int]$ores.killed -gt 0) {
+            Add-Message -From system -Text ("🧹 Auto-sweep: убит " + $ores.killed + " orphan codex.exe (старше " + $orphMax + " мин, не привязан к активному агенту)") -Kind event | Out-Null
+          }
+        } catch {}
         Start-Sleep -Seconds $idlePoll; continue
       }
     }
@@ -3785,6 +3858,14 @@ while ($true) {
       if ($vfLast) { $vfMsg += "`n`n**Последний вывод агента:**`n``````$vfLast`n``````" }
       Add-Message -From system -Text $vfMsg -Kind event | Out-Null
       try { Send-PushEvent -Kind need_you -Text "Верификация не пройдена: $(Get-PushSnippet -Text $task)" } catch {}
+      # 2026-05-28: explicitly clear task_did_actions so the verify-check doesn't
+      # re-fire on the next planner DONE. Previously this branch only printed
+      # a message — but the same DONE could land again after a restart (vrc=2
+      # preserved), and the elseif would print THE SAME warning forever. Bridge
+      # logged "Верификация не пройдена за 2 попытки" repeatedly on every restart.
+      # Setting task_did_actions=false makes the verify-check a no-op next pass,
+      # letting plannerStatus=DONE close the task naturally.
+      Update-State { param($s) $s.task_did_actions = $false } | Out-Null
     }
   }
   # Coder-bypass gate: planner did file edits without invoking Codex -> reject DONE, force CONTINUE->Codex+critic.
@@ -4240,13 +4321,13 @@ $diff
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {
     Add-Message -From system -Text "⏸ Достигнут лимит ходов по задаче ($maxTurns). Останавливаю задачу — уточни или дай новую." -Kind event | Out-Null
     try { Send-PushEvent -Kind need_you -Text "Достигнут лимит ходов ($maxTurns): $(Get-PushSnippet -Text $task)" } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'aborted'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle' } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'aborted'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
   Start-Sleep -Seconds $loopDelay

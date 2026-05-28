@@ -248,6 +248,81 @@ function Sweep-ChildProcesses {
   } catch { return @{ checked=0; dead=0; error=$_.Exception.Message } }
 }
 
+function Sweep-OrphanAgentProcesses {
+  # 2026-05-28: orphan codex.exe accumulation was a real incident -- user found
+  # 11 stale codex.exe processes (one 22 hours old, 360MB resident) because
+  # Sweep-ChildProcesses only sweeps EXPLICITLY registered children (librarian,
+  # audit, verifier), and most codex.exe instances are spawned inline by
+  # Invoke-Coder without registration.
+  #
+  # This sweep finds codex.exe instances NOT referenced by any channel's
+  # state.agent_pid / state.current_agent_pid AND not in control/children.jsonl,
+  # AND older than MaxIdleMin, and kills them.
+  #
+  # SAFETY: NEVER touches claude.exe -- user's IDE is also claude.exe (per
+  # security rule). We only sweep codex.exe (bridge-exclusive). For claude.exe
+  # we'd need ParentProcessId == driver checks (deferred to future work).
+  param([int]$MaxIdleMin = 30)
+  $result = @{ checked = 0; killed = 0; spared = 0; errors = @() }
+  try {
+    # Active PIDs across all channel states (current legitimate agents)
+    $activePids = @{}
+    $chRoot = Join-Path (Get-BridgeRoot) 'channels'
+    if (Test-Path -LiteralPath $chRoot) {
+      Get-ChildItem -LiteralPath $chRoot -Directory -EA SilentlyContinue | ForEach-Object {
+        $sp = Join-Path $_.FullName 'state.json'
+        if (-not (Test-Path -LiteralPath $sp)) { return }
+        try {
+          $st = Get-Content -LiteralPath $sp -Raw -Encoding UTF8 | ConvertFrom-Json
+          foreach ($f in @('agent_pid', 'current_agent_pid')) {
+            $v = $null; try { $v = $st.$f } catch {}
+            if ($v -and [int]$v -gt 0) { $activePids[[string]$v] = $true }
+          }
+        } catch {}
+      }
+    }
+    # Registered children (audit, librarian, verifier, etc.)
+    $registered = @{}
+    $childrenPath = Join-Path (Get-BridgeRoot) 'control\children.jsonl'
+    if (Test-Path -LiteralPath $childrenPath) {
+      foreach ($l in (Get-Content -LiteralPath $childrenPath -Encoding UTF8 -EA SilentlyContinue)) {
+        if ([string]::IsNullOrWhiteSpace($l)) { continue }
+        try { $obj = $l | ConvertFrom-Json } catch { continue }
+        if ($obj.pid) { $registered[[string]$obj.pid] = $true }
+      }
+    }
+    $procs = @(Get-Process -Name codex -ErrorAction SilentlyContinue)
+    foreach ($p in $procs) {
+      $result.checked++
+      $pidStr = [string]$p.Id
+      if ($activePids.ContainsKey($pidStr) -or $registered.ContainsKey($pidStr)) {
+        $result.spared++; continue
+      }
+      $age = $null
+      try { $age = (Get-Date) - $p.StartTime } catch {}
+      if ($age -and $age.TotalMinutes -gt $MaxIdleMin) {
+        try {
+          $p.Kill()
+          $result.killed++
+        } catch {
+          $result.errors += "pid=$($p.Id): $($_.Exception.Message)"
+        }
+      } else {
+        $result.spared++
+      }
+    }
+  } catch { $result.errors += $_.Exception.Message }
+  # Compact log entry if anything happened
+  if ($result.killed -gt 0 -or $result.errors.Count -gt 0) {
+    try {
+      $logPath = Join-Path (Get-BridgeRoot) 'control\orphan-sweep.log'
+      $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  codex sweep: killed=$($result.killed) spared=$($result.spared) errors=$($result.errors.Count)"
+      [System.IO.File]::AppendAllText($logPath, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    } catch {}
+  }
+  return $result
+}
+
 function Merge-UnflushedSidecars {
   # 2026-05-27v6: P3 audit finding -- Add-Message writes lost messages to
   # `$convPath.unflushed` when main append fails (OneDrive lock, fs error).
