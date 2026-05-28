@@ -491,9 +491,126 @@ function Invoke-BridgeAudit {
       $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings
     }
 
-    Write-AuditLog -BridgePath $root -Message ("audit done in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] backlog+={7}" -f `
+    # 11. DEEP-AUDIT phase (Codex security + Claude functional)
+    # 2026-05-28: implements backlog item 90747e410b. Runs after the static+
+    # deepseek pipeline because (a) static is fast and always-on as safety net,
+    # (b) deep-audit is heavier (~3-5min) so we want it last. Each half is
+    # individually skippable on timeout/spawn-fail — graceful degradation.
+    $deepCodexResult = $null
+    $deepClaudeResult = $null
+    try {
+      $deepScript = Join-Path $root 'tools\deep-audit.ps1'
+      if (Test-Path -LiteralPath $deepScript -PathType Leaf) {
+        Write-AuditLog -BridgePath $root -Message 'deep-audit start (Codex+Claude phase)'
+        $deepStdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $deepScript -BridgePath $root 2>&1 | Out-String
+        # Extract last JSON line from stdout
+        $deepJson = $null
+        foreach ($ln in (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+          $t = $ln.Trim()
+          if ($t.StartsWith('{') -and $t.EndsWith('}')) { $deepJson = $t }
+        }
+        if ($deepJson) {
+          try {
+            $deepParsed = $deepJson | ConvertFrom-Json
+            $deepCodexResult  = $deepParsed.codex_security
+            $deepClaudeResult = $deepParsed.claude_functional
+          } catch {
+            [void]$errors.Add('deep-audit JSON parse failed: ' + $_.Exception.Message)
+          }
+        } else {
+          [void]$errors.Add('deep-audit: no JSON in stdout')
+        }
+      }
+    } catch {
+      [void]$errors.Add('deep-audit invocation failed: ' + $_.Exception.Message)
+    }
+
+    # Merge deep findings into report + backlog
+    $deepFiled = 0
+    $deepCodexCount = 0
+    $deepClaudeCount = 0
+    if ($deepCodexResult) {
+      $cf = @($deepCodexResult.findings)
+      $deepCodexCount = $cf.Count
+      foreach ($f in $cf) {
+        if (-not $f) { continue }
+        # File critical Codex findings into backlog (separate tag for transparency)
+        if ([string]$f.severity -eq 'critical') {
+          try {
+            $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
+            $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security','critical') -Status 'new'
+            if ($bid) { $deepFiled++ }
+          } catch {}
+        }
+      }
+    }
+    if ($deepClaudeResult) {
+      $cf = @($deepClaudeResult.findings)
+      $deepClaudeCount = $cf.Count
+      # Claude's findings are observations — feed into backlog only critical/warning, not info
+      foreach ($f in $cf) {
+        if (-not $f) { continue }
+        $sev = [string]$f.severity
+        if ($sev -eq 'critical' -or $sev -eq 'warning') {
+          try {
+            $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Predлagaет: " + [string]$f.recommendation
+            $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'new'
+            if ($bid) { $deepFiled++ }
+          } catch {}
+        }
+      }
+    }
+
+    # Append deep-audit sections to the MD report (in-place edit)
+    if ($paths -and $paths.md -and (Test-Path -LiteralPath $paths.md)) {
+      try {
+        $mdExisting = [System.IO.File]::ReadAllText($paths.md, [System.Text.Encoding]::UTF8)
+        $deepBlock = New-Object 'System.Text.StringBuilder'
+        [void]$deepBlock.AppendLine('')
+        [void]$deepBlock.AppendLine('## 🤖 Codex Security (deep)')
+        if (-not $deepCodexResult -or $deepCodexResult.skipped) {
+          $reason = if ($deepCodexResult) { [string]$deepCodexResult.reason } else { 'не запущено' }
+          [void]$deepBlock.AppendLine("_Пропущено: $reason_")
+        } elseif ($deepCodexResult.error) {
+          [void]$deepBlock.AppendLine("_Ошибка: $($deepCodexResult.error)_")
+        } else {
+          if ($deepCodexCount -eq 0) {
+            [void]$deepBlock.AppendLine('_Codex не нашёл реальных уязвимостей в изменённых за 24ч файлах._')
+          } else {
+            foreach ($f in @($deepCodexResult.findings)) {
+              if (-not $f) { continue }
+              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) _(`$([string]$f.file):$([string]$f.line)`)_: $([string]$f.finding)")
+              if ($f.recommendation) { [void]$deepBlock.AppendLine("  - Рекомендация: $([string]$f.recommendation)") }
+            }
+          }
+        }
+        [void]$deepBlock.AppendLine('')
+        [void]$deepBlock.AppendLine('## 🤖 Claude Functional (deep)')
+        if (-not $deepClaudeResult -or $deepClaudeResult.skipped) {
+          $reason = if ($deepClaudeResult) { [string]$deepClaudeResult.reason } else { 'не запущено' }
+          [void]$deepBlock.AppendLine("_Пропущено: $reason_")
+        } elseif ($deepClaudeResult.error) {
+          [void]$deepBlock.AppendLine("_Ошибка: $($deepClaudeResult.error)_")
+        } else {
+          if ($deepClaudeCount -eq 0) {
+            [void]$deepBlock.AppendLine('_Claude не нашёл архитектурных проблем — реестр консистентен с состоянием._')
+          } else {
+            foreach ($f in @($deepClaudeResult.findings)) {
+              if (-not $f) { continue }
+              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) — фича `$([string]$f.feature_id)`: $([string]$f.observation)")
+              if ($f.recommendation) { [void]$deepBlock.AppendLine("  - Рекомендация: $([string]$f.recommendation)") }
+            }
+          }
+        }
+        [System.IO.File]::WriteAllText($paths.md, $mdExisting + $deepBlock.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+      } catch {
+        [void]$errors.Add('deep-audit md merge failed: ' + $_.Exception.Message)
+      }
+    }
+
+    Write-AuditLog -BridgePath $root -Message ("audit done in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[codex={7} claude={8}] backlog+={9}+{10}" -f `
       $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, `
-      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $filed)
+      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled)
 
     return [pscustomobject]@{
       status            = 'ok'
@@ -501,7 +618,9 @@ function Invoke-BridgeAudit {
       report_md         = $paths.md
       security_counts   = $secCounts
       functional_counts = $fncCounts
-      backlog_added     = $filed
+      deep_codex_count  = $deepCodexCount
+      deep_claude_count = $deepClaudeCount
+      backlog_added     = $filed + $deepFiled
       runtime_sec       = $report.runtime_sec
       errors            = @($errors.ToArray())
     }
