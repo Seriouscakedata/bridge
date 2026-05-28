@@ -35,6 +35,7 @@ _archive_*.tmp*
 .git/
 turns.jsonl
 reports/
+audit/
 channels/_archive/
 logs/heartbeat.jsonl
 channels/*/snapshots/

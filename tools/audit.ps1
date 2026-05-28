@@ -125,6 +125,22 @@ function Invoke-AuditSubcomponent {
   return $result
 }
 
+function Get-AuditFindingField {
+  param($Raw, [string[]]$Names)
+  if ($null -eq $Raw) { return $null }
+  foreach ($name in $Names) {
+    try {
+      if ($Raw -is [System.Collections.IDictionary] -and $Raw.Contains($name) -and $null -ne $Raw[$name]) {
+        return $Raw[$name]
+      }
+      if ($Raw.PSObject -and ($Raw.PSObject.Properties.Name -contains $name) -and $null -ne $Raw.$name) {
+        return $Raw.$name
+      }
+    } catch {}
+  }
+  return $null
+}
+
 function Format-AuditFindings {
   # Normalize a raw finding (hashtable or PSObject) into a flat object with known fields.
   param($Source, $Raw)
@@ -136,18 +152,24 @@ function Format-AuditFindings {
     if ($Raw -is [string]) {
       $title = [string]$Raw
     } else {
-      foreach ($p in @('severity','sev','level')) {
-        if ($Raw.PSObject -and ($Raw.PSObject.Properties.Name -contains $p) -and $Raw.$p) { $sev = ([string]$Raw.$p).ToLowerInvariant(); break }
+      $rawSev = Get-AuditFindingField -Raw $Raw -Names @('severity','sev','level')
+      if ($rawSev) { $sev = ([string]$rawSev).ToLowerInvariant() }
+
+      $rawTitle = Get-AuditFindingField -Raw $Raw -Names @('title','name','summary','rule','category')
+      if ($rawTitle) { $title = [string]$rawTitle }
+
+      $rawDetail = Get-AuditFindingField -Raw $Raw -Names @('detail','message','description','msg')
+      if ($rawDetail) { $detail = [string]$rawDetail }
+      $rawRecommendation = Get-AuditFindingField -Raw $Raw -Names @('recommendation')
+      if ($rawRecommendation) {
+        if ($detail) { $detail += " Recommendation: $rawRecommendation" }
+        else { $detail = [string]$rawRecommendation }
       }
-      foreach ($p in @('title','name','summary','rule')) {
-        if ($Raw.PSObject -and ($Raw.PSObject.Properties.Name -contains $p) -and $Raw.$p) { $title = [string]$Raw.$p; break }
-      }
-      foreach ($p in @('detail','message','description','msg')) {
-        if ($Raw.PSObject -and ($Raw.PSObject.Properties.Name -contains $p) -and $Raw.$p) { $detail = [string]$Raw.$p; break }
-      }
-      foreach ($p in @('area','path','file','target','component')) {
-        if ($Raw.PSObject -and ($Raw.PSObject.Properties.Name -contains $p) -and $Raw.$p) { $area = [string]$Raw.$p; break }
-      }
+
+      $rawArea = Get-AuditFindingField -Raw $Raw -Names @('area','path','file','target','component')
+      if ($rawArea) { $area = [string]$rawArea }
+      $rawLine = Get-AuditFindingField -Raw $Raw -Names @('line','lineno','line_number')
+      if ($rawLine -and $area -and $area -notmatch ':\d+$') { $area += ":$rawLine" }
     }
   } catch {}
   if ($sev -notin @('critical','warning','info')) {

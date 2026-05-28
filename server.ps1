@@ -1015,7 +1015,33 @@ try {
             try {
               $auditRaw = [System.IO.File]::ReadAllText($auditFiles[0].FullName, [System.Text.Encoding]::UTF8)
               $auditObj = $auditRaw | ConvertFrom-Json
-              Send-Text $ctx ($auditObj | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
+              $date = [System.IO.Path]::GetFileNameWithoutExtension($auditFiles[0].Name)
+              $mdPath = Join-Path $auditDir ($date + '.md')
+              $reportMd = ''
+              if (Test-Path -LiteralPath $mdPath -PathType Leaf) {
+                try { $reportMd = [System.IO.File]::ReadAllText($mdPath, [System.Text.Encoding]::UTF8) } catch { $reportMd = '' }
+              }
+              $sec = $auditObj.security_counts
+              $fnc = $auditObj.functional_counts
+              $secCritical = if ($null -ne $sec -and $null -ne $sec.critical) { [int]$sec.critical } else { 0 }
+              $fncCritical = if ($null -ne $fnc -and $null -ne $fnc.critical) { [int]$fnc.critical } else { 0 }
+              $apiObj = [ordered]@{
+                date = $date
+                security = @{
+                  critical = $secCritical
+                  warning = if ($null -ne $sec -and $null -ne $sec.warning) { [int]$sec.warning } else { 0 }
+                  info = if ($null -ne $sec -and $null -ne $sec.info) { [int]$sec.info } else { 0 }
+                }
+                functional = @{
+                  critical = $fncCritical
+                  warning = if ($null -ne $fnc -and $null -ne $fnc.warning) { [int]$fnc.warning } else { 0 }
+                  info = if ($null -ne $fnc -and $null -ne $fnc.info) { [int]$fnc.info } else { 0 }
+                }
+                total_critical = ($secCritical + $fncCritical)
+                report_md = $reportMd
+                generated_at = [string]$auditObj.generated_at
+              }
+              Send-Text $ctx ($apiObj | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
             } catch {
               $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
               Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
