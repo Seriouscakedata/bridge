@@ -10,6 +10,10 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
+# Project Foundry (Фаза 2): New-Project pipeline + the dispatched-DAG executor
+# (Invoke-FoundryPlanDispatch / Invoke-PlanDag / New-FoundryStepRunner). Depends on
+# plan.ps1 (above) plus worktrees/parallel/channels (loaded via common.ps1).
+. (Join-Path $PSScriptRoot 'lib\foundry.ps1')
 . (Join-Path $PSScriptRoot 'lib\auditor.ps1')
 . (Join-Path $PSScriptRoot 'lib\canary.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
@@ -1594,6 +1598,8 @@ $claudeActionBlock
 Это правило родилось из curator-задачи 2026-05-27: 6 итераций verify-reject подряд, ВСЕ последовательные. Реально 1-2 из них можно было параллелить (fix prompt в lib/backlog.ps1 + revert items в backlog.jsonl — разные файлы, могли идти одновременно).
 
 ПЛАН-ДОСКА: для КРУПНОЙ задачи (несколько эпиков/много шагов) в первом ходе сформируй доску блоком [[PLAN]] ... [[/PLAN]]: строки EPIC/TASK/STEP, deps и критерии готовности. Затем веди работу пошагово; при готовности шага ставь отдельной строкой [[STEP-DONE: <id> | краткий результат]]. Для мелкой задачи план не нужен.
+
+ДИСПАТЧ DAG (Project Foundry, только для канала, ПРИВЯЗАННОГО к отдельному проекту — НЕ к самому bridge): если доска уже создана и у независимых STEP'ов проставлены deps, можешь отдать ВСЮ доску движку строкой [[DISPATCH-DAG]] (или [[DISPATCH-DAG: N]] — ширина параллелизма, по умолчанию из конфига). Движок сам берёт готовые шаги, гоняет их параллельными воркерами в worktree'ах проекта, гейтит каждый (готово + есть коммит) и мёрджит-или-откатывает, волна за волной; статусы шагов на доске обновятся автоматически. Это замена ручного STEP-DONE для проектных задач. Над самим bridge-репозиторием DAG-исполнение запрещено.
 
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 
@@ -3699,6 +3705,51 @@ while ($true) {
     Add-Message -From system -Text ("⚠ Не удалось создать план-доску: " + $_.Exception.Message) -Kind event | Out-Null
   }
 
+  # [[DISPATCH-DAG]] / [[DISPATCH-DAG: N]] -> исполнить ТЕКУЩУЮ план-доску как реально
+  # диспетчеризуемый DAG (Project Foundry, Ф2): готовые шаги веером уходят в параллельных
+  # воркеров в worktree'ах ПРИВЯЗАННОГО ПРОЕКТА, каждый шаг гейтится (done + >=1 commit) и
+  # мёрджится-или-откатывается, волна за волной. Статусы шагов план-доски пишет сам
+  # Invoke-PlanDag (через Set-PlanStepStatus), поэтому после диспатча доска отражает факт.
+  # Жёстко отказываемся работать над самим bridge-репозиторием (foundry-слой тоже откажет).
+  $dispatchDagPattern = '(?m)^\s*\[\[DISPATCH-DAG(?::\s*(\d+))?\]\]\s*$'
+  $dispatchHit = [regex]::Match($reply, $dispatchDagPattern)
+  if ($dispatchHit.Success) {
+    $reqPar = 0
+    if ($dispatchHit.Groups[1].Success) { try { $reqPar = [int]$dispatchHit.Groups[1].Value } catch { $reqPar = 0 } }
+    $binding = $null
+    try { $binding = Get-ChannelProjectBinding -Slug $Channel } catch { $binding = $null }
+    if (-not $binding -or -not [bool]$binding.ok) {
+      $bwhy = if ($binding) { [string]$binding.error } else { 'нет привязки' }
+      Add-Message -From system -Text ("⚠ [[DISPATCH-DAG]] пропущен: канал не привязан к проекту ($bwhy). Сначала создай проект (New-Project) и привяжи канал.") -Kind event | Out-Null
+    } else {
+      $projRoot = [string]$binding.project_root
+      $bridgeFull = ''; try { $bridgeFull = [System.IO.Path]::GetFullPath((Get-BridgeRoot)).TrimEnd('\','/') } catch {}
+      $projFull = $projRoot; try { $projFull = [System.IO.Path]::GetFullPath($projRoot).TrimEnd('\','/') } catch {}
+      if ($projFull -and $bridgeFull -and $projFull.Equals($bridgeFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Add-Message -From system -Text "⚠ [[DISPATCH-DAG]] отклонён: канал указывает на сам bridge-репозиторий. DAG-исполнение работает только над отдельным проектом." -Kind event | Out-Null
+      } else {
+        $parNote = if ($reqPar -gt 0) { " (parallel=$reqPar)" } else { "" }
+        Add-Message -From system -Text ("🧭 DISPATCH-DAG: исполняю план-доску как DAG над проектом " + $projFull + $parNote + "…") -Kind event | Out-Null
+        $dag = $null
+        try {
+          if ($reqPar -gt 0) { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot -MaxParallel $reqPar }
+          else               { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot }
+        } catch {
+          Add-Message -From system -Text ("⚠ DISPATCH-DAG исключение: " + $_.Exception.Message) -Kind event | Out-Null
+        }
+        if ($dag) {
+          $icon = if ([bool]$dag.ok) { "✅" } else { "⚠" }
+          $dmsg = $icon + " DISPATCH-DAG: " + [string]$dag.summary
+          if (-not [bool]$dag.ok -and $dag.blockers -and $dag.blockers.Count -gt 0) {
+            $blines = @($dag.blockers.GetEnumerator() | ForEach-Object { [string]$_.Key + ' <- ' + ((@($_.Value) -join ', ')) }) -join '; '
+            if (-not [string]::IsNullOrWhiteSpace($blines)) { $dmsg += ("`nБлокеры: " + $blines) }
+          }
+          Add-Message -From system -Text $dmsg -Kind event | Out-Null
+        }
+      }
+    }
+  }
+
   # [[STEP-DONE: id | результат]] и [[STEP: id | status | результат]] -> обновить шаги плана.
   $stepDonePattern = '(?m)^\s*\[\[STEP-DONE:\s*([^|\]]+?)(?:\s*\|\s*(.*?))?\s*\]\]\s*$'
   $stepPattern = '(?m)^\s*\[\[STEP:\s*(.+?)\s*\]\]\s*$'
@@ -3744,6 +3795,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $needToolPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, '(?s)\[\[PARALLEL:.+?\]\]', '')
   $visibleReply = [regex]::Replace($visibleReply, $planBlockPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $dispatchDagPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepPattern, '')
   if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder' -or $fastLaneActiveForTurn) {

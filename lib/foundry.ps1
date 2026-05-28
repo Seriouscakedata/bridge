@@ -542,3 +542,96 @@ function New-Project {
     return (New-FoundryProjectResult -Ok $false -Slug $slug -ProjectRoot $projectRoot -Reason $reason)
   }
 }
+
+# ===========================================================================
+# Plan dispatch (Ф2 §3.2): the driver-facing seam. Turns the current channel's
+# persisted plan-board into a REAL dispatched DAG -- ready steps fan out to
+# parallel workers in the bound PROJECT repo's worktrees, each step gated
+# (done + >=1 commit) and merged-or-rolled-back, wave after wave until drained.
+# All the heavy orchestration lives in the unit-tested layer below
+# (Invoke-PlanDag + New-FoundryStepRunner) so the live driver only calls this
+# one entry point. Inject -BatchRunner to test the decision/reporting logic
+# without spawning real workers or touching git.
+# ===========================================================================
+
+function Get-FoundryMaxParallel {
+  # Default fan-out width for DAG dispatch. config.foundry.maxParallel overrides;
+  # clamped to [1, 8] so a bad config value can never spawn an unbounded swarm.
+  $n = 0
+  try {
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $cfg = Get-BridgeConfig
+      if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'foundry') -and $cfg.foundry -and ($cfg.foundry.PSObject.Properties.Name -contains 'maxParallel')) {
+        $n = [int]$cfg.foundry.maxParallel
+      }
+    }
+  } catch {}
+  if ($n -lt 1) { $n = 2 }
+  if ($n -gt 8) { $n = 8 }
+  return $n
+}
+
+function New-FoundryDispatchResult {
+  param([bool]$Ok, [string]$Outcome = 'error', [int]$Done = 0, [int]$Blocked = 0, [int]$Skipped = 0, [int]$Waves = 0, [bool]$Deadlocked = $false, [string]$Reason = '', [string]$Summary = '', $Blockers = $null)
+  if ($null -eq $Blockers) { $Blockers = @{} }
+  return [pscustomobject][ordered]@{
+    ok = $Ok; outcome = $Outcome; done = $Done; blocked = $Blocked; skipped = $Skipped
+    waves = $Waves; deadlocked = $Deadlocked; reason = $Reason; summary = $Summary; blockers = $Blockers
+  }
+}
+
+function Invoke-FoundryPlanDispatch {
+  # Drive the current channel's plan-board to done as a dispatched DAG against the
+  # PROJECT repo at -RepoRoot. Returns a normalized outcome:
+  #   { ok; outcome; done; blocked; skipped; waves; deadlocked; reason; summary; blockers }
+  # ok == ($outcome -eq 'complete'). Inject -BatchRunner to unit-test without workers/git.
+  [CmdletBinding()]
+  param(
+    [string]$RepoRoot = '',
+    [int]$MaxParallel = 0,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10,
+    [int]$MaxWaves = 0,
+    [scriptblock]$BatchRunner = $null,
+    [scriptblock]$Verify = $null
+  )
+  if ($MaxParallel -le 0) { $MaxParallel = Get-FoundryMaxParallel }
+
+  # 1) There must be a plan with steps to dispatch.
+  $ss = $null
+  try { $ss = Get-PlanScheduleState } catch { $ss = $null }
+  if (-not $ss -or [string]$ss.reason -eq 'no-plan' -or [int]$ss.total -le 0) {
+    return (New-FoundryDispatchResult -Ok $false -Outcome 'empty' -Reason 'no plan to dispatch' -Summary 'no plan')
+  }
+  if ([bool]$ss.complete) {
+    return (New-FoundryDispatchResult -Ok $true -Outcome 'complete' -Done ([int]$ss.done) -Skipped ([int]$ss.skipped) -Reason 'already complete' -Summary 'already complete')
+  }
+
+  # 2) Build the real step runner unless one is injected (tests inject). The runner
+  #    (via Get-FoundryDefaultOps) refuses non-git dirs and the bridge repo itself.
+  $runner = $BatchRunner
+  if ($null -eq $runner) {
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+      return (New-FoundryDispatchResult -Ok $false -Outcome 'error' -Reason 'no project repo bound' -Summary 'no repo (-RepoRoot empty)')
+    }
+    try {
+      if ($null -ne $Verify) { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec -Verify $Verify }
+      else                   { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec }
+    } catch {
+      return (New-FoundryDispatchResult -Ok $false -Outcome 'error' -Reason $_.Exception.Message -Summary ('runner build failed: ' + $_.Exception.Message))
+    }
+  }
+
+  # 3) Drain the DAG (each wave: launch ready -> await -> gate+merge/rollback).
+  $r = $null
+  try {
+    if ($MaxWaves -gt 0) { $r = Invoke-PlanDag -BatchRunner $runner -MaxParallel $MaxParallel -MaxWaves $MaxWaves }
+    else                 { $r = Invoke-PlanDag -BatchRunner $runner -MaxParallel $MaxParallel }
+  } catch {
+    return (New-FoundryDispatchResult -Ok $false -Outcome 'error' -Reason $_.Exception.Message -Summary ('dispatch threw: ' + $_.Exception.Message))
+  }
+
+  $outcome = [string]$r.outcome
+  $summary = ('outcome=' + $outcome + '; done=' + [int]$r.done + '; blocked=' + [int]$r.blocked + '; waves=' + [int]$r.waves)
+  return (New-FoundryDispatchResult -Ok ($outcome -eq 'complete') -Outcome $outcome -Done ([int]$r.done) -Blocked ([int]$r.blocked) -Skipped ([int]$r.skipped) -Waves ([int]$r.waves) -Deadlocked ([bool]$r.deadlocked) -Reason $outcome -Summary $summary -Blockers $r.blockers)
+}
