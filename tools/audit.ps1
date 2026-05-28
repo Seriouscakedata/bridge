@@ -425,15 +425,15 @@ function Invoke-BridgeAudit {
   #                     (or 'main' / bridge) channel. The deep-audit phase scopes
   #                     codex.exe and claude.exe to that project_root.
   #   -ProjectRoot      override the auto-resolved project_root (escape hatch).
-  #   -FunctionalAgent  A/B switch passed to deep-audit:
-  #                     'auto'        — claude.exe first, gemini fallback (historical)
-  #                     'gemini-only' — skip claude.exe (bypass encoding bugs).
+  #   -FunctionalAgent  functional-pass selector forwarded to deep-audit:
+  #                     'gemini-only' (DEFAULT, 2026-05-28 A/B winner)
+  #                     'auto'        — legacy claude.exe-primary path.
   param(
     [string]$BridgePath = $null,
     [string]$Channel = $null,
     [string]$ProjectRoot = $null,
     [ValidateSet('auto','gemini-only')]
-    [string]$FunctionalAgent = 'auto'
+    [string]$FunctionalAgent = 'gemini-only'
   )
   $root = Get-AuditBridgeRoot -Hint $BridgePath
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -556,22 +556,36 @@ function Invoke-BridgeAudit {
         $deepStamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
         $deepOutPath = Join-Path $deepTmpDir ("audit-deep-stdout_$deepStamp.txt")
         $deepErrPath = Join-Path $deepTmpDir ("audit-deep-stderr_$deepStamp.txt")
+        # 2026-05-28: explicit JSON output file. Required workaround for PS 5.1
+        # Start-Process -RedirectStandardOutput -WindowStyle Hidden, which binds
+        # the subprocess stdout to cp866 (Russian Windows OEM) BEFORE the script
+        # can switch [Console]::OutputEncoding to UTF-8. Result: every Cyrillic
+        # observation arrives as cp866 mojibake. Writing the result JSON to a
+        # file via [System.IO.File]::WriteAllText UTF-8 NoBOM sidesteps the
+        # console layer entirely.
+        $deepResultPath = Join-Path $deepTmpDir ("audit-deep-result_$deepStamp.json")
         try {
           # 2026-05-28: pass -ProjectRoot so codex/claude scope to the active
           # channel's codebase (not the bridge). Parallel is the default;
           # add -Sequential to fall back to back-to-back execution.
           # Also pass -FunctionalAgent (auto/gemini-only) for A/B testing.
-          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent)
+          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent,'-OutputFile',$deepResultPath)
           $deepProc = Start-Process -FilePath 'powershell.exe' `
             -ArgumentList $deepArgs `
             -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
             -WindowStyle Hidden -PassThru
           $deepProc.WaitForExit()
           try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
-          if (Test-Path -LiteralPath $deepOutPath) { $deepStdout = [System.IO.File]::ReadAllText($deepOutPath, [System.Text.Encoding]::UTF8) }
+          # Prefer the explicit result file (UTF-8 guaranteed). Fall back to
+          # stdout for older deep-audit.ps1 versions that don't write the file.
+          if (Test-Path -LiteralPath $deepResultPath) {
+            $deepStdout = [System.IO.File]::ReadAllText($deepResultPath, [System.Text.Encoding]::UTF8)
+          } elseif (Test-Path -LiteralPath $deepOutPath) {
+            $deepStdout = [System.IO.File]::ReadAllText($deepOutPath, [System.Text.Encoding]::UTF8)
+          }
           if (Test-Path -LiteralPath $deepErrPath) { $deepStderr = [System.IO.File]::ReadAllText($deepErrPath, [System.Text.Encoding]::UTF8) }
         } finally {
-          try { Remove-Item -LiteralPath $deepOutPath,$deepErrPath -Force -ErrorAction SilentlyContinue } catch {}
+          try { Remove-Item -LiteralPath $deepOutPath,$deepErrPath,$deepResultPath -Force -ErrorAction SilentlyContinue } catch {}
         }
         if ($deepExitCode -ne 0) {
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '

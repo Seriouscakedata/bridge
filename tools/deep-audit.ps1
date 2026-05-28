@@ -15,14 +15,31 @@ param(
   # concurrently. Total wall time = max(codex, claude) instead of sum.
   # Pass -Sequential to force the old back-to-back behavior (debugging).
   [switch]$Sequential,
-  # 2026-05-28: A/B test selector for the functional pass agent.
-  #   'auto'        — try claude.exe first, fall back to gemini-3-flash if it
-  #                   times out / returns empty (the historical behavior)
-  #   'gemini-only' — skip claude.exe entirely, go straight to gemini-3-flash.
-  #                   Useful to bypass claude.exe encoding bugs that make every
-  #                   Russian observation arrive as cp1251 mojibake.
+  # 2026-05-28: functional-pass agent selector.
+  #   'gemini-only' (DEFAULT) — go straight to gemini-3-flash; skip claude.exe.
+  #                   A/B verified 2026-05-28: even with the encoding fix in
+  #                   place, gemini-3-flash found 46 findings (10 critical
+  #                   undocumented systems) vs claude.exe's 32 findings (1
+  #                   trivial self-referential critical). gemini was the same
+  #                   wall time (~250s), saved claude.exe tokens, and caught
+  #                   the architect-agent / llm-router / semantic-code-memory
+  #                   gaps that claude missed.
+  #   'auto'        — try claude.exe first, fall back to gemini-3-flash on
+  #                   hang/empty. Kept for fallback testing / if claude.exe
+  #                   on Windows is ever fixed upstream.
   [ValidateSet('auto','gemini-only')]
-  [string]$FunctionalAgent = 'auto'
+  [string]$FunctionalAgent = 'gemini-only',
+  # 2026-05-28: write the result JSON to this file with explicit UTF-8 encoding,
+  # bypassing the subprocess stdout pipe entirely. Required workaround for PS 5.1:
+  # when this script is launched via Start-Process -RedirectStandardOutput
+  # -WindowStyle Hidden, the stdout stream is bound to the system console code-
+  # page (cp866 on Russian Windows) BEFORE the script can set
+  # [Console]::OutputEncoding=UTF8, so any Cyrillic text in the JSON gets
+  # re-encoded to cp866 mid-flight and arrives as garbage to the caller.
+  # Writing directly to a file with [System.IO.File]::WriteAllText + UTF-8
+  # NoBOM sidesteps the console layer completely. If empty, falls back to
+  # stdout (legacy behavior).
+  [string]$OutputFile = ''
 )
 
 # Resolve default BridgePath: param-default can't use $PSScriptRoot reliably
@@ -595,5 +612,18 @@ $output = [pscustomobject]@{
   claude_functional = $claudeResult
 }
 
-# Emit JSON for caller (audit.ps1) to capture
-$output | ConvertTo-Json -Depth 8 -Compress
+# Emit JSON for caller (audit.ps1) to capture.
+# Prefer file output (UTF-8 NoBOM, byte-exact) over stdout — see -OutputFile note.
+$jsonOut = $output | ConvertTo-Json -Depth 8 -Compress
+if (-not [string]::IsNullOrWhiteSpace($OutputFile)) {
+  try {
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($OutputFile, $jsonOut, $u8NoBom)
+    Write-Host "[deep-audit] result written to: $OutputFile (utf-8 nobom, $($jsonOut.Length) chars)"
+  } catch {
+    Write-Host "[deep-audit] -OutputFile write failed: $($_.Exception.Message), falling back to stdout"
+    $jsonOut
+  }
+} else {
+  $jsonOut
+}
