@@ -54,3 +54,5 @@
 {"ts":"2026-05-28T16:36:43.4942980+03:00","event":"verified_commit","channel":"main","what":"/api/health с Basic Auth → 10 полей включая git_head, paused, status, parallel_streams_active | резу"}
 {"ts":"2026-05-28T16:36:44.4460786+03:00","event":"verified_commit","channel":"main","what":"Test-IsAuthenticated: bypass-fix строка 274 (return $false вместо $true), scope $script: на всех пер"}
 {"ts":"2026-05-28T16:52:09.0234517+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] path-traversal (lib/features.ps1:151) -- activation_signal.path �� registr"}
+{"ts":"2026-05-28T17:00:16.2080478+03:00","event":"verified_commit","channel":"main","what":"Test-SafeFeaturePath | traversal `..\\..\\secrets.json` → null, absolute path → null, slash-rooted `/e"}
+{"ts":"2026-05-28T17:15:45.1636439+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/undocumented] audit-self-diag: Git log ᮤ�ন� ������� (`90712c9`, `2115208`) � ����७�"}
