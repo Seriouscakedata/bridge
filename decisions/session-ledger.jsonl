@@ -14,3 +14,6 @@
 {"ts":"2026-05-28T02:23:24.3113765+03:00","event":"verified_commit","channel":"main","what":"ParseFile server.ps1 OK | /api/runbook вернул application/zip | expected ZIP entries открыты | healt"}
 {"ts":"2026-05-28T02:25:22.8945608+03:00","event":"verified_commit","channel":"main","what":"GET /api/runbook HTTP live call | Status=200, Content-Type=application/zip, Len=1806; ConvertTo-Json"}
 {"ts":"2026-05-28T02:40:41.1128242+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X3 Replay mode — большой эпик: рефакторинг всех agent-вызовов на запись {prompt, model, response"}
+{"ts":"2026-05-28T03:07:15.6921493+03:00","event":"verified_commit","channel":"main","what":"`Parse tools\\replay-cli.ps1` → `OK`; `REPLAY_CLI_BOM=True`; `CMD_BOM=False`; `.gitignore` содержит `"}
+{"ts":"2026-05-28T03:07:22.4993134+03:00","event":"convergence","channel":"main","source":"planner"}
+{"ts":"2026-05-28T03:11:43.8440319+03:00","event":"verified_commit","channel":"main","what":"replay-эпик X3 | (a) parse OK для 5 файлов, (b) dot-source lib/replay.ps1 в driver:15, server:6, sup"}
