@@ -377,22 +377,6 @@ function New-AuditLlmContext {
   return (Limit-AuditText -Value ($sections -join "`n`n") -MaxChars 8000)
 }
 
-function Get-AuditDeepSeekApiKey {
-  param([string]$Root)
-  $secretPath = Join-Path $Root 'secrets.json'
-  if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { return '' }
-  try {
-    $secrets = (Read-AuditTextFile -Path $secretPath) | ConvertFrom-Json
-    $key = Get-AuditObjectProperty -InputObject $secrets -Name 'deepseekApiKey'
-    if ([string]::IsNullOrWhiteSpace([string]$key)) {
-      $key = Get-AuditObjectProperty -InputObject $secrets -Name 'DEEPSEEK_API_KEY'
-    }
-    return [string]$key
-  } catch {
-    return ''
-  }
-}
-
 function ConvertFrom-AuditLlmJsonFindings {
   param([AllowNull()][string]$Raw)
   $out = New-Object 'System.Collections.Generic.List[object]'
@@ -407,7 +391,10 @@ function ConvertFrom-AuditLlmJsonFindings {
   }
 
   $items = @()
-  try { $items = @($clean | ConvertFrom-Json) } catch { return @() }
+  try {
+    $parsed = $clean | ConvertFrom-Json
+    $items = @($parsed)
+  } catch { return @() }
   foreach ($item in @($items)) {
     $message = [string](Get-AuditObjectProperty -InputObject $item -Name 'message')
     if ([string]::IsNullOrWhiteSpace($message)) { continue }
@@ -424,35 +411,21 @@ function ConvertFrom-AuditLlmJsonFindings {
   return @($out.ToArray())
 }
 
-function Invoke-AuditDeepSeek {
-  param([string]$Root, [string]$Context)
-  $key = Get-AuditDeepSeekApiKey -Root $Root
-  if ([string]::IsNullOrWhiteSpace($key) -or [string]::IsNullOrWhiteSpace($Context)) { return @() }
-
+function Invoke-AuditFunctionalLlm {
+  param([string]$Context)
+  if ([string]::IsNullOrWhiteSpace($Context)) { return @() }
   $systemPrompt = "Ты аудитор кодовой базы AI-системы 'bridge'. Анализируй список функций, endpoints и debt-маркеров. Найди: (1) фичи которые явно сломаны или устарели, (2) endpoint'ы которые есть в коде но скорее всего больше не нужны, (3) функции которые выглядят как неиспользуемый legacy. Отвечай ТОЛЬКО в формате JSON: [{severity, category, component, message, recommendation}]"
-  $body = [ordered]@{
-    model = 'deepseek-chat'
-    messages = @(
-      @{ role = 'system'; content = $systemPrompt },
-      @{ role = 'user'; content = $Context }
-    )
-    temperature = 0.2
-    max_tokens = 1200
-    stream = $false
-  }
-
+  $prompt = $systemPrompt + "`n`n" + $Context
+  $raw = $null
   try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $json = $body | ConvertTo-Json -Depth 10
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $headers = @{ Authorization = "Bearer $key" }
-    $resp = Invoke-RestMethod -Method Post -Uri 'https://api.deepseek.com/chat/completions' -Headers $headers `
-      -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec 45
-    $raw = [string]$resp.choices[0].message.content
-    return @(ConvertFrom-AuditLlmJsonFindings -Raw $raw)
+    if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
+      $raw = Invoke-LLM -Purpose 'audit-functional' -Prompt $prompt -TimeoutSec 60 -Temperature 0.2
+    }
   } catch {
-    return @()
+    $raw = $null
   }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+  return @(ConvertFrom-AuditLlmJsonFindings -Raw $raw)
 }
 
 function Invoke-FunctionalAudit {
@@ -507,8 +480,47 @@ function Invoke-FunctionalAudit {
 
   $context = New-AuditLlmContext -Functions $functions -Endpoints $serverEndpoints -DebtFindings $debtFindings `
     -UnusedFunctions $unusedFunctions -GitLog (Get-AuditGitLog -Root $root)
-  foreach ($llmFinding in @(Invoke-AuditDeepSeek -Root $root -Context $context)) {
+  foreach ($llmFinding in @(Invoke-AuditFunctionalLlm -Context $context)) {
     [void]$findings.Add($llmFinding)
+  }
+
+  $scenarioDir = Join-Path $root 'tools\scenarios'
+  $scenarioRunner = Join-Path $root 'tools\scenario.ps1'
+  if ((Test-Path -LiteralPath $scenarioDir -PathType Container) -and (Test-Path -LiteralPath $scenarioRunner -PathType Leaf)) {
+    # Quick reachability check - don't blame audit if the bridge isn't up.
+    $serverReachable = $false
+    try {
+      $resp = Invoke-WebRequest -Uri 'http://localhost:8787/api/health' -Method GET -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+      $serverReachable = ($resp.StatusCode -eq 200)
+    } catch { $serverReachable = $false }
+
+    if (-not $serverReachable) {
+      Add-AuditFinding -Findings $findings -Severity 'info' -Category 'behavioral_skipped' -Component 'localhost:8787' `
+        -Message 'Bridge server is not reachable; behavioral scenarios skipped.' `
+        -Recommendation 'If audit runs while bridge is down, this is expected. Otherwise investigate why /api/health failed.'
+    } else {
+      foreach ($scenarioFile in (Get-ChildItem -LiteralPath $scenarioDir -Filter '*.js' -ErrorAction SilentlyContinue)) {
+        $scenarioName = [System.IO.Path]::GetFileNameWithoutExtension($scenarioFile.Name)
+        $exitCode = 0
+        try {
+          $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $scenarioRunner -Name $scenarioName -TimeoutSec 60 2>&1
+          $exitCode = $LASTEXITCODE
+        } catch {
+          $exitCode = 1
+          $output = $_.Exception.Message
+        }
+        if ($exitCode -eq 0) {
+          Add-AuditFinding -Findings $findings -Severity 'info' -Category 'behavioral_ok' -Component $scenarioName `
+            -Message ("Scenario {0} passed." -f $scenarioName) `
+            -Recommendation 'No action required.'
+        } else {
+          $outSnippet = Limit-AuditText -Value ([string]$output) -MaxChars 400
+          Add-AuditFinding -Findings $findings -Severity 'critical' -Category 'broken_feature' -Component $scenarioName `
+            -Message ("Scenario {0} failed (exit {1}). Output: {2}" -f $scenarioName, $exitCode, $outSnippet) `
+            -Recommendation 'Run tools\scenario.ps1 -Name <scenario> manually to reproduce and inspect control\scenario-results.jsonl.'
+        }
+      }
+    }
   }
 
   return (New-AuditResult -Findings $findings)
