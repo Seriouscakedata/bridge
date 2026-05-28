@@ -32,3 +32,4 @@
 {"ts":"2026-05-28T04:49:38.1004414+03:00","event":"verified_commit","channel":"main","what":"parse OK, BOM OK, trivial diff helper tested, git tree clean"}
 {"ts":"2026-05-28T04:50:49.3302125+03:00","event":"verified_commit","channel":"main","what":"lib/parallel.ps1 L924 Invoke-TrivialFallbackWorker + L885 Get-TrivialWorkerDiffInfo + hook L1131 (cl"}
 {"ts":"2026-05-28T06:50:41.6117584+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] дать deepseek-критику доступ ко всему HEAD-состоянию (а не только diff последнего коммита) — хот"}
+{"ts":"2026-05-28T07:07:42.3985990+03:00","event":"verified_commit","channel":"main","what":"headContext в driver.ps1 L3549-3629 генерирует список .ps1 файлов репо + функции + cross-refs и пере"}
