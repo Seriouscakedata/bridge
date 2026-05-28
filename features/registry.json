@@ -116,7 +116,8 @@
         "owner_files":  [
                             "tools/audit.ps1",
                             "tools/audit-security.ps1",
-                            "tools/audit-functional.ps1"
+                            "tools/audit-functional.ps1",
+                            "tools/deep-audit.ps1"
                         ],
         "owner_function":  "Start-AuditIfDue",
         "trigger":  "schedule",
@@ -140,7 +141,7 @@
                           "features-registry.js"
                       ],
         "name":  "Ночной аудит моста",
-        "description":  "Каждую ночь (01-06): статический security-скан .ps1 на injection/path-traversal/dead-code + LLM функциональный анализ через deepseek. Отчёт в audit/YYYY-MM-DD.md."
+        "description":  "Каждую ночь (01-06): 2-фазный аудит. Фаза 1: статический скан .ps1 на injection/path-traversal/dead-code. Фаза 2 (deep-audit): Codex анализирует безопасность 24h-diff, Claude анализирует drift реестра фич — оба запускаются параллельно (tools/deep-audit.ps1). Findings → задачи в бэклоге по каналам deep-codex/security и deep-claude/*."
     },
     {
         "id":  "recurrence-detection",
