@@ -13,6 +13,17 @@
 
 function Get-DoctorMaxAttempts { return 1 }   # MVP: one shot per held task
 
+function Write-DoctorLog {
+  param([string]$Message)
+  try {
+    $path = Join-Path (Get-BridgeRoot) 'control\doctor.log'
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), ([string]$Message)
+    Add-Content -LiteralPath $path -Value $line -Encoding UTF8
+  } catch {}
+}
+
 function Activate-Doctor {
   # Called by the driver when a hard failure is detected. Suspends the current task into
   # held_task, flags Doctor active, leaves current_task null so the next loop iteration
@@ -53,6 +64,7 @@ function Activate-Doctor {
   $detailMsg = if ([string]::IsNullOrWhiteSpace($Detail)) { '' } else { " — $Detail" }
   try { Add-Message -From system -Text ("🩺 Доктор активирован: " + $Reason + $detailMsg + ". Задача приостановлена: «" + $snippet + "». Диагностика и фикс пойдут отдельной задачей.") -Kind event | Out-Null } catch {}
   try { Append-DoctorEvent -Event 'activate' -Reason $Reason } catch {}
+  try { Write-DoctorLog ("Doctor activate: " + $Reason) } catch {}
   return $true
 }
 
@@ -187,6 +199,7 @@ function Complete-Doctor {
   $snippet = $held; if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0,80) + '...' }
   try { Add-Message -From system -Text ("🩺 Доктор закончил — фикс применён и проверен. Возобновляю приостановленную задачу: «" + $snippet + "».") -Kind event | Out-Null } catch {}
   try { Append-DoctorEvent -Event 'complete' } catch {}
+  try { Write-DoctorLog "Doctor complete: repaired" } catch {}
 }
 
 function Abort-Doctor {
@@ -197,6 +210,7 @@ function Abort-Doctor {
   try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
   try { Append-DoctorEvent -Event 'abort' -Reason $Reason } catch {}
+  try { Write-DoctorLog ("Doctor abort: " + $Reason) } catch {}
 }
 
 function Test-RestartLoop {
