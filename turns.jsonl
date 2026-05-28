@@ -231,3 +231,6 @@
 {"ts":"2026-05-28T18:42:09.1748099Z","speaker":"claude","model":"sonnet","sec":22.17,"status":"ok","mode":"discuss"}
 {"ts":"2026-05-28T18:43:05.3625702Z","speaker":"codex","model":"codex","sec":32.168,"status":"ok","mode":"discuss"}
 {"ts":"2026-05-28T18:43:49.3207050Z","speaker":"claude","model":"sonnet","sec":26.049,"status":"ok","mode":"discuss"}
+{"ts":"2026-05-28T18:55:36.5278074Z","speaker":"codex","model":"codex","sec":101.113,"status":"ok","mode":"normal"}
+{"ts":"2026-05-28T18:56:32.9357887Z","speaker":"claude","model":"sonnet","sec":33.612,"status":"ok","mode":"normal"}
+{"ts":"2026-05-28T19:08:03.4525879Z","speaker":"claude","model":"sonnet","sec":226.012,"status":"ok","mode":"normal"}

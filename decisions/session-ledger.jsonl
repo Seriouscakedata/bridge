@@ -68,3 +68,4 @@
 {"ts":"2026-05-28T21:16:40.7359300+03:00","event":"convergence","channel":"main","source":"planner"}
 {"ts":"2026-05-28T21:29:29.1637843+03:00","event":"verified_commit","channel":"main","what":"architect scope cleanup | commit c4c06d5; parser/BOM OK; Get-ArchitectScope == Get-EffectiveScope; s"}
 {"ts":"2026-05-28T21:29:35.9864487+03:00","event":"convergence","channel":"main","source":"planner"}
+{"ts":"2026-05-28T21:56:38.7300970+03:00","event":"verified_commit","channel":"main","what":"driver.ps1 строки 4172–4377 содержат DIFF_META+diff_truncated, CHANGED_FILES (3KB), TASK_HISTORY (6K"}
