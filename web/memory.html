@@ -121,6 +121,30 @@
   .addbox textarea{width:100%;min-height:60px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:9px 11px;font-size:14px;resize:vertical;outline:none}
   .addbox input[type=text]{background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:8px 10px;outline:none}
   .hidden{display:none!important}
+  /* Feature Registry */
+  .feat-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; padding:0 4px; }
+  .feat-search-input { flex:1; min-width:160px; padding:6px 10px; border:1px solid var(--border,#333); border-radius:6px; background:var(--bg2,#1a1a1a); color:var(--text,#e0e0e0); font-size:13px; }
+  .feat-filters { display:flex; gap:4px; flex-wrap:wrap; }
+  .feat-filter { padding:4px 10px; border:1px solid var(--border,#333); border-radius:14px; background:transparent; color:var(--text,#e0e0e0); font-size:12px; cursor:pointer; transition:background .15s; }
+  .feat-filter.on { background:var(--accent,#6c8ebf); color:#fff; border-color:var(--accent,#6c8ebf); }
+  .feat-sort-select { padding:5px 8px; border:1px solid var(--border,#333); border-radius:6px; background:var(--bg2,#1a1a1a); color:var(--text,#e0e0e0); font-size:12px; }
+  .feat-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .feat-card { background:var(--bg2,#1a1a1a); border:1px solid var(--border,#333); border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .feat-card-header { display:flex; align-items:center; gap:8px; }
+  .feat-status-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .feat-status-dot.active { background:#4caf50; }
+  .feat-status-dot.dormant { background:#9e9e9e; }
+  .feat-status-dot.broken { background:#f44336; }
+  .feat-status-dot.under_review { background:#ff9800; }
+  .feat-card-name { font-weight:600; font-size:14px; flex:1; }
+  .feat-card-layer { font-size:11px; color:var(--muted,#888); background:var(--bg3,#2a2a2a); padding:2px 7px; border-radius:10px; }
+  .feat-card-desc { font-size:12px; color:var(--muted,#888); line-height:1.4; }
+  .feat-card-files { display:flex; gap:4px; flex-wrap:wrap; }
+  .feat-file-tag { font-size:10px; font-family:monospace; background:var(--bg3,#2a2a2a); padding:2px 6px; border-radius:4px; color:var(--muted,#888); }
+  .feat-card-meta { font-size:11px; color:var(--muted2,#666); }
+  .feat-card-actions { display:flex; gap:6px; margin-top:4px; }
+  .feat-btn-discuss { padding:4px 12px; font-size:12px; border:1px solid var(--border,#333); border-radius:6px; background:transparent; color:var(--text,#e0e0e0); cursor:pointer; transition:background .15s; }
+  .feat-btn-discuss:hover { background:var(--accent,#6c8ebf); color:#fff; border-color:var(--accent,#6c8ebf); }
 </style>
 </head>
 <body>
@@ -153,6 +177,7 @@
   <!-- Radar still hidden (no live data); Settings restored 2026-05-27v5 with extended config controls -->
   <div class="tab" data-tab="radar" id="tabRadar" hidden>Радар</div>
   <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
+  <div class="tab" data-tab="features" id="tabFeatures">Фичи</div>
 </div>
 
 <div class="wrap">
@@ -310,6 +335,27 @@
         <button id="advReset" type="button" title="Перечитать с сервера">Перезагрузить</button>
         <span id="advStatus" style="font-size:12px;color:var(--muted)"></span>
       </div>
+    </div>
+  </div>
+  <div id="featuresView" class="hidden">
+    <div class="feat-toolbar">
+      <input type="text" id="featSearch" placeholder="Поиск фич..." class="feat-search-input">
+      <div class="feat-filters">
+        <button class="feat-filter on" data-status="all">Все</button>
+        <button class="feat-filter" data-status="active">Активные</button>
+        <button class="feat-filter" data-status="dormant">Спящие</button>
+        <button class="feat-filter" data-status="broken">Сломаны</button>
+        <button class="feat-filter" data-status="under_review">Ревью</button>
+      </div>
+      <select id="featSort" class="feat-sort-select">
+        <option value="name">По имени</option>
+        <option value="last_activated_at">По активации</option>
+        <option value="layer">По слою</option>
+        <option value="status">По статусу</option>
+      </select>
+    </div>
+    <div id="featGrid" class="feat-grid">
+      <div class="loading-text">Загрузка фич...</div>
     </div>
   </div>
 </div>
@@ -507,23 +553,25 @@ function mdToHtml(src){
 
 // tabs
 function switchTab(name){
-  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',radar:'#tabRadar',settings:'#tabSettings'};
-  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',radar:'#radarView',settings:'#settingsView'};
+  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',radar:'#tabRadar',settings:'#tabSettings',features:'#tabFeatures'};
+  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',radar:'#radarView',settings:'#settingsView',features:'#featuresView'};
   for(const k in tabs){ $(tabs[k]).classList.toggle('on', k===name); $(views[k]).classList.toggle('hidden', k!==name); }
   if(name==='backlog') loadBacklog();
   if(name==='radar') loadRadar();
   if(name==='settings') loadSettings();
+  if(name==='features') loadFeatures();
 }
 $('#tabRecords').addEventListener('click',()=>switchTab('records'));
 $('#tabMap').addEventListener('click',()=>switchTab('map'));
 $('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
 $('#tabRadar').addEventListener('click',()=>switchTab('radar'));
 $('#tabSettings').addEventListener('click',()=>switchTab('settings'));
+$('#tabFeatures').addEventListener('click',()=>switchTab('features'));
 
 // 2026-05-27v2: deep-link support /memory#backlog -> auto-open backlog tab
 function applyHashTab(){
   const h = String(window.location.hash || '').replace(/^#/, '');
-  if(h && ['records','map','backlog','radar','settings'].indexOf(h) >= 0) switchTab(h);
+  if(h && ['records','map','backlog','radar','settings','features'].indexOf(h) >= 0) switchTab(h);
 }
 window.addEventListener('hashchange', applyHashTab);
 // initial: try hash, fall through to default records tab
@@ -864,6 +912,85 @@ $('#addSave').addEventListener('click', async ()=>{
 });
 
 (async ()=>{ await loadChannels(); await load(); })();
+
+// Feature Registry tab
+let featAllData = [];
+let featStatusFilter = 'all';
+let featSearchQuery = '';
+let featSortKey = 'name';
+
+async function loadFeatures() {
+  try {
+    const data = await api('/api/features');
+    featAllData = data.features || [];
+    renderFeatures();
+  } catch(e) {
+    document.getElementById('featGrid').innerHTML = '<div class="loading-text">Ошибка загрузки</div>';
+  }
+}
+
+function renderFeatures() {
+  let list = [...featAllData];
+  if (featStatusFilter !== 'all') list = list.filter(f => f.status === featStatusFilter);
+  if (featSearchQuery) {
+    const q = featSearchQuery.toLowerCase();
+    list = list.filter(f => f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q) || (f.description||'').toLowerCase().includes(q));
+  }
+  list.sort((a,b) => {
+    if (featSortKey === 'last_activated_at') {
+      const aa = a.last_activated_at||''; const bb = b.last_activated_at||'';
+      return bb.localeCompare(aa);
+    }
+    if (featSortKey === 'layer') return (a.layer||'').localeCompare(b.layer||'');
+    if (featSortKey === 'status') return (a.status||'').localeCompare(b.status||'');
+    return (a.name||'').localeCompare(b.name||'');
+  });
+  const grid = document.getElementById('featGrid');
+  if (!list.length) { grid.innerHTML = '<div class="loading-text">Нет фич</div>'; return; }
+  grid.innerHTML = list.map(f => {
+    const files = (f.owner_files||[]).map(p => `<span class="feat-file-tag">${esc(p)}</span>`).join('');
+    const activated = f.last_activated_at ? new Date(f.last_activated_at).toLocaleDateString('ru-RU') : '–';
+    return `<div class="feat-card">
+      <div class="feat-card-header">
+        <span class="feat-status-dot ${esc(f.status||'dormant')}" title="${esc(f.status||'')}"></span>
+        <span class="feat-card-name">${esc(f.name||'')}</span>
+        <span class="feat-card-layer">${esc(f.layer||'')}</span>
+      </div>
+      <div class="feat-card-desc">${esc(f.description||'')}</div>
+      ${files ? `<div class="feat-card-files">${files}</div>` : ''}
+      <div class="feat-card-meta">Активация: ${activated} · ${esc(f.expected_frequency||'')}</div>
+      <div class="feat-card-actions">
+        <button class="feat-btn-discuss" onclick="featDiscuss('${esc(f.id||'')}')">Обсудить</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function featDiscuss(id) {
+  try {
+    await api('/api/features/' + encodeURIComponent(id) + '/discuss', { method: 'POST', body: JSON.stringify({note:''}) });
+    alert('Идея добавлена в бэклог');
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+
+document.getElementById('featSearch').addEventListener('input', e => {
+  featSearchQuery = e.target.value;
+  renderFeatures();
+});
+
+document.querySelectorAll('.feat-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.feat-filter').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    featStatusFilter = btn.dataset.status;
+    renderFeatures();
+  });
+});
+
+document.getElementById('featSort').addEventListener('change', e => {
+  featSortKey = e.target.value;
+  renderFeatures();
+});
 </script>
 </body>
 </html>
