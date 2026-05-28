@@ -202,13 +202,13 @@
         "owner_files":  [
                             "lib/canary.ps1"
                         ],
-        "owner_function":  "Invoke-Canary",
+        "owner_function":  "Invoke-CanaryCycle",
         "trigger":  "schedule",
-        "expected_frequency":  "on-demand",
+        "expected_frequency":  "every-6h",
         "activation_signal":  {
                                   "kind":  "log-pattern",
-                                  "path":  "control/canary.log",
-                                  "regex":  "^\\[.*\\] (PASS|FAIL|canary)"
+                                  "path":  "control/canary-runs.jsonl",
+                                  "regex":  "\"ok\":\\s*(true|false)"
                               },
         "scenarios":  [
 
