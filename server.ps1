@@ -26,7 +26,7 @@ $null = Initialize-Bridge   # ensure files exist
 $serverStartTime = Get-Date
 $healthMemoryStamp = [datetime]::MinValue
 $healthMemoryCount = 0
-$healthConversationStamp = [datetime]::MinValue
+$healthConversationStamp = ''
 $healthConversationLastSeq = 0
 $healthConversationErrorCount = 0
 $healthGitStamp = [datetime]::MinValue
@@ -407,8 +407,17 @@ try {
         $errCount = $healthConversationErrorCount
         $convPath = Join-Path $root 'channels\main\conversation.jsonl'
         if (Test-Path -LiteralPath $convPath) {
-          $convStamp = (Get-Item -LiteralPath $convPath).LastWriteTimeUtc
-          if ($convStamp -ne $healthConversationStamp) {
+          # 2026-05-28: was caching on LastWriteTimeUtc alone. NTFS file-time
+          # resolution is ~16ms, so a fast Add-Message + 200ms canary read
+          # window could land inside the same tick and the cache check would
+          # short-circuit, returning the previous lastSeq. Canary then errored
+          # "lastSeq did not advance". Now we also key on file size (changes
+          # on every append, no resolution issue).
+          $convItem = Get-Item -LiteralPath $convPath
+          $convStamp = $convItem.LastWriteTimeUtc
+          $convSize = [long]$convItem.Length
+          $cacheKey = ([string]$convStamp + '|' + $convSize)
+          if ($cacheKey -ne $healthConversationStamp) {
             $newErrCount = 0
             $newLastSeq = 0
             $cutoff24 = $now.AddHours(-24)
@@ -425,14 +434,14 @@ try {
               if (-not $mTs.Success) { $newErrCount++; continue }
               try { if ([datetime]::Parse($mTs.Groups[1].Value) -ge $cutoff24) { $newErrCount++ } } catch { $newErrCount++ }
             }
-            $healthConversationStamp = $convStamp
+            $healthConversationStamp = $cacheKey
             $healthConversationLastSeq = $newLastSeq
             $healthConversationErrorCount = $newErrCount
           }
           if ($healthConversationLastSeq -gt $hLastSeq) { $hLastSeq = $healthConversationLastSeq }
           $errCount = $healthConversationErrorCount
         } else {
-          $healthConversationStamp = [datetime]::MinValue
+          $healthConversationStamp = ''
           $healthConversationLastSeq = 0
           $healthConversationErrorCount = 0
           $errCount = 0

@@ -3052,6 +3052,31 @@ while ($true) {
           }
         } catch {}
       }
+      # 2026-05-28: dirty-state guard. Before starting an autonomous task,
+      # verify the bridge's working tree is clean. Starting work on top of
+      # uncommitted edits leads to two bad outcomes: (a) Codex/Claude's diff
+      # mixes its changes with whatever was sitting in the tree, making
+      # rollback impossible; (b) a watchdog restart loses everything that
+      # wasn't committed. Hold the task and ping the operator instead.
+      if ($claimedIdea) {
+        try {
+          $dirty = (& git -C $bridgeRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          # Filter out the perennial autosaved files that aren't real edits
+          $dirty = @($dirty | Where-Object {
+            $line = ([string]$_).Substring(3).Trim()
+            $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
+          })
+          if ($dirty.Count -gt 0) {
+            $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
+            Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу следующим циклом. Превью: $preview") -Kind event | Out-Null
+            try { Set-Idea -Id ([string]$claimedIdea.id) -Status 'held' -Reason 'dirty git tree at autonomous-pick time' | Out-Null } catch {}
+            $claimedIdea = $null
+          }
+        } catch {
+          # If git itself errors, fail open — better to start the task than wedge
+          # the loop. The watchdog/critic will catch a bad commit downstream.
+        }
+      }
       if ($claimedIdea) {
         $bid = [string]$claimedIdea.id
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
