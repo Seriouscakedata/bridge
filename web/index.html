@@ -2230,7 +2230,9 @@
     <button id="backlogToggle" class="panels-tab" type="button" data-panel="backlog" role="tab" aria-controls="backlogPanel" aria-selected="false" aria-pressed="false" title="Backlog идей" hidden>📋 <span>Backlog</span></button>
     <!-- Direct link to /memory#backlog for users who want backlog -->
     <a id="backlogMemoryLink" href="/memory#backlog" target="_blank" class="panels-tab panels-tab-link" title="Открыть бэклог на странице памяти (шире, удобнее)" style="text-decoration:none">📋 <span>Бэклог</span> <span style="font-size:9px;opacity:.6">↗</span></a>
-    <button id="settingsToggle" class="panels-tab" type="button" data-panel="settings" role="tab" aria-controls="settingsPanel" aria-selected="false" aria-pressed="false" title="Настройки">⚙ <span>Настройки</span></button>
+    <!-- 2026-05-28: settings tab removed. Settings live on /memory page (single source of truth); duplicating them in the chat-panel sidebar caused confusion and out-of-sync state. The /memory page is reachable via the existing Бэклог link in the same tab row. -->
+    <!-- <button id="settingsToggle" class="panels-tab" ...>⚙ Настройки</button> -->
+
   </div>
   <div class="panels-content">
 <aside id="overviewPanel" class="panel" data-panel="overview" aria-label="Обзор сеанса" aria-hidden="true">
@@ -2392,23 +2394,13 @@
   </section>
 </aside>
 
-<aside id="settingsPanel" class="panel" data-panel="settings" aria-label="Настройки" aria-hidden="true">
-  <div class="drag-handle" aria-hidden="true"></div>
-  <div class="overview-head">
-    <strong>⚙ Настройки</strong>
-    <button id="settingsClose" class="mini-btn overview-close" type="button" title="Закрыть настройки" aria-label="Закрыть настройки">×</button>
-  </div>
-  <section class="overview-section" aria-label="Автономия">
-    <h2>Автономия</h2>
-    <label class="setting-row">
-      <span class="setting-label">Задачи проектов в авто-выборку</span>
-      <select id="settingAutonomyScope">
-        <option value="bridge">Только мост (bridge)</option>
-        <option value="projects">Мост + все проекты</option>
-      </select>
-    </label>
-  </section>
-</aside>
+<!-- 2026-05-28: settingsPanel removed. The only control it carried (autonomy
+     scope: bridge / projects) duplicates the same field on the /memory page.
+     Single source of truth = /memory. The JS bindings below (settingsToggle,
+     settingsPanel, settingsClose, settingAutonomyScope, settingsOpen, etc.)
+     are kept as null-defensive references — every reader already guards them
+     with `if (...)`, so removing the DOM doesn't break the page. -->
+
   </div>
 </section>
 
@@ -2892,8 +2884,11 @@ function applyAllPanelStates(){
   syncPanelTabs();
 }
 function openPanels(panelId){
-  const validPanels = ['overview','plan','code','dash','usage','backlog','settings'];
-  const stored = localStorage.getItem('bridgeLastPanel') || activePanelId() || 'overview';
+  // 2026-05-28: 'settings' removed from valid panels (panel deleted, lives on /memory now).
+  const validPanels = ['overview','plan','code','dash','usage','backlog'];
+  const storedRaw = localStorage.getItem('bridgeLastPanel') || activePanelId() || 'overview';
+  // Clear stale 'settings' from localStorage so users who saved it as last panel don't get stuck on empty fallback.
+  const stored = storedRaw === 'settings' ? 'overview' : storedRaw;
   const fallback = validPanels.includes(stored) ? stored : 'overview';
   const next = validPanels.includes(panelId || '') ? panelId : fallback;
   overviewOpen = next === 'overview';
