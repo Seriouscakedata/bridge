@@ -691,8 +691,9 @@ function Start-LibrarianIfDue {
       if (($cfgLib.librarian.PSObject.Properties.Name -contains 'ceilingHours') -and $cfgLib.librarian.ceilingHours) { $ceilingHours = [int]$cfgLib.librarian.ceilingHours }
     }
   } catch {}
-  $marker = Join-Path $bridgeRoot 'memory\librarian.last'
-  $countMarker = Join-Path $bridgeRoot 'memory\librarian.count.last'
+  $scope = Get-EffectiveScope
+  $marker = Join-Path ([string]$scope.memory_root) 'librarian.last'
+  $countMarker = Join-Path ([string]$scope.memory_root) 'librarian.count.last'
   $lastTs = $null
   if (Test-Path $marker) { try { $lastTs = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch {} }
   if ($lastTs) {
@@ -711,13 +712,15 @@ function Start-LibrarianIfDue {
   if (-not (Test-Path $lib)) { return }
   # Touch the marker NOW so we don't relaunch every idle tick while it runs.
   try {
-    $md = Join-Path $bridgeRoot 'memory'
+    $md = [string]$scope.memory_root
     if (-not (Test-Path $md)) { New-Item -ItemType Directory -Path $md -Force | Out-Null }
     [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
   try {
-    $libProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$lib -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ File = $lib }
+    $libProc = Invoke-WithChannelEnv -Slug ([string]$scope.slug) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',([string]$Launch.File) -WindowStyle Hidden -PassThru
     }
     if ($libProc) {
       $libTicks = 0L; try { $libTicks = (Get-Process -Id $libProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -822,8 +825,10 @@ function Start-AuditIfDue {
       '-MaxWaitMinutes', [string]$maxWait,
       '-WaitMarker', $waitMarker
     )
-    $auditProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ Args = $args; Channel = (Get-EffectiveChannel) }
+    $auditProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList $Launch.Args -WindowStyle Hidden -PassThru
     }
     if (-not $auditProc) { throw 'Start-Process did not return an audit process' }
     $auditTicks = 0L
@@ -864,8 +869,10 @@ function Start-FeatureVerifierIfDue {
   if (-not (Test-Path -LiteralPath $verifierScript)) { return }
   try {
     $vArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $verifierScript, '-BridgePath', $bridgeRoot)
-    $vp = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList $vArgs -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ Args = $vArgs; Channel = (Get-EffectiveChannel) }
+    $vp = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList $Launch.Args -WindowStyle Hidden -PassThru
     }
     if ($vp) {
       $vpTicks = 0L
@@ -919,8 +926,10 @@ function Start-ReflectIfDue {
   if (-not (Test-Path $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
   try {
-    $rfProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ File = $rf; Channel = (Get-EffectiveChannel) }
+    $rfProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',([string]$Launch.File) -WindowStyle Hidden -PassThru
     }
     if ($rfProc) {
       $rfTicks = 0L; try { $rfTicks = (Get-Process -Id $rfProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -944,8 +953,10 @@ function Start-TechRadarIfDue {
   if (-not (Test-Path -LiteralPath $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
   try {
-    $rdProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ File = $rf; Channel = (Get-EffectiveChannel) }
+    $rdProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',([string]$Launch.File) -WindowStyle Hidden -PassThru
     }
     if ($rdProc) {
       $rdTicks = 0L; try { $rdTicks = (Get-Process -Id $rdProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -1005,8 +1016,10 @@ function Start-CanaryIfDue {
     $canaryScript = Join-Path $PSScriptRoot 'canary.ps1'
     if (-not (Test-Path -LiteralPath $canaryScript)) { return }
     [System.IO.File]::WriteAllText($launchMarker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-    $caProc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$canaryScript) -WindowStyle Hidden -PassThru
+    $launch = [pscustomobject]@{ File = $canaryScript; Channel = (Get-EffectiveChannel) }
+    $caProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',([string]$Launch.File)) -WindowStyle Hidden -PassThru
     }
     if ($caProc) {
       $caTicks = 0L; try { $caTicks = (Get-Process -Id $caProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
@@ -1873,9 +1886,19 @@ function Invoke-Planner {
   $claudeSilentExit = $false
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
-    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs `
-        -WorkingDirectory $plannerCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $launch = [pscustomobject]@{
+      File = $claudeExe
+      Args = $claudeArgs
+      Cwd  = $plannerCwd
+      In   = $inF
+      Out  = $outF
+      Err  = $errF
+      Channel = (Get-EffectiveChannel)
+    }
+    $p = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath ([string]$Launch.File) -ArgumentList $Launch.Args `
+        -WorkingDirectory ([string]$Launch.Cwd) -RedirectStandardInput ([string]$Launch.In) -RedirectStandardOutput ([string]$Launch.Out) -RedirectStandardError ([string]$Launch.Err) -NoNewWindow -PassThru
     }
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'claude'
@@ -2212,10 +2235,20 @@ function Invoke-Coder {
         (Get-Date).ToString('s') + " codex effort=$effort plen=$($effRes.plen) mode=$($effRes.mode) crc=$($effRes.crc) wt=$($effRes.wt)"
       ) -Encoding UTF8
     } catch {}
-    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath $codexExe `
-        -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-' `
-        -WorkingDirectory $coderCwd -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $launch = [pscustomobject]@{
+      File = $codexExe
+      Args = @('exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-')
+      Cwd  = $coderCwd
+      In   = $inF
+      Out  = $outF
+      Err  = $errF
+      Channel = (Get-EffectiveChannel)
+    }
+    $p = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath ([string]$Launch.File) `
+        -ArgumentList $Launch.Args `
+        -WorkingDirectory ([string]$Launch.Cwd) -RedirectStandardInput ([string]$Launch.In) -RedirectStandardOutput ([string]$Launch.Out) -RedirectStandardError ([string]$Launch.Err) -NoNewWindow -PassThru
     }
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'codex'
@@ -2275,9 +2308,18 @@ $NewBlock
   [System.IO.File]::WriteAllText($inF, $prompt, $Utf8NoBom)
   $reply = ''
   try {
-    $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-      Start-Process -FilePath $claudeExe -ArgumentList '-p','--model',$triageModel `
-        -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    $launch = [pscustomobject]@{
+      File = $claudeExe
+      Args = @('-p','--model',$triageModel)
+      In   = $inF
+      Out  = $outF
+      Err  = $errF
+      Channel = (Get-EffectiveChannel)
+    }
+    $p = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+      param($Launch)
+      Start-Process -FilePath ([string]$Launch.File) -ArgumentList $Launch.Args `
+        -RedirectStandardInput ([string]$Launch.In) -RedirectStandardOutput ([string]$Launch.Out) -RedirectStandardError ([string]$Launch.Err) -NoNewWindow -PassThru
     }
     $null = $p.Handle; Register-AgentPid $p.Id
     if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000 -ErrFile $errF -OutFile $outF)) { Stop-AgentTree $p.Id; return $null }
@@ -4379,8 +4421,10 @@ $diff
         if ($psChanged) {
           $smokeFile = Join-Path $bridgeRoot 'smoke.ps1'
           if (Test-Path $smokeFile) {
-            $smokeOut = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-              & powershell -NoProfile -ExecutionPolicy Bypass -File $smokeFile 2>&1 | Out-String
+            $launch = [pscustomobject]@{ File = $smokeFile; Channel = (Get-EffectiveChannel) }
+            $smokeOut = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
+              param($Launch)
+              & powershell -NoProfile -ExecutionPolicy Bypass -File ([string]$Launch.File) 2>&1 | Out-String
             }
             $smokeOk  = $smokeOut -imatch 'SMOKE OK'
             $smokeVrc = [int](Read-State).verify_retry_count

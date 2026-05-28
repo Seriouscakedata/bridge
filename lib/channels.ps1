@@ -57,14 +57,24 @@ function Get-EffectiveChannel {
 function Invoke-WithChannelEnv {
   param(
     [Parameter(Mandatory=$true)][string]$Slug,
-    [Parameter(Mandatory=$true)][scriptblock]$Action
+    [Parameter(Mandatory=$true)][scriptblock]$Action,
+    [object[]]$ArgumentList = @()
   )
-  $prevSlug = $env:BRIDGE_CHANNEL
+  [void](Get-EffectiveScope -Slug $Slug)
+  $hadPrevSlug = Test-Path Env:BRIDGE_CHANNEL
+  $prevSlug = if ($hadPrevSlug) { [string]$env:BRIDGE_CHANNEL } else { $null }
   try {
     [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $Slug, 'Process')
-    & $Action
+    $env:BRIDGE_CHANNEL = $Slug
+    & $Action @ArgumentList
   } finally {
-    [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $prevSlug, 'Process')
+    if ($hadPrevSlug) {
+      [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $prevSlug, 'Process')
+      $env:BRIDGE_CHANNEL = $prevSlug
+    } else {
+      [Environment]::SetEnvironmentVariable('BRIDGE_CHANNEL', $null, 'Process')
+      Remove-Item Env:BRIDGE_CHANNEL -ErrorAction SilentlyContinue
+    }
   }
 }
 

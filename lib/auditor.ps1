@@ -573,7 +573,14 @@ function Add-AuditorVerdictMemory {
   try {
     if (Get-Command Add-Memory -ErrorAction SilentlyContinue) {
       $text = ("{0} -- {1}" -f $Class, $Reason)
-      Add-Memory -Text $text -Tags @('auditor-verdict') -Source ('auditor:' + $Class) -Importance 0.65 | Out-Null
+      $channel = $null
+      try {
+        if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { $channel = [string](Get-EffectiveScope).slug }
+      } catch { $channel = $null }
+      if ([string]::IsNullOrWhiteSpace($channel)) {
+        try { $channel = [string](Get-CurrentMemoryChannel) } catch { $channel = $null }
+      }
+      Add-Memory -Text $text -Tags @('auditor-verdict') -Source ('auditor:' + $Class) -Importance 0.65 -Channel $channel | Out-Null
     }
   } catch {}
 }
