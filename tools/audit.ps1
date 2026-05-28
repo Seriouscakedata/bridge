@@ -635,10 +635,15 @@ function Invoke-BridgeAudit {
         $commonLib = Join-Path $root 'lib\common.ps1'
         if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
       }
-      # Pin the channel so Get-BacklogPath resolves to channels/main/backlog.jsonl
-      # (matches the channel the user actually picks tasks from).
+      # Pin the channel so Get-BacklogPath resolves to the active channel's
+      # backlog.jsonl. 2026-05-28: was hard-pinned to 'main' — that meant a
+      # travel-channel audit would file its findings into the bridge backlog,
+      # not the travel one. Now we use $resolvedChannel (already computed at
+      # the top of Invoke-BridgeAudit from -Channel / Get-EffectiveChannel),
+      # so the findings land where the user actually triggered the audit.
       if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
-        try { Set-PinnedChannel 'main' } catch {}
+        $pinSlug = if (-not [string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel } else { 'main' }
+        try { Set-PinnedChannel $pinSlug } catch {}
       }
       $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
     } catch {
