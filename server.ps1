@@ -267,6 +267,33 @@ function Test-Auth {
   return $false
 }
 
+function Test-IsAuthenticated {
+  param($ctx)
+  if (-not $authPass -and -not $authToken) { return $true }
+  $h = $ctx.Request.Headers['Authorization']
+  if ($authToken) {
+    if ($h -and $h.StartsWith('Bearer ')) {
+      $bearer = $h.Substring(7).Trim()
+      if ($bearer -eq $authToken) { return $true }
+    }
+    $qToken = Get-QueryParamUtf8 $ctx 'token'
+    if (-not [string]::IsNullOrWhiteSpace($qToken) -and $qToken -eq $authToken) { return $true }
+  }
+  if ($h -and $h.StartsWith('Basic ')) {
+    try {
+      $raw = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($h.Substring(6)))
+      $i = $raw.IndexOf(':')
+      if ($i -ge 0) {
+        $u = $raw.Substring(0,$i); $p = $raw.Substring($i+1)
+        if ($u -eq $authUser -and $p -eq $authPass) { return $true }
+      }
+    } catch {
+      return $false
+    }
+  }
+  return $false
+}
+
 function Send-FileNotFound {
   param($ctx)
   Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404
@@ -418,8 +445,16 @@ try {
           ',"recent_error_count_24h":' + $errCount + `
           ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"parallel_streams_active":' + $psActive + '}'
-        $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
-        Send-Text $ctx $hJson 'application/json; charset=utf-8'
+        if (Test-IsAuthenticated $ctx) {
+          Send-Text $ctx $hJson 'application/json; charset=utf-8'
+        } else {
+          $hJsonPub = '{"ok":' + ($hOk.ToString().ToLower()) + `
+            ',"uptime_sec":' + $uptimeSec + `
+            ',"heartbeat_age_sec":' + $hbAge + `
+            ',"recent_error_count_24h":' + $errCount + '}'
+          $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
+          Send-Text $ctx $hJsonPub 'application/json; charset=utf-8'
+        }
         continue
       }
       if (-not (Test-Auth $ctx)) { continue }
