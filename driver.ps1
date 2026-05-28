@@ -798,7 +798,15 @@ function Start-AuditIfDue {
         }
         . $AuditScript
         $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWait -StablePolls 2
-        if ($idle) { Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null }
+        if ($idle) {
+          Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null
+        } else {
+          try {
+            $logPath = Join-Path (Join-Path $BridgePath 'audit') 'audit.log'
+            $line = "[{0}] audit skipped: bridge did not stay idle for {1} min" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $MaxWait
+            [System.IO.File]::AppendAllText($logPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          } catch {}
+        }
       } catch {
         try {
           $logPath = Join-Path (Join-Path $BridgePath 'audit') 'audit.log'
