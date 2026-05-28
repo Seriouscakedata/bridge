@@ -180,13 +180,24 @@ function Add-ReplayRecord {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($path, $jsonLine + "`n", $utf8NoBom)
 
+    $meta = Get-ReplayTaskMeta -TaskId $TaskId
+    $metaPatch = @{}
+    $currentTurnCount = 0
+    if ($meta -and $null -ne $meta.turn_count) {
+      try { $currentTurnCount = [int]$meta.turn_count } catch { $currentTurnCount = 0 }
+    }
+    if ($Turn -gt $currentTurnCount) {
+      $metaPatch['turn_count'] = $Turn
+    }
     if ($null -ne $costValue) {
-      $meta = Get-ReplayTaskMeta -TaskId $TaskId
       $total = [decimal]0
       if ($meta -and $null -ne $meta.total_cost_usd) {
         try { $total = [decimal]$meta.total_cost_usd } catch { $total = [decimal]0 }
       }
-      Save-ReplayTaskMeta -TaskId $TaskId -Meta @{ total_cost_usd = ($total + $costValue) }
+      $metaPatch['total_cost_usd'] = ($total + $costValue)
+    }
+    if ($metaPatch.Count -gt 0) {
+      Save-ReplayTaskMeta -TaskId $TaskId -Meta $metaPatch
     }
   } catch {
     Write-ReplayInternalError ("Add-ReplayRecord: " + $_.Exception.Message)

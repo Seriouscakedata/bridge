@@ -81,6 +81,17 @@ function Get-ReplayTurnFromFileName {
   return [int]::MaxValue
 }
 
+function Get-MaxReplayTurnInDir {
+  param([string]$Dir)
+  $max = 0
+  if (-not (Test-Path -LiteralPath $Dir)) { return $max }
+  foreach ($file in @(Get-ChildItem -LiteralPath $Dir -File -Filter '*.jsonl' -ErrorAction SilentlyContinue)) {
+    $turn = Get-ReplayTurnFromFileName -Name $file.Name
+    if ($turn -ne [int]::MaxValue -and $turn -gt $max) { $max = $turn }
+  }
+  return $max
+}
+
 function Show-ReplayList {
   param([string]$Root)
   if (-not (Test-Path -LiteralPath $Root)) {
@@ -105,7 +116,10 @@ function Show-ReplayList {
     } else {
       $started = Limit-Cell -Value $meta.started_at -Limit 20
       $status = Limit-Cell -Value $meta.status -Limit 10
-      $turns = [string]$meta.turn_count
+      $metaTurns = 0
+      try { $metaTurns = [int]$meta.turn_count } catch { $metaTurns = 0 }
+      $actualTurns = Get-MaxReplayTurnInDir -Dir $dir.FullName
+      $turns = [string]([Math]::Max($metaTurns, $actualTurns))
       $cost = if ($null -eq $meta.total_cost_usd) { '' } else { ([System.Convert]::ToDecimal($meta.total_cost_usd, $InvariantCulture)).ToString('0.######', $InvariantCulture) }
       $taskText = Limit-Cell -Value $meta.task_text -Limit 40
     }
@@ -131,22 +145,25 @@ function Show-TaskReplay {
   }
 
   $meta = Read-JsonFile -Path (Join-Path $taskDir '_meta.json')
+  $files = @(Get-ChildItem -LiteralPath $taskDir -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+    Sort-Object @{ Expression = { Get-ReplayTurnFromFileName -Name $_.Name } }, @{ Expression = { $_.Name } })
+  $actualTurns = Get-MaxReplayTurnInDir -Dir $taskDir
   Write-Host "TaskId: $Id"
   if ($null -ne $meta) {
+    $metaTurns = 0
+    try { $metaTurns = [int]$meta.turn_count } catch { $metaTurns = 0 }
+    $displayTurns = [Math]::Max($metaTurns, $actualTurns)
     Write-Host "channel: $($meta.channel)"
     Write-Host "started_at: $($meta.started_at)"
     Write-Host "finished_at: $($meta.finished_at)"
     Write-Host "status: $($meta.status)"
-    Write-Host "turn_count: $($meta.turn_count)"
+    Write-Host "turn_count: $displayTurns"
     Write-Host "total_cost_usd: $($meta.total_cost_usd)"
     Write-Host "task_text: $($meta.task_text)"
   } else {
     Write-Host "_meta.json: не найден или не читается" -ForegroundColor Yellow
   }
   Write-Host ""
-
-  $files = @(Get-ChildItem -LiteralPath $taskDir -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-    Sort-Object @{ Expression = { Get-ReplayTurnFromFileName -Name $_.Name } }, @{ Expression = { $_.Name } })
 
   if ($files.Count -eq 0) {
     Write-Host "Нет записей turn'ов."
