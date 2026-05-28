@@ -1,10 +1,20 @@
 ﻿[CmdletBinding()]
 param(
   [string]$BridgePath = '',
+  # 2026-05-28: ProjectRoot is the codebase the deep-audit actually inspects.
+  # By default = BridgePath (bridge audits itself). For non-main channels the
+  # caller passes the channel's project_root so codex sees the project's git
+  # history instead of bridge's. tmp files + audit.log still live under
+  # BridgePath (central audit infra).
+  [string]$ProjectRoot = '',
   [int]$CodexTimeoutSec = 180,
   [int]$ClaudeTimeoutSec = 90,
   [switch]$NoCodex,
-  [switch]$NoClaude
+  [switch]$NoClaude,
+  # 2026-05-28: if both flags are clear, codex.exe and claude.exe spawn
+  # concurrently. Total wall time = max(codex, claude) instead of sum.
+  # Pass -Sequential to force the old back-to-back behavior (debugging).
+  [switch]$Sequential
 )
 
 # Resolve default BridgePath: param-default can't use $PSScriptRoot reliably
@@ -20,6 +30,9 @@ if ([string]::IsNullOrWhiteSpace($BridgePath)) {
     $BridgePath = 'C:\Users\rafie\OneDrive\Documents\bridge'
   }
 }
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = $BridgePath }
+try { $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot) } catch {}
+try { $BridgePath = [System.IO.Path]::GetFullPath($BridgePath) } catch {}
 
 # tools/deep-audit.ps1 -- backlog item 90747e410b "deep-audit Codex+Claude".
 #
@@ -124,19 +137,28 @@ function Extract-Json {
   try { return ($m.Value | ConvertFrom-Json) } catch { return $null }
 }
 
-# --- Codex security pass ---
+# --- Codex security pass (async-friendly split) ---
+#
+# 2026-05-28: split into Start-CodexSecurityAsync + Complete-CodexSecurityAsync
+# so codex.exe can run in parallel with claude.exe. Each returns/consumes a
+# state object carrying { proc; tmp files; deadline; pre-computed skip-result }.
+# Sequential mode falls back to wrapper Invoke-CodexSecurityPass below.
 
-function Invoke-CodexSecurityPass {
-  param([string]$Root, [string]$CodexExe, [int]$TimeoutSec)
-  $changed = Get-Last24hChangedFiles -Root $Root
+function Start-CodexSecurityAsync {
+  param([string]$ProjRoot, [string]$BridgeRoot, [string]$CodexExe, [int]$TimeoutSec)
+  # If the project has no relevant changes, return a "skipped" state that
+  # Complete-CodexSecurityAsync will pass through unchanged.
+  $changed = Get-Last24hChangedFiles -Root $ProjRoot
   $relevant = @($changed | Where-Object { -not (Test-IsTestFile -Path $_) })
   if ($relevant.Count -eq 0) {
     Write-Host "[deep-audit] codex: no .ps1/.html commits in last 24h, skip"
-    return @{ skipped = $true; reason = 'no_changes_last_24h'; findings = @() }
+    return [pscustomobject]@{
+      kind = 'codex'; proc = $null; preResult = @{ skipped = $true; reason = 'no_changes_last_24h'; findings = @() }
+    }
   }
   Write-Host "[deep-audit] codex: examining $($relevant.Count) changed files..."
   $bodyBuilder = New-Object 'System.Text.StringBuilder'
-  [void]$bodyBuilder.AppendLine('Ты security-аудитор. Это git-diff моста за 24 часа. Найди РЕАЛЬНЫЕ уязвимости — не "теоретические", а такие, что можно эксплуатировать.')
+  [void]$bodyBuilder.AppendLine('Ты security-аудитор. Это git-diff проекта за 24 часа. Найди РЕАЛЬНЫЕ уязвимости — не "теоретические", а такие, что можно эксплуатировать.')
   [void]$bodyBuilder.AppendLine('')
   [void]$bodyBuilder.AppendLine('ИЩИ:')
   [void]$bodyBuilder.AppendLine('- command injection: где user-input (HTTP body, URL params, file content) попадает в shell, dynamic command evaluation или process launch без sanitization')
@@ -153,7 +175,7 @@ function Invoke-CodexSecurityPass {
   [void]$bodyBuilder.AppendLine('ФАЙЛЫ:')
   $totalChars = 0
   foreach ($f in $relevant) {
-    $full = Join-Path $Root $f
+    $full = Join-Path $ProjRoot $f
     $content = Get-FileContentCapped -Path $full -Cap 4000
     if ([string]::IsNullOrWhiteSpace($content)) { continue }
     $totalChars += $content.Length
@@ -168,8 +190,8 @@ function Invoke-CodexSecurityPass {
   [void]$bodyBuilder.AppendLine('')
   [void]$bodyBuilder.AppendLine('После JSON напиши на отдельной строке: STATUS: DONE')
 
-  # Write prompt to temp file
-  $tmpDir = Join-Path $Root 'audit\tmp'
+  # Write prompt to temp file (tmp lives under bridge audit/, NOT under ProjRoot).
+  $tmpDir = Join-Path $BridgeRoot 'audit\tmp'
   if (-not (Test-Path -LiteralPath $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
   $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
   $inF = Join-Path $tmpDir ("deep-codex-in_$stamp.txt")
@@ -178,25 +200,43 @@ function Invoke-CodexSecurityPass {
   $errF = Join-Path $tmpDir ("deep-codex-stderr_$stamp.txt")
   [System.IO.File]::WriteAllText($inF, $bodyBuilder.ToString(), $Utf8NoBom)
 
-  Write-Host "[deep-audit] codex: spawning codex.exe (timeout ${TimeoutSec}s)..."
+  Write-Host "[deep-audit] codex: spawning codex.exe (timeout ${TimeoutSec}s, project=$ProjRoot)..."
   try {
     $reasonArg = 'model_reasoning_effort="medium"'
     $p = Start-Process -FilePath $CodexExe `
-      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','read-only','-C',$Root,'-o',$msgF,'-' `
-      -WorkingDirectory $Root -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-    $waited = $p.WaitForExit($TimeoutSec * 1000)
-    if (-not $waited) {
-      try { $p.Kill() } catch {}
-      Write-Host "[deep-audit] codex: TIMEOUT after ${TimeoutSec}s"
-      return @{ skipped = $false; error = 'codex_timeout'; findings = @() }
+      -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','read-only','-C',$ProjRoot,'-o',$msgF,'-' `
+      -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    return [pscustomobject]@{
+      kind = 'codex'; proc = $p; preResult = $null
+      msgF = $msgF; inF = $inF; outF = $outF; errF = $errF
+      startedAt = (Get-Date); timeoutSec = $TimeoutSec
     }
   } catch {
     Write-Host "[deep-audit] codex: spawn failed: $($_.Exception.Message)"
-    return @{ skipped = $false; error = 'codex_spawn_failed'; findings = @() }
+    Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+      kind = 'codex'; proc = $null; preResult = @{ skipped = $false; error = 'codex_spawn_failed'; findings = @() }
+    }
+  }
+}
+
+function Complete-CodexSecurityAsync {
+  param($State)
+  if (-not $State) { return @{ skipped = $true; reason = 'no_state'; findings = @() } }
+  if ($State.preResult) { return $State.preResult }
+  if (-not $State.proc) { return @{ skipped = $false; error = 'no_proc'; findings = @() } }
+
+  $remainingMs = [int]([Math]::Max(0, ($State.timeoutSec * 1000) - ((Get-Date) - $State.startedAt).TotalMilliseconds))
+  $waited = $State.proc.WaitForExit($remainingMs)
+  if (-not $waited) {
+    try { $State.proc.Kill() } catch {}
+    Write-Host "[deep-audit] codex: TIMEOUT after $($State.timeoutSec)s"
+    Remove-Item $State.inF,$State.msgF,$State.outF,$State.errF -ErrorAction SilentlyContinue
+    return @{ skipped = $false; error = 'codex_timeout'; findings = @() }
   }
 
-  $reply = if (Test-Path $msgF) { Get-Content $msgF -Raw -Encoding UTF8 } else { '' }
-  Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
+  $reply = if (Test-Path $State.msgF) { Get-Content $State.msgF -Raw -Encoding UTF8 } else { '' }
+  Remove-Item $State.inF,$State.msgF,$State.outF,$State.errF -ErrorAction SilentlyContinue
   if ([string]::IsNullOrWhiteSpace($reply)) {
     return @{ skipped = $false; error = 'codex_empty_reply'; findings = @() }
   }
@@ -210,25 +250,36 @@ function Invoke-CodexSecurityPass {
   return @{ skipped = $false; findings = $findings; tokens = $reply.Length }
 }
 
-# --- Claude functional pass ---
+function Invoke-CodexSecurityPass {
+  # Legacy synchronous wrapper (start + wait in one call). Used for -Sequential.
+  param([string]$ProjRoot, [string]$BridgeRoot, [string]$CodexExe, [int]$TimeoutSec)
+  $state = Start-CodexSecurityAsync -ProjRoot $ProjRoot -BridgeRoot $BridgeRoot -CodexExe $CodexExe -TimeoutSec $TimeoutSec
+  return (Complete-CodexSecurityAsync -State $state)
+}
 
-function Invoke-ClaudeFunctionalPass {
-  param([string]$Root, [string]$ClaudeExe, [int]$TimeoutSec)
-  $registryPath = Join-Path $Root 'features\registry.json'
+# --- Claude functional pass (async-friendly split) ---
+
+function Start-ClaudeFunctionalAsync {
+  param([string]$ProjRoot, [string]$BridgeRoot, [string]$ClaudeExe, [int]$TimeoutSec)
+  # Registry + audit-log live under BridgeRoot (bridge owns the registry).
+  # Git history is per-project (ProjRoot).
+  $registryPath = Join-Path $BridgeRoot 'features\registry.json'
   if (-not (Test-Path -LiteralPath $registryPath)) {
     Write-Host "[deep-audit] claude: features/registry.json missing, skip"
-    return @{ skipped = $true; reason = 'no_registry'; findings = @() }
+    return [pscustomobject]@{
+      kind = 'claude'; proc = $null; preResult = @{ skipped = $true; reason = 'no_registry'; findings = @() }
+    }
   }
   $registryRaw = Get-FileContentCapped -Path $registryPath -Cap 30000
-  $statePath = Join-Path $Root 'features\state.json'
+  $statePath = Join-Path $BridgeRoot 'features\state.json'
   $stateRaw = if (Test-Path -LiteralPath $statePath) { Get-FileContentCapped -Path $statePath -Cap 5000 } else { '{}' }
   $auditLogTail = ''
-  $auditLogPath = Join-Path $Root 'audit\audit.log'
+  $auditLogPath = Join-Path $BridgeRoot 'audit\audit.log'
   if (Test-Path -LiteralPath $auditLogPath) {
     try { $auditLogTail = (Get-Content -LiteralPath $auditLogPath -Tail 30 -Encoding UTF8 | Out-String).Trim() } catch {}
   }
   $gitLogWeek = ''
-  try { $gitLogWeek = (& git -C $Root log --since='7 days ago' --pretty=format:'%h %s' 2>$null | Out-String).Trim() } catch {}
+  try { $gitLogWeek = (& git -C $ProjRoot log --since='7 days ago' --pretty=format:'%h %s' 2>$null | Out-String).Trim() } catch {}
 
   $promptBuilder = New-Object 'System.Text.StringBuilder'
   [void]$promptBuilder.AppendLine('Ты архитектурный аудитор автономного моста Claude+Codex. Я дам тебе:')
@@ -262,7 +313,7 @@ function Invoke-ClaudeFunctionalPass {
   [void]$promptBuilder.AppendLine('[{"feature_id":"id","category":"dormant|drift|coverage|undocumented|trend","severity":"critical|warning|info","observation":"что заметил","recommendation":"что предлагаешь"}]')
   [void]$promptBuilder.AppendLine('Если ничего не нашёл — верни [].')
 
-  $tmpDir = Join-Path $Root 'audit\tmp'
+  $tmpDir = Join-Path $BridgeRoot 'audit\tmp'
   if (-not (Test-Path -LiteralPath $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
   $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
   $inF = Join-Path $tmpDir ("deep-claude-in_$stamp.txt")
@@ -270,39 +321,56 @@ function Invoke-ClaudeFunctionalPass {
   $errF = Join-Path $tmpDir ("deep-claude-err_$stamp.txt")
   [System.IO.File]::WriteAllText($inF, $promptBuilder.ToString(), $Utf8NoBom)
 
-  Write-Host "[deep-audit] claude: spawning claude.exe (timeout ${TimeoutSec}s)..."
+  Write-Host "[deep-audit] claude: spawning claude.exe (timeout ${TimeoutSec}s, project=$ProjRoot)..."
   $allowedTools = @('Read','Grep','Glob')
-  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$Root,'--allowedTools') + $allowedTools + @('--model','sonnet')
+  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$ProjRoot,'--allowedTools') + $allowedTools + @('--model','sonnet')
   try {
     $p = Start-Process -FilePath $ClaudeExe -ArgumentList $claudeArgs `
-      -WorkingDirectory $Root -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
-    $waited = $p.WaitForExit($TimeoutSec * 1000)
-    if (-not $waited) {
-      try { $p.Kill() } catch {}
-      Write-Host "[deep-audit] claude: TIMEOUT after ${TimeoutSec}s"
-      return @{ skipped = $false; error = 'claude_timeout'; findings = @() }
+      -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+    return [pscustomobject]@{
+      kind = 'claude'; proc = $p; preResult = $null
+      promptText = $promptBuilder.ToString()
+      bridgeRoot = $BridgeRoot
+      inF = $inF; outF = $outF; errF = $errF
+      startedAt = (Get-Date); timeoutSec = $TimeoutSec
     }
   } catch {
     Write-Host "[deep-audit] claude: spawn failed: $($_.Exception.Message)"
-    return @{ skipped = $false; error = 'claude_spawn_failed'; findings = @() }
+    Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+      kind = 'claude'; proc = $null; preResult = @{ skipped = $false; error = 'claude_spawn_failed'; findings = @() }
+    }
+  }
+}
+
+function Complete-ClaudeFunctionalAsync {
+  param($State)
+  if (-not $State) { return @{ skipped = $true; reason = 'no_state'; findings = @() } }
+  if ($State.preResult) { return $State.preResult }
+  if (-not $State.proc) { return @{ skipped = $false; error = 'no_proc'; findings = @() } }
+
+  $remainingMs = [int]([Math]::Max(0, ($State.timeoutSec * 1000) - ((Get-Date) - $State.startedAt).TotalMilliseconds))
+  $waited = $State.proc.WaitForExit($remainingMs)
+  if (-not $waited) {
+    try { $State.proc.Kill() } catch {}
+    Write-Host "[deep-audit] claude: TIMEOUT after $($State.timeoutSec)s"
+    Remove-Item $State.inF,$State.outF,$State.errF -ErrorAction SilentlyContinue
+    return @{ skipped = $false; error = 'claude_timeout'; findings = @() }
   }
 
-  $reply = if (Test-Path $outF) { Get-Content $outF -Raw -Encoding UTF8 } else { '' }
-  Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue
+  $reply = if (Test-Path $State.outF) { Get-Content $State.outF -Raw -Encoding UTF8 } else { '' }
+  Remove-Item $State.inF,$State.outF,$State.errF -ErrorAction SilentlyContinue
   if ([string]::IsNullOrWhiteSpace($reply)) {
     # 2026-05-28: claude.exe -p sometimes hangs/exits without output for large
-    # stdin-piped prompts (67K context). Rather than fail this whole phase,
-    # fall back to Invoke-LLM gemini-2.5-pro — same prompt, different agent.
-    # Spirit of "two heads" preserved (codex security + a separate-model
-    # functional review) even if claude.exe isn't cooperating.
+    # stdin-piped prompts (67K context). Fall back to Invoke-LLM gemini-2.5-pro —
+    # same prompt, different agent. Spirit of "two heads" preserved.
     Write-Host "[deep-audit] claude: empty reply -> falling back to Invoke-LLM gemini-2.5-pro"
-    $fbBuilder = Get-Item -LiteralPath (Join-Path $Root 'lib\common.ps1') -ErrorAction SilentlyContinue
-    if ($fbBuilder) {
+    $commonLib = Join-Path $State.bridgeRoot 'lib\common.ps1'
+    if (Test-Path -LiteralPath $commonLib) {
       try {
-        . (Join-Path $Root 'lib\common.ps1') 2>$null | Out-Null
+        . $commonLib 2>$null | Out-Null
         if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
-          $fbPrompt = $promptBuilder.ToString()
-          $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-2.5-pro' -Prompt $fbPrompt -TimeoutSec 120 -Temperature 0.2
+          $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-2.5-pro' -Prompt $State.promptText -TimeoutSec 120 -Temperature 0.2
           if (-not [string]::IsNullOrWhiteSpace($fbReply)) {
             $fbParsed = Extract-Json -Text $fbReply
             $fbFindings = @()
@@ -330,34 +398,71 @@ function Invoke-ClaudeFunctionalPass {
   return @{ skipped = $false; findings = $findings; tokens = $reply.Length; source = 'claude.exe' }
 }
 
+function Invoke-ClaudeFunctionalPass {
+  # Legacy synchronous wrapper. Used for -Sequential.
+  param([string]$ProjRoot, [string]$BridgeRoot, [string]$ClaudeExe, [int]$TimeoutSec)
+  $state = Start-ClaudeFunctionalAsync -ProjRoot $ProjRoot -BridgeRoot $BridgeRoot -ClaudeExe $ClaudeExe -TimeoutSec $TimeoutSec
+  return (Complete-ClaudeFunctionalAsync -State $state)
+}
+
 # --- Main ---
 
-$root = Get-DeepAuditBridgeRoot
+$bridgeRoot = Get-DeepAuditBridgeRoot
+$projRoot = if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot } else { $bridgeRoot }
 $cfg = Get-DeepAuditConfig
 
 $codexResult = @{ skipped = $true; reason = 'no_codex_flag'; findings = @() }
 $claudeResult = @{ skipped = $true; reason = 'no_claude_flag'; findings = @() }
 
+Write-Host "[deep-audit] bridge=$bridgeRoot"
+Write-Host "[deep-audit] project=$projRoot"
+$mode = if ($Sequential) { 'sequential' } else { 'parallel' }
+Write-Host "[deep-audit] mode=$mode"
+
+# Resolve executables up front (cheap).
+$codexExe = $null
+$claudeExe = $null
 if (-not $NoCodex) {
   $codexExe = Resolve-DeepCodexExe -Cfg $cfg
-  if (-not $codexExe) {
-    $codexResult = @{ skipped = $true; reason = 'codex_exe_not_found'; findings = @() }
-  } else {
-    $codexResult = Invoke-CodexSecurityPass -Root $root -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
-  }
+  if (-not $codexExe) { $codexResult = @{ skipped = $true; reason = 'codex_exe_not_found'; findings = @() } }
 }
-
 if (-not $NoClaude) {
   $claudeExe = Resolve-DeepClaudeExe -Cfg $cfg
-  if (-not $claudeExe) {
-    $claudeResult = @{ skipped = $true; reason = 'claude_exe_not_found'; findings = @() }
-  } else {
-    $claudeResult = Invoke-ClaudeFunctionalPass -Root $root -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
+  if (-not $claudeExe) { $claudeResult = @{ skipped = $true; reason = 'claude_exe_not_found'; findings = @() } }
+}
+
+if ($Sequential) {
+  # Legacy back-to-back execution (codex first, then claude).
+  if ($codexExe) {
+    $codexResult = Invoke-CodexSecurityPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
   }
+  if ($claudeExe) {
+    $claudeResult = Invoke-ClaudeFunctionalPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
+  }
+} else {
+  # Parallel mode: spawn both processes back-to-back (a few ms apart), then wait
+  # for both with each one's own deadline. Total wall time ≈ max(codex, claude)
+  # instead of codex+claude.
+  $codexState = $null
+  $claudeState = $null
+  if ($codexExe) {
+    $codexState = Start-CodexSecurityAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
+  }
+  if ($claudeExe) {
+    $claudeState = Start-ClaudeFunctionalAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
+  }
+  $tStart = Get-Date
+  if ($codexState) { $codexResult = Complete-CodexSecurityAsync -State $codexState }
+  if ($claudeState) { $claudeResult = Complete-ClaudeFunctionalAsync -State $claudeState }
+  $elapsed = [Math]::Round(((Get-Date) - $tStart).TotalSeconds, 1)
+  Write-Host "[deep-audit] parallel wait done in ${elapsed}s"
 }
 
 $output = [pscustomobject]@{
   ts = (Get-Date).ToString('o')
+  bridge_root = $bridgeRoot
+  project_root = $projRoot
+  mode = $mode
   codex_security = $codexResult
   claude_functional = $claudeResult
 }

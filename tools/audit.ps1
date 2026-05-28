@@ -419,9 +419,43 @@ function Add-AuditCriticalsToBacklog {
 }
 
 function Invoke-BridgeAudit {
-  param([string]$BridgePath = $null)
+  # 2026-05-28:
+  #   -Channel      pick the channel the user is on; resolved to project_root via
+  #                 Get-EffectiveProjectRoot. If empty, falls back to the pinned
+  #                 (or 'main' / bridge) channel. The deep-audit phase scopes
+  #                 codex.exe and claude.exe to that project_root.
+  #   -ProjectRoot  override the auto-resolved project_root (escape hatch).
+  param(
+    [string]$BridgePath = $null,
+    [string]$Channel = $null,
+    [string]$ProjectRoot = $null
+  )
   $root = Get-AuditBridgeRoot -Hint $BridgePath
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+  # Resolve target project root: explicit -ProjectRoot > Get-EffectiveProjectRoot($Channel) > $root.
+  $resolvedProject = $root
+  $resolvedChannel = if (-not [string]::IsNullOrWhiteSpace($Channel)) { $Channel } else { '' }
+  if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    if (Test-Path -LiteralPath $ProjectRoot -PathType Container) {
+      try { $resolvedProject = [System.IO.Path]::GetFullPath($ProjectRoot) } catch { $resolvedProject = $ProjectRoot }
+    }
+  } else {
+    try {
+      $commonLib = Join-Path $root 'lib\common.ps1'
+      if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($resolvedChannel) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
+          $resolvedChannel = [string](Get-EffectiveChannel)
+        }
+        $pr = ''
+        try { $pr = [string](Get-EffectiveProjectRoot -Slug $resolvedChannel) } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr -PathType Container)) {
+          try { $resolvedProject = [System.IO.Path]::GetFullPath($pr) } catch { $resolvedProject = $pr }
+        }
+      }
+    } catch {}
+  }
 
   # 1. lock
   $existing = Test-AuditLock -BridgePath $root
@@ -430,7 +464,8 @@ function Invoke-BridgeAudit {
     return @{ status = 'locked'; pid = $existing }
   }
   New-AuditLock -BridgePath $root
-  Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID)"
+  $scopeLabel = if ($resolvedProject -ne $root) { "channel=$resolvedChannel project=$resolvedProject" } else { 'bridge-self' }
+  Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID, scope=$scopeLabel)"
 
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $allFindings = New-Object 'System.Collections.Generic.List[object]'
@@ -517,8 +552,12 @@ function Invoke-BridgeAudit {
         $deepOutPath = Join-Path $deepTmpDir ("audit-deep-stdout_$deepStamp.txt")
         $deepErrPath = Join-Path $deepTmpDir ("audit-deep-stderr_$deepStamp.txt")
         try {
+          # 2026-05-28: pass -ProjectRoot so codex/claude scope to the active
+          # channel's codebase (not the bridge). Parallel is the default;
+          # add -Sequential to fall back to back-to-back execution.
+          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject)
           $deepProc = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root) `
+            -ArgumentList $deepArgs `
             -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
             -WindowStyle Hidden -PassThru
           $deepProc.WaitForExit()
