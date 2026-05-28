@@ -235,7 +235,22 @@ function Complete-CodexSecurityAsync {
     return @{ skipped = $false; error = 'codex_timeout'; findings = @() }
   }
 
-  $reply = if (Test-Path $State.msgF) { Get-Content $State.msgF -Raw -Encoding UTF8 } else { '' }
+  # 2026-05-28: codex.exe `-o $msgF` does NOT always materialise the final
+  # reply in the output file — on this machine the same JSON tends to leak
+  # to stdout (captured in $outF) instead. So read both and pick whichever
+  # has actual content; prefer the -o file because it's the documented path.
+  $replyFromMsg = if (Test-Path $State.msgF) { Get-Content $State.msgF -Raw -Encoding UTF8 } else { '' }
+  $replyFromOut = if (Test-Path $State.outF) { Get-Content $State.outF -Raw -Encoding UTF8 } else { '' }
+  $replySource = ''
+  $reply = ''
+  if (-not [string]::IsNullOrWhiteSpace($replyFromMsg)) {
+    $reply = $replyFromMsg
+    $replySource = 'msg-file'
+  } elseif (-not [string]::IsNullOrWhiteSpace($replyFromOut)) {
+    $reply = $replyFromOut
+    $replySource = 'stdout-fallback'
+    Write-Host "[deep-audit] codex: -o file empty, reading from stdout instead"
+  }
   Remove-Item $State.inF,$State.msgF,$State.outF,$State.errF -ErrorAction SilentlyContinue
   if ([string]::IsNullOrWhiteSpace($reply)) {
     return @{ skipped = $false; error = 'codex_empty_reply'; findings = @() }
@@ -246,8 +261,8 @@ function Complete-CodexSecurityAsync {
     if ($parsed -is [Array]) { $findings = @($parsed) }
     elseif ($parsed.findings) { $findings = @($parsed.findings) }
   }
-  Write-Host "[deep-audit] codex: returned $($findings.Count) findings"
-  return @{ skipped = $false; findings = $findings; tokens = $reply.Length }
+  Write-Host "[deep-audit] codex: returned $($findings.Count) findings (source=$replySource)"
+  return @{ skipped = $false; findings = $findings; tokens = $reply.Length; source = $replySource }
 }
 
 function Invoke-CodexSecurityPass {
@@ -343,6 +358,40 @@ function Start-ClaudeFunctionalAsync {
   }
 }
 
+function Invoke-DeepGeminiClaudeFallback {
+  # 2026-05-28: shared helper. claude.exe -p has TWO failure modes on large
+  # stdin: hang-then-timeout, and return-empty-fast. Both should fall back to
+  # gemini-2.5-pro instead of silently emitting zero findings. Previously
+  # fallback only triggered on empty-reply; timeouts dropped on the floor.
+  param([string]$BridgeRoot, [string]$PromptText, [string]$FailMode)
+  Write-Host "[deep-audit] claude: $FailMode -> falling back to Invoke-LLM gemini-2.5-pro"
+  $commonLib = Join-Path $BridgeRoot 'lib\common.ps1'
+  if (-not (Test-Path -LiteralPath $commonLib)) {
+    return @{ skipped = $false; error = ("claude_${FailMode}_no_common_lib"); findings = @() }
+  }
+  try {
+    . $commonLib 2>$null | Out-Null
+    if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
+      return @{ skipped = $false; error = ("claude_${FailMode}_no_invoke_llm"); findings = @() }
+    }
+    $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-2.5-pro' -Prompt $PromptText -TimeoutSec 120 -Temperature 0.2
+    if ([string]::IsNullOrWhiteSpace($fbReply)) {
+      return @{ skipped = $false; error = ("claude_${FailMode}_fallback_empty"); findings = @() }
+    }
+    $fbParsed = Extract-Json -Text $fbReply
+    $fbFindings = @()
+    if ($fbParsed) {
+      if ($fbParsed -is [Array]) { $fbFindings = @($fbParsed) }
+      elseif ($fbParsed.findings) { $fbFindings = @($fbParsed.findings) }
+    }
+    Write-Host "[deep-audit] claude->gemini-pro fallback ($FailMode): returned $($fbFindings.Count) findings"
+    return @{ skipped = $false; findings = $fbFindings; tokens = $fbReply.Length; source = 'gemini-2.5-pro-fallback' }
+  } catch {
+    Write-Host "[deep-audit] claude fallback failed: $($_.Exception.Message)"
+    return @{ skipped = $false; error = ("claude_${FailMode}_fallback_exception"); findings = @() }
+  }
+}
+
 function Complete-ClaudeFunctionalAsync {
   param($State)
   if (-not $State) { return @{ skipped = $true; reason = 'no_state'; findings = @() } }
@@ -355,38 +404,16 @@ function Complete-ClaudeFunctionalAsync {
     try { $State.proc.Kill() } catch {}
     Write-Host "[deep-audit] claude: TIMEOUT after $($State.timeoutSec)s"
     Remove-Item $State.inF,$State.outF,$State.errF -ErrorAction SilentlyContinue
-    return @{ skipped = $false; error = 'claude_timeout'; findings = @() }
+    # 2026-05-28: known issue — claude.exe -p hangs on large stdin (~67K context)
+    # on this machine. Instead of silently losing the functional pass, fall back
+    # to gemini-2.5-pro with the same prompt.
+    return (Invoke-DeepGeminiClaudeFallback -BridgeRoot $State.bridgeRoot -PromptText $State.promptText -FailMode 'timeout')
   }
 
   $reply = if (Test-Path $State.outF) { Get-Content $State.outF -Raw -Encoding UTF8 } else { '' }
   Remove-Item $State.inF,$State.outF,$State.errF -ErrorAction SilentlyContinue
   if ([string]::IsNullOrWhiteSpace($reply)) {
-    # 2026-05-28: claude.exe -p sometimes hangs/exits without output for large
-    # stdin-piped prompts (67K context). Fall back to Invoke-LLM gemini-2.5-pro —
-    # same prompt, different agent. Spirit of "two heads" preserved.
-    Write-Host "[deep-audit] claude: empty reply -> falling back to Invoke-LLM gemini-2.5-pro"
-    $commonLib = Join-Path $State.bridgeRoot 'lib\common.ps1'
-    if (Test-Path -LiteralPath $commonLib) {
-      try {
-        . $commonLib 2>$null | Out-Null
-        if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
-          $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-2.5-pro' -Prompt $State.promptText -TimeoutSec 120 -Temperature 0.2
-          if (-not [string]::IsNullOrWhiteSpace($fbReply)) {
-            $fbParsed = Extract-Json -Text $fbReply
-            $fbFindings = @()
-            if ($fbParsed) {
-              if ($fbParsed -is [Array]) { $fbFindings = @($fbParsed) }
-              elseif ($fbParsed.findings) { $fbFindings = @($fbParsed.findings) }
-            }
-            Write-Host "[deep-audit] claude->gemini-pro fallback: returned $($fbFindings.Count) findings"
-            return @{ skipped = $false; findings = $fbFindings; tokens = $fbReply.Length; source = 'gemini-2.5-pro-fallback' }
-          }
-        }
-      } catch {
-        Write-Host "[deep-audit] claude fallback failed: $($_.Exception.Message)"
-      }
-    }
-    return @{ skipped = $false; error = 'claude_empty_reply_and_fallback_failed'; findings = @() }
+    return (Invoke-DeepGeminiClaudeFallback -BridgeRoot $State.bridgeRoot -PromptText $State.promptText -FailMode 'empty_reply')
   }
   $parsed = Extract-Json -Text $reply
   $findings = @()
