@@ -3288,9 +3288,38 @@ while ($true) {
   # [[IDEA: ...]] -> agent raises a self-improvement idea into the backlog (status 'new').
   $ideaPattern = '(?m)^\s*\[\[IDEA:\s*(.+?)\s*\]\]\s*$'
   $proposedIdeas = New-Object System.Collections.Generic.List[string]
+  # 2026-05-28: suppress mid-task echoing of the user spec back as "ideas".
+  # Real incident: my Phase 1 task spec mentioned "Этап 2: Test-FeatureSimilarity",
+  # the planner emitted [[IDEA: добавить Test-FeatureSimilarity...]] in turn 1 as
+  # a sincere idea — but it's just the user's roadmap restated. We compare each
+  # idea-text against the current task text by word-overlap; >50% → suppress.
+  # Also gather words from current task for cheap overlap check.
+  $taskTextForSuppress = ''
+  try { $taskTextForSuppress = [string](Read-State).current_task } catch {}
+  $taskNorm = ''
+  $taskWords = @()
+  if (-not [string]::IsNullOrWhiteSpace($taskTextForSuppress)) {
+    $taskNorm = ($taskTextForSuppress -replace '\s+',' ').Trim().ToLowerInvariant()
+    $taskWords = @($taskNorm -split '\W+' | Where-Object { $_.Length -gt 3 })
+  }
   foreach ($m in [regex]::Matches($reply, $ideaPattern)) {
     $idea = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($idea)) { continue }
+    # Mid-task echo guard
+    if ($taskWords.Count -gt 5) {
+      try {
+        $ideaNorm = ($idea -replace '\s+',' ').Trim().ToLowerInvariant()
+        $ideaWords = @($ideaNorm -split '\W+' | Where-Object { $_.Length -gt 3 })
+        if ($ideaWords.Count -gt 2) {
+          $shared = ($ideaWords | Where-Object { $taskWords -contains $_ }).Count
+          $ratio = $shared / [Math]::Max(1, $ideaWords.Count)
+          if ($ratio -gt 0.5) {
+            Add-Message -From system -Text ("💡 Идея пропущена (повтор текста задачи, overlap " + ('{0:N2}' -f $ratio) + "): " + ($idea.Substring(0,[Math]::Min(80,$idea.Length)))) -Kind event | Out-Null
+            continue
+          }
+        }
+      } catch {}
+    }
     try {
       $ideaScope = if ($channelIsMainMarkers) { 'bridge' } else { 'project' }
       $addIdeaResult = Add-Idea -Text $idea -From $speaker -Tags @($speaker) -Status 'new' -Project ([string]$pbForMarkers.slug) -Scope $ideaScope

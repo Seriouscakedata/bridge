@@ -126,24 +126,47 @@ foreach ($it in $ideas) {
     $e = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.effort))
     $score = [Math]::Round($v * $c / $e, 2)
   } catch {}
-  # Skip if a near-identical idea already exists in the backlog (non-done).
+  # 2026-05-28: tightened dedup. Real incident: reflect added "Добавить
+  # epoch-guard в pollBacklog…" while an approved item already said
+  # "pollBacklog не имеет epoch-guard, …" — word overlap was 50% (below
+  # 60% threshold) so dedup missed. Now we try THREE strategies in order:
+  #   (1) Test-IdeaShouldKeep — embedding cosine similarity via Get-Embedding;
+  #       most accurate, catches paraphrases. Requires working gemini key.
+  #   (2) prefix40 byte match (was already there) — catches near-identical openings.
+  #   (3) word overlap — threshold lowered 0.6 -> 0.5 AND checks both
+  #       min(|w1|,|w2|) and max(|w1|,|w2|) (was only min before).
   $isDup = $false
   try {
-    $norm = ($text -replace '\s+',' ').Trim().ToLowerInvariant()
-    $prefix40 = if ($norm.Length -gt 40) { $norm.Substring(0,40) } else { $norm }
-    $existing = @(Get-Backlog | Where-Object { [string]$_.status -notin @('done','rejected') })
-    foreach ($ex in $existing) {
-      $exNorm = (([string]$ex.text) -replace '\s+',' ').Trim().ToLowerInvariant()
-      if ($exNorm.StartsWith($prefix40)) { $isDup = $true; break }
-      # Word-overlap check: if >60% of words match, treat as duplicate
-      $words1 = @($norm -split '\W+' | Where-Object { $_.Length -gt 3 })
-      $words2 = @($exNorm -split '\W+' | Where-Object { $_.Length -gt 3 })
-      if ($words1.Count -gt 3 -and $words2.Count -gt 3) {
-        $shared = ($words1 | Where-Object { $words2 -contains $_ }).Count
-        if ($shared / [Math]::Min($words1.Count,$words2.Count) -gt 0.6) { $isDup = $true; break }
+    if (Get-Command Test-IdeaShouldKeep -ErrorAction SilentlyContinue) {
+      $keep = Test-IdeaShouldKeep -Text $text
+      if ($keep -and [string]$keep.action -eq 'dedup') {
+        $isDup = $true
       }
     }
   } catch {}
+  if (-not $isDup) {
+    try {
+      $norm = ($text -replace '\s+',' ').Trim().ToLowerInvariant()
+      $prefix40 = if ($norm.Length -gt 40) { $norm.Substring(0,40) } else { $norm }
+      $existing = @(Get-Backlog | Where-Object { [string]$_.status -notin @('done','rejected','auto-dropped','auto-resolved') })
+      foreach ($ex in $existing) {
+        $exNorm = (([string]$ex.text) -replace '\s+',' ').Trim().ToLowerInvariant()
+        if ($exNorm.StartsWith($prefix40)) { $isDup = $true; break }
+        $words1 = @($norm -split '\W+' | Where-Object { $_.Length -gt 3 })
+        $words2 = @($exNorm -split '\W+' | Where-Object { $_.Length -gt 3 })
+        if ($words1.Count -gt 3 -and $words2.Count -gt 3) {
+          $shared = ($words1 | Where-Object { $words2 -contains $_ }).Count
+          $minWords = [Math]::Min($words1.Count, $words2.Count)
+          $maxWords = [Math]::Max($words1.Count, $words2.Count)
+          # 50% of either min OR max counts as a duplicate signal — was 60%/min only,
+          # too lenient when both texts have ~8 words and share 4 stable keywords.
+          if (($shared / $minWords) -gt 0.5 -or ($shared / $maxWords) -gt 0.5) {
+            $isDup = $true; break
+          }
+        }
+      }
+    } catch {}
+  }
   if ($isDup) { continue }
   $id = Add-Idea -Text $text -From 'reflect' -Tags $tags -Status 'new' -Score $score
   if ($id) { $added++ }

@@ -63,22 +63,41 @@ function Start-BacklogCuratorJob {
   if ([string]::IsNullOrWhiteSpace($ItemId)) { return $false }
   try {
     $root = Get-BacklogFallbackBridgeRoot
-    $lib = Join-Path $PSScriptRoot 'backlog.ps1'
+    # 2026-05-28 BUG-fix (backlog item c825502cba): the launcher previously
+    # dot-sourced ONLY `lib/backlog.ps1`. But Invoke-BacklogCurator -> Get-Backlog
+    # -> Get-BacklogPath, which needs Get-ChannelBacklogPath defined in
+    # lib/channels.ps1 to resolve channels/<slug>/backlog.jsonl. Without
+    # channels.ps1 loaded, Get-BacklogPath fell back to <root>/backlog.jsonl
+    # (doesn't exist) -> Get-Backlog returned empty -> curator returned $null
+    # silently -> EVERY new item since 2026-05-27 12:26 stayed at status=new
+    # with no auto_curator verdict.
+    # Fix: dot-source lib/common.ps1 (which itself dot-sources channels.ps1 +
+    # backlog.ps1 + memory.ps1 + llm.ps1 in the right order). Pin the active
+    # channel before invoking so Get-EffectiveChannel resolves correctly.
+    $commonLib = Join-Path $PSScriptRoot 'common.ps1'
     $log = Join-Path (Get-BacklogControlDir) 'curator.log'
-    # 2026-05-27: critic-flagged fix. Embedded -Command string with `2>&1` and
-    # `Out-File -Encoding utf8` was fragile (PS 5.1 wraps stderr as NativeCommandError
-    # objects, Out-File utf8 writes BOM). Switch to a temp launcher .ps1 file with
-    # explicit no-BOM append. Cleaner, deterministic, no quoting risks.
     $launcherDir = Join-Path (Get-BacklogControlDir) 'curator-launchers'
     if (-not (Test-Path -LiteralPath $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null }
     $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
     $launcher = Join-Path $launcherDir ("curator_" + $stamp + ".ps1")
+    # Capture the channel slug at launch time so the launcher pins to it
+    # (matches the channel whose backlog the item lives in).
+    $channelSlug = 'main'
+    try {
+      if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+        $channelSlug = [string](Get-EffectiveChannel)
+      }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($channelSlug)) { $channelSlug = 'main' }
     $launcherBody = @"
 `$ErrorActionPreference = 'Continue'
 try {
-  . '$($lib.Replace("'", "''"))'
+  . '$($commonLib.Replace("'", "''"))'
+  if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
+    Set-PinnedChannel '$($channelSlug.Replace("'", "''"))'
+  }
   `$result = Invoke-BacklogCurator -ItemId '$($ItemId.Replace("'", "''"))' 2>`$null
-  `$line = (Get-Date).ToString('o') + " | item=$($ItemId.Replace("'", "''")) | result=" + (`$result | ConvertTo-Json -Compress -Depth 4) + "`n"
+  `$line = (Get-Date).ToString('o') + " | item=$($ItemId.Replace("'", "''")) | channel=$($channelSlug.Replace("'", "''")) | result=" + (`$result | ConvertTo-Json -Compress -Depth 4) + "`n"
   [System.IO.File]::AppendAllText('$($log.Replace("'", "''"))', `$line, (New-Object System.Text.UTF8Encoding(`$false)))
 } catch {
   `$err = (Get-Date).ToString('o') + " | item=$($ItemId.Replace("'", "''")) | error=" + `$_.Exception.Message + "`n"
