@@ -14,6 +14,7 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\canary.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 . (Join-Path $PSScriptRoot 'lib\postmortem.ps1')
+. (Join-Path $PSScriptRoot 'lib\features.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
@@ -3001,6 +3002,7 @@ while ($true) {
         try { Start-LibrarianIfDue } catch {}
         try { Start-AuditIfDue } catch {}
         try { Start-FeatureVerifierIfDue } catch {}
+        try { Update-FeatureActivations | Out-Null } catch {}
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}
