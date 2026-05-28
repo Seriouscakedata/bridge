@@ -95,6 +95,30 @@ function Get-FeatureDottedValue {
     return $current
 }
 
+function Test-FeatureDottedKeyExists {
+    # 2026-05-28: feature activation companion. Tells you whether a dotted key
+    # is *present* in an object — regardless of whether its value is null, '',
+    # 0, false. A key that exists means the bridge writes that field, which
+    # is the right "feature is wired up" signal even when the current value
+    # happens to be zero (e.g. task_restart_count = 0 means cap feature is
+    # alive and tracking, not dormant).
+    param($Object, [string]$Path)
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $current = $Object
+    foreach ($part in ($Path -split '\.')) {
+        if ($null -eq $current) { return $false }
+        if ($current -is [System.Collections.IDictionary]) {
+            if (-not $current.Contains($part)) { return $false }
+            $current = $current[$part]
+        } elseif ($current.PSObject -and $current.PSObject.Properties[$part]) {
+            $current = $current.PSObject.Properties[$part].Value
+        } else {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Get-FeatureState {
     $p = Get-FeatureStatePath
     if (-not (Test-Path $p)) { return @{} }
@@ -153,11 +177,56 @@ function Get-AllFeatures {
 
 function Update-FeatureActivations {
     # Walk all features with activation_signal, check signals, update state.json
+    # 2026-05-28: enriched scanner. Previous version only matched 7/39 features
+    # because most activation_signal.path entries pointed to control/<feature>.log
+    # files that aren't actually written. New behaviour:
+    #   - log-pattern: try the declared path, then fall back to
+    #     channels/main/conversation.jsonl (rich activity record) using the
+    #     same regex. Many features only surface in chat messages.
+    #   - state-path: in addition to the declared key, accept any of a small
+    #     set of heuristic per-feature fallback keys that we know exist on the
+    #     active channel state.json (e.g. study-mode -> study_phase non-empty).
     $root = Get-BridgeRootFeat
     $registry = Get-FeatureRegistry
     $state = Get-FeatureState
     $stateDict = ConvertTo-FeatureStateDictionary $state
     $now = (Get-Date).ToString('o')
+    # Pre-load conversation tail once for shared use across log-pattern fallbacks.
+    $slug = 'main'
+    try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) } } catch {}
+    $convPath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'conversation.jsonl'))
+    $convTail = @()
+    if (Test-Path -LiteralPath $convPath) {
+        try { $convTail = Get-Content -LiteralPath $convPath -Tail 200 -Encoding UTF8 } catch {}
+    }
+    $channelStatePath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'state.json'))
+    $channelState = $null
+    if (Test-Path -LiteralPath $channelStatePath) {
+        try { $channelState = [System.IO.File]::ReadAllText($channelStatePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch {}
+    }
+    # Per-feature fallback hints (id -> list of state-path keys that, if present
+    # and non-empty/non-zero, count as a valid activation signal).
+    $stateFallbacks = @{
+        'fast-lane'          = @('fast_lane_reason','fast_lane_last_at')
+        'study-mode'         = @('study_phase','study_mode_last_at','study_subtype')
+        'critic'             = @('critic_retry_count','last_critic_at')
+        'replay-system'      = @('last_task_agent_duration_sec','last_replay_at')
+        'mission-card'       = @('session_mission')
+        'channel-switch'     = @('active_channel','active_agent')
+        'memory-recall'      = @('last_recall_at')
+        'message-cache'      = @('lastSeq','last_user_seq')
+        'worker-pool'        = @('parallel_streams','parallel_streams_active')
+        'parallel-chunks'    = @('chunk_progress','chunk_count','chunk_base_commit')
+        'task-restart-cap'   = @('task_restart_count')
+        'recurrence-detection' = @('recurrence_context','no_progress_count')
+        'state-snapshots'    = @('last_snapshot_at')
+        'runbook-diagnostics' = @('runbook_last_at')
+        'semantic-code-memory' = @('codemem.last_search_at')
+        'llm-router'         = @('llm.last_call_at','active_model')
+        'self-improvement-system' = @('autonomous_count','autonomy.enabled')
+        'health-endpoint'    = @('health.last_probe_at')
+        'project-scoping'    = @('channel.project_root','status')
+    }
     foreach ($f in $registry) {
         if (-not $f.activation_signal) { continue }
         $sig = $f.activation_signal
@@ -174,19 +243,29 @@ function Update-FeatureActivations {
                     }
                 } catch {}
             }
+            # Fallback: same regex against conversation.jsonl tail.
+            if (-not $matched -and $convTail.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$sig.regex)) {
+                $rx = [string]$sig.regex
+                foreach ($line in $convTail) {
+                    if ($line -match $rx) { $matched = $true; break }
+                }
+            }
         } elseif ($kind -eq 'state-path') {
-            # 2026-05-28 fix: was '$root\state.json' (root-level), but channel state
-            # lives at channels/<slug>/state.json. Use channel-aware resolver.
-            $slug = 'main'
-            try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) } } catch {}
-            $statePath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'state.json'))
-            if (Test-Path $statePath) {
-                try {
-                    $s = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-                    $key = [string]$sig.path
-                    $val = Get-FeatureDottedValue -Object $s -Path $key
-                    if ($null -ne $val -and $val -ne '') { $matched = $true }
-                } catch {}
+            if ($channelState) {
+                $key = [string]$sig.path
+                if (-not [string]::IsNullOrWhiteSpace($key)) {
+                    $val = Get-FeatureDottedValue -Object $channelState -Path $key
+                    if ($null -ne $val -and $val -ne '' -and $val -ne 0 -and $val -ne $false) { $matched = $true }
+                }
+            }
+            # Fallback: heuristic per-feature alternate keys. Accept ANY value
+            # (including 0 / false / '') — the key being present in state means
+            # the feature is wired into the driver, even if currently quiescent.
+            # Real dormancy = "key not in state at all".
+            if (-not $matched -and $channelState -and $stateFallbacks.ContainsKey($f.id)) {
+                foreach ($altKey in $stateFallbacks[$f.id]) {
+                    if (Test-FeatureDottedKeyExists -Object $channelState -Path $altKey) { $matched = $true; break }
+                }
             }
         }
         if ($matched) {
