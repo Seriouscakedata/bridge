@@ -197,7 +197,10 @@ function Update-FeatureActivations {
     $convPath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'conversation.jsonl'))
     $convTail = @()
     if (Test-Path -LiteralPath $convPath) {
-        try { $convTail = Get-Content -LiteralPath $convPath -Tail 200 -Encoding UTF8 } catch {}
+        # 500 messages = roughly the last week of activity on a busy channel,
+        # enough to catch periodic features (librarian, backlog-curator) that
+        # might not fire in any given 50-line window.
+        try { $convTail = Get-Content -LiteralPath $convPath -Tail 500 -Encoding UTF8 } catch {}
     }
     $channelStatePath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'state.json'))
     $channelState = $null
