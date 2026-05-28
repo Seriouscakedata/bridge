@@ -269,23 +269,26 @@ function Test-Auth {
 
 function Test-IsAuthenticated {
   param($ctx)
-  if (-not $authPass -and -not $authToken) { return $true }
+  $hasTokenAuth = -not [string]::IsNullOrWhiteSpace($script:authToken)
+  $hasBasicAuth = (-not [string]::IsNullOrWhiteSpace($script:authUser)) -and (-not [string]::IsNullOrWhiteSpace($script:authPass))
+  if (-not $hasTokenAuth -and -not $hasBasicAuth) { return $false }
+
   $h = $ctx.Request.Headers['Authorization']
-  if ($authToken) {
+  if ($hasTokenAuth) {
     if ($h -and $h.StartsWith('Bearer ')) {
       $bearer = $h.Substring(7).Trim()
-      if ($bearer -eq $authToken) { return $true }
+      if ($bearer -eq $script:authToken) { return $true }
     }
     $qToken = Get-QueryParamUtf8 $ctx 'token'
-    if (-not [string]::IsNullOrWhiteSpace($qToken) -and $qToken -eq $authToken) { return $true }
+    if (-not [string]::IsNullOrWhiteSpace($qToken) -and $qToken -eq $script:authToken) { return $true }
   }
-  if ($h -and $h.StartsWith('Basic ')) {
+  if ($hasBasicAuth -and $h -and $h.StartsWith('Basic ')) {
     try {
       $raw = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($h.Substring(6)))
       $i = $raw.IndexOf(':')
       if ($i -ge 0) {
         $u = $raw.Substring(0,$i); $p = $raw.Substring($i+1)
-        if ($u -eq $authUser -and $p -eq $authPass) { return $true }
+        if ($u -eq $script:authUser -and $p -eq $script:authPass) { return $true }
       }
     } catch {
       return $false
