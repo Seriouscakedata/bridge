@@ -349,6 +349,106 @@ function Get-NextPlanStep {
   return $null
 }
 
+function Get-ReadyPlanSteps {
+  # The "ready frontier" of the DAG: every STEP node that is 'pending' and whose
+  # deps are ALL 'done' — i.e. every step that can be dispatched to a worker
+  # RIGHT NOW. Unlike Get-NextPlanStep (returns ONE step, and also returns
+  # in_progress ones), this returns the whole runnable set and EXCLUDES
+  # in_progress steps (those are already in flight). The executor marks a step
+  # 'in_progress' the moment it hands it to a worker, so the next call won't
+  # re-dispatch it. Returns node objects (caller needs title/criteria/parent).
+  param([int]$Max = 0)   # 0 = unlimited
+  $plan = Get-Plan
+  if ($null -eq $plan) { return @() }
+
+  $statusById = @{}
+  foreach ($node in @($plan.nodes)) { $statusById[[string]$node.id] = (Normalize-PlanStatus ([string]$node.status)) }
+
+  $ready = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($node in @($plan.nodes)) {
+    if ([string]$node.type -ne 'step') { continue }
+    if ((Normalize-PlanStatus ([string]$node.status)) -ne 'pending') { continue }
+    $depsReady = $true
+    foreach ($dep in @($node.deps)) {
+      $depId = [string]$dep
+      if ([string]::IsNullOrWhiteSpace($depId)) { continue }
+      if (-not $statusById.ContainsKey($depId) -or $statusById[$depId] -ne 'done') { $depsReady = $false; break }
+    }
+    if ($depsReady) {
+      [void]$ready.Add($node)
+      if ($Max -gt 0 -and $ready.Count -ge $Max) { break }
+    }
+  }
+  return @($ready.ToArray())
+}
+
+function Get-PlanScheduleState {
+  # The scheduler's per-tick snapshot. The DAG executor calls this each loop to
+  # decide: dispatch more (ready>0), keep polling (inflight>0), finish
+  # (complete), or abort (deadlocked). Statuses are rolled up by ConvertTo-
+  # PlanObject so a step depending on a TASK/EPIC waits for the whole subtree.
+  #
+  #   complete   = no pending and no in_progress steps remain
+  #   deadlocked = work remains, but nothing is runnable AND nothing is in
+  #                flight -> a dependency cycle, a dangling dep id, or a dep on a
+  #                blocked/skipped step. The frontier can never advance, so the
+  #                executor must stop and post-mortem instead of spinning.
+  #   blockers   = per stuck step, the unmet deps with their status, e.g.
+  #                "s3" -> @("s2(blocked)","s9(missing)") — actionable diagnosis.
+  $plan = Get-Plan
+  if ($null -eq $plan) {
+    return [pscustomobject][ordered]@{
+      total = 0; done = 0; pending = 0; in_progress = 0; blocked = 0; skipped = 0
+      ready = @(); inflight = @(); waiting = @()
+      complete = $true; deadlocked = $false; reason = 'no-plan'; blockers = @{}
+    }
+  }
+
+  $steps = @($plan.nodes | Where-Object { [string]$_.type -eq 'step' })
+  $statusById = @{}
+  foreach ($node in @($plan.nodes)) { $statusById[[string]$node.id] = (Normalize-PlanStatus ([string]$node.status)) }
+
+  $ready    = New-Object 'System.Collections.Generic.List[string]'
+  $inflight = New-Object 'System.Collections.Generic.List[string]'
+  $waiting  = New-Object 'System.Collections.Generic.List[string]'
+  $blockers = @{}
+  $counts = @{ pending = 0; in_progress = 0; done = 0; blocked = 0; skipped = 0 }
+
+  foreach ($s in $steps) {
+    $st = Normalize-PlanStatus ([string]$s.status)
+    $counts[$st] = [int]$counts[$st] + 1
+    if ($st -eq 'in_progress') { [void]$inflight.Add([string]$s.id); continue }
+    if ($st -ne 'pending') { continue }
+
+    $unmet = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($dep in @($s.deps)) {
+      $depId = [string]$dep
+      if ([string]::IsNullOrWhiteSpace($depId)) { continue }
+      $depStatus = if ($statusById.ContainsKey($depId)) { [string]$statusById[$depId] } else { 'missing' }
+      if ($depStatus -ne 'done') { [void]$unmet.Add(("{0}({1})" -f $depId, $depStatus)) }
+    }
+    if ($unmet.Count -eq 0) { [void]$ready.Add([string]$s.id) }
+    else { [void]$waiting.Add([string]$s.id); $blockers[[string]$s.id] = @($unmet.ToArray()) }
+  }
+
+  $total = $steps.Count
+  $remaining = [int]$counts['pending'] + [int]$counts['in_progress']
+  $complete = ($remaining -eq 0)
+  $deadlocked = (-not $complete) -and ($ready.Count -eq 0) -and ($inflight.Count -eq 0)
+  $reason =
+    if ($complete) { 'complete' }
+    elseif ($ready.Count -gt 0) { 'runnable' }
+    elseif ($inflight.Count -gt 0) { 'awaiting-inflight' }
+    else { 'deadlocked' }
+
+  return [pscustomobject][ordered]@{
+    total = $total; done = [int]$counts['done']; pending = [int]$counts['pending']
+    in_progress = [int]$counts['in_progress']; blocked = [int]$counts['blocked']; skipped = [int]$counts['skipped']
+    ready = @($ready.ToArray()); inflight = @($inflight.ToArray()); waiting = @($waiting.ToArray())
+    complete = $complete; deadlocked = $deadlocked; reason = $reason; blockers = $blockers
+  }
+}
+
 function Get-PlanProgress {
   $plan = Get-Plan
   if ($null -eq $plan) {
