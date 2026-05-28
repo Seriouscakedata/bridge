@@ -393,3 +393,152 @@ function New-FoundryStepRunner {
     return @($out.ToArray())
   }.GetNewClosure()
 }
+
+# ===========================================================================
+# New-Project pipeline (Ф2 §3.1): turn a goal into a real, channel-bound git
+# repo the bridge can then build out via the DAG executor above.
+#
+#   resolve+confine project root -> mkdir -> write minimal scaffold -> git init
+#   + initial commit (so worktrees/rollback have a HEAD) -> New-Channel bind ->
+#   verify Get-ChannelProjectBinding.ok. Any failure after mkdir rolls the whole
+#   thing back (remove the dir + the channel) so we never leave a half-project.
+#
+# Autonomous project creation expands the bridge's write surface (the Gate C
+# concern), so creation is CONFINED to a configurable projects root
+# (config.foundry.projectsRoot, default <bridge>/projects): a project path that
+# resolves outside that root is refused fail-closed, '..' traversal included.
+# ===========================================================================
+
+function Get-FoundryProjectsRoot {
+  # The single directory under which New-Project may create project repos.
+  # Bounds the blast radius of autonomous project creation.
+  $root = ''
+  try {
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $cfg = Get-BridgeConfig
+      if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'foundry') -and $cfg.foundry -and ($cfg.foundry.PSObject.Properties.Name -contains 'projectsRoot')) {
+        $root = [string]$cfg.foundry.projectsRoot
+      }
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = Join-Path (Get-BridgeRoot) 'projects' }
+  return $root
+}
+
+function Test-FoundryPathContained {
+  # Fail-closed containment: $true only if $Path resolves to $Root or inside it.
+  # Resolves to absolute form first so '..' / relative paths cannot escape.
+  param([string]$Path, [string]$Root)
+  if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+  $full = $null; $rootFull = $null
+  try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return $false }
+  try { $rootFull = [System.IO.Path]::GetFullPath($Root) } catch { return $false }
+  $p = $full.TrimEnd('\', '/')
+  $r = $rootFull.TrimEnd('\', '/')
+  $sep = [System.IO.Path]::DirectorySeparatorChar
+  if ($p.Equals($r, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($p.StartsWith($r + $sep, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($p.StartsWith($r + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $false
+}
+
+function New-FoundryProjectResult {
+  param([bool]$Ok, [string]$Slug = '', [string]$ProjectRoot = '', [string]$Head = '', [string]$Reason = '')
+  return [pscustomobject]@{ ok = $Ok; slug = $Slug; projectRoot = $ProjectRoot; channel = $Slug; head = $Head; reason = $Reason }
+}
+
+function New-Project {
+  # Create a new project repo and bind a channel to it. Returns
+  # @{ ok; slug; projectRoot; channel; head; reason }.
+  param(
+    [Parameter(Mandatory = $true)][string]$Slug,
+    [string]$Name = '',
+    [string]$Description = '',
+    [string]$Goal = '',
+    [string]$ParentDir = '',
+    [hashtable]$Scaffold = $null
+  )
+  $ErrorActionPreference = 'Stop'
+
+  # 1) Normalize slug the same way New-Channel does (so the channel dir matches).
+  $slug = ($Slug.ToLowerInvariant() -replace '[^a-z0-9-]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($slug)) { return (New-FoundryProjectResult -Ok $false -Reason 'invalid slug') }
+  if ($slug -eq 'main') { return (New-FoundryProjectResult -Ok $false -Slug $slug -Reason "refuse: 'main' is the bridge's own channel") }
+
+  $displayName = if ([string]::IsNullOrWhiteSpace($Name)) { $slug } else { $Name }
+
+  # 2) Resolve + confine the project root.
+  $projectsRoot = Get-FoundryProjectsRoot
+  $parent = if ([string]::IsNullOrWhiteSpace($ParentDir)) { $projectsRoot } else { $ParentDir }
+  $projectRoot = Join-Path $parent $slug
+  if (-not (Test-FoundryPathContained -Path $projectRoot -Root $projectsRoot)) {
+    return (New-FoundryProjectResult -Ok $false -Slug $slug -Reason ("refuse: project path escapes projects root (" + $projectsRoot + ")"))
+  }
+  try { $projectRoot = [System.IO.Path]::GetFullPath($projectRoot) } catch {}
+
+  # 3) Refuse to clobber an existing project dir or channel.
+  if (Test-Path -LiteralPath $projectRoot) { return (New-FoundryProjectResult -Ok $false -Slug $slug -ProjectRoot $projectRoot -Reason 'project dir already exists') }
+  $channelDir = $null
+  try { $channelDir = Get-ChannelDir -Slug $slug } catch {}
+  if ($channelDir -and (Test-Path -LiteralPath $channelDir)) { return (New-FoundryProjectResult -Ok $false -Slug $slug -ProjectRoot $projectRoot -Reason 'channel already exists') }
+
+  $channelCreated = $false
+  try {
+    # 4) Create the dir + scaffold.
+    if (-not (Test-Path -LiteralPath $projectsRoot)) { New-Item -ItemType Directory -Path $projectsRoot -Force | Out-Null }
+    New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+
+    $files = $Scaffold
+    if ($null -eq $files -or $files.Count -eq 0) {
+      $readmeBody = if (-not [string]::IsNullOrWhiteSpace($Goal)) { $Goal } elseif (-not [string]::IsNullOrWhiteSpace($Description)) { $Description } else { 'Project created by the bridge Project Foundry.' }
+      $files = @{
+        'README.md'  = ("# " + $displayName + "`n`n" + $readmeBody + "`n")
+        '.gitignore' = "# bridge Project Foundry default ignores`n*.log`n*.tmp`nnode_modules/`n.bridge-wt/`n"
+      }
+    }
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    foreach ($rel in $files.Keys) {
+      $dest = Join-Path $projectRoot ([string]$rel)
+      $destDir = Split-Path -Parent $dest
+      if (-not [string]::IsNullOrWhiteSpace($destDir) -and -not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+      [System.IO.File]::WriteAllText($dest, [string]$files[$rel], $u8)
+    }
+
+    # 5) git init + initial commit (HEAD is required for worktree branches).
+    $git = Get-GitExe
+    $eapPrev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $git -C $projectRoot init 2>&1 | Out-Null
+    $initOk = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath (Join-Path $projectRoot '.git'))
+    $head = ''
+    if ($initOk) {
+      & $git -C $projectRoot add -A 2>&1 | Out-Null
+      & $git -C $projectRoot -c user.name='bridge' -c user.email='bridge@localhost' commit -m 'Initial project scaffold (bridge Project Foundry)' 2>&1 | Out-Null
+      $commitOk = ($LASTEXITCODE -eq 0)
+      if ($commitOk) { try { $head = ((& $git -C $projectRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim() } catch {} }
+    }
+    $ErrorActionPreference = $eapPrev
+    if (-not $initOk) { throw 'git init failed' }
+    if ([string]::IsNullOrWhiteSpace($head)) { throw 'initial commit failed (no HEAD) -- check git identity/signing config' }
+
+    # 6) Bind a channel to the new project.
+    $ch = New-Channel -Slug $slug -Name $displayName -Description $Description -ProjectRoot $projectRoot
+    if (-not $ch) { throw 'channel creation failed' }
+    $channelCreated = $true
+
+    # 7) Verify the binding resolves.
+    $binding = Get-ChannelProjectBinding -Slug $slug
+    if (-not $binding -or -not [bool]$binding.ok) {
+      $berr = if ($binding) { [string]$binding.error } else { 'binding null' }
+      throw ('binding not ok: ' + $berr)
+    }
+
+    return (New-FoundryProjectResult -Ok $true -Slug $slug -ProjectRoot $projectRoot -Head $head)
+  } catch {
+    # Roll back a partial project so we never leave half-created state behind.
+    $reason = $_.Exception.Message
+    if ($channelCreated -and $channelDir) { try { Remove-Item -LiteralPath $channelDir -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+    try { if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
+    return (New-FoundryProjectResult -Ok $false -Slug $slug -ProjectRoot $projectRoot -Reason $reason)
+  }
+}
