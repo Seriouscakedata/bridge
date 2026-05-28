@@ -1363,6 +1363,9 @@ function Build-Prompt {
   $activeProjectRoot = if ($projectBinding -and [bool]$projectBinding.ok) { [string]$projectBinding.project_root } else { $bridgeRoot }
   if ([string]::IsNullOrWhiteSpace($activeProjectRoot)) { $activeProjectRoot = $bridgeRoot }
   $activeProjectBlock = Get-ProjectFocusPromptBlock
+  # Tool Foundry (Ф1): advertise already-built tools so agents REUSE instead of re-requesting.
+  $autoToolsLine = ''
+  try { $atb = Get-AutoToolsPromptBlock; if (-not [string]::IsNullOrWhiteSpace($atb)) { $autoToolsLine = "`n" + $atb } } catch { $autoToolsLine = '' }
   $channelIsMain = ($projectBinding -and ([string]$projectBinding.slug -eq 'main'))
   $bridgeScopeRules = if ($channelIsMain) {
 @'
@@ -1499,6 +1502,7 @@ $autoScopeLine
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
 - ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
 - ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
+- САМО-ПОСТРОЕННЫЕ ИНСТРУМЕНТЫ (Tool Foundry, заказывает планировщик): нужна ПЕРЕИСПОЛЬЗУЕМАЯ возможность, которой ещё нет (спец-парсер, конвертер, генератор, валидатор)? Закажи её ОТДЕЛЬНОЙ строкой [[NEED-TOOL: имя | контракт-что-делает]] (имя латиницей: буква, далее буквы/цифры/_ и дефис). Мост синтезирует её в песочнице (parse → smoke-тест → критик на ДРУГОЙ модели) и при успехе даст функцию Invoke-<имя> в tools/auto/, доступную сразу и впредь. Разовую мелочь делай напрямую; не дублируй уже существующее.$autoToolsLine
 - ПАРАЛЛЕЛЬ (только планировщик): если задачу можно разбить на 2+ НЕЗАВИСИМЫЕ части — есть ДВЕ формы:
   • Для ВНЕШНЕГО репо (другой проект пользователя, НЕ мост): отдельной строкой `[[PARALLEL: <путь_к_репо> || под-задача 1 ;; под-задача 2 ;; под-задача 3]]`. Каждая уйдёт отдельному Codex-воркеру в изолированной копии репо параллельно, результаты вольются обратно (конфликты придут тебе на разрешение). Путь репозитория ОБЯЗАТЕЛЕН (НЕ сам мост — мост этой формой запретит).
   • Для самого моста (bridge): обрамляй каждый поток парой `[[PARALLEL:<id>]] ... [[/PARALLEL:<id>]]`. Внутри блока ОБЯЗАТЕЛЬНЫ две строки:
@@ -3641,6 +3645,48 @@ while ($true) {
     Update-State ({ param($s) $cur=@(); if ($s.active_jobs) { $cur=@($s.active_jobs) }; $s.active_jobs=@($cur + $sj) }.GetNewClosure()) | Out-Null
     foreach ($job in $sj) { Add-Message -From system -Text "🛠 Запущена фоновая задача [$($job.id)]: $($job.cmd)`nЖду завершения (без таймаута), результат придёт сюда." -Kind event | Out-Null }
   }
+  # [[NEED-TOOL: имя | контракт]] -> синтез инструмента на лету (Tool Foundry, Ф1). Сборка
+  # идёт в песочнице (Build-AutoTool: parse -> smoke в ДОЧЕРНЕМ процессе -> критик на ДРУГОЙ
+  # модели); зелёный инструмент пишется в tools/auto/<имя>.ps1 и СРАЗУ dot-source'ится здесь
+  # (мы в script-scope верхнеуровневого while-цикла), поэтому Invoke-<имя> доступен и этому
+  # ходу, и всем следующим. Reuse-before-rebuild: активный одноимённый инструмент не пересобираем.
+  $needToolPattern = '(?m)^\s*\[\[NEED-TOOL:\s*(.+?)\s*\]\]\s*$'
+  foreach ($m in [regex]::Matches($reply, $needToolPattern)) {
+    $spec = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($spec)) { continue }
+    $ntParts = $spec -split '\|', 2
+    $ntName = $ntParts[0].Trim()
+    $ntContract = if ($ntParts.Count -ge 2) { $ntParts[1].Trim() } else { '' }
+    $ntSafe = $null
+    try { $ntSafe = Test-AutoToolName -Name $ntName } catch {}
+    if (-not $ntSafe) {
+      Add-Message -From system -Text ("⚠ [[NEED-TOOL]] отклонён: недопустимое имя '" + $ntName + "'. Нужно латиницей: буква, далее буквы/цифры/_ и дефис.") -Kind event | Out-Null
+      continue
+    }
+    if ([string]::IsNullOrWhiteSpace($ntContract)) {
+      Add-Message -From system -Text ("⚠ [[NEED-TOOL: " + $ntSafe + "]] без контракта. Формат: [[NEED-TOOL: имя | что инструмент делает]].") -Kind event | Out-Null
+      continue
+    }
+    $ntExisting = $null
+    try { $ntExisting = Get-AutoTool -Name $ntSafe } catch {}
+    if ($ntExisting -and ([string]$ntExisting.status -eq 'active')) {
+      Add-Message -From system -Text ("🔧 Инструмент '" + $ntSafe + "' уже есть (вызов: Invoke-" + $ntSafe + "). Переиспользуй — не пересобираю.") -Kind event | Out-Null
+      continue
+    }
+    Add-Message -From system -Text ("🏗 Tool Foundry: синтез '" + $ntSafe + "' в песочнице (parse → smoke → критик)…") -Kind event | Out-Null
+    $ntBuilt = $null
+    try { $ntBuilt = Build-AutoTool -Name $ntSafe -Contract $ntContract } catch { $ntBuilt = $null }
+    if ($ntBuilt -and $ntBuilt.ok) {
+      try {
+        $ntFile = Join-Path (Get-ToolForgeRoot) ($ntBuilt.name + '.ps1')
+        if (Test-Path -LiteralPath $ntFile) { . $ntFile }   # load into engine script-scope NOW
+      } catch {}
+      Add-Message -From system -Text ("✅ Инструмент готов: '" + $ntBuilt.name + "' (вызов: " + $ntBuilt.entry + "). Контракт: " + $ntContract + ". Доступен сразу и на следующих ходах.") -Kind event | Out-Null
+    } else {
+      $ntWhy = if ($ntBuilt) { [string]$ntBuilt.reason } else { 'сборка упала (исключение)' }
+      Add-Message -From system -Text ("⚠ Не построил '" + $ntSafe + "' → карантин. Причина: " + $ntWhy + ". Сделай задачу без него или уточни контракт и повтори [[NEED-TOOL]].") -Kind event | Out-Null
+    }
+  }
   # [[PLAN]] ... [[/PLAN]] -> создать persisted план-доску для текущей задачи.
   $planBlockPattern = '(?is)\[\[PLAN\]\].*?\[\[/PLAN\]\]'
   $planCreatedStepCount = $null
@@ -3695,6 +3741,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $ideaPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $runjobPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $needToolPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, '(?s)\[\[PARALLEL:.+?\]\]', '')
   $visibleReply = [regex]::Replace($visibleReply, $planBlockPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
