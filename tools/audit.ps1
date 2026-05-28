@@ -281,6 +281,23 @@ function Add-AuditCriticalsToBacklog {
   }
   try {
     . $lib
+    # backlog.ps1 is loaded from inside this function, so its helper functions
+    # are local to this scope. Add-Idea writes under a lock via a scriptblock;
+    # that scriptblock resolves helpers from global scope, not this local scope.
+    foreach ($name in @(
+      'Get-BacklogFallbackBridgeRoot',
+      'Invoke-BacklogLocked',
+      'Write-BacklogAtomicFile',
+      'Get-BacklogControlDir',
+      'Write-BacklogJsonLine',
+      'Write-LastAddIdeaMarker',
+      'Get-BacklogPath',
+      'Get-Backlog',
+      'Add-Idea'
+    )) {
+      $cmd = Get-Command $name -CommandType Function -ErrorAction SilentlyContinue
+      if ($cmd) { Set-Item -Path "Function:\global:$name" -Value $cmd.ScriptBlock -Force }
+    }
     if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
       Write-AuditLog -BridgePath $BridgePath -Message 'Add-Idea not available after dot-source'
       return 0
@@ -288,6 +305,15 @@ function Add-AuditCriticalsToBacklog {
   } catch {
     Write-AuditLog -BridgePath $BridgePath -Message "failed to load backlog.ps1: $($_.Exception.Message)"
     return 0
+  }
+  $existingTexts = @{}
+  try {
+    foreach ($item in @(Get-Backlog)) {
+      $txt = [string]$item.text
+      if (-not [string]::IsNullOrWhiteSpace($txt)) { $existingTexts[$txt] = $true }
+    }
+  } catch {
+    Write-AuditLog -BridgePath $BridgePath -Message "failed to read backlog for audit dedupe: $($_.Exception.Message)"
   }
   foreach ($f in $crit) {
     try {
@@ -298,8 +324,12 @@ function Add-AuditCriticalsToBacklog {
         if ($det.Length -gt 240) { $det = $det.Substring(0, 240) + '...' }
         $text += " — $det"
       }
+      if ($existingTexts.ContainsKey($text)) { continue }
       $id = Add-Idea -Text $text -From 'audit' -Tags @('audit', $f.source) -SkipCurator
-      if ($id) { $added++ }
+      if ($id) {
+        $existingTexts[$text] = $true
+        $added++
+      }
     } catch {
       Write-AuditLog -BridgePath $BridgePath -Message "Add-Idea failed: $($_.Exception.Message)"
     }
