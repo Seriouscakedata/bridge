@@ -10,7 +10,14 @@ function Get-RegistryPath {
     Join-Path (Get-BridgeRootFeat) 'features\registry.json'
 }
 
-function Get-StatePath {
+function Get-FeatureStatePath {
+    # 2026-05-28 fix: was Get-StatePath — name collision with lib/common.ps1's
+    # Get-StatePath which resolves to channels/<slug>/state.json. Loading
+    # features.ps1 silently shadowed the channel-aware function, so Read-State
+    # in server began reading features/state.json instead of the real channel
+    # state. Result: API returned status=idle / heartbeat=null / task_turn=0
+    # while the actual driver was working — UI showed "Heartbeat устарел 494431ч"
+    # because 0/null heartbeat parsed as 1970-epoch, 56 years from now.
     Join-Path (Get-BridgeRootFeat) 'features\state.json'
 }
 
@@ -23,7 +30,7 @@ function Get-FeatureRegistry {
 }
 
 function Get-FeatureState {
-    $p = Get-StatePath
+    $p = Get-FeatureStatePath
     if (-not (Test-Path $p)) { return @{} }
     $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
     if ([string]::IsNullOrWhiteSpace($json)) { return @{} }
@@ -32,7 +39,7 @@ function Get-FeatureState {
 
 function Save-FeatureState {
     param($State)
-    $p = Get-StatePath
+    $p = Get-FeatureStatePath
     $dir = Split-Path $p
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $json = $State | ConvertTo-Json -Depth 6 -Compress
@@ -105,7 +112,11 @@ function Update-FeatureActivations {
                 } catch {}
             }
         } elseif ($kind -eq 'state-path') {
-            $statePath = Join-Path $root 'state.json'
+            # 2026-05-28 fix: was '$root\state.json' (root-level), but channel state
+            # lives at channels/<slug>/state.json. Use channel-aware resolver.
+            $slug = 'main'
+            try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) } } catch {}
+            $statePath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'state.json'))
             if (Test-Path $statePath) {
                 try {
                     $s = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
