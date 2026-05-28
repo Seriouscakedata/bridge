@@ -430,8 +430,18 @@ try {
         Send-Text $ctx $html 'text/html; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/messages') {
+        # 2026-05-28: ?channel=<slug> reads THAT channel's conversation.jsonl explicitly,
+        # bypassing the global active_channel marker. This was the root cause of UI
+        # flicker during channel switch: client requested channel X's messages but
+        # server returned whatever active_channel happened to be at that moment.
+        # Mirrors the /api/status pattern (pin -> read -> unpin in finally).
         $since = 0; [void][int]::TryParse($ctx.Request.QueryString['since'], [ref]$since)
-        $msgs = Get-Messages -Since $since
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $msgs = Get-Messages -Since $since
+        } finally { Set-PinnedChannel $prevPin }
         $json = '[' + (($msgs | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 }) -join ',') + ']'
         Send-Text $ctx $json 'application/json; charset=utf-8'
       }
@@ -717,9 +727,16 @@ try {
         # 2026-05-27: by default exclude terminal statuses (done/auto-resolved)
         # from the response — they accumulate forever and clutter the UI.
         # Opt-in via ?include=done|archived|all to fetch the full archive.
+        # 2026-05-28: ?channel=<slug> pin around Get-Backlog so UI switches
+        # don't accidentally show another channel's backlog mid-flight.
         $includeParam = (Get-QueryParamUtf8 $ctx 'include')
         $includeArchived = (-not [string]::IsNullOrWhiteSpace($includeParam)) -and ($includeParam -imatch '^(done|archived|all|true|1)$')
-        $allItems = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $allItems = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
+        } finally { Set-PinnedChannel $prevPin }
         $archivedCount = 0
         $itemsFiltered = New-Object 'System.Collections.Generic.List[object]'
         foreach ($item in $allItems) {
@@ -737,7 +754,14 @@ try {
         Send-Text $ctx ('{"ok":true,"items":' + $itemsJson + ',"archived_count":' + $archivedCount + ',"total":' + $allItems.Count + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/plan') {
-        $p = Get-PlanForApi
+        # 2026-05-28: ?channel=<slug> mirrors /api/messages and /api/status — explicit
+        # channel pin around Get-PlanForApi avoids races with global active_channel.
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $p = Get-PlanForApi
+        } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx ($p | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/code') {

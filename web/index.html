@@ -2386,6 +2386,17 @@ let unreadMarker = null;
 let pollInFlight = false;
 let channelEpoch = 0;
 let channelSwitchInProgress = false;
+// 2026-05-28: hoisted from later in the file -- pollers below this point now
+// reference channelsCache.active to attach ?channel=X to API calls, so we need
+// the binding live BEFORE the first poll() call near script end.
+let channelsCache = { active: 'main', items: [] };
+// Per-channel message cache for instant switching. Each entry:
+// { msgs: [array of message objects], lastSeq: max seq we've seen for this channel,
+//   loadedFull: did we ever do since=0 for this channel? }.
+// When user switches to a cached channel, render from cache instantly, then
+// background-fetch a diff (since=cachedLastSeq) instead of full reload.
+const channelMessageCache = Object.create(null);
+let channelSwitchAbort = null;  // AbortController for in-flight switch fetch
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
@@ -3073,9 +3084,18 @@ let _backlogArchivedCount = 0;
 async function pollBacklog(){
   if(backlogInFlight) return;
   backlogInFlight = true;
+  // 2026-05-28: epoch-guard + explicit ?channel — backlog is per-channel and
+  // pollBacklog had no guard before, so a stale fetch could land after a
+  // channel switch and overwrite UI with the wrong channel's backlog.
+  const myEpoch = channelEpoch;
+  const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
   try{
-    const url = _backlogShowArchived ? '/api/backlog?include=archived' : '/api/backlog';
+    const parts = [];
+    if(_backlogShowArchived) parts.push('include=archived');
+    if(ch) parts.push('channel=' + encodeURIComponent(ch));
+    const url = '/api/backlog' + (parts.length ? ('?' + parts.join('&')) : '');
     const data = await fetchJson(url);
+    if(myEpoch !== channelEpoch) return;
     _backlogItems = Array.isArray(data.items) ? data.items : [];
     _backlogArchivedCount = (typeof data.archived_count === 'number') ? data.archived_count : 0;
     // Update archive button badge
@@ -3085,6 +3105,7 @@ async function pollBacklog(){
     if(tglEl) tglEl.classList.toggle('active', _backlogShowArchived);
     renderBacklog(_backlogItems, _backlogFilter);
   }catch(e){
+    if(myEpoch !== channelEpoch) return;
     if(backlogList) backlogList.innerHTML = '<div class="backlog-empty">Backlog недоступен: ' + esc(e.message || e) + '</div>';
   }finally{
     backlogInFlight = false;
@@ -3358,8 +3379,12 @@ async function pollPlan(){
   if(planInFlight) return;
   planInFlight = true;
   const myEpoch = channelEpoch;
+  // 2026-05-28: pass explicit channel so we never show another channel's plan
+  // by accident during a switch.
+  const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
+  const url = ch ? ('/api/plan?channel=' + encodeURIComponent(ch)) : '/api/plan';
   try{
-    const data = await fetchJson('/api/plan');
+    const data = await fetchJson(url);
     if(myEpoch !== channelEpoch) return;
     renderPlan(data);
   }catch(e){
@@ -4209,16 +4234,29 @@ async function poll(){
   if(pollInFlight || channelSwitchInProgress) return;
   pollInFlight = true;
   const myEpoch = channelEpoch;
+  // 2026-05-28: pass explicit channel to /api/messages so we never get bitten by
+  // a server-global active_channel flip mid-flight.
+  const myChannel = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
   let staleEpoch = false;
   try{
     const beforeBottom = isNearBottom();
-    const data = await fetchJson('/api/messages?since=' + lastSeq);
+    const chQs = myChannel ? ('&channel=' + encodeURIComponent(myChannel)) : '';
+    const data = await fetchJson('/api/messages?since=' + lastSeq + chQs);
     if(myEpoch !== channelEpoch || channelSwitchInProgress){
       staleEpoch = true;
       return;
     }
     noteConnectionOk();
     renderMessageBatch(data, {beforeBottom});
+    // Update cache for the channel we polled (if it still matches current).
+    if(myChannel && Array.isArray(data) && data.length){
+      const slot = channelMessageCache[myChannel] || (channelMessageCache[myChannel] = {msgs:[], lastSeq:0, loadedFull:false});
+      for(const m of data){
+        slot.msgs.push(m);
+        const sq = Number(m && m.seq);
+        if(Number.isFinite(sq) && sq > slot.lastSeq) slot.lastSeq = sq;
+      }
+    }
   }catch(e){
     if(myEpoch !== channelEpoch || channelSwitchInProgress) return;
     showConnectionProblem('messages', e);
@@ -5447,7 +5485,10 @@ const channelMenu     = document.getElementById('channelMenu');
 const channelNameEl   = document.getElementById('channelName');
 const channelListEl   = document.getElementById('channelList');
 const channelNewBtn   = document.getElementById('channelNewBtn');
-let channelsCache = { active: 'main', items: [] };
+// 2026-05-28: `channelsCache` declaration moved up next to channelEpoch -- it's
+// referenced by poll()/pollPlan()/pollBacklog() above this section and a `let`
+// declared here would put it in TDZ at first-poll time. (Kept this comment as a
+// breadcrumb so the next refactor doesn't try to re-declare here.)
 
 async function pollChannels(){
   const myEpoch = channelEpoch;
@@ -5539,41 +5580,120 @@ function closeChannelMenu(){
   if(channelMenu) channelMenu.setAttribute('aria-hidden', 'true');
   if(channelBtn) channelBtn.setAttribute('aria-expanded', 'false');
 }
-async function reloadMessagesForChannel(expectedEpoch){
-  const data = await fetchJson('/api/messages?since=0');
-  if(expectedEpoch !== channelEpoch) return false;
-
+async function reloadMessagesForChannel(expectedEpoch, slug, opts){
+  // 2026-05-28: cache-aware reload. If we've seen this channel before, render
+  // from cache instantly + diff-fetch since cachedLastSeq. Otherwise full
+  // fetch (since=0). Either way, we now pass explicit channel param so server
+  // returns the right channel even if active_channel marker is mid-flight.
+  opts = opts || {};
+  const targetSlug = String(slug || (channelsCache && channelsCache.active) || '');
+  const cached = targetSlug ? channelMessageCache[targetSlug] : null;
+  let initialMsgs = [];
+  let sinceSeq = 0;
+  if(cached && cached.loadedFull && cached.msgs.length){
+    initialMsgs = cached.msgs.slice();
+    sinceSeq = cached.lastSeq;
+  }
+  // Render the cache first (if any) — instant feedback, no blank screen.
   [...log.querySelectorAll('.msg,.day-sep,.unread-marker')].forEach(n => n.remove());
   clearUnreadMarker();
   lastSeq = 0;
   lastRenderedDay = '';
   firstLoad = true;
   unseenCount = 0;
-  renderMessageBatch(data, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
+  if(initialMsgs.length){
+    renderMessageBatch(initialMsgs, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
+  }
+  // Background fetch. AbortController lets a subsequent switchChannel cancel us.
+  const ctrl = opts.signal || null;
+  const chQs = targetSlug ? ('&channel=' + encodeURIComponent(targetSlug)) : '';
+  let data;
+  try{
+    data = await fetchJson('/api/messages?since=' + sinceSeq + chQs, ctrl ? {signal: ctrl} : undefined);
+  } catch(e){
+    if(e && e.name === 'AbortError') return false;
+    throw e;
+  }
+  if(expectedEpoch !== channelEpoch) return false;
+
+  if(Array.isArray(data) && data.length){
+    renderMessageBatch(data, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
+    // Update cache.
+    if(targetSlug){
+      const slot = channelMessageCache[targetSlug] || (channelMessageCache[targetSlug] = {msgs:[], lastSeq:0, loadedFull:false});
+      // If we started from since=0, this is a full snapshot — replace cache.
+      if(sinceSeq === 0){
+        slot.msgs = data.slice();
+      } else {
+        for(const m of data){ slot.msgs.push(m); }
+      }
+      for(const m of data){
+        const sq = Number(m && m.seq);
+        if(Number.isFinite(sq) && sq > slot.lastSeq) slot.lastSeq = sq;
+      }
+      slot.loadedFull = true;
+    }
+  } else if(!initialMsgs.length){
+    // No cache and no data — still mark first-load complete so spinner clears.
+    renderMessageBatch([], {beforeBottom:true, finishFirstLoadWhenEmpty:true});
+  } else if(targetSlug){
+    // Empty diff — cache stays as-is, just mark loadedFull.
+    const slot = channelMessageCache[targetSlug];
+    if(slot) slot.loadedFull = true;
+  }
   return true;
 }
 async function switchChannel(slug){
-  if(channelSwitchInProgress) return;
+  // 2026-05-28: abortable switch. If a previous switch is still in flight,
+  // abort its fetch and supersede it. The old switchChannel's `finally` only
+  // clears global flags if `channelSwitchAbort === ctrl`, so the newer switch's
+  // state survives. Each step inside try also re-checks `ctrl===channelSwitchAbort`
+  // before rendering, so a superseded switch never paints stale data.
+  if(channelSwitchAbort){
+    try{ channelSwitchAbort.abort(); }catch(_e){}
+  }
   channelSwitchInProgress = true;
-  log.classList.add('channel-switching');
+  // Spinner instead of full blackout -- cache renders instantly so we usually
+  // don't need to hide #log at all. Only hide if this channel has zero cache
+  // (first time we're switching to it).
+  const hasCache = !!(channelMessageCache[slug] && channelMessageCache[slug].loadedFull);
+  if(!hasCache) log.classList.add('channel-switching');
+  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  channelSwitchAbort = ctrl;
+  const isCurrent = () => (channelSwitchAbort === ctrl);
   try{
     const r = await fetchJson('/api/channels/active', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})});
+    if(!isCurrent()) return;  // superseded
     if(r && r.ok){
       closeChannelMenu();
       channelEpoch++;
       channelsCache.active = slug;
-      await reloadMessagesForChannel(channelEpoch);
+      await reloadMessagesForChannel(channelEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
+      if(!isCurrent()) return;
       renderChannels();
-      status(); pollPlan(); pollMetrics();
+      // 2026-05-28: refresh ALL per-channel pollers on switch (pollBacklog was
+      // missing — left UI showing stale backlog from previous channel).
+      status(); pollPlan(); pollMetrics(); pollBacklog();
       // Wait two frames so layout and paint commit before #log becomes visible again.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     } else {
       alert('Не получилось переключиться: ' + (r && r.error ? r.error : 'unknown'));
     }
-  }catch(e){ alert('Ошибка переключения канала: ' + e.message); }
+  }catch(e){
+    if(e && e.name === 'AbortError'){
+      // Superseded by another switch -- silent.
+    } else if(isCurrent()){
+      alert('Ошибка переключения канала: ' + e.message);
+    }
+  }
   finally{
-    channelSwitchInProgress = false;
-    log.classList.remove('channel-switching');
+    // Only clear global flags if no newer switch has taken over. Otherwise
+    // we'd accidentally un-hide `#log` mid-switch and reset progress state.
+    if(channelSwitchAbort === ctrl){
+      channelSwitchAbort = null;
+      channelSwitchInProgress = false;
+      log.classList.remove('channel-switching');
+    }
   }
 }
 async function archiveChannel(slug){
