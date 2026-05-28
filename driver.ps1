@@ -13,6 +13,7 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\auditor.ps1')
 . (Join-Path $PSScriptRoot 'lib\canary.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
+. (Join-Path $PSScriptRoot 'lib\postmortem.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
@@ -2712,6 +2713,15 @@ while ($true) {
           $subj = if ($parts.Count -ge 2) { [string]$parts[1] } else { '' }
           $shortSha = if ($sha.Length -gt 7) { $sha.Substring(0, 7) } else { $sha }
           Add-TaskCheckpoint -Kind commit -Text (($shortSha + ' ' + $subj).Trim())
+          try {
+            $pmState = Read-State
+            if ($pmState -and ($pmState.PSObject.Properties.Name -contains 'task_last_failure') -and $null -ne $pmState.task_last_failure) {
+              $pmPath = Invoke-PostMortem -CommitSha $sha -State $pmState -RepoRoot $bridgeRoot
+              if ($pmPath) { Add-Message -From system -Text ("📋 Post-mortem создан: " + $pmPath) -Kind event | Out-Null }
+            }
+          } catch {
+            try { Add-Message -From system -Text ("⚠ Post-mortem не создан: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+          }
         }
       }
     } catch {}

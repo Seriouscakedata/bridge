@@ -626,7 +626,7 @@ function Add-SessionDecisionEvent {
     [string]$Channel = ''
   )
   try {
-    if (@('task_start','convergence','verified_commit','doctor_fix') -notcontains $EventType) { return }
+    if (@('task_start','convergence','verified_commit','doctor_fix','post_mortem') -notcontains $EventType) { return }
     $ch = $Channel
     if ([string]::IsNullOrWhiteSpace($ch)) {
       $s = Read-State -ErrorAction SilentlyContinue
