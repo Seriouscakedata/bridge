@@ -6,6 +6,22 @@ function Get-BridgeRootFeat {
     Split-Path -Parent $PSScriptRoot
 }
 
+function Test-SafeFeaturePath {
+    param(
+        [string]$Root,
+        [string]$RelPath
+    )
+    if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelPath)) { return $null }
+    if ([System.IO.Path]::IsPathRooted($RelPath)) { return $null }
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $rootWithSep = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $Root $RelPath))
+    if (-not $candidate.StartsWith($rootWithSep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    return $candidate
+}
+
 function Get-RegistryPath {
     Join-Path (Get-BridgeRootFeat) 'features\registry.json'
 }
@@ -148,10 +164,10 @@ function Update-FeatureActivations {
         $kind = [string]$sig.kind
         $matched = $false
         if ($kind -eq 'log-pattern') {
-            $logPath = Join-Path $root ([string]$sig.path)
-            if (Test-Path $logPath) {
+            $logPath = Test-SafeFeaturePath -Root $root -RelPath ([string]$sig.path)
+            if ($logPath -and (Test-Path -LiteralPath $logPath)) {
                 try {
-                    $tail = Get-Content $logPath -Tail 50 -Encoding UTF8
+                    $tail = Get-Content -LiteralPath $logPath -Tail 50 -Encoding UTF8
                     $rx = [string]$sig.regex
                     foreach ($line in $tail) {
                         if ($line -match $rx) { $matched = $true; break }
