@@ -98,8 +98,8 @@ function Invoke-GeminiApi {
     # standing bug where it decodes response bytes as ISO-8859-1 even when the
     # Content-Type explicitly says charset=utf-8 — that corrupts every Cyrillic
     # character into cp866-looking mojibake (we saw `���祢��` instead of
-    # `ключевая` in every gemini-2.5-pro audit fallback finding). Same workaround
-    # is already used in Invoke-DeepSeekChat (lib/llm.ps1).
+    # `ключевая` in every Gemini audit-fallback finding). Same workaround is
+    # already used in Invoke-DeepSeekChat (lib/llm.ps1).
     $resp = Invoke-WebRequest -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec -UseBasicParsing
     $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     return ($txt | ConvertFrom-Json)

@@ -361,10 +361,17 @@ function Start-ClaudeFunctionalAsync {
 function Invoke-DeepGeminiClaudeFallback {
   # 2026-05-28: shared helper. claude.exe -p has TWO failure modes on large
   # stdin: hang-then-timeout, and return-empty-fast. Both should fall back to
-  # gemini-2.5-pro instead of silently emitting zero findings. Previously
-  # fallback only triggered on empty-reply; timeouts dropped on the floor.
+  # a cheaper Gemini model instead of silently emitting zero findings.
+  #
+  # Model policy (set by user 2026-05-28): NEVER use gemini-2.5-pro anywhere
+  # — too expensive. gemini-3-flash is allowed but only as a last-resort
+  # reserve since it's also pricier than flash-lite. So this fallback fires
+  # only when claude.exe genuinely failed and there is no other path; the
+  # primary find-by-Codex pass still runs and most useful findings come
+  # from there.
   param([string]$BridgeRoot, [string]$PromptText, [string]$FailMode)
-  Write-Host "[deep-audit] claude: $FailMode -> falling back to Invoke-LLM gemini-2.5-pro"
+  $fallbackModel = 'gemini-3-flash'
+  Write-Host "[deep-audit] claude: $FailMode -> falling back to Invoke-LLM $fallbackModel (reserve only)"
   $commonLib = Join-Path $BridgeRoot 'lib\common.ps1'
   if (-not (Test-Path -LiteralPath $commonLib)) {
     return @{ skipped = $false; error = ("claude_${FailMode}_no_common_lib"); findings = @() }
@@ -374,7 +381,7 @@ function Invoke-DeepGeminiClaudeFallback {
     if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
       return @{ skipped = $false; error = ("claude_${FailMode}_no_invoke_llm"); findings = @() }
     }
-    $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-2.5-pro' -Prompt $PromptText -TimeoutSec 120 -Temperature 0.2
+    $fbReply = Invoke-LLM -Purpose 'audit-functional' -Model $fallbackModel -Prompt $PromptText -TimeoutSec 120 -Temperature 0.2
     if ([string]::IsNullOrWhiteSpace($fbReply)) {
       return @{ skipped = $false; error = ("claude_${FailMode}_fallback_empty"); findings = @() }
     }
@@ -384,8 +391,8 @@ function Invoke-DeepGeminiClaudeFallback {
       if ($fbParsed -is [Array]) { $fbFindings = @($fbParsed) }
       elseif ($fbParsed.findings) { $fbFindings = @($fbParsed.findings) }
     }
-    Write-Host "[deep-audit] claude->gemini-pro fallback ($FailMode): returned $($fbFindings.Count) findings"
-    return @{ skipped = $false; findings = $fbFindings; tokens = $fbReply.Length; source = 'gemini-2.5-pro-fallback' }
+    Write-Host "[deep-audit] claude->$fallbackModel fallback ($FailMode): returned $($fbFindings.Count) findings"
+    return @{ skipped = $false; findings = $fbFindings; tokens = $fbReply.Length; source = ($fallbackModel + '-fallback') }
   } catch {
     Write-Host "[deep-audit] claude fallback failed: $($_.Exception.Message)"
     return @{ skipped = $false; error = ("claude_${FailMode}_fallback_exception"); findings = @() }
@@ -406,7 +413,7 @@ function Complete-ClaudeFunctionalAsync {
     Remove-Item $State.inF,$State.outF,$State.errF -ErrorAction SilentlyContinue
     # 2026-05-28: known issue — claude.exe -p hangs on large stdin (~67K context)
     # on this machine. Instead of silently losing the functional pass, fall back
-    # to gemini-2.5-pro with the same prompt.
+    # to a cheaper Gemini reserve model (gemini-3-flash) with the same prompt.
     return (Invoke-DeepGeminiClaudeFallback -BridgeRoot $State.bridgeRoot -PromptText $State.promptText -FailMode 'timeout')
   }
 
