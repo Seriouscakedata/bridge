@@ -56,3 +56,5 @@
 {"ts":"2026-05-28T16:52:09.0234517+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] path-traversal (lib/features.ps1:151) -- activation_signal.path �� registr"}
 {"ts":"2026-05-28T17:00:16.2080478+03:00","event":"verified_commit","channel":"main","what":"Test-SafeFeaturePath | traversal `..\\..\\secrets.json` → null, absolute path → null, slash-rooted `/e"}
 {"ts":"2026-05-28T17:15:45.1636439+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/undocumented] audit-self-diag: Git log ᮤ�ন� ������� (`90712c9`, `2115208`) � ����७�"}
+{"ts":"2026-05-28T17:20:33.4794425+03:00","event":"verified_commit","channel":"main","what":"features/registry.json строка 144 — description содержит \"Codex\", \"Claude\", \"параллельно\", \"tools/de"}
+{"ts":"2026-05-28T17:36:05.4487074+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] canary: ��� \u0027����३��\u0027 (canary), �।�����祭��� ��� ��ਮ���᪨� smoke-�஢�ப, �� ��"}
