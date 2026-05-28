@@ -3581,8 +3581,18 @@ while ($true) {
 
               $calledInDiff = @()
               try {
-                $calledInDiff = @([regex]::Matches($diff, '(?<![#\s])(?:Invoke-|Get-|Set-|Add-|Remove-|Test-|New-|Write-|Read-|Send-|Update-|Save-|Load-|Build-|Find-|Format-|Start-|Stop-)[A-Za-z][\w-]*') |
-                  ForEach-Object { $_.Value } | Sort-Object -Unique)
+                $cmdNamePattern = '(?:Invoke-|Get-|Set-|Add-|Remove-|Test-|New-|Write-|Read-|Send-|Update-|Save-|Load-|Build-|Find-|Format-|Start-|Stop-)[A-Za-z][\w-]*'
+                $calledSet = New-Object 'System.Collections.Generic.HashSet[string]'
+                foreach ($dln in ($diff -split "`r?`n")) {
+                  if ($dln -notmatch '^[\+\- ]') { continue }
+                  if ($dln -match '^(?:\+\+\+|---)') { continue }
+                  $codeLine = if ($dln.Length -gt 0) { $dln.Substring(1) } else { '' }
+                  if ($codeLine -match '^\s*#') { continue }
+                  foreach ($m in [regex]::Matches($codeLine, "(?<![\w-])$cmdNamePattern(?![\w-])")) {
+                    [void]$calledSet.Add($m.Value)
+                  }
+                }
+                $calledInDiff = @($calledSet | Sort-Object)
               } catch { $calledInDiff = @() }
 
               $crossRefs = New-Object 'System.Collections.Generic.List[string]'
