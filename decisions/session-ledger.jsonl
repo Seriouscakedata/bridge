@@ -58,3 +58,6 @@
 {"ts":"2026-05-28T17:15:45.1636439+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/undocumented] audit-self-diag: Git log ᮤ�ন� ������� (`90712c9`, `2115208`) � ����७�"}
 {"ts":"2026-05-28T17:20:33.4794425+03:00","event":"verified_commit","channel":"main","what":"features/registry.json строка 144 — description содержит \"Codex\", \"Claude\", \"параллельно\", \"tools/de"}
 {"ts":"2026-05-28T17:36:05.4487074+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] canary: ��� \u0027����३��\u0027 (canary), �।�����祭��� ��� ��ਮ���᪨� smoke-�஢�ப, �� ��"}
+{"ts":"2026-05-28T17:51:23.4782087+03:00","event":"verified_commit","channel":"main","what":"canary registry fix f3b8c1a | owner_function=Invoke-CanaryCycle, path=control/canary-runs.jsonl суще"}
+{"ts":"2026-05-28T19:19:51.5477013+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/undocumented] architect-agent: Git log (75cbc5f) indicates a new \u0027Architect agent ("}
+{"ts":"2026-05-28T19:26:50.6371693+03:00","event":"verified_commit","channel":"main","what":"features/registry.json содержит запись id=architect с human_review=True, owner_function=Start-Archit"}
