@@ -1003,6 +1003,39 @@ try {
         $m = Get-MetricsForApi
         Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/audit/latest') {
+        $auditDir = Join-Path $root 'audit'
+        if (-not (Test-Path -LiteralPath $auditDir -PathType Container)) {
+          Send-Text $ctx '{"error":"no audit available"}' 'application/json; charset=utf-8' 404
+        } else {
+          $auditFiles = @(Get-ChildItem -LiteralPath $auditDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+          if ($auditFiles.Count -eq 0) {
+            Send-Text $ctx '{"error":"no audit available"}' 'application/json; charset=utf-8' 404
+          } else {
+            try {
+              $auditRaw = [System.IO.File]::ReadAllText($auditFiles[0].FullName, [System.Text.Encoding]::UTF8)
+              $auditObj = $auditRaw | ConvertFrom-Json
+              Send-Text $ctx ($auditObj | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
+            } catch {
+              $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+              Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
+            }
+          }
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/audit/list') {
+        $auditDir = Join-Path $root 'audit'
+        $dates = New-Object 'System.Collections.Generic.List[string]'
+        if (Test-Path -LiteralPath $auditDir -PathType Container) {
+          $auditFiles = @(Get-ChildItem -LiteralPath $auditDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+          foreach ($f in $auditFiles) {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+            [void]$dates.Add($stem)
+          }
+        }
+        $datesJson = '[' + (($dates.ToArray() | ForEach-Object { (("" + $_) | ConvertTo-Json -Compress) }) -join ',') + ']'
+        Send-Text $ctx ('{"audits":' + $datesJson + '}') 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/memory/count') {
         $total = @(Get-AllMemories).Count
         Send-Text $ctx ('{"ok":true,"total":' + $total + '}') 'application/json; charset=utf-8'
