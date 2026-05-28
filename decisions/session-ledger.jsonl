@@ -35,3 +35,5 @@
 {"ts":"2026-05-28T07:07:42.3985990+03:00","event":"verified_commit","channel":"main","what":"headContext в driver.ps1 L3549-3629 генерирует список .ps1 файлов репо + функции + cross-refs и пере"}
 {"ts":"2026-05-28T08:56:02.7285614+03:00","event":"verified_commit","channel":"main","what":"audit feature verification completed; see conversation evidence for command output"}
 {"ts":"2026-05-28T08:58:20.6924917+03:00","event":"verified_commit","channel":"main","what":"audit API and UI badge verification completed; see conversation evidence for command output"}
+{"ts":"2026-05-28T09:24:04.6100454+03:00","event":"verified_commit","channel":"main","what":"parse+BOM, audit-runner skip/cleanup, audit busy gate, security scan, clean git status | OK"}
+{"ts":"2026-05-28T09:26:23.0984506+03:00","event":"verified_commit","channel":"main","what":"audit files (audit-security.ps1, audit-functional.ps1, audit.ps1, audit-runner.ps1) существуют; conf"}
