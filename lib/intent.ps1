@@ -16,12 +16,11 @@
 # routed to normal mode; we'd add "обсуди" -> later "обсудим", "потолкуем",
 # "перетрём", endless). LLM understands intent in one pass.
 
-# 2026-05-28: defaulted to deepseek-v4-flash because the gemini API key returns
-# 403 PERMISSION_DENIED on gemini-2.5-flash-lite (account-level deny) and 429
-# on other gemini-flash variants (quota). Deepseek-v4-flash is the cheapest
-# working option and already configured in llm.ps1. Operator can switch via
-# config.json llm.intent.
-$script:IntentDefaultModel = 'deepseek-v4-flash'
+# 2026-05-28: original gemini-2.5-flash-lite design; was deepseek-v4-flash for
+# a few hours during the Google billing restriction (operator's account was
+# suspended for past-due payment, reinstated same day). Verified back-to-200
+# on the 2.5-line, reverted. Operator can override via config.json llm.intent.
+$script:IntentDefaultModel = 'gemini-2.5-flash-lite'
 
 function Get-IntentModel {
   # Lets operator override via config.json -> llm.intent. Default flash-lite.
