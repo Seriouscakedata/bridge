@@ -1676,3 +1676,6 @@ try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
 # Study-mode detection (single source of truth; bounded command-verb gate).
 try { . (Join-Path $PSScriptRoot 'study.ps1') } catch { Write-Warning "study.ps1 failed to load: $($_.Exception.Message)" }
+# LLM intent classifier — replaces hardcoded [[DEEP-THINK]] regex with semantic
+# task understanding (gemini-flash-lite, cheap). Must load AFTER llm.ps1.
+try { . (Join-Path $PSScriptRoot 'intent.ps1') } catch { Write-Warning "intent.ps1 failed to load: $($_.Exception.Message)" }

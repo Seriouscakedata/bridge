@@ -1132,6 +1132,18 @@ function Format-Transcript {
   # markers, surface recent fix commits + force planner to consider other layers.
   $recurrenceSect = ''
   try { $recurrenceSect = Get-RecurrenceContext -TaskText $TaskText } catch { $recurrenceSect = '' }
+  # 2026-05-28: LLM-classified intent breakdown for the current task. Persisted in
+  # state.task_intent at task acceptance; surfaced here so the planner sees the
+  # structured decomposition on every turn, not just turn 1. This is what makes
+  # "обсуди и сделай" actually trigger discuss-mode + show the subtask list.
+  $intentSect = ''
+  try {
+    if (Get-Command Format-IntentForPrompt -ErrorAction SilentlyContinue) {
+      $stIntent = $null
+      try { $stIntent = (Read-State).task_intent } catch {}
+      if ($stIntent) { $intentSect = Format-IntentForPrompt -Intent $stIntent }
+    }
+  } catch { $intentSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
@@ -1139,10 +1151,11 @@ function Format-Transcript {
   $antiSkillAppend = if ($antiSkillSect) { "`n`n$antiSkillSect" } else { '' }
   $codeAppend = if ($codeSect) { "`n`n$codeSect" } else { '' }
   $recurrenceAppend = if ($recurrenceSect) { "`n`n$recurrenceSect" } else { '' }
+  $intentAppend = if ($intentSect) { "`n`n$intentSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend)
   }
-  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend
+  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend
 }
 
 function Get-ActiveProjectBinding {
@@ -2619,17 +2632,62 @@ while ($true) {
       $fastLaneReason = ''
       if ($fastMark -and -not $reasoningHighMark) { $fastLaneReason = 'marker' }
       elseif ($autoFastLane) { $fastLaneReason = 'auto' }
+
+      # 2026-05-28: LLM intent classifier. Replaces hardcoded [[DEEP-THINK]] regex
+      # with semantic understanding of the user's task. Explicit markers
+      # ([[FAST]], [[NORMAL]], [[DEEP-THINK]]) always win; the LLM call only
+      # fires when no marker forces a mode. Confidence threshold 0.7 prevents
+      # acting on uncertain classifications (falls through to legacy detection).
+      # Decomposed subtasks are surfaced to the planner via Format-IntentForPrompt
+      # in Build-PromptHistory so the planner sees the structured breakdown,
+      # not just a single mode tag.
+      $taskIntent = $null
+      if (-not $fastLaneReason -and -not $normalOverride -and -not $deepThinkMark -and (Get-Command Test-TaskIntent -ErrorAction SilentlyContinue)) {
+        try { $taskIntent = Test-TaskIntent -TaskText $taskMsg -TimeoutSec 25 } catch { $taskIntent = $null }
+      }
+      $intentMode = ''
+      if ($taskIntent -and [double]$taskIntent.confidence -ge 0.7) {
+        $intentMode = [string]$taskIntent.primary_mode
+      }
+      # Convert intent into legacy mode flags so the existing switch below stays simple.
+      $intentForcedFastLane = ($intentMode -eq 'fast')
+      $intentForcedDiscuss  = ($intentMode -eq 'discuss')
+      $intentForcedStudy    = ($intentMode -eq 'study')
+
       $taskProjectRoot = Get-ActiveProjectRoot
       if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
       $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+      # Snapshot intent for the closure (Update-State runs in a separate scope).
+      $intentRecord = $null
+      if ($taskIntent) {
+        $intentRecord = [pscustomobject]@{
+          mode = [string]$taskIntent.primary_mode
+          confidence = [double]$taskIntent.confidence
+          reasoning = [string]$taskIntent.reasoning
+          user_wants_dialogue = [bool]$taskIntent.user_wants_dialogue
+          complexity = [string]$taskIntent.complexity
+          estimated_turns = [int]$taskIntent.estimated_turns
+          subtasks = @($taskIntent.subtasks)
+          model = [string]$taskIntent.model
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+        }
+      }
+      $intentForcedFastLaneClosure = $intentForcedFastLane
+      $intentForcedDiscussClosure  = $intentForcedDiscuss
+      $intentForcedStudyClosure    = $intentForcedStudy
+
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
         Start-ReplayForStateTask -State $s -TaskText $taskMsg -ChannelName $Channel
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         Clear-FastLaneFlags $s
+        # Precedence: explicit markers > LLM intent (high conf) > legacy detection.
         if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
         elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($intentForcedFastLaneClosure) { Set-FastLaneFlags -State $s -Reason 'llm-intent'; $s.task_mode='normal' }
+        elseif ($intentForcedDiscussClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($intentForcedStudyClosure) { $s.task_mode='study'; $s.study_subtype='external'; $s.study_phase='plan' }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
@@ -2638,6 +2696,8 @@ while ($true) {
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
+        # Persist intent so planner can render it via Format-IntentForPrompt on later turns too.
+        $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $intentRecord -Force
         Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
@@ -2647,7 +2707,19 @@ while ($true) {
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
       if ($normalOverride -and -not $fastLaneReason) { Add-Message -From system -Text "📐 [[NORMAL]] override -- task_mode=normal forced (auto-detect bypassed)." -Kind event | Out-Null }
       if ($deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
-      if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
+      if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentForcedDiscuss -and -not $intentForcedStudy -and -not $intentForcedFastLane) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
+      # 2026-05-28: announce LLM-classifier verdict so user sees what mode was inferred and why.
+      if ($taskIntent -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
+        $confPct = [int]([double]$taskIntent.confidence * 100)
+        $verdictText = "🧠 LLM-классификатор намерения ($([string]$taskIntent.model)): mode=" + [string]$taskIntent.primary_mode + ", confidence=$confPct%"
+        if (-not [string]::IsNullOrWhiteSpace([string]$taskIntent.reasoning)) { $verdictText += "`n   причина: " + [string]$taskIntent.reasoning }
+        if ([bool]$taskIntent.user_wants_dialogue) { $verdictText += "`n   ⚠ пользователь явно хочет диалог" }
+        if ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
+        elseif ($intentForcedStudy) { $verdictText += "`n   → режим: study" }
+        elseif ($intentForcedFastLane) { $verdictText += "`n   → режим: fast-lane (skip planner)" }
+        elseif ([double]$taskIntent.confidence -lt 0.7) { $verdictText += "`n   (confidence < 70% → не применён, режим normal)" }
+        Add-Message -From system -Text $verdictText -Kind event | Out-Null
+      }
       $state = Read-State
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.

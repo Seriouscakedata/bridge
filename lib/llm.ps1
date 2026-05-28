@@ -16,6 +16,12 @@ function Get-LLMConfig {
     deep      = 'deepseek-v4-pro'
     critic    = 'deepseek-v4-pro'
     criticHeavy = 'deepseek-v4-pro'
+    # 2026-05-28: task-intent classifier. Replaces [[DEEP-THINK]] regex with
+    # cheap LLM understanding of user's natural-language intent. Fires once
+    # per new task. Defaulted to deepseek-v4-flash because the operator's
+    # gemini key currently returns 403/429 (account-level deny + quota).
+    # Override via config.json llm.intent if a working gemini key returns.
+    intent    = 'deepseek-v4-flash'
     fallback  = 'gemini-2.5-flash'
   }
   $m = $null
