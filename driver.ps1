@@ -724,6 +724,66 @@ function Start-LibrarianIfDue {
   } catch {}
 }
 
+function Start-AuditIfDue {
+  # Run the daily bridge audit detached during the configured night window:
+  #   - audit.enabled in config.json gates the whole thing.
+  #   - current local hour must be inside [windowStartHour..windowEndHour] (wraps midnight if start > end).
+  #   - audit/audit.last marker must be older than floorHours (default 20h) so we run ~once/day.
+  # The detached Start-Job dot-sources tools/audit.ps1, waits for state.json to go idle
+  # for up to maxWaitMinutes (default 60), then calls Invoke-BridgeAudit. We touch the
+  # marker NOW so we don't relaunch every idle tick while the job sits in the wait loop.
+  $auditCfg = $null
+  try {
+    $cfgA = Get-BridgeConfig
+    if ($cfgA -and ($cfgA.PSObject.Properties.Name -contains 'audit') -and $cfgA.audit) { $auditCfg = $cfgA.audit }
+  } catch { return }
+  if (-not $auditCfg) { return }
+  $enabled = if ($null -ne $auditCfg.enabled) { [bool]$auditCfg.enabled } else { $true }
+  if (-not $enabled) { return }
+  $startH  = if ($null -ne $auditCfg.windowStartHour) { [int]$auditCfg.windowStartHour } else { 1 }
+  $endH    = if ($null -ne $auditCfg.windowEndHour)   { [int]$auditCfg.windowEndHour }   else { 6 }
+  $floorH  = if ($null -ne $auditCfg.floorHours)      { [int]$auditCfg.floorHours }      else { 20 }
+  $maxWait = if ($null -ne $auditCfg.maxWaitMinutes)  { [int]$auditCfg.maxWaitMinutes }  else { 60 }
+  $hourNow = (Get-Date).Hour
+  $inWindow = $false
+  if ($startH -le $endH) {
+    if ($hourNow -ge $startH -and $hourNow -le $endH) { $inWindow = $true }
+  } else {
+    # window wraps midnight (e.g. 22..5)
+    if ($hourNow -ge $startH -or $hourNow -le $endH) { $inWindow = $true }
+  }
+  if (-not $inWindow) { return }
+  $auditDir = Join-Path $bridgeRoot 'audit'
+  $marker   = Join-Path $auditDir 'audit.last'
+  if (Test-Path -LiteralPath $marker) {
+    try {
+      $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
+      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($floorH)) { return }
+    } catch {}
+  }
+  $auditScript = Join-Path $bridgeRoot 'tools\audit.ps1'
+  if (-not (Test-Path -LiteralPath $auditScript)) { return }
+  # Touch the marker NOW so we don't relaunch every idle tick while the job waits for idle.
+  try {
+    if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
+    [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  $stateFile = $null
+  try { $stateFile = Get-StatePath } catch {}
+  if ([string]::IsNullOrWhiteSpace($stateFile)) { $stateFile = Join-Path $bridgeRoot 'channels\main\state.json' }
+  try {
+    Start-Job -Name 'bridge-audit' -ScriptBlock {
+      param($AuditScript, $BridgePath, $StateFile, $MaxWait)
+      try {
+        . $AuditScript
+        $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWait
+        if ($idle) { Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null }
+      } catch {}
+    } -ArgumentList $auditScript, $bridgeRoot, $stateFile, $maxWait | Out-Null
+    Add-Message -From system -Text ("🔍 Запущен аудит моста (фоновое задание, ожидание idle до {0} мин)." -f $maxWait) -Kind event | Out-Null
+  } catch {}
+}
+
 function Start-ReflectIfDue {
   # Launch idle self-reflection at most once per autonomy.reflectEveryHours, detached.
   $marker = Join-Path $bridgeRoot 'reflect.last'
@@ -2685,6 +2745,7 @@ while ($true) {
       } else {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
         try { Start-LibrarianIfDue } catch {}
+        try { Start-AuditIfDue } catch {}
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}
