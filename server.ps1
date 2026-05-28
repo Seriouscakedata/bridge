@@ -1,5 +1,6 @@
 ﻿# server.ps1 -- local web UI for the bridge (HttpListener, no admin needed).
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\features.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 . (Join-Path $PSScriptRoot 'lib\radar.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
@@ -1286,6 +1287,77 @@ try {
           } else {
             Send-Text $ctx '{"ok":false,"error":"cannot archive (main/active/missing)"}' 'application/json; charset=utf-8' 400
           }
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/features') {
+        try {
+          $features = Get-AllFeatures
+          $arr = $features | ConvertTo-Json -Depth 8 -Compress
+          if (-not $arr.StartsWith('[')) { $arr = "[$arr]" }
+          Send-Text $ctx ('{"ok":true,"features":' + $arr + '}') 'application/json; charset=utf-8'
+        } catch {
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -match '^/api/features/([a-z0-9_-]+)$') {
+        $fid = [string]$Matches[1]
+        try {
+          $f = Get-Feature -Id $fid
+          if (-not $f) {
+            Send-Text $ctx '{"ok":false,"error":"not found"}' 'application/json; charset=utf-8' 404
+          } else {
+            Send-Text $ctx ($f | ConvertTo-Json -Depth 8 -Compress) 'application/json; charset=utf-8'
+          }
+        } catch {
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -eq '/api/features') {
+        try {
+          $body = $null
+          try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+          if (-not $body -or [string]::IsNullOrWhiteSpace([string]$body.id)) {
+            Send-Text $ctx '{"ok":false,"error":"id required"}' 'application/json; charset=utf-8' 400
+          } else {
+            $sig = $null
+            if ($body.activation_signal) { $sig = @{ kind = [string]$body.activation_signal.kind; path = [string]$body.activation_signal.path; regex = [string]$body.activation_signal.regex } }
+            $deps = if ($body.dependencies) { @($body.dependencies | ForEach-Object { [string]$_ }) } else { @() }
+            $files = if ($body.owner_files) { @($body.owner_files | ForEach-Object { [string]$_ }) } else { @() }
+            $newF = Add-Feature `
+              -Id ([string]$body.id) `
+              -Name ([string]$body.name) `
+              -Description ([string]$body.description) `
+              -OwnerFiles $files `
+              -OwnerFunction ([string]$body.owner_function) `
+              -Trigger (if ($body.trigger) { [string]$body.trigger } else { 'on-demand' }) `
+              -ExpectedFrequency (if ($body.expected_frequency) { [string]$body.expected_frequency } else { 'on-demand' }) `
+              -ActivationSignal $sig `
+              -Dependencies $deps `
+              -Layer (if ($body.layer) { [string]$body.layer } else { 'L2' }) `
+              -Status (if ($body.status) { [string]$body.status } else { 'active' })
+            Send-Text $ctx ('{"ok":true,"feature":' + ($newF | ConvertTo-Json -Depth 8 -Compress) + '}') 'application/json; charset=utf-8'
+          }
+        } catch {
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+        }
+      }
+      elseif ($method -eq 'POST' -and $path -match '^/api/features/([a-z0-9_-]+)/discuss$') {
+        $fid = [string]$Matches[1]
+        try {
+          $f = Get-Feature -Id $fid
+          if (-not $f) {
+            Send-Text $ctx '{"ok":false,"error":"not found"}' 'application/json; charset=utf-8' 404
+          } else {
+            $body = $null
+            try { $body = Read-Body $ctx | ConvertFrom-Json } catch { $body = $null }
+            $note = if ($body -and $body.note) { [string]$body.note } else { '' }
+            $idea = "Feature discussion: [$($f.id)] $($f.name) — $($f.description)$(if ($note) { " | Note: $note" })"
+            . (Join-Path $PSScriptRoot 'lib\backlog.ps1')
+            Add-BacklogItem -Text $idea -Source 'feature-discuss'
+            Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+          }
+        } catch {
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
       else {
