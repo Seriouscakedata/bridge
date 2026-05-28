@@ -1,4 +1,4 @@
-$env:POSTMORTEM_TEST = '1'
+﻿$env:POSTMORTEM_TEST = '1'
 $root = 'C:\Users\rafie\OneDrive\Documents\bridge'
 . (Join-Path $root 'lib\common.ps1')
 . (Join-Path $root 'lib\postmortem.ps1')

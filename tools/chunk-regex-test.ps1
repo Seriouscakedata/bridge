@@ -1,4 +1,4 @@
-$rx = '(?im)^\s*STATUS:\s*CONTINUE-CHUNK\s*:\s*(\d+)\s*/\s*(\d+)\s*$'
+﻿$rx = '(?im)^\s*STATUS:\s*CONTINUE-CHUNK\s*:\s*(\d+)\s*/\s*(\d+)\s*$'
 $cases = @(
   @{ T='STATUS: CONTINUE-CHUNK:2/5'; Expect=@(2,5) },
   @{ T="report`nSTATUS: CONTINUE-CHUNK:1/3"; Expect=@(1,3) },

@@ -412,11 +412,11 @@ try {
           ',"uptime_sec":' + $uptimeSec + `
           ',"heartbeat_age_sec":' + $hbAge + `
           ',"paused":' + ($hPaused.ToString().ToLower()) + `
-          ',"status":' + (("" + $hStatus) | ConvertTo-Json -Compress) + `
+          ',"status":' + (("" + $hStatus) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"lastSeq":' + $hLastSeq + `
           ',"memory_count":' + $memCount + `
           ',"recent_error_count_24h":' + $errCount + `
-          ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Compress) + `
+          ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"parallel_streams_active":' + $psActive + '}'
         $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
         Send-Text $ctx $hJson 'application/json; charset=utf-8'
@@ -607,10 +607,10 @@ try {
           $parts = @($r.candidates[0].content.parts)
           $text = (($parts | ForEach-Object { [string]$_.text }) -join '').Trim()
           if ([string]::IsNullOrWhiteSpace($text)) { throw 'empty transcription response' }
-          $result = @{ text = $text } | ConvertTo-Json -Compress
+          $result = @{ text = $text } | ConvertTo-Json -Depth 10 -Compress
           Send-Text $ctx $result 'application/json; charset=utf-8'
         } catch {
-          $errMsg = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+          $errMsg = @{ error = $_.Exception.Message } | ConvertTo-Json -Depth 10 -Compress
           Send-Text $ctx $errMsg 'application/json; charset=utf-8' 500
         }
       }
@@ -755,11 +755,11 @@ try {
           $mapTxt = ($parts -join "`n`n---`n`n")
         }
         $itemsJson = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        # ReadAllText returns a plain CLR string, so ConvertTo-Json cannot serialize
+        # ReadAllText returns a plain CLR string, so ConvertTo-Json -Depth 10 cannot serialize
         # PowerShell provider ETS properties as a {"value":...} object.
-        $mapJson = (("" + $mapTxt) | ConvertTo-Json -Compress)
-        $activeChJson = (("" + (Get-ActiveChannel)) | ConvertTo-Json -Compress)
-        $filterJson   = (("" + $chParam) | ConvertTo-Json -Compress)
+        $mapJson = (("" + $mapTxt) | ConvertTo-Json -Depth 10 -Compress)
+        $activeChJson = (("" + (Get-ActiveChannel)) | ConvertTo-Json -Depth 10 -Compress)
+        $filterJson   = (("" + $chParam) | ConvertTo-Json -Depth 10 -Compress)
         $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + ',"activeChannel":' + $activeChJson + ',"filterChannel":' + $filterJson + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
@@ -846,7 +846,7 @@ try {
         $q = Get-QueryParamUtf8 $ctx 'q'
         $hits = @(Get-CodeRecallForApi -Query $q -TopK 8)
         $itemsJson = '[' + (($hits | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']'
-        Send-Text $ctx ('{"ok":true,"q":' + (("" + $q) | ConvertTo-Json -Compress) + ',"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
+        Send-Text $ctx ('{"ok":true,"q":' + (("" + $q) | ConvertTo-Json -Depth 10 -Compress) + ',"items":' + $itemsJson + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/usage') {
         $u = Get-UsageSummary
@@ -868,7 +868,7 @@ try {
           $okFlag = if ([bool]$r.ok) { 'true' } else { 'false' }
           Send-Text $ctx ('{"ok":' + $okFlag + ',"mode":"' + $mode + '","ideas_created":' + [int]$r.count + '}') 'application/json; charset=utf-8'
         } catch {
-          $err = ("" + $_.Exception.Message) | ConvertTo-Json -Compress
+          $err = ("" + $_.Exception.Message) | ConvertTo-Json -Depth 10 -Compress
           Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
         }
       }
@@ -996,7 +996,7 @@ try {
             try { $response.OutputStream.Close() } catch {}
           }
         } catch {
-          $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+          $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Depth 10 -Compress
           Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
         }
       }
@@ -1044,7 +1044,7 @@ try {
               }
               Send-Text $ctx ($apiObj | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
             } catch {
-              $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+              $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json -Depth 10 -Compress
               Send-Text $ctx $errJson 'application/json; charset=utf-8' 500
             }
           }
@@ -1060,7 +1060,7 @@ try {
             [void]$dates.Add($stem)
           }
         }
-        $datesJson = '[' + (($dates.ToArray() | ForEach-Object { (("" + $_) | ConvertTo-Json -Compress) }) -join ',') + ']'
+        $datesJson = '[' + (($dates.ToArray() | ForEach-Object { (("" + $_) | ConvertTo-Json -Depth 10 -Compress) }) -join ',') + ']'
         Send-Text $ctx ('{"audits":' + $datesJson + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/memory/count') {
@@ -1078,7 +1078,7 @@ try {
             Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$rf -WindowStyle Hidden | Out-Null
             Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
           } catch {
-            $err = ("" + $_.Exception.Message) | ConvertTo-Json -Compress
+            $err = ("" + $_.Exception.Message) | ConvertTo-Json -Depth 10 -Compress
             Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
           }
         } else {
@@ -1137,7 +1137,7 @@ try {
           [void]$advPairs.Add(('"' + ($key -replace '"','\"') + '":' + $jv))
         }
         $advJson = '{' + ([string]::Join(',', $advPairs.ToArray())) + '}'
-        $payload = '{"ok":true,"settings":' + $sJson + ',"advanced":' + $advJson + ',"workRoot":' + (("" + $cfg2.workRoot) | ConvertTo-Json -Compress) + '}'
+        $payload = '{"ok":true,"settings":' + $sJson + ',"advanced":' + $advJson + ',"workRoot":' + (("" + $cfg2.workRoot) | ConvertTo-Json -Depth 10 -Compress) + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/settings') {
@@ -1192,8 +1192,8 @@ try {
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/projects') {
         $projs = @(Get-ExternalProjects)
-        $arr = '[' + (($projs | ForEach-Object { (("" + $_) | ConvertTo-Json -Compress) }) -join ',') + ']'
-        Send-Text $ctx ('{"ok":true,"projects":' + $arr + ',"bridge":' + (("" + (Get-BridgeRoot)) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8'
+        $arr = '[' + (($projs | ForEach-Object { (("" + $_) | ConvertTo-Json -Depth 10 -Compress) }) -join ',') + ']'
+        Send-Text $ctx ('{"ok":true,"projects":' + $arr + ',"bridge":' + (("" + (Get-BridgeRoot)) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8'
       }
       # ----- multi-channel endpoints (phase 2) -----
       elseif ($method -eq 'GET' -and $path -eq '/api/channels') {
@@ -1202,7 +1202,7 @@ try {
         $list = if ($inclArch) { Get-ChannelList -IncludeArchived } else { Get-ChannelList }
         $active = Get-ActiveChannel
         $items = '[' + (($list | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 }) -join ',') + ']'
-        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Compress) + ',"items":' + $items + '}') 'application/json; charset=utf-8'
+        Send-Text $ctx ('{"ok":true,"active":' + (("" + $active) | ConvertTo-Json -Depth 10 -Compress) + ',"items":' + $items + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/channels') {
         # Create a new channel. Body: { slug, name?, description?, project_root? }
@@ -1236,7 +1236,7 @@ try {
           if ($ok) {
             # Post the event into the NEW channel's conversation so the user sees the switch landed.
             [void](Add-Message -From system -Text ("🧵 Активный канал: " + $slug) -Kind event)
-            Send-Text $ctx ('{"ok":true,"active":' + (("" + $slug) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8'
+            Send-Text $ctx ('{"ok":true,"active":' + (("" + $slug) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8'
           } else {
             Send-Text $ctx '{"ok":false,"error":"channel not found"}' 'application/json; charset=utf-8' 404
           }
@@ -1296,7 +1296,7 @@ try {
           if (-not $arr.StartsWith('[')) { $arr = "[$arr]" }
           Send-Text $ctx ('{"ok":true,"features":' + $arr + '}') 'application/json; charset=utf-8'
         } catch {
-          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
       elseif ($method -eq 'GET' -and $path -match '^/api/features/([a-z0-9_-]+)$') {
@@ -1309,7 +1309,7 @@ try {
             Send-Text $ctx ($f | ConvertTo-Json -Depth 8 -Compress) 'application/json; charset=utf-8'
           }
         } catch {
-          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/features') {
@@ -1342,7 +1342,7 @@ try {
             Send-Text $ctx ('{"ok":true,"feature":' + ($newF | ConvertTo-Json -Depth 8 -Compress) + '}') 'application/json; charset=utf-8'
           }
         } catch {
-          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
       elseif ($method -eq 'POST' -and $path -match '^/api/features/([a-z0-9_-]+)/discuss$') {
@@ -1361,7 +1361,7 @@ try {
             Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
           }
         } catch {
-          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 500
+          Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
       else {
