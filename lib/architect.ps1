@@ -20,50 +20,11 @@ function Get-ArchitectExternalSystemsPath { Join-Path (Get-BridgeRoot) 'external
 function Get-ArchitectMatrixPath { Join-Path (Get-BridgeRoot) 'architecture-matrix.md' }
 
 function Get-ArchitectScope {
-  if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { return (Get-EffectiveScope) }
-  $bridgeRoot = Get-BridgeRoot
-  $slug = 'main'
-  try {
-    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) }
-    elseif (Get-Command Get-ActiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-ActiveChannel) }
-  } catch { $slug = 'main' }
-  if ([string]::IsNullOrWhiteSpace($slug) -or $slug -notmatch '^[a-z0-9][a-z0-9_-]*$') { $slug = 'main' }
-  $isBridge = ($slug -eq 'main')
-  $channelDir = Join-Path $bridgeRoot "channels/$slug"
-  if (-not $isBridge -and -not (Test-Path -LiteralPath $channelDir -PathType Container)) {
-    throw "Get-ArchitectScope: channel '$slug' does not exist at $channelDir"
+  # Single source of truth: see Get-EffectiveScope in lib/channels.ps1.
+  if (-not (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue)) {
+    throw "Get-ArchitectScope: Get-EffectiveScope is not loaded (lib/channels.ps1 must be sourced before any architect call)"
   }
-  if ($isBridge) {
-    $featuresRoot = Join-Path $bridgeRoot 'features'
-    $memoryRoot = Join-Path $bridgeRoot 'memory'
-    $projectRoot = $bridgeRoot
-    $backlogPath = Join-Path $bridgeRoot 'backlog.jsonl'
-  } else {
-    $featuresRoot = Join-Path $channelDir 'features'
-    $memoryRoot = Join-Path $channelDir 'memory'
-    try {
-      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projectRoot = [string](Get-EffectiveProjectRoot -Slug $slug) }
-      else { $projectRoot = $channelDir }
-    } catch { $projectRoot = $channelDir }
-    $backlogPath = Join-Path $channelDir 'backlog.jsonl'
-  }
-  return [pscustomobject]@{
-    slug                     = $slug
-    is_bridge                = $isBridge
-    bridge_root              = $bridgeRoot
-    project_root             = $projectRoot
-    features_root            = $featuresRoot
-    features_registry        = (Join-Path $featuresRoot 'registry.json')
-    features_state           = (Join-Path $featuresRoot 'state.json')
-    features_exists          = (Test-Path -LiteralPath $featuresRoot -PathType Container)
-    memory_root              = $memoryRoot
-    memory_store             = (Join-Path $memoryRoot 'memory.jsonl')
-    memory_exists            = (Test-Path -LiteralPath $memoryRoot -PathType Container)
-    backlog_path             = $backlogPath
-    bridge_features_registry = (Join-Path $bridgeRoot 'features/registry.json')
-    bridge_memory_root       = (Join-Path $bridgeRoot 'memory')
-    bridge_memory_store      = (Join-Path $bridgeRoot 'memory/memory.jsonl')
-  }
+  return (Get-EffectiveScope)
 }
 
 function Get-OperatorInterventions {
