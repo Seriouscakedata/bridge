@@ -26,11 +26,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
 function Get-BrowserPath {
+  # 2026-05-28: prefer Chrome over Edge. Edge's headless mode aggressively
+  # spawns "first-run" / sync-confirmation / extension background pages that
+  # steal focus from our target tab; even with --no-first-run + --disable-sync
+  # the actual page's JS does not execute consistently. Chrome headless is
+  # leaner and runs the page's JS reliably. Edge stays as fallback.
   $candidates = @(
-    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
     'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Microsoft\Edge\Application\msedge.exe'
   )
   foreach ($c in $candidates) { if (Test-Path -LiteralPath $c -PathType Leaf) { return $c } }
   return ''
@@ -95,6 +100,26 @@ $argsList = @(
   '--hide-scrollbars',
   '--no-sandbox',
   '--disable-gpu',
+  # 2026-05-28: fresh --user-data-dir triggers Edge first-run welcome
+  # AND sync-confirmation dialog AND VPN extension auto-install. Without
+  # ALL these flags, Edge spawns multiple background pages and the real
+  # tab's JS never gets executed (CDP /json/list confirms the target URL
+  # loads correctly, but bootScenario IIFE never runs to completion).
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--disable-extensions',
+  '--disable-default-apps',
+  '--disable-component-extensions-with-background-pages',
+  '--disable-sync',                      # kills the sync-confirmation tab
+  '--disable-background-networking',
+  '--disable-background-mode',
+  '--disable-features=Translate,OptimizationHints,InterestFeed,AcceptCHFrame,FirstRunExperience,EdgeSplashScreenStandalone',
+  # 2026-05-28: --virtual-time-budget is THE flag that makes headless actually
+  # execute pending JS callbacks (setTimeout/fetch) instead of idling.
+  # visit.ps1 uses it for screenshots; we use it to give the scenario time
+  # to run. Budget is TimeoutSec*1000, so browser exits after that even if
+  # scenario hangs.
+  ('--virtual-time-budget=' + ([int]($TimeoutSec * 1000))),
   ('--user-data-dir=' + $profileDir),
   $loadUrl
 )

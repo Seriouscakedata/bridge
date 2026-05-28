@@ -5500,6 +5500,16 @@ window.__bridge = {
     const sname = qs.get('scenario');
     if(!sname) return;
     if(!/^[a-z0-9_-]+$/i.test(sname)) return;
+    // 2026-05-28 debug: use sendBeacon (fire-and-forget, survives page unload)
+    // to prove the IIFE ran. Plain fetch() in headless+virtual-time-budget mode
+    // doesn't reliably complete because the page may be torn down before the
+    // network round-trip finishes.
+    try {
+      const beaconBody = JSON.stringify({name: 'debug-boot-' + sname, ok: true, log: [{m:'bootScenario IIFE fired', t:0}]});
+      const blob = new Blob([beaconBody], {type: 'application/json'});
+      if (navigator.sendBeacon) navigator.sendBeacon('/api/scenario/result', blob);
+      else fetch('/api/scenario/result', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: beaconBody, keepalive: true});
+    } catch(_e){}
     // Helper API exposed to scenario JS.
     window.__scenario = {
       name: sname,
@@ -5521,15 +5531,30 @@ window.__bridge = {
       },
       done: async function(){
         const result = { name: this.name, ok: this._errors.length === 0, errors: this._errors, log: this._log, timings: {totalMs: Date.now() - this.startedAt} };
+        // 2026-05-28: sendBeacon — under headless Chrome with --virtual-time-budget
+        // the page is torn down right after JS completes; a normal fetch() POST
+        // never finishes its network round-trip. sendBeacon is designed exactly
+        // for this "fire and forget on unload" case and reliably delivers.
         try {
-          await fetch('/api/scenario/result', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(result)});
+          const body = JSON.stringify(result);
+          const blob = new Blob([body], {type: 'application/json'});
+          if (navigator.sendBeacon && navigator.sendBeacon('/api/scenario/result', blob)) return;
+          // Fallback: keepalive fetch.
+          await fetch('/api/scenario/result', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: body, keepalive: true});
         } catch(e){ console.error('[scenario] post failed', e); }
       }
     };
     // Wait a moment for first poll() + status() to settle, then run.
     setTimeout(async () => {
       try {
-        const r = await fetch('/tools/scenarios/' + encodeURIComponent(sname) + '.js', {credentials:'same-origin', cache:'no-store'});
+        // 2026-05-28: must strip credentials from base URL before subresource
+        // fetch -- Chrome rejects fetch on a URL inheriting userinfo. The
+        // initial navigation may have used http://user:pass@host/?scenario=X
+        // (basic-auth bootstrap), and a relative /tools/... fetch would
+        // inherit the userinfo and throw "Request cannot be constructed
+        // from a URL that includes credentials". Build an explicit clean URL.
+        const cleanBase = location.protocol + '//' + location.host;
+        const r = await fetch(cleanBase + '/tools/scenarios/' + encodeURIComponent(sname) + '.js', {credentials:'same-origin', cache:'no-store'});
         if(!r.ok) { window.__scenario.fail('cannot load scenario: HTTP ' + r.status); await window.__scenario.done(); return; }
         const src = await r.text();
         // Evaluate scenario JS in module-ish scope (no eval-string-leak).
