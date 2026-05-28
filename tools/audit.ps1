@@ -630,24 +630,47 @@ function Invoke-BridgeAudit {
     # picker (Get-NextRunnableIdea / Get-NextApprovedIdea) sorts them by
     # severity rank above plain ideas. Order in backlog picker:
     #   critical > warning > info > regular ideas.
+    # 2026-05-28: diagnostic — earlier "deep[claude=10] backlog+=0+0" runs lost
+    # findings silently because Write-AuditReports already ran and errors-list
+    # had nowhere to go. Log every decision (filed/skipped/failed) directly to
+    # audit.log so the next failure is debuggable from one place.
+    $writeDiag = {
+      param([string]$Source, [string]$Sev, [string]$Outcome, [string]$Detail)
+      try {
+        Write-AuditLog -BridgePath $root -Message ("deep-audit filing: source=$Source sev=$Sev outcome=$Outcome" + $(if ($Detail) { " detail=$Detail" } else { '' }))
+      } catch {}
+    }
+    if (-not $addIdeaAvailable) {
+      & $writeDiag 'init' '' 'add-idea-unavailable' ('common-lib-loaded=' + [bool](Get-Command Get-BacklogPath -EA SilentlyContinue))
+    }
     if ($deepCodexResult) {
       $cf = @($deepCodexResult.findings)
       $deepCodexCount = $cf.Count
       foreach ($f in $cf) {
         if (-not $f) { continue }
         $sev = ([string]$f.severity).ToLowerInvariant()
-        if ($sev -notin @('critical','warning','info')) { continue }
+        if ($sev -notin @('critical','warning','info')) {
+          & $writeDiag 'codex' $sev 'skip-bad-severity' ''
+          continue
+        }
         try {
           $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
           if ($addIdeaAvailable) {
             $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
-            if ($bid) { $deepFiled++ }
+            if ($bid) {
+              $deepFiled++
+              & $writeDiag 'codex' $sev 'filed' "id=$bid"
+            } else {
+              & $writeDiag 'codex' $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
+            }
           } elseif (-not $deepBacklogHelperWarned) {
             [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
             $deepBacklogHelperWarned = $true
           }
         } catch {
-          [void]$errors.Add('deep-audit codex backlog filing failed: ' + $_.Exception.Message)
+          $msg = $_.Exception.Message
+          [void]$errors.Add('deep-audit codex backlog filing failed: ' + $msg)
+          & $writeDiag 'codex' $sev 'exception' $msg
         }
       }
     }
@@ -659,18 +682,28 @@ function Invoke-BridgeAudit {
       foreach ($f in $cf) {
         if (-not $f) { continue }
         $sev = ([string]$f.severity).ToLowerInvariant()
-        if ($sev -notin @('critical','warning','info')) { continue }
+        if ($sev -notin @('critical','warning','info')) {
+          & $writeDiag 'claude' $sev 'skip-bad-severity' ''
+          continue
+        }
         try {
           $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Предлагает: " + [string]$f.recommendation
           if ($addIdeaAvailable) {
             $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
-            if ($bid) { $deepFiled++ }
+            if ($bid) {
+              $deepFiled++
+              & $writeDiag 'claude' $sev 'filed' "id=$bid"
+            } else {
+              & $writeDiag 'claude' $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
+            }
           } elseif (-not $deepBacklogHelperWarned) {
             [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
             $deepBacklogHelperWarned = $true
           }
         } catch {
-          [void]$errors.Add('deep-audit claude backlog filing failed: ' + $_.Exception.Message)
+          $msg = $_.Exception.Message
+          [void]$errors.Add('deep-audit claude backlog filing failed: ' + $msg)
+          & $writeDiag 'claude' $sev 'exception' $msg
         }
       }
     }
@@ -693,7 +726,13 @@ function Invoke-BridgeAudit {
           } else {
             foreach ($f in @($deepCodexResult.findings)) {
               if (-not $f) { continue }
-              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) _(`$([string]$f.file):$([string]$f.line)`)_: $([string]$f.finding)")
+              # 2026-05-28: was using backtick-escaped $(...) inside double quotes
+              # to wrap file:line in markdown backticks. PowerShell read the backtick
+              # as escape and the whole $([string]$f.file...) expression became a
+              # literal in the report. Build via concatenation so the inline code
+              # markers are literal but the expression runs.
+              $codexFL = '`' + [string]$f.file + ':' + [string]$f.line + '`'
+              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) _($codexFL)_: $([string]$f.finding)")
               if ($f.recommendation) { [void]$deepBlock.AppendLine("  - Рекомендация: $([string]$f.recommendation)") }
             }
           }
@@ -711,7 +750,10 @@ function Invoke-BridgeAudit {
           } else {
             foreach ($f in @($deepClaudeResult.findings)) {
               if (-not $f) { continue }
-              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) — фича `$([string]$f.feature_id)`: $([string]$f.observation)")
+              # 2026-05-28: build the literal-backtick wrap via concat to avoid
+              # the `$(...) escape-trap (same fix as the codex block above).
+              $claudeFid = '`' + [string]$f.feature_id + '`'
+              [void]$deepBlock.AppendLine("- **$([string]$f.severity)** $([string]$f.category) — фича $claudeFid : $([string]$f.observation)")
               if ($f.recommendation) { [void]$deepBlock.AppendLine("  - Рекомендация: $([string]$f.recommendation)") }
             }
           }
