@@ -62,3 +62,62 @@ function Get-Worktrees {
   $git = Get-GitExe
   try { return (& $git -C $RepoRoot worktree list 2>&1) } catch { return @() }
 }
+
+function Clear-OrphanWorktrees {
+  # Best-effort janitor for leaked linked-worktree admin dirs under .git/worktrees/.
+  # Parallel workers create linked worktrees; if teardown ('git worktree remove') runs
+  # while OneDrive holds .git/worktrees/<name> files as READONLY reparse points (Files
+  # On-Demand), git deletes the working tree + gitdir but cannot delete the readonly
+  # metadata -> every later commit's auto-gc logs "failed to delete .git/worktrees/X:
+  # Permission denied". We identify admin dirs that no longer map to a live worktree (by
+  # PATH, per 'git worktree list --porcelain', so git's dedup naming can't fool us) and
+  # force-remove them after clearing readonly. Never throws; returns count removed.
+  param([string]$RepoRoot)
+  $ErrorActionPreference = 'Continue'
+  if ([string]::IsNullOrWhiteSpace($RepoRoot)) { try { $RepoRoot = Get-BridgeRoot } catch {} }
+  if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return 0 }
+  $adminRoot = Join-Path $RepoRoot '.git\worktrees'
+  if (-not (Test-Path -LiteralPath $adminRoot)) { return 0 }
+  $git = Get-GitExe
+  $removed = 0
+  try {
+    # 1) set of live worktree paths (normalized) straight from git
+    $valid = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    try {
+      foreach ($line in (& $git -C $RepoRoot worktree list --porcelain 2>$null)) {
+        if ([string]$line -match '^worktree\s+(.+)$') {
+          $wp = $matches[1].Trim()
+          try { $wp = ([System.IO.Path]::GetFullPath($wp)).TrimEnd('\','/') } catch {}
+          [void]$valid.Add($wp)
+        }
+      }
+    } catch {}
+    # 2) let git prune the easy ones first (readonly leftovers will survive)
+    try { & $git -C $RepoRoot worktree prune 2>$null | Out-Null } catch {}
+    # 3) force-remove leftover admin dirs that don't map to a live worktree
+    foreach ($d in @(Get-ChildItem -LiteralPath $adminRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+      $gitdir = Join-Path $d.FullName 'gitdir'
+      $isOrphan = $false
+      if (-not (Test-Path -LiteralPath $gitdir)) {
+        $isOrphan = $true
+      } else {
+        $wtPath = $null
+        try {
+          $target = (Get-Content -LiteralPath $gitdir -Raw -ErrorAction Stop).Trim()
+          if (-not [string]::IsNullOrWhiteSpace($target)) {
+            $wtPath = ([System.IO.Path]::GetFullPath((Split-Path -Parent $target))).TrimEnd('\','/')
+          }
+        } catch {}
+        if ([string]::IsNullOrWhiteSpace($wtPath) -or -not $valid.Contains($wtPath)) { $isOrphan = $true }
+      }
+      if (-not $isOrphan) { continue }
+      try {
+        Get-ChildItem -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+        try { (Get-Item -LiteralPath $d.FullName -Force).Attributes = 'Directory' } catch {}
+        Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction Stop
+        $removed++
+      } catch {}
+    }
+  } catch {}
+  return $removed
+}

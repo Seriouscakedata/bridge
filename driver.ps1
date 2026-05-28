@@ -2692,6 +2692,16 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       Add-Message -From system -Text ("🧹 Tmp-sweep on startup: cleaned " + $sweep.cleaned + " orphan .tmp files" + $stuckPart) -Kind event | Out-Null
     }
   } catch {}
+  # 2026-05-28: orphan git-worktree janitor. Parallel-worker worktrees whose teardown ran
+  # under OneDrive readonly-reparse locks leave .git/worktrees/<name> metadata that git's
+  # auto-gc can't prune ("failed to delete ...: Permission denied" on every commit).
+  # Self-heal: force-remove admin dirs that no longer map to a live worktree.
+  try {
+    $wtClean = Clear-OrphanWorktrees -RepoRoot (Get-BridgeRoot)
+    if ([int]$wtClean -gt 0) {
+      Add-Message -From system -Text ("🧹 Worktree-janitor: removed " + $wtClean + " orphaned .git/worktrees entries.") -Kind event | Out-Null
+    }
+  } catch {}
   try {
     $unflush = Merge-UnflushedSidecars
     if ($unflush -and [int]$unflush.sidecars -gt 0) {
