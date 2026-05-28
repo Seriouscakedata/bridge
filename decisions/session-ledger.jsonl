@@ -38,3 +38,9 @@
 {"ts":"2026-05-28T09:24:04.6100454+03:00","event":"verified_commit","channel":"main","what":"parse+BOM, audit-runner skip/cleanup, audit busy gate, security scan, clean git status | OK"}
 {"ts":"2026-05-28T09:26:23.0984506+03:00","event":"verified_commit","channel":"main","what":"audit files (audit-security.ps1, audit-functional.ps1, audit.ps1, audit-runner.ps1) существуют; conf"}
 {"ts":"2026-05-28T11:33:10.9853091+03:00","event":"verified_commit","channel":"main","what":"аудит запущен через audit.ps1 -Force, код выхода 0; Security 0 critical, Functional 2 critical в сце"}
+{"ts":"2026-05-28T12:33:26.8511891+03:00","event":"verified_commit","channel":"main","what":"прочитан audit/2026-05-28.json | generated_at=2026-05-28T09:27:22Z, critical=0, warning=39, info=123"}
+{"ts":"2026-05-28T13:03:13.4130361+03:00","event":"verified_commit","channel":"main","what":"полный audit.ps1 -Force после фиксов | critical=0, warning=0, errors=0, unsafe-json=0, bom=0, синтак"}
+{"ts":"2026-05-28T13:09:36.5803174+03:00","event":"verified_commit","channel":"main","what":"полный audit.ps1 -Force и чтение audit\\2026-05-28.json | critical=0, warning=0, errors=0, unsafe-jso"}
+{"ts":"2026-05-28T14:04:15.9041480+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] auditor: ���祢�� �� \u0027�㤨��\u0027 (auditor), �⢥���� �� �����ਭ� ���஢�� ��⥬�, �� ���"}
+{"ts":"2026-05-28T14:13:15.0167947+03:00","event":"verified_commit","channel":"main","what":"registry.json — 0 escaped pipes осталось, все 8 regex-паттернов корректны | PASS; driver.ps1 — импор"}
+{"ts":"2026-05-28T14:44:01.4545130+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/dormant] doctor: ��� ᠬ�६��� \u0027�����\u0027 (doctor) �� ࠧ� �� ��⨢�஢�����. ���뢠�, �� �㤨�� (�"}
