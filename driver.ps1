@@ -3560,7 +3560,7 @@ while ($true) {
                   $fns = @()
                   try {
                     $fns = @(& git -C $bridgeRoot show ('HEAD:' + ($relf -replace '\\','/')) 2>$null |
-                      Select-String -Pattern '^(?:function\s+)([A-Za-z][\w-]*)' -AllMatches |
+                      Select-String -Pattern '^\s*function\s+([A-Za-z][\w-]*)' -AllMatches |
                       ForEach-Object { $_.Matches | ForEach-Object { $_.Groups[1].Value } })
                   } catch { $fns = @() }
                   if ($fns.Count -gt 0) {
@@ -3598,17 +3598,20 @@ while ($true) {
               $crossRefs = New-Object 'System.Collections.Generic.List[string]'
               foreach ($fn in $calledInDiff) {
                 if ($allFuncsInDiffedFiles.Contains($fn)) { continue }
+                $fnFiles = New-Object 'System.Collections.Generic.List[string]'
                 foreach ($rf in $repoPs1Files) {
                   $fullRf = Join-Path $bridgeRoot $rf
                   if (-not (Test-Path $fullRf)) { continue }
                   try {
                     $hit = & git -C $bridgeRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null |
-                      Select-String -Pattern ('^function\s+' + [regex]::Escape($fn) + '\b') -Quiet
+                      Select-String -Pattern ('^\s*function\s+' + [regex]::Escape($fn) + '\b') -Quiet
                     if ($hit) {
-                      [void]$crossRefs.Add($fn + ' -> ' + $rf)
-                      break
+                      [void]$fnFiles.Add($rf)
                     }
                   } catch { $hit = $false }
+                }
+                if ($fnFiles.Count -gt 0) {
+                  [void]$crossRefs.Add($fn + ' -> ' + [string]::Join(', ', $fnFiles.ToArray()))
                 }
               }
 
