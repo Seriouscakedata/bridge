@@ -1323,18 +1323,22 @@ try {
             if ($body.activation_signal) { $sig = @{ kind = [string]$body.activation_signal.kind; path = [string]$body.activation_signal.path; regex = [string]$body.activation_signal.regex } }
             $deps = if ($body.dependencies) { @($body.dependencies | ForEach-Object { [string]$_ }) } else { @() }
             $files = if ($body.owner_files) { @($body.owner_files | ForEach-Object { [string]$_ }) } else { @() }
+            $triggerVal = if ($body.trigger) { [string]$body.trigger } else { 'on-demand' }
+            $frequencyVal = if ($body.expected_frequency) { [string]$body.expected_frequency } else { 'on-demand' }
+            $layerVal = if ($body.layer) { [string]$body.layer } else { 'L2' }
+            $statusVal = if ($body.status) { [string]$body.status } else { 'active' }
             $newF = Add-Feature `
               -Id ([string]$body.id) `
               -Name ([string]$body.name) `
               -Description ([string]$body.description) `
               -OwnerFiles $files `
               -OwnerFunction ([string]$body.owner_function) `
-              -Trigger (if ($body.trigger) { [string]$body.trigger } else { 'on-demand' }) `
-              -ExpectedFrequency (if ($body.expected_frequency) { [string]$body.expected_frequency } else { 'on-demand' }) `
+              -Trigger $triggerVal `
+              -ExpectedFrequency $frequencyVal `
               -ActivationSignal $sig `
               -Dependencies $deps `
-              -Layer (if ($body.layer) { [string]$body.layer } else { 'L2' }) `
-              -Status (if ($body.status) { [string]$body.status } else { 'active' })
+              -Layer $layerVal `
+              -Status $statusVal
             Send-Text $ctx ('{"ok":true,"feature":' + ($newF | ConvertTo-Json -Depth 8 -Compress) + '}') 'application/json; charset=utf-8'
           }
         } catch {
