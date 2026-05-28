@@ -3545,6 +3545,76 @@ while ($true) {
             $truncationNote = if ($diffWasTruncated) {
               "ВАЖНО: diff ниже обрезан по лимиту контекста. Не считай сам факт обрезки синтаксической ошибкой, потерей кода или доказательством обрезанной функции; проверяй только реально видимые изменения. Синтаксис .ps1 и BOM проверяются отдельными командами."
             } else { "" }
+            # HEAD context lets the critic distinguish "not in this diff" from "not in repo".
+            $headContext = ''
+            try {
+              $repoPs1Files = @()
+              try { $repoPs1Files = @(& git -C $bridgeRoot ls-files --cached '*.ps1' 2>$null) } catch { $repoPs1Files = @() }
+              $repoPs1List = if ($repoPs1Files.Count -gt 0) { [string]::Join(', ', $repoPs1Files) } else { '(none)' }
+
+              $funcLines = New-Object 'System.Collections.Generic.List[string]'
+              $diffPs1Names = @($diffNames | Where-Object { $_ -match '\.ps1$' })
+              foreach ($relf in $diffPs1Names) {
+                $fullF = Join-Path $bridgeRoot $relf
+                if (Test-Path $fullF) {
+                  $fns = @()
+                  try {
+                    $fns = @(& git -C $bridgeRoot show ('HEAD:' + ($relf -replace '\\','/')) 2>$null |
+                      Select-String -Pattern '^(?:function\s+)([A-Za-z][\w-]*)' -AllMatches |
+                      ForEach-Object { $_.Matches | ForEach-Object { $_.Groups[1].Value } })
+                  } catch { $fns = @() }
+                  if ($fns.Count -gt 0) {
+                    [void]$funcLines.Add(($relf + ': ' + [string]::Join(', ', $fns)))
+                  }
+                }
+              }
+
+              $allFuncsInDiffedFiles = New-Object 'System.Collections.Generic.HashSet[string]'
+              foreach ($ln in @($funcLines)) {
+                $parts2 = $ln -split ': ', 2
+                if ($parts2.Count -eq 2) {
+                  foreach ($fn in ($parts2[1] -split ', ')) {
+                    [void]$allFuncsInDiffedFiles.Add($fn.Trim())
+                  }
+                }
+              }
+
+              $calledInDiff = @()
+              try {
+                $calledInDiff = @([regex]::Matches($diff, '(?<![#\s])(?:Invoke-|Get-|Set-|Add-|Remove-|Test-|New-|Write-|Read-|Send-|Update-|Save-|Load-|Build-|Find-|Format-|Start-|Stop-)[A-Za-z][\w-]*') |
+                  ForEach-Object { $_.Value } | Sort-Object -Unique)
+              } catch { $calledInDiff = @() }
+
+              $crossRefs = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($fn in $calledInDiff) {
+                if ($allFuncsInDiffedFiles.Contains($fn)) { continue }
+                foreach ($rf in $repoPs1Files) {
+                  $fullRf = Join-Path $bridgeRoot $rf
+                  if (-not (Test-Path $fullRf)) { continue }
+                  try {
+                    $hit = & git -C $bridgeRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null |
+                      Select-String -Pattern ('^function\s+' + [regex]::Escape($fn) + '\b') -Quiet
+                    if ($hit) {
+                      [void]$crossRefs.Add($fn + ' -> ' + $rf)
+                      break
+                    }
+                  } catch { $hit = $false }
+                }
+              }
+
+              $hcParts = New-Object 'System.Collections.Generic.List[string]'
+              [void]$hcParts.Add("ВСЕ .ps1 ФАЙЛЫ РЕПО: $repoPs1List")
+              if ($funcLines.Count -gt 0) {
+                [void]$hcParts.Add("ФУНКЦИИ В ИЗМЕНЁННЫХ ФАЙЛАХ:`n" + [string]::Join("`n", $funcLines.ToArray()))
+              }
+              if ($crossRefs.Count -gt 0) {
+                [void]$hcParts.Add("ФУНКЦИИ ИЗ DIFF, ОПРЕДЕЛЁННЫЕ В ДРУГИХ ФАЙЛАХ:`n" + [string]::Join("`n", $crossRefs.ToArray()))
+              }
+              $headContext = [string]::Join("`n`n", $hcParts.ToArray())
+              if ($headContext.Length -gt 4000) { $headContext = $headContext.Substring(0, 4000) + "`n...[контекст обрезан]..." }
+            } catch {
+              $headContext = "(head-context unavailable: $($_.Exception.Message))"
+            }
             $criticPrompt = @"
 Ты — независимый код-критик. Другой ИИ (Codex) внёс изменения в проект на PowerShell (автономный мост Claude<->Codex на Windows). Проверь git-дифф на СЕРЬЁЗНЫЕ проблемы: баги, уязвимости безопасности, регрессии, потеря данных, падения, синтаксические ошибки, нарушение инвариантов (каждый .ps1 в UTF-8 с BOM; не трогать watchdog/supervisor/.git; не выводить секреты).
 НЕ придирайся к стилю, именованию и форматированию — отмечай только то, что реально сломает работу или создаёт риск.
@@ -3565,6 +3635,9 @@ while ($true) {
 Это родилось из curator-задачи 2026-05-27 где Codex 3 раза подряд заявлял «backfill 51» при реальных 3/19/35.
 
 ЗАДАЧА: $task
+
+КОНТЕКСТ HEAD (для проверки over-claim: функции, упомянутые в diff, существуют в этих файлах — не помечай их как несуществующие):
+$headContext
 
 $truncationNote
 
