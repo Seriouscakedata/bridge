@@ -20,3 +20,8 @@
 {"ts":"2026-05-28T03:24:31.4840691+03:00","event":"verified_commit","channel":"main","what":"parse OK для replay/driver/server/supervisor/llm/memory/common/replay-cli/bridge.ps1; bridge.cmd rep"}
 {"ts":"2026-05-28T03:24:39.2620902+03:00","event":"convergence","channel":"main","source":"planner"}
 {"ts":"2026-05-28T03:39:55.9833243+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X4 Auto post-mortem после repair-коммитов — лёгкий LLM-вызов (gemini-flash-lite) на diff + state"}
+{"ts":"2026-05-28T04:00:55.7983138+03:00","event":"verified_commit","channel":"main","what":"parse/BOM"}
+{"ts":"2026-05-28T04:00:57.7174726+03:00","event":"verified_commit","channel":"main","what":"fake postmortem"}
+{"ts":"2026-05-28T04:00:58.6824210+03:00","event":"verified_commit","channel":"main","what":"hook"}
+{"ts":"2026-05-28T04:02:16.4570080+03:00","event":"post_mortem","channel":"main","sha":"82d2553e09c2ed0a5cdb2e0e7473ad1ac2cd3a0f","path":"decisions/post-mortem-82d2553e.md","failure_kind":"smoke_failed"}
+{"ts":"2026-05-28T04:03:09.6083116+03:00","event":"verified_commit","channel":"main","what":"Invoke-PostMortem — функция создаёт decisions/post-mortem-\u003csha8\u003e.md с BOM=False, пишет event в sessi"}
