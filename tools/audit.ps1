@@ -383,16 +383,22 @@ function Add-AuditCriticalsToBacklog {
             $text += " — $det"
           }
           if ($existingTexts.ContainsKey($text)) { continue }
+          # 2026-05-28: static-grep criticals get severity='critical' + status='approved'
+          # so the picker pulls them ahead of plain ideas. We hand-roll the record here
+          # (instead of going through Add-Idea) because Add-AuditCriticalsToBacklog runs
+          # in the audit's locked write path and we want predictable, dedupe-by-exact-text
+          # semantics (no semantic-similarity surprises for security findings).
           $rec = [ordered]@{
             id       = [guid]::NewGuid().ToString('N')
             ts       = (Get-Date).ToUniversalTime().ToString('o')
             from     = 'audit'
-            status   = 'new'
-            tags     = @('audit', [string]$f.source)
+            status   = 'approved'
+            tags     = @('audit', [string]$f.source, 'critical')
             attempts = 0
             score    = 0.0
             project  = 'main'
             scope    = 'bridge'
+            severity = 'critical'
             text     = $text
           }
           $line = ($rec | ConvertTo-Json -Compress -Depth 6)
@@ -559,56 +565,73 @@ function Invoke-BridgeAudit {
     $addIdeaAvailable = $false
     $deepBacklogHelperWarned = $false
     try {
+      # 2026-05-28: dot-source common.ps1 (not just backlog.ps1). Same bug class as
+      # Start-BacklogCuratorJob hit earlier — Add-Idea internally references
+      # Get-BacklogPath -> Get-ChannelBacklogPath (lib/channels.ps1) and the
+      # write closure needs Use-BridgeLock (lib/common.ps1) + Get-Backlog
+      # (lib/backlog.ps1). Loading common.ps1 brings the whole stack in the right
+      # order so audit can actually file findings instead of throwing
+      # "Get-BacklogPath not recognized".
       if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
-        $backlogLib = Join-Path $root 'lib\backlog.ps1'
-        if (Test-Path -LiteralPath $backlogLib -PathType Leaf) { . $backlogLib }
+        $commonLib = Join-Path $root 'lib\common.ps1'
+        if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+      }
+      # Pin the channel so Get-BacklogPath resolves to channels/main/backlog.jsonl
+      # (matches the channel the user actually picks tasks from).
+      if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
+        try { Set-PinnedChannel 'main' } catch {}
       }
       $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
     } catch {
       [void]$errors.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
     }
+    # 2026-05-28: audit findings are pre-validated by the deep-audit pipeline
+    # (codex + claude). They go in as status='approved' + -SkipCurator so the
+    # gemini curator doesn't second-guess them, and with -Severity so the
+    # picker (Get-NextRunnableIdea / Get-NextApprovedIdea) sorts them by
+    # severity rank above plain ideas. Order in backlog picker:
+    #   critical > warning > info > regular ideas.
     if ($deepCodexResult) {
       $cf = @($deepCodexResult.findings)
       $deepCodexCount = $cf.Count
       foreach ($f in $cf) {
         if (-not $f) { continue }
-        # File critical Codex findings into backlog (separate tag for transparency)
-        if ([string]$f.severity -eq 'critical') {
-          try {
-            $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
-            if ($addIdeaAvailable) {
-              $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security','critical') -Status 'new' -Project 'main' -Scope 'bridge'
-              if ($bid) { $deepFiled++ }
-            } elseif (-not $deepBacklogHelperWarned) {
-              [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
-              $deepBacklogHelperWarned = $true
-            }
-          } catch {
-            [void]$errors.Add('deep-audit codex backlog filing failed: ' + $_.Exception.Message)
+        $sev = ([string]$f.severity).ToLowerInvariant()
+        if ($sev -notin @('critical','warning','info')) { continue }
+        try {
+          $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
+          if ($addIdeaAvailable) {
+            $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            if ($bid) { $deepFiled++ }
+          } elseif (-not $deepBacklogHelperWarned) {
+            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            $deepBacklogHelperWarned = $true
           }
+        } catch {
+          [void]$errors.Add('deep-audit codex backlog filing failed: ' + $_.Exception.Message)
         }
       }
     }
     if ($deepClaudeResult) {
       $cf = @($deepClaudeResult.findings)
       $deepClaudeCount = $cf.Count
-      # Claude's findings are observations — feed into backlog only critical/warning, not info
+      # Claude's findings (critical / warning / info) all go to backlog now —
+      # severity controls picker order, info-level just lands last.
       foreach ($f in $cf) {
         if (-not $f) { continue }
-        $sev = [string]$f.severity
-        if ($sev -eq 'critical' -or $sev -eq 'warning') {
-          try {
-            $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Predлagaет: " + [string]$f.recommendation
-            if ($addIdeaAvailable) {
-              $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'new' -Project 'main' -Scope 'bridge'
-              if ($bid) { $deepFiled++ }
-            } elseif (-not $deepBacklogHelperWarned) {
-              [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
-              $deepBacklogHelperWarned = $true
-            }
-          } catch {
-            [void]$errors.Add('deep-audit claude backlog filing failed: ' + $_.Exception.Message)
+        $sev = ([string]$f.severity).ToLowerInvariant()
+        if ($sev -notin @('critical','warning','info')) { continue }
+        try {
+          $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Предлагает: " + [string]$f.recommendation
+          if ($addIdeaAvailable) {
+            $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            if ($bid) { $deepFiled++ }
+          } elseif (-not $deepBacklogHelperWarned) {
+            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            $deepBacklogHelperWarned = $true
           }
+        } catch {
+          [void]$errors.Add('deep-audit claude backlog filing failed: ' + $_.Exception.Message)
         }
       }
     }

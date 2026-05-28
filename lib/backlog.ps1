@@ -236,6 +236,28 @@ function Test-IdeaShouldKeep {
   }
 }
 
+function Get-IdeaSeverityRank {
+  # Severity priority for backlog picker: critical findings before warnings, warnings
+  # before info, info before plain ideas. Lower rank = higher priority.
+  # 2026-05-28: introduced so audit findings outrank regular ideas in Get-NextRunnableIdea.
+  param([AllowNull()]$Idea)
+  if ($null -eq $Idea) { return 3 }
+  $sev = ''
+  try {
+    if ($Idea.PSObject.Properties.Name -contains 'severity' -and $null -ne $Idea.severity) {
+      $sev = ([string]$Idea.severity).Trim().ToLowerInvariant()
+    }
+  } catch { $sev = '' }
+  switch ($sev) {
+    'critical' { return 0 }
+    'crit'     { return 0 }
+    'warning'  { return 1 }
+    'warn'     { return 1 }
+    'info'     { return 2 }
+    default    { return 3 }
+  }
+}
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(
@@ -246,6 +268,10 @@ function Add-Idea {
     [double]$Score = 0.0,
     [string]$Project = '',
     [string]$Scope = 'bridge',
+    # 2026-05-28: severity ('critical' | 'warning' | 'info' | '') -- used by the picker
+    # so audit findings outrank regular ideas (critical before warning before info before plain).
+    [ValidateSet('critical','warning','info','')]
+    [string]$Severity = '',
     [switch]$SkipCurator
   )
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
@@ -293,6 +319,9 @@ function Add-Idea {
     project  = $Project
     scope    = $Scope
     text     = [string]$Text
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Severity)) {
+    $rec.severity = ([string]$Severity).ToLowerInvariant()
   }
   if (-not $SkipCurator -and $keep -and [string]$keep.action -eq 'similar') {
     $rec.similar_to = @($keep.similar_to)
@@ -616,10 +645,14 @@ $gitLog
 
 function Get-NextApprovedIdea {
   # Next approved item, checking whether recent commits already resolved stale work.
+  # 2026-05-28: sort key chain is severity rank (critical=0 / warning=1 / info=2 / none=3)
+  # first, then score desc, then ts asc. So audit criticals get pulled before warnings,
+  # warnings before info, info before plain ideas.
   $skipped = New-Object 'System.Collections.Generic.List[string]'
   while ($true) {
     $items = @(Get-Backlog | Where-Object { [string]$_.status -eq 'approved' } |
-      Sort-Object @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+      Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                  @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
     try {
       $autoScopeSettings = Get-AutonomySettings
@@ -679,6 +712,9 @@ function Get-NextRunnableIdea {
   # (autonomy without manual approval) 'new' items run too -- EXCEPT external/radar ones,
   # which always require explicit approval (anti-backdoor: web-sourced never auto-executes).
   param([bool]$IncludeNew = $false)
+  # 2026-05-28: sort key chain is (1) status approved-before-new, (2) severity rank
+  # critical=0 / warning=1 / info=2 / none=3, (3) score desc, (4) ts asc.
+  # Audit criticals always outrank warnings, warnings outrank info, info outranks plain ideas.
   $items = @(Get-Backlog | Where-Object {
       $st = [string]$_.status
       if ($st -eq 'approved') { $true }
@@ -686,6 +722,7 @@ function Get-NextRunnableIdea {
       else { $false }
     } |
     Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
+                @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}})
   if ($items.Count -gt 0) { return $items[0] }
