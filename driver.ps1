@@ -977,6 +977,71 @@ function Get-EvidenceRecall {
   return "=== РЕЛЕВАНТНЫЕ EVIDENCE ===`n" + ($blocks -join "`n")
 }
 
+function Get-RecurrenceContext {
+  # 2026-05-28: detect when current task is likely a RECURRENCE of an earlier
+  # complaint (e.g., user said "проблема осталась", "опять мигает"). When detected,
+  # we pull recent fix-commits and inject an architectural-review block so the
+  # planner explicitly considers OTHER layers instead of patching the same files
+  # again. Cheap heuristic, no LLM.
+  param([string]$TaskText = '')
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return '' }
+  $markersRegex = '(?i)(\bпроблема\s+(осталась|та\s*же|сохрани)|снова\s+(мига|тормоз|падает|висит|ломается|ломае)|опять|ещё\s+раз|не\s+помог|всё\s+ещё|все\s+ещё|так\s+же|повтор(я|и)?ется|несмотря|не\s+пофиксил|не\s+помогло|по-прежнему)'
+  $hasMarkers = [regex]::IsMatch($TaskText, $markersRegex)
+  if (-not $hasMarkers) { return '' }
+  # Pull recent fix/repair commits to show what was tried.
+  $recentFixes = @()
+  try {
+    $log = & git -C $bridgeRoot log --oneline -30 --since='72 hours ago' 2>$null
+    if ($log) {
+      $recentFixes = @(([string[]]$log) | Where-Object { $_ -match '^[0-9a-f]+\s+(fix|repair|chore.fix)\b' })
+    }
+  } catch {}
+  $keywords = @(Get-RecallKeywords -TaskText $TaskText)
+  # Score each fix-commit against task keywords; keep top 8.
+  $scored = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($l in $recentFixes) {
+    $score = Get-KeywordScore -Text $l -Keywords $keywords
+    if ($score -gt 0) {
+      [void]$scored.Add([pscustomobject]@{ score = $score; line = $l })
+    }
+  }
+  $top = @($scored | Sort-Object @{Expression='score';Descending=$true} | Select-Object -First 8)
+  # Also figure out which file-areas were touched recently.
+  $touchedAreas = @{}
+  foreach ($entry in $top) {
+    $sha = ($entry.line -split '\s+')[0]
+    if (-not $sha) { continue }
+    try {
+      $files = @(& git -C $bridgeRoot show --name-only --format='' $sha 2>$null | Where-Object { $_ -and ([string]$_).Trim() })
+    } catch { $files = @() }
+    foreach ($f in $files) {
+      $area = ([string]$f).Split('/\')[0]
+      if (-not $area) { continue }
+      if ($touchedAreas.ContainsKey($area)) { $touchedAreas[$area] = [int]$touchedAreas[$area] + 1 }
+      else { $touchedAreas[$area] = 1 }
+    }
+  }
+  $blocks = New-Object 'System.Collections.Generic.List[string]'
+  [void]$blocks.Add('🚨 РЕЦИДИВ ДЕТЕКТИРОВАН: текст задачи содержит маркеры повторной жалобы ("снова", "проблема осталась", "не помогло" и т.п.).')
+  if ($top.Count -gt 0) {
+    [void]$blocks.Add("Релевантные fix-коммиты последних 72ч (по ключевым словам задачи):")
+    foreach ($entry in $top) { [void]$blocks.Add("  $($entry.line)") }
+    if ($touchedAreas.Count -gt 0) {
+      $areaSummary = ($touchedAreas.GetEnumerator() | Sort-Object @{Expression='Value';Descending=$true} | ForEach-Object { "$($_.Key)($($_.Value))" }) -join ', '
+      [void]$blocks.Add("Слои, где правили: $areaSummary")
+    }
+  } else {
+    [void]$blocks.Add("(Релевантных fix-коммитов в последних 72ч не нашлось по ключевым словам — возможно симптом старый или формулировка другая.)")
+  }
+  [void]$blocks.Add('')
+  [void]$blocks.Add('🧭 ПРАВИЛО ДЛЯ ЭТОЙ ИТЕРАЦИИ:')
+  [void]$blocks.Add('1. НЕ начинай сразу с CONTINUE → Codex с правкой того же файла. Если в "Слои, где правили" доминирует один (например web/), вероятный корень в ДРУГОМ слое (server.ps1, lib/, config).')
+  [void]$blocks.Add('2. Первым ходом проведи мини-аудит: какие файлы трогали прошлые фиксы (используй Read), какие слои НЕ трогали, и где данные текут через границу слоёв (UI ↔ HTTP ↔ lib ↔ файлы).')
+  [void]$blocks.Add('3. ПОПЫТАЙСЯ воспроизвести проблему до фикса: какой именно сценарий приводит к симптому? Без воспроизведения фикс — гадание.')
+  [void]$blocks.Add('4. Только после этого выдай CONTINUE с инструкцией Codex, явно указав на ДРУГОЙ слой / иной механизм.')
+  return ($blocks -join "`n")
+}
+
 function Format-Transcript {
   param([string]$TaskText = '')
   # Compressed context: a rolling summary of older messages + the hot window (full).
@@ -1003,16 +1068,21 @@ function Format-Transcript {
   try { $antiSkillSect = Get-AntiSkillRecall -TaskText $TaskText } catch { $antiSkillSect = '' }
   $codeSect = ''
   try { $codeSect = Get-CodeRecall -Query $TaskText } catch { $codeSect = '' }
+  # 2026-05-28: Recurrence detection — if user/task contains "снова/опять/проблема осталась"
+  # markers, surface recent fix commits + force planner to consider other layers.
+  $recurrenceSect = ''
+  try { $recurrenceSect = Get-RecurrenceContext -TaskText $TaskText } catch { $recurrenceSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
   $skillAppend = if ($skillSect) { "`n`n$skillSect" } else { '' }
   $antiSkillAppend = if ($antiSkillSect) { "`n`n$antiSkillSect" } else { '' }
   $codeAppend = if ($codeSect) { "`n`n$codeSect" } else { '' }
+  $recurrenceAppend = if ($recurrenceSect) { "`n`n$recurrenceSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend)
   }
-  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend
+  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend
 }
 
 function Get-ActiveProjectBinding {
@@ -1318,6 +1388,19 @@ $claudeActionBlock
 ВАЖНО: не путай простое со сложным. Если сомневаешься, либо действие рискованное/необратимое/масштабное -- НЕ делай сам: используй CONTINUE (Codex) или CHAT (спроси пользователя). Пиши по-русски.
 
 ⏹ ПРАВИЛО «КРИТЕРИЙ ОСТАНОВКИ»: для любой многошаговой задачи — сформулируй чёткий критерий DONE до начала работы (что конкретно должно работать/вернуть/не сломаться). Для открытых задач вида «делай что считаешь нужным» — первым ходом напиши план (2–4 пункта) с явным критерием завершения. Без критерия остановки — потенциальный бесконечный цикл анализа.
+
+🧭 ПРАВИЛО CROSS-LAYER ДИАГНОСТИКИ (КРИТИЧНО для багов вида «X не работает»):
+Если задача описывает СИМПТОМ от пользователя (UI мигает / API возвращает не то / агент завис / медленно / не сохраняется), ДО первой правки кода проверь ВСЕ слои, через которые течёт данные. Не оставайся в файле, где симптом проявился — там почти никогда нет корня.
+- UI-симптом → проверь HTTP-эндпоинты, которые этот UI дёргает (читай server.ps1, найди обработчик). Симптом «UI показывает не то» = «либо server вернул не то, либо клиент неправильно отрендерил». Если сервер 200 + правильный JSON — корень в клиенте. Если сервер 200 + НЕправильный JSON — корень в сервере.
+- API-симптом → проверь PowerShell-функцию, что её обслуживает (Get-X, Save-Y в lib/*.ps1), + её зависимости (Get-PinnedChannel, Read-State, файловая система).
+- Driver-симптом (агент не отвечает / зацикливается) → проверь Wait-AgentProcess, Read-AgentOutput, потом сами CLI-аргументы агента (claude/codex), потом сам promp-stage.
+- Memory/State-симптом (что-то не сохранилось) → проверь Update-State (lock contention?), Write-AtomicFile (OneDrive sync race?), формат файла (BOM?).
+Дешёвый чек: посчитай, сколько слоёв есть между жалобой пользователя и местом в коде, на которое ты смотришь. Если >=2 → значит ты не на нижнем этаже. Спустись.
+
+🚩 ПРАВИЛО «ВТОРОЙ И ТРЕТИЙ РАЗ»: если в истории канала есть СХОЖАЯ жалоба пользователя 2-3 раза подряд (по семантике, не по дословному совпадению) — это сильный сигнал, что прошлые фиксы патчили симптом. На этой итерации:
+- ЗАПРЕТИ себе править те же файлы, что в прошлый раз — корень почти наверняка где-то ещё.
+- В первом ходе сделай мини-аудит: какие коммиты были на эту тему, что они меняли, в каких слоях. Если все фиксы в одном слое (например все 4 в web/index.html) — следующий должен быть в ДРУГОМ слое (server / lib / config).
+- Подели задачу: «исследование архитектуры» (без правок) → «доказательство корня» (минимальное воспроизведение) → «фикс именно корня». Не торопись сразу в Codex.
 "@
     if ($Mode -eq 'research') {
       $researchNote = "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
@@ -3646,6 +3729,20 @@ while ($true) {
 - «commit message заявляет 51 items, но в коде только цикл foreach без проверки итогового count»
 - «комментарий говорит "all parsed OK", но parse-проверка не возвращается / не логируется»
 Это родилось из curator-задачи 2026-05-27 где Codex 3 раза подряд заявлял «backfill 51» при реальных 3/19/35.
+
+🩺 ПРОВЕРКА: ЗАКРЫВАЕТ ЛИ ФИКС СИМПТОМ ИЛИ ТОЛЬКО МАСКИРУЕТ?
+Задача обычно описывает симптом от пользователя («X мигает», «Y тормозит», «не могу Z»). Прежде чем дать OK:
+1. Восстанови по тексту задачи: что именно увидел пользователь? Какой конкретный сценарий ломался?
+2. Спроси сам себя: ЕСЛИ пользователь повторит этот сценарий после применения этого диффа — симптом ИСЧЕЗНЕТ или просто станет менее частым/будет глотаться guard'ом?
+3. Если диф добавляет защиту (guard / try-catch / timeout / retry / epoch check / abort signal / debounce) — это часто МАСКА, а не фикс. Корень обычно лежит на этаж глубже: данные испорчены в источнике, а guard ловит их уже на выходе. Помечай severity=serious с пометкой «patches symptom, not root cause» и предложи где искать корень.
+4. Особо для UI/HTTP пар: если диф меняет КЛИЕНТ (web/), но НЕ ТРОГАЕТ серверный эндпоинт, который этот клиент дёргает — это сильный сигнал маскировки. Перечисли эндпоинты, упомянутые в diff клиента, и спроси «их серверная сторона была пересмотрена в этом дифе?». Если нет — severity=serious с конкретным эндпоинтом для проверки.
+5. Слова в комментариях кода и в коммит-сообщении: «race», «flicker», «stale», «timing», «debounce», «throttle», «retry» — это часто сигнал, что чинят временной симптом, а не источник несоответствия. Спроси «есть ли источник правды или два потока данных, которые расходятся?»
+
+🔁 ПРОВЕРКА: ЭТО НЕ ПЕРВАЯ ПОПЫТКА?
+Если в тексте задачи (или в HEAD-контексте ниже) есть признаки «уже исправляли», «повторяется», «снова», «опять», «ещё раз», «несмотря на <SHA>», ссылки на предыдущие коммиты-фиксы в этой же области — это RECURRENCE. Тогда:
+- Назови явно, чем этот диф ОТЛИЧАЕТСЯ от прошлых попыток на уровне рут-каузы (а не имени файла).
+- Если диф структурно ПОХОЖ на прошлые (тот же файл, та же функция, добавлен ещё один guard/epoch/abort/timeout) — severity=serious с подписью «N-th attempt, structurally similar to previous fix, root cause likely elsewhere».
+- Если этот диф впервые трогает СОВСЕМ ДРУГОЙ слой (UI→server, client→config, lib→tests) — это хороший знак, не флаг.
 
 ЗАДАЧА: $task
 

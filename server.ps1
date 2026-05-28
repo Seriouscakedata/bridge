@@ -429,6 +429,83 @@ try {
         $html = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
         Send-Text $ctx $html 'text/html; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/scenario/result') {
+        # 2026-05-28: functional verifier infrastructure. Browser-side scenarios
+        # (tools/scenarios/*.js) run inside the headless page after we launch it
+        # with ?scenario=<name>. They post their result here. Runner script
+        # (tools/scenario.ps1) polls /api/scenario/result?name=X for the answer.
+        # This lets us run REAL user-flow tests (click, wait, assert) instead of
+        # just static screenshots — directly addresses the "fix didn't actually
+        # close the user's complaint" failure mode.
+        $body = $null
+        try { $body = Read-Body $ctx | ConvertFrom-Json } catch {}
+        if (-not $body -or [string]::IsNullOrWhiteSpace([string]$body.name)) {
+          Send-Text $ctx '{"ok":false,"error":"name required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $rec = [ordered]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            name = [string]$body.name
+            ok = if ($null -ne $body.ok) { [bool]$body.ok } else { $false }
+            errors = if ($body.errors) { @($body.errors) } else { @() }
+            log = if ($body.log) { @($body.log) } else { @() }
+            timings = if ($body.timings) { $body.timings } else { $null }
+            user_agent = [string]$ctx.Request.Headers['User-Agent']
+          }
+          try {
+            $resPath = Join-Path $root 'control\scenario-results.jsonl'
+            $line = ($rec | ConvertTo-Json -Compress -Depth 6) + "`n"
+            [System.IO.File]::AppendAllText($resPath, $line, (New-Object System.Text.UTF8Encoding($false)))
+          } catch {}
+          Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/scenario/result') {
+        $name = Get-QueryParamUtf8 $ctx 'name'
+        if ([string]::IsNullOrWhiteSpace($name)) {
+          Send-Text $ctx '{"ok":false,"error":"name required"}' 'application/json; charset=utf-8' 400
+        } else {
+          $resPath = Join-Path $root 'control\scenario-results.jsonl'
+          if (-not (Test-Path $resPath)) {
+            Send-Text $ctx '{"ok":true,"result":null}' 'application/json; charset=utf-8'
+          } else {
+            $sinceTs = Get-QueryParamUtf8 $ctx 'since'
+            $found = $null
+            try {
+              $lines = @(Get-Content -LiteralPath $resPath -Tail 200 -Encoding UTF8)
+              for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+                $ln = [string]$lines[$i]
+                if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+                try {
+                  $rec = $ln | ConvertFrom-Json
+                  if ([string]$rec.name -ne $name) { continue }
+                  if (-not [string]::IsNullOrWhiteSpace($sinceTs)) {
+                    try { if ([datetime]$rec.ts -le [datetime]$sinceTs) { continue } } catch {}
+                  }
+                  $found = $rec; break
+                } catch {}
+              }
+            } catch {}
+            if ($found) {
+              Send-Text $ctx ('{"ok":true,"result":' + ($found | ConvertTo-Json -Compress -Depth 6) + '}') 'application/json; charset=utf-8'
+            } else {
+              Send-Text $ctx '{"ok":true,"result":null}' 'application/json; charset=utf-8'
+            }
+          }
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -match '^/tools/scenarios/[a-z0-9_-]+\.js$') {
+        # Serve scenario JS files from tools/scenarios/ to the headless browser.
+        $rel = $path.TrimStart('/')
+        $full = Join-Path $root ($rel -replace '/', '\')
+        if ((Test-Path -LiteralPath $full -PathType Leaf)) {
+          try {
+            $js = [System.IO.File]::ReadAllText($full, [System.Text.UTF8Encoding]::new($false))
+            Send-Text $ctx $js 'application/javascript; charset=utf-8'
+          } catch { Send-Text $ctx '// scenario read error' 'application/javascript; charset=utf-8' 500 }
+        } else {
+          Send-Text $ctx '// not found' 'application/javascript; charset=utf-8' 404
+        }
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/messages') {
         # 2026-05-28: ?channel=<slug> reads THAT channel's conversation.jsonl explicitly,
         # bypassing the global active_channel marker. This was the root cause of UI

@@ -5478,6 +5478,72 @@ setInterval(pollUsage, 5000);
 setInterval(pollChannels, 15000);
 setInterval(refreshTimes, 30000);
 
+// 2026-05-28: Expose select internals so scenario JS (and ad-hoc debugging)
+// can interact with them. `let` at script scope isn't visible on `window`,
+// so we wire getters explicitly. Mutations via the public API are routed
+// through the existing functions so guards stay enforced.
+window.__bridge = {
+  get channelsCache(){ return channelsCache; },
+  get channelMessageCache(){ return channelMessageCache; },
+  get channelSwitchInProgress(){ return channelSwitchInProgress; },
+  get channelEpoch(){ return channelEpoch; },
+  switchChannel: (slug) => switchChannel(slug)
+};
+
+// 2026-05-28: Functional verifier hook. If URL has ?scenario=X, fetch
+// /tools/scenarios/X.js after the UI settles and run it. Scenario JS gets
+// access to a small `__scenario` helper API (post result, log, wait).
+// This is how we run real user-flow tests against the running UI.
+(function bootScenario(){
+  try {
+    const qs = new URLSearchParams(location.search || '');
+    const sname = qs.get('scenario');
+    if(!sname) return;
+    if(!/^[a-z0-9_-]+$/i.test(sname)) return;
+    // Helper API exposed to scenario JS.
+    window.__scenario = {
+      name: sname,
+      startedAt: Date.now(),
+      _log: [],
+      _errors: [],
+      log: function(msg){ this._log.push({t: Date.now() - this.startedAt, m: String(msg)}); console.log('[scenario]', msg); },
+      fail: function(msg){ this._errors.push(String(msg)); this.log('FAIL: ' + msg); },
+      assert: function(cond, msg){ if(!cond){ this.fail(msg || 'assertion failed'); } else { this.log('OK: ' + msg); } },
+      wait: function(ms){ return new Promise(r => setTimeout(r, ms)); },
+      waitFor: async function(predFn, timeoutMs, label){
+        const t0 = Date.now();
+        while(Date.now() - t0 < (timeoutMs || 3000)){
+          try { if(predFn()) { this.log('waitFor passed: ' + (label||'')); return true; } } catch(_e){}
+          await this.wait(50);
+        }
+        this.fail('waitFor timeout: ' + (label || ''));
+        return false;
+      },
+      done: async function(){
+        const result = { name: this.name, ok: this._errors.length === 0, errors: this._errors, log: this._log, timings: {totalMs: Date.now() - this.startedAt} };
+        try {
+          await fetch('/api/scenario/result', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(result)});
+        } catch(e){ console.error('[scenario] post failed', e); }
+      }
+    };
+    // Wait a moment for first poll() + status() to settle, then run.
+    setTimeout(async () => {
+      try {
+        const r = await fetch('/tools/scenarios/' + encodeURIComponent(sname) + '.js', {credentials:'same-origin', cache:'no-store'});
+        if(!r.ok) { window.__scenario.fail('cannot load scenario: HTTP ' + r.status); await window.__scenario.done(); return; }
+        const src = await r.text();
+        // Evaluate scenario JS in module-ish scope (no eval-string-leak).
+        const fn = new Function('s', src + '\n;return (typeof scenario === "function") ? scenario(s) : undefined;');
+        await Promise.resolve(fn(window.__scenario)).catch(e => window.__scenario.fail('scenario throw: ' + (e && e.message ? e.message : e)));
+        await window.__scenario.done();
+      } catch(e){
+        window.__scenario.fail('scenario boot error: ' + (e && e.message ? e.message : e));
+        try { await window.__scenario.done(); } catch(_e){}
+      }
+    }, 1500);
+  } catch(e){ console.error('[scenario] boot error', e); }
+})();
+
 // ----- channel selector (phase 2) -----
 const channelSelector = document.getElementById('channelSelector');
 const channelBtn      = document.getElementById('channelBtn');
