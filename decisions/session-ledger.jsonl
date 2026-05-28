@@ -33,5 +33,5 @@
 {"ts":"2026-05-28T04:50:49.3302125+03:00","event":"verified_commit","channel":"main","what":"lib/parallel.ps1 L924 Invoke-TrivialFallbackWorker + L885 Get-TrivialWorkerDiffInfo + hook L1131 (cl"}
 {"ts":"2026-05-28T06:50:41.6117584+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] дать deepseek-критику доступ ко всему HEAD-состоянию (а не только diff последнего коммита) — хот"}
 {"ts":"2026-05-28T07:07:42.3985990+03:00","event":"verified_commit","channel":"main","what":"headContext в driver.ps1 L3549-3629 генерирует список .ps1 файлов репо + функции + cross-refs и пере"}
-{"ts":"2026-05-28T08:56:02.7285614+03:00","event":"verified_commit","channel":"main","what":"parser+BOM, security/functional/orchestrator audit run, backlog filing+dedupe, API endpoints, ui_aud"}
-{"ts":"2026-05-28T08:58:20.6924917+03:00","event":"verified_commit","channel":"main","what":"/api/audit/latest HTTP 200 с данными (date=2026-05-28, total_critical=13, security_critical=13, secu"}
+{"ts":"2026-05-28T08:56:02.7285614+03:00","event":"verified_commit","channel":"main","what":"audit feature verification completed; see conversation evidence for command output"}
+{"ts":"2026-05-28T08:58:20.6924917+03:00","event":"verified_commit","channel":"main","what":"audit API and UI badge verification completed; see conversation evidence for command output"}

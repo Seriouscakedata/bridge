@@ -177,9 +177,14 @@ function Format-IntentForPrompt {
   # explicitly override (e.g. "пользователь сказал обсуди, я согласен — STATUS: DISCUSS").
   param($Intent)
   if (-not $Intent) { return '' }
+  $mode = ''
+  try {
+    if ($Intent.PSObject.Properties.Name -contains 'primary_mode') { $mode = [string]$Intent.primary_mode }
+    elseif ($Intent.PSObject.Properties.Name -contains 'mode') { $mode = [string]$Intent.mode }
+  } catch {}
   $lines = New-Object 'System.Collections.Generic.List[string]'
   [void]$lines.Add('🧭 LLM-классификатор намерения (читай как подсказку, не догму):')
-  [void]$lines.Add(("  режим: " + [string]$Intent.primary_mode + ' (confidence=' + ('{0:N2}' -f [double]$Intent.confidence) + ')'))
+  [void]$lines.Add(("  режим: " + $mode + ' (confidence=' + ('{0:N2}' -f [double]$Intent.confidence) + ')'))
   if (-not [string]::IsNullOrWhiteSpace([string]$Intent.reasoning)) {
     [void]$lines.Add(("  причина: " + [string]$Intent.reasoning))
   }

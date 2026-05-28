@@ -32,6 +32,32 @@ function Get-AuditLastMarker {
   Join-Path (Get-AuditDir -BridgePath $BridgePath) 'audit.last'
 }
 
+function Get-AuditMainBacklogPath {
+  param([string]$BridgePath)
+  $channelPath = Join-Path $BridgePath 'channels\main\backlog.jsonl'
+  $channelDir = Split-Path -Parent $channelPath
+  if (Test-Path -LiteralPath $channelDir -PathType Container) { return $channelPath }
+  return (Join-Path $BridgePath 'backlog.jsonl')
+}
+
+function Invoke-AuditBridgeLocked {
+  param([scriptblock]$Body)
+  $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeLock')
+  $got = $false
+  try {
+    try {
+      $got = $mutex.WaitOne(15000)
+    } catch [System.Threading.AbandonedMutexException] {
+      $got = $true
+    }
+    if (-not $got) { throw 'Could not acquire bridge lock within 15s' }
+    & $Body
+  } finally {
+    if ($got) { try { $mutex.ReleaseMutex() } catch {} }
+    $mutex.Dispose()
+  }
+}
+
 function Write-AuditLog {
   param([string]$BridgePath, [string]$Message)
   try {
@@ -274,65 +300,64 @@ function Add-AuditCriticalsToBacklog {
   $added = 0
   $crit = @($Findings | Where-Object { $_.severity -eq 'critical' })
   if ($crit.Count -eq 0) { return 0 }
-  $lib = Join-Path $BridgePath 'lib\backlog.ps1'
-  if (-not (Test-Path -LiteralPath $lib)) {
-    Write-AuditLog -BridgePath $BridgePath -Message "lib/backlog.ps1 missing; cannot file critical findings"
-    return 0
-  }
-  try {
-    . $lib
-    # backlog.ps1 is loaded from inside this function, so its helper functions
-    # are local to this scope. Add-Idea writes under a lock via a scriptblock;
-    # that scriptblock resolves helpers from global scope, not this local scope.
-    foreach ($name in @(
-      'Get-BacklogFallbackBridgeRoot',
-      'Invoke-BacklogLocked',
-      'Write-BacklogAtomicFile',
-      'Get-BacklogControlDir',
-      'Write-BacklogJsonLine',
-      'Write-LastAddIdeaMarker',
-      'Get-BacklogPath',
-      'Get-Backlog',
-      'Add-Idea'
-    )) {
-      $cmd = Get-Command $name -CommandType Function -ErrorAction SilentlyContinue
-      if ($cmd) { Set-Item -Path "Function:\global:$name" -Value $cmd.ScriptBlock -Force }
-    }
-    if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
-      Write-AuditLog -BridgePath $BridgePath -Message 'Add-Idea not available after dot-source'
-      return 0
-    }
-  } catch {
-    Write-AuditLog -BridgePath $BridgePath -Message "failed to load backlog.ps1: $($_.Exception.Message)"
-    return 0
+  $backlogPath = Get-AuditMainBacklogPath -BridgePath $BridgePath
+  $backlogDir = Split-Path -Parent $backlogPath
+  if (-not (Test-Path -LiteralPath $backlogDir)) {
+    try { New-Item -ItemType Directory -Path $backlogDir -Force | Out-Null } catch {}
   }
   $existingTexts = @{}
   try {
-    foreach ($item in @(Get-Backlog)) {
-      $txt = [string]$item.text
-      if (-not [string]::IsNullOrWhiteSpace($txt)) { $existingTexts[$txt] = $true }
+    if (Test-Path -LiteralPath $backlogPath) {
+      foreach ($line in @([System.IO.File]::ReadAllLines($backlogPath, (New-Object System.Text.UTF8Encoding($false))))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+          $item = $line | ConvertFrom-Json
+          $txt = [string]$item.text
+          if (-not [string]::IsNullOrWhiteSpace($txt)) { $existingTexts[$txt] = $true }
+        } catch {}
+      }
     }
   } catch {
     Write-AuditLog -BridgePath $BridgePath -Message "failed to read backlog for audit dedupe: $($_.Exception.Message)"
   }
-  foreach ($f in $crit) {
-    try {
-      $text = "[audit/$($f.source)] $($f.title)"
-      if ($f.area)   { $text += " ($($f.area))" }
-      if ($f.detail) {
-        $det = ($f.detail -replace '\s+', ' ').Trim()
-        if ($det.Length -gt 240) { $det = $det.Substring(0, 240) + '...' }
-        $text += " — $det"
+  try {
+    $addedInLock = Invoke-AuditBridgeLocked {
+      $localAdded = 0
+      foreach ($f in $crit) {
+        try {
+          $text = "[audit/$($f.source)] $($f.title)"
+          if ($f.area)   { $text += " ($($f.area))" }
+          if ($f.detail) {
+            $det = ($f.detail -replace '\s+', ' ').Trim()
+            if ($det.Length -gt 240) { $det = $det.Substring(0, 240) + '...' }
+            $text += " — $det"
+          }
+          if ($existingTexts.ContainsKey($text)) { continue }
+          $rec = [ordered]@{
+            id       = [guid]::NewGuid().ToString('N')
+            ts       = (Get-Date).ToUniversalTime().ToString('o')
+            from     = 'audit'
+            status   = 'new'
+            tags     = @('audit', [string]$f.source)
+            attempts = 0
+            score    = 0.0
+            project  = 'main'
+            scope    = 'bridge'
+            text     = $text
+          }
+          $line = ($rec | ConvertTo-Json -Compress -Depth 6)
+          [System.IO.File]::AppendAllText($backlogPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $existingTexts[$text] = $true
+          $localAdded++
+        } catch {
+          Write-AuditLog -BridgePath $BridgePath -Message "audit backlog append failed: $($_.Exception.Message)"
+        }
       }
-      if ($existingTexts.ContainsKey($text)) { continue }
-      $id = Add-Idea -Text $text -From 'audit' -Tags @('audit', $f.source) -SkipCurator
-      if ($id) {
-        $existingTexts[$text] = $true
-        $added++
-      }
-    } catch {
-      Write-AuditLog -BridgePath $BridgePath -Message "Add-Idea failed: $($_.Exception.Message)"
+      return $localAdded
     }
+    try { $added = [int]$addedInLock } catch { $added = 0 }
+  } catch {
+    Write-AuditLog -BridgePath $BridgePath -Message "failed to acquire backlog lock for audit findings: $($_.Exception.Message)"
   }
   return $added
 }
@@ -431,11 +456,15 @@ function Wait-BridgeIdle {
   param(
     [string]$StateFile,
     [int]$MaxMinutes = 60,
-    [int]$PollSeconds = 30
+    [int]$PollSeconds = 30,
+    [int]$StablePolls = 1
   )
   if ([string]::IsNullOrWhiteSpace($StateFile)) { return $false }
+  if ($StablePolls -lt 1) { $StablePolls = 1 }
+  $stableCount = 0
   $deadline = (Get-Date).AddMinutes($MaxMinutes)
   while ((Get-Date) -lt $deadline) {
+    $isIdle = $false
     try {
       if (Test-Path -LiteralPath $StateFile) {
         $raw = Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8
@@ -462,10 +491,16 @@ function Wait-BridgeIdle {
               $activeCount = @($st.active_jobs).Count
             }
           } catch {}
-          if ($status -eq 'idle' -and $agentPid -eq 0 -and $activeCount -eq 0) { return $true }
+          if ($status -eq 'idle' -and $agentPid -eq 0 -and $activeCount -eq 0) { $isIdle = $true }
         }
       }
     } catch {}
+    if ($isIdle) {
+      $stableCount++
+      if ($stableCount -ge $StablePolls) { return $true }
+    } else {
+      $stableCount = 0
+    }
     Start-Sleep -Seconds $PollSeconds
   }
   return $false

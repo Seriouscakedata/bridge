@@ -729,9 +729,9 @@ function Start-AuditIfDue {
   #   - audit.enabled in config.json gates the whole thing.
   #   - current local hour must be inside [windowStartHour..windowEndHour] (wraps midnight if start > end).
   #   - audit/audit.last marker must be older than floorHours (default 20h) so we run ~once/day.
-  # The detached Start-Job dot-sources tools/audit.ps1, waits for state.json to go idle
-  # for up to maxWaitMinutes (default 60), then calls Invoke-BridgeAudit. We touch the
-  # marker NOW so we don't relaunch every idle tick while the job sits in the wait loop.
+  # The detached Start-Job dot-sources lib/common.ps1 + tools/audit.ps1, waits for
+  # stable idle, then calls Invoke-BridgeAudit. audit.last is written only by a
+  # successful audit; audit.waiting only prevents duplicate waiting jobs.
   $auditCfg = $null
   try {
     $cfgA = Get-BridgeConfig
@@ -744,6 +744,10 @@ function Start-AuditIfDue {
   $endH    = if ($null -ne $auditCfg.windowEndHour)   { [int]$auditCfg.windowEndHour }   else { 6 }
   $floorH  = if ($null -ne $auditCfg.floorHours)      { [int]$auditCfg.floorHours }      else { 20 }
   $maxWait = if ($null -ne $auditCfg.maxWaitMinutes)  { [int]$auditCfg.maxWaitMinutes }  else { 60 }
+  if ($startH -lt 0) { $startH = 0 } elseif ($startH -gt 23) { $startH = 23 }
+  if ($endH -lt 0) { $endH = 0 } elseif ($endH -gt 23) { $endH = 23 }
+  if ($floorH -lt 1) { $floorH = 1 } elseif ($floorH -gt 168) { $floorH = 168 }
+  if ($maxWait -lt 1) { $maxWait = 1 } elseif ($maxWait -gt 240) { $maxWait = 240 }
   $hourNow = (Get-Date).Hour
   $inWindow = $false
   if ($startH -le $endH) {
@@ -755,6 +759,7 @@ function Start-AuditIfDue {
   if (-not $inWindow) { return }
   $auditDir = Join-Path $bridgeRoot 'audit'
   $marker   = Join-Path $auditDir 'audit.last'
+  $waitMarker = Join-Path $auditDir 'audit.waiting'
   if (Test-Path -LiteralPath $marker) {
     try {
       $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
@@ -763,25 +768,51 @@ function Start-AuditIfDue {
   }
   $auditScript = Join-Path $bridgeRoot 'tools\audit.ps1'
   if (-not (Test-Path -LiteralPath $auditScript)) { return }
-  # Touch the marker NOW so we don't relaunch every idle tick while the job waits for idle.
+  try {
+    foreach ($oldJob in @(Get-Job -Name 'bridge-audit' -ErrorAction SilentlyContinue)) {
+      if ($oldJob.State -in @('Running','NotStarted')) { return }
+      if ($oldJob.State -in @('Completed','Failed','Stopped')) { Remove-Job -Job $oldJob -Force -ErrorAction SilentlyContinue }
+    }
+  } catch {}
   try {
     if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+    if (Test-Path -LiteralPath $waitMarker) {
+      $waitTs = $null
+      try { $waitTs = [datetime]((Get-Content -LiteralPath $waitMarker -Raw -Encoding UTF8).Trim()) } catch {}
+      if ($waitTs -and ((Get-Date) - $waitTs) -lt [TimeSpan]::FromMinutes($maxWait + 10)) { return }
+      Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue
+    }
+    [System.IO.File]::WriteAllText($waitMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
   $stateFile = $null
   try { $stateFile = Get-StatePath } catch {}
   if ([string]::IsNullOrWhiteSpace($stateFile)) { $stateFile = Join-Path $bridgeRoot 'channels\main\state.json' }
+  $commonScript = Join-Path $bridgeRoot 'lib\common.ps1'
   try {
     Start-Job -Name 'bridge-audit' -ScriptBlock {
-      param($AuditScript, $BridgePath, $StateFile, $MaxWait)
+      param($CommonScript, $AuditScript, $BridgePath, $StateFile, $MaxWait, $WaitMarker)
       try {
+        if (Test-Path -LiteralPath $CommonScript) {
+          . $CommonScript
+          try { if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel 'main' } } catch {}
+        }
         . $AuditScript
-        $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWait
+        $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWait -StablePolls 2
         if ($idle) { Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null }
-      } catch {}
-    } -ArgumentList $auditScript, $bridgeRoot, $stateFile, $maxWait | Out-Null
+      } catch {
+        try {
+          $logPath = Join-Path (Join-Path $BridgePath 'audit') 'audit.log'
+          $line = "[{0}] audit job failed: {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $_.Exception.Message
+          [System.IO.File]::AppendAllText($logPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+      } finally {
+        try { if (Test-Path -LiteralPath $WaitMarker) { Remove-Item -LiteralPath $WaitMarker -Force -ErrorAction SilentlyContinue } } catch {}
+      }
+    } -ArgumentList $commonScript, $auditScript, $bridgeRoot, $stateFile, $maxWait, $waitMarker | Out-Null
     Add-Message -From system -Text ("🔍 Запущен аудит моста (фоновое задание, ожидание idle до {0} мин)." -f $maxWait) -Kind event | Out-Null
-  } catch {}
+  } catch {
+    try { if (Test-Path -LiteralPath $waitMarker) { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } } catch {}
+  }
 }
 
 function Start-ReflectIfDue {
@@ -2633,6 +2664,24 @@ while ($true) {
       if ($fastMark -and -not $reasoningHighMark) { $fastLaneReason = 'marker' }
       elseif ($autoFastLane) { $fastLaneReason = 'auto' }
 
+      $taskProjectRoot = Get-ActiveProjectRoot
+      if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
+      $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+      Update-State ({ param($s)
+        $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
+        $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
+        Clear-FastLaneFlags $s
+        Clear-ChunkingState $s
+        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null
+        $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
+        $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
+        $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $null -Force
+        Reset-TaskAgentDuration $s
+        $s.status='working'; $s.status_text='Классифицирую задачу...'; $s.heartbeat=(Get-Date).ToString('o')
+      }.GetNewClosure()) | Out-Null
+
       # 2026-05-28: LLM intent classifier. Replaces hardcoded [[DEEP-THINK]] regex
       # with semantic understanding of the user's task. Explicit markers
       # ([[FAST]], [[NORMAL]], [[DEEP-THINK]]) always win; the LLM call only
@@ -2654,13 +2703,11 @@ while ($true) {
       $intentForcedDiscuss  = ($intentMode -eq 'discuss')
       $intentForcedStudy    = ($intentMode -eq 'study')
 
-      $taskProjectRoot = Get-ActiveProjectRoot
-      if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
-      $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
       # Snapshot intent for the closure (Update-State runs in a separate scope).
       $intentRecord = $null
       if ($taskIntent) {
         $intentRecord = [pscustomobject]@{
+          primary_mode = [string]$taskIntent.primary_mode
           mode = [string]$taskIntent.primary_mode
           confidence = [double]$taskIntent.confidence
           reasoning = [string]$taskIntent.reasoning
