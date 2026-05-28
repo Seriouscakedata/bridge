@@ -1,7 +1,7 @@
 ﻿# audit.ps1 -- main bridge audit orchestrator.
 # Runs security + functional auditors back-to-back, merges findings into a single
 # daily report (JSON + Markdown), and feeds critical issues into the backlog.
-# Designed to be invoked from driver.ps1 as a detached Start-Job during idle windows.
+# Designed to be invoked from tools/audit-runner.ps1 during idle windows.
 
 $ErrorActionPreference = 'Continue'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)

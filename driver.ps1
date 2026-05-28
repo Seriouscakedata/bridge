@@ -724,14 +724,42 @@ function Start-LibrarianIfDue {
   } catch {}
 }
 
+function Test-AuditMaintenanceBusy {
+  param([int]$MaxWaitMinutes = 60)
+  $auditDir = Join-Path $bridgeRoot 'audit'
+  $waitMarker = Join-Path $auditDir 'audit.waiting'
+  $lockMarker = Join-Path $auditDir '.audit.lock'
+  $freshFor = [TimeSpan]::FromMinutes([Math]::Max(1, $MaxWaitMinutes + 10))
+
+  if (Test-Path -LiteralPath $waitMarker) {
+    $waitTs = $null
+    try { $waitTs = [datetime]((Get-Content -LiteralPath $waitMarker -Raw -Encoding UTF8).Trim()) } catch {}
+    if ($waitTs -and ((Get-Date) - $waitTs) -lt $freshFor) { return $true }
+    try { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  if (Test-Path -LiteralPath $lockMarker) {
+    $lockPid = 0
+    try { $lockPid = [int]((Get-Content -LiteralPath $lockMarker -Raw -Encoding UTF8).Trim()) } catch {}
+    if ($lockPid -gt 0) {
+      try {
+        if (Get-Process -Id $lockPid -ErrorAction SilentlyContinue) { return $true }
+      } catch {}
+    }
+    try { Remove-Item -LiteralPath $lockMarker -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  return $false
+}
+
 function Start-AuditIfDue {
   # Run the daily bridge audit detached during the configured night window:
   #   - audit.enabled in config.json gates the whole thing.
   #   - current local hour must be inside [windowStartHour..windowEndHour] (wraps midnight if start > end).
   #   - audit/audit.last marker must be older than floorHours (default 20h) so we run ~once/day.
-  # The detached Start-Job dot-sources lib/common.ps1 + tools/audit.ps1, waits for
-  # stable idle, then calls Invoke-BridgeAudit. audit.last is written only by a
-  # successful audit; audit.waiting only prevents duplicate waiting jobs.
+  # The detached audit runner dot-sources lib/common.ps1 + tools/audit.ps1, waits
+  # for stable idle, then calls Invoke-BridgeAudit. audit.last is written only by
+  # a successful audit; audit.waiting only prevents duplicate waiting processes.
   $auditCfg = $null
   try {
     $cfgA = Get-BridgeConfig
@@ -768,55 +796,34 @@ function Start-AuditIfDue {
   }
   $auditScript = Join-Path $bridgeRoot 'tools\audit.ps1'
   if (-not (Test-Path -LiteralPath $auditScript)) { return }
-  try {
-    foreach ($oldJob in @(Get-Job -Name 'bridge-audit' -ErrorAction SilentlyContinue)) {
-      if ($oldJob.State -in @('Running','NotStarted')) { return }
-      if ($oldJob.State -in @('Completed','Failed','Stopped')) { Remove-Job -Job $oldJob -Force -ErrorAction SilentlyContinue }
-    }
-  } catch {}
+  $auditRunner = Join-Path $bridgeRoot 'tools\audit-runner.ps1'
+  if (-not (Test-Path -LiteralPath $auditRunner)) { return }
+  if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait) { return }
+  $waitMarkerWritten = $false
   try {
     if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
-    if (Test-Path -LiteralPath $waitMarker) {
-      $waitTs = $null
-      try { $waitTs = [datetime]((Get-Content -LiteralPath $waitMarker -Raw -Encoding UTF8).Trim()) } catch {}
-      if ($waitTs -and ((Get-Date) - $waitTs) -lt [TimeSpan]::FromMinutes($maxWait + 10)) { return }
-      Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue
-    }
     [System.IO.File]::WriteAllText($waitMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-  } catch {}
+    $waitMarkerWritten = $true
+  } catch { return }
+  if (-not $waitMarkerWritten) { return }
   $stateFile = $null
   try { $stateFile = Get-StatePath } catch {}
   if ([string]::IsNullOrWhiteSpace($stateFile)) { $stateFile = Join-Path $bridgeRoot 'channels\main\state.json' }
-  $commonScript = Join-Path $bridgeRoot 'lib\common.ps1'
   try {
-    Start-Job -Name 'bridge-audit' -ScriptBlock {
-      param($CommonScript, $AuditScript, $BridgePath, $StateFile, $MaxWait, $WaitMarker)
-      try {
-        if (Test-Path -LiteralPath $CommonScript) {
-          . $CommonScript
-          try { if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel 'main' } } catch {}
-        }
-        . $AuditScript
-        $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWait -StablePolls 2
-        if ($idle) {
-          Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null
-        } else {
-          try {
-            $logPath = Join-Path (Join-Path $BridgePath 'audit') 'audit.log'
-            $line = "[{0}] audit skipped: bridge did not stay idle for {1} min" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $MaxWait
-            [System.IO.File]::AppendAllText($logPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
-          } catch {}
-        }
-      } catch {
-        try {
-          $logPath = Join-Path (Join-Path $BridgePath 'audit') 'audit.log'
-          $line = "[{0}] audit job failed: {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $_.Exception.Message
-          [System.IO.File]::AppendAllText($logPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
-        } catch {}
-      } finally {
-        try { if (Test-Path -LiteralPath $WaitMarker) { Remove-Item -LiteralPath $WaitMarker -Force -ErrorAction SilentlyContinue } } catch {}
-      }
-    } -ArgumentList $commonScript, $auditScript, $bridgeRoot, $stateFile, $maxWait, $waitMarker | Out-Null
+    $args = @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', $auditRunner,
+      '-BridgePath', $bridgeRoot,
+      '-StateFile', $stateFile,
+      '-MaxWaitMinutes', [string]$maxWait,
+      '-WaitMarker', $waitMarker
+    )
+    $auditProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    if (-not $auditProc) { throw 'Start-Process did not return an audit process' }
+    $auditTicks = 0L
+    try { $auditTicks = (Get-Process -Id $auditProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
+    try { Register-ChildProcess -Label 'audit' -ProcessId $auditProc.Id -Ticks $auditTicks } catch {}
     Add-Message -From system -Text ("🔍 Запущен аудит моста (фоновое задание, ожидание idle до {0} мин)." -f $maxWait) -Kind event | Out-Null
   } catch {
     try { if (Test-Path -LiteralPath $waitMarker) { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } } catch {}
@@ -2819,7 +2826,9 @@ while ($true) {
       # as a self-task. Freshness skips are logged by backlog/curator and surfaced via poll.
       $claimedIdea = $null
       $claimedIdeaSelection = $null
-      if (Test-AutonomyReady) {
+      $auditBusyForAutonomy = $false
+      try { $auditBusyForAutonomy = Test-AuditMaintenanceBusy } catch {}
+      if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         try {
           $claimedIdeaSelection = Get-NextApprovedIdea
           if ($claimedIdeaSelection -and ($claimedIdeaSelection.PSObject.Properties.Name -contains 'skipped')) {
