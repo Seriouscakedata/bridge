@@ -313,6 +313,77 @@ function Update-FeatureActivations {
             }
         }
     }
+
+    # === Honest dormancy: demote features gone silent past their expected
+    # cadence; re-promote any that signalled this pass. The scanner used to be
+    # promote-only (monotonic) so 'dormant' never meant anything. Rules:
+    #   - on-demand / rare / unknown cadence -> never demoted on time alone
+    #     (a long idle is legitimate for them).
+    #   - 'broken' / 'under_review' are manual states -> left untouched.
+    #   - demotion only runs when the bridge has been active channel-wide in the
+    #     last day (some feature fired recently). While paused, last_signal_match
+    #     freezes for everything, so we must NOT fake mass-dormancy on resume.
+    # last_signal_match in $stateDict is the authoritative "last time this feature
+    # actually fired" (carried across scans for non-matching features).
+    $staleDaysByFreq = @{
+        'every-turn' = 2; 'per-turn' = 2; 'each-turn' = 2; 'continuous' = 2; 'always' = 2;
+        'frequent' = 4; 'hourly' = 4;
+        'periodic' = 10; 'daily' = 10;
+        'weekly' = 21
+    }
+    $nowDt = Get-Date
+    # Channel-wide liveness: newest signal across ALL features.
+    $mostRecentSignal = $null
+    foreach ($k in @($stateDict.Keys)) {
+        $e = $stateDict[$k]
+        if ($e -and $e.PSObject -and $e.PSObject.Properties['last_signal_match'] -and $e.last_signal_match) {
+            try {
+                $t = [DateTime]$e.last_signal_match
+                if ($null -eq $mostRecentSignal -or $t -gt $mostRecentSignal) { $mostRecentSignal = $t }
+            } catch {}
+        }
+    }
+    $bridgeRecentlyActive = ($null -ne $mostRecentSignal) -and ((($nowDt - $mostRecentSignal).TotalDays) -le 1)
+
+    $regForStatus = @($registry)
+    $statusChanged = $false
+    $demoted  = New-Object System.Collections.Generic.List[string]
+    $promoted = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $regForStatus) {
+        $st = [string]$f.status
+        if ($st -ne 'active' -and $st -ne 'dormant') { continue }   # skip broken/under_review/unset
+        $freq = ''
+        try { $freq = ([string]$f.expected_frequency).Trim().ToLowerInvariant() } catch { $freq = '' }
+        if (-not $staleDaysByFreq.ContainsKey($freq)) { continue }   # on-demand/rare/unknown -> no time-based demotion
+        $threshold = [int]$staleDaysByFreq[$freq]
+        $entry = $stateDict[$f.id]
+        $lastMatchStr = ''
+        if ($entry -and $entry.PSObject -and $entry.PSObject.Properties['last_signal_match'] -and $entry.last_signal_match) { $lastMatchStr = [string]$entry.last_signal_match }
+        $ageDays = $null
+        if (-not [string]::IsNullOrWhiteSpace($lastMatchStr)) {
+            try { $ageDays = ($nowDt - [DateTime]$lastMatchStr).TotalDays } catch { $ageDays = $null }
+        }
+        $fresh = ($null -ne $ageDays -and $ageDays -le $threshold)
+        if ($fresh -and $st -eq 'dormant') {
+            Add-Member -InputObject $f -MemberType NoteProperty -Name 'status' -Value 'active' -Force
+            $statusChanged = $true; [void]$promoted.Add([string]$f.id)
+        }
+        elseif (-not $fresh -and $st -eq 'active') {
+            if (-not $bridgeRecentlyActive) { continue }   # whole bridge idle/paused -> don't fake dormancy
+            Add-Member -InputObject $f -MemberType NoteProperty -Name 'status' -Value 'dormant' -Force
+            $statusChanged = $true; [void]$demoted.Add([string]$f.id)
+        }
+    }
+    if ($statusChanged) {
+        try { Save-FeatureRegistry $regForStatus } catch {}
+        try {
+            $parts = @()
+            if ($demoted.Count  -gt 0) { $parts += ('dormant: '     + ($demoted  -join ', ')) }
+            if ($promoted.Count -gt 0) { $parts += ('reactivated: ' + ($promoted -join ', ')) }
+            if ($parts.Count -gt 0) { Add-Message -From system -Text ('feature status: ' + ($parts -join ' | ')) -Kind event | Out-Null }
+        } catch {}
+    }
+
     Save-FeatureState $stateDict
     return $stateDict.Count
 }

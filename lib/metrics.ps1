@@ -173,12 +173,21 @@ function Invoke-MetricsReflection {
     $afterStats = Get-TurnsStats -Entries $afterTurns
     $bl = $hyp.baseline
 
-    $dPct = $afterStats.timeout_pct - [double]$bl.timeout_pct
-    $dSec = if ([double]$bl.avg_sec -gt 0) { ($afterStats.avg_sec - [double]$bl.avg_sec) / [double]$bl.avg_sec } else { 0 }
+    $dPct  = $afterStats.timeout_pct - [double]$bl.timeout_pct                 # timeout rate change (lower = better)
+    $dSucc = $afterStats.success_pct - [double]$bl.success_pct                 # success rate change (higher = better)
+    $dSec  = if ([double]$bl.avg_sec -gt 0) { ($afterStats.avg_sec - [double]$bl.avg_sec) / [double]$bl.avg_sec } else { 0 }  # avg turn time, relative (lower = better)
+
+    # Symmetric, regression-sensitive verdict. The old logic OR-checked 'worked'
+    # first, so a mixed result (one axis better, one worse) was mislabeled
+    # 'worked' -> the 33/33-'worked' bias that made the loop blind to regressions.
+    # Now: a clear regression on ANY axis with no offsetting improvement => 'worse';
+    # a clear improvement with no regression => 'worked'; conflicting/flat => 'no_effect'.
+    $improved  = ($dPct -le -0.05) -or ($dSucc -ge 0.05) -or ($dSec -le -0.15)
+    $regressed = ($dPct -ge 0.05)  -or ($dSucc -le -0.05) -or ($dSec -ge 0.15)
 
     $verdict = 'no_effect'
-    if ($dPct -lt -0.05 -or $dSec -lt -0.15) { $verdict = 'worked' }
-    elseif ($dPct -gt 0.05 -or $dSec -gt 0.15) { $verdict = 'worse' }
+    if     ($regressed -and -not $improved)  { $verdict = 'worse' }
+    elseif ($improved  -and -not $regressed) { $verdict = 'worked' }
 
     Append-MetricsRecord @{
       type          = 'verdict'
@@ -186,6 +195,7 @@ function Invoke-MetricsReflection {
       commit        = $hyp.commit
       task          = $hyp.task
       verdict       = $verdict
+      after_turns   = $afterTurns.Count
       delta         = @{
         timeout_pct = [Math]::Round($dPct, 4)
         avg_sec     = [Math]::Round($afterStats.avg_sec - [double]$bl.avg_sec, 2)
@@ -207,6 +217,127 @@ function Invoke-MetricsReflection {
       Add-Memory -Text $memText -Tags @('learning-loop','hypothesis','verdict') -Importance 0.8 | Out-Null
     } catch {}
   }
+
+  # === Actuation pass — close the loop on settled verdicts ===
+  # Walks ALL verdicts (not just ones minted this cycle) so transient deferrals
+  # (one-revert-per-cycle cap, dirty tree) retry on a later cycle. 'worse' -> a
+  # SAFE `git revert` (inverse commit; never reset --hard / push --force);
+  # 'worked' -> cement the win into durable memory. Fail-closed throughout.
+  try {
+    $allRec      = Read-MetricsJsonl
+    $allVerdicts = @($allRec | Where-Object { $_.type -eq 'verdict' })
+    $allActs     = @($allRec | Where-Object { $_.type -eq 'actuation' })
+    $terminal    = @('reverted','cement','revert_disabled','revert_failed','revert_skipped')
+    $revertedThisCycle = $false
+    foreach ($v in ($allVerdicts | Sort-Object ts)) {
+      $vv = [string]$v.verdict
+      if ($vv -ne 'worked' -and $vv -ne 'worse') { continue }   # no_effect: nothing to actuate
+      $hts = [string]$v.hypothesis_ts
+      $settled = $allActs | Where-Object { ([string]$_.hypothesis_ts -eq $hts) -and ($terminal -contains [string]$_.action) }
+      if ($settled) { continue }
+      $aTurns = 0; try { $aTurns = [int]$v.after_turns } catch {}
+      $act = $null
+      try { $act = Invoke-VerdictActuation -Verdict $vv -Commit ([string]$v.commit) -Task ([string]$v.task) -HypothesisTs $hts -AfterTurns $aTurns -AllowRevert (-not $revertedThisCycle) } catch {}
+      if ($act -and $act.reverted) { $revertedThisCycle = $true }
+    }
+  } catch {}
+}
+
+function Get-LearningLoopConfig {
+  # Operator kill-switch for verdict actuation. Default ON (roadmap mandate:
+  # auto-revert regressions). config.json -> { "learningLoop": { "autoRevert": false } }
+  # disables auto-revert without a code change. Every git op stays fail-closed.
+  $cfg = @{ autoRevert = $true }
+  try {
+    $cf = Join-Path (Get-BridgeRoot) 'config.json'
+    if (Test-Path -LiteralPath $cf) {
+      $j = [System.IO.File]::ReadAllText($cf, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      if ($j -and $j.PSObject.Properties['learningLoop']) {
+        $ll = $j.learningLoop
+        if ($ll.PSObject -and $ll.PSObject.Properties['autoRevert']) { $cfg.autoRevert = [bool]$ll.autoRevert }
+      }
+    }
+  } catch {}
+  return $cfg
+}
+
+function Test-GitCommitExists {
+  param([string]$Root, [string]$Commit)
+  if ([string]::IsNullOrWhiteSpace($Commit)) { return $false }
+  try {
+    $arg = $Commit + '^{commit}'
+    & git -C $Root rev-parse --verify --quiet $arg 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } catch { return $false }
+}
+
+function Invoke-VerdictActuation {
+  # Closes the learning loop. 'worse' -> auto-revert the commit with a SAFE
+  # `git revert` (creates an inverse commit; never reset --hard / push --force).
+  # 'worked' -> cement the win into durable memory. Fail-closed: any git problem
+  # aborts the revert cleanly and is logged; this never throws.
+  # Returns @{ reverted=<bool>; action=<string> }.
+  param(
+    [string]$Verdict,
+    [string]$Commit,
+    [string]$Task = '',
+    [string]$HypothesisTs = '',
+    [int]$AfterTurns = 0,
+    [bool]$AllowRevert = $true
+  )
+  $result = @{ reverted = $false; action = 'none' }
+  if ([string]::IsNullOrWhiteSpace($Verdict)) { return $result }
+  $root = Get-BridgeRoot
+  $shortTask = if ($Task.Length -gt 80) { $Task.Substring(0, 80) + '...' } else { $Task }
+
+  if ($Verdict -eq 'worked') {
+    Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='cement' }
+    try { Add-Memory -Text ("Закреплено (worked): '$shortTask' (коммит $Commit) подтверждено как улучшение за $AfterTurns ходов. Не откатывать; развивать этот подход.") -Tags @('learning-loop','cemented','worked') -Importance 0.85 | Out-Null } catch {}
+    $result.action = 'cement'
+    return $result
+  }
+
+  if ($Verdict -eq 'worse') {
+    $cfg = Get-LearningLoopConfig
+    if (-not $cfg.autoRevert) {
+      Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_disabled' }
+      $result.action = 'revert_disabled'; return $result
+    }
+    if (-not (Test-GitCommitExists -Root $root -Commit $Commit)) {
+      Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_skipped'; reason='commit not found' }
+      $result.action = 'revert_skipped'; return $result
+    }
+    if (-not $AllowRevert) { $result.action = 'revert_deferred_cap'; return $result }   # transient: retry next cycle
+    # Precondition: clean INDEX (no staged changes). The bridge repo perpetually
+    # carries unstaged/untracked runtime files (turns.jsonl, metrics.jsonl, channel
+    # state) — those do NOT block a surgical `git revert` of a code commit and must
+    # not veto actuation (a global dirty-tree check would disable auto-revert
+    # forever in production). Only a dirty index risks clobbering a mid-commit, so
+    # we defer on that (transient). git revert itself fail-closes on path conflicts.
+    $indexDirty = $true
+    try { & git -C $root diff --cached --quiet 2>$null; $indexDirty = ($LASTEXITCODE -ne 0) } catch { $indexDirty = $true }
+    if ($indexDirty) { $result.action = 'revert_skipped_dirty'; return $result }         # transient: retry next cycle
+    # Safe revert: inverse commit. On any conflict, abort and leave tree clean.
+    $ok = $false; $why = ''
+    try {
+      & git -C $root revert --no-edit $Commit 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) { $ok = $true } else { $why = "git revert exit $LASTEXITCODE" }
+    } catch { $why = $_.Exception.Message }
+    if (-not $ok) {
+      try { & git -C $root revert --abort 2>$null | Out-Null } catch {}
+      Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_failed'; reason=$why }
+      try { Add-Memory -Text ("Авто-откат регресса '$shortTask' (коммит $Commit) не прошёл: $why. Откат отменён, дерево чистое. Нужен ручной разбор.") -Tags @('learning-loop','worse','revert-failed') -Importance 0.8 | Out-Null } catch {}
+      try { Add-Idea -Text ("Ручной разбор регресса: коммит $Commit ('$shortTask') ухудшил метрики, авто-откат не прошёл ($why).") -Tags @('learning-loop','regression') -Severity 'warning' | Out-Null } catch {}
+      $result.action = 'revert_failed'; return $result
+    }
+    $revHead = try { (& git -C $root log -1 --format='%H' 2>$null).Trim() } catch { '' }
+    Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='reverted'; revert_commit=$revHead }
+    try { Add-Memory -Text ("Авто-откат (worse): коммит $Commit ('$shortTask') ухудшил метрики за $AfterTurns ходов — откат выполнен ($revHead). Подход не повторять без изменений.") -Tags @('learning-loop','worse','reverted') -Importance 0.85 | Out-Null } catch {}
+    $result.reverted = $true; $result.action = 'reverted'
+    return $result
+  }
+
+  return $result
 }
 
 function Invoke-PostMortem {
