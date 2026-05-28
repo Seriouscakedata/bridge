@@ -26,7 +26,57 @@ function Get-FeatureRegistry {
     $p = Get-RegistryPath
     if (-not (Test-Path $p)) { return @() }
     $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (@($json).Count -eq 1 -and $json[0].PSObject -and $json[0].PSObject.Properties['value']) {
+        return @($json[0].value)
+    }
+    if ($json.PSObject -and $json.PSObject.Properties['value']) {
+        return @($json.value)
+    }
     return @($json)
+}
+
+function ConvertTo-FeatureStateDictionary {
+    param($State)
+    $dict = @{}
+    $skip = @(
+        'Count', 'Length', 'LongLength', 'Rank', 'SyncRoot',
+        'IsReadOnly', 'IsFixedSize', 'IsSynchronized', 'Keys', 'Values'
+    )
+    if ($null -eq $State) { return $dict }
+    if ($State -is [System.Collections.IDictionary]) {
+        foreach ($key in $State.Keys) {
+            $name = [string]$key
+            if ($skip -notcontains $name) { $dict[$name] = $State[$key] }
+        }
+        return $dict
+    }
+    if ($State.PSObject) {
+        foreach ($prop in $State.PSObject.Properties) {
+            if ($skip -notcontains $prop.Name) { $dict[$prop.Name] = $prop.Value }
+        }
+    }
+    return $dict
+}
+
+function Get-FeatureDottedValue {
+    param(
+        $Object,
+        [string]$Path
+    )
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $current = $Object
+    foreach ($part in ($Path -split '\.')) {
+        if ($null -eq $current) { return $null }
+        if ($current -is [System.Collections.IDictionary]) {
+            if (-not $current.Contains($part)) { return $null }
+            $current = $current[$part]
+        } elseif ($current.PSObject -and $current.PSObject.Properties[$part]) {
+            $current = $current.PSObject.Properties[$part].Value
+        } else {
+            return $null
+        }
+    }
+    return $current
 }
 
 function Get-FeatureState {
@@ -42,7 +92,10 @@ function Save-FeatureState {
     $p = Get-FeatureStatePath
     $dir = Split-Path $p
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $json = $State | ConvertTo-Json -Depth 6 -Compress
+    $dict = ConvertTo-FeatureStateDictionary $State
+    $ordered = [ordered]@{}
+    foreach ($key in ($dict.Keys | Sort-Object)) { $ordered[$key] = $dict[$key] }
+    $json = ([pscustomobject]$ordered) | ConvertTo-Json -Depth 6 -Compress
     [System.IO.File]::WriteAllText($p, $json, [System.Text.Encoding]::UTF8)
 }
 
@@ -65,10 +118,7 @@ function Get-AllFeatures {
     # Returns features merged with runtime state
     $registry = Get-FeatureRegistry
     $state = Get-FeatureState
-    $stateDict = @{}
-    if ($state -and $state.PSObject) {
-        $state.PSObject.Properties | ForEach-Object { $stateDict[$_.Name] = $_.Value }
-    }
+    $stateDict = ConvertTo-FeatureStateDictionary $state
     $result = @()
     foreach ($f in $registry) {
         $entry = [ordered]@{}
@@ -90,10 +140,7 @@ function Update-FeatureActivations {
     $root = Get-BridgeRootFeat
     $registry = Get-FeatureRegistry
     $state = Get-FeatureState
-    $stateDict = @{}
-    if ($state -and $state.PSObject) {
-        $state.PSObject.Properties | ForEach-Object { $stateDict[$_.Name] = $_.Value }
-    }
+    $stateDict = ConvertTo-FeatureStateDictionary $state
     $now = (Get-Date).ToString('o')
     foreach ($f in $registry) {
         if (-not $f.activation_signal) { continue }
@@ -121,7 +168,7 @@ function Update-FeatureActivations {
                 try {
                     $s = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
                     $key = [string]$sig.path
-                    $val = $s.$key
+                    $val = Get-FeatureDottedValue -Object $s -Path $key
                     if ($null -ne $val -and $val -ne '') { $matched = $true }
                 } catch {}
             }
@@ -137,8 +184,7 @@ function Update-FeatureActivations {
             }
         }
     }
-    $newState = [pscustomobject]$stateDict
-    Save-FeatureState $newState
+    Save-FeatureState $stateDict
     return $stateDict.Count
 }
 
