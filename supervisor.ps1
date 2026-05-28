@@ -31,7 +31,7 @@ function Kill-Bridge {
 }
 function Reap-Bloated {
   # Memory-leak guard: kill any bridge server/driver powershell whose PRIVATE memory exceeds the
-  # cap. A runaway (e.g. the /api/radar ConvertTo-Json OOM that spawned 50-70GB zombie powershell)
+  # cap. A runaway (e.g. the /api/radar ConvertTo-Json -Depth 10 OOM that spawned 50-70GB zombie powershell)
   # never recovers and strangles the whole machine. The loop below then restarts a fresh one.
   # The supervisor is ELEVATED, so it CAN kill these (a non-elevated watchdog cannot). Match by
   # PRIVATE memory (zombies had small working sets but 70GB private). /F only (no /T) to spare

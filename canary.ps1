@@ -24,4 +24,4 @@ if ($Force) {
   $cycle = Invoke-CanaryCycle
 }
 
-Write-Output ($cycle | ConvertTo-Json -Compress)
+Write-Output ($cycle | ConvertTo-Json -Depth 10 -Compress)

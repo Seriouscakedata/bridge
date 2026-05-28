@@ -14,7 +14,7 @@ foreach ($f in $ps1s) {
     if ($errs.Count -gt 0) { $failed += "PARSE: $($f.Name) ($($errs.Count) err)" }
 }
 
-# 1b. Footgun lint -- ETS string -> ConvertTo-Json OOM (the /api/radar incident, 2026-05-25).
+# 1b. Footgun lint -- ETS string -> ConvertTo-Json -Depth 10 OOM (the /api/radar incident, 2026-05-25).
 #     `Get-Content -Raw` attaches ETS PSProvider/PSDrive note-props to the returned string;
 #     serializing it with a high ConvertTo-Json -Depth recurses into provider object graphs and
 #     OOM-crashes the host (~70GB zombie powershell). Convention: read JSON-bound text with
@@ -28,7 +28,7 @@ foreach ($lf in ($lintFiles | Sort-Object FullName -Unique)) {
         if ($ln.TrimStart().StartsWith('#')) { continue }   # skip comment lines (docs may mention the pattern)
         $dm = [regex]::Match($ln, 'ConvertTo-Json[^|]*?-Depth\s+(\d+)')
         if ($dm.Success -and [int]$dm.Groups[1].Value -ge 12) { $failed += "LINT: $($lf.Name): ConvertTo-Json -Depth $($dm.Groups[1].Value) (>=12 OOM risk; use <=10 + flat DTO)" }
-        if ($ln -match 'Get-Content[^|]*-Raw[^|]*\|\s*ConvertTo-Json') { $failed += "LINT: $($lf.Name): Get-Content -Raw piped into ConvertTo-Json (ETS OOM; use ReadAllText)" }
+        if ($ln -match 'Get-Content[^|]*-Raw[^|]*\|\s*ConvertTo-Json -Depth 10') { $failed += "LINT: $($lf.Name): Get-Content -Raw piped into ConvertTo-Json -Depth 10 (ETS OOM; use ReadAllText)" }
     }
 }
 
