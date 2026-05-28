@@ -50,3 +50,7 @@
 {"ts":"2026-05-28T15:46:20.7203034+03:00","event":"doctor_fix","channel":"main","what":"doctor_activated"}
 {"ts":"2026-05-28T16:17:07.3963843+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] auth-bypass (server.ps1:292) -- ���� handler GET /api/health ��ࠡ��뢠���� ��"}
 {"ts":"2026-05-28T16:29:52.0753891+03:00","event":"verified_commit","channel":"main","what":"GET /api/health без авторизации → STATUS=200, FIELDS=heartbeat_age_sec,ok,recent_error_count_24h,upt"}
+{"ts":"2026-05-28T16:36:41.5917741+03:00","event":"verified_commit","channel":"main","what":"/api/health без auth → 4 публичных поля (ok, uptime_sec, heartbeat_age_sec, recent_error_count_24h),"}
+{"ts":"2026-05-28T16:36:43.4942980+03:00","event":"verified_commit","channel":"main","what":"/api/health с Basic Auth → 10 полей включая git_head, paused, status, parallel_streams_active | резу"}
+{"ts":"2026-05-28T16:36:44.4460786+03:00","event":"verified_commit","channel":"main","what":"Test-IsAuthenticated: bypass-fix строка 274 (return $false вместо $true), scope $script: на всех пер"}
+{"ts":"2026-05-28T16:52:09.0234517+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] path-traversal (lib/features.ps1:151) -- activation_signal.path �� registr"}
