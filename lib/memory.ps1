@@ -93,12 +93,21 @@ function Invoke-GeminiApi {
   $json  = $BodyObj | ConvertTo-Json -Depth 8
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   try {
-    return Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec
+    # 2026-05-28: switched from Invoke-RestMethod to Invoke-WebRequest +
+    # RawContentStream + UTF-8 decode. PS 5.1's Invoke-RestMethod has a long-
+    # standing bug where it decodes response bytes as ISO-8859-1 even when the
+    # Content-Type explicitly says charset=utf-8 — that corrupts every Cyrillic
+    # character into cp866-looking mojibake (we saw `���祢��` instead of
+    # `ключевая` in every gemini-2.5-pro audit fallback finding). Same workaround
+    # is already used in Invoke-DeepSeekChat (lib/llm.ps1).
+    $resp = Invoke-WebRequest -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec -UseBasicParsing
+    $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    return ($txt | ConvertFrom-Json)
   } catch {
     $detail = ''
     try {
       $stream = $_.Exception.Response.GetResponseStream()
-      $detail = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+      $detail = (New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)).ReadToEnd()
     } catch {}
     if ($detail) { throw "Gemini API error: $detail" }
     throw
