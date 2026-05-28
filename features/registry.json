@@ -26,7 +26,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Аудитор",
-        "description":  "Фоновый страж: каждые 15 мин проверяет логи и состояние моста на аномалии (зависшая задача, пустые ответы, отсутствие коммитов). При срабатывании зовёт Доктора."
+        "description":  "Фоновый страж: каждые 15 мин проверяет логи и состояние моста на аномалии (зависшая задача, пустые ответы, отсутствие коммитов). При срабатывании зовёт Доктора. Также: respect-idle gate и per-task suppression по hash причины (0f50038)."
     },
     {
         "id":  "doctor",
@@ -54,7 +54,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Доктор",
-        "description":  "Режим саморемонта: запускается аудитором при поломке. Диагностирует, чинит, проверяет фикс критиком, возвращает мост к прерванной задаче."
+        "description":  "Режим саморемонта: запускается аудитором при поломке. Диагностирует, чинит, проверяет фикс критиком, возвращает мост к прерванной задаче. Также собирает event metrics (a137b96) для пост-анализа."
     },
     {
         "id":  "intent-classifier",
@@ -251,7 +251,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Библиотекарь памяти",
-        "description":  "Ночная консолидация vector-памяти: дедуп, обрезка старого, объединение похожих воспоминаний. Поддерживает relevance/recency хранилища."
+        "description":  "Ночная консолидация vector-памяти: дедуп, обрезка старого, объединение похожих воспоминаний. Поддерживает relevance/recency хранилища. Расписание — гибридное (1cdb9a1): 6h потолок + delta-trigger + 30min floor, не просто ночное."
     },
     {
         "id":  "backlog-curator",
@@ -279,7 +279,7 @@
                           "backlog-add.js"
                       ],
         "name":  "Куратор бэклога",
-        "description":  "При добавлении новой идеи в backlog: LLM (gemini-flash-lite) выносит approve/hold/drop. Дедуп через эмбеддинги. Свежесть проверяется по последним коммитам."
+        "description":  "При добавлении новой идеи в backlog: LLM (gemini-flash-lite) выносит approve/hold/drop. Дедуп через эмбеддинги. Свежесть проверяется по последним коммитам. Также читает goals.md, считает score=value*confidence/effort, сортирует по score (c71855d). + severity-ranked picker (304e477): critical \u003e warning \u003e info \u003e plain ideas."
     },
     {
         "id":  "postmortem",
@@ -442,7 +442,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Пул воркеров",
-        "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/opus) с complexity-floor и domain-affinity. [[PARALLEL:N]] параллелит на разных воркерах."
+        "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/opus) с complexity-floor и domain-affinity. [[PARALLEL:N]] параллелит на разных воркерах. Включает model usage accounting (cc9f453)."
     },
     {
         "id":  "parallel-chunks",
@@ -524,7 +524,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Режим изучения",
-        "description":  "Триггеры «изучи», «разберись как работает» → исследовательский режим: внешний поиск + локальное чтение → markdown-отчёт пользователю."
+        "description":  "Триггеры «изучи», «разберись как работает» → исследовательский режим: внешний поиск + локальное чтение → markdown-отчёт пользователю. Включает budget control (7fb06ed) для исследовательских прогонов."
     },
     {
         "id":  "discuss-mode",
@@ -551,7 +551,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Режим обсуждения",
-        "description":  "Триггеры «обсуди», «согласуй», маркер [[DEEP-THINK]] → диалог Claude ↔ Codex до сходимости (max 6 ходов) перед реализацией."
+        "description":  "Триггеры «обсуди», «согласуй», маркер [[DEEP-THINK]] → диалог Claude ↔ Codex до сходимости (max 6 ходов) перед реализацией. Триггеры — LLM-classifier (intent.ps1) + синонимы (6810f55), не regex-based."
     },
     {
         "id":  "memory-recall",
@@ -578,7 +578,7 @@
         "last_activated_at":  null,
         "embedding":  null,
         "name":  "Recall памяти",
-        "description":  "Семантический поиск по vector-памяти при каждой задаче: 3-5 релевантных воспоминаний инжектятся в промпт планировщика."
+        "description":  "Семантический поиск по vector-памяти при каждой задаче: 3-5 релевантных воспоминаний инжектятся в промпт планировщика. Расширен: skill playbooks, study lessons, tag filters, tag-aware dedup, relevant recall scoring (f39ae9e, 1c2c614)."
     },
     {
         "id":  "message-cache",
@@ -604,7 +604,7 @@
                           "message-send.js"
                       ],
         "name":  "Кэш сообщений UI",
-        "description":  "Per-channel кэш в браузере (channelMessageCache). Переключение каналов мгновенное — рендер из кэша + diff-fetch since lastSeq."
+        "description":  "Per-channel кэш в браузере (channelMessageCache). Переключение каналов мгновенное — рендер из кэша + diff-fetch since lastSeq. Часть multi-channel системы (d76e836, 635fb25, 87901bd): per-channel namespaces в памяти и параллельные drivers."
     },
     {
         "id":  "channel-switch",
@@ -631,7 +631,7 @@
                           "channel-switch.js"
                       ],
         "name":  "Переключение каналов",
-        "description":  "Atomic switch с epoch-guard и AbortController. Быстрые двойные клики корректно отменяют предыдущий swap. CSS без мигания."
+        "description":  "Atomic switch с epoch-guard и AbortController. Быстрые двойные клики корректно отменяют предыдущий swap. CSS без мигания. Часть multi-channel системы (d76e836, 635fb25, 87901bd) с per-channel state и memory namespaces."
     },
     {
         "id":  "zombie-job-recovery",
@@ -749,7 +749,7 @@
     {
         "id":  "orphan-codex-sweep",
         "name":  "Сборщик orphan codex",
-        "description":  "Idle-цикл: убивает codex.exe процессы старше 30 мин, не привязанные к активным агентам и не зарегистрированные. НЕ трогает claude.exe (IDE юзера). Лог в control/orphan-sweep.log.",
+        "description":  "Idle-цикл: убивает codex.exe процессы старше 30 мин, не привязанные к активным агентам и не зарегистрированные. НЕ трогает claude.exe (IDE юзера). Лог в control/orphan-sweep.log. Также защищает user desktop codex.exe (d862ec1): фильтр по CLI fingerprint (exec + --skip-git-repo-check), внешние codex никогда не убиваются.",
         "owner_files":  [
                             "lib/common.ps1",
                             "driver.ps1"
