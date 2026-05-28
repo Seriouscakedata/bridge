@@ -445,6 +445,7 @@ try {
           ',"recent_error_count_24h":' + $errCount + `
           ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"parallel_streams_active":' + $psActive + '}'
+        $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
         if (Test-IsAuthenticated $ctx) {
           Send-Text $ctx $hJson 'application/json; charset=utf-8'
         } else {
@@ -452,7 +453,6 @@ try {
             ',"uptime_sec":' + $uptimeSec + `
             ',"heartbeat_age_sec":' + $hbAge + `
             ',"recent_error_count_24h":' + $errCount + '}'
-          $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
           Send-Text $ctx $hJsonPub 'application/json; charset=utf-8'
         }
         continue
