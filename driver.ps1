@@ -2042,6 +2042,28 @@ function Get-LastClaudeInstruction {
   return ''
 }
 
+function Get-CoderSandboxMode {
+  # Resolves the Codex CLI sandbox mode passed via -s for a coder turn.
+  # Precedence: config 'coder.sandboxMode' (overlaid by settings.json) -> safe default.
+  # Unknown/blank values fall back to the default. The default is intentionally the
+  # historical behaviour ('danger-full-access') so introducing this control point changes
+  # NOTHING; flipping the default to 'workspace-write' is Gate A (operator sign-off),
+  # because it changes the execution environment of EVERY task.
+  $valid = @('read-only','workspace-write','danger-full-access')
+  $default = 'danger-full-access'
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'coder') -and $cfg.coder) {
+      $coderCfg = $cfg.coder
+      if (($coderCfg.PSObject.Properties.Name -contains 'sandboxMode')) {
+        $m = [string]$coderCfg.sandboxMode
+        if (-not [string]::IsNullOrWhiteSpace($m) -and ($valid -contains $m)) { return $m }
+      }
+    }
+  } catch {}
+  return $default
+}
+
 function Get-CoderReasoningEffort {
   param([string]$CoderCwd)
   $st = Read-State
@@ -2154,7 +2176,7 @@ function Invoke-Coder {
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
   $readOnlyCoderMode = ($Mode -eq 'discuss' -or $Mode -eq 'planner-fallback')
-  $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { 'danger-full-access' }
+  $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { Get-CoderSandboxMode }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $replayCoderModel = 'codex-cli'

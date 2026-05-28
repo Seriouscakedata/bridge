@@ -6,7 +6,10 @@
   "maxTurns": 150,
   "mode": "interactive",
   "planner": "claude",
-  "coder": "codex",
+  "coder": {
+    "agent": "codex",
+    "sandboxMode": "danger-full-access"
+  },
   "workRoot": "C:/Users/rafie",
   "idlePollSeconds": 1,
   "fullContextCount": 20,
