@@ -11,6 +11,25 @@ function New-DefaultCanaryState {
   }
 }
 
+# FIX 2026-05-28: canary_state recursive-nesting bug. Historically, a buggy read-modify-write
+# seeded a canary_state property INSIDE the canary_state sub-object; since Get/Set neither
+# stripped it nor whitelisted fields, the nesting persisted on disk (state.json bloated to
+# ~1290 lines, capped only by ConvertTo-Json -Depth 10). This helper rebuilds a clean state
+# carrying ONLY the canonical fields, copying values where present -- dropping any nested
+# canary_state or other junk. Used on BOTH read and write so nesting can never recur.
+function ConvertTo-CleanCanaryState {
+  param($Source)
+  $clean = New-DefaultCanaryState
+  if ($Source) {
+    foreach ($p in $clean.PSObject.Properties.Name) {
+      $has = $false
+      try { $has = ($Source.PSObject.Properties.Name -contains $p) } catch {}
+      if ($has) { $clean.$p = $Source.$p }
+    }
+  }
+  return $clean
+}
+
 function Get-CanaryConfig {
   $def = [ordered]@{
     enabled            = $true
@@ -42,30 +61,29 @@ function Get-CanaryState {
   try { $st = Read-State } catch {}
   if (-not $st -or -not $st.canary_state) { return (New-DefaultCanaryState) }
 
-  $state = $st.canary_state
-  $def = New-DefaultCanaryState
-  foreach ($p in $def.PSObject.Properties.Name) {
-    if (-not ($state.PSObject.Properties.Name -contains $p)) {
-      $state | Add-Member -NotePropertyName $p -NotePropertyValue $def.$p -Force
-    }
-  }
-  return $state
+  # Whitelist-rebuild: fills missing fields with defaults AND strips any nested canary_state
+  # or other junk that historical buggy writes may have left on disk.
+  return (ConvertTo-CleanCanaryState -Source $st.canary_state)
 }
 
 function Set-CanaryState {
   param($State)
 
+  # Persist ONLY the canonical fields. Even if $State carries a nested canary_state (e.g. it
+  # was read from a still-bloated disk), the clean rebuild guarantees a single flat level.
+  $clean = ConvertTo-CleanCanaryState -Source $State
+
   if (Get-Command Update-State -ErrorAction SilentlyContinue) {
     Update-State {
       param($s)
-      $s | Add-Member -NotePropertyName canary_state -NotePropertyValue $State -Force
+      $s | Add-Member -NotePropertyName canary_state -NotePropertyValue $clean -Force
     } | Out-Null
     return
   }
 
   $st = Read-State
   if (-not $st) { throw 'state.json missing; cannot persist canary_state' }
-  $st | Add-Member -NotePropertyName canary_state -NotePropertyValue $State -Force
+  $st | Add-Member -NotePropertyName canary_state -NotePropertyValue $clean -Force
   Write-State $st
 }
 
