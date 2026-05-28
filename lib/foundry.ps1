@@ -130,3 +130,266 @@ function Invoke-PlanDag {
     if ($null -ne $OnWave) { try { & $OnWave ([pscustomobject]@{ wave=$waves; ids=$batchIds; outcomes=$waveOutcomes }) } catch {} }
   }
 }
+
+# ===========================================================================
+# Production step runner: the REAL $BatchRunner that Invoke-PlanDag drives.
+#
+# Each plan step becomes an isolated worker in its OWN git worktree of the
+# target PROJECT repo. The result is gated (worker reported 'done' + produced
+# commits, plus an optional caller-supplied verify/critic gate) and then MERGED
+# back on pass or DISCARDED on fail. Discard == rollback: rejected work lives
+# only on the throwaway worktree branch, so the repo's real branch never sees
+# it -- no git reset/revert needed, the bad work is simply never merged.
+#
+# Steps inside one batch are exactly one DAG wave => mutually independent, so we
+# launch them ALL, await the whole batch once, then gate+merge SEQUENTIALLY
+# (merges must serialize to stay conflict-safe -- same discipline as
+# Invoke-ParallelDispatch).
+#
+# All subprocess/git plumbing is injected via $Ops so the orchestration (batch
+# lifecycle, gating, rollback-vs-merge, result shaping) is unit-testable with a
+# simulated runner. Production callers pass -RepoRoot and Get-FoundryDefaultOps
+# wires the real worktree-worker engine (lib/parallel.ps1 + lib/worktrees.ps1).
+#
+# $Ops contract (every value is a scriptblock):
+#   Prepare : { param($Step)     -> @{ ok=<bool>; ctx=<opaque>; error=<string> } }
+#               create the worktree + spawn the worker; ctx is threaded to the
+#               other ops untouched (it carries whatever Prepare needs later).
+#   Await   : { param($Contexts) -> $null }   block until every ctx's worker is
+#               terminal (or a timeout fires and kills the stragglers).
+#   Result  : { param($Ctx)      -> @{ status=<string>; reply=<string>; commits=@() } }
+#   Merge   : { param($Ctx)      -> @{ ok=<bool>; conflict=<bool> } }
+#   Cleanup : { param($Ctx)      -> $null }   tear down worktree+branch; called
+#               on EVERY prepared step, pass or fail (idempotent).
+#
+# $Verify (the gate): { param($Step,$Ctx,$Result) -> @{ ok=<bool>; reason=<string> } }
+#   Default = Test-FoundryStepResult (structural only, no LLM cost): pass iff the
+#   worker reported terminal 'done' AND produced >=1 commit.
+# ===========================================================================
+
+function Format-FoundryTail {
+  # Collapse whitespace and keep only the trailing $Max chars of a worker reply,
+  # prefixed with ': ', for embedding in a one-line step result string.
+  param([string]$Text, [int]$Max = 160)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  $t = (([string]$Text).Trim() -replace '\s+', ' ')
+  if ($t.Length -gt $Max) { $t = '...' + $t.Substring($t.Length - $Max) }
+  return ': ' + $t
+}
+
+function Get-FoundryStepBody {
+  # Compose the worker instruction body for a plan step: title + acceptance
+  # criteria. Kept separate so both the runner and its tests can reason about it.
+  param($Step)
+  $title = [string](Get-RunnerField $Step 'title' '')
+  $criteria = [string](Get-RunnerField $Step 'criteria' '')
+  $sb = New-Object System.Text.StringBuilder
+  if (-not [string]::IsNullOrWhiteSpace($title)) { [void]$sb.AppendLine($title) }
+  if (-not [string]::IsNullOrWhiteSpace($criteria)) {
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('Acceptance criteria:')
+    [void]$sb.AppendLine($criteria)
+  }
+  $text = $sb.ToString().Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { $text = [string](Get-RunnerField $Step 'id' 'step') }
+  return $text
+}
+
+function Test-FoundryStepResult {
+  # Default verify gate: STRUCTURAL only (no LLM cost). A step passes iff the
+  # worker reported terminal 'done' AND actually produced >=1 commit on its
+  # branch. Everything else fails closed. Richer gates (run a verify command in
+  # the worktree, call a critic model) are layered by passing a custom -Verify
+  # scriptblock to New-FoundryStepRunner.
+  param($Step, $Ctx, $Result)
+  $status = [string](Get-RunnerField $Result 'status' '')
+  if ($status -ne 'done') { return @{ ok = $false; reason = ('worker status=' + $status) } }
+  $commits = @(Get-RunnerField $Result 'commits' @())
+  if ($commits.Count -lt 1) { return @{ ok = $false; reason = 'worker reported done but produced no commits' } }
+  return @{ ok = $true; reason = '' }
+}
+
+function Get-FoundryDefaultOps {
+  # Wire the REAL plumbing for New-FoundryStepRunner against a project repo.
+  # Returns the $Ops hashtable (Prepare/Await/Result/Merge/Cleanup). Refuses the
+  # bridge's own repo: self-modification must stay serial/safe and never flow
+  # through throwaway parallel worktree workers.
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10
+  )
+  $repo = [string]$RepoRoot
+  if ([string]::IsNullOrWhiteSpace($repo) -or -not (Test-Path (Join-Path $repo '.git'))) {
+    throw ('Get-FoundryDefaultOps: not a git repo: ' + $repo)
+  }
+  try {
+    $bridge = [System.IO.Path]::GetFullPath((Get-BridgeRoot)).TrimEnd('\')
+    if ([System.IO.Path]::GetFullPath($repo).TrimEnd('\') -eq $bridge) {
+      throw 'Get-FoundryDefaultOps: refusing to run the Foundry DAG against the bridge repo itself'
+    }
+  } catch {
+    if ($_.Exception.Message -like '*refusing*') { throw }
+  }
+
+  $tmin = $TimeoutMin
+  $psec = $PollSec
+  $ops = @{}
+
+  $ops['Prepare'] = {
+    param($Step)
+    $sid = [string](Get-RunnerField $Step 'id' '')
+    if ([string]::IsNullOrWhiteSpace($sid)) { return @{ ok = $false; error = 'step has no id' } }
+    $wt = New-Worktree -RepoRoot $repo -Name ('foundry-' + $sid)
+    if (-not $wt) { return @{ ok = $false; error = 'worktree create failed' } }
+    $body = Get-FoundryStepBody $Step
+    $complexity = [string](Get-RunnerField $Step 'complexity' 'moderate')
+    $stream = [pscustomobject]@{ id = $sid; files = @(); complexity = $complexity; body = $body; opus = $false }
+    $spec = $null
+    try { $spec = Select-WorkerForStream -Stream $stream } catch {}
+    if (-not $spec) { $pool = @(Get-ParallelWorkerPool); if ($pool.Count -gt 0) { $spec = $pool[0] } }
+    if (-not $spec) { Remove-Worktree $wt; return @{ ok = $false; error = 'no worker available' } }
+    $worker = $null
+    try { $worker = Spawn-Worker -StreamId $sid -Body $body -Worktree $wt.path -BranchName $wt.branch -WorkerSpec $spec }
+    catch { Remove-Worktree $wt; return @{ ok = $false; error = ('spawn: ' + $_.Exception.Message) } }
+    return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker } }
+  }.GetNewClosure()
+
+  $ops['Await'] = {
+    param($Contexts)
+    $cs = @($Contexts)
+    if ($cs.Count -eq 0) { return }
+    $deadline = (Get-Date).AddMinutes($tmin)
+    while ($true) {
+      $alive = 0
+      foreach ($c in $cs) {
+        $r = Get-WorkerResult $c.worker
+        if ([string](Get-RunnerField $r 'status' '') -eq 'running') { $alive++ }
+      }
+      if ($alive -eq 0) { break }
+      if ((Get-Date) -ge $deadline) {
+        foreach ($c in $cs) {
+          $w = $c.worker
+          try { if ($w.process -and -not $w.process.HasExited) { Start-Process taskkill -ArgumentList '/PID', ([string]$w.pid), '/F', '/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
+        }
+        break
+      }
+      Start-Sleep -Seconds $psec
+    }
+  }.GetNewClosure()
+
+  $ops['Result'] = {
+    param($Ctx)
+    $r = Get-WorkerResult $Ctx.worker
+    return @{
+      status  = [string](Get-RunnerField $r 'status' 'failed')
+      reply   = [string](Get-RunnerField $r 'reply' '')
+      commits = @(Get-RunnerField $r 'commits' @())
+    }
+  }.GetNewClosure()
+
+  $ops['Merge'] = {
+    param($Ctx)
+    $m = Merge-Worktree -Wt $Ctx.wt -Message ('foundry: ' + $Ctx.sid)
+    return @{ ok = [bool](Get-RunnerField $m 'ok' $false); conflict = [bool](Get-RunnerField $m 'conflict' $false) }
+  }.GetNewClosure()
+
+  $ops['Cleanup'] = {
+    param($Ctx)
+    try { Remove-Worktree $Ctx.wt } catch {}
+  }.GetNewClosure()
+
+  return $ops
+}
+
+function New-FoundryStepRunner {
+  # Build the $BatchRunner scriptblock for Invoke-PlanDag. Pass -Ops to inject
+  # plumbing (tests), or -RepoRoot to wire the real engine via Get-FoundryDefaultOps.
+  [CmdletBinding()]
+  param(
+    [hashtable]$Ops = $null,
+    [string]$RepoRoot = '',
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10,
+    [scriptblock]$Verify = $null
+  )
+  if ($null -eq $Ops) {
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) { throw 'New-FoundryStepRunner: provide -Ops or -RepoRoot' }
+    $Ops = Get-FoundryDefaultOps -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec
+  }
+  foreach ($k in @('Prepare', 'Await', 'Result', 'Merge', 'Cleanup')) {
+    if (-not $Ops.ContainsKey($k) -or $null -eq $Ops[$k]) { throw ("New-FoundryStepRunner: Ops is missing '" + $k + "'") }
+  }
+  $verifyGate = $Verify
+  if ($null -eq $verifyGate) { $verifyGate = { param($Step, $Ctx, $Result) Test-FoundryStepResult -Step $Step -Ctx $Ctx -Result $Result } }
+
+  $prepareOp = $Ops['Prepare']
+  $awaitOp   = $Ops['Await']
+  $resultOp  = $Ops['Result']
+  $mergeOp   = $Ops['Merge']
+  $cleanupOp = $Ops['Cleanup']
+
+  return {
+    param($Steps)
+    $out  = New-Object 'System.Collections.Generic.List[object]'
+    $live = New-Object 'System.Collections.Generic.List[object]'   # prepared steps awaiting their worker
+
+    # 1) Launch every step in the wave (parallel): create worktree + spawn worker.
+    foreach ($s in @($Steps)) {
+      $sid = [string](Get-RunnerField $s 'id' '')
+      $prep = $null
+      try { $prep = & $prepareOp $s } catch { $prep = @{ ok = $false; error = $_.Exception.Message } }
+      if (-not [bool](Get-RunnerField $prep 'ok' $false)) {
+        $perr = [string](Get-RunnerField $prep 'error' 'prepare failed')
+        [void]$out.Add(@{ id = $sid; ok = $false; status = 'blocked'; result = ('spawn failed: ' + $perr) })
+        continue
+      }
+      [void]$live.Add(@{ step = $s; ctx = (Get-RunnerField $prep 'ctx' $null); sid = $sid })
+    }
+
+    # 2) Await the WHOLE batch once (workers run concurrently).
+    if ($live.Count -gt 0) {
+      $ctxs = @($live | ForEach-Object { $_.ctx })
+      try { & $awaitOp $ctxs } catch {}
+
+      # 3) Gate + merge-or-rollback, SEQUENTIALLY (merges must serialize).
+      foreach ($item in $live) {
+        $s = $item.step; $ctx = $item.ctx; $sid = $item.sid
+        $res = $null
+        try { $res = & $resultOp $ctx } catch { $res = @{ status = 'failed'; reply = $_.Exception.Message; commits = @() } }
+        $status = [string](Get-RunnerField $res 'status' 'failed')
+
+        if ($status -ne 'done') {
+          try { & $cleanupOp $ctx } catch {}
+          $reply = [string](Get-RunnerField $res 'reply' '')
+          [void]$out.Add(@{ id = $sid; ok = $false; status = 'blocked'; result = ('worker ' + $status + (Format-FoundryTail $reply)) })
+          continue
+        }
+
+        $gate = $null
+        try { $gate = & $verifyGate $s $ctx $res } catch { $gate = @{ ok = $false; reason = ('verify threw: ' + $_.Exception.Message) } }
+        if (-not [bool](Get-RunnerField $gate 'ok' $false)) {
+          try { & $cleanupOp $ctx } catch {}
+          $reason = [string](Get-RunnerField $gate 'reason' 'gate rejected')
+          [void]$out.Add(@{ id = $sid; ok = $false; status = 'blocked'; result = ('verify failed: ' + $reason) })
+          continue
+        }
+
+        $merge = $null
+        try { $merge = & $mergeOp $ctx } catch { $merge = @{ ok = $false; conflict = $false } }
+        if (-not [bool](Get-RunnerField $merge 'ok' $false)) {
+          try { & $cleanupOp $ctx } catch {}
+          $why = if ([bool](Get-RunnerField $merge 'conflict' $false)) { 'merge conflict (rolled back)' } else { 'merge failed (rolled back)' }
+          [void]$out.Add(@{ id = $sid; ok = $false; status = 'blocked'; result = $why })
+          continue
+        }
+
+        try { & $cleanupOp $ctx } catch {}
+        $commits = @(Get-RunnerField $res 'commits' @())
+        [void]$out.Add(@{ id = $sid; ok = $true; status = 'done'; result = ('merged ' + $commits.Count + ' commit(s)') })
+      }
+    }
+
+    return @($out.ToArray())
+  }.GetNewClosure()
+}
