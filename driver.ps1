@@ -4170,6 +4170,8 @@ while ($true) {
             }
 
             $diffWasTruncated = $false
+            $diffBytes = 0
+            try { $diffBytes = [Text.Encoding]::UTF8.GetByteCount($diff) } catch { $diffBytes = $diff.Length }
             if ($diff.Length -gt 16000) {
               $diffWasTruncated = $true
               $diff = $diff.Substring(0,16000) + "`n...[дифф обрезан]..."
@@ -4177,8 +4179,32 @@ while ($true) {
             $truncationNote = if ($diffWasTruncated) {
               "ВАЖНО: diff ниже обрезан по лимиту контекста. Не считай сам факт обрезки синтаксической ошибкой, потерей кода или доказательством обрезанной функции; проверяй только реально видимые изменения. Синтаксис .ps1 и BOM проверяются отдельными командами."
             } else { "" }
+            $diffTruncatedText = ([string]$diffWasTruncated).ToLowerInvariant()
+            $changedFilesText = ''
+            try {
+              $changedLines = @()
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $changedLines = @(& git -C $bridgeRoot diff --name-status $base -- 2>$null) }
+              if (@($changedLines).Count -eq 0) { $changedLines = @(& git -C $bridgeRoot diff --name-status HEAD -- 2>$null) }
+              $changedFilesText = [string]::Join("`n", @($changedLines))
+              if ($changedFilesText.Length -gt 3000) { $changedFilesText = $changedFilesText.Substring(0, 3000) + "`n...[changed-files truncated]..." }
+            } catch {
+              $changedFilesText = "(changed-files unavailable: $($_.Exception.Message))"
+            }
+            $taskHistory = ''
+            if (-not [string]::IsNullOrWhiteSpace($base)) {
+              try {
+                $histLines = @(& git -C $bridgeRoot log --oneline --name-status "$base..HEAD" 2>$null)
+                $taskHistory = [string]::Join("`n", @($histLines))
+                if ($taskHistory.Length -gt 6000) {
+                  $taskHistory = $taskHistory.Substring(0, 6000) + "`n...[история обрезана]..."
+                }
+              } catch {
+                $taskHistory = "(task-history unavailable: $($_.Exception.Message))"
+              }
+            }
             # HEAD context lets the critic distinguish "not in this diff" from "not in repo".
             $headContext = ''
+            $symbolEvidence = ''
             try {
               $repoPs1Files = @()
               try { $repoPs1Files = @(& git -C $bridgeRoot ls-files --cached '*.ps1' 2>$null) } catch { $repoPs1Files = @() }
@@ -4186,6 +4212,8 @@ while ($true) {
 
               $funcLines = New-Object 'System.Collections.Generic.List[string]'
               $diffPs1Names = @($diffNames | Where-Object { $_ -match '\.ps1$' })
+              $diffPs1Set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+              foreach ($relDiffPs1 in $diffPs1Names) { [void]$diffPs1Set.Add([string]$relDiffPs1) }
               foreach ($relf in $diffPs1Names) {
                 $fullF = Join-Path $bridgeRoot $relf
                 if (Test-Path $fullF) {
@@ -4228,23 +4256,45 @@ while ($true) {
               } catch { $calledInDiff = @() }
 
               $crossRefs = New-Object 'System.Collections.Generic.List[string]'
+              $symbolEvidenceParts = New-Object 'System.Collections.Generic.List[string]'
               foreach ($fn in $calledInDiff) {
                 if ($allFuncsInDiffedFiles.Contains($fn)) { continue }
                 $fnFiles = New-Object 'System.Collections.Generic.List[string]'
                 foreach ($rf in $repoPs1Files) {
                   $fullRf = Join-Path $bridgeRoot $rf
                   if (-not (Test-Path $fullRf)) { continue }
+                  if ($diffPs1Set.Contains([string]$rf)) { continue }
                   try {
-                    $hit = & git -C $bridgeRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null |
-                      Select-String -Pattern ('^\s*function\s+' + [regex]::Escape($fn) + '\b') -Quiet
+                    $headLines = @(& git -C $bridgeRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null)
+                    $fnPattern = '^\s*function\s+' + [regex]::Escape($fn) + '\b'
+                    $hitIndex = -1
+                    for ($idx = 0; $idx -lt $headLines.Count; $idx++) {
+                      if ([string]$headLines[$idx] -match $fnPattern) { $hitIndex = $idx; break }
+                    }
+                    $hit = ($hitIndex -ge 0)
                     if ($hit) {
                       [void]$fnFiles.Add($rf)
+                      if ($symbolEvidence.Length -lt 8000) {
+                        $endIdx = [Math]::Min($headLines.Count - 1, $hitIndex + 10)
+                        $bodyLines = New-Object 'System.Collections.Generic.List[string]'
+                        for ($bodyIdx = $hitIndex; $bodyIdx -le $endIdx; $bodyIdx++) {
+                          [void]$bodyLines.Add([string]$headLines[$bodyIdx])
+                        }
+                        $snippet = ("### {0} -> {1}`n{2}" -f $fn, $rf, [string]::Join("`n", $bodyLines.ToArray()))
+                        [void]$symbolEvidenceParts.Add($snippet)
+                        $symbolEvidence = [string]::Join("`n`n", $symbolEvidenceParts.ToArray())
+                        if ($symbolEvidence.Length -gt 8000) {
+                          $symbolEvidence = $symbolEvidence.Substring(0, 8000) + "`n...[symbol-evidence truncated]..."
+                          break
+                        }
+                      }
                     }
                   } catch { $hit = $false }
                 }
                 if ($fnFiles.Count -gt 0) {
                   [void]$crossRefs.Add($fn + ' -> ' + [string]::Join(', ', $fnFiles.ToArray()))
                 }
+                if ($symbolEvidence.Length -gt 8000) { break }
               }
 
               $hcParts = New-Object 'System.Collections.Generic.List[string]'
@@ -4257,8 +4307,10 @@ while ($true) {
               }
               $headContext = [string]::Join("`n`n", $hcParts.ToArray())
               if ($headContext.Length -gt 4000) { $headContext = $headContext.Substring(0, 4000) + "`n...[контекст обрезан]..." }
+              if ([string]::IsNullOrWhiteSpace($symbolEvidence)) { $symbolEvidence = "(no cross-file symbol evidence)" }
             } catch {
               $headContext = "(head-context unavailable: $($_.Exception.Message))"
+              $symbolEvidence = "(symbol-evidence unavailable: $($_.Exception.Message))"
             }
             $criticPrompt = @"
 Ты — независимый код-критик. Другой ИИ (Codex) внёс изменения в проект на PowerShell (автономный мост Claude<->Codex на Windows). Проверь git-дифф на СЕРЬЁЗНЫЕ проблемы: баги, уязвимости безопасности, регрессии, потеря данных, падения, синтаксические ошибки, нарушение инвариантов (каждый .ps1 в UTF-8 с BOM; не трогать watchdog/supervisor/.git; не выводить секреты).
@@ -4294,6 +4346,22 @@ while ($true) {
 - Если этот диф впервые трогает СОВСЕМ ДРУГОЙ слой (UI→server, client→config, lib→tests) — это хороший знак, не флаг.
 
 ЗАДАЧА: $task
+
+=== КОНТЕКСТ ЗАДАЧИ ===
+DIFF_META: base=$base | diff_truncated=$diffTruncatedText | diff_bytes=$diffBytes
+DIFF ниже — полный диф от начала задачи до HEAD. Если diff_truncated=true — файлы за пределом могут быть изменены; их отсутствие в DIFF не доказывает, что они не менялись.
+TASK_HISTORY показывает все коммиты задачи — используй его для проверки полноты фаз и файлов.
+SYMBOL_EVIDENCE — сигнатуры и первые строки функций, вызванных в DIFF, но определённых в других файлах. Если функция есть в SYMBOL_EVIDENCE — не флагируй её как отсутствующую. Duplicate/drift флагируй только если изменённые строки DIFF реально вводят конфликтующую реализацию.
+Аудируй только строки DIFF со знаком + или -. Не аудируй unchanged код из SYMBOL_EVIDENCE, TASK_HISTORY или HEAD-контекста.
+
+=== CHANGED_FILES ===
+$changedFilesText
+
+=== TASK_HISTORY ===
+$taskHistory
+
+=== SYMBOL_EVIDENCE ===
+$symbolEvidence
 
 КОНТЕКСТ HEAD (для проверки over-claim: функции, упомянутые в diff, существуют в этих файлах — не помечай их как несуществующие):
 $headContext
