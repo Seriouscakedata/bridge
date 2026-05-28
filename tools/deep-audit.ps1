@@ -14,7 +14,15 @@ param(
   # 2026-05-28: if both flags are clear, codex.exe and claude.exe spawn
   # concurrently. Total wall time = max(codex, claude) instead of sum.
   # Pass -Sequential to force the old back-to-back behavior (debugging).
-  [switch]$Sequential
+  [switch]$Sequential,
+  # 2026-05-28: A/B test selector for the functional pass agent.
+  #   'auto'        — try claude.exe first, fall back to gemini-3-flash if it
+  #                   times out / returns empty (the historical behavior)
+  #   'gemini-only' — skip claude.exe entirely, go straight to gemini-3-flash.
+  #                   Useful to bypass claude.exe encoding bugs that make every
+  #                   Russian observation arrive as cp1251 mojibake.
+  [ValidateSet('auto','gemini-only')]
+  [string]$FunctionalAgent = 'auto'
 )
 
 # Resolve default BridgePath: param-default can't use $PSScriptRoot reliably
@@ -452,6 +460,7 @@ Write-Host "[deep-audit] bridge=$bridgeRoot"
 Write-Host "[deep-audit] project=$projRoot"
 $mode = if ($Sequential) { 'sequential' } else { 'parallel' }
 Write-Host "[deep-audit] mode=$mode"
+Write-Host "[deep-audit] functional-agent=$FunctionalAgent"
 
 # Resolve executables up front (cheap).
 $codexExe = $null
@@ -460,34 +469,119 @@ if (-not $NoCodex) {
   $codexExe = Resolve-DeepCodexExe -Cfg $cfg
   if (-not $codexExe) { $codexResult = @{ skipped = $true; reason = 'codex_exe_not_found'; findings = @() } }
 }
-if (-not $NoClaude) {
+# 2026-05-28: claude.exe is only resolved when FunctionalAgent='auto'. In
+# 'gemini-only' mode we go straight to gemini-3-flash and skip the claude.exe
+# subprocess entirely (no encoding surprises, no token spend on broken bytes).
+if (-not $NoClaude -and $FunctionalAgent -eq 'auto') {
   $claudeExe = Resolve-DeepClaudeExe -Cfg $cfg
   if (-not $claudeExe) { $claudeResult = @{ skipped = $true; reason = 'claude_exe_not_found'; findings = @() } }
 }
 
+# Functional-pass helper: in 'gemini-only' mode synthesise the same prompt the
+# Claude pass would have built, then call gemini-3-flash directly.
+function Invoke-GeminiOnlyFunctional {
+  param([string]$ProjRoot, [string]$BridgeRoot)
+  $registryPath = Join-Path $BridgeRoot 'features\registry.json'
+  if (-not (Test-Path -LiteralPath $registryPath)) {
+    return @{ skipped = $true; reason = 'no_registry'; findings = @() }
+  }
+  $registryRaw = Get-FileContentCapped -Path $registryPath -Cap 30000
+  $statePath = Join-Path $BridgeRoot 'features\state.json'
+  $stateRaw = if (Test-Path -LiteralPath $statePath) { Get-FileContentCapped -Path $statePath -Cap 5000 } else { '{}' }
+  $auditLogTail = ''
+  $auditLogPath = Join-Path $BridgeRoot 'audit\audit.log'
+  if (Test-Path -LiteralPath $auditLogPath) {
+    try { $auditLogTail = (Get-Content -LiteralPath $auditLogPath -Tail 30 -Encoding UTF8 | Out-String).Trim() } catch {}
+  }
+  $gitLogWeek = ''
+  try { $gitLogWeek = (& git -C $ProjRoot log --since='7 days ago' --pretty=format:'%h %s' 2>$null | Out-String).Trim() } catch {}
+
+  $sb = New-Object 'System.Text.StringBuilder'
+  [void]$sb.AppendLine('Ты архитектурный аудитор автономного моста Claude+Codex. Я дам тебе:')
+  [void]$sb.AppendLine('1. Реестр фич (features/registry.json) — что мы заявляем что есть в системе')
+  [void]$sb.AppendLine('2. State фич (last_activated_at, last_health)')
+  [void]$sb.AppendLine('3. Хвост audit.log за неделю')
+  [void]$sb.AppendLine('4. Git log за неделю')
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('ОЦЕНИ:')
+  [void]$sb.AppendLine('- DORMANT: какие фичи в реестре status=active, но last_activated_at>30 дней назад (или null)?')
+  [void]$sb.AppendLine('- DRIFT: где описание фичи в реестре расходится с её реальным поведением (видимо в git log)?')
+  [void]$sb.AppendLine('- COVERAGE: какие фичи не имеют scenarios в registry, но это user-facing? (scenario_recommended)')
+  [void]$sb.AppendLine('- UNDOCUMENTED: какие паттерны в git log не отражены в реестре? (новый функционал без записи)')
+  [void]$sb.AppendLine('- TREND: видны ли в audit.log повторяющиеся проблемы (одна и та же категория > 3 раза)?')
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('НЕ ПРЕДЛАГАЙ удалять — только маркируй для human-review.')
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('=== РЕЕСТР ФИЧ ===')
+  [void]$sb.AppendLine($registryRaw)
+  [void]$sb.AppendLine('=== STATE ===')
+  [void]$sb.AppendLine($stateRaw)
+  [void]$sb.AppendLine('=== AUDIT LOG (последние 30 строк) ===')
+  [void]$sb.AppendLine($auditLogTail)
+  [void]$sb.AppendLine('=== GIT LOG за неделю ===')
+  [void]$sb.AppendLine($gitLogWeek)
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('Верни СТРОГО JSON-массив:')
+  [void]$sb.AppendLine('[{"feature_id":"id","category":"dormant|drift|coverage|undocumented|trend","severity":"critical|warning|info","observation":"что заметил","recommendation":"что предлагаешь"}]')
+  [void]$sb.AppendLine('Если ничего не нашёл — верни [].')
+
+  Write-Host "[deep-audit] functional: direct gemini-3-flash (skipping claude.exe)..."
+  $commonLib = Join-Path $BridgeRoot 'lib\common.ps1'
+  if (-not (Test-Path -LiteralPath $commonLib)) {
+    return @{ skipped = $false; error = 'no_common_lib'; findings = @() }
+  }
+  try {
+    . $commonLib 2>$null | Out-Null
+    if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
+      return @{ skipped = $false; error = 'no_invoke_llm'; findings = @() }
+    }
+    $reply = Invoke-LLM -Purpose 'audit-functional' -Model 'gemini-3-flash' -Prompt $sb.ToString() -TimeoutSec 120 -Temperature 0.2
+    if ([string]::IsNullOrWhiteSpace($reply)) {
+      return @{ skipped = $false; error = 'gemini_empty'; findings = @() }
+    }
+    $parsed = Extract-Json -Text $reply
+    $findings = @()
+    if ($parsed) {
+      if ($parsed -is [Array]) { $findings = @($parsed) }
+      elseif ($parsed.findings) { $findings = @($parsed.findings) }
+    }
+    Write-Host "[deep-audit] gemini-only: returned $($findings.Count) findings"
+    return @{ skipped = $false; findings = $findings; tokens = $reply.Length; source = 'gemini-3-flash-direct' }
+  } catch {
+    Write-Host "[deep-audit] gemini-only failed: $($_.Exception.Message)"
+    return @{ skipped = $false; error = ('gemini_exception: ' + $_.Exception.Message); findings = @() }
+  }
+}
+
 if ($Sequential) {
-  # Legacy back-to-back execution (codex first, then claude).
+  # Legacy back-to-back execution (codex first, then functional pass).
   if ($codexExe) {
     $codexResult = Invoke-CodexSecurityPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
   }
-  if ($claudeExe) {
+  if ($FunctionalAgent -eq 'gemini-only') {
+    $claudeResult = Invoke-GeminiOnlyFunctional -ProjRoot $projRoot -BridgeRoot $bridgeRoot
+  } elseif ($claudeExe) {
     $claudeResult = Invoke-ClaudeFunctionalPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
   }
 } else {
-  # Parallel mode: spawn both processes back-to-back (a few ms apart), then wait
-  # for both with each one's own deadline. Total wall time ≈ max(codex, claude)
-  # instead of codex+claude.
+  # Parallel mode: codex.exe (security) runs in parallel with the functional pass.
   $codexState = $null
   $claudeState = $null
   if ($codexExe) {
     $codexState = Start-CodexSecurityAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
   }
-  if ($claudeExe) {
+  if ($FunctionalAgent -eq 'auto' -and $claudeExe) {
     $claudeState = Start-ClaudeFunctionalAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
   }
   $tStart = Get-Date
   if ($codexState) { $codexResult = Complete-CodexSecurityAsync -State $codexState }
-  if ($claudeState) { $claudeResult = Complete-ClaudeFunctionalAsync -State $claudeState }
+  if ($FunctionalAgent -eq 'gemini-only') {
+    # Gemini-only path is synchronous HTTP — runs after Codex is launched so
+    # they still overlap (Codex stays in the background while gemini answers).
+    $claudeResult = Invoke-GeminiOnlyFunctional -ProjRoot $projRoot -BridgeRoot $bridgeRoot
+  } elseif ($claudeState) {
+    $claudeResult = Complete-ClaudeFunctionalAsync -State $claudeState
+  }
   $elapsed = [Math]::Round(((Get-Date) - $tStart).TotalSeconds, 1)
   Write-Host "[deep-audit] parallel wait done in ${elapsed}s"
 }

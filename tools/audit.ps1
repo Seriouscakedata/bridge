@@ -420,15 +420,20 @@ function Add-AuditCriticalsToBacklog {
 
 function Invoke-BridgeAudit {
   # 2026-05-28:
-  #   -Channel      pick the channel the user is on; resolved to project_root via
-  #                 Get-EffectiveProjectRoot. If empty, falls back to the pinned
-  #                 (or 'main' / bridge) channel. The deep-audit phase scopes
-  #                 codex.exe and claude.exe to that project_root.
-  #   -ProjectRoot  override the auto-resolved project_root (escape hatch).
+  #   -Channel          pick the channel the user is on; resolved to project_root via
+  #                     Get-EffectiveProjectRoot. If empty, falls back to the pinned
+  #                     (or 'main' / bridge) channel. The deep-audit phase scopes
+  #                     codex.exe and claude.exe to that project_root.
+  #   -ProjectRoot      override the auto-resolved project_root (escape hatch).
+  #   -FunctionalAgent  A/B switch passed to deep-audit:
+  #                     'auto'        — claude.exe first, gemini fallback (historical)
+  #                     'gemini-only' — skip claude.exe (bypass encoding bugs).
   param(
     [string]$BridgePath = $null,
     [string]$Channel = $null,
-    [string]$ProjectRoot = $null
+    [string]$ProjectRoot = $null,
+    [ValidateSet('auto','gemini-only')]
+    [string]$FunctionalAgent = 'auto'
   )
   $root = Get-AuditBridgeRoot -Hint $BridgePath
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -555,7 +560,8 @@ function Invoke-BridgeAudit {
           # 2026-05-28: pass -ProjectRoot so codex/claude scope to the active
           # channel's codebase (not the bridge). Parallel is the default;
           # add -Sequential to fall back to back-to-back execution.
-          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject)
+          # Also pass -FunctionalAgent (auto/gemini-only) for A/B testing.
+          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent)
           $deepProc = Start-Process -FilePath 'powershell.exe' `
             -ArgumentList $deepArgs `
             -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
