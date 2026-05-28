@@ -8,7 +8,7 @@
   "planner": "claude",
   "coder": {
     "agent": "codex",
-    "sandboxMode": "danger-full-access"
+    "sandboxMode": "workspace-write"
   },
   "workRoot": "C:/Users/rafie",
   "idlePollSeconds": 1,

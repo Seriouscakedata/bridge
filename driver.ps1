@@ -2089,13 +2089,14 @@ function Test-PathInAllowedRoot {
 
 function Get-CoderSandboxMode {
   # Resolves the Codex CLI sandbox mode passed via -s for a coder turn.
-  # Precedence: config 'coder.sandboxMode' (overlaid by settings.json) -> safe default.
-  # Unknown/blank values fall back to the default. The default is intentionally the
-  # historical behaviour ('danger-full-access') so introducing this control point changes
-  # NOTHING; flipping the default to 'workspace-write' is Gate A (operator sign-off),
-  # because it changes the execution environment of EVERY task.
+  # Precedence: config 'coder.sandboxMode' (overlaid by settings.json) -> fail-safe default.
+  # Default is 'workspace-write' (OS-confines coder writes to its -C cwd / project root) as
+  # of Gate A (2026-05-28). The fallback is also 'workspace-write' so a missing/corrupted
+  # config fails CLOSED (confined), never open. Operator escape-hatch: set
+  # coder.sandboxMode='danger-full-access' in settings.json (gitignored, survives rollback)
+  # for a maintenance window; the autonomy loop has no path to self-escalate.
   $valid = @('read-only','workspace-write','danger-full-access')
-  $default = 'danger-full-access'
+  $default = 'workspace-write'
   try {
     $cfg = Get-BridgeConfig
     if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'coder') -and $cfg.coder) {
