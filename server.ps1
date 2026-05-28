@@ -869,7 +869,11 @@ try {
           if (-not ($item.PSObject.Properties.Name -contains 'similar_to')) { $item | Add-Member -NotePropertyName similar_to -NotePropertyValue @() -Force }
           if (-not ($item.PSObject.Properties.Name -contains 'seen_again_count')) { $item | Add-Member -NotePropertyName seen_again_count -NotePropertyValue 0 -Force }
           $st = [string]$item.status
-          if (-not $includeArchived -and ($st -eq 'done' -or $st -eq 'auto-resolved')) {
+          # 2026-05-28: also hide auto-dropped and rejected by default. These
+          # are terminal closed statuses (curator/operator decided NOT to do)
+          # and they were accumulating in the visible list — 186 dropped items
+          # cluttering the UI even though no work remains on them.
+          if (-not $includeArchived -and ($st -eq 'done' -or $st -eq 'auto-resolved' -or $st -eq 'auto-dropped' -or $st -eq 'rejected')) {
             $archivedCount++
             continue
           }
