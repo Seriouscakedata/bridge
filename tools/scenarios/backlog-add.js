@@ -1,9 +1,22 @@
 // backlog-add.js — functional test for the backlog flow.
+// @audit-safe: no (POSTs a test item to backlog briefly; even with cleanup
+//                  it appears in the queue for a moment + curator gets triggered)
 // Verifies: POST /api/backlog/add returns ok+id, the item appears in
 // GET /api/backlog response, and subsequent pollBacklog renders it
 // in the UI when /memory page is on the Backlog tab.
 async function scenario(s) {
   s.log('start scenario');
+
+  function cleanScenarioUrl(path) {
+    const u = new URL(path, window.location.href);
+    u.username = '';
+    u.password = '';
+    return u.href;
+  }
+
+  function scenarioFetch(path, opts) {
+    return fetch(cleanScenarioUrl(path), Object.assign({credentials: 'same-origin'}, opts || {}));
+  }
 
   const marker = 'scenario-backlog-' + Date.now().toString(36);
   const taskText = '[scenario test] please ignore — verifying backlog add flow with marker ' + marker;
@@ -11,7 +24,7 @@ async function scenario(s) {
   // 1. POST add
   let addResp = null;
   try {
-    const r = await fetch('/api/backlog/add', {
+    const r = await scenarioFetch('/api/backlog/add', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/json'},
@@ -29,7 +42,7 @@ async function scenario(s) {
   let listResp = null;
   try {
     const ch = (window.__bridge && window.__bridge.channelsCache && window.__bridge.channelsCache.active) || 'main';
-    const r = await fetch('/api/backlog?channel=' + encodeURIComponent(ch), {credentials: 'same-origin'});
+    const r = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(ch));
     listResp = await r.json();
   } catch (e) { s.fail('GET /api/backlog failed: ' + e.message); return; }
 
@@ -46,7 +59,7 @@ async function scenario(s) {
   // 3. Clean up — drop the scenario item so it doesn't pollute the queue.
   if (addResp && addResp.id) {
     try {
-      await fetch('/api/backlog/delete', {
+      await scenarioFetch('/api/backlog/delete', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'},

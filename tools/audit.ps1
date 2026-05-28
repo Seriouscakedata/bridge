@@ -502,11 +502,34 @@ function Invoke-BridgeAudit {
       $deepScript = Join-Path $root 'tools\deep-audit.ps1'
       if (Test-Path -LiteralPath $deepScript -PathType Leaf) {
         Write-AuditLog -BridgePath $root -Message 'deep-audit start (Codex+Claude phase)'
-        $deepStdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $deepScript -BridgePath $root 2>&1 | Out-String
+        $deepStdout = ''
+        $deepStderr = ''
+        $deepExitCode = 0
+        $deepTmpDir = Join-Path (Get-AuditDir -BridgePath $root) 'tmp'
+        if (-not (Test-Path -LiteralPath $deepTmpDir)) { New-Item -ItemType Directory -Path $deepTmpDir -Force | Out-Null }
+        $deepStamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
+        $deepOutPath = Join-Path $deepTmpDir ("audit-deep-stdout_$deepStamp.txt")
+        $deepErrPath = Join-Path $deepTmpDir ("audit-deep-stderr_$deepStamp.txt")
+        try {
+          $deepProc = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root) `
+            -WorkingDirectory $root -RedirectStandardOutput $deepOutPath -RedirectStandardError $deepErrPath `
+            -WindowStyle Hidden -PassThru
+          $deepProc.WaitForExit()
+          try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
+          if (Test-Path -LiteralPath $deepOutPath) { $deepStdout = [System.IO.File]::ReadAllText($deepOutPath, [System.Text.Encoding]::UTF8) }
+          if (Test-Path -LiteralPath $deepErrPath) { $deepStderr = [System.IO.File]::ReadAllText($deepErrPath, [System.Text.Encoding]::UTF8) }
+        } finally {
+          try { Remove-Item -LiteralPath $deepOutPath,$deepErrPath -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        if ($deepExitCode -ne 0) {
+          $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
+          [void]$errors.Add(("deep-audit exited with code {0}: {1}" -f $deepExitCode, $stderrTail))
+        }
         # Extract last JSON line from stdout
         $deepJson = $null
         foreach ($ln in (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-          $t = $ln.Trim()
+          $t = $ln.Trim().Trim([char]0xFEFF)
           if ($t.StartsWith('{') -and $t.EndsWith('}')) { $deepJson = $t }
         }
         if ($deepJson) {
@@ -515,10 +538,14 @@ function Invoke-BridgeAudit {
             $deepCodexResult  = $deepParsed.codex_security
             $deepClaudeResult = $deepParsed.claude_functional
           } catch {
-            [void]$errors.Add('deep-audit JSON parse failed: ' + $_.Exception.Message)
+            $jsonSnippet = $deepJson
+            if ($jsonSnippet.Length -gt 500) { $jsonSnippet = $jsonSnippet.Substring(0,500) + '...' }
+            [void]$errors.Add('deep-audit JSON parse failed: ' + $_.Exception.Message + '; json_snippet=' + $jsonSnippet)
           }
         } else {
-          [void]$errors.Add('deep-audit: no JSON in stdout')
+          $stdoutTail = (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
+          $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
+          [void]$errors.Add('deep-audit: no JSON in stdout; stdout_tail=' + $stdoutTail + '; stderr_tail=' + $stderrTail)
         }
       }
     } catch {
@@ -529,6 +556,17 @@ function Invoke-BridgeAudit {
     $deepFiled = 0
     $deepCodexCount = 0
     $deepClaudeCount = 0
+    $addIdeaAvailable = $false
+    $deepBacklogHelperWarned = $false
+    try {
+      if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
+        $backlogLib = Join-Path $root 'lib\backlog.ps1'
+        if (Test-Path -LiteralPath $backlogLib -PathType Leaf) { . $backlogLib }
+      }
+      $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
+    } catch {
+      [void]$errors.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
+    }
     if ($deepCodexResult) {
       $cf = @($deepCodexResult.findings)
       $deepCodexCount = $cf.Count
@@ -538,9 +576,16 @@ function Invoke-BridgeAudit {
         if ([string]$f.severity -eq 'critical') {
           try {
             $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
-            $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security','critical') -Status 'new'
-            if ($bid) { $deepFiled++ }
-          } catch {}
+            if ($addIdeaAvailable) {
+              $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security','critical') -Status 'new' -Project 'main' -Scope 'bridge'
+              if ($bid) { $deepFiled++ }
+            } elseif (-not $deepBacklogHelperWarned) {
+              [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+              $deepBacklogHelperWarned = $true
+            }
+          } catch {
+            [void]$errors.Add('deep-audit codex backlog filing failed: ' + $_.Exception.Message)
+          }
         }
       }
     }
@@ -554,9 +599,16 @@ function Invoke-BridgeAudit {
         if ($sev -eq 'critical' -or $sev -eq 'warning') {
           try {
             $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Predлagaет: " + [string]$f.recommendation
-            $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'new'
-            if ($bid) { $deepFiled++ }
-          } catch {}
+            if ($addIdeaAvailable) {
+              $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'new' -Project 'main' -Scope 'bridge'
+              if ($bid) { $deepFiled++ }
+            } elseif (-not $deepBacklogHelperWarned) {
+              [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+              $deepBacklogHelperWarned = $true
+            }
+          } catch {
+            [void]$errors.Add('deep-audit claude backlog filing failed: ' + $_.Exception.Message)
+          }
         }
       }
     }

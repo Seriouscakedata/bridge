@@ -499,8 +499,39 @@ function Invoke-FunctionalAudit {
         -Message 'Bridge server is not reachable; behavioral scenarios skipped.' `
         -Recommendation 'If audit runs while bridge is down, this is expected. Otherwise investigate why /api/health failed.'
     } else {
+      # 2026-05-28: audit-safety gate. Real incident: user typed "сделай аудит",
+      # audit-functional ran ALL scenarios (no filter), including message-send.js
+      # which BY DESIGN types into composer + clicks Send -> a "user message"
+      # appeared in their chat ("scenario-msg-..."). Also backlog-add.js polluted
+      # backlog with test items. From now on each scenario must opt-in via a
+      # leading comment "// @audit-safe: yes" -- mutating scenarios stay out of
+      # automated audit batch and can only be run manually via tools\scenario.ps1.
       foreach ($scenarioFile in (Get-ChildItem -LiteralPath $scenarioDir -Filter '*.js' -ErrorAction SilentlyContinue)) {
         $scenarioName = [System.IO.Path]::GetFileNameWithoutExtension($scenarioFile.Name)
+        # Read first 20 lines of the .js file looking for opt-in marker.
+        $auditSafe = $false
+        $skipReason = ''
+        try {
+          $head = Get-Content -LiteralPath $scenarioFile.FullName -TotalCount 20 -Encoding UTF8 -ErrorAction SilentlyContinue
+          $headText = ($head -join "`n")
+          if ($headText -match '(?im)^\s*//\s*@audit-safe\s*:\s*yes\b') {
+            $auditSafe = $true
+          } elseif ($headText -match '(?im)^\s*//\s*@audit-safe\s*:\s*no\b') {
+            $auditSafe = $false
+            $skipReason = 'marked @audit-safe: no (mutates state)'
+          } else {
+            $auditSafe = $false
+            $skipReason = 'no @audit-safe annotation (default safe: skip)'
+          }
+        } catch { $auditSafe = $false; $skipReason = 'cannot read scenario file' }
+
+        if (-not $auditSafe) {
+          Add-AuditFinding -Findings $findings -Severity 'info' -Category 'behavioral_skipped' -Component $scenarioName `
+            -Message ("Scenario {0} skipped — {1}." -f $scenarioName, $skipReason) `
+            -Recommendation 'Add `// @audit-safe: yes` to the scenario header if it is non-mutating and safe to run in batch audits.'
+          continue
+        }
+
         $exitCode = 0
         try {
           $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $scenarioRunner -Name $scenarioName -TimeoutSec 60 2>&1

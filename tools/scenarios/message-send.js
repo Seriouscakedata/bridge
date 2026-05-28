@@ -1,4 +1,5 @@
 // message-send.js — functional test for the basic chat-message flow.
+// @audit-safe: no (types into composer + clicks Send -> real user message lands in chat)
 // Verifies: typing into composer, hitting Send, message appears in #log
 // with seq, and the server recorded it (next poll returns it via cache).
 async function scenario(s) {

@@ -1,4 +1,5 @@
 // channel-switch.js — functional test for the channel-switch UI flow.
+// @audit-safe: yes (toggles channels but doesn't write to chat/backlog; user sees nothing)
 // Reproduces user's complaint: "при переключении вкладок мигает, не могу переключиться".
 // Tests:
 //   1. Switch from initial channel to another channel — channelsCache.active updates.
