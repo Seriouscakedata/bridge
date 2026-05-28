@@ -64,6 +64,11 @@ function Write-AuditLog {
     $dir = Get-AuditDir -BridgePath $BridgePath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $log = Join-Path $dir 'audit.log'
+    try {
+      if (Get-Command Rotate-LogIfBig -ErrorAction SilentlyContinue) {
+        Rotate-LogIfBig -Path $log -MaxBytes 200KB
+      }
+    } catch {}
     $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), ([string]$Message)
     [System.IO.File]::AppendAllText($log, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
@@ -171,6 +176,9 @@ function Format-AuditFindings {
   # Normalize a raw finding (hashtable or PSObject) into a flat object with known fields.
   param($Source, $Raw)
   $sev = 'info'
+  $category = ''
+  $component = ''
+  $file = ''
   $title = ''
   $detail = ''
   $area = ''
@@ -180,6 +188,9 @@ function Format-AuditFindings {
     } else {
       $rawSev = Get-AuditFindingField -Raw $Raw -Names @('severity','sev','level')
       if ($rawSev) { $sev = ([string]$rawSev).ToLowerInvariant() }
+
+      $rawCategory = Get-AuditFindingField -Raw $Raw -Names @('category','kind','type')
+      if ($rawCategory) { $category = ([string]$rawCategory).ToLowerInvariant() }
 
       $rawTitle = Get-AuditFindingField -Raw $Raw -Names @('title','name','summary','rule','category')
       if ($rawTitle) { $title = [string]$rawTitle }
@@ -192,8 +203,16 @@ function Format-AuditFindings {
         else { $detail = [string]$rawRecommendation }
       }
 
+      $rawComponent = Get-AuditFindingField -Raw $Raw -Names @('component')
+      if ($rawComponent) { $component = [string]$rawComponent }
+
+      $rawFile = Get-AuditFindingField -Raw $Raw -Names @('file','path','target')
+      if ($rawFile) { $file = [string]$rawFile }
+
       $rawArea = Get-AuditFindingField -Raw $Raw -Names @('area','path','file','target','component')
       if ($rawArea) { $area = [string]$rawArea }
+      if (-not $component -and $rawArea) { $component = [string]$rawArea }
+      if (-not $file -and $rawFile) { $file = [string]$rawFile }
       $rawLine = Get-AuditFindingField -Raw $Raw -Names @('line','lineno','line_number')
       if ($rawLine -and $area -and $area -notmatch ':\d+$') { $area += ":$rawLine" }
     }
@@ -213,6 +232,9 @@ function Format-AuditFindings {
   return [pscustomobject]@{
     source   = [string]$Source
     severity = $sev
+    category = $category
+    component = $component
+    file = $file
     title    = $title
     detail   = $detail
     area     = $area
@@ -227,6 +249,28 @@ function Get-AuditSeverityCounts {
     if ($c.ContainsKey($s)) { $c[$s] = $c[$s] + 1 } else { $c.info = $c.info + 1 }
   }
   return $c
+}
+
+function Merge-AuditFindings {
+  param($Findings)
+  $deduped = New-Object 'System.Collections.Generic.List[object]'
+  $seen = @{}
+  foreach ($f in @($Findings)) {
+    $cat = [string](Get-AuditFindingField -Raw $f -Names @('category'))
+    if ($cat) { $cat = $cat.ToLowerInvariant() }
+    $normalizedCat = $cat -replace '_', '-'
+    if ($normalizedCat -eq 'orphaned-files') { $normalizedCat = 'orphaned-file' }
+    $key = ''
+    if ($normalizedCat -match '(dead|orphan)') {
+      $component = [string](Get-AuditFindingField -Raw $f -Names @('component'))
+      $file = [string](Get-AuditFindingField -Raw $f -Names @('file'))
+      $key = "$normalizedCat|$component|$file"
+    }
+    if ($key -and $seen.ContainsKey($key)) { continue }
+    if ($key) { $seen[$key] = $true }
+    [void]$deduped.Add($f)
+  }
+  return @($deduped.ToArray())
 }
 
 function Format-AuditFindingMarkdown {
@@ -267,6 +311,12 @@ function Write-AuditReports {
   $crit = @($all | Where-Object { $_.severity -eq 'critical' })
   $warn = @($all | Where-Object { $_.severity -eq 'warning' })
   $info = @($all | Where-Object { $_.severity -eq 'info' })
+  $runtimeForDisplay = $Report.runtime_sec
+  $generatedForDisplay = $Report.generated_at
+  if ($Report.PSObject.Properties.Name -contains 'metadata' -and $Report.metadata) {
+    if ($Report.metadata.runtime_seconds -ne $null) { $runtimeForDisplay = $Report.metadata.runtime_seconds }
+    if ($Report.metadata.gen_timestamp) { $generatedForDisplay = $Report.metadata.gen_timestamp }
+  }
 
   [void]$sb.AppendLine('## 🔴 Critical Issues')
   if ($crit.Count -eq 0) { [void]$sb.AppendLine('_(none)_') }
@@ -284,8 +334,8 @@ function Write-AuditReports {
   [void]$sb.AppendLine('')
 
   [void]$sb.AppendLine('## Metadata')
-  [void]$sb.AppendLine("- Runtime: $($Report.runtime_sec)s")
-  [void]$sb.AppendLine("- Generated: $($Report.generated_at)")
+  [void]$sb.AppendLine("- Runtime: $($runtimeForDisplay)s")
+  [void]$sb.AppendLine("- Generated: $($generatedForDisplay)")
   if ($Report.errors -and @($Report.errors).Count -gt 0) {
     [void]$sb.AppendLine('- Errors:')
     foreach ($e in @($Report.errors)) { [void]$sb.AppendLine("  - $e") }
@@ -365,6 +415,7 @@ function Add-AuditCriticalsToBacklog {
 function Invoke-BridgeAudit {
   param([string]$BridgePath = $null)
   $root = Get-AuditBridgeRoot -Hint $BridgePath
+  $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
   # 1. lock
   $existing = Test-AuditLock -BridgePath $root
@@ -375,7 +426,6 @@ function Invoke-BridgeAudit {
   New-AuditLock -BridgePath $root
   Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID)"
 
-  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $allFindings = New-Object 'System.Collections.Generic.List[object]'
   $secFindings = @()
@@ -401,17 +451,28 @@ function Invoke-BridgeAudit {
 
     $secCounts = Get-AuditSeverityCounts -Findings $secFindings
     $fncCounts = Get-AuditSeverityCounts -Findings $fncFindings
+    $mergedFindings = Merge-AuditFindings -Findings $allFindings.ToArray()
+    $generatedAtLocal = (Get-Date).ToString('o')
+    $generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+    $runtimeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 2)
 
-    $sw.Stop()
     $report = [pscustomobject]@{
-      generated_at      = (Get-Date).ToUniversalTime().ToString('o')
+      generated_at      = $generatedAtUtc
       bridge_root       = $root
-      runtime_sec       = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+      runtime_sec       = $runtimeSeconds
+      metadata          = [ordered]@{
+        bridge_path          = $root
+        generated_at         = $generatedAtLocal
+        gen_timestamp        = $generatedAtUtc
+        runtime_seconds      = $runtimeSeconds
+        security_runtime_sec = $sec.runtime_sec
+        functional_runtime_sec = $fnc.runtime_sec
+      }
       security_counts   = $secCounts
       functional_counts = $fncCounts
       security_runtime_sec   = $sec.runtime_sec
       functional_runtime_sec = $fnc.runtime_sec
-      findings          = @($allFindings.ToArray())
+      findings          = @($mergedFindings)
       errors            = @($errors.ToArray())
     }
 
@@ -427,7 +488,7 @@ function Invoke-BridgeAudit {
     # 10. file critical findings into backlog
     $filed = 0
     if ($secCounts.critical -gt 0 -or $fncCounts.critical -gt 0) {
-      $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $allFindings
+      $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings
     }
 
     Write-AuditLog -BridgePath $root -Message ("audit done in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] backlog+={7}" -f `

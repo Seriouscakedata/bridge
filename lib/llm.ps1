@@ -16,6 +16,11 @@ function Get-LLMConfig {
     deep      = 'deepseek-v4-pro'
     critic    = 'deepseek-v4-pro'
     criticHeavy = 'deepseek-v4-pro'
+    # 2026-05-28: nightly audit functional analyzer. Receives a static
+    # context (function list, endpoints, debt markers) and returns JSON
+    # findings about dead/legacy code. Deepseek-pro for quality;
+    # falls back to gemini-2.5-flash via Invoke-LLM router.
+    'audit-functional' = 'deepseek-v4-pro'
     # 2026-05-28: task-intent classifier. Replaces [[DEEP-THINK]] regex with
     # cheap LLM understanding of user's natural-language intent. Fires once
     # per new task on each new user task (~$0.0001/call on flash-lite).
