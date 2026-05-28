@@ -534,7 +534,13 @@ function Invoke-FunctionalAudit {
 
         $exitCode = 0
         try {
-          $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $scenarioRunner -Name $scenarioName -TimeoutSec 60 2>&1
+          if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+            $output = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+              & powershell -NoProfile -ExecutionPolicy Bypass -File $scenarioRunner -Name $scenarioName -TimeoutSec 60 2>&1
+            }
+          } else {
+            $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $scenarioRunner -Name $scenarioName -TimeoutSec 60 2>&1
+          }
           $exitCode = $LASTEXITCODE
         } catch {
           $exitCode = 1

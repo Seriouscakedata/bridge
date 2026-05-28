@@ -494,7 +494,9 @@ function Get-AuditorMemoryBlock {
     if (-not (Get-Command Search-Memory -ErrorAction SilentlyContinue)) { return '' }
     $q = (@($Triggers) | ForEach-Object { "$($_.name) $($_.detail)" }) -join "`n"
     if ([string]::IsNullOrWhiteSpace($q)) { $q = 'Auditor verdict bridge failure recovery' }
-    $hits = @(Search-Memory -Query $q -RequireTag 'auditor-verdict' -TopK 3 -MinScore 0.2 -Channel '__all__')
+    $channel = 'main'
+    try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $channel = [string](Get-EffectiveChannel) } } catch {}
+    $hits = @(Search-Memory -Query $q -RequireTag 'auditor-verdict' -TopK 3 -MinScore 0.2 -Channel $channel)
     if ($hits.Count -eq 0) { return '' }
     $lines = New-Object 'System.Collections.Generic.List[string]'
     foreach ($h in $hits) {
@@ -571,7 +573,7 @@ function Add-AuditorVerdictMemory {
   try {
     if (Get-Command Add-Memory -ErrorAction SilentlyContinue) {
       $text = ("{0} -- {1}" -f $Class, $Reason)
-      Add-Memory -Text $text -Tags @('auditor-verdict') -Source ('auditor:' + $Class) -Importance 0.65 -Channel 'main' | Out-Null
+      Add-Memory -Text $text -Tags @('auditor-verdict') -Source ('auditor:' + $Class) -Importance 0.65 | Out-Null
     }
   } catch {}
 }

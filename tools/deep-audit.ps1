@@ -68,7 +68,7 @@ try { $BridgePath = [System.IO.Path]::GetFullPath($BridgePath) } catch {}
 #   CODEX-SECURITY:  reads last-24h git diff, looks for REAL injection /
 #                    path-traversal / auth-bypass / hardcoded-secrets that
 #                    static grep misses. Returns structured JSON findings.
-#   CLAUDE-FUNCTIONAL: reads features/registry.json + state.json + audit.log
+#   CLAUDE-FUNCTIONAL: reads scoped features/registry.json + state.json + audit.log
 #                    week, looks for drift (description vs code) and dormant
 #                    features. Returns structured JSON observations.
 #
@@ -77,7 +77,7 @@ try { $BridgePath = [System.IO.Path]::GetFullPath($BridgePath) } catch {}
 #
 # SKIP conditions:
 # - No .ps1/.html commits in last 24h -> skip codex (nothing changed)
-# - features/registry.json missing -> skip claude (no context)
+# - scoped features/registry.json missing -> skip functional pass (no context)
 # - codex.exe / claude.exe not resolvable -> skip that half gracefully
 
 $ErrorActionPreference = 'Continue'
@@ -141,6 +141,32 @@ function Get-FileContentCapped {
     if ($c.Length -gt $Cap) { return $c.Substring(0, $Cap) + "`n...[truncated at $Cap chars]" }
     return $c
   } catch { return '' }
+}
+
+function Get-DeepAuditFeatureScope {
+  param([string]$BridgeRoot)
+  try {
+    $commonLib = Join-Path $BridgeRoot 'lib\common.ps1'
+    if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib 2>$null | Out-Null }
+    $channelsLib = Join-Path $BridgeRoot 'lib\channels.ps1'
+    if (-not (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $channelsLib -PathType Leaf)) {
+      . $channelsLib 2>$null | Out-Null
+    }
+    if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) {
+      return (Get-EffectiveScope)
+    }
+  } catch {}
+  $featuresRoot = Join-Path $BridgeRoot 'features'
+  return [pscustomobject]@{
+    slug = 'main'
+    is_bridge = $true
+    bridge_root = $BridgeRoot
+    project_root = $BridgeRoot
+    features_root = $featuresRoot
+    features_registry = (Join-Path $featuresRoot 'registry.json')
+    features_state = (Join-Path $featuresRoot 'state.json')
+    features_exists = (Test-Path -LiteralPath $featuresRoot -PathType Container)
+  }
 }
 
 function Test-IsTestFile {
@@ -308,17 +334,18 @@ function Invoke-CodexSecurityPass {
 
 function Start-ClaudeFunctionalAsync {
   param([string]$ProjRoot, [string]$BridgeRoot, [string]$ClaudeExe, [int]$TimeoutSec)
-  # Registry + audit-log live under BridgeRoot (bridge owns the registry).
+  # Registry/state are scoped to the effective channel; audit-log lives under BridgeRoot.
   # Git history is per-project (ProjRoot).
-  $registryPath = Join-Path $BridgeRoot 'features\registry.json'
+  $featureScope = Get-DeepAuditFeatureScope -BridgeRoot $BridgeRoot
+  $registryPath = [string]$featureScope.features_registry
   if (-not (Test-Path -LiteralPath $registryPath)) {
-    Write-Host "[deep-audit] claude: features/registry.json missing, skip"
+    Write-Host "[deep-audit] claude: feature registry missing for channel '$($featureScope.slug)', skip"
     return [pscustomobject]@{
       kind = 'claude'; proc = $null; preResult = @{ skipped = $true; reason = 'no_registry'; findings = @() }
     }
   }
   $registryRaw = Get-FileContentCapped -Path $registryPath -Cap 30000
-  $statePath = Join-Path $BridgeRoot 'features\state.json'
+  $statePath = [string]$featureScope.features_state
   $stateRaw = if (Test-Path -LiteralPath $statePath) { Get-FileContentCapped -Path $statePath -Cap 5000 } else { '{}' }
   $auditLogTail = ''
   $auditLogPath = Join-Path $BridgeRoot 'audit\audit.log'
@@ -330,7 +357,7 @@ function Start-ClaudeFunctionalAsync {
 
   $promptBuilder = New-Object 'System.Text.StringBuilder'
   [void]$promptBuilder.AppendLine('Ты архитектурный аудитор автономного моста Claude+Codex. Я дам тебе:')
-  [void]$promptBuilder.AppendLine('1. Реестр фич (features/registry.json) — что мы заявляем что есть в системе')
+  [void]$promptBuilder.AppendLine('1. Реестр фич текущего канала — что мы заявляем что есть в системе')
   [void]$promptBuilder.AppendLine('2. State фич (last_activated_at, last_health) — что фактически активировалось')
   [void]$promptBuilder.AppendLine('3. Хвост audit.log за неделю — тренды')
   [void]$promptBuilder.AppendLine('4. Git log за неделю — что реально менялось в коде')
@@ -524,12 +551,14 @@ if (-not $NoClaude -and $FunctionalAgent -eq 'auto') {
 # Claude pass would have built, then call gemini-3-flash directly.
 function Invoke-GeminiOnlyFunctional {
   param([string]$ProjRoot, [string]$BridgeRoot)
-  $registryPath = Join-Path $BridgeRoot 'features\registry.json'
+  $featureScope = Get-DeepAuditFeatureScope -BridgeRoot $BridgeRoot
+  $registryPath = [string]$featureScope.features_registry
   if (-not (Test-Path -LiteralPath $registryPath)) {
+    Write-Host "[deep-audit] functional: feature registry missing for channel '$($featureScope.slug)', skip"
     return @{ skipped = $true; reason = 'no_registry'; findings = @() }
   }
   $registryRaw = Get-FileContentCapped -Path $registryPath -Cap 30000
-  $statePath = Join-Path $BridgeRoot 'features\state.json'
+  $statePath = [string]$featureScope.features_state
   $stateRaw = if (Test-Path -LiteralPath $statePath) { Get-FileContentCapped -Path $statePath -Cap 5000 } else { '{}' }
   $auditLogTail = ''
   $auditLogPath = Join-Path $BridgeRoot 'audit\audit.log'
@@ -541,7 +570,7 @@ function Invoke-GeminiOnlyFunctional {
 
   $sb = New-Object 'System.Text.StringBuilder'
   [void]$sb.AppendLine('Ты архитектурный аудитор автономного моста Claude+Codex. Я дам тебе:')
-  [void]$sb.AppendLine('1. Реестр фич (features/registry.json) — что мы заявляем что есть в системе')
+  [void]$sb.AppendLine('1. Реестр фич текущего канала — что мы заявляем что есть в системе')
   [void]$sb.AppendLine('2. State фич (last_activated_at, last_health)')
   [void]$sb.AppendLine('3. Хвост audit.log за неделю')
   [void]$sb.AppendLine('4. Git log за неделю')

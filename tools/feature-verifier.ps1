@@ -8,7 +8,7 @@ param(
 
 # tools\feature-verifier.ps1 -- Phase 4 of the feature-registry initiative.
 #
-# Walks features/registry.json. For each feature with non-empty `scenarios`,
+# Walks the effective channel's features/registry.json. For each feature with non-empty `scenarios`,
 # runs every named scenario via tools/scenario.ps1 (headless Chrome). Collects
 # pass/fail, updates features/state.json with last_verified_at + last_health
 # per feature, writes a digest markdown to audit/feature-verifier-YYYY-MM-DD.md.
@@ -23,6 +23,10 @@ $ErrorActionPreference = 'Stop'
 try {
   $commonLib = Join-Path $BridgePath 'lib\common.ps1'
   if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+} catch {}
+try {
+  $channelsLib = Join-Path $BridgePath 'lib\channels.ps1'
+  if (-not (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $channelsLib -PathType Leaf)) { . $channelsLib }
 } catch {}
 
 function Get-AuthHeaders {
@@ -46,14 +50,35 @@ function Send-VerifierChatAlert {
   } catch {}
 }
 
-$registryPath = Join-Path $BridgePath 'features\registry.json'
+$scope = $null
+try {
+  if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { $scope = Get-EffectiveScope }
+} catch {}
+if (-not $scope) {
+  $featuresRoot = Join-Path $BridgePath 'features'
+  $scope = [pscustomobject]@{
+    slug = 'main'
+    features_root = $featuresRoot
+    features_registry = (Join-Path $featuresRoot 'registry.json')
+    features_state = (Join-Path $featuresRoot 'state.json')
+  }
+}
+
+$registryPath = [string]$scope.features_registry
 if (-not (Test-Path -LiteralPath $registryPath)) {
-  Write-Error "Feature registry not found at $registryPath"
-  exit 2
+  $summary = [ordered]@{
+    ts = (Get-Date).ToString('o')
+    channel = [string]$scope.slug
+    skipped = $true
+    reason = 'no_registry'
+    registry = $registryPath
+  }
+  $summary | ConvertTo-Json -Depth 10 -Compress
+  exit 0
 }
 $registry = @(Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json)
 
-$statePath = Join-Path $BridgePath 'features\state.json'
+$statePath = [string]$scope.features_state
 $state = @{}
 if (Test-Path -LiteralPath $statePath) {
   try {
@@ -213,7 +238,7 @@ if ($brokenCount -gt 0) {
 }
 
 $summary = [ordered]@{
-  ts = $now; total = $results.Count; passing = $passingCount; broken = $brokenCount; untested = $untestedCount; digest = $digestPath
+  ts = $now; channel = [string]$scope.slug; total = $results.Count; passing = $passingCount; broken = $brokenCount; untested = $untestedCount; digest = $digestPath
 }
 $summary | ConvertTo-Json -Depth 10 -Compress
 if ($brokenCount -gt 0) { exit 1 } else { exit 0 }

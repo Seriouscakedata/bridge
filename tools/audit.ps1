@@ -442,7 +442,7 @@ function Invoke-BridgeAudit {
   } catch {}
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-  # Resolve target project root: explicit -ProjectRoot > Get-EffectiveProjectRoot($Channel) > $root.
+  # Resolve target project root: explicit -ProjectRoot > Get-EffectiveScope($Channel).project_root > $root.
   $resolvedProject = $root
   $resolvedChannel = if (-not [string]::IsNullOrWhiteSpace($Channel)) { $Channel } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -453,7 +453,19 @@ function Invoke-BridgeAudit {
     try {
       $commonLib = Join-Path $root 'lib\common.ps1'
       if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
-      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+      if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($resolvedChannel) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
+          $resolvedChannel = [string](Get-EffectiveChannel)
+        }
+        $pr = ''
+        try {
+          $scope = Get-EffectiveScope -Slug $resolvedChannel
+          $pr = [string]$scope.project_root
+        } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr -PathType Container)) {
+          try { $resolvedProject = [System.IO.Path]::GetFullPath($pr) } catch { $resolvedProject = $pr }
+        }
+      } elseif (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
         if ([string]::IsNullOrWhiteSpace($resolvedChannel) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
           $resolvedChannel = [string](Get-EffectiveChannel)
         }
@@ -516,6 +528,8 @@ function Invoke-BridgeAudit {
       runtime_sec       = $runtimeSeconds
       metadata          = [ordered]@{
         bridge_path          = $root
+        channel              = $resolvedChannel
+        project_root         = $resolvedProject
         generated_at         = $generatedAtLocal
         gen_timestamp        = $generatedAtUtc
         runtime_seconds      = $runtimeSeconds

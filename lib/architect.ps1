@@ -19,6 +19,19 @@ function Get-ArchitectCountMarkerPath { Join-Path (Get-BridgeRoot) 'control\arch
 function Get-ArchitectExternalSystemsPath { Join-Path (Get-BridgeRoot) 'external-systems.md' }
 function Get-ArchitectMatrixPath { Join-Path (Get-BridgeRoot) 'architecture-matrix.md' }
 
+function Get-ArchitectScope {
+  try {
+    if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { return (Get-EffectiveScope) }
+  } catch {}
+  return [pscustomobject]@{
+    slug = 'main'
+    is_bridge = $true
+    bridge_root = (Get-BridgeRoot)
+    project_root = (Get-BridgeRoot)
+    backlog_path = (Join-Path (Get-BridgeRoot) 'backlog.jsonl')
+  }
+}
+
 function Get-OperatorInterventions {
   # Scan recent user messages for intervention markers -- signals where the operator stepped
   # in because the bridge couldn't do something. Returns up to $Limit most recent items.
@@ -55,6 +68,13 @@ function Get-ArchitectContext {
   # Compact diagnostic dump for the Architect prompt. All strings, no ETS.
   param([int]$WindowDays = 7)
   $sb = New-Object System.Text.StringBuilder
+  $scope = Get-ArchitectScope
+
+  [void]$sb.AppendLine('=== EFFECTIVE SCOPE ===')
+  [void]$sb.AppendLine("channel=$($scope.slug) is_bridge=$($scope.is_bridge)")
+  [void]$sb.AppendLine("project_root=$($scope.project_root)")
+  [void]$sb.AppendLine("backlog_path=$($scope.backlog_path)")
+  [void]$sb.AppendLine('')
 
   # 1) capability matrix
   $matrixPath = Get-ArchitectMatrixPath
