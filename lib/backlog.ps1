@@ -332,7 +332,15 @@ function Add-Idea {
   # downstream Save-Backlog also uses Depth 10 — both lowered to 6.
   $line = ($rec | ConvertTo-Json -Compress -Depth 6)
   $u8NoBomA = New-Object System.Text.UTF8Encoding($false)
-  Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText((Get-BacklogPath), ($line + "`n"), $u8NoBomA) }.GetNewClosure()) | Out-Null
+  # 2026-05-28: resolve the backlog path BEFORE building the closure. .GetNewClosure()
+  # captures variables from the enclosing scope but NOT functions — when the
+  # closure is later invoked via `& $ScriptBlock` from Invoke-BacklogLocked
+  # (which runs in a child scope), Get-BacklogPath isn't visible there. Audit
+  # findings dropped silently with "Get-BacklogPath not recognized" every time
+  # the helper was loaded via inline dot-source (audit.ps1, curator launcher).
+  # Resolving up-front captures the path as a value and sidesteps the lookup.
+  $backlogPathForAppend = Get-BacklogPath
+  Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA) }.GetNewClosure()) | Out-Null
 
   $curatorStarted = $false
   if (-not $SkipCurator) {
@@ -368,7 +376,9 @@ function Save-Backlog {
   param($Items)
   $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
-  Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path (Get-BacklogPath) -Content $content }.GetNewClosure()) | Out-Null
+  # 2026-05-28: resolve path before closure (see Add-Idea note about scope).
+  $backlogPathForSave = Get-BacklogPath
+  Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
 }
 
 function Set-Idea {
