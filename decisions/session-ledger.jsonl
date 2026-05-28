@@ -37,3 +37,4 @@
 {"ts":"2026-05-28T08:58:20.6924917+03:00","event":"verified_commit","channel":"main","what":"audit API and UI badge verification completed; see conversation evidence for command output"}
 {"ts":"2026-05-28T09:24:04.6100454+03:00","event":"verified_commit","channel":"main","what":"parse+BOM, audit-runner skip/cleanup, audit busy gate, security scan, clean git status | OK"}
 {"ts":"2026-05-28T09:26:23.0984506+03:00","event":"verified_commit","channel":"main","what":"audit files (audit-security.ps1, audit-functional.ps1, audit.ps1, audit-runner.ps1) существуют; conf"}
+{"ts":"2026-05-28T11:33:10.9853091+03:00","event":"verified_commit","channel":"main","what":"аудит запущен через audit.ps1 -Force, код выхода 0; Security 0 critical, Functional 2 critical в сце"}
