@@ -253,16 +253,15 @@ function Update-FeatureStatus {
 # Goal: when a new user task arrives with non-trivial length, compute its
 # embedding and compare against the feature registry. Surface top matches
 # (sim >= 0.85) to the planner via Build-PromptHistory so it can decide
-# "extend feature X" vs "create new Y" with eyes open. Cost: one
-# Get-Embedding call per task + one-time seeding of registry (cached in
-# registry.json `embedding` field). Reuses Get-Embedding/Get-CosineSimilarity
-# from lib/memory.ps1.
+# "extend feature X" vs "create new Y" with eyes open. Document vectors stay in
+# the process-local Get-Embedding cache; registry.json must remain a compact
+# declarative registry, not a persistence layer for 1536-dim vectors.
+# Reuses Get-Embedding/Get-CosineSimilarity from lib/memory.ps1.
 
 function Get-FeatureEmbedding {
     param(
         [Parameter(Mandatory=$true)][string]$Id,
-        $Feature = $null,
-        [ref]$DirtyRef = $null
+        $Feature = $null
     )
     if (-not $Feature) { $Feature = Get-Feature -Id $Id }
     if (-not $Feature) { return $null }
@@ -276,10 +275,7 @@ function Get-FeatureEmbedding {
     $vec = $null
     try { $vec = Get-Embedding -Text $text -TaskType 'RETRIEVAL_DOCUMENT' } catch { $vec = $null }
     if (-not $vec) { return $null }
-    $vecArr = @($vec)
-    Add-Member -InputObject $Feature -MemberType NoteProperty -Name 'embedding' -Value $vecArr -Force
-    if ($DirtyRef) { $DirtyRef.Value = $true }
-    return $vecArr
+    return @($vec)
 }
 
 function Test-FeatureSimilarity {
@@ -297,11 +293,9 @@ function Test-FeatureSimilarity {
     if (-not $qvec) { return @() }
     $registry = @(Get-FeatureRegistry)
     if ($registry.Count -eq 0) { return @() }
-    $dirty = $false
-    $dirtyRef = [ref]$dirty
     $scored = New-Object 'System.Collections.Generic.List[object]'
     foreach ($f in $registry) {
-        $vec = Get-FeatureEmbedding -Id ([string]$f.id) -Feature $f -DirtyRef $dirtyRef
+        $vec = Get-FeatureEmbedding -Id ([string]$f.id) -Feature $f
         if (-not $vec) { continue }
         $sim = 0.0
         try { $sim = [double](Get-CosineSimilarity -A $qvec -B $vec) } catch { $sim = 0.0 }
@@ -309,7 +303,6 @@ function Test-FeatureSimilarity {
             [void]$scored.Add([pscustomobject]@{ similarity = $sim; feature = $f })
         }
     }
-    if ($dirty) { try { Save-FeatureRegistry $registry } catch {} }
     return @($scored | Sort-Object @{Expression='similarity';Descending=$true} | Select-Object -First $TopK)
 }
 
