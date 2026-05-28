@@ -17,3 +17,6 @@
 {"ts":"2026-05-28T03:07:15.6921493+03:00","event":"verified_commit","channel":"main","what":"`Parse tools\\replay-cli.ps1` → `OK`; `REPLAY_CLI_BOM=True`; `CMD_BOM=False`; `.gitignore` содержит `"}
 {"ts":"2026-05-28T03:07:22.4993134+03:00","event":"convergence","channel":"main","source":"planner"}
 {"ts":"2026-05-28T03:11:43.8440319+03:00","event":"verified_commit","channel":"main","what":"replay-эпик X3 | (a) parse OK для 5 файлов, (b) dot-source lib/replay.ps1 в driver:15, server:6, sup"}
+{"ts":"2026-05-28T03:24:31.4840691+03:00","event":"verified_commit","channel":"main","what":"parse OK для replay/driver/server/supervisor/llm/memory/common/replay-cli/bridge.ps1; bridge.cmd rep"}
+{"ts":"2026-05-28T03:24:39.2620902+03:00","event":"convergence","channel":"main","source":"planner"}
+{"ts":"2026-05-28T03:39:55.9833243+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] X4 Auto post-mortem после repair-коммитов — лёгкий LLM-вызов (gemini-flash-lite) на diff + state"}
