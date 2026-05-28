@@ -1357,7 +1357,7 @@ try {
             $note = if ($body -and $body.note) { [string]$body.note } else { '' }
             $idea = "Feature discussion: [$($f.id)] $($f.name) — $($f.description)$(if ($note) { " | Note: $note" })"
             . (Join-Path $PSScriptRoot 'lib\backlog.ps1')
-            Add-BacklogItem -Text $idea -Source 'feature-discuss'
+            Add-Idea -Text $idea -From 'feature-discuss' -Tags @('feature','discussion') -Scope 'bridge' | Out-Null
             Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
           }
         } catch {
