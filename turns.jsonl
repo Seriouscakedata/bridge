@@ -181,3 +181,5 @@
 {"ts":"2026-05-28T12:46:00.8767883Z","speaker":"claude","model":"sonnet","sec":906.88,"status":"timeout","mode":"normal"}
 {"ts":"2026-05-28T13:01:45.1693784Z","speaker":"claude","model":"sonnet","sec":914.326,"status":"timeout","mode":"normal"}
 {"ts":"2026-05-28T13:21:16.8286202Z","speaker":"claude","model":"sonnet","sec":163.681,"status":"ok","mode":"normal"}
+{"ts":"2026-05-28T13:28:12.5844418Z","speaker":"codex","model":"codex","sec":85.146,"status":"ok","mode":"normal"}
+{"ts":"2026-05-28T13:29:46.3588029Z","speaker":"claude","model":"sonnet","sec":70.11,"status":"ok","mode":"normal"}

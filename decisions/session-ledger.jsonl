@@ -49,3 +49,4 @@
 {"ts":"2026-05-28T15:30:38.3995196+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-claude/trend] backlog-curator: � audit.log �������� ���ᮢ�� ����������� �訡�� (����� 15 ࠧ):"}
 {"ts":"2026-05-28T15:46:20.7203034+03:00","event":"doctor_fix","channel":"main","what":"doctor_activated"}
 {"ts":"2026-05-28T16:17:07.3963843+03:00","event":"task_start","channel":"main","task":"[Автозадача из бэклога] [deep-codex/security] auth-bypass (server.ps1:292) -- ���� handler GET /api/health ��ࠡ��뢠���� ��"}
+{"ts":"2026-05-28T16:29:52.0753891+03:00","event":"verified_commit","channel":"main","what":"GET /api/health без авторизации → STATUS=200, FIELDS=heartbeat_age_sec,ok,recent_error_count_24h,upt"}
