@@ -242,6 +242,12 @@ function Get-FoundryDefaultOps {
     if ([string]::IsNullOrWhiteSpace($sid)) { return @{ ok = $false; error = 'step has no id' } }
     $wt = New-Worktree -RepoRoot $repo -Name ('foundry-' + $sid)
     if (-not $wt) { return @{ ok = $false; error = 'worktree create failed' } }
+    # Pin the PROJECT-repo HEAD the worktree branched from, so the Result Op can
+    # count commits as base..branch INSIDE this repo. Do NOT rely on
+    # Get-WorkerCommits -- it is hardcoded to the bridge repo and returns nothing
+    # for a project worktree branch (would gate every committed step as "no commits").
+    $baseSha = ''
+    try { $baseSha = ((& (Get-GitExe) -C $repo rev-parse HEAD 2>$null) | Select-Object -First 1).Trim() } catch {}
     $body = Get-FoundryStepBody $Step
     $complexity = [string](Get-RunnerField $Step 'complexity' 'moderate')
     $stream = [pscustomobject]@{ id = $sid; files = @(); complexity = $complexity; body = $body; opus = $false }
@@ -252,7 +258,7 @@ function Get-FoundryDefaultOps {
     $worker = $null
     try { $worker = Spawn-Worker -StreamId $sid -Body $body -Worktree $wt.path -BranchName $wt.branch -WorkerSpec $spec }
     catch { Remove-Worktree $wt; return @{ ok = $false; error = ('spawn: ' + $_.Exception.Message) } }
-    return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker } }
+    return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker; baseSha = $baseSha } }
   }.GetNewClosure()
 
   $ops['Await'] = {
@@ -280,11 +286,23 @@ function Get-FoundryDefaultOps {
 
   $ops['Result'] = {
     param($Ctx)
+    # status/reply from the worker are fine (parsed from its STATUS line, not
+    # bridge-coupled). commits MUST be recomputed against the PROJECT repo:
+    # Get-WorkerResult delegates to Get-WorkerCommits, which queries the bridge
+    # repo and so always returns empty for a project worktree branch.
     $r = Get-WorkerResult $Ctx.worker
+    $branch = ''
+    try { $branch = [string]$Ctx.wt.branch } catch {}
+    $base = [string](Get-RunnerField $Ctx 'baseSha' '')
+    $commits = @()
+    if (-not [string]::IsNullOrWhiteSpace($branch)) {
+      $range = if ([string]::IsNullOrWhiteSpace($base)) { $branch } else { ($base + '..' + $branch) }
+      try { $commits = @(& (Get-GitExe) -C $repo rev-list --reverse $range 2>$null | ForEach-Object { [string]$_ }) } catch { $commits = @() }
+    }
     return @{
       status  = [string](Get-RunnerField $r 'status' 'failed')
       reply   = [string](Get-RunnerField $r 'reply' '')
-      commits = @(Get-RunnerField $r 'commits' @())
+      commits = $commits
     }
   }.GetNewClosure()
 
