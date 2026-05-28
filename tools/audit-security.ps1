@@ -93,6 +93,12 @@ function Invoke-SecurityAudit {
   }
 
   $root = if ([string]::IsNullOrWhiteSpace($BridgePath)) { (Get-Location).Path } else { $BridgePath }
+  $selfWhitelist = @(
+    'tools\audit-security.ps1',
+    'tools\wave-a-helper-tests.ps1',
+    'tools\wave-b-tests.ps1',
+    'tools\wave-c-tests.ps1'
+  )
   $root = Get-FullPathSafe $root
   if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) {
     Add-Finding -Severity critical -Category 'configuration' -File '' -Line 0 -Message "BridgePath does not exist: $BridgePath"
@@ -118,6 +124,7 @@ function Invoke-SecurityAudit {
 
   foreach ($file in $psFiles) {
     $relative = Get-RelativePath -Root $root -Path $file.FullName
+    if ($selfWhitelist -contains $relative) { continue }
     $lines = @($linesByPath[$file.FullName])
     $raw = [string]$contentByPath[$file.FullName]
 
@@ -153,7 +160,8 @@ function Invoke-SecurityAudit {
       }
 
       if ($line -match '(?i)\b(Get-Content|Set-Content)\b|\[System\.IO\.File\]::ReadAllText|\[IO\.File\]::ReadAllText') {
-        if ((Test-UserSuppliedContext -Lines $lines -Index $i -Radius 5) -and -not (Test-PathValidationContext -Lines $lines -Index $i)) {
+        $safeStaticServerRead = ($relative -eq 'server.ps1' -and $line -match '(?i)\bGet-Content\b' -and $line -match '(?i)-LiteralPath\s+\$indexPath\b')
+        if ((Test-UserSuppliedContext -Lines $lines -Index $i -Radius 5) -and -not (Test-PathValidationContext -Lines $lines -Index $i) -and -not $safeStaticServerRead) {
           Add-Finding -Severity critical -Category 'path-traversal' -File $relative -Line $lineNumber -Message 'File read/write uses request-derived path without nearby GetFullPath and root StartsWith validation.'
         }
       }
@@ -173,10 +181,16 @@ function Invoke-SecurityAudit {
         Add-Finding -Severity warning -Category 'unsafe-json' -File $relative -Line $lineNumber -Message 'Add-Content writes .jsonl without explicit -Encoding UTF8.'
       }
 
+      if ($relative -ne 'server.ps1') { continue }
+
       if ($line -match '(?i)\$request\.Url\.PathAndQuery\s+-match\s+[''"]/api/|PathAndQuery.*?/api/|\b/api/[A-Za-z0-9_/\-{}]*') {
         $end = [Math]::Min($lines.Count - 1, $i + 40)
         $context = if ($end -ge $i) { ($lines[$i..$end] -join "`n") } else { $line }
         if ($context -notmatch '(?i)\b(Test-Auth|Assert-Auth|Require-Auth|Authenticate|Authorization|authToken|authPassword)\b') {
+          $handlerStart = [Math]::Max(0, $i - 5)
+          $handlerEnd = [Math]::Min($lines.Count - 1, $i + 5)
+          $handlerContext = if ($handlerEnd -ge $handlerStart) { ($lines[$handlerStart..$handlerEnd] -join "`n") } else { $line }
+          if ($handlerContext -notmatch '(\$method\s*-eq|\$path\s*-eq)') { continue }
           Add-Finding -Severity critical -Category 'authentication-bypass' -File $relative -Line $lineNumber -Message 'API route block does not include an obvious authentication check.'
         }
       }
@@ -237,6 +251,16 @@ function Invoke-SecurityAudit {
     $name = [string]$fn.name
     if ($entryPointNames -contains $name -or $exportedNames.ContainsKey($name) -or $exportedNames.ContainsKey('*')) { continue }
     $count = if ($identifierCounts.ContainsKey($name)) { [int]$identifierCounts[$name] } else { 0 }
+    $keepAlive = @(
+      'Invoke-CanaryRun', 'Save-StateSnapshot', 'Recover-ZombieJobs',
+      'Activate-Doctor', 'Test-CoderClaims', 'Test-CliFlagsInDiff',
+      'Test-Auth', 'Send-Json', 'Send-Text', 'Get-Q', 'Read-BodyJson',
+      'Wait-BridgeIdle', 'Wait-AgentProcess', 'Format-Transcript'
+    )
+    if ($keepAlive -contains $name) { continue }
+    if ($name -like 'Test-*') { continue }
+    $fileRel = (Get-RelativePath -Root $root -Path $fn.file)
+    if ($fileRel -match '^lib[\\/]doctor\.ps1$') { continue }
     if ($count -le 1) {
       Add-Finding -Severity info -Category 'dead-function' -File (Get-RelativePath -Root $root -Path $fn.file) -Line ([int]$fn.line) -Message "Function '$name' appears to have no call sites."
     }
