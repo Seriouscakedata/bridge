@@ -804,20 +804,30 @@ try {
         } else { Send-FileNotFound $ctx }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/memory') {
-        # Phase 4: ?channel=<slug> filters items; default shows ALL channels so the user can
-        # audit/organize. Pass ?channel=__active__ for "what's recallable from the current channel".
+        # ?channel=<slug> filters items; default follows the effective/pinned channel.
+        # ?include_bridge=1 adds bridge-memory records as read-only rows for project channels.
         $chParam = Get-QueryParamUtf8 $ctx 'channel'
-        if ([string]::IsNullOrWhiteSpace($chParam)) { $chParam = '__all__' }
-        elseif ($chParam -eq '__active__') { $chParam = (Get-ActiveChannel) }
-        $stats = Get-MemoryStats
-        $items = @(Get-MemoriesView -Channel $chParam)
+        if ([string]::IsNullOrWhiteSpace($chParam)) { $chParam = '__active__' }
+        if ($chParam -eq '__active__') { $chParam = (Get-EffectiveChannel) }
+        $includeBridgeParam = Get-QueryParamUtf8 $ctx 'include_bridge'
+        $includeBridge = ($includeBridgeParam -match '^(1|true|yes|on)$')
+        if ($chParam -eq '__all__') { $includeBridge = $false }
+        try {
+          $memScope = if ($chParam -eq '__all__') { Get-EffectiveScope -Slug (Get-EffectiveChannel) } else { Get-EffectiveScope -Slug $chParam }
+        } catch {
+          Send-Text $ctx ('{"ok":false,"error":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 400
+          continue
+        }
+        if ([bool]$memScope.is_bridge) { $includeBridge = $false }
+        $stats = Get-MemoryStats -Channel $chParam
+        $items = @(Get-MemoriesView -Channel $chParam -IncludeBridgeReadonly $includeBridge)
         $mapTxt = ''
         if ($chParam -eq '__all__') {
           $mp = Get-MemoryMapPath
           if (Test-Path $mp) { $mapTxt = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) }
         } else {
           $perCh = Get-MemoryMapPathForChannel -Slug $chParam
-          $shared = Get-MemorySharedMapPath
+          $shared = Get-MemorySharedMapPath -Slug $chParam
           $parts = New-Object 'System.Collections.Generic.List[string]'
           if (Test-Path $perCh)  { [void]$parts.Add([System.IO.File]::ReadAllText($perCh, [System.Text.Encoding]::UTF8)) }
           if (Test-Path $shared) { [void]$parts.Add([System.IO.File]::ReadAllText($shared, [System.Text.Encoding]::UTF8)) }
@@ -827,9 +837,9 @@ try {
         # ReadAllText returns a plain CLR string, so ConvertTo-Json -Depth 10 cannot serialize
         # PowerShell provider ETS properties as a {"value":...} object.
         $mapJson = (("" + $mapTxt) | ConvertTo-Json -Depth 10 -Compress)
-        $activeChJson = (("" + (Get-ActiveChannel)) | ConvertTo-Json -Depth 10 -Compress)
+        $activeChJson = (("" + (Get-EffectiveChannel)) | ConvertTo-Json -Depth 10 -Compress)
         $filterJson   = (("" + $chParam) | ConvertTo-Json -Depth 10 -Compress)
-        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + ',"activeChannel":' + $activeChJson + ',"filterChannel":' + $filterJson + '}'
+        $payload = '{"ok":true,"stats":' + ($stats | ConvertTo-Json -Compress -Depth 6) + ',"map":' + $mapJson + ',"items":' + $itemsJson + ',"activeChannel":' + $activeChJson + ',"filterChannel":' + $filterJson + ',"includeBridge":' + ($includeBridge.ToString().ToLower()) + ',"scope":' + ($memScope | ConvertTo-Json -Compress -Depth 6) + '}'
         Send-Text $ctx $payload 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/memory/add') {

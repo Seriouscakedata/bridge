@@ -848,13 +848,23 @@ function Purge-MemoryForChannel {
 function Get-MemoriesView {
   # All memories WITHOUT the heavy vec arrays, for the API/UI.
   # -Channel: '' or $null = active; '__all__' = all channels (admin view).
-  param([string]$Channel = '__all__')
+  param([string]$Channel = '__all__', [bool]$IncludeBridgeReadonly = $false)
   $storeSlug = if ($Channel -eq '__all__') { Get-CurrentMemoryChannel } else { $Channel }
+  $scope = Get-MemoryScope -Slug $storeSlug
   $all = @(Get-AllMemories -Channel $storeSlug)
   if (-not [string]::IsNullOrWhiteSpace($Channel) -and $Channel -ne '__all__') {
     $all = @($all | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
   }
+  if ($IncludeBridgeReadonly -and $Channel -ne '__all__' -and -not [bool]$scope.is_bridge) {
+    $bridgeAll = @(Get-AllMemories -Channel 'main' | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel 'main' })
+    foreach ($bm in $bridgeAll) {
+      $bm | Add-Member -NotePropertyName readonly_source -NotePropertyValue 'bridge' -Force
+    }
+    if ($bridgeAll.Count -gt 0) { $all = @($all + $bridgeAll) }
+  }
   $out = foreach ($m in $all) {
+    $readonlySource = ''
+    if ($m.PSObject.Properties['readonly_source']) { $readonlySource = [string]$m.readonly_source }
     [pscustomobject]@{
       id         = [string]$m.id
       ts         = [string]$m.ts
@@ -865,6 +875,8 @@ function Get-MemoriesView {
       channel    = (Get-MemoryChannel $m)
       shared     = (Test-MemoryShared $m)
       text       = [string]$m.text
+      readonly   = ($readonlySource -eq 'bridge')
+      readonly_source = $readonlySource
     }
   }
   return @($out)
@@ -920,9 +932,11 @@ function Set-Memory {
 }
 
 function Get-MemoryStats {
-  $mems = @(Get-AllMemories)
+  param([string]$Channel = $null)
+  $storeSlug = if ($Channel -eq '__all__') { Get-CurrentMemoryChannel } else { $Channel }
+  $mems = @(Get-AllMemories -Channel $storeSlug)
   $last = $null
-  $mp = Get-MemoryMarkerPath
+  $mp = Get-MemoryMarkerPath -Slug $storeSlug
   if (Test-Path $mp) { try { $last = (Get-Content $mp -Raw -Encoding UTF8).Trim() } catch {} }
   $bySource = [ordered]@{}
   foreach ($m in $mems) {
@@ -935,7 +949,7 @@ function Get-MemoryStats {
     count         = $mems.Count
     pinned        = $pinned
     lastLibrarian = $last
-    mapExists     = (Test-Path (Get-MemoryMapPath))
+    mapExists     = (Test-Path (Get-MemoryMapPath -Slug $storeSlug))
     bySource      = $bySource
   }
 }

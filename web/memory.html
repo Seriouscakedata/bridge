@@ -63,8 +63,10 @@
     padding:12px;display:flex;flex-direction:column;gap:9px;box-shadow:0 8px 22px rgba(0,0,0,.14);
   }
   .card.pinned{border-color:rgba(255,209,102,.5);box-shadow:0 0 0 1px rgba(255,209,102,.1),0 8px 22px rgba(0,0,0,.18)}
+  .card.readonly{border-color:rgba(140,150,165,.34);background:rgba(23,26,33,.72)}
   .card .meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted)}
   .card .tag{padding:1px 7px;border-radius:999px;background:#10151d;border:1px solid var(--border-soft);color:#9fb0c5}
+  .readonly-badge{padding:2px 7px;border-radius:999px;font-size:11px;border:1px solid rgba(140,150,165,.34);background:rgba(140,150,165,.12);color:#c4cbd6}
   .card textarea{
     width:100%;min-height:54px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;
     color:var(--txt);padding:9px 11px;font-size:14px;line-height:1.5;resize:vertical;outline:none;
@@ -157,6 +159,9 @@
     </div>
   </div>
   <div class="head-actions">
+    <label id="bridgeReadonlyWrap" title="Show bridge memory as read-only rows" style="display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:6px 9px;background:#0b0f15">
+      <input type="checkbox" id="bridgeReadonlyToggle" checked style="accent-color:var(--user)"> bridge readonly
+    </label>
     <button id="addToggle" type="button">＋ Добавить</button>
     <select id="chanFilter" title="Канал" style="background:#0b0f15;border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:6px 9px;outline:none;font-size:13px"></select>
     <button id="allChannelsBtn" type="button" title="Показать память всех каналов">все каналы</button>
@@ -368,6 +373,7 @@ let MAP = '';
 let RADAR = null;
 let CURRENT_CHAN = null; // null = active default; '__all__' = admin view
 let CHANNELS = [];
+let SHOW_BRIDGE_READONLY = true;
 const $ = s => document.querySelector(s);
 const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -419,6 +425,28 @@ function renderChanFilter(){
   }
   opts.push(`<option value="__all__" ${CURRENT_CHAN==='__all__'?'selected':''}>все каналы</option>`);
   sel.innerHTML = opts.join('');
+  renderBridgeReadonlyToggle();
+}
+function selectedChannelItem(){
+  const slug = CURRENT_CHAN || '';
+  return (CHANNELS || []).find(c => String(c.slug || c.name || '') === slug) || null;
+}
+function selectedChannelIsBridge(){
+  if(CURRENT_CHAN === '__all__') return true;
+  const c = selectedChannelItem();
+  if(c && c.scope && typeof c.scope.is_bridge === 'boolean') return !!c.scope.is_bridge;
+  return String(CURRENT_CHAN || 'main') === 'main';
+}
+function shouldIncludeBridgeReadonly(){
+  return !!SHOW_BRIDGE_READONLY && CURRENT_CHAN !== '__all__' && !selectedChannelIsBridge();
+}
+function renderBridgeReadonlyToggle(){
+  const wrap = $('#bridgeReadonlyWrap');
+  const toggle = $('#bridgeReadonlyToggle');
+  if(!wrap || !toggle) return;
+  const visible = CURRENT_CHAN !== '__all__' && !selectedChannelIsBridge();
+  wrap.style.display = visible ? 'inline-flex' : 'none';
+  toggle.checked = !!SHOW_BRIDGE_READONLY;
 }
 
 async function load(){
@@ -427,6 +455,9 @@ async function load(){
     if(CURRENT_CHAN === '__all__'){ url += '?channel=__all__'; }
     else if(CURRENT_CHAN){ url += '?channel=' + encodeURIComponent(CURRENT_CHAN); }
     else { url += '?channel=__active__'; }
+    if(shouldIncludeBridgeReadonly()){
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + 'include_bridge=1';
+    }
     const d = await api(url);
     ITEMS = d.items || [];
     MAP = d.map || '';
@@ -472,19 +503,22 @@ function renderGrid(){
     const imp = (m.importance!=null?m.importance:0).toFixed(2);
     const channel = String(m.channel || 'main');
     const isShared = !!m.shared;
+    const isReadonly = !!m.readonly || String(m.readonly_source || '') === 'bridge';
     const channelChip = isShared
       ? `<span class="tag" title="Общая память: доступна из всех каналов" style="background:rgba(155,200,255,.16);border-color:rgba(155,200,255,.42);color:#cfe5ff">🌐 общая</span>`
       : `<span class="tag" title="Канал: ${esc(channel)}" style="background:rgba(255,222,160,.12);border-color:rgba(255,222,160,.32);color:#ffdda0">🧵 ${esc(channel)}</span>`;
+    const readonlyBadge = isReadonly ? '<span class="readonly-badge" title="Bridge memory is read-only from project channels">&#128274; bridge readonly</span>' : '';
     const card = document.createElement('div');
-    card.className = 'card' + (m.pinned?' pinned':'');
+    card.className = 'card' + (m.pinned?' pinned':'') + (isReadonly?' readonly':'');
     card.innerHTML =
       `<div class="meta">`+
         `<span class="src-pill ${srcClass(m.source)}">${esc(m.source||'?')}</span>`+
         channelChip +
+        readonlyBadge +
         tags +
         `<span style="margin-left:auto">${esc(ago(m.ts))}</span>`+
       `</div>`+
-      `<textarea>${esc(m.text)}</textarea>`+
+      `<textarea ${isReadonly?'readonly':''}>${esc(m.text)}</textarea>`+
       `<div class="row">`+
         `<span class="imp">важность <b class="impVal">${imp}</b>`+
           `<input type="range" min="0" max="1" step="0.05" value="${m.importance||0}"></span>`+
@@ -494,6 +528,12 @@ function renderGrid(){
         `<button class="saveBtn" disabled>Сохранить</button>`+
         `<button class="danger delBtn">Удалить</button>`+
       `</div>`;
+    if(isReadonly){
+      const row = card.querySelector('.row');
+      if(row) row.innerHTML = '<span class="imp">read-only bridge memory</span><span class="spacer"></span>';
+      g.appendChild(card);
+      continue;
+    }
     const ta = card.querySelector('textarea');
     const range = card.querySelector('input[type=range]');
     const impVal = card.querySelector('.impVal');
@@ -878,8 +918,16 @@ $('#runRadarBtn').addEventListener('click', async ()=>{
 
 $('#filter').addEventListener('input', renderGrid);
 $('#refreshBtn').addEventListener('click', load);
+const bridgeReadonlyToggle = document.getElementById('bridgeReadonlyToggle');
+if(bridgeReadonlyToggle){
+  bridgeReadonlyToggle.addEventListener('change', e=>{
+    SHOW_BRIDGE_READONLY = !!e.target.checked;
+    load();
+  });
+}
 $('#chanFilter').addEventListener('change', e=>{
   CURRENT_CHAN = e.target.value;
+  renderBridgeReadonlyToggle();
   load();
 });
 $('#allChannelsBtn').addEventListener('click', ()=>{
