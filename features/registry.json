@@ -749,7 +749,7 @@
     {
         "id":  "orphan-codex-sweep",
         "name":  "Сборщик orphan codex",
-        "description":  "Idle-цикл: убивает codex.exe процессы старше 30 мин, не привязанные к активным агентам и не зарегистрированные. НЕ трогает claude.exe (IDE юзера). Лог в control/orphan-sweep.log. Также защищает user desktop codex.exe (d862ec1): фильтр по CLI fingerprint (exec + --skip-git-repo-check), внешние codex никогда не убиваются.",
+        "description":  "Idle-цикл: убивает только bridge-owned codex.exe процессы старше 30 мин, не привязанные к активным агентам и не зарегистрированные. НЕ трогает claude.exe (IDE юзера): Claude полностью исключён из sweep. Лог в control/orphan-sweep.log. Защищает user desktop/interactive Codex: внешние codex.exe не убиваются; принадлежность мосту определяется по process telemetry и безопасному Codex-only fingerprint.",
         "owner_files":  [
                             "lib/common.ps1",
                             "driver.ps1"
