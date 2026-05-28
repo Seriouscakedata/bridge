@@ -2679,24 +2679,6 @@ while ($true) {
       if ($fastMark -and -not $reasoningHighMark) { $fastLaneReason = 'marker' }
       elseif ($autoFastLane) { $fastLaneReason = 'auto' }
 
-      $taskProjectRoot = Get-ActiveProjectRoot
-      if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
-      $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
-      Update-State ({ param($s)
-        $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
-        $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
-        Clear-FastLaneFlags $s
-        Clear-ChunkingState $s
-        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null
-        $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
-        $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
-        $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
-        $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
-        $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $null -Force
-        Reset-TaskAgentDuration $s
-        $s.status='working'; $s.status_text='Классифицирую задачу...'; $s.heartbeat=(Get-Date).ToString('o')
-      }.GetNewClosure()) | Out-Null
-
       # 2026-05-28: LLM intent classifier. Replaces hardcoded [[DEEP-THINK]] regex
       # with semantic understanding of the user's task. Explicit markers
       # ([[FAST]], [[NORMAL]], [[DEEP-THINK]]) always win; the LLM call only
@@ -2718,7 +2700,11 @@ while ($true) {
       $intentForcedDiscuss  = ($intentMode -eq 'discuss')
       $intentForcedStudy    = ($intentMode -eq 'study')
 
-      # Snapshot intent for the closure (Update-State runs in a separate scope).
+      $taskProjectRoot = Get-ActiveProjectRoot
+      if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
+      $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+
+      # Snapshot intent for the state mutator closure.
       $intentRecord = $null
       if ($taskIntent) {
         $intentRecord = [pscustomobject]@{
@@ -2751,7 +2737,7 @@ while ($true) {
         elseif ($intentForcedDiscussClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedStudyClosure) { $s.task_mode='study'; $s.study_subtype='external'; $s.study_phase='plan' }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
-        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+        $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
         $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
         Clear-AuditorSuppressedHashes -State $s
