@@ -10,7 +10,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/auditor.log",
-                                  "regex":  "^\\[.*\\] (no anomaly\\|ok:\\|hung:\\|unsolvable:\\|corrupted_state:)"
+                                  "regex":  "^\\[.*\\] (no anomaly|ok:|hung:|unsolvable:|corrupted_state:)"
                               },
         "scenarios":  [
 
@@ -39,7 +39,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/doctor.log",
-                                  "regex":  "^\\[.*\\] (Doctor\\|repair\\|restarted\\|verified)"
+                                  "regex":  "^\\[.*\\] (Doctor|repair|restarted|verified)"
                               },
         "scenarios":  [
 
@@ -94,7 +94,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/scenario.log",
-                                  "regex":  "^\\[.*\\] (PASS\\|FAIL\\|scenario)"
+                                  "regex":  "^\\[.*\\] (PASS|FAIL|scenario)"
                               },
         "scenarios":  [
 
@@ -207,7 +207,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/canary.log",
-                                  "regex":  "^\\[.*\\] (PASS\\|FAIL\\|canary)"
+                                  "regex":  "^\\[.*\\] (PASS|FAIL|canary)"
                               },
         "scenarios":  [
 
@@ -235,7 +235,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/librarian.log",
-                                  "regex":  "^\\[.*\\] (consolidated\\|pruned\\|merged\\|librarian)"
+                                  "regex":  "^\\[.*\\] (consolidated|pruned|merged|librarian)"
                               },
         "scenarios":  [
 
@@ -263,7 +263,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/backlog.log",
-                                  "regex":  "^\\[.*\\] (curator\\|approved\\|rejected\\|duplicate)"
+                                  "regex":  "^\\[.*\\] (curator|approved|rejected|duplicate)"
                               },
         "dependencies":  [
                              "llm-router"
@@ -291,7 +291,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/postmortem.log",
-                                  "regex":  "^\\[.*\\] (postmortem\\|written\\|generated)"
+                                  "regex":  "^\\[.*\\] (postmortem|written|generated)"
                               },
         "scenarios":  [
 
@@ -643,7 +643,7 @@
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "control/auditor.log",
-                                  "regex":  "zombie\\|Recover-Zombie"
+                                  "regex":  "zombie|Recover-Zombie"
                               },
         "scenarios":  [
 
