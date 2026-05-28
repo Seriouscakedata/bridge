@@ -1,0 +1,690 @@
+﻿[
+    {
+        "id":  "auditor",
+        "name":  "Auditor",
+        "description":  "Idle auditor that scans bridge logs and state for anomalies.",
+        "owner_files":  [
+                            "lib/auditor.ps1"
+                        ],
+        "owner_function":  "Invoke-Auditor",
+        "trigger":  "idle-loop-15min",
+        "expected_frequency":  "15min",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/auditor.log",
+                                  "regex":  "^\\[.*\\] (no anomaly\\|ok:\\|hung:\\|unsolvable:\\|corrupted_state:)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "doctor",
+                             "llm-router"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "doctor",
+        "name":  "Doctor",
+        "description":  "On-demand diagnostics and repair workflow for bridge runtime issues.",
+        "owner_files":  [
+                            "lib/doctor.ps1"
+                        ],
+        "owner_function":  "Invoke-Doctor",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/doctor.log",
+                                  "regex":  "^\\[.*\\] (Doctor\\|repair\\|restarted\\|verified)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "auditor"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "intent-classifier",
+        "name":  "Intent Classifier",
+        "description":  "Classifies incoming task intent before routing and execution.",
+        "owner_files":  [
+                            "lib/intent.ps1"
+                        ],
+        "owner_function":  "Invoke-IntentClassifier",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "task_intent"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "scenario-runner",
+        "name":  "Scenario Runner",
+        "description":  "Runs named bridge scenarios and records pass or fail results.",
+        "owner_files":  [
+                            "tools/scenario.ps1"
+                        ],
+        "owner_function":  "Invoke-ScenarioRunner",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/scenario.log",
+                                  "regex":  "^\\[.*\\] (PASS\\|FAIL\\|scenario)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "audit-self-diag",
+        "name":  "Audit Self-Diagnostics",
+        "description":  "Scheduled self-diagnostics that audit bridge behavior, security, and functionality.",
+        "owner_files":  [
+                            "tools/audit.ps1",
+                            "tools/audit-security.ps1",
+                            "tools/audit-functional.ps1"
+                        ],
+        "owner_function":  "Start-AuditIfDue",
+        "trigger":  "schedule",
+        "expected_frequency":  "nightly",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/auditor.log",
+                                  "regex":  "^\\[.*\\] audit"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "doctor",
+                             "librarian"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  true,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "recurrence-detection",
+        "name":  "Recurrence Detection",
+        "description":  "Builds recurrence context for repeated task patterns.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Get-RecurrenceContext",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "recurrence_context"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "critic",
+        "name":  "Critic",
+        "description":  "Per-task critic pass that reviews plans and outputs through the router.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "(critic block)",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "last_critic_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "llm-router"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "canary",
+        "name":  "Canary",
+        "description":  "Canary checks for verifying bridge readiness and basic execution paths.",
+        "owner_files":  [
+                            "lib/canary.ps1"
+                        ],
+        "owner_function":  "Invoke-Canary",
+        "trigger":  "schedule",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/canary.log",
+                                  "regex":  "^\\[.*\\] (PASS\\|FAIL\\|canary)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "doctor"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "librarian",
+        "name":  "Librarian",
+        "description":  "Memory librarian that consolidates, prunes, and merges stored context.",
+        "owner_files":  [
+                            "lib/memory.ps1"
+                        ],
+        "owner_function":  "Invoke-MemoryLibrarian",
+        "trigger":  "schedule",
+        "expected_frequency":  "nightly",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/librarian.log",
+                                  "regex":  "^\\[.*\\] (consolidated\\|pruned\\|merged\\|librarian)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "backlog-curator",
+        "name":  "Backlog Curator",
+        "description":  "Nightly backlog curation for duplicate, approved, and rejected items.",
+        "owner_files":  [
+                            "lib/backlog.ps1"
+                        ],
+        "owner_function":  "Invoke-BacklogCurator",
+        "trigger":  "schedule",
+        "expected_frequency":  "nightly",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/backlog.log",
+                                  "regex":  "^\\[.*\\] (curator\\|approved\\|rejected\\|duplicate)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "llm-router"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "postmortem",
+        "name":  "Auto Postmortem",
+        "description":  "Generates postmortem records for selected bridge incidents.",
+        "owner_files":  [
+                            "lib/postmortem.ps1"
+                        ],
+        "owner_function":  "Invoke-Postmortem",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/postmortem.log",
+                                  "regex":  "^\\[.*\\] (postmortem\\|written\\|generated)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "doctor"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "replay-system",
+        "name":  "Replay System",
+        "description":  "Captures replay data for reproducing bridge task behavior.",
+        "owner_files":  [
+                            "lib/replay.ps1"
+                        ],
+        "owner_function":  "Start-ReplayCapture",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "last_replay_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "state-snapshots",
+        "name":  "State Snapshots",
+        "description":  "Per-task state snapshot capture for rollback and inspection.",
+        "owner_files":  [
+                            "lib/common.ps1"
+                        ],
+        "owner_function":  "Save-StateSnapshot",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "last_snapshot_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "mission-card",
+        "name":  "Mission Card",
+        "description":  "User-facing mission ledger and session decision card.",
+        "owner_files":  [
+                            "driver.ps1",
+                            "state session_decisions"
+                        ],
+        "owner_function":  "(ledger block)",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "session_decisions"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "runbook-diagnostics",
+        "name":  "Runbook Diagnostics",
+        "description":  "User-facing runbook diagnostics endpoint for operational inspection.",
+        "owner_files":  [
+                            "server.ps1"
+                        ],
+        "owner_function":  "(GET /api/runbook)",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "none"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "worker-pool",
+        "name":  "Worker Pool",
+        "description":  "Parallel worker dispatch and active stream coordination.",
+        "owner_files":  [
+                            "lib/parallel.ps1"
+                        ],
+        "owner_function":  "Invoke-ParallelDispatch",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "parallel_streams_active"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "parallel-chunks",
+        "name":  "Parallel Chunks",
+        "description":  "Chunk continuation protocol for long parallel worker streams.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "(CONTINUE-CHUNK)",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "chunk_count"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "worker-pool"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "fast-lane",
+        "name":  "Fast Lane",
+        "description":  "Detects trivial tasks and routes them through a faster execution lane.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Test-IsTrivialTask",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "fast_lane_last_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "study-mode",
+        "name":  "Study Mode",
+        "description":  "User-facing study mode for guided learning and memory-backed context.",
+        "owner_files":  [
+                            "lib/study.ps1"
+                        ],
+        "owner_function":  "Invoke-StudyMode",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "study_mode_last_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "llm-router",
+                             "memory-recall"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "discuss-mode",
+        "name":  "Discuss Mode",
+        "description":  "User-facing discussion mode selected by task mode.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "(task_mode=discuss)",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "task_mode"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "llm-router"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "memory-recall",
+        "name":  "Memory Recall",
+        "description":  "Retrieves relevant memory context for each task.",
+        "owner_files":  [
+                            "lib/memory.ps1"
+                        ],
+        "owner_function":  "Get-MemoryRecall",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "last_recall_at"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-25",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "message-cache",
+        "name":  "Message Cache",
+        "description":  "UI message cache for channel-specific browser state.",
+        "owner_files":  [
+                            "web/index.html"
+                        ],
+        "owner_function":  "channelMessageCache",
+        "trigger":  "ui-event",
+        "expected_frequency":  "continuous",
+        "activation_signal":  {
+                                  "kind":  "none"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "channel-switch"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "channel-switch",
+        "name":  "Channel Switch",
+        "description":  "User-facing UI channel switch behavior and active channel state.",
+        "owner_files":  [
+                            "web/index.html"
+                        ],
+        "owner_function":  "switchChannel",
+        "trigger":  "ui-event",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "active_channel"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "zombie-job-recovery",
+        "name":  "Zombie Job Recovery",
+        "description":  "Idle recovery path for jobs detected as stuck or abandoned.",
+        "owner_files":  [
+                            "lib/common.ps1"
+                        ],
+        "owner_function":  "Recover-ZombieJobs",
+        "trigger":  "idle-loop-15min",
+        "expected_frequency":  "15min",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/auditor.log",
+                                  "regex":  "zombie\\|Recover-Zombie"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "auditor"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "telemetry",
+        "name":  "Agent Telemetry",
+        "description":  "Continuous agent process telemetry captured while waiting on workers.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Wait-AgentProcess",
+        "trigger":  "continuous",
+        "expected_frequency":  "continuous",
+        "activation_signal":  {
+                                  "kind":  "state-path",
+                                  "path":  "agent_telemetry"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    }
+]

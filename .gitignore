@@ -1,5 +1,6 @@
 # Runtime/state and secrets -- NOT tracked, so rollback never wipes them.
 state.json
+features/state.json
 conversation.jsonl
 summary.txt
 auth.json
