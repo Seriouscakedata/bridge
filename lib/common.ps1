@@ -248,6 +248,47 @@ function Sweep-ChildProcesses {
   } catch { return @{ checked=0; dead=0; error=$_.Exception.Message } }
 }
 
+function Test-CodexIsBridgeOwned {
+  # 2026-05-28: distinguish a bridge-spawned codex.exe from an unrelated codex
+  # process (e.g. user's Codex desktop app, an interactive `codex` shell the
+  # user launched themselves). The bridge ALWAYS invokes codex with:
+  #     codex exec --color never --skip-git-repo-check -c ... -s read-only -C <root> -o <file> -
+  # This combination (`exec` subcommand + `--skip-git-repo-check`) is the
+  # bridge fingerprint -- nothing the user runs interactively uses both.
+  # ParentProcessId fallback: if the parent is bridge powershell.exe (driver,
+  # supervisor, audit-launcher), the child is ours regardless of CLI flags.
+  param([string]$CommandLine, [int]$ParentPid, [hashtable]$BridgePowershellPids)
+  if (-not [string]::IsNullOrWhiteSpace($CommandLine)) {
+    $cl = $CommandLine.ToLowerInvariant()
+    # Both markers must be present. `exec` alone is too permissive (could be
+    # any codex subcommand name fragment); the skip-flag is bridge-specific.
+    if ($cl -match '\bexec\b' -and $cl -match '--skip-git-repo-check') { return $true }
+  }
+  if ($ParentPid -gt 0 -and $BridgePowershellPids -and $BridgePowershellPids.ContainsKey([string]$ParentPid)) {
+    return $true
+  }
+  return $false
+}
+
+function Get-BridgePowershellPids {
+  # PIDs of powershell.exe processes whose working dir or command-line ties
+  # them to the bridge root. Used as a fallback ownership signal for codex.exe
+  # whose CLI markers were stripped (rare, but happens with -PassThru wrappers).
+  $set = @{}
+  try {
+    $bridgeRoot = (Get-BridgeRoot).ToLowerInvariant()
+    $procs = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+    foreach ($p in $procs) {
+      $cl = [string]$p.CommandLine
+      $cwd = ''
+      if (-not [string]::IsNullOrWhiteSpace($cl) -and $cl.ToLowerInvariant().Contains($bridgeRoot)) {
+        $set[[string]$p.ProcessId] = $true
+      }
+    }
+  } catch {}
+  return $set
+}
+
 function Sweep-OrphanAgentProcesses {
   # 2026-05-28: orphan codex.exe accumulation was a real incident -- user found
   # 11 stale codex.exe processes (one 22 hours old, 360MB resident) because
@@ -255,17 +296,21 @@ function Sweep-OrphanAgentProcesses {
   # audit, verifier), and most codex.exe instances are spawned inline by
   # Invoke-Coder without registration.
   #
-  # This sweep finds codex.exe instances NOT referenced by any channel's
-  # state.agent_pid / state.current_agent_pid AND not in control/children.jsonl,
-  # AND older than MaxIdleMin, and kills them.
+  # 2026-05-28 v2: the previous allowlist-only logic killed the user's own
+  # Codex desktop app and interactive `codex` shells (any codex.exe whose PID
+  # wasn't in state.json/children.jsonl). Now we INVERT the check: only kill
+  # codex.exe that is provably bridge-owned (Test-CodexIsBridgeOwned matches
+  # bridge CLI fingerprint OR parent is a bridge powershell.exe). External
+  # codex processes are always spared, age-of-process is irrelevant.
   #
   # SAFETY: NEVER touches claude.exe -- user's IDE is also claude.exe (per
-  # security rule). We only sweep codex.exe (bridge-exclusive). For claude.exe
-  # we'd need ParentProcessId == driver checks (deferred to future work).
+  # security rule). We only sweep codex.exe (bridge-exclusive).
   param([int]$MaxIdleMin = 30)
-  $result = @{ checked = 0; killed = 0; spared = 0; errors = @() }
+  $result = @{ checked = 0; killed = 0; spared = 0; spared_external = 0; errors = @() }
   try {
-    # Active PIDs across all channel states (current legitimate agents)
+    # Legacy belt-and-suspenders allowlist: PIDs explicitly tracked by the
+    # bridge always survive even if CLI fingerprint matches (e.g. an actively
+    # running codex shouldn't be touched).
     $activePids = @{}
     $chRoot = Join-Path (Get-BridgeRoot) 'channels'
     if (Test-Path -LiteralPath $chRoot) {
@@ -281,7 +326,6 @@ function Sweep-OrphanAgentProcesses {
         } catch {}
       }
     }
-    # Registered children (audit, librarian, verifier, etc.)
     $registered = @{}
     $childrenPath = Join-Path (Get-BridgeRoot) 'control\children.jsonl'
     if (Test-Path -LiteralPath $childrenPath) {
@@ -291,32 +335,56 @@ function Sweep-OrphanAgentProcesses {
         if ($obj.pid) { $registered[[string]$obj.pid] = $true }
       }
     }
-    $procs = @(Get-Process -Name codex -ErrorAction SilentlyContinue)
-    foreach ($p in $procs) {
+
+    $bridgePsPids = Get-BridgePowershellPids
+    $cimProcs = @(Get-CimInstance Win32_Process -Filter "Name='codex.exe'" -ErrorAction SilentlyContinue)
+    foreach ($cp in $cimProcs) {
       $result.checked++
-      $pidStr = [string]$p.Id
-      if ($activePids.ContainsKey($pidStr) -or $registered.ContainsKey($pidStr)) {
-        $result.spared++; continue
+      $pidStr = [string]$cp.ProcessId
+      $cmdLine = [string]$cp.CommandLine
+      $parentPid = 0; try { $parentPid = [int]$cp.ParentProcessId } catch {}
+
+      # 1. External codex (user's desktop app, manual shell, etc.) -- ALWAYS spare.
+      $ownedByBridge = Test-CodexIsBridgeOwned -CommandLine $cmdLine -ParentPid $parentPid -BridgePowershellPids $bridgePsPids
+      if (-not $ownedByBridge) {
+        $result.spared_external++
+        $result.spared++
+        continue
       }
+
+      # 2. Bridge-owned but actively tracked (state.json / children.jsonl) -- spare.
+      if ($activePids.ContainsKey($pidStr) -or $registered.ContainsKey($pidStr)) {
+        $result.spared++
+        continue
+      }
+
+      # 3. Bridge-owned, untracked, and old enough -- kill as orphan.
       $age = $null
-      try { $age = (Get-Date) - $p.StartTime } catch {}
+      try {
+        if ($cp.CreationDate) {
+          $age = (Get-Date) - ([Management.ManagementDateTimeConverter]::ToDateTime($cp.CreationDate))
+        }
+      } catch {}
+      if (-not $age) {
+        try { $age = (Get-Date) - (Get-Process -Id $cp.ProcessId -ErrorAction Stop).StartTime } catch {}
+      }
       if ($age -and $age.TotalMinutes -gt $MaxIdleMin) {
         try {
-          $p.Kill()
+          (Get-Process -Id $cp.ProcessId -ErrorAction Stop).Kill()
           $result.killed++
         } catch {
-          $result.errors += "pid=$($p.Id): $($_.Exception.Message)"
+          $result.errors += "pid=$($cp.ProcessId): $($_.Exception.Message)"
         }
       } else {
         $result.spared++
       }
     }
   } catch { $result.errors += $_.Exception.Message }
-  # Compact log entry if anything happened
+  # Compact log entry if anything happened.
   if ($result.killed -gt 0 -or $result.errors.Count -gt 0) {
     try {
       $logPath = Join-Path (Get-BridgeRoot) 'control\orphan-sweep.log'
-      $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  codex sweep: killed=$($result.killed) spared=$($result.spared) errors=$($result.errors.Count)"
+      $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  codex sweep: killed=$($result.killed) spared=$($result.spared) (external=$($result.spared_external)) errors=$($result.errors.Count)"
       [System.IO.File]::AppendAllText($logPath, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
     } catch {}
   }
