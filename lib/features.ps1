@@ -6,6 +6,18 @@ function Get-BridgeRootFeat {
     Split-Path -Parent $PSScriptRoot
 }
 
+if (-not (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'common.ps1')
+}
+if (-not (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'channels.ps1')
+}
+
+function Get-FeatureScope {
+    param([string]$Slug = $null)
+    return (Get-EffectiveScope -Slug $Slug)
+}
+
 function Test-SafeFeaturePath {
     param(
         [string]$Root,
@@ -23,7 +35,8 @@ function Test-SafeFeaturePath {
 }
 
 function Get-RegistryPath {
-    Join-Path (Get-BridgeRootFeat) 'features\registry.json'
+    param([string]$Slug = $null)
+    [string]((Get-FeatureScope -Slug $Slug).features_registry)
 }
 
 function Get-FeatureStatePath {
@@ -34,13 +47,25 @@ function Get-FeatureStatePath {
     # state. Result: API returned status=idle / heartbeat=null / task_turn=0
     # while the actual driver was working — UI showed "Heartbeat устарел 494431ч"
     # because 0/null heartbeat parsed as 1970-epoch, 56 years from now.
-    Join-Path (Get-BridgeRootFeat) 'features\state.json'
+    param([string]$Slug = $null)
+    [string]((Get-FeatureScope -Slug $Slug).features_state)
+}
+
+function Assert-FeatureRegistryWritable {
+    param([string]$Operation = 'feature write')
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) {
+        throw "${Operation}: no_registry for channel '$($scope.slug)' at $($scope.features_root)"
+    }
+    return $scope
 }
 
 function Get-FeatureRegistry {
     # Returns raw registry array
-    $p = Get-RegistryPath
-    if (-not (Test-Path $p)) { return @() }
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) { return @() }
+    $p = [string]$scope.features_registry
+    if (-not (Test-Path -LiteralPath $p)) { return @() }
     $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     if (@($json).Count -eq 1 -and $json[0].PSObject -and $json[0].PSObject.Properties['value']) {
         return @($json[0].value)
@@ -120,8 +145,10 @@ function Test-FeatureDottedKeyExists {
 }
 
 function Get-FeatureState {
-    $p = Get-FeatureStatePath
-    if (-not (Test-Path $p)) { return @{} }
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) { return @{} }
+    $p = [string]$scope.features_state
+    if (-not (Test-Path -LiteralPath $p)) { return @{} }
     $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
     if ([string]::IsNullOrWhiteSpace($json)) { return @{} }
     return $json | ConvertFrom-Json
@@ -129,7 +156,8 @@ function Get-FeatureState {
 
 function Save-FeatureState {
     param($State)
-    $p = Get-FeatureStatePath
+    $scope = Assert-FeatureRegistryWritable -Operation 'Save-FeatureState'
+    $p = [string]$scope.features_state
     $dir = Split-Path $p
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $dict = ConvertTo-FeatureStateDictionary $State
@@ -141,7 +169,8 @@ function Save-FeatureState {
 
 function Save-FeatureRegistry {
     param($Registry)
-    $p = Get-RegistryPath
+    $scope = Assert-FeatureRegistryWritable -Operation 'Save-FeatureRegistry'
+    $p = [string]$scope.features_registry
     $dir = Split-Path $p
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $json = ConvertTo-Json -InputObject @($Registry) -Depth 8
@@ -186,15 +215,17 @@ function Update-FeatureActivations {
     #   - state-path: in addition to the declared key, accept any of a small
     #     set of heuristic per-feature fallback keys that we know exist on the
     #     active channel state.json (e.g. study-mode -> study_phase non-empty).
-    $root = Get-BridgeRootFeat
+    $scope = Get-FeatureScope
+    $root = if ([bool]$scope.is_bridge) { [string]$scope.bridge_root } else { [string]$scope.project_root }
+    $bridgeRoot = [string]$scope.bridge_root
     $registry = Get-FeatureRegistry
+    if (@($registry).Count -eq 0) { return 0 }
     $state = Get-FeatureState
     $stateDict = ConvertTo-FeatureStateDictionary $state
     $now = (Get-Date).ToString('o')
     # Pre-load conversation tail once for shared use across log-pattern fallbacks.
-    $slug = 'main'
-    try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) } } catch {}
-    $convPath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'conversation.jsonl'))
+    $slug = [string]$scope.slug
+    $convPath = Join-Path $bridgeRoot (Join-Path 'channels' (Join-Path $slug 'conversation.jsonl'))
     $convTail = @()
     if (Test-Path -LiteralPath $convPath) {
         # 500 messages = roughly the last week of activity on a busy channel,
@@ -202,7 +233,7 @@ function Update-FeatureActivations {
         # might not fire in any given 50-line window.
         try { $convTail = Get-Content -LiteralPath $convPath -Tail 500 -Encoding UTF8 } catch {}
     }
-    $channelStatePath = Join-Path $root (Join-Path 'channels' (Join-Path $slug 'state.json'))
+    $channelStatePath = Join-Path $bridgeRoot (Join-Path 'channels' (Join-Path $slug 'state.json'))
     $channelState = $null
     if (Test-Path -LiteralPath $channelStatePath) {
         try { $channelState = [System.IO.File]::ReadAllText($channelStatePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch {}
@@ -300,6 +331,7 @@ function Add-Feature {
         [string]$Layer = 'L2',
         [string]$Status = 'active'
     )
+    Assert-FeatureRegistryWritable -Operation 'Add-Feature' | Out-Null
     $registry = @(Get-FeatureRegistry)
     if ($registry | Where-Object { $_.id -eq $Id }) {
         throw "Feature '$Id' already exists"
@@ -334,6 +366,7 @@ function Update-FeatureStatus {
         [ValidateSet('active','dormant','broken','under_review')]
         [string]$Status
     )
+    Assert-FeatureRegistryWritable -Operation 'Update-FeatureStatus' | Out-Null
     $registry = @(Get-FeatureRegistry)
     $found = $false
     foreach ($f in $registry) {
