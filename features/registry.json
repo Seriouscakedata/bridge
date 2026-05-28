@@ -1,8 +1,6 @@
 ﻿[
     {
         "id":  "auditor",
-        "name":  "Auditor",
-        "description":  "Idle auditor that scans bridge logs and state for anomalies.",
         "owner_files":  [
                             "lib/auditor.ps1"
                         ],
@@ -26,12 +24,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Аудитор",
+        "description":  "Фоновый страж: каждые 15 мин проверяет логи и состояние моста на аномалии (зависшая задача, пустые ответы, отсутствие коммитов). При срабатывании зовёт Доктора."
     },
     {
         "id":  "doctor",
-        "name":  "Doctor",
-        "description":  "On-demand diagnostics and repair workflow for bridge runtime issues.",
         "owner_files":  [
                             "lib/doctor.ps1"
                         ],
@@ -54,12 +52,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Доктор",
+        "description":  "Режим саморемонта: запускается аудитором при поломке. Диагностирует, чинит, проверяет фикс критиком, возвращает мост к прерванной задаче."
     },
     {
         "id":  "intent-classifier",
-        "name":  "Intent Classifier",
-        "description":  "Classifies incoming task intent before routing and execution.",
         "owner_files":  [
                             "lib/intent.ps1"
                         ],
@@ -81,12 +79,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Классификатор намерения",
+        "description":  "При новой задаче дёшевый LLM (gemini-flash-lite) определяет режим: discuss/normal/study/fast/chat. Разбивает задачу на подзадачи. Заменяет regex-парсер [[DEEP-THINK]]."
     },
     {
         "id":  "scenario-runner",
-        "name":  "Scenario Runner",
-        "description":  "Runs named bridge scenarios and records pass or fail results.",
         "owner_files":  [
                             "tools/scenario.ps1"
                         ],
@@ -109,12 +107,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Запускатель сценариев",
+        "description":  "Прогоняет JS-сценарии (tools/scenarios/*.js) в headless Chrome против живого UI. Используется для функциональной верификации фич. Результат → control/scenario-results.jsonl."
     },
     {
         "id":  "audit-self-diag",
-        "name":  "Audit Self-Diagnostics",
-        "description":  "Scheduled self-diagnostics that audit bridge behavior, security, and functionality.",
         "owner_files":  [
                             "tools/audit.ps1",
                             "tools/audit-security.ps1",
@@ -140,12 +138,12 @@
         "embedding":  null,
         "scenarios":  [
                           "features-registry.js"
-                      ]
+                      ],
+        "name":  "Ночной аудит моста",
+        "description":  "Каждую ночь (01-06): статический security-скан .ps1 на injection/path-traversal/dead-code + LLM функциональный анализ через deepseek. Отчёт в audit/YYYY-MM-DD.md."
     },
     {
         "id":  "recurrence-detection",
-        "name":  "Recurrence Detection",
-        "description":  "Builds recurrence context for repeated task patterns.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -167,12 +165,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Детектор рецидива",
+        "description":  "При новой задаче ищет маркеры рецидива («снова», «опять», «проблема осталась»), вытаскивает fix-коммиты за 72ч. Заставляет планировщика смотреть в другой слой."
     },
     {
         "id":  "critic",
-        "name":  "Critic",
-        "description":  "Per-task critic pass that reviews plans and outputs through the router.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -194,12 +192,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Критик кода",
+        "description":  "После Codex-фикса независимый deepseek читает diff + HEAD-контекст и выносит вердикт. Серьёзный finding → задача возвращается на доработку. Лимит 2 ретрая."
     },
     {
         "id":  "canary",
-        "name":  "Canary",
-        "description":  "Canary checks for verifying bridge readiness and basic execution paths.",
         "owner_files":  [
                             "lib/canary.ps1"
                         ],
@@ -222,12 +220,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Канарейка",
+        "description":  "Периодический smoke-чек на изолированном worktree: мост может выполнить базовые операции. При падении канарейки → доктор или алерт."
     },
     {
         "id":  "librarian",
-        "name":  "Librarian",
-        "description":  "Memory librarian that consolidates, prunes, and merges stored context.",
         "owner_files":  [
                             "lib/memory.ps1"
                         ],
@@ -250,12 +248,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Библиотекарь памяти",
+        "description":  "Ночная консолидация vector-памяти: дедуп, обрезка старого, объединение похожих воспоминаний. Поддерживает relevance/recency хранилища."
     },
     {
         "id":  "backlog-curator",
-        "name":  "Backlog Curator",
-        "description":  "Nightly backlog curation for duplicate, approved, and rejected items.",
         "owner_files":  [
                             "lib/backlog.ps1"
                         ],
@@ -278,12 +276,12 @@
         "embedding":  null,
         "scenarios":  [
                           "backlog-add.js"
-                      ]
+                      ],
+        "name":  "Куратор бэклога",
+        "description":  "При добавлении новой идеи в backlog: LLM (gemini-flash-lite) выносит approve/hold/drop. Дедуп через эмбеддинги. Свежесть проверяется по последним коммитам."
     },
     {
         "id":  "postmortem",
-        "name":  "Auto Postmortem",
-        "description":  "Generates postmortem records for selected bridge incidents.",
         "owner_files":  [
                             "lib/postmortem.ps1"
                         ],
@@ -306,12 +304,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Авто-постмортем",
+        "description":  "После timeout или repair-коммита автоматически генерирует короткий разбор «что произошло и почему» через LLM. Сохраняется в decisions/."
     },
     {
         "id":  "replay-system",
-        "name":  "Replay System",
-        "description":  "Captures replay data for reproducing bridge task behavior.",
         "owner_files":  [
                             "lib/replay.ps1"
                         ],
@@ -333,12 +331,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Replay задач",
+        "description":  "Захватывает все LLM-вызовы в задаче (модель, промпт, ответ, latency, cost) для повторного прогона или детального анализа."
     },
     {
         "id":  "state-snapshots",
-        "name":  "State Snapshots",
-        "description":  "Per-task state snapshot capture for rollback and inspection.",
         "owner_files":  [
                             "lib/common.ps1"
                         ],
@@ -360,12 +358,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Снимки состояния",
+        "description":  "Save-StateSnapshot перед рискованными операциями (restart.flag, активация доктора). При боте предлагается восстановление из последнего снимка."
     },
     {
         "id":  "mission-card",
-        "name":  "Mission Card",
-        "description":  "User-facing mission ledger and session decision card.",
         "owner_files":  [
                             "driver.ps1",
                             "state session_decisions"
@@ -388,12 +386,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Карточка миссии",
+        "description":  "state.session_mission хранит: цель, следующий шаг, accepted_decisions, constraints. Планировщик видит её в каждом промпте."
     },
     {
         "id":  "runbook-diagnostics",
-        "name":  "Runbook Diagnostics",
-        "description":  "User-facing runbook diagnostics endpoint for operational inspection.",
         "owner_files":  [
                             "server.ps1"
                         ],
@@ -414,12 +412,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Runbook diagnostics",
+        "description":  "GET /api/runbook — ZIP с логами, снимками state, git-историей для дебага. Кнопка в ⋮-меню UI."
     },
     {
         "id":  "worker-pool",
-        "name":  "Worker Pool",
-        "description":  "Parallel worker dispatch and active stream coordination.",
         "owner_files":  [
                             "lib/parallel.ps1"
                         ],
@@ -441,12 +439,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Пул воркеров",
+        "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/opus) с complexity-floor и domain-affinity. [[PARALLEL:N]] параллелит на разных воркерах."
     },
     {
         "id":  "parallel-chunks",
-        "name":  "Parallel Chunks",
-        "description":  "Chunk continuation protocol for long parallel worker streams.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -468,12 +466,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Параллель + чанки",
+        "description":  "Воркер внутри своего потока может разбить работу на N чанков (STATUS: CONTINUE-CHUNK). Драйвер респавнит того же воркера в том же worktree."
     },
     {
         "id":  "fast-lane",
-        "name":  "Fast Lane",
-        "description":  "Detects trivial tasks and routes them through a faster execution lane.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -495,12 +493,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Fast-lane",
+        "description":  "Тривиальные задачи (\u003c100 символов, императивные) или маркер [[FAST]] → пропустить планировщика, сразу запустить Codex."
     },
     {
         "id":  "study-mode",
-        "name":  "Study Mode",
-        "description":  "User-facing study mode for guided learning and memory-backed context.",
         "owner_files":  [
                             "lib/study.ps1"
                         ],
@@ -523,12 +521,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Режим изучения",
+        "description":  "Триггеры «изучи», «разберись как работает» → исследовательский режим: внешний поиск + локальное чтение → markdown-отчёт пользователю."
     },
     {
         "id":  "discuss-mode",
-        "name":  "Discuss Mode",
-        "description":  "User-facing discussion mode selected by task mode.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -550,12 +548,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Режим обсуждения",
+        "description":  "Триггеры «обсуди», «согласуй», маркер [[DEEP-THINK]] → диалог Claude ↔ Codex до сходимости (max 6 ходов) перед реализацией."
     },
     {
         "id":  "memory-recall",
-        "name":  "Memory Recall",
-        "description":  "Retrieves relevant memory context for each task.",
         "owner_files":  [
                             "lib/memory.ps1"
                         ],
@@ -577,12 +575,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Recall памяти",
+        "description":  "Семантический поиск по vector-памяти при каждой задаче: 3-5 релевантных воспоминаний инжектятся в промпт планировщика."
     },
     {
         "id":  "message-cache",
-        "name":  "Message Cache",
-        "description":  "UI message cache for channel-specific browser state.",
         "owner_files":  [
                             "web/index.html"
                         ],
@@ -603,12 +601,12 @@
         "embedding":  null,
         "scenarios":  [
                           "message-send.js"
-                      ]
+                      ],
+        "name":  "Кэш сообщений UI",
+        "description":  "Per-channel кэш в браузере (channelMessageCache). Переключение каналов мгновенное — рендер из кэша + diff-fetch since lastSeq."
     },
     {
         "id":  "channel-switch",
-        "name":  "Channel Switch",
-        "description":  "User-facing UI channel switch behavior and active channel state.",
         "owner_files":  [
                             "web/index.html"
                         ],
@@ -630,12 +628,12 @@
         "embedding":  null,
         "scenarios":  [
                           "channel-switch.js"
-                      ]
+                      ],
+        "name":  "Переключение каналов",
+        "description":  "Atomic switch с epoch-guard и AbortController. Быстрые двойные клики корректно отменяют предыдущий swap. CSS без мигания."
     },
     {
         "id":  "zombie-job-recovery",
-        "name":  "Zombie Job Recovery",
-        "description":  "Idle recovery path for jobs detected as stuck or abandoned.",
         "owner_files":  [
                             "lib/common.ps1"
                         ],
@@ -658,12 +656,12 @@
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "name":  "Восстановление zombie-job\u0027ов",
+        "description":  "При боте драйвер проверяет state.active_jobs: если PID мёртв и нет .done маркера — пишет fake done=-1 чтобы polling-loop разморозился."
     },
     {
         "id":  "telemetry",
-        "name":  "Agent Telemetry",
-        "description":  "Continuous agent process telemetry captured while waiting on workers.",
         "owner_files":  [
                             "driver.ps1"
                         ],
@@ -673,6 +671,123 @@
         "activation_signal":  {
                                   "kind":  "state-path",
                                   "path":  "agent_telemetry"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null,
+        "name":  "Телеметрия агента",
+        "description":  "Каждые 60с активного агента: tick → state.agent_telemetry (elapsed_sec, cpu_sec, files_touched). Видно прогресс долгих задач."
+    },
+    {
+        "id":  "feature-dedup-gate",
+        "name":  "Дедуп-гейт фич",
+        "description":  "При новой задаче с complexity\u003e=moderate считается embedding и сверяется с реестром фич. Похожие (sim\u003e=0.85) выводятся планировщику с правилом «расширь существующую, а не плоди новое».",
+        "owner_files":  [
+                            "lib/features.ps1",
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Test-FeatureSimilarity",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "АНТИ-ДУБЛИРОВАНИЕ|similarity check"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "memory-recall"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  true,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "feature-verifier",
+        "name":  "Верификатор фич",
+        "description":  "Каждую ночь (02-06): для каждой фичи с привязанными `scenarios` прогоняет их через headless Chrome. Broken → immediate чат-алерт + backlog item; дайджест в audit/feature-verifier-YYYY-MM-DD.md.",
+        "owner_files":  [
+                            "tools/feature-verifier.ps1",
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Start-FeatureVerifierIfDue",
+        "trigger":  "idle-loop-daily",
+        "expected_frequency":  "nightly",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/supervisor.log",
+                                  "regex":  "feature-verifier"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "scenario-runner"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "orphan-codex-sweep",
+        "name":  "Сборщик orphan codex",
+        "description":  "Idle-цикл: убивает codex.exe процессы старше 30 мин, не привязанные к активным агентам и не зарегистрированные. НЕ трогает claude.exe (IDE юзера). Лог в control/orphan-sweep.log.",
+        "owner_files":  [
+                            "lib/common.ps1",
+                            "driver.ps1"
+                        ],
+        "owner_function":  "Sweep-OrphanAgentProcesses",
+        "trigger":  "idle-loop-15min",
+        "expected_frequency":  "continuous",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/orphan-sweep.log",
+                                  "regex":  "codex sweep"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-05-28",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "task-restart-cap",
+        "name":  "Лимит рестартов задачи",
+        "description":  "state.task_restart_count считает рестарты с одной активной задачей. На 3-й рестарт без закрытия → backlog item помечается failed, current_task сбрасывается, мост идёт к следующей.",
+        "owner_files":  [
+                            "driver.ps1"
+                        ],
+        "owner_function":  "boot resume block",
+        "trigger":  "per-task",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "task_restart_count|пережила .* рестартов"
                               },
         "scenarios":  [
 
