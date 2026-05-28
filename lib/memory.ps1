@@ -22,20 +22,39 @@ function Get-EmbedCacheKey {
 }
 
 # ---- paths ----
-function Get-MemoryDir { Join-Path (Get-BridgeRoot) 'memory' }
-function Get-MemoryStorePath { Join-Path (Get-MemoryDir) 'memory.jsonl' }
-function Get-MemoryMapPath { Join-Path (Get-MemoryDir) 'map.md' }
-function Get-MemoryMapPathForChannel { param([string]$Slug) Join-Path (Get-MemoryDir) ("map." + $Slug + ".md") }
-function Get-MemorySharedMapPath { Join-Path (Get-MemoryDir) 'map.shared.md' }
+function Get-MemoryScope {
+  param([string]$Slug = $null)
+  if ([string]::IsNullOrWhiteSpace($Slug)) {
+    if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { return (Get-EffectiveScope) }
+  } elseif ($Slug -ne '__all__') {
+    if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { return (Get-EffectiveScope -Slug $Slug) }
+  }
+  $bridgeRoot = Get-BridgeRoot
+  $memoryRoot = Join-Path $bridgeRoot 'memory'
+  return [pscustomobject]@{
+    slug                = 'main'
+    is_bridge           = $true
+    bridge_root         = $bridgeRoot
+    memory_root         = $memoryRoot
+    memory_store        = (Join-Path $memoryRoot 'memory.jsonl')
+    bridge_memory_root  = $memoryRoot
+    bridge_memory_store = (Join-Path $memoryRoot 'memory.jsonl')
+  }
+}
+function Get-MemoryDir { param([string]$Slug = $null) [string]((Get-MemoryScope -Slug $Slug).memory_root) }
+function Get-MemoryStorePath { param([string]$Slug = $null) [string]((Get-MemoryScope -Slug $Slug).memory_store) }
+function Get-MemoryMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
+function Get-MemoryMapPathForChannel { param([string]$Slug) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
+function Get-MemorySharedMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.shared.md' }
 function Get-MemoryMapPathsForChannel {
   param([string]$Slug)
   return [pscustomobject]@{
     Channel = (Get-MemoryMapPathForChannel -Slug $Slug)
-    Shared  = (Get-MemorySharedMapPath)
+    Shared  = (Get-MemorySharedMapPath -Slug $Slug)
   }
 }
-function Get-MemoryLogPath { Join-Path (Get-MemoryDir) 'librarian.log' }
-function Get-MemoryMarkerPath { Join-Path (Get-MemoryDir) 'librarian.last' }
+function Get-MemoryLogPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.log' }
+function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.last' }
 
 # ---- secrets / config ----
 function Get-Secret {
@@ -294,19 +313,30 @@ function Get-CurrentMemoryChannel {
   return 'main'
 }
 
+function Assert-MemoryWriteAllowed {
+  param([string]$TargetSlug)
+  if ([string]::IsNullOrWhiteSpace($TargetSlug)) { $TargetSlug = Get-CurrentMemoryChannel }
+  $current = Get-CurrentMemoryChannel
+  if ($TargetSlug -eq 'main' -and $current -ne 'main') {
+    throw 'Bridge memory is read-only from project channels'
+  }
+}
+
 function Add-Memory {
   # Embed $Text and append a memory record. Returns the new id, or $null.
   # -Channel: explicit channel slug; default = current active channel.
-  # -Shared:  if $true, memory is recallable from EVERY channel (cross-channel knowledge).
+  # -Shared:  if $true, memory is recallable inside the current channel store.
   param([string]$Text, [string[]]$Tags = @(), [string]$Source = 'task', [double]$Importance = 0.5, [string]$Channel = $null, [bool]$Shared = $false)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return $null }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  Assert-MemoryWriteAllowed -TargetSlug $Channel
+  $scope = Get-MemoryScope -Slug $Channel
   $vec = Get-Embedding -Text $Text -TaskType 'RETRIEVAL_DOCUMENT'
   if (-not $vec) { return $null }
-  $dir = Get-MemoryDir
-  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  $dir = [string]$scope.memory_root
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $rec = [ordered]@{
     id         = [guid]::NewGuid().ToString('N')
     ts         = (Get-Date).ToUniversalTime().ToString('o')
@@ -320,7 +350,8 @@ function Add-Memory {
     vec        = @($vec)
   }
   $line = ($rec | ConvertTo-Json -Compress -Depth 6)
-  Use-BridgeLock ({ Add-Content -LiteralPath (Get-MemoryStorePath) -Value $line -Encoding UTF8 }.GetNewClosure())
+  $storePath = [string]$scope.memory_store
+  Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $line -Encoding UTF8 }.GetNewClosure())
   return $rec.id
 }
 
@@ -339,7 +370,7 @@ function Get-MemoryChannel {
 }
 
 function Test-MemoryShared {
-  # Returns $true if a memory is marked shared (cross-channel).
+  # Returns $true if a memory is marked shared inside its channel store.
   param($Mem)
   if (-not $Mem) { return $false }
   try {
@@ -350,7 +381,7 @@ function Test-MemoryShared {
 
 function Test-MemoryVisibleInChannel {
   # Should this memory be recalled when working in $Channel?
-  # YES if: shared OR no channel set (legacy) AND $Channel == 'main', OR its channel matches.
+  # YES if: shared inside the current store, OR its channel matches.
   param($Mem, [string]$Channel)
   if (Test-MemoryShared $Mem) { return $true }
   $mc = Get-MemoryChannel $Mem
@@ -358,8 +389,9 @@ function Test-MemoryVisibleInChannel {
 }
 
 function Get-AllMemories {
-  $p = Get-MemoryStorePath
-  if (-not (Test-Path $p)) { return @() }
+  param([string]$Channel = $null)
+  $p = Get-MemoryStorePath -Slug $Channel
+  if (-not (Test-Path -LiteralPath $p)) { return @() }
   $out = New-Object 'System.Collections.Generic.List[object]'
   foreach ($line in (Get-Content -LiteralPath $p -Encoding UTF8)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -369,17 +401,60 @@ function Get-AllMemories {
   return @($out.ToArray())
 }
 
+function Select-MemoryHits {
+  param($Mems, $QueryVector, [int]$TopK, [double]$MinScore)
+  if (-not $Mems -or @($Mems).Count -eq 0) { return @() }
+  $scored = foreach ($m in @($Mems)) {
+    $sim = Get-CosineSimilarity -A $QueryVector -B $m.vec
+    [pscustomobject]@{ Score = [double]$sim; Mem = $m }
+  }
+  return @($scored | Where-Object { $_.Score -ge $MinScore } | Sort-Object -Property Score -Descending | Select-Object -First $TopK)
+}
+
+function Set-MemoryHitsLastRecalled {
+  param([string]$StoreSlug, $Hits)
+  try {
+    if (-not $Hits -or @($Hits).Count -eq 0) { return }
+    $now = Get-Date
+    $allow = $true
+    if ($null -ne $script:LastRecallFlushTs) {
+      if (($now - $script:LastRecallFlushTs).TotalSeconds -lt $script:RecallFlushMinIntervalSec) { $allow = $false }
+    }
+    if (-not $allow) { return }
+    $all = @(Get-AllMemories -Channel $StoreSlug)
+    $idSet = @{}
+    foreach ($h in @($Hits)) { $idSet[[string]$h.Mem.id] = $true }
+    $stampedAny = $false
+    foreach ($m in $all) {
+      if ($idSet.ContainsKey([string]$m.id)) {
+        $m | Add-Member -NotePropertyName lastRecalledAt -NotePropertyValue ($now.ToUniversalTime().ToString('o')) -Force
+        $stampedAny = $true
+      }
+    }
+    if ($stampedAny) {
+      Save-AllMemories -Mems $all -Channel $StoreSlug
+      $script:LastRecallFlushTs = $now
+    }
+  } catch {}
+}
+
 function Search-Memory {
   # Returns array of [pscustomobject]{ Score; Mem } sorted by score desc.
-  # -Channel: filter so only memories from $Channel + 'shared' memories are searched.
-  #          $null/'' = use active channel; '__all__' = bypass filter (admin/UI views).
+  # Project channels search their own memory store first, then bridge memory read-only.
+  # -Channel: $null/'' = effective channel; '__all__' = bypass record-level filter in current store.
   # -ExcludeTag accepts either a single legacy string or a string array.
   param([string]$Query, [int]$TopK = 0, [double]$MinScore = -1, [string]$RequireTag = '', $ExcludeTag = '', [string]$Channel = $null)
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return @() }
   if ($TopK -le 0)    { $TopK = [int]$mc.recallTopK }
   if ($MinScore -lt 0) { $MinScore = [double]$mc.recallMinScore }
-  $mems = @(Get-AllMemories)
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  $storeSlug = if ($Channel -eq '__all__') { Get-CurrentMemoryChannel } else { $Channel }
+  $scope = Get-MemoryScope -Slug $storeSlug
+  $qvec = Get-Embedding -Text $Query -TaskType 'RETRIEVAL_QUERY'
+  if (-not $qvec) { return @() }
+
+  $mems = @(Get-AllMemories -Channel $storeSlug)
   if (-not [string]::IsNullOrWhiteSpace($RequireTag)) {
     $mems = @($mems | Where-Object { @($_.tags) -contains $RequireTag })
   }
@@ -387,44 +462,32 @@ function Search-Memory {
     if ([string]::IsNullOrWhiteSpace($tag)) { continue }
     $mems = @($mems | Where-Object { -not (@($_.tags) -contains $tag) })
   }
-  # Channel filter (phase 4): default to active channel; '__all__' skips filtering.
-  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
   if ($Channel -ne '__all__') {
     $mems = @($mems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
   }
-  if ($mems.Count -eq 0) { return @() }
-  $qvec = Get-Embedding -Text $Query -TaskType 'RETRIEVAL_QUERY'
-  if (-not $qvec) { return @() }
-  $scored = foreach ($m in $mems) {
-    $sim = Get-CosineSimilarity -A $qvec -B $m.vec
-    [pscustomobject]@{ Score = [double]$sim; Mem = $m }
-  }
-  $result = @($scored | Where-Object { $_.Score -ge $MinScore } | Sort-Object -Property Score -Descending | Select-Object -First $TopK)
-  try {
-    if ($result -and @($result).Count -gt 0) {
-      $now = Get-Date
-      $allow = $true
-      if ($null -ne $script:LastRecallFlushTs) {
-        if (($now - $script:LastRecallFlushTs).TotalSeconds -lt $script:RecallFlushMinIntervalSec) { $allow = $false }
+  $result = @(Select-MemoryHits -Mems $mems -QueryVector $qvec -TopK $TopK -MinScore $MinScore)
+  Set-MemoryHitsLastRecalled -StoreSlug $storeSlug -Hits $result
+
+  if (-not [bool]$scope.is_bridge -and $Channel -ne '__all__') {
+    $remain = [Math]::Max(0, $TopK - @($result).Count)
+    $bridgeCap = [Math]::Min(2, $remain)
+    if ($bridgeCap -gt 0) {
+      $bridgeMems = @(Get-AllMemories -Channel 'main')
+      if (-not [string]::IsNullOrWhiteSpace($RequireTag)) {
+        $bridgeMems = @($bridgeMems | Where-Object { @($_.tags) -contains $RequireTag })
       }
-      if ($allow) {
-        $all = @(Get-AllMemories)
-        $idSet = @{}
-        foreach ($h in $result) { $idSet[[string]$h.Mem.id] = $true }
-        $stampedAny = $false
-        foreach ($m in $all) {
-          if ($idSet.ContainsKey([string]$m.id)) {
-            $m | Add-Member -NotePropertyName lastRecalledAt -NotePropertyValue ($now.ToUniversalTime().ToString('o')) -Force
-            $stampedAny = $true
-          }
-        }
-        if ($stampedAny) {
-          Save-AllMemories $all
-          $script:LastRecallFlushTs = $now
-        }
+      foreach ($tag in @($ExcludeTag)) {
+        if ([string]::IsNullOrWhiteSpace($tag)) { continue }
+        $bridgeMems = @($bridgeMems | Where-Object { -not (@($_.tags) -contains $tag) })
       }
+      $bridgeMems = @($bridgeMems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel 'main' })
+      $bridgeHits = @(Select-MemoryHits -Mems $bridgeMems -QueryVector $qvec -TopK $bridgeCap -MinScore $MinScore)
+      foreach ($h in $bridgeHits) {
+        $h.Mem | Add-Member -NotePropertyName readonly_source -NotePropertyValue 'bridge' -Force
+      }
+      if ($bridgeHits.Count -gt 0) { $result = @($result + $bridgeHits) }
     }
-  } catch {}
+  }
   return $result
 }
 
@@ -441,6 +504,9 @@ function Get-MemoryRecall {
   foreach ($h in $hits) {
     $t = ([string]$h.Mem.text).Trim() -replace '\s+', ' '
     if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+    if ($h.Mem.PSObject.Properties['readonly_source'] -and [string]$h.Mem.readonly_source -eq 'bridge') {
+      $t = "[FROM BRIDGE - readonly] $t"
+    }
     $pct = [int]([Math]::Round([double]$h.Score * 100))
     $entry = "- ($pct%) $t"
     if ($sb.Length + $entry.Length + 1 -gt $maxChars) { break }
@@ -465,6 +531,9 @@ function Get-SkillRecall {
     foreach ($h in $hits) {
       $t = ([string]$h.Mem.text).Trim() -replace '\s+', ' '
       if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+      if ($h.Mem.PSObject.Properties['readonly_source'] -and [string]$h.Mem.readonly_source -eq 'bridge') {
+        $t = "[FROM BRIDGE - readonly] $t"
+      }
       $pct = [int]([Math]::Round([double]$h.Score * 100))
       $entry = "- ($pct%) $t"
       if ($sb.Length + $entry.Length + 1 -gt $maxChars) { break }
@@ -492,6 +561,9 @@ function Get-AntiSkillRecall {
     foreach ($h in $hits) {
       $t = ([string]$h.Mem.text).Trim() -replace '\s+', ' '
       if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+      if ($h.Mem.PSObject.Properties['readonly_source'] -and [string]$h.Mem.readonly_source -eq 'bridge') {
+        $t = "[FROM BRIDGE - readonly] $t"
+      }
       $pct = [int]([Math]::Round([double]$h.Score * 100))
       $entry = "- ($pct%) $t"
       if ($sb.Length + $entry.Length + 1 -gt $maxChars) { break }
@@ -742,18 +814,23 @@ function Invoke-MemoryAgePrune {
 
 # ---- management (used by the web UI) ----
 function Save-AllMemories {
-  param($Mems)
+  param($Mems, [string]$Channel = $null)
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  Assert-MemoryWriteAllowed -TargetSlug $Channel
+  $dir = Get-MemoryDir -Slug $Channel
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $storePath = Get-MemoryStorePath -Slug $Channel
   $lines = @($Mems | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
-  Use-BridgeLock ({ Write-AtomicFile -Path (Get-MemoryStorePath) -Content $content }.GetNewClosure())
+  Use-BridgeLock ({ Write-AtomicFile -Path $storePath -Content $content }.GetNewClosure())
 }
 
 function Purge-MemoryForChannel {
-  # Remove only non-shared memories for an archived channel; shared knowledge survives.
+  # Remove only non-shared memories from a channel store; shared-in-scope knowledge survives.
   param([string]$Slug)
   if ([string]::IsNullOrWhiteSpace($Slug)) { return 0 }
   try {
-    $mems = @(Get-AllMemories)
+    $mems = @(Get-AllMemories -Channel $Slug)
     if ($mems.Count -eq 0) { return 0 }
     $kept = @($mems | Where-Object {
       $isShared = Test-MemoryShared $_
@@ -761,7 +838,7 @@ function Purge-MemoryForChannel {
       -not (($ch -eq $Slug) -and (-not $isShared))
     })
     $removed = $mems.Count - $kept.Count
-    if ($removed -gt 0) { Save-AllMemories $kept }
+    if ($removed -gt 0) { Save-AllMemories -Mems $kept -Channel $Slug }
     return $removed
   } catch {
     return 0
@@ -772,7 +849,8 @@ function Get-MemoriesView {
   # All memories WITHOUT the heavy vec arrays, for the API/UI.
   # -Channel: '' or $null = active; '__all__' = all channels (admin view).
   param([string]$Channel = '__all__')
-  $all = @(Get-AllMemories)
+  $storeSlug = if ($Channel -eq '__all__') { Get-CurrentMemoryChannel } else { $Channel }
+  $all = @(Get-AllMemories -Channel $storeSlug)
   if (-not [string]::IsNullOrWhiteSpace($Channel) -and $Channel -ne '__all__') {
     $all = @($all | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
   }
@@ -795,10 +873,11 @@ function Get-MemoriesView {
 function Remove-Memory {
   param([string]$Id)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
-  $mems = @(Get-AllMemories)
+  $target = Get-CurrentMemoryChannel
+  $mems = @(Get-AllMemories -Channel $target)
   $kept = @($mems | Where-Object { [string]$_.id -ne $Id })
   if ($kept.Count -eq $mems.Count) { return $false }
-  Save-AllMemories $kept
+  Save-AllMemories -Mems $kept -Channel $target
   return $true
 }
 
@@ -806,7 +885,8 @@ function Set-Memory {
   # Edit a memory in place. $Text re-embeds. Pass $null to leave a field unchanged.
   param([string]$Id, $Importance = $null, $Text = $null, $Pinned = $null, $Shared = $null, $Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
-  $mems = @(Get-AllMemories)
+  $target = Get-CurrentMemoryChannel
+  $mems = @(Get-AllMemories -Channel $target)
   $found = $false
   foreach ($m in $mems) {
     if ([string]$m.id -ne $Id) { continue }
@@ -835,7 +915,7 @@ function Set-Memory {
     break
   }
   if (-not $found) { return $false }
-  Save-AllMemories $mems
+  Save-AllMemories -Mems $mems -Channel $target
   return $true
 }
 
