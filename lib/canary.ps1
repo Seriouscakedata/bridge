@@ -391,8 +391,24 @@ function Invoke-CanarySmokeChecks {
   }
 
   $uri = Get-CanaryHealthUri
+  # 2026-05-29 fix: /api/health exposes lastSeq ONLY to AUTHENTICATED callers; the public (unauth)
+  # response was trimmed (no lastSeq) ~2026-05-28, so canary's unauth read got lastSeq=null->0 and
+  # reported a FALSE "lastSeq did not advance (0 -> 0)" on every run (smoke fail -> quarantine), even
+  # though the bridge was healthy. Canary is an internal localhost caller, so it authenticates with
+  # the same Basic creds the driver uses (auth.json in the protected store).
+  $authHeaders = @{}
   try {
-    $before = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
+    $authP = if (Get-Command Get-AuthPath -ErrorAction SilentlyContinue) { Get-AuthPath } else { Join-Path (Get-BridgeRoot) 'auth.json' }
+    if ($authP -and (Test-Path -LiteralPath $authP)) {
+      $auth = Get-Content -LiteralPath $authP -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($auth.user -and $auth.password) {
+        $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(("{0}:{1}" -f [string]$auth.user, [string]$auth.password)))
+        $authHeaders = @{ Authorization = "Basic $basic" }
+      }
+    }
+  } catch {}
+  try {
+    $before = Invoke-WebRequest -Uri $uri -Headers $authHeaders -UseBasicParsing -TimeoutSec 5
     if ($before.StatusCode -ne 200) { [void]$errors.Add("health before HTTP $($before.StatusCode)") }
     $beforeObj = $before.Content | ConvertFrom-Json
     $beforeSeq = 0
@@ -401,7 +417,7 @@ function Invoke-CanarySmokeChecks {
     [void](Add-Message -From system -Kind event -Text ("🧪 Canary smoke heartbeat " + (Get-Date).ToUniversalTime().ToString('o')))
 
     Start-Sleep -Milliseconds 200
-    $after = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
+    $after = Invoke-WebRequest -Uri $uri -Headers $authHeaders -UseBasicParsing -TimeoutSec 5
     if ($after.StatusCode -ne 200) { [void]$errors.Add("health after HTTP $($after.StatusCode)") }
     $afterObj = $after.Content | ConvertFrom-Json
     $afterSeq = 0
