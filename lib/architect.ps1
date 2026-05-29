@@ -375,15 +375,18 @@ function Test-WithinQuietHours {
 }
 
 function Should-RunDeepThink {
-  # Weekly proactive deep-think — on SUNDAY, any time of day (user 2026-05-29: "раз в неделю, скорее
-  # воскресенье"). Previously pinned to the 02:00-06:00 window, which silently missed whenever the PC
-  # was off overnight -> it ran ~monthly instead of weekly. Now it fires on the first idle Sunday tick
-  # the PC is on, de-duped to once per >=6 days so it can't re-fire the same Sunday.
-  if ((Get-Date).DayOfWeek -ne [System.DayOfWeek]::Sunday) { return $false }
+  # NIGHTLY proactive deep-think (user 2026-05-29: "каждую ночь" — проект быстро развивается).
+  # Prefers the night window (01:00-09:00 local) and fires once per ~18h there; but also has a hard
+  # 24h floor so it can't be skipped indefinitely if the PC is off overnight (then it runs by day).
+  $now = Get-Date
   $marker = Get-DeepThinkMarkerPath
-  if (-not (Test-Path $marker)) { return $true }
-  try { $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch { return $true }
-  return ((Get-Date) - $last) -ge [TimeSpan]::FromDays(6)
+  $last = $null
+  if (Test-Path $marker) { try { $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch {} }
+  $sinceH = if ($last) { ((Get-Date) - $last).TotalHours } else { 9999 }
+  $inNightWindow = ($now.Hour -ge 1 -and $now.Hour -lt 9)
+  if ($inNightWindow -and $sinceH -ge 18) { return $true }   # the usual nightly path
+  if ($sinceH -ge 24) { return $true }                       # safety floor: ~daily even if PC was off at night
+  return $false
 }
 
 function Start-DeepThinkDialog {
