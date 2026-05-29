@@ -564,6 +564,169 @@ function Save-Backlog {
   Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
 }
 
+function Invoke-BacklogLLMPrioritize {
+  param(
+    [int]$MaxItems = 20,
+    [string]$Channel = $env:BRIDGE_CHANNEL
+  )
+  if ($MaxItems -le 0) { return 0 }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+
+  $runner = {
+    param([int]$BoundMaxItems)
+    $allItems = @(Get-Backlog)
+    $ideas = @(
+      $allItems |
+      Where-Object {
+        $status = [string]$_.status
+        if ($status -ne 'approved' -and $status -ne 'new') { return $false }
+        $tags = @($_.tags | ForEach-Object { [string]$_ })
+        return (-not ($tags -contains 'external') -and -not ($tags -contains 'radar'))
+      } |
+      Select-Object -First $BoundMaxItems
+    )
+    if ($ideas.Count -eq 0) { return 0 }
+
+    Ensure-BacklogLLMLoaded
+    $raw = $null
+    try {
+      if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
+        $promptBuilder = New-Object System.Text.StringBuilder
+        [void]$promptBuilder.AppendLine('Ты — приоритизатор задач для автономного ИИ-моста.')
+        [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
+        [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
+        [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
+        [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
+        [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
+        [void]$promptBuilder.AppendLine('')
+        [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
+        [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
+        [void]$promptBuilder.AppendLine('')
+        [void]$promptBuilder.AppendLine('Задачи:')
+        foreach ($idea in $ideas) {
+          $title = ''
+          try {
+            if ($idea.PSObject.Properties.Name -contains 'title' -and -not [string]::IsNullOrWhiteSpace([string]$idea.title)) {
+              $title = [string]$idea.title
+            }
+          } catch {}
+          if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = ([string]$idea.text -replace '\s+', ' ').Trim()
+          }
+          if ($title.Length -gt 220) { $title = $title.Substring(0, 220) + '...' }
+          $effort = ''
+          $value = ''
+          try { $effort = [string]$idea.effort } catch { $effort = '' }
+          try { $value = [string]$idea.value } catch { $value = '' }
+          if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'n/a' }
+          if ([string]::IsNullOrWhiteSpace($value)) { $value = 'n/a' }
+          [void]$promptBuilder.AppendLine(("ID: {0} | {1} | effort:{2} | value:{3}" -f [string]$idea.id, $title, $effort, $value))
+        }
+        $prompt = $promptBuilder.ToString().Trim()
+        $raw = Invoke-LLM -Purpose 'prioritizer' -Prompt $prompt -TimeoutSec 30 -Temperature 0.2
+      } elseif (Get-Command Invoke-LLMProvider -ErrorAction SilentlyContinue) {
+        $promptBuilder = New-Object System.Text.StringBuilder
+        [void]$promptBuilder.AppendLine('Ты — приоритизатор задач для автономного ИИ-моста.')
+        [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
+        [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
+        [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
+        [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
+        [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
+        [void]$promptBuilder.AppendLine('')
+        [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
+        [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
+        [void]$promptBuilder.AppendLine('')
+        [void]$promptBuilder.AppendLine('Задачи:')
+        foreach ($idea in $ideas) {
+          $title = ''
+          try {
+            if ($idea.PSObject.Properties.Name -contains 'title' -and -not [string]::IsNullOrWhiteSpace([string]$idea.title)) {
+              $title = [string]$idea.title
+            }
+          } catch {}
+          if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = ([string]$idea.text -replace '\s+', ' ').Trim()
+          }
+          if ($title.Length -gt 220) { $title = $title.Substring(0, 220) + '...' }
+          $effort = ''
+          $value = ''
+          try { $effort = [string]$idea.effort } catch { $effort = '' }
+          try { $value = [string]$idea.value } catch { $value = '' }
+          if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'n/a' }
+          if ([string]::IsNullOrWhiteSpace($value)) { $value = 'n/a' }
+          [void]$promptBuilder.AppendLine(("ID: {0} | {1} | effort:{2} | value:{3}" -f [string]$idea.id, $title, $effort, $value))
+        }
+        $prompt = $promptBuilder.ToString().Trim()
+        $raw = Invoke-LLMProvider -Model 'deepseek-v4-pro' -Prompt $prompt -TimeoutSec 30 -Temperature 0.2
+      } else {
+        Write-Warning 'Invoke-BacklogLLMPrioritize: neither Invoke-LLM nor Invoke-LLMProvider is available'
+        return 0
+      }
+    } catch {
+      Write-Warning ("Invoke-BacklogLLMPrioritize: LLM call failed: " + $_.Exception.Message)
+      return 0
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+      Write-Warning 'Invoke-BacklogLLMPrioritize: empty LLM response'
+      return 0
+    }
+
+    $clean = ([string]$raw -replace '```json', '' -replace '```', '').Trim()
+    $match = [regex]::Match($clean, '(?s)\[.*\]')
+    if (-not $match.Success) {
+      Write-Warning 'Invoke-BacklogLLMPrioritize: could not find JSON array in LLM response'
+      return 0
+    }
+
+    $ranked = @()
+    try {
+      $ranked = @($match.Value | ConvertFrom-Json -Depth 5)
+    } catch {
+      Write-Warning ("Invoke-BacklogLLMPrioritize: failed to parse JSON: " + $_.Exception.Message)
+      return 0
+    }
+
+    $updated = 0
+    foreach ($rank in $ranked) {
+      $id = ''
+      try { $id = [string]$rank.id } catch { $id = '' }
+      if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+      $target = $null
+      foreach ($idea in $ideas) {
+        if ([string]$idea.id -eq $id) { $target = $idea; break }
+      }
+      if (-not $target) { continue }
+
+      $score100 = 0.0
+      try { $score100 = [double]$rank.score } catch { continue }
+      if ($score100 -lt 0) { $score100 = 0.0 }
+      if ($score100 -gt 100) { $score100 = 100.0 }
+      $reason = ''
+      try { $reason = ([string]$rank.reason).Trim() } catch { $reason = '' }
+
+      $target | Add-Member -NotePropertyName score -NotePropertyValue ([Math]::Round($score100 / 10.0, 2)) -Force
+      $target | Add-Member -NotePropertyName llm_priority_reason -NotePropertyValue $reason -Force
+      $updated++
+    }
+
+    if ($updated -gt 0) { Save-Backlog $allItems }
+    Write-Host "🧠 LLM-приоритизация: обновлено $($updated) идей из $($ideas.Count)"
+    return $updated
+  }.GetNewClosure()
+
+  try {
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      return (Invoke-WithChannelEnv -Slug $Channel -Action $runner -ArgumentList @($MaxItems))
+    }
+    return (& $runner $MaxItems)
+  } catch {
+    Write-Warning ("Invoke-BacklogLLMPrioritize: failed for channel '" + $Channel + "': " + $_.Exception.Message)
+    return 0
+  }
+}
+
 function Set-Idea {
   # Edit a backlog item. Pass $null to leave a field unchanged.
   param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false, [bool]$ClearAutoCurator = $false, [string]$Reason = $null)
@@ -905,6 +1068,18 @@ function Get-NextRunnableIdea {
   # (autonomy without manual approval) 'new' items run too -- EXCEPT external/radar ones,
   # which always require explicit approval (anti-backdoor: web-sourced never auto-executes).
   param([bool]$IncludeNew = $false)
+  $useLLMPriority = $false
+  try {
+    $cfg = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 5
+    if ($cfg -and $cfg.PSObject.Properties.Name -contains 'backlog' -and $cfg.backlog) {
+      try { $useLLMPriority = [bool]$cfg.backlog.useLLMPriority } catch {}
+    }
+  } catch {}
+  if ($useLLMPriority -or $env:BRIDGE_LLM_PRIORITY -eq '1') {
+    $priorityChannel = [string]$env:BRIDGE_CHANNEL
+    if ([string]::IsNullOrWhiteSpace($priorityChannel)) { $priorityChannel = 'main' }
+    try { Invoke-BacklogLLMPrioritize -MaxItems 15 -Channel $priorityChannel | Out-Null } catch {}
+  }
   # 2026-05-28: sort key chain is (1) status approved-before-new, (2) severity rank
   # critical=0 / warning=1 / info=2 / none=3, (3) score desc, (4) ts asc.
   # Audit criticals always outrank warnings, warnings outrank info, info outranks plain ideas.
