@@ -3568,6 +3568,43 @@ while ($true) {
     } catch {}
   }
 
+  # 2026-05-29: close the Gate-A commit gap. Codex runs in a workspace-write sandbox that BLOCKS
+  # writes to .git (index.lock ACL "Permission denied"), so it often can't commit its own work and
+  # reports "can't close the task honestly -- need a git commit via the driver". The driver runs
+  # OUTSIDE the sandbox, so it commits the coder's verified edits right here. Without this, edits
+  # sat uncommitted until a later turn happened to win the ACL race (real friction + extra loops).
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and ([string]$turnResult.status -eq 'ok')) {
+    try {
+      $headNowAC = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
+      if ($headNowAC -and $headBeforeTurn -and $headNowAC -eq $headBeforeTurn) {
+        $acDirty = @(& git -C $bridgeRoot status --porcelain 2>$null | Where-Object {
+          $line = ([string]$_).Substring(3).Trim()
+          $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*|audit/.*|logs/.*)$'
+        })
+        if (@($acDirty).Count -gt 0) {
+          $acFiles = @()
+          foreach ($d in $acDirty) {
+            $l = [string]$d; if ($l.Length -le 3) { continue }
+            $nm = $l.Substring(3).Trim()
+            if ($nm -match ' -> ') { $nm = ($nm -split ' -> ', 2)[1].Trim() }
+            $nm = $nm.Trim('"'); if ($nm) { $acFiles += $nm }
+          }
+          if ($acFiles.Count -gt 0) {
+            $acMsg = 'auto-commit (driver; coder sandbox cannot reach .git): ' + (($task -replace '\s+',' ').Trim())
+            if ($acMsg.Length -gt 180) { $acMsg = $acMsg.Substring(0,180) }
+            & git -C $bridgeRoot add -- @($acFiles) 2>$null | Out-Null
+            & git -C $bridgeRoot commit -m $acMsg 2>$null | Out-Null
+            $acNewHead = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
+            if ($acNewHead -and $acNewHead -ne $headBeforeTurn) {
+              try { Add-TaskCheckpoint -Kind commit -Text (($acNewHead.Substring(0,7) + ' ' + $acMsg).Trim()) } catch {}
+              Add-Message -From system -Text ("💾 Драйвер зафиксировал правки Codex (coder в sandbox не имеет доступа к .git): " + $acNewHead.Substring(0,7)) -Kind event | Out-Null
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 
   if ($turnResult.status -eq 'preflight_blocked' -or [bool]$turnResult.preflightBlocked) {
