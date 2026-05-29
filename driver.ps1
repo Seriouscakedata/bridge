@@ -3427,6 +3427,7 @@ while ($true) {
       # reflect.ps1 (leaf-level tweaks) and Doctor (acute repair).
       try { Start-ArchitectIfDue -Mode 'normal' } catch {}
       try { Start-DeepThinkIfDue } catch {}
+      try { Start-ThinkingReflectionIfDue } catch {}   # internal-thinking step 3: deep reflection -> one insight -> journal
       try { Start-AuditorIfDue } catch {}
       try {
         if ([string]$Channel -eq 'main') {

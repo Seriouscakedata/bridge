@@ -91,6 +91,90 @@ function Get-ThinkingNotes {
   return $out.ToArray()
 }
 
+function Get-ThinkingExperience {
+  # Compact recent EXPERIENCE for deep reflection: turn outcomes + notable failures + idea fates.
+  $sb = New-Object System.Text.StringBuilder
+  try {
+    $tp = Join-Path (Get-BridgeRoot) 'turns.jsonl'
+    if (Test-Path $tp) {
+      $rows = New-Object System.Collections.ArrayList
+      foreach ($ln in @([System.IO.File]::ReadAllLines($tp, [System.Text.Encoding]::UTF8) | Where-Object { $_ } | Select-Object -Last 80)) { try { [void]$rows.Add(($ln | ConvertFrom-Json)) } catch {} }
+      $okN = @($rows | Where-Object { [string]$_.status -eq 'ok' }).Count
+      $erN = @($rows | Where-Object { [string]$_.status -eq 'error' }).Count
+      $toN = @($rows | Where-Object { [string]$_.status -eq 'timeout' }).Count
+      [void]$sb.AppendLine("Турны (последние $($rows.Count)): ok=$okN error=$erN timeout=$toN")
+    }
+  } catch {}
+  try {
+    $bl = @(Get-Backlog)
+    $failed = @($bl | Where-Object { [string]$_.status -eq 'failed' })
+    $doneN  = @($bl | Where-Object { [string]$_.status -eq 'done' }).Count
+    $rejN   = @($bl | Where-Object { [string]$_.status -eq 'rejected' }).Count
+    [void]$sb.AppendLine("Идеи в бэклоге: done=$doneN failed=$($failed.Count) rejected=$rejN")
+    if ($failed.Count -gt 0) {
+      [void]$sb.AppendLine('Недавно провалившиеся задачи (до 5):')
+      foreach ($f in @($failed | Select-Object -Last 5)) { $ft = ([string]$f.text -replace '\s+',' ').Trim(); if ($ft.Length -gt 90) { $ft = $ft.Substring(0,90) }; [void]$sb.AppendLine("  - $ft") }
+    }
+  } catch {}
+  return $sb.ToString()
+}
+
+function Get-ThinkingReflectionMarkerPath { Join-Path (Get-BridgeRoot) 'control\thinking.reflection.last' }
+
+function Should-RunThinkingReflection {
+  # Cron-style: at least 20h since the last deep reflection.
+  $m = Get-ThinkingReflectionMarkerPath
+  if (-not (Test-Path $m)) { return $true }
+  try { $last = [datetime]((Get-Content $m -Raw -Encoding UTF8).Trim()); return (((Get-Date) - $last) -ge [TimeSpan]::FromHours(20)) } catch { return $true }
+}
+
+function Invoke-ThinkingReflection {
+  # DEEP reflection (internal-thinking step 3): unlike reflect/metrics (leaf stats), this reads recent
+  # EXPERIENCE and distills ONE substantive INSIGHT about the bridge itself -- a recurring pattern,
+  # weakness, or lesson -- then writes it to the thinking journal so it shapes the next Architect cycle.
+  # Quality over quantity: one actionable conclusion, never a stat dump. FAIL-OPEN (no LLM -> no note).
+  param([int]$TimeoutSec = 180)
+  $exp = Get-ThinkingExperience
+  if ([string]::IsNullOrWhiteSpace($exp)) { return @{ ok = $false; note = '' } }
+  $prior = @(Get-ThinkingNotes -Last 8)
+  $priorStr = if ($prior.Count -gt 0) { ($prior -join "`n") } else { '(журнал пуст)' }
+  $prompt = @"
+Ты — рефлексирующий мост Claude+Codex. Посмотри на свой НЕДАВНИЙ ОПЫТ ниже и сформулируй РОВНО ОДИН
+содержательный вывод О СЕБЕ: повторяющийся паттерн, слабость или урок, который должен изменить твоё
+поведение. ЭТО НЕ СТАТИСТИКА («N задач провалилось») — это инсайт ПОЧЕМУ и ЧТО менять.
+Если в прошлых выводах (журнал) это уже сказано — найди НОВОЕ или углуби, не повторяйся.
+Одно-два предложения. Конкретно и действенно.
+
+НЕДАВНИЙ ОПЫТ:
+$exp
+
+ПРОШЛЫЕ ВЫВОДЫ (журнал — не повторяй):
+$priorStr
+
+Верни ТОЛЬКО текст вывода, без преамбулы и кавычек.
+"@
+  $raw = $null
+  try { $raw = Invoke-LLM -Purpose 'deep' -Prompt $prompt -TimeoutSec $TimeoutSec -Temperature 0.4 } catch {}
+  if ([string]::IsNullOrWhiteSpace($raw)) { return @{ ok = $false; note = '' } }
+  $insight = ($raw -replace '```','').Trim()
+  if ($insight.Length -gt 400) { $insight = $insight.Substring(0,400) + '…' }
+  Add-ThinkingNote -Note ("Рефлексия: " + $insight) -Source 'reflection'
+  try { Add-Message -From system -Text ("🪞 Рефлексия моста: " + $insight) -Kind event | Out-Null } catch {}
+  return @{ ok = $true; note = $insight }
+}
+
+function Start-ThinkingReflectionIfDue {
+  # Called from the driver idle loop. Honors autonomy.enabled + 20h cadence.
+  try { $auto = Get-AutonomySettings; if (-not [bool]$auto.enabled) { return } } catch {}
+  if (-not (Should-RunThinkingReflection)) { return }
+  try {
+    $ctl = Join-Path (Get-BridgeRoot) 'control'
+    if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Get-ThinkingReflectionMarkerPath), (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  try { Invoke-ThinkingReflection | Out-Null } catch { try { Add-Message -From system -Text ('🪞 Рефлексия: ошибка цикла: ' + $_.Exception.Message) -Kind event | Out-Null } catch {} }
+}
+
 function Get-ArchitectContext {
   # Compact diagnostic dump for the Architect prompt. All strings, no ETS.
   param([int]$WindowDays = 7)
