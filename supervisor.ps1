@@ -20,6 +20,25 @@ $supLog = Join-Path $ctl 'supervisor.log'
 $srvOut = Join-Path $ctl 'server.out.log'; $srvErr = Join-Path $ctl 'server.err.log'
 function Log($m){ ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) | Out-File $supLog -Append -Encoding utf8 }
 $null = Initialize-Bridge
+# Auto-clean snapshots older than 7 days at startup
+try {
+  $snapCutoff = (Get-Date).AddDays(-7)
+  $chansRoot = Join-Path $root 'channels'
+  if (Test-Path -LiteralPath $chansRoot) {
+    Get-ChildItem -LiteralPath $chansRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      $snapDir = Join-Path $_.FullName 'snapshots'
+      if (Test-Path -LiteralPath $snapDir) {
+        $old = Get-ChildItem -LiteralPath $snapDir -Filter 'state.*.json' -ErrorAction SilentlyContinue |
+          Where-Object { $_.LastWriteTime -lt $snapCutoff }
+        if ($old) {
+          $cnt = @($old).Count
+          $old | Remove-Item -Force -ErrorAction SilentlyContinue
+          Log ("startup snapshot cleanup: removed $cnt files older than 7 days in $snapDir")
+        }
+      }
+    }
+  }
+} catch { Log ("startup snapshot cleanup error: " + $_.Exception.Message) }
 
 # Phase 3 (full): supervisor keeps ONE driver per non-archived channel. Each driver is
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
