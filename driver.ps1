@@ -3172,7 +3172,7 @@ while ($true) {
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
       if ($normalOverride -and -not $fastLaneReason) { Add-Message -From system -Text "📐 [[NORMAL]] override -- task_mode=normal forced (auto-detect bypassed)." -Kind event | Out-Null }
       if ($deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
-      if ($discussVerbMark -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🗣 Discuss-verb detected (обсуди/согласуйте/...) — режим: discuss (Claude↔Codex до сходимости, max 6 ходов). Хочешь обычный режим без обсуждения — добавь [[NORMAL]] в начало задачи." -Kind event | Out-Null }
+      if ($discussVerbMark -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentLowComplexity) { Add-Message -From system -Text "🗣 Discuss-verb detected (обсуди/согласуйте/...) — режим: discuss (Claude↔Codex до сходимости, max 6 ходов). Хочешь обычный режим без обсуждения — добавь [[NORMAL]] в начало задачи." -Kind event | Out-Null }
       if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentForcedDiscuss -and -not $intentForcedStudy -and -not $intentForcedFastLane) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       # 2026-05-28: announce LLM-classifier verdict so user sees what mode was inferred and why.
       if ($taskIntent -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
@@ -3180,7 +3180,8 @@ while ($true) {
         $verdictText = "🧠 LLM-классификатор намерения ($([string]$taskIntent.model)): mode=" + [string]$taskIntent.primary_mode + ", confidence=$confPct%"
         if (-not [string]::IsNullOrWhiteSpace([string]$taskIntent.reasoning)) { $verdictText += "`n   причина: " + [string]$taskIntent.reasoning }
         if ([bool]$taskIntent.user_wants_dialogue) { $verdictText += "`n   ⚠ пользователь явно хочет диалог" }
-        if ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
+        if ($intentLowComplexity) { $verdictText += "`n   → режим: fast-lane (простая задача — пропускаю планировщик/критика/обсуждение). Нужен полный разбор — добавь [[DEEP-THINK]]." }
+        elseif ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
         elseif ($intentForcedStudy) { $verdictText += "`n   → режим: study" }
         elseif ($intentForcedFastLane) { $verdictText += "`n   → режим: fast-lane (skip planner)" }
         elseif ([double]$taskIntent.confidence -lt 0.7) { $verdictText += "`n   (confidence < 70% → не применён, режим normal)" }
