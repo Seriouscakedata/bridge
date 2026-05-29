@@ -397,7 +397,7 @@ function Invoke-CircuitRestartRecord {
 function Test-CircuitSpawnPauseState {
   param(
     [Parameter(Mandatory=$true)][string]$FreezeFlagPath,
-    [AllowNull()][datetime]$CooldownUntil,
+    [AllowNull()][Nullable[datetime]]$CooldownUntil,
     [scriptblock]$LogCallback = $null,
     [scriptblock]$MessageCallback = $null
   )
