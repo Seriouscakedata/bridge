@@ -11,8 +11,6 @@ param(
   [int]$ClaudeTimeoutSec = 90,
   [switch]$NoCodex,
   [switch]$NoClaude,
-  [switch]$NoModelAgents,
-  [string]$ModelAgentOverride = '',
   # 2026-05-28: if both flags are clear, codex.exe and claude.exe spawn
   # concurrently. Total wall time = max(codex, claude) instead of sum.
   # Pass -Sequential to force the old back-to-back behavior (debugging).
@@ -515,125 +513,271 @@ function Invoke-ClaudeFunctionalPass {
   return (Complete-ClaudeFunctionalAsync -State $state)
 }
 
-# --- Generic model-agent fan-out ---
-
 function Get-DeepAuditAgentSpecs {
   param($Cfg)
+  $allowedRoles = @('security-model','functional-model','reliability-model','architecture-model','dependency-model')
   $defaults = @(
-    @{ role = 'security-model';    model = 'deepseek-v4-pro';   timeoutSec = 140 },
-    @{ role = 'functional-model';  model = 'gemini-2.5-flash';  timeoutSec = 140 },
-    @{ role = 'reliability-model'; model = 'deepseek-v4-flash'; timeoutSec = 120 }
+    [pscustomobject]@{ role = 'security-model'; model = 'deepseek-v4-flash' },
+    [pscustomobject]@{ role = 'functional-model'; model = 'gemini-3-flash' },
+    [pscustomobject]@{ role = 'reliability-model'; model = 'deepseek-v4-flash' },
+    [pscustomobject]@{ role = 'architecture-model'; model = 'deepseek-v4-pro' },
+    [pscustomobject]@{ role = 'dependency-model'; model = 'deepseek-v4-flash' }
   )
+  $rawSpecs = $defaults
   try {
-    if ($Cfg -and $Cfg.PSObject.Properties.Name -contains 'audit' -and
-        $Cfg.audit -and $Cfg.audit.PSObject.Properties.Name -contains 'deepAgents' -and
-        $Cfg.audit.deepAgents) {
-      $specs = @()
-      foreach ($a in @($Cfg.audit.deepAgents)) {
-        $role = [string]$a.role
-        $model = [string]$a.model
-        if ($role -notin @('security-model','functional-model','reliability-model')) { continue }
-        if ([string]::IsNullOrWhiteSpace($model) -or $model -eq 'off') { continue }
-        $to = 120
-        try { if ($a.PSObject.Properties.Name -contains 'timeoutSec') { $to = [int]$a.timeoutSec } } catch { $to = 120 }
-        if ($to -lt 15) { $to = 15 }
-        $specs += @{ role = $role; model = $model; timeoutSec = $to }
-      }
-      if ($specs.Count -gt 0) { return @($specs) }
+    if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'agentSpecs')) {
+      $rawSpecs = @($Cfg.audit.agentSpecs)
+    } elseif ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'roles')) {
+      $rawSpecs = @($Cfg.audit.roles | ForEach-Object {
+        [pscustomobject]@{ role = [string]$_; model = $null }
+      })
     }
   } catch {}
-  return @($defaults)
+
+  $agentSpecs = @()
+  foreach ($spec in @($rawSpecs)) {
+    $role = ''
+    $model = ''
+    try { $role = [string]$spec.role } catch { $role = [string]$spec }
+    try { $model = [string]$spec.model } catch {}
+    if ([string]::IsNullOrWhiteSpace($role)) { continue }
+    if ($role -notin @('security-model','functional-model','reliability-model','architecture-model','dependency-model')) { continue }
+    if ([string]::IsNullOrWhiteSpace($model)) {
+      $model = 'deepseek-v4-flash'
+      if ($role -eq 'functional-model') { $model = 'gemini-3-flash' }
+      if ($role -eq 'architecture-model') { $model = 'deepseek-v4-pro' }
+    }
+    $agentSpecs += [pscustomobject]@{ role = $role; model = $model }
+  }
+  return @($agentSpecs)
 }
 
-function Start-DeepModelAgentAsync {
-  param([string]$ProjRoot, [string]$BridgeRoot, $Spec)
-  $scriptPath = Join-Path $BridgeRoot 'tools\deep-audit-agent.ps1'
-  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-    return [pscustomobject]@{
-      role = [string]$Spec.role; model = [string]$Spec.model; proc = $null
-      preResult = @{ role = [string]$Spec.role; model = [string]$Spec.model; skipped = $true; reason = 'agent_script_missing'; findings = @() }
-    }
+function New-DeepAuditAgentResult {
+  param([string]$Role, [string]$Model, [string]$Status, [string[]]$Errors, [double]$RuntimeSec)
+  return [pscustomobject]@{
+    role = $Role
+    model = $Model
+    status = $Status
+    runtime_sec = [Math]::Round($RuntimeSec, 3)
+    findings = @()
+    errors = @($Errors)
+    coverage = @()
+    confidence = 0.0
   }
+}
+
+function Start-DeepAuditAgentProcess {
+  param($Spec, [string]$BridgeRoot, [string]$ProjRoot, [int]$TimeoutSec)
   $tmpDir = Join-Path $BridgeRoot 'audit\tmp'
-  if (-not (Test-Path -LiteralPath $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
-  $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
-  $outJson = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.json")
-  $outLog  = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.out")
-  $errLog  = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.err")
-  $timeoutSec = [int]$Spec.timeoutSec
-  $agentArgs = @(
-    '-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath,
-    '-BridgePath',$BridgeRoot,
-    '-ProjectRoot',$ProjRoot,
+  if (-not (Test-Path -LiteralPath $tmpDir -PathType Container)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+  $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,8))
+  $agentScript = Join-Path $BridgeRoot 'tools\deep-audit-agent.ps1'
+  $resultF = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.json")
+  $outF = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.out")
+  $errF = Join-Path $tmpDir ("deep-agent-$($Spec.role)-$stamp.err")
+  $psExe = $null
+  try { $psExe = (Get-Process -Id $PID).Path } catch {}
+  if ([string]::IsNullOrWhiteSpace($psExe)) { $psExe = 'powershell.exe' }
+  $args = @(
+    '-NoProfile','-ExecutionPolicy','Bypass','-File',$agentScript,
     '-Role',[string]$Spec.role,
     '-Model',[string]$Spec.model,
-    '-TimeoutSec',[string]$timeoutSec,
-    '-OutputFile',$outJson
+    '-BridgePath',$BridgeRoot,
+    '-ProjectRoot',$ProjRoot,
+    '-OutputFile',$resultF,
+    '-TimeoutSec',[string]$TimeoutSec,
+    '-RunLLM'
   )
-  Write-Host "[deep-audit] agent $($Spec.role): spawning $($Spec.model) timeout=${timeoutSec}s"
-  try {
-    # Start-Process can fail when inherited env has both Path and PATH.
-    # The agent writes JSON to $outJson, so direct ProcessStartInfo is enough.
-    $quote = {
-      param([string]$s)
-      if ($null -eq $s) { return '""' }
-      return '"' + (($s -replace '"', '\"')) + '"'
-    }
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell.exe'
-    $psi.Arguments = (($agentArgs | ForEach-Object { & $quote ([string]$_) }) -join ' ')
-    $psi.WorkingDirectory = $BridgeRoot
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $p = New-Object System.Diagnostics.Process
-    $p.StartInfo = $psi
-    [void]$p.Start()
-    return [pscustomobject]@{
-      role = [string]$Spec.role; model = [string]$Spec.model; proc = $p; preResult = $null
-      outputFile = $outJson; outLog = $outLog; errLog = $errLog
-      startedAt = (Get-Date); timeoutSec = $timeoutSec
-    }
-  } catch {
-    Remove-Item $outJson,$outLog,$errLog -ErrorAction SilentlyContinue
-    return [pscustomobject]@{
-      role = [string]$Spec.role; model = [string]$Spec.model; proc = $null
-      preResult = @{ role = [string]$Spec.role; model = [string]$Spec.model; skipped = $false; error = 'spawn_failed'; findings = @() }
-    }
+  $proc = Start-Process -FilePath $psExe -ArgumentList $args -WorkingDirectory $ProjRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+  return [pscustomobject]@{
+    spec = $Spec
+    proc = $proc
+    resultF = $resultF
+    outF = $outF
+    errF = $errF
+    startedAt = (Get-Date)
+    timeoutSec = $TimeoutSec
   }
 }
 
-function Complete-DeepModelAgentAsync {
+function Complete-DeepAuditAgentProcess {
   param($State)
-  if (-not $State) { return @{ skipped = $true; reason = 'no_state'; findings = @() } }
-  if ($State.preResult) { return $State.preResult }
-  if (-not $State.proc) {
-    return @{ role = [string]$State.role; model = [string]$State.model; skipped = $false; error = 'no_proc'; findings = @() }
-  }
-  $remainingMs = [int]([Math]::Max(0, ($State.timeoutSec * 1000) - ((Get-Date) - $State.startedAt).TotalMilliseconds))
-  $waited = $State.proc.WaitForExit($remainingMs)
-  if (-not $waited) {
-    try { $State.proc.Kill() } catch {}
-    Write-Host "[deep-audit] agent $($State.role): TIMEOUT after $($State.timeoutSec)s"
-    Remove-Item $State.outputFile,$State.outLog,$State.errLog -ErrorAction SilentlyContinue
-    return @{ role = [string]$State.role; model = [string]$State.model; skipped = $false; error = 'timeout'; findings = @() }
-  }
-  $raw = ''
-  if (Test-Path -LiteralPath $State.outputFile) {
-    $raw = [System.IO.File]::ReadAllText($State.outputFile, [System.Text.Encoding]::UTF8)
-  } elseif (Test-Path -LiteralPath $State.outLog) {
-    $raw = [System.IO.File]::ReadAllText($State.outLog, [System.Text.Encoding]::UTF8)
-  }
-  Remove-Item $State.outputFile,$State.outLog,$State.errLog -ErrorAction SilentlyContinue
-  if ([string]::IsNullOrWhiteSpace($raw)) {
-    return @{ role = [string]$State.role; model = [string]$State.model; skipped = $false; error = 'empty_output'; findings = @() }
-  }
+  $role = [string]$State.spec.role
+  $model = [string]$State.spec.model
+  $runtime = 0.0
+  try { $runtime = ((Get-Date) - $State.startedAt).TotalSeconds } catch {}
   try {
-    $obj = $raw | ConvertFrom-Json
-    $count = @($obj.findings).Count
-    Write-Host "[deep-audit] agent $($State.role): returned $count findings"
-    return $obj
+    if ($State.proc -and -not $State.proc.HasExited) {
+      $remainingMs = [int]([Math]::Max(0, ($State.timeoutSec * 1000) - ((Get-Date) - $State.startedAt).TotalMilliseconds))
+      if (-not $State.proc.WaitForExit($remainingMs)) {
+        try { $State.proc.Kill() } catch {}
+        return (New-DeepAuditAgentResult -Role $role -Model $model -Status 'error' -Errors @('timeout') -RuntimeSec $runtime)
+      }
+    }
+    if (-not (Test-Path -LiteralPath $State.resultF -PathType Leaf)) {
+      $errTail = ''
+      if (Test-Path -LiteralPath $State.errF -PathType Leaf) {
+        try { $errTail = ((Get-Content -LiteralPath $State.errF -Tail 8 -Encoding UTF8) -join ' | ') } catch {}
+      }
+      return (New-DeepAuditAgentResult -Role $role -Model $model -Status 'error' -Errors @('missing_output_file', $errTail) -RuntimeSec $runtime)
+    }
+    $json = [System.IO.File]::ReadAllText($State.resultF, [System.Text.Encoding]::UTF8)
+    $parsed = $json | ConvertFrom-Json
+    return [pscustomobject]@{
+      role = [string]$parsed.role
+      model = [string]$parsed.model
+      status = [string]$parsed.status
+      runtime_sec = [double]$parsed.runtime_sec
+      findings = @($parsed.findings)
+      errors = @($parsed.errors)
+      coverage = @($parsed.coverage)
+      confidence = [double]$parsed.confidence
+    }
   } catch {
-    return @{ role = [string]$State.role; model = [string]$State.model; skipped = $false; error = 'json_parse_failed'; findings = @() }
+    return (New-DeepAuditAgentResult -Role $role -Model $model -Status 'error' -Errors @($_.Exception.Message) -RuntimeSec $runtime)
+  } finally {
+    Remove-Item $State.resultF,$State.outF,$State.errF -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-DeepAuditDedupedFindings {
+  param([object[]]$Findings)
+  $seen = @{}
+  $unique = @()
+  foreach ($f in @($Findings)) {
+    if (-not $f) { continue }
+    $severity = ''
+    $file = ''
+    $line = ''
+    $category = ''
+    $observation = ''
+    try { $severity = [string]$f.severity } catch {}
+    try { $file = [string]$f.file } catch {}
+    try { $line = [string]$f.line } catch {}
+    try { $category = [string]$f.category } catch {}
+    try { $observation = [string]$f.observation } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($line)) {
+      $fp = "$severity|$file|$line"
+    } else {
+      $obsPrefix = ''
+      if (-not [string]::IsNullOrEmpty($observation)) {
+        $obsPrefix = $observation.Substring(0, [Math]::Min(40, $observation.Length))
+      }
+      $fp = "$category|$file|$obsPrefix"
+    }
+    if (-not $seen.ContainsKey($fp)) {
+      $seen[$fp] = $true
+      $unique += $f
+    }
+  }
+  return @($unique)
+}
+
+function Invoke-DeepAuditSynthesis {
+  param($Cfg, [string]$BridgeRoot, [object[]]$Findings)
+  try {
+    if (-not ($Cfg -and $Cfg.audit -and $Cfg.audit.synthesisEnabled -eq $true)) { return $null }
+    $commonLib = Join-Path $BridgeRoot 'lib\common.ps1'
+    if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib 2>$null | Out-Null }
+    if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) { return $null }
+    $model = 'deepseek-v4-flash'
+    if ($Cfg.audit.PSObject.Properties.Name -contains 'synthesizerModel') { $model = [string]$Cfg.audit.synthesizerModel }
+    $findingsJson = (@($Findings) | ConvertTo-Json -Depth 8 -Compress)
+    $prompt = "synthesize these findings into prioritized narrative`n`n$findingsJson"
+    return (Invoke-LLM -Purpose 'audit-synthesis' -Model $model -Prompt $prompt -TimeoutSec 90 -Temperature 0.2)
+  } catch {
+    return $null
+  }
+}
+
+function Invoke-MultiAgentDeepAudit {
+  param([string]$BridgeRoot, [string]$ProjRoot, $Cfg, [int]$TimeoutSec)
+  $agentSpecs = @(Get-DeepAuditAgentSpecs -Cfg $Cfg)
+  if ($agentSpecs.Count -eq 0) {
+    return [pscustomobject]@{ agents = @(); findings = @(); synthesis = $null }
+  }
+
+  $maxPar = 3
+  if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'maxParallelAgents')) { $maxPar = [int]$Cfg.audit.maxParallelAgents }
+  if ($maxPar -lt 1) { $maxPar = 1 }
+  $minSuccess = [Math]::Ceiling($agentSpecs.Count / 2)
+  if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'minSuccessfulAgents')) { $minSuccess = [int]$Cfg.audit.minSuccessfulAgents }
+  if ($minSuccess -lt 1) { $minSuccess = 1 }
+
+  $queue = New-Object System.Collections.Queue
+  foreach ($spec in $agentSpecs) { [void]$queue.Enqueue($spec) }
+  $running = New-Object System.Collections.ArrayList
+  $agents = New-Object System.Collections.ArrayList
+  $succeeded = 0
+
+  while (($queue.Count -gt 0 -or $running.Count -gt 0) -and $succeeded -lt $minSuccess) {
+    while ($queue.Count -gt 0 -and $running.Count -lt $maxPar) {
+      $spec = $queue.Dequeue()
+      try {
+        Write-Host "[deep-audit] agent start role=$($spec.role) model=$($spec.model)"
+        [void]$running.Add((Start-DeepAuditAgentProcess -Spec $spec -BridgeRoot $BridgeRoot -ProjRoot $ProjRoot -TimeoutSec $TimeoutSec))
+      } catch {
+        [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$spec.role) -Model ([string]$spec.model) -Status 'error' -Errors @('spawn_failed', $_.Exception.Message) -RuntimeSec 0.0))
+      }
+    }
+
+    $completedIdx = @()
+    for ($i = 0; $i -lt $running.Count; $i++) {
+      $state = $running[$i]
+      $elapsed = ((Get-Date) - $state.startedAt).TotalSeconds
+      if (($state.proc -and $state.proc.HasExited) -or $elapsed -ge $state.timeoutSec) {
+        $res = Complete-DeepAuditAgentProcess -State $state
+        if ($res.status -eq 'ok' -or $res.status -eq 'prompt_ready') { $succeeded++ }
+        [void]$agents.Add($res)
+        $completedIdx += $i
+      }
+    }
+    foreach ($i in @($completedIdx | Sort-Object -Descending)) { $running.RemoveAt($i) }
+    if ($succeeded -ge $minSuccess) { break }
+    if ($running.Count -gt 0 -or $queue.Count -gt 0) { Start-Sleep -Seconds 1 }
+  }
+
+  if ($succeeded -ge $minSuccess) {
+    foreach ($state in @($running)) {
+      try { if ($state.proc -and -not $state.proc.HasExited) { $state.proc.Kill() } } catch {}
+      $runtime = 0.0
+      try { $runtime = ((Get-Date) - $state.startedAt).TotalSeconds } catch {}
+      [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$state.spec.role) -Model ([string]$state.spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec $runtime))
+      Remove-Item $state.resultF,$state.outF,$state.errF -ErrorAction SilentlyContinue
+    }
+    while ($queue.Count -gt 0) {
+      $spec = $queue.Dequeue()
+      [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$spec.role) -Model ([string]$spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec 0.0))
+    }
+  }
+
+  $allFindings = @()
+  foreach ($agent in @($agents)) {
+    foreach ($finding in @($agent.findings)) { $allFindings += $finding }
+  }
+  $deduped = @(Get-DeepAuditDedupedFindings -Findings $allFindings)
+  $synthesis = Invoke-DeepAuditSynthesis -Cfg $Cfg -BridgeRoot $BridgeRoot -Findings $deduped
+  return [pscustomobject]@{
+    agents = @($agents)
+    findings = @($deduped)
+    synthesis = $synthesis
+  }
+}
+
+function Write-DeepAuditOutput {
+  param($Output, [string]$OutputFile)
+  $jsonOut = $Output | ConvertTo-Json -Depth 12 -Compress
+  if (-not [string]::IsNullOrWhiteSpace($OutputFile)) {
+    try {
+      $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($OutputFile, $jsonOut, $u8NoBom)
+      Write-Host "[deep-audit] result written to: $OutputFile (utf-8 nobom, $($jsonOut.Length) chars)"
+    } catch {
+      Write-Host "[deep-audit] -OutputFile write failed: $($_.Exception.Message), falling back to stdout"
+      $jsonOut
+    }
+  } else {
+    $jsonOut
   }
 }
 
@@ -647,22 +791,53 @@ try {
   if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib 2>$null | Out-Null }
 } catch {}
 
+$mode = if ($Sequential) { 'sequential' } else { 'parallel' }
+Write-Host "[deep-audit] bridge=$bridgeRoot"
+Write-Host "[deep-audit] project=$projRoot"
+Write-Host "[deep-audit] mode=multi-agent-$mode"
+$multiStart = Get-Date
+$multiAgent = Invoke-MultiAgentDeepAudit -BridgeRoot $bridgeRoot -ProjRoot $projRoot -Cfg $cfg -TimeoutSec ([Math]::Max($CodexTimeoutSec, $ClaudeTimeoutSec))
+$multiRuntimeSec = [Math]::Round(((Get-Date) - $multiStart).TotalSeconds, 1)
+$securityAgent = @($multiAgent.agents | Where-Object { $_.role -eq 'security-model' } | Select-Object -First 1)
+$functionalAgent = @($multiAgent.agents | Where-Object { $_.role -eq 'functional-model' } | Select-Object -First 1)
+$codexCompat = @{
+  skipped = (-not $securityAgent)
+  findings = if ($securityAgent) { @($securityAgent.findings) } else { @() }
+  errors = if ($securityAgent) { @($securityAgent.errors) } else { @('security-model_not_run') }
+  runtime_sec = if ($securityAgent) { [double]$securityAgent.runtime_sec } else { 0.0 }
+  source = 'multi-agent/security-model'
+}
+$claudeCompat = @{
+  skipped = (-not $functionalAgent)
+  findings = if ($functionalAgent) { @($functionalAgent.findings) } else { @() }
+  errors = if ($functionalAgent) { @($functionalAgent.errors) } else { @('functional-model_not_run') }
+  runtime_sec = if ($functionalAgent) { [double]$functionalAgent.runtime_sec } else { 0.0 }
+  source = 'multi-agent/functional-model'
+}
+
+$output = [pscustomobject]@{
+  ts = (Get-Date).ToString('o')
+  bridge_root = $bridgeRoot
+  project_root = $projRoot
+  mode = 'multi-agent'
+  runtime_sec = $multiRuntimeSec
+  agents = @($multiAgent.agents)
+  findings = @($multiAgent.findings)
+  synthesis = $multiAgent.synthesis
+  codex_security = $codexCompat
+  claude_functional = $claudeCompat
+}
+Write-DeepAuditOutput -Output $output -OutputFile $OutputFile
+return
+
 $codexResult = @{ skipped = $true; reason = 'no_codex_flag'; findings = @() }
 $claudeResult = @{ skipped = $true; reason = 'no_claude_flag'; findings = @() }
-$modelAgentResults = @()
 
 Write-Host "[deep-audit] bridge=$bridgeRoot"
 Write-Host "[deep-audit] project=$projRoot"
 $mode = if ($Sequential) { 'sequential' } else { 'parallel' }
 Write-Host "[deep-audit] mode=$mode"
 Write-Host "[deep-audit] functional-agent=$FunctionalAgent"
-$agentSpecs = if ($NoModelAgents) { @() } else { @(Get-DeepAuditAgentSpecs -Cfg $cfg) }
-if (-not [string]::IsNullOrWhiteSpace($ModelAgentOverride)) {
-  $agentSpecs = @($agentSpecs | ForEach-Object {
-    @{ role = [string]$_.role; model = $ModelAgentOverride; timeoutSec = [int]$_.timeoutSec }
-  })
-}
-Write-Host "[deep-audit] model-agents=$($agentSpecs.Count)"
 
 # Resolve executables up front (cheap).
 $codexExe = $null
@@ -766,39 +941,28 @@ if ($Sequential) {
   if ($codexExe) {
     $codexResult = Invoke-CodexSecurityPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
   }
-  if (-not $NoClaude -and $FunctionalAgent -eq 'gemini-only') {
+  if ($FunctionalAgent -eq 'gemini-only') {
     $claudeResult = Invoke-GeminiOnlyFunctional -ProjRoot $projRoot -BridgeRoot $bridgeRoot
-  } elseif (-not $NoClaude -and $claudeExe) {
+  } elseif ($claudeExe) {
     $claudeResult = Invoke-ClaudeFunctionalPass -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
   }
 } else {
-  # Parallel mode: codex.exe, optional claude.exe, and generic model agents all
-  # fan out first. Synchronous HTTP work then runs while process agents are alive.
+  # Parallel mode: codex.exe (security) runs in parallel with the functional pass.
   $codexState = $null
   $claudeState = $null
-  $agentStates = @()
   if ($codexExe) {
     $codexState = Start-CodexSecurityAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -CodexExe $codexExe -TimeoutSec $CodexTimeoutSec
   }
   if ($FunctionalAgent -eq 'auto' -and $claudeExe) {
     $claudeState = Start-ClaudeFunctionalAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -ClaudeExe $claudeExe -TimeoutSec $ClaudeTimeoutSec
   }
-  foreach ($spec in $agentSpecs) {
-    $agentStates += ,(Start-DeepModelAgentAsync -ProjRoot $projRoot -BridgeRoot $bridgeRoot -Spec $spec)
-  }
   $tStart = Get-Date
-  if (-not $NoClaude -and $FunctionalAgent -eq 'gemini-only') {
-    # Gemini-only path is synchronous HTTP — runs after Codex is launched so
-    # it overlaps with codex.exe and the generic model-agent processes.
-    $claudeResult = Invoke-GeminiOnlyFunctional -ProjRoot $projRoot -BridgeRoot $bridgeRoot
-  }
   if ($codexState) { $codexResult = Complete-CodexSecurityAsync -State $codexState }
-  foreach ($st in @($agentStates)) {
-    $modelAgentResults += ,(Complete-DeepModelAgentAsync -State $st)
-  }
   if ($FunctionalAgent -eq 'gemini-only') {
-    # already completed above
-  } elseif (-not $NoClaude -and $claudeState) {
+    # Gemini-only path is synchronous HTTP — runs after Codex is launched so
+    # they still overlap (Codex stays in the background while gemini answers).
+    $claudeResult = Invoke-GeminiOnlyFunctional -ProjRoot $projRoot -BridgeRoot $bridgeRoot
+  } elseif ($claudeState) {
     $claudeResult = Complete-ClaudeFunctionalAsync -State $claudeState
   }
   $elapsed = [Math]::Round(((Get-Date) - $tStart).TotalSeconds, 1)
@@ -812,7 +976,6 @@ $output = [pscustomobject]@{
   mode = $mode
   codex_security = $codexResult
   claude_functional = $claudeResult
-  model_agents = @($modelAgentResults)
 }
 
 # Emit JSON for caller (audit.ps1) to capture.
