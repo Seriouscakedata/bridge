@@ -74,6 +74,10 @@ function ConvertFrom-PlanBlock {
       if ($dm.Success) {
         foreach ($depRaw in ($dm.Groups[1].Value -split ',')) {
           $dep = Normalize-PlanText $depRaw
+          # '-' / '—' / 'none' / 'нет' / 'n/a' are "NO dependency" placeholders, NOT real dep ids.
+          # Recording them as deps made a step wait forever on a phantom node -> plan deadlock ->
+          # "no available steps" -> the agent loses its own plan (operator-reported 2026-05-29).
+          if ($dep -match '^[-–—]+$' -or ($dep.ToLowerInvariant() -in @('none','нет','n/a','na'))) { continue }
           if (-not [string]::IsNullOrWhiteSpace($dep) -and -not $depsList.Contains($dep)) { [void]$depsList.Add($dep) }
         }
       } else {
@@ -338,6 +342,7 @@ function Get-NextPlanStep {
     foreach ($dep in @($node.deps)) {
       $depId = [string]$dep
       if ([string]::IsNullOrWhiteSpace($depId)) { continue }
+      if ($depId -match '^[-–—]+$' -or ($depId.ToLowerInvariant() -in @('none','нет','n/a','na'))) { continue }  # "no dep" placeholder, not a real dep id
       if (-not $statusById.ContainsKey($depId) -or [string]$statusById[$depId] -ne 'done') {
         $depsReady = $false
         break
@@ -372,6 +377,7 @@ function Get-ReadyPlanSteps {
     foreach ($dep in @($node.deps)) {
       $depId = [string]$dep
       if ([string]::IsNullOrWhiteSpace($depId)) { continue }
+      if ($depId -match '^[-–—]+$' -or ($depId.ToLowerInvariant() -in @('none','нет','n/a','na'))) { continue }  # "no dep" placeholder, not a real dep id
       if (-not $statusById.ContainsKey($depId) -or $statusById[$depId] -ne 'done') { $depsReady = $false; break }
     }
     if ($depsReady) {
@@ -424,6 +430,8 @@ function Get-PlanScheduleState {
     foreach ($dep in @($s.deps)) {
       $depId = [string]$dep
       if ([string]::IsNullOrWhiteSpace($depId)) { continue }
+      # defensive: ignore "no dependency" placeholders an older/buggy plan may have stored as a dep id
+      if ($depId -match '^[-–—]+$' -or ($depId.ToLowerInvariant() -in @('none','нет','n/a','na'))) { continue }
       $depStatus = if ($statusById.ContainsKey($depId)) { [string]$statusById[$depId] } else { 'missing' }
       if ($depStatus -ne 'done') { [void]$unmet.Add(("{0}({1})" -f $depId, $depStatus)) }
     }
