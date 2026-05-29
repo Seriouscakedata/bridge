@@ -260,6 +260,115 @@ function Get-IdeaSeverityRank {
   }
 }
 
+function Get-IdeaOutcomeStats {
+  # Learning-loop aggregate: distills the FATE of past ideas so a generator (Architect/reflect)
+  # can calibrate -- propose more of what survives, less of what the curator rejects. Read-only.
+  # Sources: backlog (status/from/auto_curator/self_exec_commit) + metrics verdicts. Housekeeping
+  # drops (manual cleanup, mojibake, A/B reruns) are filtered out so only SUBSTANTIVE curator
+  # rejections inform the generator. Returns a pscustomobject; safe on empty/cold data.
+  param([int]$RecentWinDays = 30, [int]$MaxDropReasons = 6, [int]$MaxWins = 6)
+  $bl = @(Get-Backlog)
+  $doneSt = @('done','auto-resolved')
+  $dropSt = @('auto-dropped','rejected')
+  $noise  = '(?i)(mojibake|cleanup|a/b[- ]?test|rerun|pre-[a-z0-9]|encoding fix|scenario|\btest\b|времен)'
+  $moji   = '[�]|[À-ÿ]{3,}'   # broken-encoding artifacts (pre-7163c88 UTF-8/CP1251 mojibake)
+
+  $perSource = [ordered]@{}
+  foreach ($g in ($bl | Group-Object { [string]$_.from })) {
+    $grp = $g.Group
+    $done = @($grp | Where-Object { $doneSt -contains [string]$_.status }).Count
+    $drop = @($grp | Where-Object { $dropSt -contains [string]$_.status }).Count
+    $perSource[[string]$g.Name] = [pscustomobject]@{
+      total = $g.Count; done = $done; dropped = $drop
+      drop_rate = if ($g.Count -gt 0) { [Math]::Round($drop / [double]$g.Count, 2) } else { 0 }
+    }
+  }
+
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($i in $bl) {
+    if ($dropSt -notcontains [string]$i.status) { continue }
+    $ac = $i.auto_curator
+    if (-not $ac) { continue }
+    $model = [string]$ac.model
+    if ($model -eq 'manual' -or [string]::IsNullOrWhiteSpace($model)) { continue }   # housekeeping, not a judgment
+    $r = ([string]$ac.reason).Trim()
+    if ([string]::IsNullOrWhiteSpace($r) -or ($r -match $noise) -or ($r -match $moji)) { continue }
+    $r = ($r -replace '\s*\(low confidence\)\s*$','').Trim()
+    if ($r.Length -gt 90) { $r = $r.Substring(0,90) + '…' }
+    [void]$reasons.Add($r)
+  }
+  $topDrop = @($reasons | Group-Object | Sort-Object Count -Descending | Select-Object -First $MaxDropReasons |
+              ForEach-Object { [pscustomobject]@{ reason = $_.Name; count = $_.Count } })
+
+  $wins = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($i in ($bl | Where-Object { [string]$_.status -eq 'done' } | Sort-Object { [string]$_.ts } -Descending)) {
+    $t = ([string]$i.text -replace '\s+',' ').Trim()
+    if ($t -match $noise -or $t -match $moji) { continue }
+    if ($t.Length -gt 90) { $t = $t.Substring(0,90) + '…' }
+    [void]$wins.Add($t)
+    if ($wins.Count -ge $MaxWins) { break }
+  }
+
+  $worked = 0; $worse = 0
+  try {
+    $sc = @{}
+    foreach ($i in $bl) { $c = [string]$i.self_exec_commit; if ($c) { $sc[$c] = $true; if ($c.Length -ge 7) { $sc[$c.Substring(0,7)] = $true } } }
+    if ($sc.Count -gt 0 -and (Get-Command Read-MetricsJsonl -ErrorAction SilentlyContinue)) {
+      foreach ($r in @(Read-MetricsJsonl)) {
+        if ([string]$r.type -ne 'verdict') { continue }
+        $vc = [string]$r.commit; if (-not $vc) { continue }
+        if (-not ($sc.ContainsKey($vc) -or ($vc.Length -ge 7 -and $sc.ContainsKey($vc.Substring(0,7))))) { continue }
+        if ([string]$r.verdict -eq 'worked') { $worked++ } elseif ([string]$r.verdict -eq 'worse') { $worse++ }
+      }
+    }
+  } catch {}
+
+  return [pscustomobject]@{
+    perSource      = $perSource
+    topDropReasons = $topDrop
+    recentWins     = @($wins.ToArray())
+    selfExec       = [pscustomobject]@{ worked = $worked; worse = $worse }
+  }
+}
+
+function Format-IdeaLearningGuidance {
+  # Render Get-IdeaOutcomeStats into a compact prompt block so a generator LEARNS from the fate of
+  # past ideas. Returns '' when there's nothing useful yet (cold start) so callers can skip it.
+  param([int]$RecentWinDays = 30, [int]$MinSourceVolume = 3)
+  $st = $null
+  try { $st = Get-IdeaOutcomeStats -RecentWinDays $RecentWinDays } catch { return '' }
+  if (-not $st) { return '' }
+  $sb = New-Object System.Text.StringBuilder
+  $had = $false
+  $srcLines = @()
+  foreach ($k in $st.perSource.Keys) {
+    $v = $st.perSource[$k]
+    if ([int]$v.total -lt $MinSourceVolume) { continue }
+    $srcLines += ("- {0}: предложено {1}, done {2}, отклонено {3} (drop-rate {4})" -f $k, $v.total, $v.done, $v.dropped, $v.drop_rate)
+  }
+  if ($srcLines.Count -gt 0) {
+    $had = $true
+    [void]$sb.AppendLine('Источники идей по исходам (высокий drop-rate = источник генерит много мусора):')
+    foreach ($l in $srcLines) { [void]$sb.AppendLine($l) }
+  }
+  if ($st.topDropReasons.Count -gt 0) {
+    $had = $true
+    [void]$sb.AppendLine('Частые СОДЕРЖАТЕЛЬНЫЕ причины отказа куратора (НЕ предлагай идеи с такими свойствами):')
+    foreach ($d in $st.topDropReasons) { [void]$sb.AppendLine(("- «{0}» ×{1}" -f $d.reason, $d.count)) }
+  }
+  if ($st.recentWins.Count -gt 0) {
+    $had = $true
+    [void]$sb.AppendLine('Недавно принятые и сделанные идеи (вот формат/масштаб, который заходит):')
+    foreach ($w in $st.recentWins) { [void]$sb.AppendLine("- $w") }
+  }
+  if (([int]$st.selfExec.worked + [int]$st.selfExec.worse) -gt 0) {
+    $had = $true
+    [void]$sb.AppendLine(("Авто-исполненные идеи по 24ч-вердикту: сработали {0}, ухудшили {1}." -f $st.selfExec.worked, $st.selfExec.worse))
+  }
+  if (-not $had) { return '' }
+  return ('=== СУДЬБА ПРОШЛЫХ ИДЕЙ (учись на ней) ===' + "`n" + $sb.ToString().Trim())
+}
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(

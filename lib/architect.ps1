@@ -175,6 +175,15 @@ function Get-ArchitectContext {
   } catch { [void]$sb.AppendLine('(не удалось)') }
   [void]$sb.AppendLine('')
 
+  # 10) learning loop: fate of past ideas (drop-rates, substantive rejection reasons, recent wins)
+  # so the Architect calibrates -- propose more of what survives, avoid what the curator rejects.
+  try {
+    if (Get-Command Format-IdeaLearningGuidance -ErrorAction SilentlyContinue) {
+      $guidance = Format-IdeaLearningGuidance
+      if (-not [string]::IsNullOrWhiteSpace($guidance)) { [void]$sb.AppendLine($guidance); [void]$sb.AppendLine('') }
+    }
+  } catch {}
+
   return $sb.ToString()
 }
 

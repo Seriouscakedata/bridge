@@ -71,6 +71,15 @@ if (Test-Path -LiteralPath $goalsPath) {
   } catch {}
 }
 
+# learning loop: fate of past ideas (calibrate against what survives / gets rejected by the curator)
+$learningSection = '(нет данных об исходах прошлых идей)'
+try {
+  if (Get-Command Format-IdeaLearningGuidance -ErrorAction SilentlyContinue) {
+    $lg = Format-IdeaLearningGuidance
+    if (-not [string]::IsNullOrWhiteSpace($lg)) { $learningSection = $lg }
+  }
+} catch {}
+
 $prompt = @"
 Ты — аналитик-наблюдатель ИИ-моста (пара агентов Claude+Codex, разработка на ПК пользователя Тимура).
 Твоя задача: на основе ДАННЫХ ниже предложить до $maxIdeas КОНКРЕТНЫХ, выполнимых улучшений самого моста (код, процесс, надёжность, UX, память, автономия).
@@ -98,6 +107,8 @@ $convoTail
 
 УЖЕ В БЭКЛОГЕ (не повторять):
 $openIdeas
+
+$learningSection
 
 Верни СТРОГО JSON-массив без markdown, формата:
 [{"text":"идея одной-двумя фразами по-русски","tags":["короткие","теги"],"value":N,"confidence":N,"effort":N}]
