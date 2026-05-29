@@ -3257,6 +3257,49 @@ while ($true) {
           }
         } catch {}
       }
+      # 🌱 Increment B -- graduated self-development: AUTO-CLAIM of an UNapproved 'new' idea within
+      # the operator's selfExecuteTier dial. When no human/curator-approved idea is queued and the
+      # dial is 'green'/'yellow', take the next runnable 'new' idea whose risk tier is within the
+      # dial (Get-NextSelfExecIdea excludes external/radar and red-tier, and skips past out-of-dial
+      # items so the queue can't wedge). It is promoted into $claimedIdea HERE -- BEFORE the dirty
+      # guard -- so it runs the IDENTICAL pipeline as approved ideas (dirty guard, smoke+critic
+      # gates, verdict auto-revert). $selfDev* are read by the shadow-observability block below.
+      $selfDevTier = 'off'
+      $selfDevClaimed = $false
+      $selfDevPick = $null
+      $selfDevTierOfPick = ''
+      $selfDevReason = ''
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and ([string]$Channel -eq 'main') -and (Test-AutonomyReady)) {
+        try { $selfDevTier = ([string](Get-AutonomySettings).selfExecuteTier).ToLowerInvariant() } catch { $selfDevTier = 'shadow' }
+        # 🛡 Safety reflex: if recent self-exec commits regressed (verdict 'worse'), dial DOWN one
+        # notch BEFORE picking again, so the system throttles its own autonomy after regressions.
+        try {
+          $reflex = Test-SelfDevSafetyReflex -CurrentDial $selfDevTier
+          if ($reflex -and $reflex.shouldDampen) {
+            try { Set-AutonomySetting @{ selfExecuteTier = [string]$reflex.newDial } | Out-Null } catch {}
+            Add-Message -From system -Text ("🛡 Само-защита: понижаю диск само-развития $($reflex.fromDial)→$($reflex.newDial) — недавние авто-коммиты дали регресс (worse=$($reflex.worseCount)). Система притормаживает сама.") -Kind event | Out-Null
+            try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='self-dev-dampen'; from=[string]$reflex.fromDial; to=[string]$reflex.newDial; worse=[int]$reflex.worseCount }) } catch {}
+            $selfDevTier = [string]$reflex.newDial
+          }
+        } catch {}
+        if ($selfDevTier -eq 'green' -or $selfDevTier -eq 'yellow') {
+          try { $selfDevPick = Get-NextSelfExecIdea -Dial $selfDevTier } catch { $selfDevPick = $null }
+          if ($selfDevPick) {
+            $rt = Get-IdeaRiskTier -Idea $selfDevPick
+            $selfDevTierOfPick = [string]$rt.tier
+            $selfDevReason = [string]$rt.reason
+            try { Set-IdeaRiskTier -Id ([string]$selfDevPick.id) -Tier $selfDevTierOfPick -Reason $selfDevReason | Out-Null } catch {}
+            $claimedIdea = $selfDevPick
+            $selfDevClaimed = $true
+            try { Set-IdeaSelfExec -Id ([string]$selfDevPick.id) -Dial $selfDevTier | Out-Null } catch {}
+            $script:lastShadowIdeaId = [string]$selfDevPick.id
+            $ideaPrev = [string]$selfDevPick.text
+            if ($ideaPrev.Length -gt 80) { $ideaPrev = $ideaPrev.Substring(0,80) + '…' }
+            Add-Message -From system -Text ("🌱 Само-развитие [диск=$selfDevTier]: беру НОВУЮ идею автономно (риск=$selfDevTierOfPick · $selfDevReason): «$ideaPrev»") -Kind event | Out-Null
+            try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='self-exec-claim'; item_id=[string]$selfDevPick.id; tier=$selfDevTierOfPick; reason=$selfDevReason; dial=$selfDevTier }) } catch {}
+          }
+        }
+      }
       # 2026-05-28: dirty-state guard. Before starting an autonomous task,
       # verify the bridge's working tree is clean. Starting work on top of
       # uncommitted edits leads to two bad outcomes: (a) Codex/Claude's diff
@@ -3282,16 +3325,15 @@ while ($true) {
           # the loop. The watchdog/critic will catch a bad commit downstream.
         }
       }
-      # 🌒 Shadow self-development (graduated autonomy; autonomy.selfExecuteTier, default 'shadow').
-      # When NO human/curator-approved idea is queued, surface which UNapproved 'new' idea the system
-      # WOULD self-pick next and its risk tier -- WITHOUT executing anything. This is the safe
-      # observability layer of the selection-autonomy axis: the operator watches the classifier's
-      # picks in chat, then dials selfExecuteTier up to 'green' once trusted. Pure logging; this
-      # block NEVER sets $claimedIdea. main channel only (bridge self-dev lives on the bridge channel).
-      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and ([string]$Channel -eq 'main')) {
+      # 🌒 Shadow observability (graduated autonomy; autonomy.selfExecuteTier). When an UNapproved
+      # 'new' idea WOULD be the next self-pick but is NOT being executed this tick -- either the dial
+      # is 'shadow' (observe-only) or the top idea's risk tier exceeds the dial -- surface it in chat
+      # WITHOUT running it. (When the dial DID auto-claim an in-dial idea, $selfDevClaimed is set and
+      # the claim path above already announced it.) Posts only when the would-pick CHANGES, so idle
+      # ticks don't spam. main channel only.
+      if ((-not $claimedIdea) -and (-not $selfDevClaimed) -and (-not $auditBusyForAutonomy) -and ([string]$Channel -eq 'main')) {
         try {
-          $selfTier = 'shadow'
-          try { $selfTier = ([string](Get-AutonomySettings).selfExecuteTier).ToLowerInvariant() } catch {}
+          $selfTier = if ($selfDevTier) { $selfDevTier } else { 'shadow' }
           if ($selfTier -and $selfTier -ne 'off' -and (Test-AutonomyReady)) {
             $shadowPick = $null
             try { $shadowPick = Get-NextRunnableIdea -IncludeNew $true } catch {}
@@ -3303,15 +3345,12 @@ while ($true) {
                 $rt = Get-IdeaRiskTier -Idea $shadowPick
                 $tier = [string]$rt.tier; $why = [string]$rt.reason
                 try { Set-IdeaRiskTier -Id $shadowId -Tier $tier -Reason $why | Out-Null } catch {}
-                $wouldExec = (($selfTier -eq 'green')  -and ($tier -eq 'green')) -or `
-                             (($selfTier -eq 'yellow') -and ($tier -eq 'green' -or $tier -eq 'yellow'))
                 $verb = if ($selfTier -eq 'shadow') { 'взяла бы (shadow, без запуска)' }
-                        elseif ($wouldExec) { 'ЗАПУСТИЛА БЫ сейчас' }
-                        else { 'НЕ запускает (тир выше текущего диска)' }
+                        else { "НЕ запускает (риск=$tier выше диска=$selfTier)" }
                 $ideaText = [string]$shadowPick.text
                 if ($ideaText.Length -gt 80) { $ideaText = $ideaText.Substring(0,80) + '…' }
                 Add-Message -From system -Text ("🌒 Само-развитие [диск=$selfTier]: $verb новую идею «$ideaText» · риск=$tier · $why") -Kind event | Out-Null
-                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='shadow-pick'; item_id=$shadowId; tier=$tier; reason=$why; dial=$selfTier; would_execute=$wouldExec }) } catch {}
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='shadow-pick'; item_id=$shadowId; tier=$tier; reason=$why; dial=$selfTier; would_execute=$false }) } catch {}
               }
             }
           }
@@ -4888,6 +4927,19 @@ $diff
       $headC = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
       if ($baseC -and $headC -and $baseC -ne $headC) {
         Write-Hypothesis -CommitHash $headC -TaskText ([string]$task)
+      }
+    } catch {}
+    # 🌱 Self-dev attribution: stamp the resulting commit on a self-executed idea so the safety
+    # reflex can later correlate it to the 24h verdict (worse -> auto-dampen the dial). Read-mostly.
+    try {
+      $stSd = Read-State
+      $sdBid = [string]$stSd.current_backlog_id
+      if ($sdBid) {
+        $sdIdea = Get-IdeaById $sdBid
+        if ($sdIdea -and ([bool]$sdIdea.self_exec)) {
+          $sdHead = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
+          if ($sdHead) { Set-IdeaSelfExec -Id $sdBid -Dial ([string]$sdIdea.self_exec_dial) -Commit $sdHead | Out-Null }
+        }
       }
     } catch {}
     # 🩺 If Doctor just finished a repair, restore the held task instead of going idle.

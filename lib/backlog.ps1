@@ -741,6 +741,38 @@ function Get-NextRunnableIdea {
   return $null
 }
 
+function Get-NextSelfExecIdea {
+  # Increment B selection (graduated self-development). Returns the next UNapproved 'new' idea whose
+  # heuristic risk tier is WITHIN the operator's selfExecuteTier dial -- so a 'green' dial never
+  # auto-runs a 'yellow' idea, AND the queue never wedges on an out-of-dial item sitting ahead of
+  # runnable ones (we scan past it to the first in-dial idea). External/radar are excluded
+  # (anti-backdoor), and project-scoped ideas are skipped unless autonomy scope is 'projects' --
+  # mirroring Get-NextApprovedIdea. red-tier is never returned at any dial. Deterministic, no LLM.
+  #   Dial 'green'  -> first new idea classified green
+  #   Dial 'yellow' -> first new idea classified green OR yellow
+  param([string]$Dial)
+  $d = ([string]$Dial).ToLowerInvariant()
+  if ($d -ne 'green' -and $d -ne 'yellow') { return $null }
+  $cands = @(Get-Backlog | Where-Object {
+      ([string]$_.status -eq 'new') -and -not (Test-IdeaExternal $_)
+    } |
+    Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+                @{Expression={[string]$_.ts}})
+  try {
+    $sc = Get-AutonomySettings
+    if ([string]$sc.scope -ne 'projects') {
+      $cands = @($cands | Where-Object { -not ($_.PSObject.Properties.Name -contains 'scope') -or ([string]$_.scope -ne 'project') })
+    }
+  } catch {}
+  foreach ($it in $cands) {
+    $t = ([string](Get-IdeaRiskTier -Idea $it).tier)
+    $ok = ($d -eq 'green' -and $t -eq 'green') -or ($d -eq 'yellow' -and ($t -eq 'green' -or $t -eq 'yellow'))
+    if ($ok) { return $it }
+  }
+  return $null
+}
+
 function Get-IdeaRiskTier {
   # Heuristic risk classifier for graduated self-execution. CONSERVATIVE by design:
   #   red    = never auto-executes — externally-sourced (anti-backdoor) OR touches the
@@ -777,6 +809,68 @@ function Set-IdeaRiskTier {
   }
   if ($hit) { Save-Backlog $items }
   return $hit
+}
+
+function Set-IdeaSelfExec {
+  # Mark a backlog item as auto-claimed by graduated self-development (Increment B). At claim time
+  # call with -Dial; at task completion call again with -Commit to stamp the resulting SHA so the
+  # safety-reflex can correlate it to the 24h verdict. Additive; never removes existing fields.
+  param([string]$Id, [string]$Dial = '', [string]$Commit = '')
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $items = @(Get-Backlog); $hit = $false
+  foreach ($i in $items) {
+    if ([string]$i.id -ne $Id) { continue }
+    $i | Add-Member -NotePropertyName self_exec -NotePropertyValue $true -Force
+    if (-not [string]::IsNullOrWhiteSpace($Dial)) { $i | Add-Member -NotePropertyName self_exec_dial -NotePropertyValue ([string]$Dial) -Force }
+    if (-not ($i.PSObject.Properties.Name -contains 'self_exec_ts')) {
+      $i | Add-Member -NotePropertyName self_exec_ts -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Commit)) { $i | Add-Member -NotePropertyName self_exec_commit -NotePropertyValue ([string]$Commit) -Force }
+    $hit = $true; break
+  }
+  if ($hit) { Save-Backlog $items }
+  return $hit
+}
+
+function Test-SelfDevSafetyReflex {
+  # Graduated-autonomy safety reflex: if recent self-executed commits were judged 'worse' by the
+  # 24h verdict cycle, recommend dialing selfExecuteTier DOWN one notch (yellow->green->shadow) so
+  # the system throttles its OWN autonomy after regressions -- the system learning caution. This is
+  # the SECOND line of defence; smoke+critic gates (pre-commit) and verdict auto-revert (per-commit)
+  # are the first. Read-only here -- the caller applies the change. CONSERVATIVE: fires only on
+  # >=WorseThreshold settled 'worse' verdicts among self-exec commits within the lookback window.
+  # Returns @{ shouldDampen; fromDial; newDial; worseCount }.
+  param([string]$CurrentDial, [int]$WorseThreshold = 2, [int]$LookbackDays = 14)
+  $cur = ([string]$CurrentDial).ToLowerInvariant()
+  $out = [pscustomobject]@{ shouldDampen = $false; fromDial = $cur; newDial = $cur; worseCount = 0 }
+  if ($cur -ne 'green' -and $cur -ne 'yellow') { return $out }   # shadow/off: nothing to dampen
+  $cutoff = (Get-Date).ToUniversalTime().AddDays(-[Math]::Abs($LookbackDays))
+  $selfCommits = @{}
+  foreach ($i in @(Get-Backlog)) {
+    if (-not ([bool]$i.self_exec)) { continue }
+    $c = [string]$i.self_exec_commit
+    if ([string]::IsNullOrWhiteSpace($c)) { continue }
+    $ts = $null; try { $ts = ([datetime]$i.self_exec_ts).ToUniversalTime() } catch {}
+    if ($ts -and $ts -lt $cutoff) { continue }
+    $selfCommits[$c] = $true
+    if ($c.Length -ge 7) { $selfCommits[$c.Substring(0, 7)] = $true }
+  }
+  if ($selfCommits.Count -eq 0) { return $out }
+  $worse = 0
+  try {
+    foreach ($r in @(Read-MetricsJsonl)) {
+      if ([string]$r.type -ne 'verdict' -or [string]$r.verdict -ne 'worse') { continue }
+      $vc = [string]$r.commit
+      if ([string]::IsNullOrWhiteSpace($vc)) { continue }
+      if ($selfCommits.ContainsKey($vc) -or ($vc.Length -ge 7 -and $selfCommits.ContainsKey($vc.Substring(0, 7)))) { $worse++ }
+    }
+  } catch {}
+  $out.worseCount = $worse
+  if ($worse -ge $WorseThreshold) {
+    $out.shouldDampen = $true
+    $out.newDial = if ($cur -eq 'yellow') { 'green' } else { 'shadow' }
+  }
+  return $out
 }
 
 function Get-IdeaById {
