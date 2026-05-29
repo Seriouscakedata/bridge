@@ -1006,13 +1006,18 @@ function Invoke-Auditor {
 }
 
 function Start-AuditorIfDue {
+  # Side-effecting idle-tick hook (like Start-ArchitectIfDue / Start-DeepThinkIfDue):
+  # returns NOTHING. It used to `return $true/$false`, but both call sites invoke it
+  # bare (driver idle loop + auditor-tick.ps1), so that boolean leaked onto the
+  # driver's stdout once per idle tick -- driver.main.out.log filled with True/False.
+  # No caller consumes the value; valueless return keeps the success stream clean.
   try {
-    if (-not (Should-RunAuditor)) { return $false }
+    if (-not (Should-RunAuditor)) { return }
     Invoke-Auditor | Out-Null
-    return $true
+    return
   } catch {
     Write-AuditorLog ("Start-AuditorIfDue error: " + $_.Exception.Message)
     try { Add-Message -From system -Text ("⚠ Auditor error: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-    return $false
+    return
   }
 }
