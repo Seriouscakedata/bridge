@@ -811,14 +811,14 @@ try {
           if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
           $st = Read-State
           if ($st -and [string]$st.status -ne 'idle') {
-            $resp = '{"ok":false,"reason":"busy","status":' + (([string]$st.status) | ConvertTo-Json -Compress) + '}'
+            $resp = '{"ok":false,"reason":"busy","status":' + (([string]$st.status) | ConvertTo-Json -Compress -Depth 10) + '}'
           } else {
             $r = Invoke-ConversationArchive -Keep $keep
             if ([int]$r.archived -gt 0) { [void](Add-Message -From system -Text ("🗄 В архив убрано сообщений: " + [int]$r.archived + " (в чате осталось последних " + [int]$r.kept + "). История сохранена в архиве, мост контекст не потерял.") -Kind event) }
             $resp = '{"ok":true,"archived":' + [int]$r.archived + ',"kept":' + [int]$r.kept + '}'
           }
         } catch {
-          $resp = '{"ok":false,"reason":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress) + '}'
+          $resp = '{"ok":false,"reason":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress -Depth 10) + '}'
         } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx $resp 'application/json; charset=utf-8'
       }
@@ -840,7 +840,7 @@ try {
         try {
           $memScope = if ($chParam -eq '__all__') { Get-EffectiveScope -Slug (Get-EffectiveChannel) } else { Get-EffectiveScope -Slug $chParam }
         } catch {
-          Send-Text $ctx ('{"ok":false,"error":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress) + '}') 'application/json; charset=utf-8' 400
+          Send-Text $ctx ('{"ok":false,"error":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress -Depth 10) + '}') 'application/json; charset=utf-8' 400
           continue
         }
         if ([bool]$memScope.is_bridge) { $includeBridge = $false }
