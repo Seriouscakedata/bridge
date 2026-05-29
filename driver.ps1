@@ -3294,7 +3294,7 @@ while ($true) {
           try { $selfTier = ([string](Get-AutonomySettings).selfExecuteTier).ToLowerInvariant() } catch {}
           if ($selfTier -and $selfTier -ne 'off' -and (Test-AutonomyReady)) {
             $shadowPick = $null
-            try { $shadowPick = Get-NextRunnableIdea -IncludeNew } catch {}
+            try { $shadowPick = Get-NextRunnableIdea -IncludeNew $true } catch {}
             $shadowId = if ($shadowPick) { [string]$shadowPick.id } else { '' }
             # Only act when the would-pick CHANGES, so we don't repost every idle tick.
             if ($shadowId -ne [string]$script:lastShadowIdeaId) {
