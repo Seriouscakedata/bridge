@@ -2248,7 +2248,12 @@ function Invoke-Coder {
       if ($others[$k] -eq 'codex')  { $codexBusyElsewhere = $true }
       if ($others[$k] -eq 'claude') { $claudeBusyElsewhere = $true }
     }
-    if ($codexBusyElsewhere -and -not $claudeBusyElsewhere) {
+    # FIX 2026-05-29: NEVER fall back to Claude-as-coder in DISCUSS mode. discuss needs TWO DISTINCT
+    # agents (Claude proposes, Codex critiques). If Codex is busy and Claude also plays the Codex turn,
+    # the "dialogue" becomes Claude talking to ITSELF -- "Codex принимает пункты Claude" where both are
+    # Claude (operator-reported role-confusion). In discuss we let the real Codex turn wait/surface its
+    # busy status instead of simulating the opponent with the same model.
+    if ($codexBusyElsewhere -and -not $claudeBusyElsewhere -and $Mode -ne 'discuss') {
       $busyCh = ($others.GetEnumerator() | Where-Object { $_.Value -eq 'codex' } | Select-Object -First 1).Key
       Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude Opus берёт coder-турн (реальное выполнение).") -Kind event | Out-Null
       $fallbackPrefix = @"
@@ -4074,6 +4079,29 @@ while ($true) {
     $jcmd = $parts[0].Trim()
     $jdir = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
     if ([string]::IsNullOrWhiteSpace($jcmd)) { continue }
+    # IDEMPOTENCY (2026-05-29): do NOT relaunch a job whose command is ALREADY running, or that ran in
+    # the last 15 min. ROOT CAUSE of "аудит запустился 3-й раз без команды": a discuss-loop + resume +
+    # history-compaction made the agent re-emit [[RUNJOB: ...audit.ps1]] on almost every turn, and each
+    # emit spawned a fresh audit. Dedupe by normalized command so a burst collapses to ONE run.
+    $jnorm = ($jcmd -replace '\s+',' ').Trim().ToLowerInvariant()
+    $dupRunning = $false
+    try { foreach ($aj in @((Read-State).active_jobs)) { if ((([string]$aj.cmd) -replace '\s+',' ').Trim().ToLowerInvariant() -eq $jnorm) { $dupRunning = $true; break } } } catch {}
+    $dupRecent = $false
+    if (-not $dupRunning) {
+      try {
+        $jobsD = Join-Path $bridgeRoot 'jobs'
+        $cutoff = (Get-Date).AddMinutes(-15)
+        foreach ($cf in @(Get-ChildItem $jobsD -Filter '*.cmd' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff })) {
+          $cc = (([string]([System.IO.File]::ReadAllText($cf.FullName))) -replace '\s+',' ').Trim().ToLowerInvariant()
+          if ($cc -eq $jnorm) { $dupRecent = $true; break }
+        }
+      } catch {}
+    }
+    if ($dupRunning -or $dupRecent) {
+      $why = if ($dupRunning) { 'уже выполняется' } else { 'уже запускалась в последние 15 минут' }
+      Add-Message -From system -Text ("⏭ Не дублирую фоновую задачу ($why): $jcmd`nИспользуй предыдущий результат вместо повторного запуска.") -Kind event | Out-Null
+      continue
+    }
     try { $job = Start-BridgeJob -Command $jcmd -WorkDir $jdir; if ($job) { $startedJobs += $job } } catch {}
   }
   if ($startedJobs.Count -gt 0) {
