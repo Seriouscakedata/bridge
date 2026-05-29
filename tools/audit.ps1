@@ -561,20 +561,21 @@ function Invoke-BridgeAudit {
       $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings
     }
 
-    # 11. DEEP-AUDIT phase (Codex security + Claude functional)
+    # 11. DEEP-AUDIT phase (Codex security + multi-agent model fan-out)
     # 2026-05-28: implements backlog item 90747e410b. Runs after the static+
     # deepseek pipeline because (a) static is fast and always-on as safety net,
     # (b) deep-audit is heavier (~3-5min) so we want it last. Each half is
     # individually skippable on timeout/spawn-fail — graceful degradation.
     $deepCodexResult = $null
     $deepClaudeResult = $null
+    $deepModelAgentResults = @()
     $deepStatus = 'skipped'
     $deepRuntimeSec = 0.0
     $deepWatchdogFired = $false
     try {
       $deepScript = Join-Path $root 'tools\deep-audit.ps1'
       if (Test-Path -LiteralPath $deepScript -PathType Leaf) {
-        Write-AuditLog -BridgePath $root -Message "deep-audit start (Codex+Claude phase, watchdog=${DeepAuditTimeoutSec}s)"
+        Write-AuditLog -BridgePath $root -Message "deep-audit start (Codex+multi-agent phase, watchdog=${DeepAuditTimeoutSec}s)"
         $deepSw = [System.Diagnostics.Stopwatch]::StartNew()
         $deepStdout = ''
         $deepStderr = ''
@@ -653,6 +654,9 @@ function Invoke-BridgeAudit {
             $deepParsed = $deepJson | ConvertFrom-Json
             $deepCodexResult  = $deepParsed.codex_security
             $deepClaudeResult = $deepParsed.claude_functional
+            if ($deepParsed.PSObject.Properties.Name -contains 'model_agents') {
+              $deepModelAgentResults = @($deepParsed.model_agents)
+            }
             if (-not $deepWatchdogFired -and $deepExitCode -eq 0) { $deepStatus = 'ok' }
           } catch {
             $deepStatus = 'deep_failed'
@@ -678,6 +682,7 @@ function Invoke-BridgeAudit {
     $deepFiled = 0
     $deepCodexCount = 0
     $deepClaudeCount = 0
+    $deepModelAgentCount = 0
     $addIdeaAvailable = $false
     $deepBacklogHelperWarned = $false
     try {
@@ -789,6 +794,46 @@ function Invoke-BridgeAudit {
         }
       }
     }
+    foreach ($agent in @($deepModelAgentResults)) {
+      if (-not $agent) { continue }
+      $agentRole = [string]$agent.role
+      $agentModel = [string]$agent.model
+      $af = @($agent.findings)
+      $deepModelAgentCount += $af.Count
+      foreach ($f in $af) {
+        if (-not $f) { continue }
+        $sev = ([string]$f.severity).ToLowerInvariant()
+        if ($sev -notin @('critical','warning','info')) {
+          & $writeDiag $agentRole $sev 'skip-bad-severity' ''
+          continue
+        }
+        try {
+          $area = [string]$f.area
+          $cat = [string]$f.category
+          $obs = [string]$f.observation
+          $rec = [string]$f.recommendation
+          $bText = "[deep-agent/$agentRole/$agentModel] $cat"
+          if (-not [string]::IsNullOrWhiteSpace($area)) { $bText += " ($area)" }
+          $bText += " -- $obs | Recommend: $rec"
+          if ($addIdeaAvailable) {
+            $bid = Add-Idea -Text $bText -From 'audit-deep-agent' -Tags @('audit','deep-audit','agent',$agentRole,$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            if ($bid) {
+              $deepFiled++
+              & $writeDiag $agentRole $sev 'filed' "id=$bid"
+            } else {
+              & $writeDiag $agentRole $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
+            }
+          } elseif (-not $deepBacklogHelperWarned) {
+            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            $deepBacklogHelperWarned = $true
+          }
+        } catch {
+          $msg = $_.Exception.Message
+          [void]$errors.Add('deep-audit model-agent backlog filing failed: ' + $msg)
+          & $writeDiag $agentRole $sev 'exception' $msg
+        }
+      }
+    }
 
     # Append deep-audit sections to the MD report (in-place edit)
     if ($paths -and $paths.md -and (Test-Path -LiteralPath $paths.md)) {
@@ -799,6 +844,7 @@ function Invoke-BridgeAudit {
         [void]$deepBlock.AppendLine("## Deep Audit Status")
         [void]$deepBlock.AppendLine("- Status: $deepStatus")
         [void]$deepBlock.AppendLine("- Runtime: ${deepRuntimeSec}s")
+        [void]$deepBlock.AppendLine("- Model agents: $(@($deepModelAgentResults).Count) agents, $deepModelAgentCount findings")
         if ($deepWatchdogFired) { [void]$deepBlock.AppendLine("- Watchdog: timeout after ${DeepAuditTimeoutSec}s") }
         [void]$deepBlock.AppendLine('')
         [void]$deepBlock.AppendLine('## 🤖 Codex Security (deep)')
@@ -845,6 +891,38 @@ function Invoke-BridgeAudit {
             }
           }
         }
+        [void]$deepBlock.AppendLine('')
+        [void]$deepBlock.AppendLine('## 🤖 Model Agents (deep)')
+        if (@($deepModelAgentResults).Count -eq 0) {
+          [void]$deepBlock.AppendLine('_Не запущены или не вернули результатов._')
+        } else {
+          foreach ($agent in @($deepModelAgentResults)) {
+            if (-not $agent) { continue }
+            $role = [string]$agent.role
+            $model = [string]$agent.model
+            if ($agent.skipped) {
+              $reason = if ($agent.reason) { [string]$agent.reason } else { 'skipped' }
+              [void]$deepBlock.AppendLine("- `$role` / `$model`: skipped ($reason)")
+              continue
+            }
+            if ($agent.error) {
+              [void]$deepBlock.AppendLine("- `$role` / `$model`: error $([string]$agent.error)")
+              continue
+            }
+            $finds = @($agent.findings)
+            if ($finds.Count -eq 0) {
+              [void]$deepBlock.AppendLine("- `$role` / `$model`: findings=0")
+              continue
+            }
+            [void]$deepBlock.AppendLine("- `$role` / `$model`: findings=$($finds.Count)")
+            foreach ($f in $finds) {
+              if (-not $f) { continue }
+              $area = if ($f.area) { ' _(`' + [string]$f.area + '`)_ ' } else { ' ' }
+              [void]$deepBlock.AppendLine("  - **$([string]$f.severity)** $([string]$f.category)$($area): $([string]$f.observation)")
+              if ($f.recommendation) { [void]$deepBlock.AppendLine("    - Рекомендация: $([string]$f.recommendation)") }
+            }
+          }
+        }
         [System.IO.File]::WriteAllText($paths.md, $mdExisting + $deepBlock.ToString(), (New-Object System.Text.UTF8Encoding($false)))
       } catch {
         [void]$errors.Add('deep-audit md merge failed: ' + $_.Exception.Message)
@@ -855,11 +933,17 @@ function Invoke-BridgeAudit {
     try {
       $report | Add-Member -NotePropertyName status -NotePropertyValue $finalStatus -Force
       $report | Add-Member -NotePropertyName errors -NotePropertyValue @($errors.ToArray()) -Force
+      $report | Add-Member -NotePropertyName deep_results -NotePropertyValue ([ordered]@{
+        codex_security    = $deepCodexResult
+        claude_functional = $deepClaudeResult
+        model_agents      = @($deepModelAgentResults)
+      }) -Force
       if ($report.metadata) {
         $report.metadata['deep_status'] = $deepStatus
         $report.metadata['deep_runtime_sec'] = $deepRuntimeSec
         $report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec
         $report.metadata['deep_watchdog_fired'] = $deepWatchdogFired
+        $report.metadata['deep_model_agent_count'] = $deepModelAgentCount
       }
       if ($paths -and $paths.json) {
         Write-AuditAtomicFile -Path $paths.json -Content ($report | ConvertTo-Json -Depth 8)
@@ -868,9 +952,9 @@ function Invoke-BridgeAudit {
       [void]$errors.Add('audit report deep-status update failed: ' + $_.Exception.Message)
     }
 
-    Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8}] backlog+={9}+{10}" -f `
+    Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f `
       $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, `
-      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus)
+      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus, $deepModelAgentCount)
 
     return [pscustomobject]@{
       status            = $finalStatus
@@ -881,6 +965,7 @@ function Invoke-BridgeAudit {
       functional_counts = $fncCounts
       deep_codex_count  = $deepCodexCount
       deep_claude_count = $deepClaudeCount
+      deep_model_agent_count = $deepModelAgentCount
       deep_runtime_sec  = $deepRuntimeSec
       backlog_added     = $filed + $deepFiled
       runtime_sec       = $report.runtime_sec
