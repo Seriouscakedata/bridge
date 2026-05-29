@@ -43,3 +43,5 @@ audit/
 channels/_archive/
 logs/heartbeat.jsonl
 channels/*/snapshots/
+channels/*/checkpoints/
+channels/*/qa-results.jsonl
