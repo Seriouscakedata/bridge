@@ -74,6 +74,8 @@ Start-Sleep -Seconds 2
 $srv = $null
 $lastRecycleTs = $null   # rate-limit: prevent restart-storm
 $minRecycleSec = 60      # at least 60s between consecutive recycles
+$lastWdSpawn   = $null   # rate-limit watchdog (re)spawns (guards against a spawn storm)
+$minWdSpawnSec = 60      # at least 60s between watchdog spawn attempts
 Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
 while ($true) {
@@ -127,6 +129,31 @@ while ($true) {
         $drivers[$slug] = $proc
       }
     }
+    # Ensure the INDEPENDENT watchdog safety-net is alive. By design it's a separate
+    # scheduled task (install-watchdog.ps1), but task registration needs elevation and the
+    # task can go missing (observed 2026-05-29: task ClaudeCodexBridge-Watchdog absent, the
+    # watchdog had been DOWN ~3 days, leaving the bridge with no git auto-rollback). The
+    # supervisor is already the elevated, autostarted host, so it (re)spawns the watchdog as
+    # a detached process whenever none is alive -- durable across reboots without a manual
+    # elevated install step. PRECISE match (-File ...watchdog.ps1, excluding -Command) so we
+    # don't mistake an ad-hoc inspection command that merely mentions the script name for a
+    # live loop. Rate-limited so a watchdog that dies instantly can't trigger a spawn storm.
+    try {
+      $wdAlive = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*-File*watchdog.ps1*' -and $_.CommandLine -notlike '*-Command*' }).Count -gt 0
+      if (-not $wdAlive) {
+        $nowWd = Get-Date
+        if (-not $lastWdSpawn -or ($nowWd - $lastWdSpawn).TotalSeconds -ge $minWdSpawnSec) {
+          $wdScript = Join-Path $root 'watchdog.ps1'
+          if (Test-Path $wdScript) {
+            Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$wdScript -WindowStyle Hidden | Out-Null
+            $lastWdSpawn = $nowWd
+            Log "watchdog not running -> spawned detached safety-net"
+          }
+        }
+      }
+    } catch { Log ("watchdog-ensure error: " + $_.Exception.Message) }
+
     # Reap drivers whose channel was archived (channel no longer in $slugs).
     $known = New-Object 'System.Collections.Generic.List[string]'
     foreach ($k in $drivers.Keys) { $known.Add([string]$k) }
