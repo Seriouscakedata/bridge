@@ -3214,7 +3214,11 @@ while ($true) {
       $discussVerbMark = [bool]([regex]::IsMatch($taskMsg, $discussVerbRegex))
       # [[NORMAL]] override forces task_mode=normal even if other auto-detect would route
       # elsewhere (study/discuss). For operators who know "obsuzhdat' nechego, delay".
-      $normalOverride = [bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[NORMAL\]\]\s*$'))
+      # [[NORMAL]] OR an explicit operator "finish / don't loop / this is recon" instruction wins
+      # over the LLM intent classifier. FIX 2026-05-29: the classifier forced discuss on an audit
+      # task that literally said "STATUS: DONE, без дебатов, не зацикливайся" -> it then looped on
+      # the already-finished work. Operator phrasing must override the heuristic.
+      $normalOverride = ([bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[NORMAL\]\]\s*$'))) -or ([bool]([regex]::IsMatch($taskMsg, '(?i)(не\s+зациклив|без\s+дебат|не\s+обсужда|не\s+уходи\s+в\s+обсужд|status:\s*done\b|это\s+разведка,?\s+не\s+стройка|один\s+сфокусированн\w*\s+проход)')))
       $fastLaneCfg = Get-FastLaneSettings
       $fastMark = [bool]([regex]::IsMatch($taskMsg, '\[\[FAST\]\]'))
       $reasoningHighMark = [bool]([regex]::IsMatch($taskMsg, '\[\[REASONING:high\]\]'))
@@ -3658,6 +3662,12 @@ while ($true) {
   $turnStart = [DateTime]::UtcNow
   $headBeforeTurn = ''
   try { $headBeforeTurn = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch {}
+  # FIX 2026-05-29: snapshot the dirty set BEFORE the turn so the project-focus guard below can
+  # compare the DELTA of this turn, not the absolute dirty tree. main + non-main channels share
+  # ONE bridge git tree -> without this, a non-main guard fired on files MAIN changed in parallel
+  # (false halt of a clean travel audit while main legitimately edited the bridge).
+  $dirtyBeforeTurn = @()
+  try { $dirtyBeforeTurn = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) } catch {}
   try {
     if ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else {
@@ -3678,8 +3688,13 @@ while ($true) {
     try {
       $bridgeHeadAfterGuard = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
       $bridgeDirtyAfterGuard = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-      if (($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard) -or @($bridgeDirtyAfterGuard).Count -gt 0) {
-        $changed = if (@($bridgeDirtyAfterGuard).Count -gt 0) { @($bridgeDirtyAfterGuard) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
+      # Only files this turn NEWLY dirtied (After \ Before) or a HEAD move by THIS turn implicate
+      # this channel. Pre-existing dirt (another channel working in parallel on the shared tree)
+      # is excluded -> no more false halts from a sibling channel's legitimate edits.
+      $newlyDirty = @($bridgeDirtyAfterGuard | Where-Object { $_ -notin $dirtyBeforeTurn })
+      $headMoved  = ($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard)
+      if ($headMoved -or @($newlyDirty).Count -gt 0) {
+        $changed = if (@($newlyDirty).Count -gt 0) { @($newlyDirty) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
         $guardMsg = "⚠ Project-focus guard: канал '$guardChannelSlug' не является main, но после coder-хода изменился bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
         try { Set-TaskLastFailure -Kind bridge_guard -Text $guardMsg } catch {}
         Add-Message -From system -Text $guardMsg -Kind event | Out-Null
