@@ -984,6 +984,18 @@ try {
           Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
         }
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/brainstorm') {
+        # 🧭💭 Manual deep-think DIALOG trigger (Claude<->Codex pingpong), bypassing the daily timer.
+        # Injects the [[DEEP-THINK]] task into the current channel; the driver runs it in discuss-mode.
+        try {
+          Start-DeepThinkDialog
+          try { [System.IO.File]::WriteAllText((Get-DeepThinkMarkerPath), (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+          Send-Text $ctx '{"ok":true,"started":"deep-think dialog (Claude<->Codex)"}' 'application/json; charset=utf-8'
+        } catch {
+          $err = ("" + $_.Exception.Message) | ConvertTo-Json -Depth 10 -Compress
+          Send-Text $ctx ('{"ok":false,"error":' + $err + '}') 'application/json; charset=utf-8' 500
+        }
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/runbook') {
         try {
           $runbookRoot = Get-BridgeRoot

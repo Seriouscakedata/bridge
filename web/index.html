@@ -2160,6 +2160,7 @@
         <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
         <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
         <button id="archiveChat" class="icon" type="button" title="Убрать старые сообщения в архив — чат очистится, история сохранится (мост ничего не теряет)" onclick="archiveChat()">🗄 <span class="sec-label">Архив</span></button>
+        <button id="brainstormBtn" class="icon" type="button" title="Запустить глубокий брейншторм (диалог Claude↔Codex) прямо сейчас, не дожидаясь ночного таймера" onclick="brainstormNow()">🧭 <span class="sec-label">Брейншторм</span></button>
       </div>
       <div class="sec-group">
         <div class="sec-group-title">Вид</div>
@@ -5021,6 +5022,18 @@ async function archiveChat(){
       alert('Не удалось заархивировать: ' + ((j&&j.reason)||'ошибка'));
     }
   }catch(e){ alert('Ошибка архивирования: ' + e.message); }
+}
+async function brainstormNow(){
+  if(!confirm('Запустить глубокий брейншторм сейчас? Claude и Codex проведут диалог (4-6 ходов) о том, что сильнее всего укрепит мост, и положат выжившие идеи в бэклог. Если мост занят — запустится, когда освободится.')) return;
+  const btn = document.getElementById('brainstormBtn');
+  if(btn) btn.disabled = true;
+  try{
+    const resp = await fetch('/api/brainstorm', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j = await resp.json().catch(()=>null);
+    if(j && j.ok){ alert('Брейншторм запущен — диалог Claude↔Codex появится в чате. Идеи попадут в бэклог после сходимости.'); }
+    else { alert('Не удалось запустить брейншторм: ' + ((j&&j.error)||'ошибка')); }
+  }catch(e){ alert('Ошибка запуска брейншторма: ' + e.message); }
+  finally{ if(btn) btn.disabled = false; }
 }
 document.getElementById('runbookBtn').addEventListener('click', async () => {
   const btn = document.getElementById('runbookBtn');
