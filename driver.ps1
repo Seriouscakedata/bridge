@@ -3088,6 +3088,17 @@ while ($true) {
       $intentForcedFastLane = ($intentMode -eq 'fast')
       $intentForcedDiscuss  = ($intentMode -eq 'discuss')
       $intentForcedStudy    = ($intentMode -eq 'study')
+      # 2026-05-29 complexity throttle: even when the classifier routed to a
+      # heavy mode (e.g. discuss) by topic, a CONFIDENT trivial/simple verdict
+      # means the task does not warrant the full ceremony. Test-IntentLowComplexity
+      # gates on confidence>=0.7 + complexity in {trivial,simple} + turns<=4.
+      # This is the fix for "show a desktop screenshot" being routed to a ~7-min
+      # discuss debate. Honour the operator's autoDetect switch so the throttle
+      # can be disabled wholesale; explicit markers already suppress $taskIntent.
+      $intentLowComplexity = $false
+      if ($taskIntent -and [bool]$fastLaneCfg.autoDetect -and (Get-Command Test-IntentLowComplexity -ErrorAction SilentlyContinue)) {
+        try { $intentLowComplexity = [bool](Test-IntentLowComplexity -Intent $taskIntent) } catch { $intentLowComplexity = $false }
+      }
 
       $taskProjectRoot = Get-ActiveProjectRoot
       if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
@@ -3113,6 +3124,7 @@ while ($true) {
       $intentForcedDiscussClosure  = $intentForcedDiscuss
       $intentForcedStudyClosure    = $intentForcedStudy
       $discussVerbClosure          = $discussVerbMark
+      $intentLowComplexityClosure  = $intentLowComplexity
 
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
@@ -3124,14 +3136,20 @@ while ($true) {
         # "обсуди" в любом месте текста, не зависит от того что классификатор
         # решил по доминирующей теме задачи (он часто прозевает discuss-секции
         # в задачах с большим implementation-спеком).
+        # 2026-05-29: a CONFIDENT trivial/simple verdict ($intentLowComplexityClosure)
+        # neuters the two "discuss" branches so a 1-line change can't be dragged into
+        # a multi-turn Claude<->Codex debate; it then lands on the new fast-lane catch
+        # below (after study, which keeps its own output contract). Markers/normal/
+        # deep-think still win because they suppress $taskIntent upstream.
         if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
         elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
-        elseif ($discussVerbClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($discussVerbClosure -and -not $intentLowComplexityClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedFastLaneClosure) { Set-FastLaneFlags -State $s -Reason 'llm-intent'; $s.task_mode='normal' }
-        elseif ($intentForcedDiscussClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($intentForcedDiscussClosure -and -not $intentLowComplexityClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedStudyClosure) { $s.task_mode='study'; $s.study_subtype='external'; $s.study_phase='plan' }
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
+        elseif ($intentLowComplexityClosure) { Set-FastLaneFlags -State $s -Reason 'llm-simple'; $s.task_mode='normal' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
         $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force

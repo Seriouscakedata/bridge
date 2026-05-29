@@ -203,3 +203,30 @@ function Format-IntentForPrompt {
   [void]$lines.Add(("  сложность: " + [string]$Intent.complexity + ', estimated_turns=' + [string]$Intent.estimated_turns))
   return ([string]::Join("`n", $lines.ToArray()))
 }
+
+function Test-IntentLowComplexity {
+  # True when the classifier is CONFIDENT the task is small enough to skip the
+  # heavy ceremony (planner + critic + the multi-turn Claude<->Codex "discuss"
+  # debate). A 1-line / 1-file change must not trigger an architectural
+  # deliberation -- that is exactly the latency the operator complained about
+  # ("show a desktop screenshot" routed to discuss mode, ~7 min).
+  #
+  # Caps (all must hold): confidence >= MinConfidence, complexity in
+  # {trivial,simple}, estimated_turns <= MaxTurns. Anything moderate/complex,
+  # low-confidence, or many-turns falls through to the normal pipeline so we
+  # never under-power a genuinely big task. The driver still lets the coder
+  # escalate mid-task via [[PLAN]]/[[NEED-TOOL]]/[[DISPATCH-DAG]], and the
+  # operator can force the full path with [[DEEP-THINK]] / [[NORMAL]].
+  param($Intent, [double]$MinConfidence = 0.7, [int]$MaxTurns = 4)
+  if (-not $Intent) { return $false }
+  $conf = 0.0
+  try { $conf = [double]$Intent.confidence } catch { return $false }
+  if ($conf -lt $MinConfidence) { return $false }
+  $cx = ''
+  try { $cx = ([string]$Intent.complexity).Trim().ToLowerInvariant() } catch {}
+  if ($cx -notin @('trivial','simple')) { return $false }
+  $turns = 99
+  try { $turns = [int]$Intent.estimated_turns } catch { $turns = 99 }
+  if ($turns -gt $MaxTurns) { return $false }
+  return $true
+}
