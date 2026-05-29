@@ -69,3 +69,6 @@
 {"ts":"2026-05-28T21:29:29.1637843+03:00","event":"verified_commit","channel":"main","what":"architect scope cleanup | commit c4c06d5; parser/BOM OK; Get-ArchitectScope == Get-EffectiveScope; s"}
 {"ts":"2026-05-28T21:29:35.9864487+03:00","event":"convergence","channel":"main","source":"planner"}
 {"ts":"2026-05-28T21:56:38.7300970+03:00","event":"verified_commit","channel":"main","what":"driver.ps1 строки 4172–4377 содержат DIFF_META+diff_truncated, CHANGED_FILES (3KB), TASK_HISTORY (6K"}
+{"ts":"2026-05-28T22:33:20.7893294+03:00","event":"verified_commit","channel":"main","what":"gate-check commit 747b0f8 OK; ConvertFrom-Json features/registry.json OK; critic_count=1; TASK_HISTO"}
+{"ts":"2026-05-29T05:53:12.7704002+03:00","event":"verified_commit","channel":"main","what":"PNG создан и прочитан через System.Drawing | результат: OK"}
+{"ts":"2026-05-29T05:53:21.4821151+03:00","event":"convergence","channel":"main","source":"coder"}
