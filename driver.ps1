@@ -3197,7 +3197,19 @@ while ($true) {
       } else { [void]$stillRunning.Add($job) }
     }
     $remaining = @($stillRunning.ToArray())
-    Update-State ({ param($s) $s.active_jobs=$remaining; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.status_text=$(if ($remaining.Count -gt 0) { "⏳ Жду фоновую задачу (" + $remaining.Count + ")..." } else { $null }) }.GetNewClosure()) | Out-Null
+    # LIVE background-job progress: surface the job's LAST LOG LINE so the UI shows WHAT it's doing,
+    # not a silent "waiting" (operator 2026-05-29: "дал задачу, она висит, его работа не видна").
+    $jobProgress = ''
+    if ($remaining.Count -gt 0) {
+      try {
+        $lpath = [string]$remaining[0].log
+        if ($lpath -and (Test-Path -LiteralPath $lpath)) {
+          $ll = @([System.IO.File]::ReadAllLines($lpath, [System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($ll.Count -gt 0) { $last = ([string]$ll[-1]).Trim(); if ($last.Length -gt 64) { $last = $last.Substring(0,64) + '…' }; $jobProgress = ' — ' + $last }
+        }
+      } catch {}
+    }
+    Update-State ({ param($s) $s.active_jobs=$remaining; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o'); $s.status_text=$(if ($remaining.Count -gt 0) { "⏳ Фоновая задача (" + $remaining.Count + ")" + $jobProgress } else { $null }) }.GetNewClosure()) | Out-Null
     if ($remaining.Count -gt 0) { Start-Sleep -Seconds $loopDelay; continue }
     $state = Read-State
   }
