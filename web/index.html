@@ -2159,6 +2159,7 @@
         <button id="memoryBtn" class="icon" type="button" title="Долговременная память" onclick="window.open('/memory','_blank')">🧠 <span class="sec-label">Память</span></button>
         <button id="exportChat" class="icon" type="button" title="Скачать историю JSON">⇩ <span class="sec-label">Экспорт</span></button>
         <button id="exportMarkdown" class="icon" type="button" title="Скачать историю Markdown">MD <span class="sec-label">Markdown</span></button>
+        <button id="archiveChat" class="icon" type="button" title="Убрать старые сообщения в архив — чат очистится, история сохранится (мост ничего не теряет)" onclick="archiveChat()">🗄 <span class="sec-label">Архив</span></button>
       </div>
       <div class="sec-group">
         <div class="sec-group-title">Вид</div>
@@ -5005,6 +5006,21 @@ async function killSwitch(){
 async function restartBridge(){
   if(!confirm('Перезапустить мост через supervisor? Текущая задача будет возобновлена после рестарта.')) return;
   await ctl('restart');
+}
+async function archiveChat(){
+  if(!confirm('Убрать старые сообщения в архив? В чате останутся последние ~30, остальное уедет в архив. История НЕ теряется (мост сохраняет свой контекст), архив автоматически чистится раз в неделю.')) return;
+  try{
+    const resp = await fetch('/api/archive', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({keep:30})});
+    const j = await resp.json().catch(()=>null);
+    if(j && j.ok){
+      if((j.archived||0) > 0){ alert('Готово: убрано в архив ' + j.archived + ', в чате осталось ' + j.kept + '. Лента обновится через пару секунд.'); }
+      else { alert('Архивировать нечего — сообщений ещё мало.'); }
+    } else if(j && j.reason==='busy'){
+      alert('Мост сейчас работает над задачей. Архив сработает, когда он освободится (idle) — чтобы не обрывать контекст посреди работы.');
+    } else {
+      alert('Не удалось заархивировать: ' + ((j&&j.reason)||'ошибка'));
+    }
+  }catch(e){ alert('Ошибка архивирования: ' + e.message); }
 }
 document.getElementById('runbookBtn').addEventListener('click', async () => {
   const btn = document.getElementById('runbookBtn');
