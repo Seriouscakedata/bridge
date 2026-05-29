@@ -3315,9 +3315,16 @@ while ($true) {
             $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
           })
           if ($dirty.Count -gt 0) {
-            $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
-            Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу следующим циклом. Превью: $preview") -Kind event | Out-Null
-            try { Set-Idea -Id ([string]$claimedIdea.id) -Status 'held' -Reason 'dirty git tree at autonomous-pick time' | Out-Null } catch {}
+            # Dirty tree is a TRANSIENT condition (uncommitted edits), so do NOT change the idea's
+            # status -- marking it 'held' would STRAND it, since the selectors only pick 'new'/
+            # 'approved' (this silently wedged self-/backlog tasks whenever a stray file sat in the
+            # tree). Leave the idea in the queue and just skip this tick; it gets re-picked once the
+            # tree is clean. Dedupe the notice by idea id so idle ticks don't spam while it stays dirty.
+            if ([string]$claimedIdea.id -ne [string]$script:lastDirtyDeferId) {
+              $script:lastDirtyDeferId = [string]$claimedIdea.id
+              $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
+              Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу как только дерево станет чистым (идея остаётся в очереди). Превью: $preview") -Kind event | Out-Null
+            }
             $claimedIdea = $null
           }
         } catch {
