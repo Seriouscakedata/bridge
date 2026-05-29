@@ -12,12 +12,44 @@ function Get-BridgeConfig {
   # Loads config.json then overlays settings.json (gitignored, survives rollbacks).
   # Keys: flat ("maxAutonomousTasksPerDay") or dotted ("parallel.maxStreams").
   # Dotted-path goes into nested config; flat key overlays only if cfg has root key.
+  #
+  # PERF (2026-05-29): the idle driver loop calls this 10-15x PER SECOND, and each call
+  # used to read BOTH config.json and settings.json from disk on a OneDrive-backed folder
+  # where reads are network-latency-bound -- a major source of "redundant loop" overhead.
+  # We now cache the RAW TEXT of both files keyed on a cheap (mtime,size) stamp and re-read
+  # ONLY when a file actually changes. We still ConvertFrom-Json + overlay FRESH on every
+  # call, so the returned object is always a brand-new instance: callers that Add-Member
+  # onto it cannot poison the cache, and a settings.json edit (e.g. a UI toggle) is picked
+  # up on the very next call because the stamp changes. If stat throws (transient OneDrive
+  # hiccup) the stamp goes empty and we fall back to a direct read -- correctness never
+  # depends on the cache.
   $root = Get-BridgeRoot
-  $cfg = Get-Content (Join-Path $root 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $cfgPath = Join-Path $root 'config.json'
+  $setPath = Join-Path $root 'settings.json'
+
+  $stamp = ''
+  try { $ci = Get-Item -LiteralPath $cfgPath -ErrorAction Stop; $stamp = '' + $ci.LastWriteTimeUtc.Ticks + ':' + $ci.Length } catch { $stamp = '' }
+  if ($stamp -ne '') {
+    try {
+      if (Test-Path -LiteralPath $setPath) { $si = Get-Item -LiteralPath $setPath -ErrorAction Stop; $stamp += '|' + $si.LastWriteTimeUtc.Ticks + ':' + $si.Length }
+      else { $stamp += '|none' }
+    } catch { $stamp = '' }
+  }
+
+  if ($script:__bridgeCfgCache -and $stamp -ne '' -and [string]$script:__bridgeCfgCache.stamp -eq $stamp) {
+    $cfgRaw = [string]$script:__bridgeCfgCache.cfgRaw
+    $setRaw = [string]$script:__bridgeCfgCache.setRaw
+  } else {
+    $cfgRaw = Get-Content $cfgPath -Raw -Encoding UTF8
+    $setRaw = ''
+    if (Test-Path -LiteralPath $setPath) { try { $setRaw = Get-Content $setPath -Raw -Encoding UTF8 } catch { $setRaw = '' } }
+    if ($stamp -ne '') { $script:__bridgeCfgCache = @{ stamp = $stamp; cfgRaw = $cfgRaw; setRaw = $setRaw } }
+  }
+
+  $cfg = $cfgRaw | ConvertFrom-Json
   try {
-    $sp = Join-Path $root 'settings.json'
-    if (Test-Path $sp) {
-      $s = Get-Content $sp -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not [string]::IsNullOrWhiteSpace($setRaw)) {
+      $s = $setRaw | ConvertFrom-Json
       if ($s) {
         foreach ($p in $s.PSObject.Properties) {
           $k = [string]$p.Name; $v = $p.Value
