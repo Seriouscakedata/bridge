@@ -798,6 +798,30 @@ try {
         } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/archive') {
+        # User-triggered chat archive: move old messages to conversation.archive.jsonl, keeping the
+        # last N live. ONLY when the channel is idle, so we never strip context mid-task. Honors
+        # ?channel=<slug>. The bridge never reads the archive, so summary + agent context are intact.
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $body = $null; try { $body = Read-Body $ctx | ConvertFrom-Json } catch {}
+        $keep = 30; try { if ($body -and $null -ne $body.keep) { $keep = [int]$body.keep } } catch {}
+        $prevPin = Get-PinnedChannel
+        $resp = '{"ok":false,"reason":"unknown"}'
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $st = Read-State
+          if ($st -and [string]$st.status -ne 'idle') {
+            $resp = '{"ok":false,"reason":"busy","status":' + (([string]$st.status) | ConvertTo-Json -Compress) + '}'
+          } else {
+            $r = Invoke-ConversationArchive -Keep $keep
+            if ([int]$r.archived -gt 0) { [void](Add-Message -From system -Text ("🗄 В архив убрано сообщений: " + [int]$r.archived + " (в чате осталось последних " + [int]$r.kept + "). История сохранена в архиве, мост контекст не потерял.") -Kind event) }
+            $resp = '{"ok":true,"archived":' + [int]$r.archived + ',"kept":' + [int]$r.kept + '}'
+          }
+        } catch {
+          $resp = '{"ok":false,"reason":' + (([string]$_.Exception.Message) | ConvertTo-Json -Compress) + '}'
+        } finally { Set-PinnedChannel $prevPin }
+        Send-Text $ctx $resp 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'GET' -and ($path -eq '/memory' -or $path -eq '/memory.html')) {
         $memHtmlPath = Join-Path $root 'web\memory.html'
         if (Test-Path $memHtmlPath) {

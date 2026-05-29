@@ -1599,6 +1599,59 @@ function Add-Message {
   }
 }
 
+function Get-ConversationArchivePath {
+  $cp = Get-ConversationPath
+  return (Join-Path (Split-Path $cp -Parent) 'conversation.archive.jsonl')
+}
+
+function Invoke-ConversationArchive {
+  # User-triggered chat cleanup: move all but the last $Keep messages from the live conversation.jsonl
+  # into conversation.archive.jsonl. The bridge does NOT read the archive, so it never affects the
+  # mind of the agents. lastSeq in state is untouched (seq continuity preserved) and summary.txt is
+  # left intact (Format-Transcript still has its compressed history + the kept tail), so the agents
+  # keep full context. Runs under the same Use-BridgeLock as Add-Message so a concurrent write can't
+  # race. Returns @{ ok; archived; kept }.
+  param([int]$Keep = 30)
+  if ($Keep -lt 5) { $Keep = 5 }
+  return (Use-BridgeLock {
+    $convPath = Get-ConversationPath
+    if (-not (Test-Path -LiteralPath $convPath)) { return [pscustomobject]@{ ok=$true; archived=0; kept=0 } }
+    $lines = @(Get-Content -LiteralPath $convPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($lines.Count -le $Keep) { return [pscustomobject]@{ ok=$true; archived=0; kept=$lines.Count } }
+    $cut = $lines.Count - $Keep
+    $toArchive = $lines[0..($cut-1)]
+    $toKeep    = $lines[$cut..($lines.Count-1)]
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText((Get-ConversationArchivePath), (($toArchive -join "`n") + "`n"), $u8)
+    [System.IO.File]::WriteAllText($convPath, (($toKeep -join "`n") + "`n"), $u8)
+    return [pscustomobject]@{ ok=$true; archived=$toArchive.Count; kept=$toKeep.Count }
+  })
+}
+
+function Invoke-ConversationArchivePrune {
+  # Permanently drop archive lines older than $MaxAgeDays. The live conversation + summary are never
+  # touched; only the archive sidecar (which the bridge doesn't read) is trimmed. Safe to run weekly.
+  # Lines whose ts can't be parsed are KEPT (fail-safe). Returns count removed.
+  param([int]$MaxAgeDays = 7)
+  $archPath = Get-ConversationArchivePath
+  if (-not (Test-Path -LiteralPath $archPath)) { return 0 }
+  $cut = (Get-Date).ToUniversalTime().AddDays(-[Math]::Abs($MaxAgeDays))
+  $all  = @(Get-Content -LiteralPath $archPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($all.Count -eq 0) { return 0 }
+  $keep = @($all | Where-Object {
+    $ok = $true
+    try { $o = $_ | ConvertFrom-Json; $ts = [datetime]::Parse([string]$o.ts).ToUniversalTime(); $ok = ($ts -ge $cut) } catch { $ok = $true }
+    $ok
+  })
+  $removed = $all.Count - $keep.Count
+  if ($removed -gt 0) {
+    $u8 = New-Object System.Text.UTF8Encoding($false)
+    $body = if ($keep.Count -gt 0) { ($keep -join "`n") + "`n" } else { '' }
+    [System.IO.File]::WriteAllText($archPath, $body, $u8)
+  }
+  return $removed
+}
+
 function Get-MimeForExt {
   param([string]$Ext)
   $e = ''

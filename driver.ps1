@@ -3423,6 +3423,19 @@ while ($true) {
             if ($staleN -gt 0) { Add-Message -From system -Text "🧹 Гигиена бэклога: $staleN неразобранных идей старше срока → авто-архив (auto-stale)." -Kind event | Out-Null }
           }
         } catch {}
+        # 🗄 Archive hygiene: weekly prune of conversation.archive.jsonl (lines older than 7 days).
+        # Only the archive sidecar is touched — never the live chat or summary — so this can NOT
+        # affect the bridge's context. Throttled via control/archive-prune.last (~7d).
+        try {
+          $apMarker = Join-Path (Get-BridgeRoot) 'control\archive-prune.last'
+          $apDue = $true
+          if (Test-Path $apMarker) { try { $apDue = (((Get-Date) - [datetime]((Get-Content $apMarker -Raw -Encoding UTF8).Trim())).TotalDays -ge 7) } catch {} }
+          if ($apDue) {
+            [System.IO.File]::WriteAllText($apMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+            $prunedN = Invoke-ConversationArchivePrune -MaxAgeDays 7
+            if ($prunedN -gt 0) { Add-Message -From system -Text "🗄 Архив чата почищен: удалено $prunedN сообщений старше 7 дней (из архива, не из чата)." -Kind event | Out-Null }
+          }
+        } catch {}
         # 2026-05-27v6: log rotation every idle tick (cheap — Rotate-LogIfBig
         # is O(1) when file is under limit). 2MB cap = ~1 month of metrics.
         try {

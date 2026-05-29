@@ -2,6 +2,7 @@
 state.json
 features/state.json
 conversation.jsonl
+conversation.archive.jsonl
 summary.txt
 auth.json
 secrets.json
