@@ -249,6 +249,60 @@ effort (1-5) = трудозатраты (1=просто, 5=сложно).
 "@
 }
 
+function Invoke-ArchitectCritique {
+  # SELF-CRITIQUE PASS (2026-05-29): turn one-shot idea generation into think -> critique -> refine.
+  # The Architect used to generate ideas in a single LLM call and dump them straight to the backlog,
+  # which sprayed shallow/duplicate proposals (~186 historically auto-dropped). Here a SKEPTIC reviews
+  # the drafts adversarially and returns only the survivors -- concrete, data-grounded, non-duplicate --
+  # rewriting weak-but-valuable ones to be specific. Fewer, deeper ideas. FAIL-OPEN: if the critique
+  # LLM is unavailable or returns garbage, we keep the original drafts (never lose the work).
+  param([object[]]$DraftIdeas, [string]$Context = '', [int]$TimeoutSec = 240)
+  if (-not $DraftIdeas -or @($DraftIdeas).Count -eq 0) { return @() }
+  $draftJson = ''
+  try { $draftJson = ($DraftIdeas | ConvertTo-Json -Depth 6) } catch { return $DraftIdeas }
+  $ctxShort = [string]$Context
+  if ($ctxShort.Length -gt 4000) { $ctxShort = $ctxShort.Substring(0,4000) + "`n...[обрезано]" }
+  $prompt = @"
+Ты — ЖЁСТКИЙ скептик-архитектор моста Claude+Codex. Тебе дали ЧЕРНОВЫЕ идеи развития (сгенерированы
+одним проходом, без обдумывания). Твоя работа — отсеять слабое и углубить ценное, ПОКА идеи не попали
+в бэклог. Принцип: лучше ОДНА конкретная идея, чем три расплывчатых.
+
+Для КАЖДОЙ черновой идеи вынеси вердикт:
+- "drop"   — расплывчата / «видение ради видения» / дубль уже существующего / низкая ценность / не подкреплена сигналом из данных.
+- "keep"   — конкретна, опирается на данные ниже, реальный пробел. Оставь text как есть.
+- "refine" — суть ценна, но формулировка слабая: ПЕРЕПИШИ text конкретнее (что добавить — файл/модуль, как триггерится, какую метрику улучшит).
+
+Жёсткие правила:
+- Нет конкретного сигнала из ДАННЫХ под идеей — "drop".
+- Две идеи про одно — оставь лучшую, остальные "drop".
+- Цель-лестница: идеи фундамента (стабильность/автономность/самообучение) приоритетнее расширения.
+- НЕ придумывай новые идеи — только суди и уточняй то, что дано.
+
+ЧЕРНОВЫЕ ИДЕИ (JSON):
+$draftJson
+
+ДАННЫЕ (на чём всё должно быть основано):
+$ctxShort
+
+Верни СТРОГО JSON-массив ТОЛЬКО выживших (keep+refine), без markdown. Каждый объект:
+{ "text": "...", "tags": ["architect", ...], "rationale": "...", "value": N, "confidence": N, "effort": N, "verdict": "keep|refine", "critique": "1 короткая фраза: почему выжила / что уточнил" }
+Если все черновые слабые — верни [].
+"@
+  $raw = $null
+  try { $raw = Invoke-LLM -Purpose 'criticHeavy' -Prompt $prompt -TimeoutSec $TimeoutSec -Temperature 0.2 } catch {}
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $DraftIdeas }              # fail-open
+  $clean = ($raw -replace '```json','' -replace '```','').Trim()
+  $mm = [regex]::Match($clean, '(?s)\[.*\]')
+  if (-not $mm.Success) { return $DraftIdeas }                                # fail-open
+  $survivors = @()
+  try { $survivors = @($mm.Value | ConvertFrom-Json) } catch { return $DraftIdeas }
+  # Enforce the verdict in CODE: the LLM sometimes returns dropped items too (annotated verdict='drop')
+  # instead of omitting them -- without this filter the rejected junk would still reach the backlog.
+  # Keep only keep/refine survivors that have non-empty text.
+  $kept = @($survivors | Where-Object { ([string]$_.verdict).Trim().ToLower() -ne 'drop' -and -not [string]::IsNullOrWhiteSpace([string]$_.text) })
+  return $kept
+}
+
 function Invoke-Architect {
   # Run one Architect reflection cycle. Returns hashtable with count + ids of created ideas.
   param([ValidateSet('normal','deep-think')] [string]$Mode = 'normal', [int]$MaxIdeas = 3, [int]$TimeoutSec = 240)
@@ -266,8 +320,18 @@ function Invoke-Architect {
   $m = [regex]::Match($clean, '(?s)\[.*\]')
   $ideas = @()
   if ($m.Success) { try { $ideas = @($m.Value | ConvertFrom-Json) } catch {} }
+  # SELF-CRITIQUE: adversarially filter+refine the drafts BEFORE they hit the backlog
+  # (think -> critique -> refine). Cures one-shot shallow generation -> backlog spam.
+  if ($ideas -and @($ideas).Count -gt 0) {
+    $draftN = @($ideas).Count
+    $ctxForCritique = ''
+    try { $ctxForCritique = Get-ArchitectContext } catch {}
+    $ideas = @(Invoke-ArchitectCritique -DraftIdeas $ideas -Context $ctxForCritique -TimeoutSec $TimeoutSec)
+    $keptN = @($ideas).Count
+    try { Add-Message -From system -Text ("🧐 Самокритика идей: из $draftN черновых прошли отбор $keptN (расплывчатые/дубли/слабые отсеяны ДО бэклога).") -Kind event | Out-Null } catch {}
+  }
   if (-not $ideas -or $ideas.Count -eq 0) {
-    try { Add-Message -From system -Text "🧭 Архитектор: структурных пробелов не вижу (или данные не дали зацепиться). Цикл закрыт без идей." -Kind event | Out-Null } catch {}
+    try { Add-Message -From system -Text "🧭 Архитектор: структурных пробелов не вижу (или все черновики не пережили самокритику). Цикл закрыт без идей." -Kind event | Out-Null } catch {}
     return @{ ok = $true; count = 0; ids = @() }
   }
   $created = New-Object 'System.Collections.Generic.List[string]'
@@ -285,6 +349,8 @@ function Invoke-Architect {
     } catch {}
     $rationale = [string]$it.rationale
     if (-not [string]::IsNullOrWhiteSpace($rationale)) { $text = $text + "`n_Основа:_ " + $rationale }
+    $critique = [string]$it.critique
+    if (-not [string]::IsNullOrWhiteSpace($critique)) { $text = $text + "`n_Самокритика (" + ([string]$it.verdict) + "):_ " + $critique }
     $score = 0.0
     try {
       $v = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.value))
