@@ -5,7 +5,7 @@
 # radar digest). Root cause: a brief API gap during a normal server.ps1 self-edit restart
 # was treated as "engine broken" and triggered `git reset --hard stable`, wiping good commits.
 # Changes:
-#   1) PAUSE kill-switch: control/watchdog.pause present -> watchdog takes NO action.
+#   1) PAUSE kill-switch: <USERPROFILE>\.bridge-private\watchdog.pause present -> watchdog takes NO action.
 #   2) API down but driver ALIVE (heartbeat fresh) == server restarting after a self-edit,
 #      NOT a broken engine -> gentle RESTART (restart.flag); git-rollback only if the API
 #      stays down across a restart (server code itself is broken).
@@ -18,9 +18,17 @@ $b   = 'C:\Users\rafie\OneDrive\Documents\bridge'
 $git = 'C:\Program Files\Git\cmd\git.exe'
 $ctl = Join-Path $b 'control'
 if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
+# Ф0.3: the PAUSE kill-switch lives OUTSIDE the bridge root (so outside a coder turn's
+# workspace-write cwd, which IS the bridge root). A coder can therefore never create it
+# to silence this safety net. Only this protected path is honored -- the legacy
+# control\watchdog.pause is intentionally NOT checked anymore. Operator pauses the
+# watchdog by creating <USERPROFILE>\.bridge-private\watchdog.pause. Kept inline (no
+# common.ps1) so the watchdog stays self-contained even if the engine is broken.
+$priv = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private' } else { $ctl }
+if (-not (Test-Path $priv)) { try { New-Item -ItemType Directory -Path $priv -Force | Out-Null } catch {} }
 $log         = Join-Path $ctl 'watchdog.log'
 $failFile    = Join-Path $ctl 'watchdog.fails'
-$pauseFile   = Join-Path $ctl 'watchdog.pause'
+$pauseFile   = Join-Path $priv 'watchdog.pause'
 $healthyFile = Join-Path $ctl 'watchdog.healthy-since'
 $promoteMin          = 30   # advance 'stable' after this many minutes of CONTINUOUS health
 $apiRestartThreshold = 3    # api down + driver alive: gentle recycle after ~6 min
@@ -79,11 +87,13 @@ function Request-Restart {
 }
 
 function Check-Once {
-  if (Test-Path $pauseFile) { WLog 'paused (control/watchdog.pause present) - no action'; return }
+  if (Test-Path $pauseFile) { WLog 'paused (.bridge-private\watchdog.pause present) - no action'; return }
 
   $apiOk = $false
   try {
-    $pw = (Get-Content (Join-Path $b 'auth.json') -Raw -Encoding UTF8 | ConvertFrom-Json).password
+    $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+    $authP = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $b 'auth.json' }
+    $pw = (Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json).password
     $cred = New-Object System.Management.Automation.PSCredential('timur', (ConvertTo-SecureString $pw -AsPlainText -Force))
     $r = Invoke-WebRequest -UseBasicParsing 'http://localhost:8787/api/status' -Credential $cred -TimeoutSec 6
     if ($r.StatusCode -eq 200) { $apiOk = $true }

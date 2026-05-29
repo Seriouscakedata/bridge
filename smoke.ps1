@@ -36,7 +36,10 @@ foreach ($lf in ($lintFiles | Sort-Object FullName -Unique)) {
 $pw = $null
 $usr = 'timur'
 try {
-    $a = Get-Content (Join-Path $b 'auth.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+    $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+    $authP = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $b 'auth.json' }
+    $a = Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json
     $pw = [string]$a.password
     $usr = [string]$a.user
 } catch {}

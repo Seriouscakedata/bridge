@@ -30,7 +30,9 @@ try {
 } catch {}
 
 function Get-AuthHeaders {
-  $authPath = Join-Path $BridgePath 'auth.json'
+  # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+  $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+  $authPath = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $BridgePath 'auth.json' }
   if (-not (Test-Path -LiteralPath $authPath)) { return @{} }
   try {
     $auth = Get-Content -LiteralPath $authPath -Raw -Encoding UTF8 | ConvertFrom-Json

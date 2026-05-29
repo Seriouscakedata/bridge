@@ -245,7 +245,7 @@ function Invoke-GeminiPostMortem {
     Write-Warning ("Invoke-GeminiChat post-mortem failed: " + $_.Exception.Message)
   }
   try {
-    $secretPath = Join-Path (Get-BridgeRoot) 'secrets.json'
+    $secretPath = if (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' }
     if (-not (Test-Path -LiteralPath $secretPath)) { Write-Warning 'secrets.json не найден'; return $null }
     $secretsText = [System.IO.File]::ReadAllText($secretPath, [System.Text.Encoding]::UTF8)
     $key = Get-PostMortemFlatJsonValue -Json $secretsText -Name 'geminiApiKey'

@@ -53,7 +53,9 @@ function Get-LocalAuthUrl {
   if (-not [string]::IsNullOrWhiteSpace($uri.UserInfo)) { return $OriginalUrl }
   if (-not ($uri.IsLoopback -or $uri.Host -in @('localhost', '127.0.0.1', '::1'))) { return $OriginalUrl }
 
-  $authPath = Join-Path $BridgeRoot 'auth.json'
+  # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+  $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+  $authPath = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $BridgeRoot 'auth.json' }
   if (-not (Test-Path $authPath)) { return $OriginalUrl }
 
   try {
@@ -127,7 +129,9 @@ function Get-GeminiVisionVerdict {
   if ($SkipVision) { return 'SKIPPED' }
   if (-not (Test-Path $PngPath)) { return 'VISION_ERROR' }
 
-  $secretsPath = Join-Path $BridgeRoot 'secrets.json'
+  # secrets.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+  $privSec = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\secrets.json' } else { '' }
+  $secretsPath = if ($privSec -and (Test-Path $privSec)) { $privSec } else { Join-Path $BridgeRoot 'secrets.json' }
   if (-not (Test-Path $secretsPath)) { return 'SKIPPED' }
 
   try {

@@ -13,8 +13,9 @@ $indexPath = Join-Path $root 'web\index.html'
 $filesPath = Get-FilesPath
 $maxUploadBytes = 25 * 1024 * 1024
 
-# Authentication (HTTP Basic). Credentials live in auth.json next to config.
-$authPath = Join-Path $root 'auth.json'
+# Authentication (HTTP Basic). Credentials live in auth.json in the protected private
+# store outside the bridge root (Get-AuthPath; falls back to legacy in-bridge path).
+$authPath = Get-AuthPath
 $authUser = $null; $authPass = $null; $authToken = $null
 if (Test-Path $authPath) {
   $a = Get-Content $authPath -Raw -Encoding UTF8 | ConvertFrom-Json

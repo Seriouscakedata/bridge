@@ -520,6 +520,40 @@ function Get-FilesPath {
 }
 function Get-SummaryPath { Join-Path (Get-BridgeRoot) 'summary.txt' }
 
+function Get-BridgePrivateRoot {
+  # Protected store OUTSIDE the bridge root -- and therefore outside the coder's
+  # workspace-write sandbox, whose cwd for a bridge-self task IS the bridge root.
+  # Holds operator-only material a coder turn must never be able to overwrite or
+  # delete: API secrets (secrets.json), HTTP-auth creds (auth.json), and the
+  # watchdog kill-switch (watchdog.pause). On Windows the codex sandbox runs as a
+  # SEPARATE restricted OS user (confirmed in Gate C); a path outside its cwd is not
+  # in its writable-roots, so it cannot create/clobber anything here. %USERPROFILE%
+  # is per-user, NOT OneDrive-synced (KFM only moves Documents/Desktop/Pictures), and
+  # NOT MSIX-virtualized for the host. Falls back to <bridge>/.private only if
+  # USERPROFILE is unset (degraded, but still better than the repo root).
+  $base = [string]$env:USERPROFILE
+  if ([string]::IsNullOrWhiteSpace($base)) { $dir = Join-Path (Get-BridgeRoot) '.private' }
+  else { $dir = Join-Path $base '.bridge-private' }
+  if (-not (Test-Path -LiteralPath $dir)) { try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch {} }
+  return $dir
+}
+
+function Get-PrivateFilePath {
+  # Resolve a protected file by name. Prefers the out-of-bridge store, but transparently
+  # falls back to the legacy in-bridge path if a file hasn't been migrated yet, so a
+  # half-migrated tree still reads. Writers/creators should always target the new path
+  # (the default return when neither exists).
+  param([Parameter(Mandatory=$true)][string]$Name)
+  $new = Join-Path (Get-BridgePrivateRoot) $Name
+  if (Test-Path -LiteralPath $new) { return $new }
+  $old = Join-Path (Get-BridgeRoot) $Name
+  if (Test-Path -LiteralPath $old) { return $old }
+  return $new
+}
+
+function Get-SecretsPath { Get-PrivateFilePath 'secrets.json' }
+function Get-AuthPath    { Get-PrivateFilePath 'auth.json' }
+
 function Read-Summary {
   $p = Get-SummaryPath
   if (-not (Test-Path $p)) { return '' }

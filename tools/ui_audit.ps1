@@ -25,7 +25,10 @@ $root = Split-Path $PSScriptRoot -Parent
 $url = "http://localhost:${Port}${Path}"
 $auth = @{}
 try {
-  $a = Get-Content (Join-Path $root 'auth.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+  $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+  $authP = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $root 'auth.json' }
+  $a = Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($a.password) { $auth = @{ Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(($a.user + ':' + $a.password))) } }
 } catch {}
 

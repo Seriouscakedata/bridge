@@ -346,7 +346,7 @@ function Test-CoderClaims {
   }
   if ($httpClaims.Count -gt 0) {
     $auth = $null
-    try { $auth = Get-Content (Join-Path $BridgeRoot 'auth.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+    try { $authP = if (Get-Command Get-AuthPath -ErrorAction SilentlyContinue) { Get-AuthPath } else { Join-Path $BridgeRoot 'auth.json' }; $auth = Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
     $basic = ''
     if ($auth) { try { $basic = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($auth.user + ':' + $auth.password)) } catch {} }
     foreach ($key in $httpClaims.Keys) {

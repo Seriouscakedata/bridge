@@ -46,7 +46,8 @@ function Get-LocalAuthUrl {
   try { $uri = [Uri]$Original } catch { return $Original }
   if ($uri.Scheme -notin @('http','https')) { return $Original }
   if (-not ($uri.IsLoopback -or $uri.Host -in @('localhost','127.0.0.1'))) { return $Original }
-  $authPath = Join-Path $root 'auth.json'
+  $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+  $authPath = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $root 'auth.json' }
   if (-not (Test-Path -LiteralPath $authPath)) { return $Original }
   try {
     $auth = Get-Content -LiteralPath $authPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -58,7 +59,9 @@ function Get-LocalAuthUrl {
 }
 
 function Get-AuthHeaders {
-  $authPath = Join-Path $root 'auth.json'
+  # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
+  $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
+  $authPath = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $root 'auth.json' }
   if (-not (Test-Path -LiteralPath $authPath)) { return @{} }
   try {
     $auth = Get-Content -LiteralPath $authPath -Raw -Encoding UTF8 | ConvertFrom-Json

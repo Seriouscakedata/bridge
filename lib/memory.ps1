@@ -59,7 +59,7 @@ function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-Memo
 # ---- secrets / config ----
 function Get-Secret {
   param([string]$Name)
-  $p = Join-Path (Get-BridgeRoot) 'secrets.json'
+  $p = if (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' }
   if (-not (Test-Path $p)) { return $null }
   try { $s = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
   if ($s.PSObject.Properties.Name -contains $Name) { return [string]$s.$Name }
