@@ -190,9 +190,15 @@ function Test-IdeaShouldKeep {
 
     $items = @(Get-Backlog)
     $cutoff = (Get-Date).ToUniversalTime().AddDays(-30)
+    $dropDays = 30
+    try { $dropDays = [int](Get-AutonomySettings).dedupDroppedDays } catch {}
+    $dropCut = (Get-Date).ToUniversalTime().AddDays(-[Math]::Abs($dropDays))
+    $dropNoise = '(?i)(mojibake|cleanup|a/b[- ]?test|rerun|pre-[a-z0-9]|encoding fix|scenario|\btest\b|времен)'
     $dirty = $false
     $bestId = $null
     $bestSim = 0.0
+    $bestDropId = $null
+    $bestDropSim = 0.0
     $similarIds = New-Object 'System.Collections.Generic.List[string]'
 
     foreach ($item in $items) {
@@ -204,7 +210,17 @@ function Test-IdeaShouldKeep {
           $eligible = ($its -ge $cutoff)
         } catch { $eligible = $false }
       }
-      if (-not $eligible) { continue }
+      # SUBSTANTIVE recent curator rejections — tracked separately so we refuse to re-propose junk
+      # the curator already refused. Housekeeping/manual/noise drops do NOT count (the idea was valid,
+      # only the encoding/test-run was bad), so they never block a legitimate re-proposal.
+      $isDrop = $false
+      if (-not $eligible -and ($status -in @('auto-dropped','rejected')) -and $dropDays -gt 0) {
+        $ac = $item.auto_curator
+        if ($ac -and -not [string]::IsNullOrWhiteSpace([string]$ac.model) -and ([string]$ac.model -ne 'manual') -and (([string]$ac.reason) -notmatch $dropNoise)) {
+          try { if ([datetime]::Parse([string]$item.ts).ToUniversalTime() -ge $dropCut) { $isDrop = $true } } catch {}
+        }
+      }
+      if (-not $eligible -and -not $isDrop) { continue }
       if ([string]::IsNullOrWhiteSpace([string]$item.text)) { continue }
 
       $ivec = $null
@@ -218,16 +234,20 @@ function Test-IdeaShouldKeep {
         $dirty = $true
       }
       $sim = [double](Get-CosineSimilarity -A $qvec -B $ivec)
-      if ($sim -gt $bestSim) {
-        $bestSim = $sim
-        $bestId = [string]$item.id
+      if ($isDrop) {
+        if ($sim -gt $bestDropSim) { $bestDropSim = $sim; $bestDropId = [string]$item.id }
+      } else {
+        if ($sim -gt $bestSim) { $bestSim = $sim; $bestId = [string]$item.id }
+        if ($sim -ge 0.70 -and $sim -lt 0.88) { [void]$similarIds.Add([string]$item.id) }
       }
-      if ($sim -ge 0.70 -and $sim -lt 0.88) { [void]$similarIds.Add([string]$item.id) }
     }
     if ($dirty) { Save-Backlog $items }
 
     if ($bestId -and $bestSim -ge 0.88) {
       return [pscustomobject]@{ action = 'dedup'; matched_id = $bestId; similarity = $bestSim; similar_to = @() }
+    }
+    if ($bestDropId -and $bestDropSim -ge 0.85) {
+      return [pscustomobject]@{ action = 'rejected-recently'; matched_id = $bestDropId; similarity = $bestDropSim; similar_to = @() }
     }
     if ($similarIds.Count -gt 0) {
       return [pscustomobject]@{ action = 'similar'; matched_id = $bestId; similarity = $bestSim; similar_to = @($similarIds.ToArray()) }
@@ -369,6 +389,50 @@ function Format-IdeaLearningGuidance {
   return ('=== СУДЬБА ПРОШЛЫХ ИДЕЙ (учись на ней) ===' + "`n" + $sb.ToString().Trim())
 }
 
+function Get-OpenIdeaCount {
+  # Count of ideas still "in flight" — proposed but not yet resolved/dropped/archived. Drives the
+  # WIP budget so proactive generators don't pile on while the queue is already full.
+  return @(Get-Backlog | Where-Object { [string]$_.status -in @('new','approved','running','inprogress') }).Count
+}
+
+function Test-BacklogHasCapacity {
+  # WIP gate for PROACTIVE generators (reflect/architect). $true if open ideas are under maxOpenIdeas
+  # (so the generator may add more); $false means "drain the queue first". Reactive generators
+  # (deep-audit filing real bugs) must NOT call this. Fail-open on any error.
+  $cap = 12
+  try { $cap = [int](Get-AutonomySettings).maxOpenIdeas } catch {}
+  if ($cap -le 0) { return $true }   # 0 / unset = unlimited
+  try { return ((Get-OpenIdeaCount) -lt $cap) } catch { return $true }
+}
+
+function Invoke-BacklogStaleSweep {
+  # Anti-junk hygiene: archive 'new' ideas nobody ever claimed. A 'new' idea older than ideaStaleDays
+  # (not approved/running, and not external/radar — those await manual review) -> status 'auto-stale'.
+  # Caller throttles cadence. Returns count archived.
+  param([int]$MaxAgeDays = 0)
+  $days = $MaxAgeDays
+  if ($days -le 0) { try { $days = [int](Get-AutonomySettings).ideaStaleDays } catch { $days = 14 } }
+  if ($days -le 0) { return 0 }
+  $cut = (Get-Date).ToUniversalTime().AddDays(-[Math]::Abs($days))
+  $items = @(Get-Backlog)
+  $n = 0
+  foreach ($i in $items) {
+    if ([string]$i.status -ne 'new') { continue }
+    try { if (Test-IdeaExternal $i) { continue } } catch {}   # radar/web await human review by design
+    $ts = $null
+    try { $ts = [datetime]::Parse([string]$i.ts).ToUniversalTime() } catch { continue }
+    if ($ts -ge $cut) { continue }
+    $i | Add-Member -NotePropertyName status   -NotePropertyValue 'auto-stale' -Force
+    $i | Add-Member -NotePropertyName stale_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+    $n++
+  }
+  if ($n -gt 0) {
+    Save-Backlog $items
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='stale-sweep'; archived=$n; older_than_days=$days }) } catch {}
+  }
+  return $n
+}
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(
@@ -417,6 +481,14 @@ function Add-Idea {
       ts = $now; deduped = $true; id = [string]$keep.matched_id; matched_id = [string]$keep.matched_id; similarity = [double]$keep.similarity
     })
     return [string]$keep.matched_id
+  }
+
+  # Anti-junk: refuse to re-file an idea near-identical to one the curator SUBSTANTIVELY rejected
+  # within dedupDroppedDays — this kills the propose->drop->propose loop. Logged, not stored.
+  if (-not $SkipCurator -and $keep -and [string]$keep.action -eq 'rejected-recently') {
+    Write-BacklogJsonLine ([ordered]@{ ts = $now; action = 'rejected-recently'; new_text = [string]$Text; matched_id = [string]$keep.matched_id; similarity = [double]$keep.similarity })
+    Write-LastAddIdeaMarker ([ordered]@{ ts = $now; rejected_recently = $true; matched_id = [string]$keep.matched_id; similarity = [double]$keep.similarity })
+    return $null
   }
 
   $rec = [ordered]@{

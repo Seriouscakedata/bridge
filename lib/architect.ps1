@@ -334,6 +334,12 @@ function Start-ArchitectIfDue {
   } catch {}
   if (-not (Should-RunArchitect)) { return }
   Save-ArchitectMarker   # Touch marker BEFORE running so we don't relaunch every idle tick.
+  # Anti-junk WIP budget: if the backlog is already full of open ideas, skip this cycle (wait for the
+  # next window) rather than piling on more structural proposals.
+  if ((Get-Command Test-BacklogHasCapacity -ErrorAction SilentlyContinue) -and -not (Test-BacklogHasCapacity)) {
+    try { Add-Message -From system -Text '🧭 Архитектор: бэклог полон (WIP-лимит) — пропускаю цикл, сначала разгребём очередь.' -Kind event | Out-Null } catch {}
+    return
+  }
   try { Invoke-Architect -Mode $Mode -MaxIdeas 3 | Out-Null } catch { try { Add-Message -From system -Text ("🧭 Архитектор: ошибка цикла: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
 }
 

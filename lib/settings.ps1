@@ -35,6 +35,15 @@ function Get-AutonomySettings {
     #   yellow = ALSO auto-execute yellow-tier new ideas (broader; opt-in)
     # red-tier (security/irreversible/externally-sourced) NEVER auto-executes at any dial.
     selfExecuteTier          = 'shadow'
+    # Anti-junk brainstorm controls (2026-05-29): keep the backlog from flooding with junk.
+    #   maxOpenIdeas     = WIP cap. Proactive generators (reflect/architect) stay SILENT while open
+    #                      (new+approved+running) ideas >= this, so the queue drains first. Reactive
+    #                      deep-audit (real bugs) is NOT gated.
+    #   ideaStaleDays    = an unclaimed 'new' idea older than this is auto-archived ('auto-stale').
+    #   dedupDroppedDays = window for refusing to re-propose ideas the curator recently rejected.
+    maxOpenIdeas             = 12
+    ideaStaleDays            = 14
+    dedupDroppedDays         = 30
   }
   try {
     $cfg = Get-BridgeConfig

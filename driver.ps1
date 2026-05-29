@@ -3409,6 +3409,18 @@ while ($true) {
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}
+        # 🧹 Anti-junk hygiene: archive unclaimed 'new' ideas older than ideaStaleDays. Throttled to
+        # once per 24h via control/stale-sweep.last so it's near-free on the idle path.
+        try {
+          $ssMarker = Join-Path (Get-BridgeRoot) 'control\stale-sweep.last'
+          $ssDue = $true
+          if (Test-Path $ssMarker) { try { $ssDue = (((Get-Date) - [datetime]((Get-Content $ssMarker -Raw -Encoding UTF8).Trim())).TotalHours -ge 24) } catch {} }
+          if ($ssDue) {
+            [System.IO.File]::WriteAllText($ssMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+            $staleN = Invoke-BacklogStaleSweep
+            if ($staleN -gt 0) { Add-Message -From system -Text "🧹 Гигиена бэклога: $staleN неразобранных идей старше срока → авто-архив (auto-stale)." -Kind event | Out-Null }
+          }
+        } catch {}
         # 2026-05-27v6: log rotation every idle tick (cheap — Rotate-LogIfBig
         # is O(1) when file is under limit). 2MB cap = ~1 month of metrics.
         try {

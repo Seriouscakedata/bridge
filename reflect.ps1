@@ -13,6 +13,11 @@ function Write-ReflectLog { param([string]$Msg) try { Add-Content -LiteralPath (
 
 $auto = Get-AutonomySettings
 if (-not [bool]$auto.enabled) { Write-ReflectLog 'autonomy disabled; exit'; return }
+# Anti-junk WIP budget: if the backlog is already full of open ideas, skip generating more —
+# drain the queue first. Reflect is a proactive generator, so it yields to the cap.
+if (Get-Command Test-BacklogHasCapacity -ErrorAction SilentlyContinue) {
+  if (-not (Test-BacklogHasCapacity)) { Write-ReflectLog 'backlog at WIP cap; skip generation'; return }
+}
 $maxIdeas = if ($auto.maxIdeasPerReflect) { [int]$auto.maxIdeasPerReflect } else { 3 }
 $scope = [string]$auto.scope
 $scopeLine = if ($scope -eq 'projects') {
