@@ -71,7 +71,7 @@ function Read-TaskCheckpoint {
       if (-not [string]::IsNullOrWhiteSpace($line)) { $last = $line }
     }
     if ([string]::IsNullOrWhiteSpace($last)) { return $null }
-    return ($last | ConvertFrom-Json -Depth 5)
+    return ($last | ConvertFrom-Json)
   } catch {
     return $null
   }
