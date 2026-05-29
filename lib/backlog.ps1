@@ -681,7 +681,7 @@ function Invoke-BacklogLLMPrioritize {
 
     $ranked = @()
     try {
-      $ranked = @($match.Value | ConvertFrom-Json -Depth 5)
+      $ranked = @($match.Value | ConvertFrom-Json)
     } catch {
       Write-Warning ("Invoke-BacklogLLMPrioritize: failed to parse JSON: " + $_.Exception.Message)
       return 0
@@ -1070,7 +1070,7 @@ function Get-NextRunnableIdea {
   param([bool]$IncludeNew = $false)
   $useLLMPriority = $false
   try {
-    $cfg = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 5
+    $cfg = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($cfg -and $cfg.PSObject.Properties.Name -contains 'backlog' -and $cfg.backlog) {
       try { $useLLMPriority = [bool]$cfg.backlog.useLLMPriority } catch {}
     }

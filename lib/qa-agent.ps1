@@ -59,6 +59,12 @@ function New-QAAgentResult {
   }
 }
 
+function Quote-QAAgentArgument {
+  param([string]$Value)
+  if ($null -eq $Value) { return '""' }
+  return '"' + ([string]$Value).Replace('"', '\"') + '"'
+}
+
 function Invoke-QAAgent {
   param(
     [string]$TaskId = '',
@@ -67,7 +73,11 @@ function Invoke-QAAgent {
   )
 
   $channelName = Get-QAAgentChannel -Channel $Channel
-  $smokePath = Join-Path (Join-Path $PSScriptRoot '..') 'tools\smoke.ps1'
+  $bridgeRoot = Get-QAAgentBridgeRoot
+  $smokePath = Join-Path (Join-Path $bridgeRoot 'tools') 'smoke.ps1'
+  if (-not (Test-Path -LiteralPath $smokePath)) {
+    $smokePath = Join-Path $bridgeRoot 'smoke.ps1'
+  }
   if (-not (Test-Path -LiteralPath $smokePath)) {
     return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary 'smoke.ps1 not found, QA skipped'
   }
@@ -76,9 +86,17 @@ function Invoke-QAAgent {
   $stderrPath = [System.IO.Path]::GetTempFileName()
   $process = $null
   try {
-    $quotedSmoke = $smokePath.Replace("'", "''")
-    $command = "& { & '$quotedSmoke' 2>&1 | Out-String }"
-    $process = Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$command) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -NoNewWindow -PassThru
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-QAAgentArgument $smokePath)
+    $psi.WorkingDirectory = $bridgeRoot
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
     $completed = $process.WaitForExit(60000)
     if (-not $completed) {
       try { $process.Kill() } catch {}
@@ -87,9 +105,9 @@ function Invoke-QAAgent {
     }
 
     $out = ''
-    try { $out += [System.IO.File]::ReadAllText($stdoutPath) } catch {}
+    try { $out += $process.StandardOutput.ReadToEnd() } catch {}
     try {
-      $err = [System.IO.File]::ReadAllText($stderrPath)
+      $err = $process.StandardError.ReadToEnd()
       if (-not [string]::IsNullOrWhiteSpace($err)) { $out += "`n" + $err }
     } catch {}
 
