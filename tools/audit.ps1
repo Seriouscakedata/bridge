@@ -383,16 +383,16 @@ function Add-AuditCriticalsToBacklog {
             $text += " — $det"
           }
           if ($existingTexts.ContainsKey($text)) { continue }
-          # 2026-05-28: static-grep criticals get severity='critical' + status='approved'
-          # so the picker pulls them ahead of plain ideas. We hand-roll the record here
-          # (instead of going through Add-Idea) because Add-AuditCriticalsToBacklog runs
-          # in the audit's locked write path and we want predictable, dedupe-by-exact-text
-          # semantics (no semantic-similarity surprises for security findings).
+          # 2026-05-29 CALM MODE: audit criticals now land as status='new' (NOT 'approved') so the
+          # operator reviews them before anything auto-executes. Auto-approving audit findings (e.g. a
+          # flaky functional scenario like the channel-switch timeout) was a source of "странная одобренная
+          # задача" + autonomous churn. Audit PROPOSES; the operator approves. Hand-rolled record (not
+          # Add-Idea) keeps dedupe-by-exact-text semantics in the audit's locked write path.
           $rec = [ordered]@{
             id       = [guid]::NewGuid().ToString('N')
             ts       = (Get-Date).ToUniversalTime().ToString('o')
             from     = 'audit'
-            status   = 'approved'
+            status   = 'new'
             tags     = @('audit', [string]$f.source, 'critical')
             attempts = 0
             score    = 0.0

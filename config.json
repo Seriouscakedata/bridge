@@ -146,7 +146,7 @@
     "enabled": true,
     "requireApproval": false,
     "idleQuietMinutes": 10,
-    "maxAutonomousTasksPerDay": 8,
+    "maxAutonomousTasksPerDay": 2,
     "reflectEveryHours": 6,
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
@@ -175,7 +175,7 @@
     "maxChunksPerTask": 10
   },
   "parallel": {
-    "enabled": true,
+    "enabled": false,
     "maxStreams": 6,
     "claudeCoderModel": "sonnet",
     "drainingTimeoutSec": 30,
