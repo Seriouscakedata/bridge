@@ -4271,7 +4271,15 @@ function addMsg(m){
     log.insertBefore(sep, working);
     lastRenderedDay = key;
   }
-  const role = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
+  const baseRole = roleInfo[m.from] || {name:m.from || 'unknown', short:'?'};
+  // HONEST model label: show the REAL model that answered (e.g. "Claude · Opus", "Codex · GPT-5.5")
+  // instead of the fixed "планировщик/кодер" role. m.model is stamped per agent reply by the driver;
+  // falls back to the role name for older messages / system / user.
+  let roleName = baseRole.name;
+  if ((m.from === 'claude' || m.from === 'codex') && m.model){
+    roleName = (m.from === 'claude' ? 'Claude' : 'Codex') + ' · ' + (modelNames[m.model] || m.model);
+  }
+  const role = { name: roleName, short: baseRole.short };
   const atts = msgAttachments(m);
   const rawText = String(m.text || '');
   const seq = Number(m.seq) || 0;
@@ -4311,7 +4319,7 @@ function addMsg(m){
     '<div class="avatar" aria-hidden="true">' + esc(role.short) + '</div>' +
     '<div class="bubble' + (isLong ? ' long' : '') + '">' +
       '<div class="msg-head">' +
-        '<div class="who">' + esc(role.name) + (m.model && m.from === 'claude' ? ' <span style="color:var(--muted);font-weight:400">· ' + esc(m.model.charAt(0).toUpperCase() + m.model.slice(1)) + '</span>' : '') + '</div>' +
+        '<div class="who">' + esc(role.name) + '</div>' +
         '<time class="time" datetime="' + escAttr(m.ts || '') + '" title="' + escAttr(fullTime(m.ts)) + '">' + esc(relativeTime(m.ts)) + '</time>' +
         (seqLabel ? '<span class="seq" title="Номер сообщения">' + esc(seqLabel) + '</span>' : '') +
         '<div class="msg-actions">' + favoriteButton + expandButton + quoteButton + linkButton + '<button type="button" class="mini-btn copy-msg" title="Скопировать сообщение" aria-label="Скопировать сообщение">&#x2398;</button></div>' +
@@ -4471,9 +4479,22 @@ async function status(){
     const mdl = modelLabel(s.active_model);
     activeAgentLabel = act === 'claude' ? 'Claude' : act === 'codex' ? 'Codex' : '';
     const readableStatus = s.status || 'idle';
-    const statusText = (act === 'claude' || act === 'codex' || s.paused)
+    let statusText = (act === 'claude' || act === 'codex' || s.paused)
       ? (s.status_text || fallbackStatus(s, mdl))
       : readableStatus;
+    // LIVE progress: while an agent works, append elapsed + liveness so the UI never looks "frozen"
+    // during a long turn. claimed_at + agent_telemetry come straight from state (driver updates them
+    // every ~5s in Wait-AgentProcess). stalled_sec small => output is still growing (agent is alive).
+    if((act === 'claude' || act === 'codex') && s.claimed_at){
+      const elapsed = Math.max(0, Math.round((Date.now() - new Date(s.claimed_at).getTime())/1000));
+      const fmt = elapsed >= 60 ? (Math.floor(elapsed/60) + 'м ' + (elapsed%60) + 'с') : (elapsed + 'с');
+      let live = ' · работает ' + fmt;
+      const tel = s.agent_telemetry;
+      if(tel && typeof tel.stalled_sec === 'number'){
+        live += (tel.stalled_sec <= 12) ? ' · вывод идёт ✓' : (' · тишина ' + tel.stalled_sec + 'с');
+      }
+      statusText += live;
+    }
     const statusEl = document.getElementById('st');
     statusEl.textContent = statusText;
     statusEl.title = statusText === readableStatus ? '' : readableStatus;
