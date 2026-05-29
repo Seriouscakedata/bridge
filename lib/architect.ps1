@@ -59,6 +59,38 @@ function Get-OperatorInterventions {
   return @($hits.ToArray() | Sort-Object seq -Descending | Select-Object -First $Limit)
 }
 
+function Get-ThinkingJournalPath { Join-Path (Get-BridgeRoot) 'memory\thinking-journal.jsonl' }
+
+function Add-ThinkingNote {
+  # Append one durable INSIGHT from a thinking cycle -- the bridge's "train of thought" across
+  # sessions. Not a backlog idea: it's what the cycle CONCLUDED (themes, what got filtered, patterns).
+  # Read back into the Architect prompt so each cycle builds on the last instead of a blank slate.
+  param([string]$Note, [string]$Source = 'architect')
+  if ([string]::IsNullOrWhiteSpace($Note)) { return }
+  try {
+    $p = Get-ThinkingJournalPath
+    $dir = Split-Path -Parent $p
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $rec = ([ordered]@{ ts=(Get-Date).ToString('o'); source=([string]$Source); note=([string]$Note) } | ConvertTo-Json -Compress -Depth 4)
+    Add-Content -LiteralPath $p -Value $rec -Encoding UTF8
+  } catch {}
+}
+
+function Get-ThinkingNotes {
+  # Last N journal insights (newest last) as compact dated text lines.
+  param([int]$Last = 6)
+  $p = Get-ThinkingJournalPath
+  if (-not (Test-Path $p)) { return @() }
+  $out = New-Object System.Collections.ArrayList
+  try {
+    $lines = @([System.IO.File]::ReadAllLines($p, [System.Text.Encoding]::UTF8) | Where-Object { $_ } | Select-Object -Last $Last)
+    foreach ($ln in $lines) {
+      try { $r = $ln | ConvertFrom-Json; $d = [string]$r.ts; if ($d.Length -ge 10) { $d = $d.Substring(0,10) }; [void]$out.Add("[$d] " + [string]$r.note) } catch {}
+    }
+  } catch {}
+  return $out.ToArray()
+}
+
 function Get-ArchitectContext {
   # Compact diagnostic dump for the Architect prompt. All strings, no ETS.
   param([int]$WindowDays = 7)
@@ -70,6 +102,16 @@ function Get-ArchitectContext {
   [void]$sb.AppendLine("project_root=$($scope.project_root)")
   [void]$sb.AppendLine("backlog_path=$($scope.backlog_path)")
   [void]$sb.AppendLine('')
+
+  # 0) thinking journal -- past conclusions so this cycle builds on prior thought, not a blank slate
+  try {
+    $jnotes = @(Get-ThinkingNotes -Last 6)
+    if ($jnotes.Count -gt 0) {
+      [void]$sb.AppendLine('=== ЖУРНАЛ РАЗМЫШЛЕНИЙ (твои прошлые выводы — строй ПОВЕРХ, НЕ повторяй уже обдуманное) ===')
+      foreach ($jn in $jnotes) { [void]$sb.AppendLine($jn) }
+      [void]$sb.AppendLine('')
+    }
+  } catch {}
 
   # 1) capability matrix
   $matrixPath = Get-ArchitectMatrixPath
@@ -307,6 +349,7 @@ function Invoke-Architect {
   # Run one Architect reflection cycle. Returns hashtable with count + ids of created ideas.
   param([ValidateSet('normal','deep-think')] [string]$Mode = 'normal', [int]$MaxIdeas = 3, [int]$TimeoutSec = 240)
   try { Add-Message -From system -Text ("🧭 Архитектор просыпается (режим: $Mode). Анализирую структурные пробелы...") -Kind event | Out-Null } catch {}
+  $draftN = 0; $keptN = 0   # tracked through the cycle for the thinking-journal note at the end
   $prompt = Build-ArchitectPrompt -Mode $Mode -MaxIdeas $MaxIdeas
   # Use deep-reasoning model purpose ('deep' -> deepseek-v4-pro by default;
   # operator can override to opus via config if desired).
@@ -373,6 +416,13 @@ function Invoke-Architect {
   } else {
     try { Add-Message -From system -Text "🧭 Архитектор: все предложенные идеи отсеяны воронкой (дубли/уже отклонённые) — бэклог не засоряется." -Kind event | Out-Null } catch {}
   }
+  # journal this cycle's conclusion so the NEXT cycle builds on it (continuity of thought, step 2)
+  try {
+    $jthemes = @()
+    foreach ($ji in @($ideas)) { foreach ($jt in @($ji.tags)) { $jts=[string]$jt; if ($jts -and $jts -ne 'architect' -and -not ($jthemes -contains $jts)) { $jthemes += $jts } } }
+    $jthemeStr = if ($jthemes.Count -gt 0) { ($jthemes -join ', ') } else { 'без явных тем' }
+    Add-ThinkingNote -Note ("Цикл ${Mode}: черновых $draftN, после самокритики $keptN, в бэклог $($created.Count). Темы: $jthemeStr.") -Source 'architect'
+  } catch {}
   return @{ ok = $true; count = $created.Count; ids = @($created.ToArray()) }
 }
 
