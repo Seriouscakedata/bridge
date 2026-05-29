@@ -175,8 +175,8 @@
     "maxChunksPerTask": 10
   },
   "parallel": {
-    "enabled": false,
-    "maxStreams": 6,
+    "enabled": true,
+    "maxStreams": 3,
     "claudeCoderModel": "sonnet",
     "drainingTimeoutSec": 30,
     "wipBranchPrefix": "wip/parallel",

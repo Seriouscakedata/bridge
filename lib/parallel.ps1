@@ -1202,23 +1202,39 @@ function Invoke-ParallelDispatch {
       }
     }
     try {
-      # ff-only merge
+      # 1) ff-only merge (clean, no merge commit)
       $mergeOut = & git -C $bridgeRoot merge --ff-only $w.branch 2>&1
       if ($LASTEXITCODE -eq 0) {
         $merged++
         Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (" + $res.commits.Count + " commits, branch " + $w.branch + ")") -Kind event | Out-Null
       } else {
-        # Fallback: non-ff merge with no-edit message
+        # 2) non-ff merge commit
         $mergeOut2 = & git -C $bridgeRoot merge --no-ff -m ("merge parallel stream " + $w.id) $w.branch 2>&1
         if ($LASTEXITCODE -eq 0) {
           $merged++
           Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (non-ff fallback)") -Kind event | Out-Null
         } else {
-          Add-Message -From system -Text ("❌ Merge failed for stream " + $w.id + ": " + ($mergeOut2 -join '; ')) -Kind event | Out-Null
+          # 3) CONFLICT (e.g. two workers created the same new file = add/add). ROOT-CAUSE FIX 2026-05-29:
+          # NEVER leave the tree in an unmerged state -- that blocks EVERY sibling stream ("Merging is not
+          # possible: unmerged files") and sinks the whole parallel run (this is why parallel "failed" and
+          # fell back to sequential, losing the speed-up). Abort to free the tree, then retry with a
+          # conflict-tolerant strategy: -X ours keeps the already-merged side on conflict, while NEW
+          # non-conflicting files from this stream still merge in. If even that fails, abort again so the
+          # tree stays CLEAN and the remaining streams can still merge; the branch is kept for review.
+          try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+          $mergeOut3 = & git -C $bridgeRoot merge --no-ff -X ours -m ("merge parallel stream " + $w.id + " (auto-resolve: ours)") $w.branch 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            $merged++
+            Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $w.branch + ")") -Kind event | Out-Null
+          } else {
+            try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+            Add-Message -From system -Text ("⚠ Поток " + $w.id + " не слит (конфликт не разрешился авто). Дерево очищено — остальные потоки сливаются нормально. Ветка " + $w.branch + " сохранена для ручного разбора.") -Kind event | Out-Null
+          }
         }
       }
     } catch {
-      Add-Message -From system -Text ("❌ Merge exception for stream " + $w.id + ": " + $_.Exception.Message) -Kind event | Out-Null
+      try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+      Add-Message -From system -Text ("❌ Merge exception for stream " + $w.id + " (дерево очищено): " + $_.Exception.Message) -Kind event | Out-Null
     }
     try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
   }
