@@ -45,6 +45,30 @@ function Get-CircuitHash {
   }
 }
 
+function Remove-CircuitLineBom {
+  param([AllowNull()][string]$Line)
+  $lineText = ([string]$Line).Trim()
+  while ($lineText.Length -gt 0 -and [int][char]$lineText[0] -eq 0xFEFF) {
+    $lineText = $lineText.Substring(1).TrimStart()
+  }
+  return $lineText
+}
+
+function Repair-CircuitLogBom {
+  param([Parameter(Mandatory=$true)][string]$LogPath)
+  if (-not (Test-Path -LiteralPath $LogPath)) { return }
+  try {
+    $bytes = [System.IO.File]::ReadAllBytes($LogPath)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+      $next = New-Object byte[] ([Math]::Max(0, $bytes.Length - 3))
+      if ($next.Length -gt 0) { [Array]::Copy($bytes, 3, $next, 0, $next.Length) }
+      $tmp = $LogPath + ".nobom.$PID.tmp"
+      [System.IO.File]::WriteAllBytes($tmp, $next)
+      Move-Item -LiteralPath $tmp -Destination $LogPath -Force
+    }
+  } catch {}
+}
+
 function Normalize-CircuitErrorLine {
   param([string]$Text)
   $lines = @(([string]$Text) -split "(`r`n|`n|`r)")
@@ -83,7 +107,7 @@ function Write-RestartEvent {
   $dir = Split-Path -Parent $LogPath
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   if ([string]::IsNullOrWhiteSpace($Signature)) { $Signature = Get-CircuitHash ($Cause + ':nosig') }
-  $rec = [ordered]@{
+  $rec = [pscustomobject]@{
     ts        = (Get-Date).ToUniversalTime().ToString('o')
     cause     = [string]$Cause
     signature = [string]$Signature
@@ -98,6 +122,7 @@ function Write-RestartEvent {
     try { $got = $mutex.WaitOne(5000) }
     catch [System.Threading.AbandonedMutexException] { $got = $true }
     if (-not $got) { throw 'Could not acquire restart-log mutex within 5s' }
+    Repair-CircuitLogBom -LogPath $LogPath
     [System.IO.File]::AppendAllText($LogPath, $line, $enc)
     return [pscustomobject]$rec
   } finally {
@@ -152,9 +177,8 @@ function Test-CircuitTrip {
     $cutoff = $nowUtc.AddMinutes(-1 * [Math]::Max(1, $WindowMin))
     foreach ($raw in [System.IO.File]::ReadLines($LogPath)) {
       try {
-        $line = ([string]$raw).Trim()
+        $line = Remove-CircuitLineBom $raw
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        if ($line.Length -gt 0 -and [int][char]$line[0] -eq 0xFEFF) { $line = $line.Substring(1) }
         $e = $line | ConvertFrom-Json
         $ts = ([DateTimeOffset]::Parse([string]$e.ts)).UtcDateTime
         if ($ts -ge $cutoff -and $ts -le $nowUtc.AddMinutes(1)) { $events += $e }
@@ -194,6 +218,55 @@ function Get-CircuitMode {
   return 'cooldown'
 }
 
+function Format-CircuitNativeArg {
+  param([AllowNull()][string]$Value)
+  $v = [string]$Value
+  if ($v.Length -eq 0) { return '""' }
+  if ($v -notmatch '[\s"]') { return $v }
+  return '"' + ($v -replace '"','\"') + '"'
+}
+
+function Invoke-CircuitGitCapture {
+  param(
+    [Parameter(Mandatory=$true)][string]$Root,
+    [Parameter(Mandatory=$true)][string[]]$Arguments,
+    [Parameter(Mandatory=$true)][string]$OutPath
+  )
+  $enc = New-Object System.Text.UTF8Encoding($false)
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.WorkingDirectory = $Root
+    $psi.Arguments = (($Arguments | ForEach-Object { Format-CircuitNativeArg $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    [void]$p.Start()
+    $stdoutTask = $p.StandardOutput.ReadToEndAsync()
+    $stderrTask = $p.StandardError.ReadToEndAsync()
+    $p.WaitForExit()
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    $exitCode = $p.ExitCode
+    try { $p.Dispose() } catch {}
+    $text = [string]$stdout
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+      if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
+      $text += "# stderr:`n" + $stderr
+    }
+    if ($exitCode -ne 0) {
+      if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
+      $text += "# exitCode: " + $exitCode
+    }
+    [System.IO.File]::WriteAllText($OutPath, $text, $enc)
+  } catch {
+    [System.IO.File]::WriteAllText($OutPath, $_.Exception.Message, $enc)
+  }
+}
+
 function Save-CircuitDiagnostics {
   param([Parameter(Mandatory=$true)][string]$OutDir)
   $files = New-Object 'System.Collections.Generic.List[string]'
@@ -202,10 +275,8 @@ function Save-CircuitDiagnostics {
     $root = Get-BridgeRoot
     $statusPath = Join-Path $OutDir 'git-status.txt'
     $diffPath = Join-Path $OutDir 'git-diff.patch'
-    try { & git -C $root status --short 2>&1 | Out-File -LiteralPath $statusPath -Encoding utf8; [void]$files.Add($statusPath) }
-    catch { [System.IO.File]::WriteAllText($statusPath, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))); [void]$files.Add($statusPath) }
-    try { & git -C $root diff --binary --no-color 2>&1 | Out-File -LiteralPath $diffPath -Encoding utf8; [void]$files.Add($diffPath) }
-    catch { [System.IO.File]::WriteAllText($diffPath, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))); [void]$files.Add($diffPath) }
+    Invoke-CircuitGitCapture -Root $root -Arguments @('status','--short') -OutPath $statusPath; [void]$files.Add($statusPath)
+    Invoke-CircuitGitCapture -Root $root -Arguments @('diff','--binary','--no-color') -OutPath $diffPath; [void]$files.Add($diffPath)
 
     $snapDir = Join-Path $OutDir 'snapshots'
     if (-not (Test-Path -LiteralPath $snapDir)) { New-Item -ItemType Directory -Path $snapDir -Force | Out-Null }
