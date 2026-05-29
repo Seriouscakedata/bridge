@@ -127,6 +127,24 @@ if (Test-Path $pfScript) {
     $failed += "PREFLIGHT: lib\common.ps1 не найден"
 }
 
+# 9. Driver runtime gate -- EXECUTE driver.ps1 -SelfTest in a child process. ParseFile (step 1)
+# only proves syntax; this proves the dot-sourced libs + driver top-level code + every function
+# DEFINITION run without a runtime error -- the exact gap that let a PS5.1 `(if...)` expression
+# bomb ship green and restart-loop the bridge (2026-05-26). The child reaches the self-test guard
+# BEFORE the main loop and exits; it takes no lease and writes no state, so it cannot disturb the
+# live driver.
+$driverScript = Join-Path $b 'driver.ps1'
+if (Test-Path $driverScript) {
+    $dvRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $driverScript -SelfTest 2>&1
+    $dvCode = $LASTEXITCODE
+    $dvText = ($dvRaw | ForEach-Object { [string]$_ }) -join "`n"
+    if ($dvCode -ne 0 -or $dvText -notmatch 'DRIVER SELFTEST OK') {
+        $failed += ("DRIVER-SELFTEST (exit=$dvCode): " + (($dvText -replace '\s+',' ').Trim()))
+    }
+} else {
+    $failed += "DRIVER-SELFTEST: driver.ps1 not found"
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"

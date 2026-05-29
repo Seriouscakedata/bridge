@@ -5,7 +5,7 @@
 # driver hard-pins itself to that channel for its entire process lifetime -- all
 # Read-State/Update-State/Add-Message calls route into channels/<slug>/. Supervisor
 # spawns one process per non-archived channel.
-param([string]$Channel = $null)
+param([string]$Channel = $null, [switch]$SelfTest)
 
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
@@ -2680,6 +2680,36 @@ function Write-EvidenceLog {
   } catch {
     return $false
   }
+}
+
+# ---------- driver self-test (pre-promote runtime gate) ----------
+# smoke.ps1 PARSES every .ps1 and runs common.ps1 at runtime (Get-PreflightBlockers), but it never
+# EXECUTES driver.ps1 -- so a parse-OK-but-runtime-broken edit here (the PS5.1 `(if...)` expression
+# bomb behind the 2026-05-26 restart-loop) shipped green and only blew up on the NEXT restart.
+# Running this file as `-SelfTest` in a CHILD process makes reaching this line proof that every
+# dot-sourced lib + all driver top-level code + EVERY function definition (L1-2684) loaded without
+# a runtime error; we then smoke the pure helpers most exposed to Doctor/coder timeout edits.
+# This guard sits BEFORE the startup block (Sweep-AgentOrphans, tmp-sweep, zombie-recovery, Doctor
+# restart-loop guard) so the child performs NO process kills, NO Add-Message, NO state writes -- it
+# is safe to run alongside the live driver. (Initialize-Bridge above is idempotent without -Reset:
+# it only creates missing dirs, never overwrites an existing convo/state.)
+if ($SelfTest) {
+  $stFail = New-Object System.Collections.ArrayList
+  try {
+    $probeCfg = Get-BridgeConfig
+    $ct = 900000
+    if ($probeCfg.coderTimeoutMs -and [int]$probeCfg.coderTimeoutMs -gt 0) { $ct = [int]$probeCfg.coderTimeoutMs }
+    if ($ct -le 0) { [void]$stFail.Add('coderTimeoutMs resolved <= 0') }
+    $cr = 2
+    if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
+    if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
+  } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Activate-Doctor','Complete-Doctor','Abort-Doctor')) {
+    if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
+  }
+  if ($stFail.Count -gt 0) { foreach ($f in $stFail) { Write-Output ('DRIVER SELFTEST FAIL: ' + $f) }; exit 1 }
+  Write-Output 'DRIVER SELFTEST OK'
+  exit 0
 }
 
 # ---------- startup ----------
