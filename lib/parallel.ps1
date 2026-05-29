@@ -90,8 +90,21 @@ function Invoke-CodexParallel {
     [System.IO.File]::WriteAllText($inF, $wprompt, $u8)
     $proc = $null
     try {
+      # SECURITY (Ф2): honor config-driven sandbox instead of hardcoded danger-full-access.
+      # See Invoke-ParallelCodexCli for the full rationale (Windows = behavioral boundary, not an
+      # OS jail; --add-dir grants the shared .git for linked-worktree commits where enforced).
+      $cpSandbox = 'workspace-write'
+      try { if (Get-Command Get-CoderSandboxMode -ErrorAction SilentlyContinue) { $cpSandbox = [string](Get-CoderSandboxMode) } } catch {}
+      if ([string]::IsNullOrWhiteSpace($cpSandbox)) { $cpSandbox = 'workspace-write' }
+      $cpArgs = @('exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s',$cpSandbox)
+      if ($cpSandbox -eq 'workspace-write') {
+        $cpGit = $null
+        try { if (Get-Command Get-WorktreeGitDir -ErrorAction SilentlyContinue) { $cpGit = Get-WorktreeGitDir $wt.path } } catch {}
+        if ($cpGit) { $cpArgs += @('--add-dir', $cpGit) }
+      }
+      $cpArgs += @('-C',$wt.path,'-o',$msgF,'-')
       $proc = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
-        Start-Process -FilePath $codex -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c','model_reasoning_effort="xhigh"','-s','danger-full-access','-C',$wt.path,'-o',$msgF,'-' `
+        Start-Process -FilePath $codex -ArgumentList $cpArgs `
           -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
       }
       $null = $proc.Handle
@@ -321,12 +334,29 @@ function Invoke-ParallelCodexCli {
   $effort = [string]$Worker.reasoning
   if ([string]::IsNullOrWhiteSpace($model)) { $model = 'gpt-5.5' }
   if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
+  # SECURITY (Ф2): parallel/foundry workers used to hardcode -s danger-full-access, which fully
+  # disables Codex's own command guards. Honor the same config-driven sandbox as the serial coder
+  # (Get-CoderSandboxMode -> default 'workspace-write', fail-closed). Note (empirically verified on
+  # this Windows host 2026-05-29): workspace-write is NOT OS-enforced on Windows -- it is a behavioral
+  # boundary the model honors, not a hard jail. Real isolation comes from (a) workers never targeting
+  # the bridge repo itself and (b) per-worker git worktrees. On Linux/macOS workspace-write IS OS-
+  # enforced; there a git commit in a LINKED worktree writes objects/refs under <project>/.git
+  # (outside cwd) and would be blocked, so we also grant that shared git dir via --add-dir.
+  $sandbox = 'workspace-write'
+  try { if (Get-Command Get-CoderSandboxMode -ErrorAction SilentlyContinue) { $sandbox = [string](Get-CoderSandboxMode) } } catch {}
+  if ([string]::IsNullOrWhiteSpace($sandbox)) { $sandbox = 'workspace-write' }
   $cliArgs = @(
     'exec','--color','never','--skip-git-repo-check',
     '-c', "model=`"$model`"",
     '-c', "model_reasoning_effort=`"$effort`"",
-    '-s','danger-full-access','-C',$Worktree,'-o',$MsgFile,'-'
+    '-s', $sandbox
   )
+  if ($sandbox -eq 'workspace-write') {
+    $gitDir = $null
+    try { if (Get-Command Get-WorktreeGitDir -ErrorAction SilentlyContinue) { $gitDir = Get-WorktreeGitDir $Worktree } } catch {}
+    if ($gitDir) { $cliArgs += @('--add-dir', $gitDir) }
+  }
+  $cliArgs += @('-C',$Worktree,'-o',$MsgFile,'-')
   return Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
     Start-Process -FilePath $codex -ArgumentList $cliArgs `
       -RedirectStandardInput $InFile -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `

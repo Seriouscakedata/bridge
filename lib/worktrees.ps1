@@ -12,6 +12,38 @@ function Get-GitExe {
   return 'git'
 }
 
+function Get-WorktreeGitDir {
+  # Resolve the absolute path to the SHARED git dir (the "git common dir") for a worktree.
+  # For a linked worktree at <project>/.bridge-wt/<id>, this is <project>/.git -- which lives
+  # OUTSIDE the worktree cwd. Parallel/foundry codex workers run under -s workspace-write, so a
+  # git commit (which writes objects + per-worktree HEAD/index/refs under the common dir) needs
+  # this path granted via --add-dir, otherwise the commit fails on any platform that enforces the
+  # sandbox. Returns the absolute path, or $null if it cannot be resolved. Never throws.
+  param([string]$Worktree)
+  if ([string]::IsNullOrWhiteSpace($Worktree)) { return $null }
+  $ErrorActionPreference = 'Continue'
+  $git = Get-GitExe
+  # 1) Authoritative: ask git for the common dir (works for any layout, linked or not).
+  try {
+    $cd = (& $git -C $Worktree rev-parse --git-common-dir 2>$null | Select-Object -First 1)
+    if (-not [string]::IsNullOrWhiteSpace($cd)) {
+      $cd = [string]$cd
+      if (-not [System.IO.Path]::IsPathRooted($cd)) { $cd = Join-Path $Worktree $cd }
+      $full = [System.IO.Path]::GetFullPath($cd)
+      if (Test-Path -LiteralPath $full) { return $full.TrimEnd('\','/') }
+    }
+  } catch {}
+  # 2) Fallback to the known .bridge-wt layout: <project>/.bridge-wt/<id> -> <project>/.git
+  try {
+    $proj = Split-Path (Split-Path $Worktree -Parent) -Parent
+    if (-not [string]::IsNullOrWhiteSpace($proj)) {
+      $gd = Join-Path $proj '.git'
+      if (Test-Path -LiteralPath $gd) { return ([System.IO.Path]::GetFullPath($gd)).TrimEnd('\','/') }
+    }
+  } catch {}
+  return $null
+}
+
 function New-Worktree {
   # Create an isolated worktree on a new branch off HEAD inside $RepoRoot/.bridge-wt/<Name>.
   # Returns @{ repo; branch; path } or $null. Use for a project repo OR the bridge repo.
