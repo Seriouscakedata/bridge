@@ -69,6 +69,9 @@
     "antiSkillMinScore": 0.55,
     "antiSkillMaxInjectChars": 600
   },
+  "backlog": {
+    "useLLMPriority": false
+  },
   "llm": {
     "gate": "deepseek-v4-flash",
     "librarian": "deepseek-v4-flash",
