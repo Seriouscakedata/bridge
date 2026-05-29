@@ -73,6 +73,8 @@
     "gate": "deepseek-v4-flash",
     "librarian": "deepseek-v4-flash",
     "reflect": "deepseek-v4-flash",
+    "qa": "deepseek-v4-flash",
+    "prioritizer": "deepseek-v4-pro",
     "deep": "deepseek-v4-pro",
     "critic": "deepseek-v4-flash",
     "criticHeavy": "deepseek-v4-pro",
