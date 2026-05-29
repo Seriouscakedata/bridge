@@ -3,6 +3,7 @@
 # WITHOUT a new UAC prompt. Never exits on its own (its job keeps children alive).
 # Instrumented: captures child stdout/stderr to control/*.log for diagnosis.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\circuit-breaker.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 $ErrorActionPreference = 'Continue'
 $enc = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = $enc
@@ -36,6 +37,7 @@ function Reap-Bloated {
   # The supervisor is ELEVATED, so it CAN kill these (a non-elevated watchdog cannot). Match by
   # PRIVATE memory (zombies had small working sets but 70GB private). /F only (no /T) to spare
   # any codex children. Cap 8GB: no healthy bridge powershell ever approaches this.
+  $reaped = $false
   try {
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
       Where-Object { $_.CommandLine -like '*\server.ps1*' -or $_.CommandLine -like '*\driver.ps1*' } |
@@ -44,9 +46,11 @@ function Reap-Bloated {
         if ($priv -gt 8GB) {
           Log ("REAP: bloated PID " + $_.ProcessId + " private=" + [int]($priv/1MB) + "MB > 8GB -> kill (mem-leak guard)")
           taskkill /PID $_.ProcessId /F 2>$null | Out-Null
+          $reaped = $true
         }
       }
   } catch { Log ("reap error: " + $_.Exception.Message) }
+  return $reaped
 }
 function Start-Srv {
   Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'server.ps1') `
@@ -67,6 +71,25 @@ function Get-ActiveSlugs {
   if ($slugs.Count -eq 0) { $slugs = @('main') }
   return $slugs
 }
+function Record-CircuitRestart {
+  param([string]$Detail, [bool]$ReapFired = $false, [bool]$FlagPresent = $false)
+  try {
+    $res = Invoke-CircuitRestartRecord -ControlDir $ctl -Root $root -Slugs (Get-ActiveSlugs) -Detail $Detail -ReapFired:$ReapFired -FlagPresent:$FlagPresent -FreezeFlagPath $flagCbFreeze -LogCallback { param($m) Log $m } -MessageCallback { param($m) Add-Message -From system -Text $m -Kind event | Out-Null } -PushCallback { param($m) try { Send-PushEvent -Kind need_you -Text $m } catch {} }
+    if ($res.cooldownUntil) { $script:cbCooldownUntil = $res.cooldownUntil }
+  } catch {
+    Log ("circuit record error (fail-safe allow restart): " + $_.Exception.Message)
+  }
+}
+function Test-CircuitSpawnPaused {
+  try {
+    $res = Test-CircuitSpawnPauseState -FreezeFlagPath $flagCbFreeze -CooldownUntil $script:cbCooldownUntil -LogCallback { param($m) Log $m } -MessageCallback { param($m) Add-Message -From system -Text $m -Kind event | Out-Null }
+    $script:cbCooldownUntil = $res.cooldownUntil
+    return [bool]$res.paused
+  } catch {
+    Log ("circuit pause check error (fail-safe allow restart): " + $_.Exception.Message)
+    return $false
+  }
+}
 
 Log "=== supervisor start, PID $PID ==="
 Kill-Bridge
@@ -76,11 +99,15 @@ $lastRecycleTs = $null   # rate-limit: prevent restart-storm
 $minRecycleSec = 60      # at least 60s between consecutive recycles
 $lastWdSpawn   = $null   # rate-limit watchdog (re)spawns (guards against a spawn storm)
 $minWdSpawnSec = 60      # at least 60s between watchdog spawn attempts
+$flagCbFreeze  = Join-Path $ctl 'cb-freeze.flag'
+$script:cbCooldownUntil = $null
 Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
 while ($true) {
   try {
-    Reap-Bloated
+    $reapFired = $false
+    try { $reapFired = [bool](Reap-Bloated) } catch { Log ("reap error: " + $_.Exception.Message) }
+    if ($reapFired) { Record-CircuitRestart -Detail 'reap-bloated OOM guard killed bridge child' -ReapFired:$true -FlagPresent:$false }
     if (Test-Path $flagStop) {
       Remove-Item $flagStop -Force -ErrorAction SilentlyContinue
       Log "stop flag -> exit"; Kill-Bridge; break
@@ -110,23 +137,35 @@ while ($true) {
         try { foreach ($_slug in (Get-ActiveSlugs)) { try { Save-StateSnapshot -Reason 'restart_flag' -Channel $_slug } catch {} } } catch {}
         Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
         $lastRecycleTs = Get-Date
+        Record-CircuitRestart -Detail 'restart.flag recycle' -ReapFired:$false -FlagPresent:$true
       }
     }
-    if ($null -eq $srv -or $srv.HasExited) {
-      Log "starting server..."
-      $srv = Start-Srv; Start-Sleep -Seconds 3
-      Log ("server pid=" + $(if($srv){$srv.Id}else{'?'}) + " hasExited=" + $(if($srv){$srv.HasExited}else{'?'}))
-    }
-    # Spawn one driver per non-archived channel; restart any that died.
     $slugs = Get-ActiveSlugs
-    foreach ($slug in $slugs) {
-      $proc = $drivers[$slug]
-      if ($null -eq $proc -or $proc.HasExited) {
-        Log ("starting driver for channel '" + $slug + "'...")
-        $proc = Start-Drv -Slug $slug
-        Start-Sleep -Seconds 2
-        Log ("driver[" + $slug + "] pid=" + $(if($proc){$proc.Id}else{'?'}) + " hasExited=" + $(if($proc){$proc.HasExited}else{'?'}))
-        $drivers[$slug] = $proc
+    if (-not (Test-CircuitSpawnPaused)) {
+      if ($null -eq $srv -or $srv.HasExited) {
+        if ($null -ne $srv -and $srv.HasExited -and -not $reapFired) {
+          Record-CircuitRestart -Detail ("server exited with code " + $srv.ExitCode) -ReapFired:$false -FlagPresent:$false
+        }
+        if (-not (Test-CircuitSpawnPaused)) {
+          Log "starting server..."
+          $srv = Start-Srv; Start-Sleep -Seconds 3
+          Log ("server pid=" + $(if($srv){$srv.Id}else{'?'}) + " hasExited=" + $(if($srv){$srv.HasExited}else{'?'}))
+        }
+      }
+      # Spawn one driver per non-archived channel; restart any that died.
+      foreach ($slug in $slugs) {
+        $proc = $drivers[$slug]
+        if ($null -eq $proc -or $proc.HasExited) {
+          if ($null -ne $proc -and $proc.HasExited -and -not $reapFired) {
+            Record-CircuitRestart -Detail ("driver[" + $slug + "] exited with code " + $proc.ExitCode) -ReapFired:$false -FlagPresent:$false
+          }
+          if (Test-CircuitSpawnPaused) { break }
+          Log ("starting driver for channel '" + $slug + "'...")
+          $proc = Start-Drv -Slug $slug
+          Start-Sleep -Seconds 2
+          Log ("driver[" + $slug + "] pid=" + $(if($proc){$proc.Id}else{'?'}) + " hasExited=" + $(if($proc){$proc.HasExited}else{'?'}))
+          $drivers[$slug] = $proc
+        }
       }
     }
     # Ensure the INDEPENDENT watchdog safety-net is alive. By design it's a separate

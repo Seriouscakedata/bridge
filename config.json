@@ -117,6 +117,12 @@
     "throttleSeconds": 20,
     "timeoutSec": 10
   },
+  "circuitBreaker": {
+    "enabled": true,
+    "windowMin": 30,
+    "maxRestarts": 5,
+    "cooldownMin": 15
+  },
   "auditor": {
     "enabled": true,
     "intervalMin": 15,

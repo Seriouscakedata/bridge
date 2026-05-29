@@ -570,6 +570,17 @@ function Get-BridgePrivateRoot {
   return $dir
 }
 
+function Get-RuntimeRoot {
+  # Mutable runtime telemetry that must survive supervisor restarts but must NOT
+  # live under OneDrive/MSIX-virtualized roots. USERPROFILE was empirically stable
+  # for bridge worktrees; fall back to control/ only when USERPROFILE is absent.
+  $base = [string]$env:USERPROFILE
+  if ([string]::IsNullOrWhiteSpace($base)) { $dir = Join-Path (Get-BridgeRoot) 'control' }
+  else { $dir = Join-Path $base '.bridge-runtime' }
+  if (-not (Test-Path -LiteralPath $dir)) { try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch {} }
+  return $dir
+}
+
 function Get-PrivateFilePath {
   # Resolve a protected file by name. Prefers the out-of-bridge store, but transparently
   # falls back to the legacy in-bridge path if a file hasn't been migrated yet, so a
