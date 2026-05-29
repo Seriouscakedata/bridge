@@ -940,6 +940,15 @@ function Save-StateSnapshot {
     } catch {}
     $dir = Join-Path (Get-BridgeRoot) "channels\$ch\snapshots"
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    # Dedup: skip if a recent snapshot with the same Reason already exists
+    try {
+      $dedupMin = 15
+      try { $cfg2 = Get-BridgeConfig; if ($cfg2.PSObject.Properties.Name -contains 'snapshotDedupMinutes') { $dedupMin = [int]$cfg2.snapshotDedupMinutes } } catch {}
+      $cutoff = (Get-Date).AddMinutes(-[Math]::Max(1, $dedupMin))
+      $recent = Get-ChildItem $dir -Filter "state.*.$Reason.json" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($recent -and $recent.LastWriteTime -ge $cutoff) { return $recent.FullName }
+    } catch {}
     $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
     $snapPath = Join-Path $dir "state.${ts}.${Reason}.json"
     $json = $s | ConvertTo-Json -Depth 10
