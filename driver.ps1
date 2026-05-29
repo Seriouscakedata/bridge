@@ -1856,6 +1856,17 @@ function Wait-AgentProcess {
   while ($true) {
     if ($Proc.WaitForExit(5000)) { return $true }
     try { Update-State { param($s) $s.heartbeat=(Get-Date).ToString('o') } | Out-Null } catch {}
+    # recycle coalescer (MID-TURN): we are busy waiting on an agent right now. If a restart.flag
+    # appears (coder edited a .ps1 and flagged it), DEFER it immediately so the supervisor can't kill
+    # THIS turn. The main-loop coalescer restores it once all channels go idle -> a burst of self-dev
+    # edits collapses into one clean recycle. Only the 'main' driver manages the shared flag.
+    if ($Channel -eq 'main') {
+      try {
+        $rcCtl = Join-Path $bridgeRoot 'control'
+        $rcF = Join-Path $rcCtl 'restart.flag'
+        if (Test-Path -LiteralPath $rcF) { Move-Item -LiteralPath $rcF -Destination (Join-Path $rcCtl 'restart.deferred') -Force; Write-Host 'recycle: deferred mid-turn restart.flag' }
+      } catch {}
+    }
     $elapsedMs = $sw.ElapsedMilliseconds
     $elapsedSec = [int]($elapsedMs / 1000)
     # liveness signal: total bytes written to out+err. Growth => agent is alive and making progress.
@@ -3001,6 +3012,48 @@ while ($true) {
       # Recovery itself failed — sleep + retry. Never hard-crash the loop.
       Start-Sleep -Seconds 5; continue
     }
+  }
+
+  # ───────── self-dev recycle COALESCER — root-cause fix for restart-storms (2026-05-29) ─────────
+  # PROBLEM: a self-dev task that edited several .ps1 set restart.flag per edit; the supervisor then
+  # recycled MID-TURN, the coder resumed, edited again, set the flag again -> 18 recycles/30min ->
+  # circuit-breaker cooldown -> the bridge looked "unstable" (operator-visible). The supervisor's
+  # 60s rate-limit only thinned the storm, it didn't stop the mid-turn kill->resume->re-edit loop.
+  # CURE: while ANY channel is BUSY, DEFER restart.flag (move it aside) so the supervisor cannot kill
+  # a coder mid-turn (recycle = Kill-Bridge ALL channels). Restore the instant ALL channels are idle
+  # -> a burst of edits collapses into ONE clean recycle, taken only when nothing is running. A hard
+  # cap stops an ever-busy/stuck channel from blocking a genuinely-needed restart forever.
+  # ONLY the 'main' driver manages the shared flag (one manager -> no cross-channel Move races, since
+  # all channels share one control/ dir). Driver-side on purpose: ships on a normal recycle
+  # (supervisor.ps1 would need an elevated reload). The supervisor's 60s rate-limit still backstops.
+  if ($Channel -eq 'main') {
+    try {
+      $ctlDir    = Join-Path $bridgeRoot 'control'
+      $rcFlag    = Join-Path $ctlDir 'restart.flag'
+      $rcDefer   = Join-Path $ctlDir 'restart.deferred'
+      $rcMaxDefer = 600
+      $rcBusy = $false
+      foreach ($rcSlug in (Get-ActiveSlugs)) {
+        $rcSp = Join-Path $bridgeRoot ("channels\" + $rcSlug + "\state.json")
+        if (Test-Path -LiteralPath $rcSp) {
+          try {
+            $rcCs = [IO.File]::ReadAllText($rcSp, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if (([string]$rcCs.status -in @('working','planning','coding','discuss','study','research')) -or (-not [string]::IsNullOrWhiteSpace([string]$rcCs.current_task)) -or [bool]$rcCs.doctor_active) { $rcBusy = $true; break }
+          } catch {}
+        }
+      }
+      if ((Test-Path -LiteralPath $rcFlag) -and $rcBusy) {
+        try { Move-Item -LiteralPath $rcFlag -Destination $rcDefer -Force; Write-Host 'recycle: deferred restart.flag (a channel is busy, coalescing)' } catch {}
+      }
+      elseif (Test-Path -LiteralPath $rcDefer) {
+        $rcAge = 999999; try { $rcAge = ((Get-Date) - (Get-Item -LiteralPath $rcDefer).LastWriteTime).TotalSeconds } catch {}
+        if (-not $rcBusy) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Применяю отложенный перезапуск — все каналы свободны. Пачка self-dev правок объединена в один recycle (анти-шторм).' -Kind event | Out-Null } catch {}
+        } elseif ($rcAge -ge $rcMaxDefer) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Write-Host 'recycle: force-applied deferred restart (max-defer cap)' } catch {}
+        }
+      }
+    } catch {}
   }
 
   if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }
