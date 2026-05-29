@@ -146,7 +146,7 @@
     "enabled": true,
     "requireApproval": false,
     "idleQuietMinutes": 10,
-    "maxAutonomousTasksPerDay": 2,
+    "maxAutonomousTasksPerDay": 8,
     "reflectEveryHours": 6,
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
@@ -176,7 +176,7 @@
   },
   "parallel": {
     "enabled": true,
-    "maxStreams": 3,
+    "maxStreams": 6,
     "claudeCoderModel": "sonnet",
     "drainingTimeoutSec": 30,
     "wipBranchPrefix": "wip/parallel",
