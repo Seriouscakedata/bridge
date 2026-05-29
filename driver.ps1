@@ -1857,7 +1857,24 @@ function Wait-AgentProcess {
             $fInfo[$label] = if ($fi) { [ordered]@{ len=[long]$fi.Length; mtime=$fi.LastWriteTime.ToString('o') } } else { [ordered]@{ len=0; mtime=$null } }
           }
         }
-        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; files=$fInfo }
+        $restartsHour = 0
+        try {
+          $rlPath = Join-Path (Get-RuntimeRoot) 'restarts.jsonl'
+          if (Test-Path -LiteralPath $rlPath) {
+            $since = (Get-Date).ToUniversalTime().AddHours(-1)
+            $enc8 = New-Object System.Text.UTF8Encoding($false)
+            $lines = [System.IO.File]::ReadAllLines($rlPath, $enc8)
+            foreach ($rl in $lines) {
+              $rlt = ([string]$rl).Trim()
+              if ([string]::IsNullOrWhiteSpace($rlt)) { continue }
+              try {
+                $rev = $rlt | ConvertFrom-Json
+                if ($rev.ts -and [datetime]::Parse($rev.ts, $null, [System.Globalization.DateTimeStyles]::RoundtripKind) -ge $since) { $restartsHour++ }
+              } catch {}
+            }
+          }
+        } catch {}
+        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; files=$fInfo; restarts_last_hour=$restartsHour }
         Update-State ({ param($s) $s | Add-Member -NotePropertyName agent_telemetry -NotePropertyValue $telem -Force }.GetNewClosure()) | Out-Null
       } catch {}
     }
