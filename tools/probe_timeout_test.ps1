@@ -93,6 +93,7 @@ Assert-True ($badFallback -eq 180000) "invalid config should fall back to defaul
 
 $probeByCommand = Test-IsProbeTask -Command 'powershell -File tools\diag\runtime-storage-probe.ps1'
 $probeByTag = Test-IsProbeTask -Prompt 'ordinary task' -Tags @('diag')
+$probeByCurrentTaskText = Test-IsProbeTask -Prompt 'Динамическое управление таймаутами для probe-задач'
 $durabilityOnly = Test-IsProbeTask -Prompt 'foundation durability refactor without explicit marker'
 $contextMentionOnly = Test-IsProbeTask -Prompt 'historical note: runtime-storage-probe existed in a previous task'
 $fullPromptHistory = @'
@@ -112,6 +113,7 @@ run powershell -File tools\diag\runtime-storage-probe.ps1
 '@
 Assert-True $probeByCommand 'runtime-storage-probe command should be detected'
 Assert-True $probeByTag 'diag tag should be detected'
+Assert-True $probeByCurrentTaskText 'probe-задач in current task text should be detected'
 Assert-True (-not $durabilityOnly) 'durability alone must not be detected as probe'
 Assert-True (-not $contextMentionOnly) 'plain historical runtime-storage-probe mention must not be detected as probe'
 Assert-True (-not (Test-IsProbeTask -Prompt $fullPromptHistory)) 'old probe path in dialogue must not affect current non-probe task'
@@ -135,6 +137,6 @@ try {
 }
 
 Write-Host "base=$base minClamp=$minClamp maxClamp=$maxClamp coderCap=$coderCap perMetricCap=$capOnly partialFallback=$partial emptyFallback=$emptyFallback badFallback=$badFallback"
-Write-Host "detect: command=$probeByCommand tag=$probeByTag durabilityOnly=$durabilityOnly contextMentionOnly=$contextMentionOnly"
+Write-Host "detect: command=$probeByCommand tag=$probeByTag currentTaskText=$probeByCurrentTaskText durabilityOnly=$durabilityOnly contextMentionOnly=$contextMentionOnly"
 Write-Host "telemetry: one valid JSONL line written"
 Write-Host 'OK'

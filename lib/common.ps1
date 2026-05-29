@@ -892,6 +892,7 @@ function Test-IsProbeTask {
 
   $hay = ($promptScope + "`n" + ([string]$Command)).ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($hay)) { return $false }
+  if ($hay -match '(?i)(^|[^\p{L}\p{N}_-])probe(?:\s+|[-‑–—])(?:task|tasks|job|jobs|задач|провер|диаг|diag|health)\b') { return $true }
   if ($hay -match '(?i)\bproof-probe\b') { return $true }
   if ($hay -match '(?i)tools[\\/]+diag[\\/]+[^\s''"]*-probe\.ps1\b') { return $true }
   if (-not [string]::IsNullOrWhiteSpace($Command) -and ([string]$Command).ToLowerInvariant() -match '(?i)(^|[\\/])[^\\/]*-probe\.ps1\b') { return $true }
