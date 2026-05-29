@@ -517,9 +517,9 @@ function Invoke-BridgeAudit {
       [void]$allFindings.Add($norm)
     }
 
-    $secCounts = Get-AuditSeverityCounts -Findings $secFindings
-    $fncCounts = Get-AuditSeverityCounts -Findings $fncFindings
     $mergedFindings = Merge-AuditFindings -Findings $allFindings.ToArray()
+    $secCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'security' })
+    $fncCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'functional' })
     $generatedAtLocal = (Get-Date).ToString('o')
     $generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     $runtimeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 2)
