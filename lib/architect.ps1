@@ -212,6 +212,12 @@ new patterns из внешних систем. До $MaxIdeas структурн
 $modeIntro
 
 ВАЖНЫЕ ЗАМЕЧАНИЯ:
+- ЦЕЛЬ-ЛЕСТНИЦА (из goals.md, держи СТРОГО): сначала укрепляй ФУНДАМЕНТ — автономность,
+  стабильность, скорость, саморазвитие/самообучение самого моста. ТОЛЬКО когда фундамент крепок,
+  предлагай следующий уровень: способность моста САМ выявлять и порождать сторонние проекты,
+  востребованные на рынке услуг. НЕ предлагай рыночные проекты, пока автономный цикл моста не
+  стабилен. Для КАЖДОЙ идеи укажи, какую ступень лестницы она двигает (фундамент или расширение).
+- Это не «видение ради видения»: каждая идея — конкретный шаг к саморазвитию/автономности, а не общие рассуждения.
 - Если 3 разных post-mortem'а намекают на отсутствие капабилити X — это твой сигнал.
 - Если оператор 3 раза вмешивался про одно и то же — это твой сигнал.
 - Если внешняя система имеет паттерн, которого у нас нет, и оно объяснимо — это сигнал.
@@ -283,11 +289,20 @@ function Invoke-Architect {
       $e = [Math]::Max(1.0,[Math]::Min(5.0,[double]$it.effort))
       $score = [Math]::Round($v * $c / $e, 2)
     } catch {}
+    $shortText = ($it.text -replace '\s+',' ').Trim()
+    if ($shortText.Length -gt 100) { $shortText = $shortText.Substring(0,100) + '…' }
     $id = Add-Idea -Text $text -From 'architect' -Tags $tags -Status 'new' -Score $score
-    if ($id) { [void]$created.Add([string]$id) }
+    if ($id) {
+      [void]$created.Add([string]$id)
+      try { Add-Message -From system -Text ("  💡 в бэклог (score=$score): «$shortText»") -Kind event | Out-Null } catch {}
+    } else {
+      try { Add-Message -From system -Text ("  ♻ отсеяна воронкой (дубль/недавно отклонена): «$shortText»") -Kind event | Out-Null } catch {}
+    }
   }
   if ($created.Count -gt 0) {
-    try { Add-Message -From system -Text ("🧭 Архитектор: предложено " + $created.Count + " структурных идей в бэклог (тег: architect, status=new — нужно одобрение).") -Kind event | Out-Null } catch {}
+    try { Add-Message -From system -Text ("🧭 Архитектор: в бэклог попало " + $created.Count + " идей (тег: architect, status=new). Дальше — классификация риска + воронка/одобрение.") -Kind event | Out-Null } catch {}
+  } else {
+    try { Add-Message -From system -Text "🧭 Архитектор: все предложенные идеи отсеяны воронкой (дубли/уже отклонённые) — бэклог не засоряется." -Kind event | Out-Null } catch {}
   }
   return @{ ok = $true; count = $created.Count; ids = @($created.ToArray()) }
 }
@@ -357,9 +372,11 @@ function Test-WithinQuietHours {
 }
 
 function Should-RunDeepThink {
-  # TWO weekend nights (Saturday + Sunday morning 02:00-06:00 local). Fires once per
-  # window, max one deep-think per 6 days (so two firings per weekend are de-duped).
-  if (-not (Test-WithinQuietHours -StartHour 2 -EndHour 6 -DaysOfWeek @('Saturday','Sunday'))) { return $false }
+  # Weekly proactive deep-think — on SUNDAY, any time of day (user 2026-05-29: "раз в неделю, скорее
+  # воскресенье"). Previously pinned to the 02:00-06:00 window, which silently missed whenever the PC
+  # was off overnight -> it ran ~monthly instead of weekly. Now it fires on the first idle Sunday tick
+  # the PC is on, de-duped to once per >=6 days so it can't re-fire the same Sunday.
+  if ((Get-Date).DayOfWeek -ne [System.DayOfWeek]::Sunday) { return $false }
   $marker = Get-DeepThinkMarkerPath
   if (-not (Test-Path $marker)) { return $true }
   try { $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim()) } catch { return $true }
@@ -373,9 +390,12 @@ function Start-DeepThinkDialog {
   # turns. After STATUS: DONE the planner files 1-3 ideas via the normal pipeline.
   $ctx = Get-ArchitectContext
   $prompt = @"
-[[DEEP-THINK]] Архитектурная мета-задача (раз в неделю в выходную ночь).
+[[DEEP-THINK]] Архитектурная мета-задача (раз в неделю, воскресенье).
 
-ОТКРЫТЫЙ ВОПРОС: чем мост должен стать через 3 месяца, чтобы выжить и быть полезным?
+ВОПРОС (держи цель-лестницу из goals.md, порядок СТРОГИЙ): какой следующий шаг сильнее всего укрепит
+ФУНДАМЕНТ моста — автономность, стабильность, скорость, саморазвитие/самообучение? Предлагай конкретные
+механизмы, которых сейчас нет. И ТОЛЬКО если фундамент уже крепок — какие сторонние РЫНОЧНЫЕ проекты
+(востребованные на рынке услуг) мост мог бы начать сам выявлять и предлагать?
 
 ПРАВИЛА ДИАЛОГА (важно):
 - Claude (планировщик) НАЧИНАЕТ: предлагает 1-3 структурных идеи с обоснованием. STATUS: DISCUSS.
