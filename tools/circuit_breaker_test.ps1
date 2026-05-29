@@ -34,10 +34,13 @@ function New-CbLine {
 $lines = @()
 1..5 | ForEach-Object { $lines += (New-CbLine -Ts $now.AddMinutes(-1 * $_) -Cause 'parse-fail' -Signature 'same-parse') }
 $lines[2] = $bom + $lines[2]
+$lines += '{bad json'
 [System.IO.File]::WriteAllText($log, (($lines -join "`n") + "`n"), $enc)
 $trip = Test-CircuitTrip -LogPath $log -WindowMin 30 -MaxRestarts 5 -Now $now
 Assert-Cb $trip.tripped '5 events in 30min should trip'
-Assert-Cb ($trip.countInWindow -eq 5) 'BOM-prefixed JSONL line should still count'
+Assert-Cb ($trip.countInWindow -eq 5) 'BOM-prefixed JSONL line should count and bad JSONL line should be ignored'
+Assert-Cb ($trip.invalidLineCount -eq 1) 'bad JSONL line should be counted as invalid'
+Assert-Cb ($trip.dominantSignatureCause -eq 'parse-fail') 'dominant repeated signature should retain its cause'
 Assert-Cb ((Get-CircuitMode -Trip $trip) -eq 'hard-freeze') 'same deterministic signature should hard-freeze'
 
 $old = Join-Path $WorkDir 'old.jsonl'
@@ -68,6 +71,15 @@ $mixedLines = @(
 $mixedTrip = Test-CircuitTrip -LogPath $mixed -WindowMin 30 -MaxRestarts 5 -Now $now
 Assert-Cb ($mixedTrip.tripped -and (Get-CircuitMode -Trip $mixedTrip) -eq 'cooldown') 'mixed trip should cooldown'
 
+$explicitRepeated = Join-Path $WorkDir 'explicit-repeated.jsonl'
+$explicitRepeatedLines = @()
+1..4 | ForEach-Object { $explicitRepeatedLines += (New-CbLine -Ts $now.AddMinutes(-1 * $_) -Cause 'explicit-flag' -Signature 'same-explicit') }
+$explicitRepeatedLines += (New-CbLine -Ts $now.AddMinutes(-5) -Cause 'parse-fail' -Signature 'one-parse')
+[System.IO.File]::WriteAllText($explicitRepeated, (($explicitRepeatedLines -join "`n") + "`n"), $enc)
+$explicitRepeatedTrip = Test-CircuitTrip -LogPath $explicitRepeated -WindowMin 30 -MaxRestarts 5 -Now $now
+Assert-Cb ($explicitRepeatedTrip.tripped -and $explicitRepeatedTrip.sameSignatureRatio -eq 0.8) 'repeated explicit flag should compute pair ratio'
+Assert-Cb ((Get-CircuitMode -Trip $explicitRepeatedTrip) -eq 'cooldown') 'repeated explicit flag is not deterministic hard-freeze'
+
 $writeLog = Join-Path $WorkDir 'write.jsonl'
 $bomEnc = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($writeLog, '', $bomEnc)
@@ -93,6 +105,8 @@ $diag = Save-CircuitDiagnostics -OutDir (Join-Path $WorkDir 'diag')
 Assert-Cb $diag.ok 'diagnostics should complete'
 Assert-Cb (Test-Path -LiteralPath (Join-Path $diag.outDir 'git-status.txt')) 'diagnostics should write git-status.txt'
 Assert-Cb (Test-Path -LiteralPath (Join-Path $diag.outDir 'git-diff.patch')) 'diagnostics should write git-diff.patch'
+$diffText = [System.IO.File]::ReadAllText((Join-Path $diag.outDir 'git-diff.patch'), $enc)
+Assert-Cb (-not ($diffText -match '(?m)^# stderr:|^exitCode:')) 'git-diff.patch should contain stdout only; stderr belongs in a sidecar'
 
 $health = Invoke-HealthProbe
 Assert-Cb $health.green "health probe should be green: $($health.reason)"
@@ -104,10 +118,12 @@ Assert-Cb ($failSafe -eq 'allow restart') 'fail-safe wrapper should default to a
   workDir = $WorkDir
   trip5 = $trip.tripped
   trip5Count = $trip.countInWindow
+  invalidLineCount = $trip.invalidLineCount
   oldTrip = $oldTrip.tripped
   oldCount = $oldTrip.countInWindow
   hardMode = Get-CircuitMode -Trip $trip
   mixedMode = Get-CircuitMode -Trip $mixedTrip
+  explicitRepeatedMode = Get-CircuitMode -Trip $explicitRepeatedTrip
   causes = $causes
   freezeNullPaused = $pauseFreeze.paused
   pastGreenPaused = $pausePast.paused

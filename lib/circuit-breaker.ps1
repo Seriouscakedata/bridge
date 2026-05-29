@@ -54,6 +54,24 @@ function Remove-CircuitLineBom {
   return $lineText
 }
 
+function Invoke-CircuitLogMutex {
+  param(
+    [Parameter(Mandatory=$true)][scriptblock]$Body,
+    [int]$TimeoutMs = 5000
+  )
+  $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeRestartsLog')
+  $got = $false
+  try {
+    try { $got = $mutex.WaitOne($TimeoutMs) }
+    catch [System.Threading.AbandonedMutexException] { $got = $true }
+    if (-not $got) { throw "Could not acquire restart-log mutex within ${TimeoutMs}ms" }
+    return (& $Body)
+  } finally {
+    if ($got) { try { $mutex.ReleaseMutex() } catch {} }
+    try { $mutex.Dispose() } catch {}
+  }
+}
+
 function Repair-CircuitLogBom {
   param([Parameter(Mandatory=$true)][string]$LogPath)
   if (-not (Test-Path -LiteralPath $LogPath)) { return }
@@ -67,6 +85,29 @@ function Repair-CircuitLogBom {
       Move-Item -LiteralPath $tmp -Destination $LogPath -Force
     }
   } catch {}
+}
+
+function Read-CircuitLogLines {
+  param([Parameter(Mandatory=$true)][string]$LogPath)
+  if (-not (Test-Path -LiteralPath $LogPath)) { return @() }
+  try {
+    $text = Invoke-CircuitLogMutex -TimeoutMs 5000 -Body {
+      $fs = $null
+      $sr = $null
+      try {
+        $fs = New-Object System.IO.FileStream($LogPath, ([System.IO.FileMode]::Open), ([System.IO.FileAccess]::Read), ([System.IO.FileShare]::ReadWrite))
+        $sr = New-Object System.IO.StreamReader($fs, ([System.Text.Encoding]::UTF8), $true)
+        return $sr.ReadToEnd()
+      } finally {
+        if ($sr) { try { $sr.Dispose() } catch {} }
+        elseif ($fs) { try { $fs.Dispose() } catch {} }
+      }
+    }
+    if ([string]::IsNullOrEmpty([string]$text)) { return @() }
+    return @(([string]$text) -split "(`r`n|`n|`r)")
+  } catch {
+    return @()
+  }
 }
 
 function Normalize-CircuitErrorLine {
@@ -116,19 +157,19 @@ function Write-RestartEvent {
   }
   $line = ($rec | ConvertTo-Json -Compress -Depth 5) + "`n"
   $enc = New-Object System.Text.UTF8Encoding($false)
-  $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeRestartsLog')
-  $got = $false
-  try {
-    try { $got = $mutex.WaitOne(5000) }
-    catch [System.Threading.AbandonedMutexException] { $got = $true }
-    if (-not $got) { throw 'Could not acquire restart-log mutex within 5s' }
+  Invoke-CircuitLogMutex -TimeoutMs 5000 -Body {
     Repair-CircuitLogBom -LogPath $LogPath
-    [System.IO.File]::AppendAllText($LogPath, $line, $enc)
-    return [pscustomobject]$rec
-  } finally {
-    if ($got) { try { $mutex.ReleaseMutex() } catch {} }
-    try { $mutex.Dispose() } catch {}
+    $bytes = $enc.GetBytes($line)
+    $fs = $null
+    try {
+      $fs = New-Object System.IO.FileStream($LogPath, ([System.IO.FileMode]::Append), ([System.IO.FileAccess]::Write), ([System.IO.FileShare]::Read))
+      $fs.Write($bytes, 0, $bytes.Length)
+      $fs.Flush($true)
+    } finally {
+      if ($fs) { try { $fs.Dispose() } catch {} }
+    }
   }
+  return [pscustomobject]$rec
 }
 
 function Get-RestartCause {
@@ -172,38 +213,53 @@ function Test-CircuitTrip {
   )
   if ([string]::IsNullOrWhiteSpace($LogPath)) { $LogPath = Get-RestartsLogPath }
   $events = @()
+  $invalidLines = 0
   if (Test-Path -LiteralPath $LogPath) {
     $nowUtc = ([datetime]$Now).ToUniversalTime()
     $cutoff = $nowUtc.AddMinutes(-1 * [Math]::Max(1, $WindowMin))
-    foreach ($raw in [System.IO.File]::ReadLines($LogPath)) {
+    foreach ($raw in (Read-CircuitLogLines -LogPath $LogPath)) {
       try {
         $line = Remove-CircuitLineBom $raw
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $e = $line | ConvertFrom-Json
         $ts = ([DateTimeOffset]::Parse([string]$e.ts)).UtcDateTime
-        if ($ts -ge $cutoff -and $ts -le $nowUtc.AddMinutes(1)) { $events += $e }
-      } catch {}
+        if ($ts -ge $cutoff -and $ts -le $nowUtc.AddMinutes(1)) {
+          $cause = [string]$e.cause
+          $sig = [string]$e.signature
+          $events += [pscustomobject]@{
+            ts        = $ts
+            cause     = $cause
+            signature = $sig
+            pairKey   = ($cause + "`t" + $sig)
+          }
+        }
+      } catch { $invalidLines++ }
     }
   }
   $count = @($events).Count
   $dominantCause = ''
   $dominantSignature = ''
+  $dominantSignatureCause = ''
   $sameRatio = 0.0
   if ($count -gt 0) {
     $cg = @($events | Group-Object cause | Sort-Object Count -Descending | Select-Object -First 1)
     if ($cg.Count -gt 0) { $dominantCause = [string]$cg[0].Name }
-    $sg = @($events | Group-Object signature | Sort-Object Count -Descending | Select-Object -First 1)
-    if ($sg.Count -gt 0) {
-      $dominantSignature = [string]$sg[0].Name
-      $sameRatio = [Math]::Round(([double]$sg[0].Count / [double]$count), 3)
+    $pg = @($events | Group-Object pairKey | Sort-Object Count -Descending | Select-Object -First 1)
+    if ($pg.Count -gt 0) {
+      $pair = ([string]$pg[0].Name) -split "`t", 2
+      if ($pair.Count -gt 0) { $dominantSignatureCause = [string]$pair[0] }
+      if ($pair.Count -gt 1) { $dominantSignature = [string]$pair[1] }
+      $sameRatio = [Math]::Round(([double]$pg[0].Count / [double]$count), 3)
     }
   }
   return [pscustomobject]@{
-    tripped           = ($count -ge [Math]::Max(1, $MaxRestarts))
-    countInWindow     = $count
-    dominantCause     = $dominantCause
-    dominantSignature = $dominantSignature
-    sameSignatureRatio = $sameRatio
+    tripped                = ($count -ge [Math]::Max(1, $MaxRestarts))
+    countInWindow          = $count
+    dominantCause          = $dominantCause
+    dominantSignature      = $dominantSignature
+    dominantSignatureCause = $dominantSignatureCause
+    sameSignatureRatio     = $sameRatio
+    invalidLineCount       = $invalidLines
   }
 }
 
@@ -212,6 +268,11 @@ function Get-CircuitMode {
   if (-not $Trip -or -not [bool]$Trip.tripped) { return 'allow' }
   $deterministic = @('parse-fail','state-corrupt')
   $cause = [string]$Trip.dominantCause
+  try {
+    if (($Trip.PSObject.Properties.Name -contains 'dominantSignatureCause') -and -not [string]::IsNullOrWhiteSpace([string]$Trip.dominantSignatureCause)) {
+      $cause = [string]$Trip.dominantSignatureCause
+    }
+  } catch {}
   $ratio = 0.0
   try { $ratio = [double]$Trip.sameSignatureRatio } catch {}
   if (($deterministic -contains $cause) -and $ratio -ge 0.8) { return 'hard-freeze' }
@@ -233,7 +294,10 @@ function Invoke-CircuitGitCapture {
     [Parameter(Mandatory=$true)][string]$OutPath
   )
   $enc = New-Object System.Text.UTF8Encoding($false)
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  $stderrPath = $OutPath + '.stderr.txt'
   try {
+    if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'git'
     $psi.WorkingDirectory = $Root
@@ -252,18 +316,20 @@ function Invoke-CircuitGitCapture {
     $stderr = $stderrTask.Result
     $exitCode = $p.ExitCode
     try { $p.Dispose() } catch {}
-    $text = [string]$stdout
-    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-      if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
-      $text += "# stderr:`n" + $stderr
+    [System.IO.File]::WriteAllText($OutPath, [string]$stdout, $enc)
+    [void]$files.Add($OutPath)
+    if ((-not [string]::IsNullOrWhiteSpace($stderr)) -or $exitCode -ne 0) {
+      $errText = "exitCode: $exitCode`n" + [string]$stderr
+      [System.IO.File]::WriteAllText($stderrPath, $errText, $enc)
+      [void]$files.Add($stderrPath)
     }
-    if ($exitCode -ne 0) {
-      if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
-      $text += "# exitCode: " + $exitCode
-    }
-    [System.IO.File]::WriteAllText($OutPath, $text, $enc)
+    return [pscustomobject]@{ ok = ($exitCode -eq 0); outPath = $OutPath; stderrPath = $(if (Test-Path -LiteralPath $stderrPath) { $stderrPath } else { '' }); files = @($files) }
   } catch {
-    [System.IO.File]::WriteAllText($OutPath, $_.Exception.Message, $enc)
+    [System.IO.File]::WriteAllText($OutPath, '', $enc)
+    [System.IO.File]::WriteAllText($stderrPath, $_.Exception.Message, $enc)
+    [void]$files.Add($OutPath)
+    [void]$files.Add($stderrPath)
+    return [pscustomobject]@{ ok = $false; outPath = $OutPath; stderrPath = $stderrPath; files = @($files) }
   }
 }
 
@@ -275,8 +341,10 @@ function Save-CircuitDiagnostics {
     $root = Get-BridgeRoot
     $statusPath = Join-Path $OutDir 'git-status.txt'
     $diffPath = Join-Path $OutDir 'git-diff.patch'
-    Invoke-CircuitGitCapture -Root $root -Arguments @('status','--short') -OutPath $statusPath; [void]$files.Add($statusPath)
-    Invoke-CircuitGitCapture -Root $root -Arguments @('diff','--binary','--no-color') -OutPath $diffPath; [void]$files.Add($diffPath)
+    $statusCapture = Invoke-CircuitGitCapture -Root $root -Arguments @('status','--short') -OutPath $statusPath
+    foreach ($f in @($statusCapture.files)) { if ($f) { [void]$files.Add([string]$f) } }
+    $diffCapture = Invoke-CircuitGitCapture -Root $root -Arguments @('diff','--binary','--no-color') -OutPath $diffPath
+    foreach ($f in @($diffCapture.files)) { if ($f) { [void]$files.Add([string]$f) } }
 
     $snapDir = Join-Path $OutDir 'snapshots'
     if (-not (Test-Path -LiteralPath $snapDir)) { New-Item -ItemType Directory -Path $snapDir -Force | Out-Null }

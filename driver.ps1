@@ -3011,6 +3011,9 @@ while ($true) {
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $script:idleStreak = 0   # user activity -> restore snappy idle cadence
+      # 🤖 Autonomy metric (Foundation #3): operator stepped in -> the "no-intervention" streak ends.
+      # Best is already captured at done-time; just reset the running counter.
+      try { Update-State { param($s) $s | Add-Member -NotePropertyName autonomy_streak -NotePropertyValue 0 -Force } | Out-Null } catch {}
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
       $projectBindingForTask = Get-ActiveProjectBinding
       if ($projectBindingForTask -and ([string]$projectBindingForTask.slug -ne 'main') -and -not [bool]$projectBindingForTask.ok) {
@@ -5026,7 +5029,22 @@ $diff
       $doneBid = [string](Read-State).current_backlog_id
       if ($doneBid) {
         Set-Idea -Id $doneBid -Status 'done' | Out-Null
-        Add-Message -From system -Text "✅ Автозадача из бэклога выполнена и закрыта." -Kind event | Out-Null
+        # 🤖 Autonomy metric (Foundation #3): the honest self-sufficiency number — autonomous backlog
+        # tasks closed IN A ROW with zero operator messages between them. Increment on each autonomous
+        # done; the user-message handler resets the running streak to 0 (best is preserved here).
+        Update-State ({ param($s)
+          $cur = 0; try { $cur = [int]$s.autonomy_streak } catch {}
+          $cur++
+          $best = 0; try { $best = [int]$s.autonomy_streak_best } catch {}
+          if ($cur -gt $best) { $best = $cur }
+          $s | Add-Member -NotePropertyName autonomy_streak      -NotePropertyValue $cur  -Force
+          $s | Add-Member -NotePropertyName autonomy_streak_best -NotePropertyValue $best -Force
+        }.GetNewClosure()) | Out-Null
+        $stk = Read-State
+        $sNow = 0; try { $sNow = [int]$stk.autonomy_streak } catch {}
+        $sBest = 0; try { $sBest = [int]$stk.autonomy_streak_best } catch {}
+        $bestTxt = if ($sBest -gt $sNow) { " (рекорд: $sBest)" } else { '' }
+        Add-Message -From system -Text ("✅ Автозадача из бэклога выполнена и закрыта. 🤖 Автономных задач подряд без вмешательства: $sNow$bestTxt") -Kind event | Out-Null
       }
     } catch {}
     # Mark ANY self-improvement commit as a hypothesis for the 24h verdict cycle (was previously
