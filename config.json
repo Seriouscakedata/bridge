@@ -12,6 +12,8 @@
   },
   "workRoot": "C:/Users/rafie",
   "idlePollSeconds": 1,
+  "idleMaxPollSeconds": 5,
+  "idleFastTicks": 8,
   "fullContextCount": 20,
   "summarizeBatch": 15,
   "triageModel": "sonnet",

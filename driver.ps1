@@ -51,6 +51,15 @@ $bridgeRoot = Get-BridgeRoot
 $maxTurns   = [int]$cfg.maxTurns
 $loopDelay  = [int]$cfg.loopDelaySeconds
 $idlePoll   = if ($cfg.idlePollSeconds) { [int]$cfg.idlePollSeconds } else { 3 }
+# Adaptive idle backoff (perf 2026-05-29): keep the snappy $idlePoll cadence for the first
+# $idleFastTicks consecutive idle ticks after any activity, then ramp the sleep +1s/tick up to
+# $idleMaxPoll. A long-idle bridge otherwise wakes ~1Hz to run maintenance that is almost always
+# "not due" -- pure redundant looping. The streak resets to 0 the instant a user message arrives
+# or an autonomous task is claimed, so post-activity responsiveness is unchanged.
+$idleMaxPoll   = if ($cfg.idleMaxPollSeconds) { [int]$cfg.idleMaxPollSeconds } else { 5 }
+$idleFastTicks = if ($cfg.idleFastTicks)      { [int]$cfg.idleFastTicks }      else { 8 }
+if ($idleMaxPoll -lt $idlePoll) { $idleMaxPoll = $idlePoll }   # never sleep below base cadence
+$script:idleStreak = 0
 $fullContext    = if ($cfg.fullContextCount) { [int]$cfg.fullContextCount } else { 20 }
 $summarizeBatch = if ($cfg.summarizeBatch)   { [int]$cfg.summarizeBatch }   else { 15 }
 $triageModel       = if ($cfg.triageModel)       { [string]$cfg.triageModel }       else { 'sonnet' }
@@ -2999,6 +3008,7 @@ while ($true) {
 
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
+      $script:idleStreak = 0   # user activity -> restore snappy idle cadence
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
       $projectBindingForTask = Get-ActiveProjectBinding
       if ($projectBindingForTask -and ([string]$projectBindingForTask.slug -ne 'main') -and -not [bool]$projectBindingForTask.ok) {
@@ -3273,6 +3283,7 @@ while ($true) {
         }
       }
       if ($claimedIdea) {
+        $script:idleStreak = 0   # autonomous task claimed -> snappy idle again once it finishes
         $bid = [string]$claimedIdea.id
         $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
         $today = (Get-Date).ToString('yyyy-MM-dd')
@@ -3349,7 +3360,12 @@ while ($true) {
             Add-Message -From system -Text ("🧹 Auto-sweep: убит " + $ores.killed + " orphan codex.exe (старше " + $orphMax + " мин, не привязан к активному агенту)") -Kind event | Out-Null
           }
         } catch {}
-        Start-Sleep -Seconds $idlePoll; continue
+        # Adaptive backoff: snappy for the first $idleFastTicks ticks after activity, then
+        # +1s per extra consecutive idle tick, capped at $idleMaxPoll. Cuts redundant ~1Hz wakeups.
+        $script:idleStreak = [int]$script:idleStreak + 1
+        $sleepSec = $idlePoll
+        if ($script:idleStreak -gt $idleFastTicks) { $sleepSec = [Math]::Min($idleMaxPoll, $idlePoll + ($script:idleStreak - $idleFastTicks)) }
+        Start-Sleep -Seconds $sleepSec; continue
       }
     }
   } else {
