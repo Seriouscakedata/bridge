@@ -91,8 +91,9 @@ function Invoke-CodexParallel {
     $proc = $null
     try {
       # SECURITY (Ф2): honor config-driven sandbox instead of hardcoded danger-full-access.
-      # See Invoke-ParallelCodexCli for the full rationale (Windows = behavioral boundary, not an
-      # OS jail; --add-dir grants the shared .git for linked-worktree commits where enforced).
+      # See Invoke-ParallelCodexCli for the full rationale (on Windows workspace-write IS an OS jail:
+      # Codex shell runs as a separate restricted user, so the worker cannot write linked-worktree git
+      # metadata; Project Foundry uses host-managed commit. --add-dir still helps where it CAN write).
       $cpSandbox = 'workspace-write'
       try { if (Get-Command Get-CoderSandboxMode -ErrorAction SilentlyContinue) { $cpSandbox = [string](Get-CoderSandboxMode) } } catch {}
       if ([string]::IsNullOrWhiteSpace($cpSandbox)) { $cpSandbox = 'workspace-write' }
@@ -336,12 +337,19 @@ function Invoke-ParallelCodexCli {
   if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
   # SECURITY (Ф2): parallel/foundry workers used to hardcode -s danger-full-access, which fully
   # disables Codex's own command guards. Honor the same config-driven sandbox as the serial coder
-  # (Get-CoderSandboxMode -> default 'workspace-write', fail-closed). Note (empirically verified on
-  # this Windows host 2026-05-29): workspace-write is NOT OS-enforced on Windows -- it is a behavioral
-  # boundary the model honors, not a hard jail. Real isolation comes from (a) workers never targeting
-  # the bridge repo itself and (b) per-worker git worktrees. On Linux/macOS workspace-write IS OS-
-  # enforced; there a git commit in a LINKED worktree writes objects/refs under <project>/.git
-  # (outside cwd) and would be blocked, so we also grant that shared git dir via --add-dir.
+  # (Get-CoderSandboxMode -> default 'workspace-write', fail-closed). EMPIRICAL CORRECTION
+  # (Gate C, 2026-05-29 -- supersedes an earlier wrong note that said "not OS-enforced on Windows"):
+  # workspace-write IS OS-enforced on this Windows host. Codex runs shell commands as a SEPARATE
+  # restricted user account 'CodexSandboxOffline' (SID ...-1003), distinct from the repo owner
+  # 'rafie' (SID ...-1001). Consequence for LINKED worktrees: even though --add-dir puts the shared
+  # <project>/.git in Codex's writable-roots, the NTFS ACL still denies the sandbox user write to
+  # .git/worktrees/<id>/, so it cannot create index.lock and therefore cannot 'git add'/'git commit'
+  # (verified: jobs/parallel/worker_s1_*.err.txt -> "Unable to create ...index.lock: Permission
+  # denied"). FIX: Project Foundry workers run in HOST-MANAGED-COMMIT mode -- the worker only PRODUCES
+  # files in its worktree cwd (which the sandbox CAN write) and the trusted host (repo owner) does the
+  # git add/commit afterwards (see Get-FoundryDefaultOps Result Op + Spawn-Worker -HostManagedCommit).
+  # --add-dir below stays: harmless for the host-commit path, and still useful where the sandbox CAN
+  # write git metadata (Temp-rooted repos / Linux/macOS), so workers there can still commit directly.
   $sandbox = 'workspace-write'
   try { if (Get-Command Get-CoderSandboxMode -ErrorAction SilentlyContinue) { $sandbox = [string](Get-CoderSandboxMode) } } catch {}
   if ([string]::IsNullOrWhiteSpace($sandbox)) { $sandbox = 'workspace-write' }
@@ -660,6 +668,11 @@ function Spawn-Worker {
     [Parameter(Mandatory=$true)] [string]$Body,
     [Parameter(Mandatory=$true)] [string]$Worktree,
     [Parameter(Mandatory=$true)] [string]$BranchName,
+    # Host-managed-commit mode: the worker only PRODUCES files (does not git
+    # add/commit); the host commits afterwards. Required where the codex sandbox
+    # runs as a separate OS user that cannot write linked-worktree git metadata
+    # (Windows). Set by Project Foundry's Prepare Op. Belongs to every param set.
+    [switch]$HostManagedCommit,
     [Parameter(ParameterSetName='Spec',  Position=4)] [object]$WorkerSpec,
     [Parameter(ParameterSetName='Legacy')] [string]$Coder,
     [Parameter(ParameterSetName='Legacy')] [string]$Model
@@ -700,6 +713,12 @@ function Spawn-Worker {
   $outF = "$prefix.out.txt"
   $errF = "$prefix.err.txt"
   $prompt = New-ParallelWorkerPrompt -Body $Body -Files $files -BranchName $BranchName
+  if ($HostManagedCommit) {
+    # Override the prompt's "git add/commit" rule for sandboxes that cannot write
+    # linked-worktree git metadata (Windows codex workspace-write runs as a separate
+    # restricted user). The worker must NOT commit; the host commits its files.
+    $prompt += "`n`nВАЖНО — режим host-managed commit (ПЕРЕОПРЕДЕЛЯЕТ правило про git выше):`n- НЕ выполняй git add и git commit. Фиксацию в git сделает система (host) автоматически после твоего завершения.`n- Просто создай/измени нужные файлы в рабочей папке и убедись, что они корректны.`n- Когда файлы готовы — верни ровно STATUS: DONE (НЕ PARTIAL и НЕ FAILED из-за невозможности закоммитить)."
+  }
   $u8 = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($inF, $prompt, $u8)
 

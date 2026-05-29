@@ -256,7 +256,7 @@ function Get-FoundryDefaultOps {
     if (-not $spec) { $pool = @(Get-ParallelWorkerPool); if ($pool.Count -gt 0) { $spec = $pool[0] } }
     if (-not $spec) { Remove-Worktree $wt; return @{ ok = $false; error = 'no worker available' } }
     $worker = $null
-    try { $worker = Spawn-Worker -StreamId $sid -Body $body -Worktree $wt.path -BranchName $wt.branch -WorkerSpec $spec }
+    try { $worker = Spawn-Worker -StreamId $sid -Body $body -Worktree $wt.path -BranchName $wt.branch -WorkerSpec $spec -HostManagedCommit }
     catch { Remove-Worktree $wt; return @{ ok = $false; error = ('spawn: ' + $_.Exception.Message) } }
     return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker; baseSha = $baseSha } }
   }.GetNewClosure()
@@ -294,6 +294,44 @@ function Get-FoundryDefaultOps {
     $branch = ''
     try { $branch = [string]$Ctx.wt.branch } catch {}
     $base = [string](Get-RunnerField $Ctx 'baseSha' '')
+
+    # HOST-MANAGED COMMIT (Gate C root-cause fix, 2026-05-29). The codex
+    # workspace-write sandbox on Windows executes shell as a SEPARATE restricted OS
+    # user ('CodexSandboxOffline', distinct SID from repo owner 'rafie'). Even with
+    # --add-dir granting the shared <project>/.git, the NTFS ACL denies that user
+    # write to .git/worktrees/<id>/, so the worker cannot create index.lock and thus
+    # cannot 'git add'/'git commit'. Workers therefore run in host-managed-commit
+    # mode (Spawn-Worker -HostManagedCommit): they only PRODUCE files in the worktree
+    # cwd (which the sandbox CAN write). Here the trusted HOST (this process, the repo
+    # owner) commits that work so the structural gate can count it. The gate keeps its
+    # meaning: a worker that lies about 'done' but produces nothing leaves a clean
+    # worktree -> no commit -> fail-closed. Idempotent: if the worker DID manage to
+    # commit (Temp-rooted repo / other OS where the sandbox can write git metadata),
+    # the worktree is already clean and we add nothing.
+    $wstatus = [string](Get-RunnerField $r 'status' '')
+    $wtPath = ''
+    try { $wtPath = [string]$Ctx.wt.path } catch {}
+    if ($wstatus -eq 'done' -and -not [string]::IsNullOrWhiteSpace($wtPath) -and (Test-Path -LiteralPath $wtPath)) {
+      # EAP=Continue locally + gate on $LASTEXITCODE: native git writes benign
+      # warnings to stderr (notably the "LF will be replaced by CRLF" autoconv notice
+      # on 'git add'), and under EAP=Stop those raise NativeCommandError that would
+      # abort the commit (confirmed Gate C run #5: add emitted the CRLF warning, the
+      # old 2>$null+catch swallowed it as a failure, the commit never happened, the
+      # gate saw 0 commits and deadlocked). Success is decided by exit code, not by
+      # the absence of stderr output.
+      $eapSave = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        $dirty = @(& (Get-GitExe) -C $wtPath status --porcelain 2>&1 | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($dirty.Count -gt 0) {
+          & (Get-GitExe) -C $wtPath add -A 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            & (Get-GitExe) -C $wtPath -c user.name='bridge' -c user.email='bridge@localhost' commit -m ('foundry-worker: ' + [string]$Ctx.sid) 2>&1 | Out-Null
+          }
+        }
+      } catch {} finally { $ErrorActionPreference = $eapSave }
+    }
+
     $commits = @()
     if (-not [string]::IsNullOrWhiteSpace($branch)) {
       $range = if ([string]::IsNullOrWhiteSpace($base)) { $branch } else { ($base + '..' + $branch) }
@@ -439,7 +477,27 @@ function Get-FoundryProjectsRoot {
       }
     }
   } catch {}
-  if ([string]::IsNullOrWhiteSpace($root)) { $root = Join-Path (Get-BridgeRoot) 'projects' }
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    # Default to a path that is BOTH outside OneDrive AND outside MSIX per-app
+    # virtualization -- the two Windows mechanisms that corrupt git linked-worktree
+    # metadata for autonomous workers (empirically pinned in Gate C, 2026-05-29):
+    #   * OneDrive Files-On-Demand turns .git/worktrees/<id>/ into READONLY reparse
+    #     points -> worker `git commit` dies "Unable to create ...index.lock:
+    #     Permission denied". (bridge lives under OneDrive\Documents, so the old
+    #     default <bridge>/projects inherited this.)
+    #   * %LOCALAPPDATA% / %APPDATA% / %TEMP% get redirected under an MSIX-packaged
+    #     host into ...\Packages\<app>\LocalCache\... ; a worktree created via the
+    #     logical path but resolved back via the physical path desyncs across
+    #     processes -> "cannot lock ref 'HEAD': unable to create directory for
+    #     ...\worktrees\<id>\HEAD". (Probed 2026-05-29: USERPROFILE is NOT
+    #     virtualized; parallel worktree commits under it succeed.)
+    # %USERPROFILE% root is per-user, never OneDrive-synced (KFM only moves
+    # Documents/Desktop/Pictures), and not MSIX-redirected. Falls back to
+    # <bridge>/projects only if USERPROFILE is somehow unset.
+    $up = [string]$env:USERPROFILE
+    if (-not [string]::IsNullOrWhiteSpace($up)) { $root = Join-Path $up 'bridge-projects' }
+    else { $root = Join-Path (Get-BridgeRoot) 'projects' }
+  }
   return $root
 }
 
