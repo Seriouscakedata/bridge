@@ -26,6 +26,15 @@ function Get-AutonomySettings {
     maxIdeasPerReflect       = 3
     stablePromoteMinutes     = 30
     scope                    = 'bridge'   # 'bridge' = only the bridge; 'projects' = bridge + its projects
+    # Graduated self-development of UNapproved 'new' backlog ideas (the selection-autonomy axis).
+    # Default 'shadow' is safe: the system surfaces WHICH new idea + risk tier it would self-pick
+    # but executes nothing. The operator dials up only after trusting the classifier from logs.
+    #   off    = legacy — only human/curator-approved ideas ever run; no shadow logging
+    #   shadow = log the would-pick + risk tier (green/yellow/red), no execution            [default]
+    #   green  = ALSO auto-execute green-tier (low-blast-radius, reversible) new ideas, no approval
+    #   yellow = ALSO auto-execute yellow-tier new ideas (broader; opt-in)
+    # red-tier (security/irreversible/externally-sourced) NEVER auto-executes at any dial.
+    selfExecuteTier          = 'shadow'
   }
   try {
     $cfg = Get-BridgeConfig

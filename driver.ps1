@@ -3282,6 +3282,41 @@ while ($true) {
           # the loop. The watchdog/critic will catch a bad commit downstream.
         }
       }
+      # 🌒 Shadow self-development (graduated autonomy; autonomy.selfExecuteTier, default 'shadow').
+      # When NO human/curator-approved idea is queued, surface which UNapproved 'new' idea the system
+      # WOULD self-pick next and its risk tier -- WITHOUT executing anything. This is the safe
+      # observability layer of the selection-autonomy axis: the operator watches the classifier's
+      # picks in chat, then dials selfExecuteTier up to 'green' once trusted. Pure logging; this
+      # block NEVER sets $claimedIdea. main channel only (bridge self-dev lives on the bridge channel).
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and ([string]$Channel -eq 'main')) {
+        try {
+          $selfTier = 'shadow'
+          try { $selfTier = ([string](Get-AutonomySettings).selfExecuteTier).ToLowerInvariant() } catch {}
+          if ($selfTier -and $selfTier -ne 'off' -and (Test-AutonomyReady)) {
+            $shadowPick = $null
+            try { $shadowPick = Get-NextRunnableIdea -IncludeNew } catch {}
+            $shadowId = if ($shadowPick) { [string]$shadowPick.id } else { '' }
+            # Only act when the would-pick CHANGES, so we don't repost every idle tick.
+            if ($shadowId -ne [string]$script:lastShadowIdeaId) {
+              $script:lastShadowIdeaId = $shadowId
+              if ($shadowPick -and ([string]$shadowPick.status -eq 'new')) {
+                $rt = Get-IdeaRiskTier -Idea $shadowPick
+                $tier = [string]$rt.tier; $why = [string]$rt.reason
+                try { Set-IdeaRiskTier -Id $shadowId -Tier $tier -Reason $why | Out-Null } catch {}
+                $wouldExec = (($selfTier -eq 'green')  -and ($tier -eq 'green')) -or `
+                             (($selfTier -eq 'yellow') -and ($tier -eq 'green' -or $tier -eq 'yellow'))
+                $verb = if ($selfTier -eq 'shadow') { 'взяла бы (shadow, без запуска)' }
+                        elseif ($wouldExec) { 'ЗАПУСТИЛА БЫ сейчас' }
+                        else { 'НЕ запускает (тир выше текущего диска)' }
+                $ideaText = [string]$shadowPick.text
+                if ($ideaText.Length -gt 80) { $ideaText = $ideaText.Substring(0,80) + '…' }
+                Add-Message -From system -Text ("🌒 Само-развитие [диск=$selfTier]: $verb новую идею «$ideaText» · риск=$tier · $why") -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='shadow-pick'; item_id=$shadowId; tier=$tier; reason=$why; dial=$selfTier; would_execute=$wouldExec }) } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
       if ($claimedIdea) {
         $script:idleStreak = 0   # autonomous task claimed -> snappy idle again once it finishes
         $bid = [string]$claimedIdea.id

@@ -741,6 +741,44 @@ function Get-NextRunnableIdea {
   return $null
 }
 
+function Get-IdeaRiskTier {
+  # Heuristic risk classifier for graduated self-execution. CONSERVATIVE by design:
+  #   red    = never auto-executes — externally-sourced (anti-backdoor) OR touches the
+  #            safety/security/irreversible surface (watchdog, .git, secrets, delete, sandbox...)
+  #   green  = explicitly low-blast-radius & reversible (docs/comments/typos/lint/log wording)
+  #   yellow = everything else (a real code change) — never auto-green; caution by default
+  # Deterministic, no LLM (cheap enough to run every idle tick). Returns @{ tier; reason }.
+  # Patterns are bilingual (RU+EN) because ideas are authored in both.
+  param($Idea)
+  $text = ''
+  try { $text = ([string]$Idea.text).ToLowerInvariant() } catch {}
+  if ([string]::IsNullOrWhiteSpace($text)) { return [pscustomobject]@{ tier = 'red'; reason = 'пустой текст идеи' } }
+  try { if (Test-IdeaExternal $Idea) { return [pscustomobject]@{ tier = 'red'; reason = 'внешний источник (radar/web) — только ручное одобрение' } } } catch {}
+  $redPat = '(watchdog|supervisor|kill[- ]?switch|\.git|force[- ]?push|reset --hard|secret|credential|пароль|password|auth\.json|token|api[- ]?key|sandbox|permission|разрешени|удал|delete|drop\s+table|rm\s+-rf|encrypt|шифр|биллинг|billing|оплат|payment)'
+  if ($text -match $redPat) { return [pscustomobject]@{ tier = 'red'; reason = 'затрагивает безопасность/необратимое/деньги' } }
+  $greenPat = '(коммент|comment|документац|\bdocs?\b|readme|typo|опечат|орфограф|wording|форматир|\bformat\b|\blint\b|мёртв\w* код|dead code|unused|неиспольз|лог[- ]?сообщен|log message|whitespace|пробел|отступ|переименован\w* переменн|rename \w+ variable)'
+  if ($text -match $greenPat) { return [pscustomobject]@{ tier = 'green'; reason = 'узкий обратимый скоуп (доки/комменты/линт/тексты)' } }
+  return [pscustomobject]@{ tier = 'yellow'; reason = 'реальное изменение кода — нужна осторожность' }
+}
+
+function Set-IdeaRiskTier {
+  # Persist a classified risk tier on the backlog item (UI visibility + audit trail).
+  param([string]$Id, [string]$Tier, [string]$Reason = '')
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $items = @(Get-Backlog)
+  $hit = $false
+  foreach ($i in $items) {
+    if ([string]$i.id -eq $Id) {
+      $i | Add-Member -NotePropertyName risk_tier   -NotePropertyValue ([string]$Tier)   -Force
+      $i | Add-Member -NotePropertyName risk_reason -NotePropertyValue ([string]$Reason) -Force
+      $i | Add-Member -NotePropertyName risk_ts     -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+      $hit = $true; break
+    }
+  }
+  if ($hit) { Save-Backlog $items }
+  return $hit
+}
+
 function Get-IdeaById {
   param([string]$Id)
   foreach ($i in @(Get-Backlog)) { if ([string]$i.id -eq $Id) { return $i } }
