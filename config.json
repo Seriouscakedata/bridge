@@ -198,6 +198,7 @@
       { "id": "claude-opus",      "cli": "claude", "model": "opus",            "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs"], "purpose": "Heavy architectural work, design decisions. RESERVE: only for complexity=architectural or explicit [[OPUS]] marker. Expensive quota."  }
     ]
   },
+  "coderTimeoutMs": 1500000,
   "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }

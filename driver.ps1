@@ -2389,7 +2389,9 @@ function Invoke-Coder {
     # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
     # mandatory visit.ps1 invocations on top of edits, ui_audit, verification, and
     # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
+    $coderTimeoutMs = 900000
+    if ($cfg.coderTimeoutMs -gt 0) { $coderTimeoutMs = [int]$cfg.coderTimeoutMs }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs $coderTimeoutMs -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
       Stop-AgentTree $p.Id
       Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response '' `
         -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'coder_timeout' -Provider 'codex'
