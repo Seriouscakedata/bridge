@@ -383,18 +383,16 @@ function Add-AuditCriticalsToBacklog {
             $text += " — $det"
           }
           if ($existingTexts.ContainsKey($text)) { continue }
-          # 2026-05-29: status by finding RELIABILITY, not a blanket cut. Deterministic criticals
-          # (security/static-grep) auto-approve -> the bridge fixes them AUTONOMOUSLY (that's the point).
-          # FUNCTIONAL findings (e.g. a scenario timeout like channel-switch) can be FLAKY -> land as
-          # 'new' for a quick operator glance, so a flaky test never becomes a self-executing task
-          # ("странная одобренная задача"). Autonomy preserved for what's trustworthy; review only for
-          # the flaky-prone class. Hand-rolled record (not Add-Idea) keeps dedupe-by-exact-text in the lock.
-          $auditStatus = if ([string]$f.source -eq 'functional') { 'new' } else { 'approved' }
+          # Audit criticals auto-approve so the bridge fixes them AUTONOMOUSLY -- self-development is the
+          # whole point. The risk-classifier still blocks red-tier, the funnel still dedupes, and the
+          # operator can un-approve in the UI. If flaky findings get noisy, fix it at the SOURCE (audit
+          # must not flag a flaky scenario as 'critical') -- NOT by trimming autonomy here. Hand-rolled
+          # record (not Add-Idea) keeps dedupe-by-exact-text semantics in the audit's locked write path.
           $rec = [ordered]@{
             id       = [guid]::NewGuid().ToString('N')
             ts       = (Get-Date).ToUniversalTime().ToString('o')
             from     = 'audit'
-            status   = $auditStatus
+            status   = 'approved'
             tags     = @('audit', [string]$f.source, 'critical')
             attempts = 0
             score    = 0.0
