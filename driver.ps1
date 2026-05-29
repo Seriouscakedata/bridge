@@ -3525,6 +3525,29 @@ while ($true) {
     }
     else { $failedAttachmentPaths += $sourcePath }
   }
+  # Auto-detect image file paths from markdown links: [name](</C:/path.png>)
+  $imgMdPattern = '\[[^\]]*\]\(<\/?([^>]+\.(?:png|jpg|jpeg|gif|bmp|webp))>\)'
+  foreach ($mdMatch in [regex]::Matches($reply, $imgMdPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    $imgPath = $mdMatch.Groups[1].Value.Trim()
+    if ($imgPath -match '^/([A-Za-z]:.*)') { $imgPath = $Matches[1] }
+    $imgPath = $imgPath.Replace('/', '\')
+    $normalized = $imgPath
+    if ($normalized -notin ($fileMarkerPaths | ForEach-Object { ([string]$_).Replace('/', '\') }) -and (Test-Path -LiteralPath $imgPath)) {
+      $fileMarkerPaths += $imgPath
+      $meta = Register-AttachmentPath -SourcePath $imgPath
+      if ($meta) { $attachmentMetas += $meta } else { $failedAttachmentPaths += $imgPath }
+    }
+  }
+  # Best-effort: bare Windows paths (no spaces supported)
+  $imgBarePattern = '([A-Za-z]:\\[^\s\[\]<>"'']+\.(?:png|jpg|jpeg|gif|bmp|webp))'
+  foreach ($bareMatch in [regex]::Matches($reply, $imgBarePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    $imgPath = $bareMatch.Groups[1].Value.Trim()
+    if ($imgPath -notin ($fileMarkerPaths | ForEach-Object { ([string]$_).Replace('/', '\') }) -and (Test-Path -LiteralPath $imgPath)) {
+      $fileMarkerPaths += $imgPath
+      $meta = Register-AttachmentPath -SourcePath $imgPath
+      if ($meta) { $attachmentMetas += $meta } else { $failedAttachmentPaths += $imgPath }
+    }
+  }
   # [[SAVE: title]] ... [[/SAVE]] -> durable decision note
   $savePattern = '(?s)\[\[SAVE:\s*(.+?)\s*\]\](.*?)\[\[/SAVE\]\]'
   $savedPaths = @()
