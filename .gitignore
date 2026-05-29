@@ -34,6 +34,7 @@ notify.last
 tmp_*.png
 visit_*.png
 bridge_shot_*.png
+desktop-screenshot*.png
 _archive_*.tmp*
 .git/
 turns.jsonl
