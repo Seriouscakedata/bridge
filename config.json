@@ -200,6 +200,19 @@
     ]
   },
   "coderTimeoutMs": 1500000,
+  "probeTimeout": {
+    "minMs": 120000,
+    "baseMs": 180000,
+    "maxMs": 1200000,
+    "metrics": {
+      "channels": { "weight": 10000, "capMs": 90000 },
+      "stateKb": { "weight": 120, "capMs": 180000 },
+      "locks": { "weight": 15000, "capMs": 120000 },
+      "jobs": { "weight": 5000, "capMs": 180000 },
+      "checkpoints": { "weight": 8000, "capMs": 180000 },
+      "restartsHour": { "weight": 45000, "capMs": 270000 }
+    }
+  },
   "radarEveryHours": 168,
   "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
 }

@@ -2323,6 +2323,11 @@ function Invoke-Coder {
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $replayCoderModel = 'codex-cli'
+  $isProbeTurn = $false
+  $probeMetrics = $null
+  $probeTimeoutMs = 0
+  $probeExit = 'unknown'
+  $probeVerdict = ''
   # Per-channel project root routes Codex -C to the active project. No non-main fallback.
   # Global Codex instance mutex: Codex MSIX supports only one exec session at a time.
   # When another channel's driver is running Codex, wait up to 120s for it to finish.
@@ -2417,19 +2422,77 @@ function Invoke-Coder {
     }
     $null = $p.Handle; Set-AgentPid $p.Id; Register-AgentPid $p.Id
     Set-CurrentAgent 'codex'
-    # Coder cap was 600s - too tight after visual-baseline rule (d02ac8f) added
-    # mandatory visit.ps1 invocations on top of edits, ui_audit, verification, and
-    # commit for UI tasks. Drag-handle fix timed out at 603s twice. Raised to 900s.
     $coderTimeoutMs = 900000
-    if ($cfg.coderTimeoutMs -gt 0) { $coderTimeoutMs = [int]$cfg.coderTimeoutMs }
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs $coderTimeoutMs -MsgFile $msgF -ErrFile $errF -OutFile $outF)) {
+    try {
+      $timeoutCfg = Get-BridgeConfig
+      if ($timeoutCfg.coderTimeoutMs -gt 0) { $coderTimeoutMs = [int]$timeoutCfg.coderTimeoutMs }
+    } catch {
+      try { if ($cfg.coderTimeoutMs -gt 0) { $coderTimeoutMs = [int]$cfg.coderTimeoutMs } } catch {}
+    }
+    $probeTags = @()
+    $probeTaskPrompt = $Prompt
+    try {
+      $probeState = Read-State
+      if ($probeState -and $probeState.current_task) { $probeTaskPrompt = [string]$probeState.current_task }
+      $probeBacklogId = if ($probeState -and $probeState.current_backlog_id) { [string]$probeState.current_backlog_id } else { '' }
+      if (-not [string]::IsNullOrWhiteSpace($probeBacklogId) -and (Get-Command Get-IdeaById -ErrorAction SilentlyContinue)) {
+        $probeIdea = Get-IdeaById -Id $probeBacklogId
+        if ($probeIdea -and $probeIdea.tags) { $probeTags = @($probeIdea.tags | ForEach-Object { [string]$_ }) }
+      }
+    } catch { $probeTags = @() }
+    $isProbeTurn = Test-IsProbeTask -Prompt $probeTaskPrompt -Command '' -Tags $probeTags
+    if ($isProbeTurn) {
+      try {
+        $probeMetrics = Get-RuntimeStateMetrics
+        $probeTimeoutMs = Get-AdaptiveProbeTimeoutMs -Metrics $probeMetrics -CoderTimeoutMs $coderTimeoutMs
+        $coderTimeoutMs = $probeTimeoutMs
+        try {
+          Add-Content -LiteralPath (Join-Path $bridgeRoot 'driver.out.log') -Value (
+            (Get-Date).ToString('s') + " probe-timeout computed=$probeTimeoutMs metrics=" + ($probeMetrics | ConvertTo-Json -Compress -Depth 4)
+          ) -Encoding UTF8
+        } catch {}
+      } catch {
+        $probeExit = 'error'
+        $probeVerdict = 'adaptive-timeout-error: ' + $_.Exception.Message
+        try { Add-Message -From system -Text ("⚠ probe-timeout: adaptive calculation failed, using coderTimeoutMs=" + $coderTimeoutMs + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+      }
+    }
+    $waitOk = $false
+    try {
+      $waitOk = Wait-AgentProcess -Proc $p -TimeoutMs $coderTimeoutMs -MsgFile $msgF -ErrFile $errF -OutFile $outF
+    } catch {
+      $probeExit = 'error'
+      $probeVerdict = 'wait-error: ' + $_.Exception.Message
+      throw
+    }
+    if (-not $waitOk) {
+      $probeExit = 'timeout'
+      $probeVerdict = 'timeout'
       Stop-AgentTree $p.Id
       Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response '' `
         -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'coder_timeout' -Provider 'codex'
       return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
     }
+    $probeExit = 'ok'
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
+    if ($isProbeTurn -and $reply -match '(?m)^\s*(STATUS|VERDICT|verdict)\s*[:=]\s*(.+?)\s*$') { $probeVerdict = [string]$matches[2] }
+  } catch {
+    if ($isProbeTurn -and $probeExit -eq 'unknown') {
+      $probeExit = 'error'
+      $probeVerdict = $_.Exception.Message
+    }
+    throw
   } finally {
+    if ($isProbeTurn) {
+      try {
+        if ($null -eq $probeMetrics) { $probeMetrics = Get-RuntimeStateMetrics }
+        if ($probeTimeoutMs -le 0) { $probeTimeoutMs = $coderTimeoutMs }
+        if ([string]::IsNullOrWhiteSpace($probeVerdict)) { $probeVerdict = $probeExit }
+        Write-ProbeDuration -ComputedTimeoutMs $probeTimeoutMs -ActualDurationMs ([int]$sw.ElapsedMilliseconds) -Metrics $probeMetrics -Exit $probeExit -Verdict $probeVerdict
+      } catch {
+        try { Add-Message -From system -Text ("⚠ probe-timeout: failed to write duration telemetry: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+      }
+    }
     Set-CurrentAgent $null
     if ($codexLockAcquired) { Remove-Item $codexLockFile -Force -ErrorAction SilentlyContinue }
     if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Clear-AgentPid
