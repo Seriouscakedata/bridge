@@ -564,6 +564,56 @@ function Save-Backlog {
   Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
 }
 
+function New-BacklogLLMPriorityPrompt {
+  param([object[]]$Ideas)
+
+  $promptBuilder = New-Object System.Text.StringBuilder
+  [void]$promptBuilder.AppendLine('Ты — приоритизатор задач для автономного ИИ-моста.')
+  [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
+  [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
+  [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
+  [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
+  [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
+  [void]$promptBuilder.AppendLine('')
+  [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
+  [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
+  [void]$promptBuilder.AppendLine('')
+  [void]$promptBuilder.AppendLine('Задачи:')
+  foreach ($idea in @($Ideas)) {
+    $title = ''
+    try {
+      if ($idea.PSObject.Properties.Name -contains 'title' -and -not [string]::IsNullOrWhiteSpace([string]$idea.title)) {
+        $title = [string]$idea.title
+      }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($title)) {
+      $title = ([string]$idea.text -replace '\s+', ' ').Trim()
+    }
+    if ($title.Length -gt 220) { $title = $title.Substring(0, 220) + '...' }
+    $effort = ''
+    $value = ''
+    try { $effort = [string]$idea.effort } catch { $effort = '' }
+    try { $value = [string]$idea.value } catch { $value = '' }
+    if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'n/a' }
+    if ([string]::IsNullOrWhiteSpace($value)) { $value = 'n/a' }
+    [void]$promptBuilder.AppendLine(("ID: {0} | {1} | effort:{2} | value:{3}" -f [string]$idea.id, $title, $effort, $value))
+  }
+  return $promptBuilder.ToString().Trim()
+}
+
+function Get-BacklogPrioritizerModel {
+  if (-not (Get-Command Get-LLMConfig -ErrorAction SilentlyContinue)) { return '' }
+  try {
+    $cfg = Get-LLMConfig
+    foreach ($key in @('prioritizer','deep','fallback')) {
+      if ($cfg -and $cfg.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$cfg[$key])) {
+        return [string]$cfg[$key]
+      }
+    }
+  } catch {}
+  return ''
+}
+
 function Invoke-BacklogLLMPrioritize {
   param(
     [int]$MaxItems = 20,
@@ -588,76 +638,18 @@ function Invoke-BacklogLLMPrioritize {
     if ($ideas.Count -eq 0) { return 0 }
 
     Ensure-BacklogLLMLoaded
+    $prompt = New-BacklogLLMPriorityPrompt -Ideas $ideas
     $raw = $null
     try {
       if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
-        $promptBuilder = New-Object System.Text.StringBuilder
-        [void]$promptBuilder.AppendLine('Ты — приоритизатор задач для автономного ИИ-моста.')
-        [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
-        [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
-        [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
-        [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
-        [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
-        [void]$promptBuilder.AppendLine('')
-        [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
-        [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
-        [void]$promptBuilder.AppendLine('')
-        [void]$promptBuilder.AppendLine('Задачи:')
-        foreach ($idea in $ideas) {
-          $title = ''
-          try {
-            if ($idea.PSObject.Properties.Name -contains 'title' -and -not [string]::IsNullOrWhiteSpace([string]$idea.title)) {
-              $title = [string]$idea.title
-            }
-          } catch {}
-          if ([string]::IsNullOrWhiteSpace($title)) {
-            $title = ([string]$idea.text -replace '\s+', ' ').Trim()
-          }
-          if ($title.Length -gt 220) { $title = $title.Substring(0, 220) + '...' }
-          $effort = ''
-          $value = ''
-          try { $effort = [string]$idea.effort } catch { $effort = '' }
-          try { $value = [string]$idea.value } catch { $value = '' }
-          if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'n/a' }
-          if ([string]::IsNullOrWhiteSpace($value)) { $value = 'n/a' }
-          [void]$promptBuilder.AppendLine(("ID: {0} | {1} | effort:{2} | value:{3}" -f [string]$idea.id, $title, $effort, $value))
-        }
-        $prompt = $promptBuilder.ToString().Trim()
         $raw = Invoke-LLM -Purpose 'prioritizer' -Prompt $prompt -TimeoutSec 30 -Temperature 0.2
       } elseif (Get-Command Invoke-LLMProvider -ErrorAction SilentlyContinue) {
-        $promptBuilder = New-Object System.Text.StringBuilder
-        [void]$promptBuilder.AppendLine('Ты — приоритизатор задач для автономного ИИ-моста.')
-        [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
-        [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
-        [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
-        [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
-        [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
-        [void]$promptBuilder.AppendLine('')
-        [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
-        [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
-        [void]$promptBuilder.AppendLine('')
-        [void]$promptBuilder.AppendLine('Задачи:')
-        foreach ($idea in $ideas) {
-          $title = ''
-          try {
-            if ($idea.PSObject.Properties.Name -contains 'title' -and -not [string]::IsNullOrWhiteSpace([string]$idea.title)) {
-              $title = [string]$idea.title
-            }
-          } catch {}
-          if ([string]::IsNullOrWhiteSpace($title)) {
-            $title = ([string]$idea.text -replace '\s+', ' ').Trim()
-          }
-          if ($title.Length -gt 220) { $title = $title.Substring(0, 220) + '...' }
-          $effort = ''
-          $value = ''
-          try { $effort = [string]$idea.effort } catch { $effort = '' }
-          try { $value = [string]$idea.value } catch { $value = '' }
-          if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'n/a' }
-          if ([string]::IsNullOrWhiteSpace($value)) { $value = 'n/a' }
-          [void]$promptBuilder.AppendLine(("ID: {0} | {1} | effort:{2} | value:{3}" -f [string]$idea.id, $title, $effort, $value))
+        $priorityModel = Get-BacklogPrioritizerModel
+        if ([string]::IsNullOrWhiteSpace($priorityModel)) {
+          Write-Warning 'Invoke-BacklogLLMPrioritize: prioritizer model is not configured'
+          return 0
         }
-        $prompt = $promptBuilder.ToString().Trim()
-        $raw = Invoke-LLMProvider -Model 'deepseek-v4-pro' -Prompt $prompt -TimeoutSec 30 -Temperature 0.2
+        $raw = Invoke-LLMProvider -Model $priorityModel -Prompt $prompt -TimeoutSec 30 -Temperature 0.2
       } else {
         Write-Warning 'Invoke-BacklogLLMPrioritize: neither Invoke-LLM nor Invoke-LLMProvider is available'
         return 0
@@ -687,17 +679,26 @@ function Invoke-BacklogLLMPrioritize {
       return 0
     }
 
+    $ideaIds = @{}
+    foreach ($idea in $ideas) {
+      $ideaId = ''
+      try { $ideaId = [string]$idea.id } catch { $ideaId = '' }
+      if (-not [string]::IsNullOrWhiteSpace($ideaId)) { $ideaIds[$ideaId] = $true }
+    }
+    $idToIndex = @{}
+    for ($idx = 0; $idx -lt $allItems.Count; $idx++) {
+      $itemId = ''
+      try { $itemId = [string]$allItems[$idx].id } catch { $itemId = '' }
+      if (-not [string]::IsNullOrWhiteSpace($itemId)) { $idToIndex[$itemId] = $idx }
+    }
+
     $updated = 0
     foreach ($rank in $ranked) {
       $id = ''
       try { $id = [string]$rank.id } catch { $id = '' }
       if ([string]::IsNullOrWhiteSpace($id)) { continue }
-
-      $target = $null
-      foreach ($idea in $ideas) {
-        if ([string]$idea.id -eq $id) { $target = $idea; break }
-      }
-      if (-not $target) { continue }
+      if (-not $ideaIds.ContainsKey($id)) { continue }
+      if (-not $idToIndex.ContainsKey($id)) { continue }
 
       $score100 = 0.0
       try { $score100 = [double]$rank.score } catch { continue }
@@ -706,8 +707,11 @@ function Invoke-BacklogLLMPrioritize {
       $reason = ''
       try { $reason = ([string]$rank.reason).Trim() } catch { $reason = '' }
 
+      $targetIndex = [int]$idToIndex[$id]
+      $target = $allItems[$targetIndex]
       $target | Add-Member -NotePropertyName score -NotePropertyValue ([Math]::Round($score100 / 10.0, 2)) -Force
       $target | Add-Member -NotePropertyName llm_priority_reason -NotePropertyValue $reason -Force
+      $allItems[$targetIndex] = $target
       $updated++
     }
 

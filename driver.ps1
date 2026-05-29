@@ -4432,23 +4432,6 @@ while ($true) {
       # letting plannerStatus=DONE close the task naturally.
       Update-State { param($s) $s.task_did_actions = $false } | Out-Null
     }
-    if ($hasVerify -and $plannerStatus -eq 'DONE') {
-      try {
-        $stQa = Read-State
-        $qaTaskId = [string]$stQa.current_task_id
-        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = [string]$stQa.current_backlog_id }
-        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = 'task-' + [string]$stQa.task_start_seq }
-        $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
-        if ($qaResult.Verdict -eq 'FAIL') {
-          Add-Message -From system -Text "🔴 QA-агент: FAIL`n$($qaResult.Summary)`nВозвращаю задачу на доработку." -Kind event | Out-Null
-          $plannerStatus = 'CONTINUE'
-        } else {
-          Add-Message -From system -Text "✅ QA-агент: PASS — $($qaResult.Summary)" -Kind event | Out-Null
-        }
-      } catch {
-        Add-Message -From system -Text "⚠ QA-агент: ошибка запуска ($($_.Exception.Message)), пропускаю." -Kind event | Out-Null
-      }
-    }
   }
   # Coder-bypass gate: planner did file edits without invoking Codex -> reject DONE, force CONTINUE->Codex+critic.
   # The critic only reviews Codex diffs; if Opus modifies files directly, its diff ships without independent review.
@@ -4673,15 +4656,15 @@ while ($true) {
               }
 
               $hcParts = New-Object 'System.Collections.Generic.List[string]'
-              [void]$hcParts.Add("ВСЕ .ps1 ФАЙЛЫ РЕПО: $repoPs1List")
               if ($funcLines.Count -gt 0) {
                 [void]$hcParts.Add("ФУНКЦИИ В ИЗМЕНЁННЫХ ФАЙЛАХ:`n" + [string]::Join("`n", $funcLines.ToArray()))
               }
               if ($crossRefs.Count -gt 0) {
                 [void]$hcParts.Add("ФУНКЦИИ ИЗ DIFF, ОПРЕДЕЛЁННЫЕ В ДРУГИХ ФАЙЛАХ:`n" + [string]::Join("`n", $crossRefs.ToArray()))
               }
+              [void]$hcParts.Add("ВСЕ .ps1 ФАЙЛЫ РЕПО: $repoPs1List")
               $headContext = [string]::Join("`n`n", $hcParts.ToArray())
-              if ($headContext.Length -gt 4000) { $headContext = $headContext.Substring(0, 4000) + "`n...[контекст обрезан]..." }
+              if ($headContext.Length -gt 8000) { $headContext = $headContext.Substring(0, 8000) + "`n...[контекст обрезан]..." }
               if ([string]::IsNullOrWhiteSpace($symbolEvidence)) { $symbolEvidence = "(no cross-file symbol evidence)" }
             } catch {
               $headContext = "(head-context unavailable: $($_.Exception.Message))"
@@ -4726,7 +4709,7 @@ while ($true) {
 DIFF_META: base=$base | diff_truncated=$diffTruncatedText | diff_bytes=$diffBytes
 DIFF ниже — полный диф от начала задачи до HEAD. Если diff_truncated=true — файлы за пределом могут быть изменены; их отсутствие в DIFF не доказывает, что они не менялись.
 TASK_HISTORY показывает все коммиты задачи — используй его для проверки полноты фаз и файлов.
-SYMBOL_EVIDENCE — сигнатуры и первые строки функций, вызванных в DIFF, но определённых в других файлах. Если функция есть в SYMBOL_EVIDENCE — не флагируй её как отсутствующую. Duplicate/drift флагируй только если изменённые строки DIFF реально вводят конфликтующую реализацию.
+SYMBOL_EVIDENCE — сигнатуры и первые строки функций, вызванных в DIFF, но определённых в других файлах. Если функция есть в SYMBOL_EVIDENCE или в блоке "ФУНКЦИИ В ИЗМЕНЁННЫХ ФАЙЛАХ" из HEAD-контекста — не флагируй её как отсутствующую. Duplicate/drift флагируй только если изменённые строки DIFF реально вводят конфликтующую реализацию.
 Аудируй только строки DIFF со знаком + или -. Не аудируй unchanged код из SYMBOL_EVIDENCE, TASK_HISTORY или HEAD-контекста.
 
 === CHANGED_FILES ===
@@ -4904,16 +4887,45 @@ $diff
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  auto-smoke-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
+  # QA agent gate: after verify/coder-bypass/critic/parse/smoke gates, run runtime QA before accepting DONE.
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $stQa = Read-State
+      if ([bool]$stQa.task_did_actions) {
+        $qaTaskId = [string]$stQa.current_task_id
+        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = [string]$stQa.current_backlog_id }
+        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = 'task-' + [string]$stQa.task_start_seq }
+        $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
+        if ($qaResult.Verdict -eq 'FAIL') {
+          Add-Message -From system -Text "🔴 QA-агент: FAIL`n$($qaResult.Summary)`nВозвращаю задачу на доработку." -Kind event | Out-Null
+          $plannerStatus = 'CONTINUE'
+        } else {
+          Add-Message -From system -Text "✅ QA-агент: PASS — $($qaResult.Summary)" -Kind event | Out-Null
+        }
+      }
+    } catch {
+      Add-Message -From system -Text "⚠ QA-агент: ошибка запуска ($($_.Exception.Message)), пропускаю." -Kind event | Out-Null
+    }
+  }
   if ($plannerStatus -eq 'CONTINUE') {
     try {
       $stCp = Read-State
       $cpTaskId = [string]$stCp.current_task_id
       if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = [string]$stCp.current_backlog_id }
       if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = 'task-' + [string]$stCp.task_start_seq }
-      $conversationSummary = Read-Summary
+      $cpStep = 0
+      try { $cpStep = [int]$stCp.task_turn } catch { $cpStep = 0 }
+      $conversationSummary = ''
+      try {
+        $conversationSummary = [string](Read-Summary)
+      } catch {
+        try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  summary-read-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+      }
       $cpSummary = if ($conversationSummary) { $conversationSummary.Substring(0, [Math]::Min(500, $conversationSummary.Length)) } else { '' }
-      Write-TaskCheckpoint -TaskId $cpTaskId -TaskTitle $task -Step ([int]$stCp.task_turn) -LastSummary $cpSummary -Channel $Channel
-    } catch {}
+      Write-TaskCheckpoint -TaskId $cpTaskId -TaskTitle $task -Step $cpStep -LastSummary $cpSummary -Channel $Channel
+    } catch {
+      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  checkpoint-write-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+    }
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
