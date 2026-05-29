@@ -1838,12 +1838,33 @@ function Wait-AgentProcess {
   # MsgFile/ErrFile/OutFile: optional temp-file paths; used for 60s telemetry ticks
   # (stagnation observability — no hard abort, data only).
   param($Proc, [int]$TimeoutMs, [string]$MsgFile='', [string]$ErrFile='', [string]$OutFile='')
+  # 2026-05-29: ADAPTIVE timeout — kill by STAGNATION, not by the wall clock. The old code aborted at a
+  # hard $TimeoutMs even while the agent was actively writing (thinking) -> false coder_timeout -> Doctor
+  # -> lost work + restart-loop (operator saw this live). Now: while the agent's output (out+err bytes)
+  # keeps GROWING it is ALIVE -> we extend; we abort only when it is past the soft timeout AND has produced
+  # NO new output for $stallGraceMs (truly hung), or hits an absolute ceiling $hardMs (runaway guard).
+  # Backward-compatible: with no Out/Err file (no progress signal) it falls back to the plain soft timeout.
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $softMs = [int]$TimeoutMs
+  $stallGraceMs = 300000                                  # 5 min of ZERO output growth past soft = hung
+  $hardMs = [Math]::Max([int]$TimeoutMs * 2, 3600000)     # absolute ceiling: 2x soft or 1h, whichever larger
+  $haveSignal = (-not [string]::IsNullOrWhiteSpace($OutFile)) -or (-not [string]::IsNullOrWhiteSpace($ErrFile))
+  $lastProgressMs = 0
+  $lastTotLen = [long](-1)
   $lastTelemetrySec = -1
-  while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+  $announcedAlive = $false
+  while ($true) {
     if ($Proc.WaitForExit(5000)) { return $true }
     try { Update-State { param($s) $s.heartbeat=(Get-Date).ToString('o') } | Out-Null } catch {}
-    $elapsedSec = [int]$sw.Elapsed.TotalSeconds
+    $elapsedMs = $sw.ElapsedMilliseconds
+    $elapsedSec = [int]($elapsedMs / 1000)
+    # liveness signal: total bytes written to out+err. Growth => agent is alive and making progress.
+    $totLen = [long]0
+    foreach ($fp in @($OutFile, $ErrFile)) {
+      if (-not [string]::IsNullOrWhiteSpace($fp)) { $fi = Get-Item -LiteralPath $fp -ErrorAction SilentlyContinue; if ($fi) { $totLen += [long]$fi.Length } }
+    }
+    if ($totLen -gt $lastTotLen) { $lastProgressMs = $elapsedMs; $lastTotLen = $totLen }
+    $stalledMs = $elapsedMs - $lastProgressMs
     if ($elapsedSec - $lastTelemetrySec -ge 60) {
       $lastTelemetrySec = $elapsedSec
       try {
@@ -1874,12 +1895,22 @@ function Wait-AgentProcess {
             }
           }
         } catch {}
-        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; files=$fInfo; restarts_last_hour=$restartsHour }
+        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; stalled_sec=[int]($stalledMs/1000); files=$fInfo; restarts_last_hour=$restartsHour }
         Update-State ({ param($s) $s | Add-Member -NotePropertyName agent_telemetry -NotePropertyValue $telem -Force }.GetNewClosure()) | Out-Null
       } catch {}
+      # operator visibility: past the soft timeout but still writing -> say so, don't silently hang
+      if ($haveSignal -and $elapsedMs -ge $softMs -and $stalledMs -lt $stallGraceMs -and -not $announcedAlive) {
+        try { Add-Message -From system -Text ("⏳ Агент работает дольше обычного (${elapsedSec}с), но ЖИВ — вывод растёт. Продлеваю ожидание, не прерываю.") -Kind event | Out-Null } catch {}
+        $announcedAlive = $true
+      }
+    }
+    # ABORT — by stagnation, not by clock:
+    if ($elapsedMs -ge $hardMs) { return $false }                       # absolute ceiling (runaway, even if writing)
+    if ($elapsedMs -ge $softMs) {
+      if (-not $haveSignal) { return $false }                           # no liveness signal -> legacy plain-timeout
+      if ($stalledMs -ge $stallGraceMs) { return $false }               # past soft AND no output for grace = hung
     }
   }
-  return $Proc.WaitForExit(0)
 }
 
 function Get-OtherChannelsAgents { Get-OtherChannelsAgentsImpl }
