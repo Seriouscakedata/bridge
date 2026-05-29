@@ -19,6 +19,8 @@ param([string]$Channel = $null)
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 . (Join-Path $PSScriptRoot 'lib\postmortem.ps1')
 . (Join-Path $PSScriptRoot 'lib\features.ps1')
+. (Join-Path $PSScriptRoot 'lib\qa-agent.ps1')
+. (Join-Path $PSScriptRoot 'lib\checkpoint.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Tool Foundry (Фаза 1): load every GREEN (status=active) self-built tool from
@@ -4430,6 +4432,23 @@ while ($true) {
       # letting plannerStatus=DONE close the task naturally.
       Update-State { param($s) $s.task_did_actions = $false } | Out-Null
     }
+    if ($hasVerify -and $plannerStatus -eq 'DONE') {
+      try {
+        $stQa = Read-State
+        $qaTaskId = [string]$stQa.current_task_id
+        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = [string]$stQa.current_backlog_id }
+        if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = 'task-' + [string]$stQa.task_start_seq }
+        $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
+        if ($qaResult.Verdict -eq 'FAIL') {
+          Add-Message -From system -Text "🔴 QA-агент: FAIL`n$($qaResult.Summary)`nВозвращаю задачу на доработку." -Kind event | Out-Null
+          $plannerStatus = 'CONTINUE'
+        } else {
+          Add-Message -From system -Text "✅ QA-агент: PASS — $($qaResult.Summary)" -Kind event | Out-Null
+        }
+      } catch {
+        Add-Message -From system -Text "⚠ QA-агент: ошибка запуска ($($_.Exception.Message)), пропускаю." -Kind event | Out-Null
+      }
+    }
   }
   # Coder-bypass gate: planner did file edits without invoking Codex -> reject DONE, force CONTINUE->Codex+critic.
   # The critic only reviews Codex diffs; if Opus modifies files directly, its diff ships without independent review.
@@ -4885,6 +4904,17 @@ $diff
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  auto-smoke-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
+  if ($plannerStatus -eq 'CONTINUE') {
+    try {
+      $stCp = Read-State
+      $cpTaskId = [string]$stCp.current_task_id
+      if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = [string]$stCp.current_backlog_id }
+      if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = 'task-' + [string]$stCp.task_start_seq }
+      $conversationSummary = Read-Summary
+      $cpSummary = if ($conversationSummary) { $conversationSummary.Substring(0, [Math]::Min(500, $conversationSummary.Length)) } else { '' }
+      Write-TaskCheckpoint -TaskId $cpTaskId -TaskTitle $task -Step ([int]$stCp.task_turn) -LastSummary $cpSummary -Channel $Channel
+    } catch {}
+  }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {
     if ($mode -eq 'discuss') {
       try {
@@ -4969,6 +4999,13 @@ $diff
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
+    try {
+      $stDoneCp = Read-State
+      $doneCpTaskId = [string]$stDoneCp.current_task_id
+      if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = [string]$stDoneCp.current_backlog_id }
+      if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = 'task-' + [string]$stDoneCp.task_start_seq }
+      Clear-TaskCheckpoint -TaskId $doneCpTaskId -Channel $Channel
+    } catch {}
     Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
