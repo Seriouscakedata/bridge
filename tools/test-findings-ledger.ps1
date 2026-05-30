@@ -1,4 +1,4 @@
-# Smoke-test for findings-ledger functions embedded in tools/audit.ps1
+﻿# Smoke-test for findings-ledger functions embedded in tools/audit.ps1
 # Run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-findings-ledger.ps1
 param([string]$BridgePath = $null)
 

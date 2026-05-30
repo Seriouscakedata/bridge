@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('security-model','functional-model','reliability-model','architecture-model','dependency-model')]
