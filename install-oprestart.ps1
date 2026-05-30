@@ -8,7 +8,7 @@ $root       = Get-BridgeRoot
 $restartPs1 = Join-Path $root 'restart-elevated.ps1'
 $taskName   = 'ClaudeCodexBridge-OpRestart'
 
-$argList = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f ($restartPs1 -replace '"', '\"')))
+$argList = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ('"' + ($restartPs1 -replace '"', '\"') + '"'))
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
   -Argument ($argList -join ' ')
 
