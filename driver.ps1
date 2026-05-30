@@ -3079,11 +3079,22 @@ while ($true) {
       }
       elseif (Test-Path -LiteralPath $rcDefer) {
         $rcAge = 999999; try { $rcAge = ((Get-Date) - (Get-Item -LiteralPath $rcDefer).LastWriteTime).TotalSeconds } catch {}
-        if (-not $rcBusy) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Применяю отложенный перезапуск — все каналы свободны. Пачка self-dev правок объединена в один recycle (анти-шторм).' -Kind event | Out-Null } catch {}
+        # 2026-05-30 BATCH-AWARE restore. The old code restored the instant ALL
+        # channels went idle -- but that idle moment is often just the GAP between
+        # two tasks of a self-dev batch, so the restart interrupted the batch ("мост
+        # сам себя обрывает"). Now we hold the deferred restart until the bridge has
+        # been continuously quiet for $rcIdleSettle seconds = the batch is truly DONE
+        # (no next task is mid-claim). Any new task flips $rcBusy above and re-defers,
+        # collapsing the WHOLE batch into ONE restart taken after the last task.
+        $rcIdleSettle = 120
+        $rcQuietSec = 0
+        try { $rcCp = Get-ConversationPath; $rcQuietSec = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $rcCp).LastWriteTimeUtc).TotalSeconds } catch {}
+        if ((-not $rcBusy) -and ($rcQuietSec -ge $rcIdleSettle)) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — пачка self-dev правок завершена (тихо ' + [int]$rcQuietSec + 'с), объединено в один recycle.') -Kind event | Out-Null } catch {}
         } elseif ($rcAge -ge $rcMaxDefer) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Write-Host 'recycle: force-applied deferred restart (max-defer cap)' } catch {}
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту (макс. отсрочка). ' -Kind event | Out-Null } catch {}
         }
+        # else: idle-but-not-settled (gap between batch tasks) OR a channel is busy -> keep holding
       }
     } catch {}
   }
