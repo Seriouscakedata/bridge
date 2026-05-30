@@ -2290,3 +2290,8 @@ try { . (Join-Path $PSScriptRoot 'study.ps1') } catch { Write-Warning "study.ps1
 # LLM intent classifier — replaces hardcoded [[DEEP-THINK]] regex with semantic
 # task understanding (gemini-flash-lite, cheap). Must load AFTER llm.ps1.
 try { . (Join-Path $PSScriptRoot 'intent.ps1') } catch { Write-Warning "intent.ps1 failed to load: $($_.Exception.Message)" }
+# Radar (RSS digest collector) + Scholar (autonomous deep-reader: reads FULL article text + links,
+# verdicts idea/knowledge/skip against bridge gaps -- replaces radar's title-only judging). Scholar
+# depends on radar (candidates) + llm + backlog (all loaded above).
+try { . (Join-Path $PSScriptRoot 'radar.ps1') } catch { Write-Warning "radar.ps1 failed to load: $($_.Exception.Message)" }
+try { . (Join-Path $PSScriptRoot 'scholar.ps1') } catch { Write-Warning "scholar.ps1 failed to load: $($_.Exception.Message)" }

@@ -24,7 +24,21 @@ function Get-ScholarGaps {
       }
     }
   } catch {}
-  # 2) what we already have -- feature names from the registry (avoid proposing duplicates)
+  # 2) what the bridge WANTS to improve -- open architect ideas + dev directions, so articles can
+  #    match a real improvement TARGET, not only failure classes. Recall quality / durability /
+  #    orchestration are genuine gaps even when not in the failure log.
+  try {
+    $openArch = @(Get-Backlog | Where-Object { (@($_.tags | ForEach-Object { [string]$_ }) -contains 'architect') -and ([string]$_.status -in @('new', 'approved')) } | Select-Object -First 5)
+    if ($openArch.Count -gt 0) {
+      [void]$sb.AppendLine('')
+      [void]$sb.AppendLine('МОСТ ХОЧЕТ УЛУЧШИТЬ (открытые идеи -- статьи под эти темы особенно ценны):')
+      foreach ($o in $openArch) { $t = ([string]$o.text -replace '\s+', ' '); if ($t.Length -gt 110) { $t = $t.Substring(0, 110) }; [void]$sb.AppendLine('- ' + $t) }
+    }
+  } catch {}
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('НАПРАВЛЕНИЯ РАЗВИТИЯ (приём ценен и тянет на "idea", ЕСЛИ ложится на PowerShell/CLI-стек без Python-ML): надёжность/durability состояния, КАЧЕСТВО recall vector-памяти (reranking, confidence-оценка достаточности, query-expansion), оркестрация агентов, скорость/latency LLM-вызовов, восстановление после сбоёв, автономность.')
+
+  # 3) what we already have -- feature names from the registry (avoid proposing duplicates)
   try {
     $regPath = Join-Path (Get-BridgeRoot) 'features\registry.json'
     if (Test-Path -LiteralPath $regPath) {

@@ -2,6 +2,9 @@
 state.json
 state.json.bak
 features/state.json
+radar/scholar-seen.jsonl
+radar/scholar-knowledge.jsonl
+radar/scholar.last
 features/verifier.last
 conversation.jsonl
 conversation.archive.jsonl
