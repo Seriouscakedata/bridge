@@ -5,14 +5,16 @@
 
 $ErrorActionPreference = "Stop"
 
-$script:MaxJsonLineChars = 1048576
+$script:MaxJsonLineChars = 262144
+$script:MaxOutputJsonChars = 2097152
+$script:MaxJsonNesting = 16
 $script:MaxOutputStringChars = 4096
 $script:JsonSerializer = $null
 try {
   Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
   $script:JsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-  $script:JsonSerializer.MaxJsonLength = $script:MaxJsonLineChars
-  $script:JsonSerializer.RecursionLimit = 16
+  $script:JsonSerializer.MaxJsonLength = $script:MaxOutputJsonChars
+  $script:JsonSerializer.RecursionLimit = $script:MaxJsonNesting
 } catch {
   throw "JSON parser unavailable: $($_.Exception.Message)"
 }
@@ -145,7 +147,7 @@ function ConvertTo-SafeString {
   return ($text.Substring(0, $MaxChars) + "...[truncated]")
 }
 
-function ConvertFrom-SafeJsonLine {
+function Assert-SafeJsonLineShape {
   param(
     [string]$Line,
     [int]$LineNo
@@ -154,6 +156,45 @@ function ConvertFrom-SafeJsonLine {
   if ($Line.Length -gt $script:MaxJsonLineChars) {
     throw "line ${LineNo}: JSON line exceeds $script:MaxJsonLineChars characters"
   }
+
+  $depth = 0
+  $inString = $false
+  $escaped = $false
+  for ($i = 0; $i -lt $Line.Length; $i++) {
+    $ch = $Line[$i]
+    if ($inString) {
+      if ($escaped) {
+        $escaped = $false
+      } elseif ($ch -eq '\') {
+        $escaped = $true
+      } elseif ($ch -eq '"') {
+        $inString = $false
+      }
+      continue
+    }
+
+    if ($ch -eq '"') {
+      $inString = $true
+    } elseif ($ch -eq '{' -or $ch -eq '[') {
+      $depth++
+      if ($depth -gt $script:MaxJsonNesting) {
+        throw "line ${LineNo}: JSON nesting exceeds $script:MaxJsonNesting"
+      }
+    } elseif ($ch -eq '}' -or $ch -eq ']') {
+      if ($depth -gt 0) {
+        $depth--
+      }
+    }
+  }
+}
+
+function ConvertFrom-SafeJsonLine {
+  param(
+    [string]$Line,
+    [int]$LineNo
+  )
+
+  Assert-SafeJsonLineShape -Line $Line -LineNo $LineNo
 
   $parsed = $script:JsonSerializer.DeserializeObject($Line)
   if (-not ($parsed -is [System.Collections.IDictionary])) {
@@ -466,14 +507,17 @@ function ConvertTo-SignalJson {
   param([object]$Payload)
 
   $safePayload = ConvertTo-SignalDto -Value $Payload
-  $jsonOutput = $safePayload | ConvertTo-Json -Depth 8 -ErrorAction Stop
-  if ($jsonOutput -is [array]) {
-    $jsonText = [string]($jsonOutput -join [Environment]::NewLine)
-  } else {
-    $jsonText = [string]$jsonOutput
+  if (-not ($safePayload -is [System.Collections.IDictionary])) {
+    throw "signal payload root must be an object"
   }
+
+  # Avoid ConvertTo-Json here: PowerShell ETS can walk provider graphs if a raw object leaks in.
+  $jsonText = [string]$script:JsonSerializer.Serialize($safePayload)
   if ([string]::IsNullOrWhiteSpace($jsonText)) {
-    throw "ConvertTo-Json produced empty output"
+    throw "JSON serializer produced empty output"
+  }
+  if ($jsonText.Length -gt $script:MaxOutputJsonChars) {
+    throw "signal JSON exceeds $script:MaxOutputJsonChars characters"
   }
 
   return ($jsonText.TrimEnd() + [Environment]::NewLine)
