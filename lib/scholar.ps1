@@ -218,6 +218,97 @@ function Invoke-ArticleStudyFlash {
   try { return $mm.Value | ConvertFrom-Json } catch { return $null }
 }
 
+# ───────── ACTIVE PULL — search the web for solutions to the bridge's OWN pains ─────────
+# This is the "research, don't browse" half: the bridge turns its failure classes / open gaps into
+# concrete web queries, then a Claude research agent searches + reads + synthesises an idea that
+# fits OUR stack. Complements the passive RSS pass (which yields knowledge for brainstorm fuel).
+
+function Get-ScholarQuestions {
+  # flash turns the bridge's pains into concrete English web-search queries (cheap).
+  param([int]$Max = 2)
+  $gaps = ''; try { $gaps = Get-ScholarGaps } catch {}
+  if ([string]::IsNullOrWhiteSpace($gaps)) { return @() }
+  $prompt = @"
+Боли и направления развития моста (PowerShell/Windows; агент: планировщик Claude -> кодер Codex; vector-память):
+$gaps
+
+Сформулируй $Max КОНКРЕТНЫХ англоязычных поисковых запроса (для web-поиска) под САМЫЕ острые боли/пробелы,
+чтобы найти ПРИМЕНИМЫЕ к нашему стеку решения (НЕ Python-ML/GPU). Каждый -- готовая строка для поиска.
+Верни СТРОГО JSON-массив строк: ["query one", "query two"]
+"@
+  $raw = $null
+  try { $raw = Invoke-LLM -Purpose 'reflect' -Prompt $prompt -TimeoutSec 40 -Temperature 0.3 } catch {}
+  if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+  $clean = ($raw -replace '```json', '' -replace '```', '').Trim()
+  $mm = [regex]::Match($clean, '(?s)\[.*\]')
+  if (-not $mm.Success) { return @() }
+  try { return @(($mm.Value | ConvertFrom-Json) | Where-Object { $_ } | Select-Object -First $Max) } catch { return @() }
+}
+
+function Build-ScholarSearchPrompt {
+  param([string]$Question, [string]$Gaps)
+  return @"
+Ты — исследователь автономного моста Claude+Codex (PowerShell/Windows; планировщик->кодер; vector-память).
+ВОПРОС/БОЛЬ для исследования: $Question
+
+ПРОБЕЛЫ МОСТА (контекст для оценки применимости):
+$Gaps
+
+ШАГИ:
+1. WebSearch по вопросу -- найди 2-3 релевантных источника (статьи, доки, обсуждения).
+2. WebFetch топ-1-2 -- прочитай ПОЛНЫЙ текст, извлеки КОНКРЕТНЫЙ приём решения.
+3. СТЕК-ГЕЙТ: мост на PowerShell/CLI, без Python-ML/GPU/тяжёлых сервисов. Приём, требующий чужого
+   стека -> "knowledge", НЕ "idea". "idea" -- только если ложится на PowerShell/CLI И решает боль.
+
+Верни СТРОГО JSON (без markdown):
+{ "verdict":"idea|knowledge|skip", "idea":"что добавить · в какой файл моста · какой пробел · метрика", "knowledge":"1-2 фразы", "rationale":"<привязка к боли>", "pattern":"<имя приёма>", "source":"<url>" }
+"@
+}
+
+function Invoke-ScholarSearch {
+  # Active pull: a Claude research agent searches the web for a bridge pain and synthesises a verdict.
+  param([string]$Question, [string]$Gaps = '', [int]$TimeoutSec = 220)
+  if ([string]::IsNullOrWhiteSpace($Question)) { return $null }
+  $claudeExe = $null; try { $claudeExe = Resolve-ClaudeExe (Get-BridgeConfig) } catch { return $null }
+  if (-not $claudeExe) { return $null }
+  if ([string]::IsNullOrWhiteSpace($Gaps)) { try { $Gaps = Get-ScholarGaps } catch {} }
+  $prompt = Build-ScholarSearchPrompt -Question $Question -Gaps $Gaps
+  $tmpBase = Join-Path $env:TEMP ('scholarsearch_' + ([guid]::NewGuid().ToString('N').Substring(0, 8)))
+  $inF = "$tmpBase.in"; $outF = "$tmpBase.out"; $errF = "$tmpBase.err"
+  [System.IO.File]::WriteAllText($inF, $prompt, (New-Object System.Text.UTF8Encoding($false)))
+  $claudeArgs = @('-p', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', '--model', 'sonnet')
+  $raw = ''
+  try {
+    $spawn = { Start-Process -FilePath $claudeExe -ArgumentList $claudeArgs -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru }
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) { $p = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action $spawn } else { $p = & $spawn }
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) { try { $p.Kill() } catch {}; return $null }
+    if (Test-Path -LiteralPath $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8) }
+  } catch { return $null }
+  finally { Remove-Item -LiteralPath $inF, $outF, $errF -Force -ErrorAction SilentlyContinue }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  $clean = ($raw -replace '```json', '' -replace '```', '').Trim()
+  $mm = [regex]::Match($clean, '(?s)\{.*\}')
+  if (-not $mm.Success) { return $null }
+  try { return $mm.Value | ConvertFrom-Json } catch { return $null }
+}
+
+function Format-ScholarKnowledgeForPrompt {
+  # Render recent accumulated knowledge for injection into the Architect/brainstorm prompt -- so the
+  # bridge gets "inspired by border-line findings" exactly as the operator asked.
+  param([int]$Last = 8)
+  $kp = Get-ScholarKnowledgePath
+  if (-not (Test-Path -LiteralPath $kp)) { return '' }
+  $entries = @()
+  try { $entries = @(Get-Content -LiteralPath $kp -Encoding UTF8 | Where-Object { $_ } | Select-Object -Last $Last) } catch { return '' }
+  if ($entries.Count -eq 0) { return '' }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.AppendLine('=== ЗНАНИЯ ИЗ ВНЕШНИХ ИСТОЧНИКОВ (Scholar -- приёмы из статей; вдохновись, если ложится на наш стек) ===')
+  foreach ($e in $entries) {
+    try { $o = $e | ConvertFrom-Json; $t = ([string]$o.text -replace '\s+', ' '); if ($t.Length -gt 220) { $t = $t.Substring(0, 220) + '…' }; [void]$sb.AppendLine('- ' + $t) } catch {}
+  }
+  return $sb.ToString()
+}
+
 # ───────── STAGE 2 — orchestration + autonomy ─────────
 
 function Get-ScholarSeenPath      { Join-Path (Get-BridgeRoot) 'radar\scholar-seen.jsonl' }
@@ -259,7 +350,7 @@ function Add-ScholarKnowledge {
 function Invoke-ScholarRun {
   # Orchestrate one Scholar pass: take top-N radar candidates -> flash reads each -> idea (Claude-
   # verified) into backlog, knowledge into the knowledge log, dedup by URL. Returns a summary.
-  param([int]$MaxArticles = 4, [int]$FollowLinks = 1, [bool]$VerifyIdeasWithClaude = $true)
+  param([int]$MaxArticles = 4, [int]$FollowLinks = 1, [bool]$VerifyIdeasWithClaude = $true, [int]$MaxAgeDays = 21, [int]$SearchQuestions = 2)
   $run = $null
   try { $run = Get-RadarLatestRun } catch {}
   if (-not $run) { return @{ ok = $false; reason = 'no-radar-run'; studied = 0 } }
@@ -268,11 +359,39 @@ function Invoke-ScholarRun {
   $gaps = ''; try { $gaps = Get-ScholarGaps } catch {}
   $seen = Get-ScholarSeenUrls
   $studied = 0; $ideas = 0; $knowledge = 0; $skipped = 0
-  try { Add-Message -From system -Text ('📚 Scholar просыпается: глубоко изучаю до ' + $MaxArticles + ' статей из радара (читаю полный текст, сопоставляю с болями моста).') -Kind event | Out-Null } catch {}
+  try { Add-Message -From system -Text ('📚 Scholar просыпается: ищу решения болей в web (active) + изучаю до ' + $MaxArticles + ' статей из радара (passive).') -Kind event | Out-Null } catch {}
+  # PHASE 1 (ACTIVE PULL): search the web for solutions to the bridge's OWN pains -- this is where
+  # ideas under our stack come from (vs the RSS pass which is mostly knowledge fuel).
+  $searched = 0
+  if ($SearchQuestions -gt 0) {
+    $questions = @(); try { $questions = @(Get-ScholarQuestions -Max $SearchQuestions) } catch {}
+    foreach ($q in $questions) {
+      $sv = $null; try { $sv = Invoke-ScholarSearch -Question $q -Gaps $gaps } catch {}
+      $searched++
+      if (-not $sv) { continue }
+      $sVerdict = ([string]$sv.verdict).Trim().ToLower()
+      if ($sVerdict -eq 'idea' -and $sv.idea) {
+        $txt = '[scholar/поиск под боль: ' + $q + '] ' + [string]$sv.idea
+        if ($sv.source) { $txt += "`nИсточник: " + [string]$sv.source }
+        $id = $null; try { $id = Add-Idea -Text $txt -From 'scholar' -Tags @('scholar', 'external', 'active-search') -Status 'new' } catch {}
+        if ($id) { $ideas++ }
+      }
+      elseif ($sVerdict -eq 'knowledge' -and $sv.knowledge) { Add-ScholarKnowledge -Text ([string]$sv.knowledge) -Url ([string]$sv.source) -Pattern ([string]$sv.pattern); $knowledge++ }
+    }
+  }
+  # PHASE 2 (PASSIVE): read fresh RSS candidates -> mostly knowledge (brainstorm fuel), occasional idea.
   foreach ($it in $items) {
     if ($studied -ge $MaxArticles) { break }
     $url = [string]$it.link
     if ([string]::IsNullOrWhiteSpace($url) -or $seen.ContainsKey($url)) { continue }
+    # freshness gate: only articles published within MaxAgeDays -- stale tech info is worse than none.
+    $pub = [string]$it.published
+    if (-not [string]::IsNullOrWhiteSpace($pub)) {
+      $pubDate = [datetime]::MinValue
+      if ([datetime]::TryParse($pub, [ref]$pubDate)) {
+        if (((Get-Date).ToUniversalTime() - $pubDate.ToUniversalTime()).TotalDays -gt $MaxAgeDays) { continue }
+      }
+    }
     $title = [string]$it.title
     $v = $null
     try { $v = Invoke-ArticleStudyFlash -Url $url -Title $title -Gaps $gaps -FollowLinks $FollowLinks } catch {}
@@ -308,8 +427,8 @@ function Invoke-ScholarRun {
     }
     else { $skipped++; Add-ScholarSeen -Url $url -Verdict 'skip' }
   }
-  try { Add-Message -From system -Text ('📚 Scholar закончил: изучено ' + $studied + ' · идей в бэклог ' + $ideas + ' · знаний ' + $knowledge + ' · пропущено ' + $skipped + '.') -Kind event | Out-Null } catch {}
-  return @{ ok = $true; studied = $studied; ideas = $ideas; knowledge = $knowledge; skipped = $skipped }
+  try { Add-Message -From system -Text ('📚 Scholar закончил: web-поисков ' + $searched + ' · изучено статей ' + $studied + ' · идей в бэклог ' + $ideas + ' · знаний ' + $knowledge + ' · пропущено ' + $skipped + '.') -Kind event | Out-Null } catch {}
+  return @{ ok = $true; searched = $searched; studied = $studied; ideas = $ideas; knowledge = $knowledge; skipped = $skipped }
 }
 
 function Start-ScholarIfDue {
