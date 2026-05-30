@@ -59,6 +59,13 @@ function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-Memo
 # ---- secrets / config ----
 function Get-Secret {
   param([string]$Name)
+  if (-not [string]::IsNullOrWhiteSpace($Name)) {
+    $envKey = 'BRIDGE_' + ($Name.ToUpper() -replace '[^A-Z0-9]', '_')
+    $envVal = [System.Environment]::GetEnvironmentVariable($envKey)
+    if (-not [string]::IsNullOrWhiteSpace($envVal)) { return $envVal }
+    $envVal = [System.Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($envVal)) { return $envVal }
+  }
   $p = if (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' }
   if (-not (Test-Path $p)) { return $null }
   try { $s = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
