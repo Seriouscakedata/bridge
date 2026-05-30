@@ -14,26 +14,31 @@
 #   4) 'stable' advances on SUSTAINED health (healthy-since marker), not on commit age, so
 #      rapid healthy commits get promoted instead of being rolled back to an old ref.
 $ErrorActionPreference = 'Continue'
-$b   = 'C:\Users\rafie\OneDrive\Documents\bridge'
-$git = 'C:\Program Files\Git\cmd\git.exe'
-$ctl = Join-Path $b 'control'
-if (-not (Test-Path $ctl)) { New-Item -ItemType Directory -Path $ctl -Force | Out-Null }
+$b   = if ($env:BRIDGE_ROOT) { $env:BRIDGE_ROOT } else { 'C:\Users\rafie\OneDrive\Documents\bridge' }
+$git = if ($env:BRIDGE_GIT) { $env:BRIDGE_GIT } else { 'C:\Program Files\Git\cmd\git.exe' }
 # Ф0.3: the PAUSE kill-switch lives OUTSIDE the bridge root (so outside a coder turn's
 # workspace-write cwd, which IS the bridge root). A coder can therefore never create it
 # to silence this safety net. Only this protected path is honored -- the legacy
 # control\watchdog.pause is intentionally NOT checked anymore. Operator pauses the
 # watchdog by creating <USERPROFILE>\.bridge-private\watchdog.pause. Kept inline (no
 # common.ps1) so the watchdog stays self-contained even if the engine is broken.
-$priv = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private' } else { $ctl }
+$priv = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private' } else { Join-Path ([System.IO.Path]::GetTempPath()) '.bridge-private' }
 if (-not (Test-Path $priv)) { try { New-Item -ItemType Directory -Path $priv -Force | Out-Null } catch {} }
+$ctl = if (Test-Path -LiteralPath $b) { Join-Path $b 'control' } else { Join-Path $priv 'watchdog-control' }
+if (-not (Test-Path $ctl)) { try { New-Item -ItemType Directory -Path $ctl -Force | Out-Null } catch {} }
 $log         = Join-Path $ctl 'watchdog.log'
 $failFile    = Join-Path $ctl 'watchdog.fails'
+$critFile    = Join-Path $ctl 'watchdog.critical'
+$fatalFile   = Join-Path $ctl 'watchdog.fatal'
 $pauseFile   = Join-Path $priv 'watchdog.pause'
 $healthyFile = Join-Path $ctl 'watchdog.healthy-since'
 $promoteMin          = 30   # advance 'stable' after this many minutes of CONTINUOUS health
 $apiRestartThreshold = 3    # api down + driver alive: gentle recycle after ~6 min
 $apiRollbackThreshold= 6    # api STILL down after recycle (~12 min): server code broken -> rollback
 $rollbackThreshold   = 4    # driver heartbeat stale (~8 min): engine dead -> rollback
+$criticalExitThreshold = if ($env:WATCHDOG_CRIT_THRESHOLD) { [int]$env:WATCHDOG_CRIT_THRESHOLD } else { 10 }
+$loopSleepSec          = if ($env:WATCHDOG_SLEEP_SEC) { [int]$env:WATCHDOG_SLEEP_SEC } else { 120 }
+$criticalStreak        = 0
 function WLog($m){ try { ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m) | Out-File $log -Append -Encoding utf8 } catch {} }
 
 # Promote the 'stable' ref (last-known-good) to HEAD once the bridge has been continuously
@@ -169,6 +174,35 @@ function Check-Once {
 
 WLog "=== watchdog loop started (PID $PID) [hardened] ==="
 while ($true) {
-  try { Check-Once } catch { WLog ("loop error: " + $_.Exception.Message) }
-  Start-Sleep -Seconds 120
+  # Bounded critical-error handling: this watchdog is killed/relaunched every ~2 min by its
+  # scheduled task (5-min ExecutionTimeLimit), so the consecutive-critical counter is PERSISTED
+  # to $critFile to survive instance recycles. A "critical" fault is one that defeats the
+  # watchdog's core job (no bridge root, no git.exe to roll back with) or any unhandled loop
+  # error. After $criticalExitThreshold consecutive critical iterations we raise a one-time
+  # watchdog.fatal signal and EXIT (the scheduler relaunches a fresh instance) instead of
+  # logging the same error forever. A clean Check-Once resets the streak.
+  $critReason = $null
+  if (-not (Test-Path -LiteralPath $b))       { $critReason = "bridge root missing ($b)" }
+  elseif (-not (Test-Path -LiteralPath $git)) { $critReason = "git.exe missing ($git)" }
+  else {
+    try { Check-Once } catch { $critReason = "loop error: " + $_.Exception.Message }
+  }
+
+  if ($critReason) {
+    $cf = $criticalStreak; if (Test-Path $critFile) { try { $cf = [int](Get-Content $critFile -Raw) } catch {} }
+    $cf++; $criticalStreak = $cf
+    try { Set-Content -LiteralPath $critFile -Value "$cf" -Encoding ascii -ErrorAction Stop } catch {}
+    WLog "CRITICAL ($critReason), consecutive=$cf/$criticalExitThreshold"
+    if ($cf -ge $criticalExitThreshold) {
+      WLog "FATAL: $cf consecutive critical errors [$critReason] -> raising watchdog.fatal and EXITING (scheduler relaunches a fresh instance)"
+      try { Set-Content -LiteralPath $fatalFile -Value (((Get-Date).ToString('o')) + ' | ' + $critReason) -Encoding utf8 } catch {}
+      try { Set-Content -LiteralPath $critFile -Value '0' -Encoding ascii -ErrorAction Stop } catch {}
+      exit 1
+    }
+  } else {
+    $criticalStreak = 0
+    if (Test-Path $critFile) { Remove-Item $critFile -Force -ErrorAction SilentlyContinue }
+  }
+
+  Start-Sleep -Seconds $loopSleepSec
 }
