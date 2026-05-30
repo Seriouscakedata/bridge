@@ -39,7 +39,22 @@ $rollbackThreshold   = 4    # driver heartbeat stale (~8 min): engine dead -> ro
 $criticalExitThreshold = if ($env:WATCHDOG_CRIT_THRESHOLD) { [int]$env:WATCHDOG_CRIT_THRESHOLD } else { 10 }
 $loopSleepSec          = if ($env:WATCHDOG_SLEEP_SEC) { [int]$env:WATCHDOG_SLEEP_SEC } else { 120 }
 $criticalStreak        = 0
-function WLog($m){ try { ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m) | Out-File $log -Append -Encoding utf8 } catch {} }
+function WLog($m) {
+  $line = ("{0}  {1}`n" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m)
+  $mtx = $null
+  try {
+    $mtx = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeWatchdogLog')
+    [void]$mtx.WaitOne(3000)
+    $fs = [System.IO.File]::Open($log, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    try {
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($line)
+      $fs.Write($bytes, 0, $bytes.Length)
+      $fs.Flush($true)
+    } finally { $fs.Close() }
+  } catch {} finally {
+    if ($mtx) { try { $mtx.ReleaseMutex() } catch {}; $mtx.Dispose() }
+  }
+}
 
 # Promote the 'stable' ref (last-known-good) to HEAD once the bridge has been continuously
 # HEALTHY for >= $promoteMin minutes (tracked via $healthyFile, reset on any unhealthy check)
