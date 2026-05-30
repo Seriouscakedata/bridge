@@ -48,7 +48,7 @@
     ]
   },
   "fastLane": {
-    "autoDetect": false,
+    "autoDetect": true,
     "minChars": 100,
     "embedBatchEnabled": true
   },

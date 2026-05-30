@@ -449,8 +449,8 @@ function Test-IsTrivialTask {
   if ($t -match '(?m)^\d+\.\s') { return $false }
   if ($t -match '```') { return $false }
   if ($t -match '(?i)(архитектур|разбер|исследу|спроектир|design|refactor|audit)') { return $false }
-  if ($t -match '(?i)\b(поправ|обнов|убер|добав|fix|update|remove|add|set|replace|rename)\w*') { return $true }
-  return $false
+  if (Test-IsUnsafeFastLaneTask -TaskText $t) { return $false }
+  return [bool](Test-IsSafeOsFastLaneTask -TaskText $t)
 }
 
 function Set-FastLaneFlags {
@@ -3358,6 +3358,12 @@ while ($true) {
       if ($taskIntent -and [bool]$fastLaneCfg.autoDetect -and (Get-Command Test-IntentLowComplexity -ErrorAction SilentlyContinue)) {
         try { $intentLowComplexity = [bool](Test-IntentLowComplexity -Intent $taskIntent) } catch { $intentLowComplexity = $false }
       }
+      # Fast-lane skips planner/critic/reflect, so auto-routed intent fast paths
+      # are limited to safe reversible OS/UI/read commands. Explicit [[FAST]]
+      # remains an operator opt-in via $fastLaneReason='marker'.
+      $fastLaneSafe = $false
+      try { $fastLaneSafe = [bool](Test-IsSafeOsFastLaneTask -TaskText $taskMsg) } catch { $fastLaneSafe = $false }
+      if (-not $fastLaneSafe) { $intentForcedFastLane = $false; $intentLowComplexity = $false }
 
       $taskProjectRoot = Get-ActiveProjectRoot
       if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
