@@ -7,7 +7,11 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $root 'lib\common.ps1')
 
 # в”Ђв”Ђ Override Get-StatePath to a temp file so we never touch live state в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-$script:SmokeStatePath = Join-Path $env:TEMP "bridge-smoke-state-$PID.json"
+# Use control\smoke-<PID>\ under bridge root (same filesystem as live state.json)
+# so File.Replace works; $env:TEMP can be blocked by Defender on atomic replace.
+$script:SmokeDir = Join-Path (Get-BridgeRoot) "control\smoke-$PID"
+if (-not (Test-Path $script:SmokeDir)) { New-Item -ItemType Directory -Path $script:SmokeDir -Force | Out-Null }
+$script:SmokeStatePath = Join-Path $script:SmokeDir 'state.json'
 function Get-StatePath { return $script:SmokeStatePath }
 
 # в”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -77,8 +81,7 @@ $bakContent = Read-StateJsonRawValidated -Path ($script:SmokeStatePath + '.bak')
 Assert 'backup contains correct task'  ($bakContent.current_task -eq 'SMOKE-TASK-4')
 
 # в”Ђв”Ђ Cleanup в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-Remove-Item -LiteralPath $script:SmokeStatePath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath ($script:SmokeStatePath + '.bak') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $script:SmokeDir -Recurse -Force -ErrorAction SilentlyContinue
 
 # в”Ђв”Ђ Summary в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 Write-Host ""

@@ -659,7 +659,7 @@ function Restore-StateFromBackup {
   }
   try {
     $json = $bak | ConvertTo-Json -Depth 10
-    Write-AtomicFile -Path $statePath -Content $json -NoCopyFallback
+    Write-AtomicFile -Path $statePath -Content $json
   } catch { return $null }
   return $bak
 }
@@ -748,8 +748,7 @@ function Write-State {
   }
   $json = $State | ConvertTo-Json -Depth 10
   $sp = Get-StatePath
-  # -NoCopyFallback: for state files fail-write is better than torn-write
-  Write-AtomicFile -Path $sp -Content $json -NoCopyFallback
+  Write-AtomicFile -Path $sp -Content $json
   # Write-through backup (best-effort: fail = warning only, not rollback of the main write)
   try {
     Write-AtomicFile -Path ($sp + '.bak') -Content $json
