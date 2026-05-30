@@ -18,7 +18,20 @@ $flagRestart = Join-Path $ctl 'restart.flag'
 $flagStop    = Join-Path $ctl 'stop.flag'
 $supLog = Join-Path $ctl 'supervisor.log'
 $srvOut = Join-Path $ctl 'server.out.log'; $srvErr = Join-Path $ctl 'server.err.log'
-function Log($m){ ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) | Out-File $supLog -Append -Encoding utf8 }
+function Log($m) {
+  $line = "{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m
+  $mtx = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeSupervisorLog')
+  $got = $false
+  try {
+    try { $got = $mtx.WaitOne(5000) }
+    catch [System.Threading.AbandonedMutexException] { $got = $true }
+    if (-not $got) { return }
+    $line | Out-File $supLog -Append -Encoding utf8
+  } finally {
+    if ($got) { try { $mtx.ReleaseMutex() } catch {} }
+    try { $mtx.Dispose() } catch {}
+  }
+}
 $null = Initialize-Bridge
 # Auto-clean snapshots older than 7 days at startup
 try {
