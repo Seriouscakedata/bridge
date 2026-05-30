@@ -1,0 +1,23 @@
+{
+    "generated_at":  "2026-05-30T08:19:52.1496116Z",
+    "window_from":  "2026-05-23T08:19:52.1496116Z",
+    "window_to":  "2026-05-30T08:19:52.1496116Z",
+    "data_quality":  "degraded",
+    "degraded_reason":  "usage.jsonl unreadable: source not found: C:\\Users\\rafie\\OneDrive\\Documents\\bridge\\worktrees\\parallel\\889ea6eec8ca\\A\\usage.jsonl",
+    "signals":  {
+                    "total_cost_usd":  0,
+                    "total_prompt_tokens":  0,
+                    "total_completion_tokens":  0,
+                    "paid_calls":  0,
+                    "prepaid_calls":  0,
+                    "cost_by_provider":  {
+
+                                         },
+                    "cost_by_purpose":  {
+
+                                        },
+                    "top_models":  [
+
+                                   ]
+                }
+}
