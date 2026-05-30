@@ -3146,10 +3146,26 @@ while ($true) {
         }
       }
       if ((Test-Path -LiteralPath $rcFlag) -and $rcBusy) {
-        try { Move-Item -LiteralPath $rcFlag -Destination $rcDefer -Force; Write-Host 'recycle: deferred restart.flag (a channel is busy, coalescing)' } catch {}
+        # 2026-05-30 v3: stamp the FIRST-defer time into restart.deferred content and do
+        # NOT reset it on re-defer. Otherwise continuous self-dev work re-defers every
+        # tick, bumping the file mtime, so the maxDefer cap (age) never fires and the
+        # restart is held FOREVER -- a never-deploying gate exposed this. Keep original stamp.
+        try {
+          if (Test-Path -LiteralPath $rcDefer) { Remove-Item -LiteralPath $rcFlag -Force }
+          else { Set-Content -LiteralPath $rcDefer -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII; Remove-Item -LiteralPath $rcFlag -Force }
+          Write-Host 'recycle: deferred restart.flag (a channel is busy, coalescing)'
+        } catch {}
       }
       elseif (Test-Path -LiteralPath $rcDefer) {
-        $rcAge = 999999; try { $rcAge = ((Get-Date) - (Get-Item -LiteralPath $rcDefer).LastWriteTime).TotalSeconds } catch {}
+        # Age from the FIRST-defer timestamp in the file content (mtime would keep getting
+        # bumped by re-defer). Fall back to mtime if content isn't a parseable timestamp.
+        $rcAge = 999999
+        try {
+          $rcStamp = ([string](Get-Content -LiteralPath $rcDefer -Raw -ErrorAction SilentlyContinue)).Trim()
+          $rcFirst = [datetime]::MinValue
+          if ($rcStamp -and [datetime]::TryParse($rcStamp, [ref]$rcFirst)) { $rcAge = ((Get-Date).ToUniversalTime() - $rcFirst.ToUniversalTime()).TotalSeconds }
+          else { $rcAge = ((Get-Date) - (Get-Item -LiteralPath $rcDefer).LastWriteTime).TotalSeconds }
+        } catch {}
         # 2026-05-30 v2 PLAN-AWARE batch-done detection (operator: a blind timeout
         # could fire while a slow Codex is mid-batch -> "выстрел в ногу"). Two facts:
         #   1. $rcBusy above ALREADY keeps the restart deferred while a task RUNS
