@@ -8,8 +8,9 @@ $root      = Get-BridgeRoot
 $superPs1  = Join-Path $root 'supervisor.ps1'
 $taskName  = 'ClaudeCodexBridge'
 
+$argList = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f ($superPs1 -replace '"', '\"')))
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $superPs1)
+  -Argument ($argList -join ' ')
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
