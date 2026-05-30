@@ -44,6 +44,52 @@ try {
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
 $drivers = @{}
 
+function Get-TrackedBridgeProcesses {
+  $tracked = @()
+  if ($script:srv) { $tracked += $script:srv }
+  if ($script:drivers) {
+    foreach ($proc in $script:drivers.Values) {
+      if ($proc) { $tracked += $proc }
+    }
+  }
+  return @($tracked)
+}
+function Test-TrackedBridgeProcess {
+  param([System.Diagnostics.Process]$Process)
+  if ($null -eq $Process) { return $false }
+  try { $trackedPid = [int]$Process.Id } catch { return $false }
+  if ($trackedPid -le 0 -or $trackedPid -eq $PID) {
+    Log ("PID guard: refusing to stop PID " + $trackedPid)
+    return $false
+  }
+  try {
+    $current = Get-Process -Id $trackedPid -ErrorAction Stop
+    # Guard against PID reuse: only stop the same process instance we spawned/tracked.
+    if ($current.StartTime -ne $Process.StartTime) {
+      Log ("PID owner validation: refusing to stop PID " + $trackedPid + " because StartTime changed")
+      return $false
+    }
+  } catch {
+    return $false
+  }
+  return $true
+}
+function Stop-TrackedBridgeProcess {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$Reason
+  )
+  if (-not (Test-TrackedBridgeProcess -Process $Process)) { return $false }
+  $trackedPid = [int]$Process.Id
+  try {
+    Log ($Reason + " -> stopping tracked PID " + $trackedPid)
+    Stop-Process -Id $trackedPid -Force -ErrorAction SilentlyContinue
+    return $true
+  } catch {
+    Log ($Reason + " stop error for PID " + $trackedPid + ": " + $_.Exception.Message)
+    return $false
+  }
+}
 function Kill-Bridge {
   $currentUser = "$env:USERDOMAIN\$env:USERNAME"
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
@@ -66,16 +112,16 @@ function Reap-Bloated {
   # any codex children. Cap 8GB: no healthy bridge powershell ever approaches this.
   $reaped = $false
   try {
-    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-      Where-Object { $_.CommandLine -like '*\server.ps1*' -or $_.CommandLine -like '*\driver.ps1*' } |
-      ForEach-Object {
-        $priv = 0; try { $priv = [int64](Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).PrivateMemorySize64 } catch {}
+    foreach ($proc in (Get-TrackedBridgeProcesses)) {
+      if (Test-TrackedBridgeProcess -Process $proc) {
+        $priv = 0; try { $priv = [int64](Get-Process -Id $proc.Id -ErrorAction SilentlyContinue).PrivateMemorySize64 } catch {}
         if ($priv -gt 8GB) {
-          Log ("REAP: bloated PID " + $_.ProcessId + " private=" + [int]($priv/1MB) + "MB > 8GB -> kill (mem-leak guard)")
-          taskkill /PID $_.ProcessId /F 2>$null | Out-Null
+          Log ("REAP: bloated tracked PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > 8GB -> kill (mem-leak guard)")
+          $null = Stop-TrackedBridgeProcess -Process $proc -Reason 'REAP'
           $reaped = $true
         }
       }
+    }
   } catch { Log ("reap error: " + $_.Exception.Message) }
   return $reaped
 }
@@ -128,6 +174,35 @@ $lastWdSpawn   = $null   # rate-limit watchdog (re)spawns (guards against a spaw
 $minWdSpawnSec = 60      # at least 60s between watchdog spawn attempts
 $flagCbFreeze  = Join-Path $ctl 'cb-freeze.flag'
 $script:cbCooldownUntil = $null
+$script:startupFailureCount = 0
+$script:startupFailureLimit = 10
+$script:startupFailureBackoffBaseSec = 3
+$script:startupFailureBackoffMaxSec = 120
+function Reset-StartupFailures {
+  param([string]$Operation)
+  if ($script:startupFailureCount -gt 0) {
+    Log ($Operation + " recovered after " + $script:startupFailureCount + " consecutive startup failure(s)")
+  }
+  $script:startupFailureCount = 0
+}
+function Register-StartupFailure {
+  param(
+    [string]$Operation,
+    [object]$ErrorRecord
+  )
+  $script:startupFailureCount += 1
+  $exp = [Math]::Min(($script:startupFailureCount - 1), 6)
+  $delay = [int]($script:startupFailureBackoffBaseSec * [Math]::Pow(2, $exp))
+  if ($delay -gt $script:startupFailureBackoffMaxSec) { $delay = $script:startupFailureBackoffMaxSec }
+  $msg = [string]$ErrorRecord
+  if ($ErrorRecord -and $ErrorRecord.Exception) { $msg = $ErrorRecord.Exception.Message }
+  if ($script:startupFailureCount -ge $script:startupFailureLimit) {
+    Log ("FATAL: " + $Operation + " failed " + $script:startupFailureCount + " consecutive time(s); retrying after " + $delay + "s. Last error: " + $msg)
+  } else {
+    Log ($Operation + " failed (" + $script:startupFailureCount + "/" + $script:startupFailureLimit + "); retrying after " + $delay + "s. Error: " + $msg)
+  }
+  Start-Sleep -Seconds $delay
+}
 Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
 while ($true) {
@@ -175,11 +250,20 @@ while ($true) {
         }
         if (-not (Test-CircuitSpawnPaused)) {
           Log "starting server..."
-          $srv = Start-Srv; Start-Sleep -Seconds 3
+          try {
+            $srv = Start-Srv; Start-Sleep -Seconds 3
+            if ($null -eq $srv) { throw "Start-Srv returned no process" }
+            if ($srv.HasExited) { throw ("server exited immediately with code " + $srv.ExitCode) }
+            Reset-StartupFailures -Operation 'Start-Srv'
+          } catch {
+            Register-StartupFailure -Operation 'Start-Srv' -ErrorRecord $_
+            continue
+          }
           Log ("server pid=" + $(if($srv){$srv.Id}else{'?'}) + " hasExited=" + $(if($srv){$srv.HasExited}else{'?'}))
         }
       }
       # Spawn one driver per non-archived channel; restart any that died.
+      $driverStartupFailed = $false
       foreach ($slug in $slugs) {
         $proc = $drivers[$slug]
         if ($null -eq $proc -or $proc.HasExited) {
@@ -188,12 +272,22 @@ while ($true) {
           }
           if (Test-CircuitSpawnPaused) { break }
           Log ("starting driver for channel '" + $slug + "'...")
-          $proc = Start-Drv -Slug $slug
-          Start-Sleep -Seconds 2
+          try {
+            $proc = Start-Drv -Slug $slug
+            Start-Sleep -Seconds 2
+            if ($null -eq $proc) { throw ("Start-Drv[" + $slug + "] returned no process") }
+            if ($proc.HasExited) { throw ("driver[" + $slug + "] exited immediately with code " + $proc.ExitCode) }
+            Reset-StartupFailures -Operation ("Start-Drv[" + $slug + "]")
+          } catch {
+            Register-StartupFailure -Operation ("Start-Drv[" + $slug + "]") -ErrorRecord $_
+            $driverStartupFailed = $true
+            break
+          }
           Log ("driver[" + $slug + "] pid=" + $(if($proc){$proc.Id}else{'?'}) + " hasExited=" + $(if($proc){$proc.HasExited}else{'?'}))
           $drivers[$slug] = $proc
         }
       }
+      if ($driverStartupFailed) { continue }
     }
     # Ensure the INDEPENDENT watchdog safety-net is alive. By design it's a separate
     # scheduled task (install-watchdog.ps1), but task registration needs elevation and the
@@ -227,7 +321,7 @@ while ($true) {
       if (-not ($slugs -contains $k)) {
         Log ("channel '" + $k + "' archived -> stopping its driver")
         $p = $drivers[$k]
-        if ($p -and -not $p.HasExited) { try { taskkill /PID $p.Id /F /T 2>$null | Out-Null } catch {} }
+        if ($p -and -not $p.HasExited) { $null = Stop-TrackedBridgeProcess -Process $p -Reason ("archive channel '" + $k + "'") }
         $drivers.Remove($k)
       }
     }
