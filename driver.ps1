@@ -2383,7 +2383,9 @@ function Get-CoderReasoningEffort {
     return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
   }
   if ($mode -eq 'discuss') {
-    return [pscustomobject]@{ effort='high'; plen=$plen; mode=$mode; crc=$crc; wt='discuss-high' }
+    # 2026-05-30: discuss = deep architectural dialogue (brainstorm/deep-think) where Codex critiques
+    # and counter-proposes on hard problems -> xhigh, symmetric with Opus's xhigh in discuss. Was 'high'.
+    return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt='discuss-xhigh' }
   }
 
   $wtClean = $true
