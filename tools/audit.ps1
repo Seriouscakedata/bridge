@@ -809,6 +809,14 @@ function Invoke-BridgeAudit {
   # 2026-05-30: surface audit lifecycle in the chat so the user can SEE it run/finish
   # (previously the audit only wrote audit.log -> invisible in the UI).
   try { if (Get-Command Add-Message -ErrorAction SilentlyContinue) { [void](Add-Message -From system -Text '🔍 Аудит запущен (статика + deep multi-agent)…' -Kind event) } } catch {}
+  # Collect telemetry signals before LLM agents (incident/speed/cost slices).
+  try {
+    $sigScript = Join-Path $PSScriptRoot 'audit-signals.ps1'
+    if (Test-Path -LiteralPath $sigScript -PathType Leaf) {
+      $sigOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $sigScript -BridgePath $root -WindowHours 24 2>&1
+      Write-AuditLog -BridgePath $root -Message "signals: $([string]($sigOut -join ' '))"
+    }
+  } catch { Write-AuditLog -BridgePath $root -Message "signal-collector error: $_" }
 
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $allFindings = New-Object 'System.Collections.Generic.List[object]'
