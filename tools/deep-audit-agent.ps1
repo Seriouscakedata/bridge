@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet('security-model','functional-model','reliability-model','architecture-model','dependency-model','runtime-incident-model')]
+  [ValidateSet('security-model','functional-model','reliability-model','architecture-model','dependency-model','runtime-incident-model','latency-speed-model','cost-burn-model')]
   [string]$Role,
   [string]$Model = '',
   [string]$BridgePath = '',
@@ -56,6 +56,8 @@ function Get-AgentConfidence {
   if ($RoleName -eq 'runtime-incident-model') { return 0.80 }
   if ($RoleName -eq 'architecture-model') { return 0.70 }
   if ($RoleName -eq 'dependency-model') { return 0.65 }
+  if ($RoleName -eq 'latency-speed-model') { return 0.80 }
+  if ($RoleName -eq 'cost-burn-model') { return 0.75 }
   return 0.50
 }
 
@@ -251,6 +253,153 @@ function New-AgentPrompt {
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('=== incident-bundle/circuit-breaker (last 5) ===')
     [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($cbSnippet)) { '(empty)' } else { $cbSnippet }))
+    [void]$sb.AppendLine('')
+  } elseif ($Role -eq 'latency-speed-model') {
+    [void]$sb.AppendLine('Role: latency-speed audit. Analyse p95 latency by phase (mode + fast_lane) for status=ok turns.')
+    [void]$sb.AppendLine('JSON schema: [{"severity":"critical|warning|info","category":"string","file":"path","line":0,"observation":"specific issue","recommendation":"specific fix"}]')
+    [void]$sb.AppendLine('Find ONLY concrete issues:')
+    [void]$sb.AppendLine('- slow_phase: any phase where p95_ok_sec > 600s (normal/discuss) or > 120s (fast+fast_lane). warning if p95>300s, critical if p95>900s.')
+    [void]$sb.AppendLine('- no_fast_lane: fast_lane turns count=0 while total_ok_turns>50 (feature deployed but never triggered).')
+    [void]$sb.AppendLine('- outlier: max_ok_sec > 3*p95_ok_sec for any phase (single outlier skewing distribution).')
+    [void]$sb.AppendLine('- high_failure: timeout_pct > 5% overall.')
+    [void]$sb.AppendLine('Use [] if no threshold is exceeded. Avoid speculative findings.')
+    [void]$sb.AppendLine('')
+    $coverage.Add('turns.jsonl')
+    $coverage.Add('audit/signals/speed.json')
+    # read pre-computed speed.json
+    $signalsPath = Join-Path $BridgeRoot 'audit\signals\speed.json'
+    if (Test-Path -LiteralPath $signalsPath -PathType Leaf) {
+      try {
+        $sigJson = [System.IO.File]::ReadAllText($signalsPath, [System.Text.Encoding]::UTF8)
+        [void]$sb.AppendLine('=== audit/signals/speed.json (overall stats) ===')
+        [void]$sb.AppendLine($(if ($sigJson.Length -gt 4000) { $sigJson.Substring(0,4000) + '...[truncated]' } else { $sigJson }))
+        [void]$sb.AppendLine('')
+      } catch {}
+    }
+    # compute per-phase p95 directly from turns.jsonl (status=ok only, last 500 rows)
+    $turnsPath2 = Join-Path $BridgeRoot 'turns.jsonl'
+    $phaseMap = @{}  # phase-key -> List[double]
+    if (Test-Path -LiteralPath $turnsPath2 -PathType Leaf) {
+      try {
+        $allTurnLines = [System.IO.File]::ReadAllLines($turnsPath2)
+        $subsetTurns = if ($allTurnLines.Count -gt 500) { $allTurnLines[($allTurnLines.Count-500)..($allTurnLines.Count-1)] } else { $allTurnLines }
+        foreach ($tl in $subsetTurns) {
+          if ([string]::IsNullOrWhiteSpace($tl)) { continue }
+          try {
+            $tr = $tl | ConvertFrom-Json
+            $tStatus = [string]$tr.status
+            if ($tStatus -ne 'ok') { continue }
+            $tMode = if ($tr.PSObject.Properties['mode'] -and $tr.mode) { [string]$tr.mode } else { 'unknown' }
+            $tFast = $false
+            if ($tr.PSObject.Properties['fast_lane'] -and $tr.fast_lane -eq $true) { $tFast = $true }
+            $phase = if ($tFast) { "$tMode+fast_lane" } else { $tMode }
+            $tSec = if ($tr.PSObject.Properties['sec']) { [double]$tr.sec } else { 0.0 }
+            if (-not $phaseMap.ContainsKey($phase)) { $phaseMap[$phase] = New-Object 'System.Collections.Generic.List[double]' }
+            [void]$phaseMap[$phase].Add($tSec)
+          } catch {}
+        }
+      } catch {}
+    }
+    $phaseLines = New-Object System.Text.StringBuilder
+    foreach ($phase in ($phaseMap.Keys | Sort-Object)) {
+      $pSecs = [double[]]$phaseMap[$phase].ToArray()
+      [Array]::Sort($pSecs)
+      $pN = $pSecs.Count
+      if ($pN -eq 0) { continue }
+      $p95idx = [Math]::Max(0, [Math]::Ceiling($pN * 0.95) - 1)
+      if ($p95idx -ge $pN) { $p95idx = $pN - 1 }
+      $pP95 = [Math]::Round($pSecs[$p95idx], 1)
+      $pAvg = [Math]::Round(($pSecs | Measure-Object -Average).Average, 1)
+      $pMax = [Math]::Round($pSecs[$pN-1], 1)
+      [void]$phaseLines.AppendLine("phase=$phase count=$pN avg=${pAvg}s p95=${pP95}s max=${pMax}s")
+    }
+    $phaseStatsTxt = $phaseLines.ToString().Trim()
+    [void]$sb.AppendLine('=== per-phase latency (status=ok, last 500 turns) ===')
+    [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($phaseStatsTxt)) { '(no status=ok turns found)' } else { $phaseStatsTxt }))
+    [void]$sb.AppendLine('')
+  } elseif ($Role -eq 'cost-burn-model') {
+    [void]$sb.AppendLine('Role: cost-burn audit. Find wasted spend in usage.jsonl: duplicate LLM calls (same purpose+model >=3 times in 5 min) and failed-token-burn (prompt cost paid, zero completion output on text-generation calls).')
+    [void]$sb.AppendLine('JSON schema: [{"severity":"critical|warning|info","category":"string","file":"path","line":0,"observation":"specific issue","recommendation":"specific fix"}]')
+    [void]$sb.AppendLine('Find ONLY concrete issues:')
+    [void]$sb.AppendLine('- duplicate_burst: same purpose+model called >=3 times within any 5-min window (audit/retry storm).')
+    [void]$sb.AppendLine('- failed_burn: text-gen calls (purpose not embed/codemem/embedding) where completion_tokens=0 AND cost_usd>0 AND count>2.')
+    [void]$sb.AppendLine('- expensive_purpose: single purpose with total cost_usd > $0.50 in window without proportional value.')
+    [void]$sb.AppendLine('Use [] if no concrete issue. Avoid speculative findings.')
+    [void]$sb.AppendLine('')
+    $coverage.Add('usage.jsonl')
+    $coverage.Add('audit/signals/cost.json')
+    # read pre-computed cost.json
+    $costSignalPath = Join-Path $BridgeRoot 'audit\signals\cost.json'
+    if (Test-Path -LiteralPath $costSignalPath -PathType Leaf) {
+      try {
+        $cJson = [System.IO.File]::ReadAllText($costSignalPath, [System.Text.Encoding]::UTF8)
+        [void]$sb.AppendLine('=== audit/signals/cost.json (pre-computed cost breakdown) ===')
+        [void]$sb.AppendLine($(if ($cJson.Length -gt 4000) { $cJson.Substring(0,4000) + '...[truncated]' } else { $cJson }))
+        [void]$sb.AppendLine('')
+      } catch {}
+    }
+    # read usage.jsonl for duplicate + failed-burn detection (last 1000 rows)
+    $usageRawPath = Join-Path $BridgeRoot 'usage.jsonl'
+    $purposeModelTs = @{}   # "$purpose|$model" -> List[datetime]
+    $failedBurnCount = 0
+    $failedBurnCostUsd = 0.0
+    $failedBurnExamples = New-Object 'System.Collections.Generic.List[string]'
+    $textGenPurposes = @{}  # purpose -> completion_tokens sum
+    if (Test-Path -LiteralPath $usageRawPath -PathType Leaf) {
+      try {
+        $allULines = [System.IO.File]::ReadAllLines($usageRawPath)
+        $subsetU = if ($allULines.Count -gt 1000) { $allULines[($allULines.Count-1000)..($allULines.Count-1)] } else { $allULines }
+        foreach ($ul in $subsetU) {
+          if ([string]::IsNullOrWhiteSpace($ul)) { continue }
+          try {
+            $ur = $ul | ConvertFrom-Json
+            $uPurpose = [string]$ur.purpose
+            $uModel = [string]$ur.model
+            $uCost = [double]$ur.cost_usd
+            $uCt = [long]$ur.completion_tokens
+            $uPt = [long]$ur.prompt_tokens
+            $uTs = $null
+            try { $uTs = [datetime]::Parse([string]$ur.ts) } catch {}
+            # duplicate detection
+            if (-not [string]::IsNullOrWhiteSpace($uPurpose) -and $uTs -ne $null) {
+              $key = "$uPurpose|$uModel"
+              if (-not $purposeModelTs.ContainsKey($key)) { $purposeModelTs[$key] = New-Object 'System.Collections.Generic.List[datetime]' }
+              [void]$purposeModelTs[$key].Add($uTs)
+            }
+            # failed-token-burn: text-gen only (exclude embed/codemem)
+            $isEmbed = ($uPurpose -match '(?i)(embed|codemem|embedding)')
+            if (-not $isEmbed -and $uCt -eq 0 -and $uCost -gt 0) {
+              $failedBurnCount++
+              $failedBurnCostUsd += $uCost
+              if ($failedBurnExamples.Count -lt 5) { [void]$failedBurnExamples.Add("purpose=$uPurpose model=$uModel cost=$uCost prompt_tokens=$uPt") }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    # burst detection
+    $dupBursts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($key in ($purposeModelTs.Keys | Sort-Object)) {
+      $times = [datetime[]]($purposeModelTs[$key].ToArray() | Sort-Object)
+      for ($bi = 0; $bi -lt ($times.Count - 2); $bi++) {
+        $winEnd = $times[$bi].AddMinutes(5)
+        $inWin = @($times[$bi..$times.Count] | Where-Object { $_ -le $winEnd })
+        if ($inWin.Count -ge 3) {
+          [void]$dupBursts.Add("$key : $($inWin.Count) calls within 5 min starting $($times[$bi].ToString('o'))")
+          break
+        }
+      }
+    }
+    [void]$sb.AppendLine('=== failed-token-burn (text-gen: completion_tokens=0, cost_usd>0, last 1000 rows) ===')
+    [void]$sb.AppendLine("count=$failedBurnCount total_cost_usd=$([Math]::Round($failedBurnCostUsd,6))")
+    if ($failedBurnExamples.Count -gt 0) { [void]$sb.AppendLine('examples: ' + ($failedBurnExamples -join ' | ')) }
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('=== duplicate-burst (same purpose+model >=3 calls within 5 min) ===')
+    if ($dupBursts.Count -eq 0) {
+      [void]$sb.AppendLine('(none detected)')
+    } else {
+      foreach ($burst in $dupBursts) { [void]$sb.AppendLine($burst) }
+    }
     [void]$sb.AppendLine('')
   } elseif ($Role -eq 'architecture-model') {
     [void]$sb.AppendLine('Role: architecture audit. Find dead functions/unused exports, architecture antipatterns, layer violations such as driver->lib misuse or server->driver without API, and very long functions over 150 lines that need decomposition.')
