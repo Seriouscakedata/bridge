@@ -32,6 +32,53 @@ function Get-TurnsStats {
   }
 }
 
+function Get-FastLaneLatencyStats {
+  param([int]$Limit = 500)
+
+  $entries = @(Read-RecentTurns -Limit $Limit)
+  $codex = @($entries | Where-Object { [string]$_.speaker -eq 'codex' -and $null -ne $_.sec })
+  $fast = @($codex | Where-Object { $_.fast_lane -eq $true })
+  $normal = @($codex | Where-Object { $_.fast_lane -ne $true })
+
+  function _GetFastLanePctl {
+    param([double[]]$Values, [double]$Percentile)
+    if (-not $Values -or $Values.Count -eq 0) { return 0.0 }
+    $sorted = @($Values | Sort-Object)
+    $idx = [int][Math]::Ceiling(($Percentile / 100.0) * $sorted.Count) - 1
+    if ($idx -lt 0) { $idx = 0 }
+    if ($idx -ge $sorted.Count) { $idx = $sorted.Count - 1 }
+    return [Math]::Round($sorted[$idx], 2)
+  }
+
+  function _GetFastLaneSummary {
+    param([object[]]$Rows)
+    $secs = @($Rows | ForEach-Object { [double]$_.sec })
+    $avgSec = 0.0
+    $minSec = 0.0
+    $maxSec = 0.0
+    if ($secs.Count -gt 0) {
+      $avgSec = [Math]::Round(($secs | Measure-Object -Average).Average, 2)
+      $minSec = [Math]::Round(($secs | Measure-Object -Minimum).Minimum, 2)
+      $maxSec = [Math]::Round(($secs | Measure-Object -Maximum).Maximum, 2)
+    }
+
+    return [pscustomobject]@{
+      count   = $Rows.Count
+      avg_sec = $avgSec
+      p50_sec = _GetFastLanePctl $secs 50
+      p90_sec = _GetFastLanePctl $secs 90
+      min_sec = $minSec
+      max_sec = $maxSec
+    }
+  }
+
+  return [pscustomobject]@{
+    fast_lane    = (_GetFastLaneSummary $fast)
+    normal_codex = (_GetFastLaneSummary $normal)
+    window_turns = $codex.Count
+  }
+}
+
 function Read-MetricsJsonl {
   $mf = Join-Path (Get-BridgeRoot) 'metrics.jsonl'
   if (-not (Test-Path $mf)) { return @() }

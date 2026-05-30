@@ -2717,7 +2717,8 @@ function Write-TurnLog {
     [string]$Mode,
     [DateTime]$StartedAtUtc,
     [string]$Reply,
-    [string]$Status = ''
+    [string]$Status = '',
+    [switch]$FastLane
   )
   try {
     $turnStatus = $Status
@@ -2734,6 +2735,7 @@ function Write-TurnLog {
       sec     = $sec
       status  = $turnStatus
       mode    = $Mode
+      fast_lane = [bool]$FastLane
     }
     Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Depth 10 -Compress) -Encoding UTF8
     try {
@@ -3809,11 +3811,11 @@ while ($true) {
       if ($turnResult.status -eq 'ok') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
     }
   } catch {
-    Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error'
+    Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error' -FastLane:$fastLaneTurn
     throw
   }
   $reply = [string]$turnResult.text
-  Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status)
+  Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status) -FastLane:$fastLaneTurn
   $guardChannelSlug = [string]$Channel
   try { $guardChannelSlug = Normalize-ChannelSlug $guardChannelSlug } catch {}
   if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and $guardChannelSlug -ne 'main') {
