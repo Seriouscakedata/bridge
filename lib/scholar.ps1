@@ -204,6 +204,112 @@ function Invoke-ArticleStudyFlash {
   try { return $mm.Value | ConvertFrom-Json } catch { return $null }
 }
 
-# ───────── STAGE 2 (next increment) — orchestration + autonomy ─────────
-# function Invoke-ScholarRun { ... }   # batch top-N candidates -> study each -> dedup -> file idea/knowledge
-# function Start-ScholarIfDue { ... }  # autonomous trigger (idle/schedule); replaces broken radar auto-idea
+# ───────── STAGE 2 — orchestration + autonomy ─────────
+
+function Get-ScholarSeenPath      { Join-Path (Get-BridgeRoot) 'radar\scholar-seen.jsonl' }
+function Get-ScholarKnowledgePath { Join-Path (Get-BridgeRoot) 'radar\scholar-knowledge.jsonl' }
+function Get-ScholarLastPath      { Join-Path (Get-BridgeRoot) 'radar\scholar.last' }
+
+function Get-ScholarSeenUrls {
+  # Set of URLs already studied (any verdict) -- so we never re-read the same article.
+  $h = @{}
+  $p = Get-ScholarSeenPath
+  if (Test-Path -LiteralPath $p) {
+    foreach ($line in (Get-Content -LiteralPath $p -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      try { $o = $line | ConvertFrom-Json; if ($o.url) { $h[[string]$o.url] = 1 } } catch {}
+    }
+  }
+  return $h
+}
+
+function Add-ScholarSeen {
+  param([string]$Url, [string]$Verdict)
+  try {
+    $rec = [ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); url = [string]$Url; verdict = [string]$Verdict }
+    $line = ($rec | ConvertTo-Json -Compress)
+    Add-Content -LiteralPath (Get-ScholarSeenPath) -Value $line -Encoding UTF8
+  } catch {}
+}
+
+function Add-ScholarKnowledge {
+  # Knowledge goes to a durable jsonl (later injected into the architect/scholar context).
+  param([string]$Text, [string]$Url, [string]$Pattern)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return }
+  try {
+    $rec = [ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); pattern = [string]$Pattern; text = [string]$Text; source = [string]$Url }
+    Add-Content -LiteralPath (Get-ScholarKnowledgePath) -Value ($rec | ConvertTo-Json -Compress) -Encoding UTF8
+  } catch {}
+}
+
+function Invoke-ScholarRun {
+  # Orchestrate one Scholar pass: take top-N radar candidates -> flash reads each -> idea (Claude-
+  # verified) into backlog, knowledge into the knowledge log, dedup by URL. Returns a summary.
+  param([int]$MaxArticles = 4, [int]$FollowLinks = 1, [bool]$VerifyIdeasWithClaude = $true)
+  $run = $null
+  try { $run = Get-RadarLatestRun } catch {}
+  if (-not $run) { return @{ ok = $false; reason = 'no-radar-run'; studied = 0 } }
+  $items = @(@($run.items) | Sort-Object { -1 * ([double]([string]$_.value -replace '[^\d.]', '0')) })
+  if ($items.Count -eq 0) { return @{ ok = $false; reason = 'no-items'; studied = 0 } }
+  $gaps = ''; try { $gaps = Get-ScholarGaps } catch {}
+  $seen = Get-ScholarSeenUrls
+  $studied = 0; $ideas = 0; $knowledge = 0; $skipped = 0
+  try { Add-Message -From system -Text ('📚 Scholar просыпается: глубоко изучаю до ' + $MaxArticles + ' статей из радара (читаю полный текст, сопоставляю с болями моста).') -Kind event | Out-Null } catch {}
+  foreach ($it in $items) {
+    if ($studied -ge $MaxArticles) { break }
+    $url = [string]$it.link
+    if ([string]::IsNullOrWhiteSpace($url) -or $seen.ContainsKey($url)) { continue }
+    $title = [string]$it.title
+    $v = $null
+    try { $v = Invoke-ArticleStudyFlash -Url $url -Title $title -Gaps $gaps -FollowLinks $FollowLinks } catch {}
+    $studied++
+    if (-not $v) { Add-ScholarSeen -Url $url -Verdict 'error'; continue }
+    $verdict = ([string]$v.verdict).Trim().ToLower()
+    if ($verdict -eq 'idea') {
+      $ideaText = [string]$v.idea
+      # Claude double-check: flash idea is cheap but spam-prone; Claude verifies before backlog.
+      if ($VerifyIdeasWithClaude) {
+        $cv = $null
+        try { $cv = Invoke-ArticleStudy -Url $url -Title $title -Gaps $gaps -TimeoutSec 200 } catch {}
+        if ($cv) {
+          $cVerdict = ([string]$cv.verdict).Trim().ToLower()
+          if ($cVerdict -ne 'idea') {
+            # flash over-claimed -> downgrade
+            if ($cv.knowledge) { Add-ScholarKnowledge -Text ([string]$cv.knowledge) -Url $url -Pattern ([string]$v.pattern); $knowledge++ }
+            Add-ScholarSeen -Url $url -Verdict ('flash-idea->claude-' + $cVerdict)
+            continue
+          }
+          if ($cv.idea) { $ideaText = [string]$cv.idea }   # use Claude's refined formulation
+        }
+      }
+      $txt = '[scholar/внешний источник] ' + $ideaText + "`nИсточник: " + $url
+      $id = $null
+      try { $id = Add-Idea -Text $txt -From 'scholar' -Tags @('scholar', 'external', 'radar-derived') -Status 'new' } catch {}
+      if ($id) { $ideas++ }
+      Add-ScholarSeen -Url $url -Verdict 'idea'
+    }
+    elseif ($verdict -eq 'knowledge') {
+      if ($v.knowledge) { Add-ScholarKnowledge -Text ([string]$v.knowledge) -Url $url -Pattern ([string]$v.pattern); $knowledge++ }
+      Add-ScholarSeen -Url $url -Verdict 'knowledge'
+    }
+    else { $skipped++; Add-ScholarSeen -Url $url -Verdict 'skip' }
+  }
+  try { Add-Message -From system -Text ('📚 Scholar закончил: изучено ' + $studied + ' · идей в бэклог ' + $ideas + ' · знаний ' + $knowledge + ' · пропущено ' + $skipped + '.') -Kind event | Out-Null } catch {}
+  return @{ ok = $true; studied = $studied; ideas = $ideas; knowledge = $knowledge; skipped = $skipped }
+}
+
+function Start-ScholarIfDue {
+  # Autonomous trigger: run Scholar at most once per FloorHours, in a night window. Marker: radar\scholar.last.
+  # This is the replacement for the broken radar auto-idea path -- radar collects RSS, Scholar reads+judges.
+  param([int]$FloorHours = 24, [int]$WindowStartHour = 1, [int]$WindowEndHour = 6, [int]$MaxArticles = 4)
+  $hour = (Get-Date).Hour
+  $inWindow = if ($WindowStartHour -le $WindowEndHour) { ($hour -ge $WindowStartHour -and $hour -le $WindowEndHour) } else { ($hour -ge $WindowStartHour -or $hour -le $WindowEndHour) }
+  if (-not $inWindow) { return $false }
+  $marker = Get-ScholarLastPath
+  if (Test-Path -LiteralPath $marker) {
+    try { $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim()); if (((Get-Date) - $last).TotalHours -lt $FloorHours) { return $false } } catch {}
+  }
+  try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try { Invoke-ScholarRun -MaxArticles $MaxArticles | Out-Null } catch {}
+  return $true
+}
