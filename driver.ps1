@@ -1091,6 +1091,24 @@ function Test-AutonomyReady {
   return $true
 }
 
+function Invoke-AutoPush {
+  # 2026-05-30: after the driver commits work, push it to origin so everything
+  # lands on GitHub automatically. Non-fatal: only runs if a remote + upstream
+  # exist and HEAD is ahead. Never force-pushes; a push failure is swallowed so
+  # it can never block the autonomous loop.
+  param([string]$Root)
+  try {
+    $remote = & git -C $Root remote 2>$null
+    if (-not $remote) { return }                       # no remote -> nothing to push
+    $ahead = (& git -C $Root rev-list --count '@{upstream}..HEAD' 2>$null)
+    $aheadN = 0; [void][int]::TryParse((([string]$ahead).Trim()), [ref]$aheadN)
+    if ($aheadN -le 0) { return }
+    & git -C $Root push 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host ("auto-push: pushed " + $aheadN + " commit(s) to origin") }
+    else { Write-Host ("auto-push: push failed (exit " + $LASTEXITCODE + "); will retry next commit") }
+  } catch {}
+}
+
 function Get-RecallKeywords {
   param([string]$TaskText = '')
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
@@ -3849,6 +3867,13 @@ while ($true) {
       }
     } catch {}
   }
+
+  # 2026-05-30: auto-push committed work to GitHub when HEAD moved this turn
+  # (covers both driver auto-commit above and commits the coder made itself).
+  try {
+    $headAfterTurn = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
+    if ($headAfterTurn -and $headBeforeTurn -and $headAfterTurn -ne $headBeforeTurn) { Invoke-AutoPush -Root $bridgeRoot }
+  } catch {}
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 
