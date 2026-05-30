@@ -381,32 +381,50 @@ function Save-CircuitDiagnostics {
 }
 
 function Invoke-HealthProbe {
-  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  # 2026-05-30 DEADLOCK FIX. The probe gates resume from circuit-breaker cooldown.
+  # Previously ANY of {parse-fail (recursive over ALL .ps1), state-unreadable, disk}
+  # made it red -> cooldown extended forever. But:
+  #   * state.json corruption is what the SERVER repairs on spawn -> blocking resume
+  #     on it created a deadlock (cooldown -> no server -> state stays corrupt ->
+  #     probe red -> cooldown). So state issues are now WARNINGS, not blockers.
+  #   * recursive scan let a broken .ps1 in canary-worktree/sandbox/projects (not even
+  #     part of the running bridge) wedge the probe. Scope to CORE files only.
+  # Only a real, fatal condition blocks resume now: a CORE .ps1 won't parse (would
+  # crash-loop) or the bridge root is gone (real disk failure).
+  $blockers = New-Object 'System.Collections.Generic.List[string]'
+  $warnings = New-Object 'System.Collections.Generic.List[string]'
   try {
     $root = Get-BridgeRoot
-    $psFiles = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File -Recurse -ErrorAction SilentlyContinue)
-    foreach ($f in $psFiles) {
+    $coreFiles = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($f in @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) { [void]$coreFiles.Add($f.FullName) }
+    foreach ($sub in @('lib','tools')) {
+      $sd = Join-Path $root $sub
+      if (Test-Path -LiteralPath $sd) { foreach ($f in @(Get-ChildItem -LiteralPath $sd -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) { [void]$coreFiles.Add($f.FullName) } }
+    }
+    foreach ($fp in $coreFiles) {
       $tokens = $null; $errors = $null
-      [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors) | Out-Null
-      if ($errors -and $errors.Count -gt 0) { [void]$reasons.Add("parse-fail: $($f.FullName)") }
+      [System.Management.Automation.Language.Parser]::ParseFile($fp, [ref]$tokens, [ref]$errors) | Out-Null
+      if ($errors -and $errors.Count -gt 0) { [void]$blockers.Add("parse-fail: $([System.IO.Path]::GetFileName($fp))") }
     }
   } catch {
-    [void]$reasons.Add("parse-probe-error: $($_.Exception.Message)")
+    [void]$warnings.Add("parse-probe-error: $($_.Exception.Message)")
   }
+  # state.json: WARNING only -- the server recreates/repairs it on spawn.
   try {
     $s = Read-State
-    if ($null -eq $s) { [void]$reasons.Add('state-unreadable') }
+    if ($null -eq $s) { [void]$warnings.Add('state-unreadable (server recreates on spawn)') }
   } catch {
-    [void]$reasons.Add("state-read-error: $($_.Exception.Message)")
+    [void]$warnings.Add("state-read-error: $($_.Exception.Message)")
   }
+  # bridge root gone is a real, blocking disk failure.
   try {
     $rootItem = Get-Item -LiteralPath (Get-BridgeRoot) -ErrorAction Stop
-    if (-not $rootItem.Exists) { [void]$reasons.Add('bridge-root-missing') }
+    if (-not $rootItem.Exists) { [void]$blockers.Add('bridge-root-missing') }
   } catch {
-    [void]$reasons.Add("disk-probe-error: $($_.Exception.Message)")
+    [void]$blockers.Add("disk-probe-error: $($_.Exception.Message)")
   }
-  $green = ($reasons.Count -eq 0)
-  $reason = if ($green) { 'ok' } else { ($reasons -join '; ') }
+  $green = ($blockers.Count -eq 0)
+  $reason = if ($green) { if ($warnings.Count -gt 0) { 'ok (warnings: ' + ($warnings -join '; ') + ')' } else { 'ok' } } else { ($blockers -join '; ') }
   return [pscustomobject]@{ green = $green; reason = $reason }
 }
 
@@ -547,18 +565,34 @@ function Test-CircuitSpawnPauseState {
       $now = Get-Date
       if ($now -lt $CooldownUntil) { $out.paused = $true; return [pscustomobject]$out }
       $probe = Invoke-HealthProbe
+      $extFile = Join-Path (Split-Path -Parent $FreezeFlagPath) 'cb-cooldown-extensions'
       if ($probe.green) {
+        try { if (Test-Path -LiteralPath $extFile) { Remove-Item -LiteralPath $extFile -Force -ErrorAction SilentlyContinue } } catch {}
         Invoke-CircuitCallback -Callback $LogCallback -Text "circuit cooldown expired; health probe green -> resume"
         Invoke-CircuitCallback -Callback $MessageCallback -Text "Circuit-breaker: health-probe зелёный, возобновляю server/driver."
         $out.cooldownUntil = $null
         return [pscustomobject]$out
       }
+      # 2026-05-30 FAILSAFE: a stuck-red probe must NOT keep the bridge dead forever
+      # (the deadlock we just hit). After 3 extensions (~45 min), force-resume anyway
+      # and escalate to the operator -- a live bridge with a warning beats a dead one.
+      $extCount = 0
+      try { if (Test-Path -LiteralPath $extFile) { $extCount = [int]((Get-Content -LiteralPath $extFile -Raw -ErrorAction SilentlyContinue).Trim()) } } catch { $extCount = 0 }
+      $extCount++
+      if ($extCount -ge 3) {
+        try { if (Test-Path -LiteralPath $extFile) { Remove-Item -LiteralPath $extFile -Force -ErrorAction SilentlyContinue } } catch {}
+        Invoke-CircuitCallback -Callback $LogCallback -Text ("circuit FAILSAFE force-resume after " + $extCount + " extensions; probe still not green: " + $probe.reason)
+        Invoke-CircuitCallback -Callback $MessageCallback -Text ("Circuit-breaker: 3 продления подряд, health-probe не зелёный (" + $probe.reason + "). FAILSAFE — поднимаю мост принудительно, проверь причину.")
+        $out.cooldownUntil = $null
+        return [pscustomobject]$out
+      }
+      try { Set-Content -LiteralPath $extFile -Value ([string]$extCount) -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
       $settings = Get-CircuitBreakerSettings
       $mins = [Math]::Min(30, [Math]::Max(10, [int]$settings.cooldownMin))
       $out.cooldownUntil = $now.AddMinutes($mins)
       $out.paused = $true
-      Invoke-CircuitCallback -Callback $LogCallback -Text ("circuit cooldown extended; health probe not green: " + $probe.reason)
-      Invoke-CircuitCallback -Callback $MessageCallback -Text ("Circuit-breaker: health-probe не зелёный (" + $probe.reason + "), продлеваю cooldown.")
+      Invoke-CircuitCallback -Callback $LogCallback -Text ("circuit cooldown extended (#" + $extCount + "/3); health probe not green: " + $probe.reason)
+      Invoke-CircuitCallback -Callback $MessageCallback -Text ("Circuit-breaker: health-probe не зелёный (" + $probe.reason + "), продлеваю cooldown (#" + $extCount + "/3).")
     }
   } catch {
     Invoke-CircuitCallback -Callback $LogCallback -Text ("circuit pause check error (fail-safe allow restart): " + $_.Exception.Message)
