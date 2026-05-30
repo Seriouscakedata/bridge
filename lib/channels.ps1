@@ -408,6 +408,19 @@ function Get-ChannelList {
   return @($items.ToArray() | Sort-Object { [string]$_.slug })
 }
 
+function Get-ActiveSlugs {
+  # Non-archived channel slugs, in stable order. 2026-05-30: moved here from supervisor.ps1
+  # so the DRIVER (which dot-sources lib/* but NOT supervisor.ps1) can call it too. The
+  # recycle-coalescer in driver.ps1 (L3207) calls Get-ActiveSlugs OUTSIDE its inner try;
+  # when the function was supervisor-only it threw "not recognized" every tick, the whole
+  # apply-block fell into the outer catch, and deferred restarts were NEVER applied (the
+  # bridge could not self-deploy its own .ps1 edits without a manual recycle). Single source.
+  $list = @(Get-ChannelList)
+  $slugs = @($list | ForEach-Object { [string]$_.slug } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($slugs.Count -eq 0) { $slugs = @('main') }
+  return $slugs
+}
+
 function Archive-Channel {
   param([string]$Slug)
   if ([string]::IsNullOrWhiteSpace($Slug)) { return $false }

@@ -3204,7 +3204,13 @@ while ($true) {
       $rcDefer   = Join-Path $ctlDir 'restart.deferred'
       $rcMaxDefer = 600
       $rcBusy = $false
-      foreach ($rcSlug in (Get-ActiveSlugs)) {
+      # 2026-05-30 defense: Get-ActiveSlugs now lives in lib/channels.ps1 (driver dot-sources it).
+      # Guard anyway -- if it's ever unavailable again, fall back to 'main' instead of throwing the
+      # WHOLE apply-block into the outer catch. That exact silent failure (supervisor-only function
+      # called from the driver) held deferred restarts UNAPPLIED for weeks: the bridge could not
+      # self-deploy its own .ps1 edits without a manual recycle.
+      $rcSlugs = @('main'); try { $rcSlugs = @(Get-ActiveSlugs) } catch { $rcSlugs = @('main') }
+      foreach ($rcSlug in $rcSlugs) {
         $rcSp = Join-Path $bridgeRoot ("channels\" + $rcSlug + "\state.json")
         if (Test-Path -LiteralPath $rcSp) {
           try {
@@ -3268,7 +3274,7 @@ while ($true) {
         }
         # else: plan still has queued work, not failsafe-quiet, under cap -> keep holding
       }
-    } catch {}
+    } catch { try { [System.IO.File]::AppendAllText((Join-Path $bridgeRoot 'control\coalescer.err.log'), ((Get-Date).ToString('o') + ' coalescer-apply EXC: ' + $_.Exception.Message + "`n")) } catch {} }
   }
 
   if ($state.stop) { Add-Message -From system -Text "Мост остановлен." -Kind event | Out-Null; Update-State { param($s) $s.status='stopped'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null } | Out-Null; break }
