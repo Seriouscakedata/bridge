@@ -3,9 +3,32 @@
 $b = 'C:\Users\rafie\OneDrive\Documents\bridge'
 $failed = @()
 
-# 1. Parse-check all .ps1 files
-$ps1s = Get-ChildItem $b -Recurse -Filter *.ps1 -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch '\\\.' }
+# 1. Parse-check source .ps1 files. Runtime dirs such as jobs/control are ignored by git
+#    and may contain transient wrappers/log probes that are not project source.
+function Get-SmokePs1Files {
+    param([string]$Root)
+    $paths = @()
+    try {
+        $tracked = @(git -C $Root ls-files -- '*.ps1' 2>$null)
+        $untracked = @(git -C $Root ls-files --others --exclude-standard -- '*.ps1' 2>$null)
+        $paths = @($tracked + $untracked |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique)
+    } catch {
+        $paths = @()
+    }
+    if ($paths.Count -gt 0) {
+        return @($paths |
+            ForEach-Object { Get-Item -LiteralPath (Join-Path $Root $_) -ErrorAction SilentlyContinue } |
+            Where-Object { $_ -and $_.FullName -notmatch '\\\.' })
+    }
+    return @(Get-ChildItem $Root -Recurse -Filter *.ps1 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch '\\\.' -and
+            $_.FullName -notmatch '\\(audit|control|files|jobs|memory|projects|replay|reports|runtime|sandbox|tmp)\\'
+        })
+}
+$ps1s = @(Get-SmokePs1Files -Root $b)
 foreach ($f in $ps1s) {
     $tokens = $null
     $errs = $null
