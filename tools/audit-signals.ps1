@@ -5,6 +5,18 @@
 
 $ErrorActionPreference = "Stop"
 
+$script:MaxJsonLineChars = 1048576
+$script:MaxOutputStringChars = 4096
+$script:JsonSerializer = $null
+try {
+  Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+  $script:JsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+  $script:JsonSerializer.MaxJsonLength = $script:MaxJsonLineChars
+  $script:JsonSerializer.RecursionLimit = 16
+} catch {
+  throw "JSON parser unavailable: $($_.Exception.Message)"
+}
+
 function Get-Prop {
   param(
     [object]$Object,
@@ -13,6 +25,20 @@ function Get-Prop {
   )
 
   if ($null -eq $Object) { return $Default }
+  if ($Object -is [System.Collections.IDictionary]) {
+    $hasKey = $false
+    if ($Object.PSObject.Methods['ContainsKey']) {
+      $hasKey = [bool]$Object.ContainsKey($Name)
+    } else {
+      $hasKey = [bool]$Object.Contains($Name)
+    }
+    if ($hasKey) {
+      $value = $Object[$Name]
+      if ($null -ne $value) { return $value }
+    }
+    return $Default
+  }
+
   $prop = $Object.PSObject.Properties[$Name]
   if ($null -eq $prop -or $null -eq $prop.Value) { return $Default }
   return $prop.Value
@@ -107,6 +133,35 @@ function Test-InWindow {
   return $Timestamp -ge $script:WindowFrom
 }
 
+function ConvertTo-SafeString {
+  param(
+    [AllowNull()][object]$Value,
+    [int]$MaxChars = 1024
+  )
+
+  if ($null -eq $Value) { return $null }
+  $text = [string]$Value
+  if ($text.Length -le $MaxChars) { return $text }
+  return ($text.Substring(0, $MaxChars) + "...[truncated]")
+}
+
+function ConvertFrom-SafeJsonLine {
+  param(
+    [string]$Line,
+    [int]$LineNo
+  )
+
+  if ($Line.Length -gt $script:MaxJsonLineChars) {
+    throw "line ${LineNo}: JSON line exceeds $script:MaxJsonLineChars characters"
+  }
+
+  $parsed = $script:JsonSerializer.DeserializeObject($Line)
+  if (-not ($parsed -is [System.Collections.IDictionary])) {
+    throw "line ${LineNo}: JSON root is not an object"
+  }
+  return $parsed
+}
+
 function Read-JsonLines {
   param([string]$Path)
 
@@ -135,9 +190,9 @@ function Read-JsonLines {
       }
 
       try {
-        [void]$rows.Add(($line | ConvertFrom-Json -ErrorAction Stop))
+        [void]$rows.Add((ConvertFrom-SafeJsonLine -Line $line -LineNo $lineNo))
       } catch {
-        [void]$errors.Add("line ${lineNo}: $($_.Exception.Message)")
+        [void]$errors.Add($_.Exception.Message)
       }
     }
   } catch {
@@ -147,9 +202,107 @@ function Read-JsonLines {
     elseif ($null -ne $stream) { $stream.Close() }
   }
 
-  return [pscustomobject]@{
+  return [ordered]@{
     Rows = @($rows.ToArray())
     Errors = @($errors.ToArray())
+  }
+}
+
+function Read-SharedTextLines {
+  param(
+    [string]$Path,
+    [int]$MaxLines = 500,
+    [int]$MaxChars = 1048576
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return @()
+  }
+
+  $lines = New-Object 'System.Collections.Generic.List[string]'
+  $stream = $null
+  $reader = $null
+  $chars = 0
+  try {
+    $share = [System.IO.FileShare]([int][System.IO.FileShare]::ReadWrite -bor [int][System.IO.FileShare]::Delete)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    $utf8 = New-Object System.Text.UTF8Encoding($false, $false)
+    $reader = New-Object System.IO.StreamReader($stream, $utf8, $true)
+    while ($lines.Count -lt $MaxLines) {
+      $line = $reader.ReadLine()
+      if ($null -eq $line) { break }
+      $chars += $line.Length
+      if ($chars -gt $MaxChars) { break }
+      [void]$lines.Add((ConvertTo-SafeString -Value $line -MaxChars 2048))
+    }
+  } finally {
+    if ($null -ne $reader) { $reader.Close() }
+    elseif ($null -ne $stream) { $stream.Close() }
+  }
+
+  return @($lines.ToArray())
+}
+
+function New-CircuitBreakerRecord {
+  param([System.IO.FileSystemInfo]$Item)
+
+  $parts = $Item.Name -split "\.", 2
+  if ($parts.Count -lt 2) { return $null }
+  $ts = ConvertFrom-CircuitBreakerStamp -Stamp $parts[1]
+  if ($null -eq $ts) { return $null }
+
+  $diffPath = $null
+  $statusPath = $null
+  if ($Item.PSIsContainer) {
+    $diffPath = Join-Path $Item.FullName "git-diff.patch"
+    $statusPath = Join-Path $Item.FullName "git-status.txt"
+  } else {
+    $diffPath = $Item.FullName
+  }
+
+  $diffFiles = New-Object 'System.Collections.Generic.List[string]'
+  $diffBytes = 0
+  $readError = $null
+  try {
+    if ($diffPath -and (Test-Path -LiteralPath $diffPath -PathType Leaf)) {
+      $diffBytes = [Int64](Get-Item -LiteralPath $diffPath -ErrorAction Stop).Length
+      foreach ($line in (Read-SharedTextLines -Path $diffPath -MaxLines 5000 -MaxChars 1048576)) {
+        if ($line -match '^diff --git a/(.+?) b/(.+)$') {
+          $fileName = ConvertTo-SafeString -Value $Matches[2] -MaxChars 512
+          if (-not [string]::IsNullOrWhiteSpace($fileName) -and -not $diffFiles.Contains($fileName)) {
+            [void]$diffFiles.Add($fileName)
+          }
+        }
+      }
+    }
+  } catch {
+    $readError = $_.Exception.Message
+  }
+
+  $statusPreview = @()
+  try {
+    if ($statusPath -and (Test-Path -LiteralPath $statusPath -PathType Leaf)) {
+      $statusPreview = @(
+        Read-SharedTextLines -Path $statusPath -MaxLines 20 -MaxChars 20000 |
+          Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+          Select-Object -First 20
+      )
+    }
+  } catch {
+    if ($readError) {
+      $readError = "$readError; status: $($_.Exception.Message)"
+    } else {
+      $readError = "status: $($_.Exception.Message)"
+    }
+  }
+
+  return [ordered]@{
+    ts = $ts
+    name = $Item.Name
+    diff_bytes = [Int64]$diffBytes
+    diff_files = @($diffFiles.ToArray())
+    git_status_preview = $statusPreview
+    read_error = $readError
   }
 }
 
@@ -257,10 +410,63 @@ function Join-Reasons {
   return ($filtered -join "; ")
 }
 
+function ConvertTo-SignalDto {
+  param(
+    [AllowNull()][object]$Value,
+    [int]$Depth = 0
+  )
+
+  if ($Depth -gt 8) {
+    return "[max-depth]"
+  }
+  if ($null -eq $Value) {
+    return $null
+  }
+  if ($Value -is [string]) {
+    return (ConvertTo-SafeString -Value $Value -MaxChars $script:MaxOutputStringChars)
+  }
+  if ($Value -is [bool]) {
+    return [bool]$Value
+  }
+  if ($Value -is [byte] -or $Value -is [sbyte] -or
+      $Value -is [int16] -or $Value -is [uint16] -or
+      $Value -is [int] -or $Value -is [uint32] -or
+      $Value -is [long] -or $Value -is [uint64] -or
+      $Value -is [single] -or $Value -is [double] -or
+      $Value -is [decimal]) {
+    return $Value
+  }
+  if ($Value -is [datetime]) {
+    return ([datetime]$Value).ToUniversalTime().ToString("o")
+  }
+  if ($Value -is [datetimeoffset]) {
+    return ([datetimeoffset]$Value).UtcDateTime.ToString("o")
+  }
+  if ($Value -is [System.Collections.IDictionary]) {
+    $dto = [ordered]@{}
+    $keys = @($Value.Keys | ForEach-Object { [string]$_ })
+    [array]::Sort($keys, [System.StringComparer]::Ordinal)
+    foreach ($key in $keys) {
+      $dto[$key] = ConvertTo-SignalDto -Value $Value[$key] -Depth ($Depth + 1)
+    }
+    return $dto
+  }
+  if ($Value -is [System.Collections.IEnumerable]) {
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($item in $Value) {
+      [void]$items.Add((ConvertTo-SignalDto -Value $item -Depth ($Depth + 1)))
+    }
+    return ,@($items.ToArray())
+  }
+
+  return (ConvertTo-SafeString -Value $Value -MaxChars 512)
+}
+
 function ConvertTo-SignalJson {
   param([object]$Payload)
 
-  $jsonOutput = $Payload | ConvertTo-Json -Depth 20 -ErrorAction Stop
+  $safePayload = ConvertTo-SignalDto -Value $Payload
+  $jsonOutput = $safePayload | ConvertTo-Json -Depth 8 -ErrorAction Stop
   if ($jsonOutput -is [array]) {
     $jsonText = [string]($jsonOutput -join [Environment]::NewLine)
   } else {
@@ -270,7 +476,6 @@ function ConvertTo-SignalJson {
     throw "ConvertTo-Json produced empty output"
   }
 
-  [void]($jsonText | ConvertFrom-Json -ErrorAction Stop)
   return ($jsonText.TrimEnd() + [Environment]::NewLine)
 }
 
@@ -317,6 +522,8 @@ function Build-IncidentSignals {
   $restartsPath = Join-Path $script:RuntimeRoot "restarts.jsonl"
   $restartRows = New-Object 'System.Collections.Generic.List[object]'
   $restartCounts = @{}
+  $cbRecords = New-Object 'System.Collections.Generic.List[object]'
+  $cbDiffFiles = @{}
   $cbActivations = 0
   $restartsReadable = $false
   $cbReadable = $false
@@ -335,10 +542,10 @@ function Build-IncidentSignals {
       if (Test-InWindow -Timestamp $ts) {
         $cause = Get-StringValue -Object $row -Name "cause"
         Add-Count -Map $restartCounts -Key $cause
-        [void]$restartRows.Add([pscustomobject]@{
+        [void]$restartRows.Add([ordered]@{
           ts = $ts
           cause = $cause
-          detail = [string](Get-Prop -Object $row -Name "detail" -Default "")
+          detail = ConvertTo-SafeString -Value (Get-Prop -Object $row -Name "detail" -Default "") -MaxChars 1024
         })
       }
     }
@@ -352,16 +559,19 @@ function Build-IncidentSignals {
       throw "runtime root not found: $script:RuntimeRoot"
     }
 
-    $cbFiles = Get-ChildItem -LiteralPath $script:RuntimeRoot -Filter "circuit-breaker.*" -File -ErrorAction Stop
-    foreach ($file in $cbFiles) {
-      $parts = $file.Name -split "\.", 2
-      if ($parts.Count -lt 2) {
-        continue
-      }
-
-      $ts = ConvertFrom-CircuitBreakerStamp -Stamp $parts[1]
-      if (Test-InWindow -Timestamp $ts) {
+    $cbItems = Get-ChildItem -LiteralPath $script:RuntimeRoot -Filter "circuit-breaker.*" -ErrorAction Stop
+    foreach ($item in $cbItems) {
+      $record = New-CircuitBreakerRecord -Item $item
+      if ($null -ne $record -and (Test-InWindow -Timestamp $record.ts)) {
         $cbActivations++
+        [void]$cbRecords.Add($record)
+        foreach ($diffFile in @($record.diff_files)) {
+          Add-Count -Map $cbDiffFiles -Key $diffFile
+        }
+        if ($record.read_error) {
+          $hasPartialData = $true
+          [void]$reasons.Add("circuit-breaker $($record.name) partial: $($record.read_error)")
+        }
       }
     }
     $cbReadable = $true
@@ -382,7 +592,7 @@ function Build-IncidentSignals {
 
   $recentRestarts = @(
     $restartRows.ToArray() |
-      Sort-Object @{ Expression = "ts"; Descending = $true }, @{ Expression = "cause"; Ascending = $true } |
+      Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "ts" }; Descending = $true }, @{ Expression = { Get-Prop -Object $_ -Name "cause" }; Ascending = $true } |
       Select-Object -First 10 |
       ForEach-Object {
         [ordered]@{
@@ -393,12 +603,47 @@ function Build-IncidentSignals {
       }
   )
 
+  $recentCbActivations = @(
+    $cbRecords.ToArray() |
+      Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "ts" }; Descending = $true }, @{ Expression = { Get-Prop -Object $_ -Name "name" }; Ascending = $true } |
+      Select-Object -First 10 |
+      ForEach-Object {
+        [ordered]@{
+          ts = $_.ts.ToString("o")
+          name = $_.name
+          diff_bytes = [Int64]$_.diff_bytes
+          diff_files = @($_.diff_files | Select-Object -First 20)
+          git_status_preview = @($_.git_status_preview | Select-Object -First 20)
+        }
+      }
+  )
+
+  $latestCbDiff = $null
+  $latestCb = @(
+    $cbRecords.ToArray() |
+      Where-Object { @($_.diff_files).Count -gt 0 -or [Int64]$_.diff_bytes -gt 0 } |
+      Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "ts" }; Descending = $true }, @{ Expression = { Get-Prop -Object $_ -Name "name" }; Ascending = $true } |
+      Select-Object -First 1
+  )
+  if ($latestCb.Count -gt 0) {
+    $latestCbDiff = [ordered]@{
+      ts = $latestCb[0].ts.ToString("o")
+      name = $latestCb[0].name
+      diff_bytes = [Int64]$latestCb[0].diff_bytes
+      diff_files = @($latestCb[0].diff_files | Select-Object -First 50)
+      git_status_preview = @($latestCb[0].git_status_preview | Select-Object -First 20)
+    }
+  }
+
   $signals = [ordered]@{
     total_restarts = [int]$restartRows.Count
     restarts_by_cause = Convert-CountMapToOrdered -Map $restartCounts
     dominant_cause = Get-DominantKey -Map $restartCounts
     cb_activations = [int]$cbActivations
+    cb_diff_files = Convert-CountMapToOrdered -Map $cbDiffFiles
+    latest_cb_diff = $latestCbDiff
     recent_restarts = $recentRestarts
+    recent_cb_activations = $recentCbActivations
   }
 
   return New-SignalDocument -Quality $quality -Reason $reason -Signals $signals
@@ -435,7 +680,7 @@ function Build-SpeedSignals {
         $speaker = Get-StringValue -Object $row -Name "speaker"
         Add-Count -Map $turnsByMode -Key $mode
         Add-Count -Map $turnsBySpeaker -Key $speaker
-        [void]$turnRows.Add([pscustomobject]@{
+        [void]$turnRows.Add([ordered]@{
           ts = $ts
           speaker = $speaker
           mode = $mode
@@ -464,7 +709,7 @@ function Build-SpeedSignals {
 
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
-        [void]$snapshots.Add([pscustomobject]@{
+        [void]$snapshots.Add([ordered]@{
           ts = $ts
           avg_sec = Get-DoubleValue -Object $row -Name "avg_sec"
           timeout_pct = Get-DoubleValue -Object $row -Name "timeout_pct"
@@ -472,7 +717,7 @@ function Build-SpeedSignals {
       }
     }
 
-    $latest = @($snapshots.ToArray() | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
+    $latest = @($snapshots.ToArray() | Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "ts" }; Descending = $true } | Select-Object -First 1)
     if ($latest.Count -gt 0) {
       $latestSnapshotAvgSec = [Math]::Round([double]$latest[0].avg_sec, 2)
       $latestSnapshotTimeoutPct = [Math]::Round([double]$latest[0].timeout_pct, 2)
@@ -492,7 +737,7 @@ function Build-SpeedSignals {
     foreach ($row in $readResult.Rows) {
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
-        [void]$probes.Add([pscustomobject]@{
+        [void]$probes.Add([ordered]@{
           ts = $ts
           computed_timeout_ms = Get-Int64Value -Object $row -Name "computed_timeout_ms"
           actual_duration_ms = Get-Int64Value -Object $row -Name "actual_duration_ms"
@@ -500,7 +745,7 @@ function Build-SpeedSignals {
       }
     }
 
-    $latestProbe = @($probes.ToArray() | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
+    $latestProbe = @($probes.ToArray() | Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "ts" }; Descending = $true } | Select-Object -First 1)
     if ($latestProbe.Count -gt 0) {
       $probeComputedMs = [Int64]$latestProbe[0].computed_timeout_ms
       $probeActualMs = [Int64]$latestProbe[0].actual_duration_ms
@@ -569,12 +814,14 @@ function Build-CostSignals {
   $costByProvider = @{}
   $costByPurpose = @{}
   $modelMap = @{}
+  $usageLinesRead = 0
   $usageReadable = $false
   $hasPartialData = $false
   $reasons = New-Object 'System.Collections.Generic.List[string]'
 
   try {
     $readResult = Read-JsonLines -Path $usagePath
+    $usageLinesRead = @($readResult.Rows).Count + @($readResult.Errors).Count
     if (@($readResult.Errors).Count -gt 0) {
       $hasPartialData = $true
       Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "usage.jsonl"
@@ -591,7 +838,7 @@ function Build-CostSignals {
         Add-Sum -Map $costByPurpose -Key $purpose -Value $cost
 
         if (-not $modelMap.ContainsKey($model)) {
-          $modelMap[$model] = [pscustomobject]@{
+          $modelMap[$model] = [ordered]@{
             model = $model
             cost = 0.0
             calls = 0
@@ -600,7 +847,7 @@ function Build-CostSignals {
         $modelMap[$model].cost = [double]$modelMap[$model].cost + $cost
         $modelMap[$model].calls = [int]$modelMap[$model].calls + 1
 
-        [void]$usageRows.Add([pscustomobject]@{
+        [void]$usageRows.Add([ordered]@{
           prompt_tokens = Get-Int64Value -Object $row -Name "prompt_tokens"
           completion_tokens = Get-Int64Value -Object $row -Name "completion_tokens"
           cost_usd = $cost
@@ -648,7 +895,7 @@ function Build-CostSignals {
 
   $topModels = @(
     $modelMap.Values |
-      Sort-Object @{ Expression = "cost"; Descending = $true }, @{ Expression = "model"; Ascending = $true } |
+      Sort-Object @{ Expression = { Get-Prop -Object $_ -Name "cost" }; Descending = $true }, @{ Expression = { Get-Prop -Object $_ -Name "model" }; Ascending = $true } |
       Select-Object -First 5 |
       ForEach-Object {
         [ordered]@{
@@ -660,6 +907,8 @@ function Build-CostSignals {
   )
 
   $signals = [ordered]@{
+    usage_lines_read = [int]$usageLinesRead
+    usage_rows_in_window = [int]$usageRows.Count
     total_cost_usd = [Math]::Round($totalCost, 6)
     total_prompt_tokens = $totalPromptTokens
     total_completion_tokens = $totalCompletionTokens
