@@ -1,7 +1,9 @@
 ﻿param(
-  [string]$BridgePath = $null,
-  [int]$WindowHours = 24
+  [AllowNull()][string]$BridgePath = $null,
+  [ValidateRange(1, 8760)][int]$WindowHours = 24
 )
+
+$ErrorActionPreference = "Stop"
 
 function Get-Prop {
   param(
@@ -112,23 +114,43 @@ function Read-JsonLines {
     throw "source not found: $Path"
   }
 
-  $rows = New-Object System.Collections.Generic.List[object]
+  $rows = New-Object 'System.Collections.Generic.List[object]'
+  $errors = New-Object 'System.Collections.Generic.List[string]'
   $lineNo = 0
-  Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
-    $lineNo++
-    $line = [string]$_
-    if ([string]::IsNullOrWhiteSpace($line)) {
-      return
-    }
+  $stream = $null
+  $reader = $null
 
-    try {
-      $rows.Add(($line | ConvertFrom-Json -ErrorAction Stop)) | Out-Null
-    } catch {
-      throw "invalid json in $Path at line ${lineNo}: $($_.Exception.Message)"
+  try {
+    $share = [System.IO.FileShare]([int][System.IO.FileShare]::ReadWrite -bor [int][System.IO.FileShare]::Delete)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    $utf8 = New-Object System.Text.UTF8Encoding($false, $false)
+    $reader = New-Object System.IO.StreamReader($stream, $utf8, $true)
+
+    while ($true) {
+      $line = $reader.ReadLine()
+      if ($null -eq $line) { break }
+      $lineNo++
+      if ([string]::IsNullOrWhiteSpace($line)) {
+        continue
+      }
+
+      try {
+        [void]$rows.Add(($line | ConvertFrom-Json -ErrorAction Stop))
+      } catch {
+        [void]$errors.Add("line ${lineNo}: $($_.Exception.Message)")
+      }
     }
+  } catch {
+    throw "read failed for ${Path}: $($_.Exception.Message)"
+  } finally {
+    if ($null -ne $reader) { $reader.Close() }
+    elseif ($null -ne $stream) { $stream.Close() }
   }
 
-  return @($rows.ToArray())
+  return [pscustomobject]@{
+    Rows = @($rows.ToArray())
+    Errors = @($errors.ToArray())
+  }
 }
 
 function Add-Count {
@@ -212,14 +234,44 @@ function Get-DominantKey {
   return $bestKey
 }
 
+function Add-ReadWarnings {
+  param(
+    [System.Collections.Generic.List[string]]$Reasons,
+    [object]$ReadResult,
+    [string]$SourceName
+  )
+
+  $count = @($ReadResult.Errors).Count
+  if ($count -gt 0) {
+    [void]$Reasons.Add("${SourceName} partial: $count malformed jsonl line(s)")
+  }
+}
+
 function Join-Reasons {
-  param([string[]]$Reasons)
+  param([object]$Reasons)
 
   $filtered = @($Reasons | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   if ($filtered.Count -eq 0) {
     return $null
   }
   return ($filtered -join "; ")
+}
+
+function ConvertTo-SignalJson {
+  param([object]$Payload)
+
+  $jsonOutput = $Payload | ConvertTo-Json -Depth 20 -ErrorAction Stop
+  if ($jsonOutput -is [array]) {
+    $jsonText = [string]($jsonOutput -join [Environment]::NewLine)
+  } else {
+    $jsonText = [string]$jsonOutput
+  }
+  if ([string]::IsNullOrWhiteSpace($jsonText)) {
+    throw "ConvertTo-Json produced empty output"
+  }
+
+  [void]($jsonText | ConvertFrom-Json -ErrorAction Stop)
+  return ($jsonText.TrimEnd() + [Environment]::NewLine)
 }
 
 function New-SignalDocument {
@@ -251,36 +303,48 @@ function Write-JsonAtomic {
   }
 
   $tmp = Join-Path $dir (".{0}.{1}.tmp" -f ([System.IO.Path]::GetFileName($Path)), ([guid]::NewGuid().ToString("N")))
-  $json = $Payload | ConvertTo-Json -Depth 20
-  [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
-  Move-Item -LiteralPath $tmp -Destination $Path -Force
+  try {
+    $jsonText = ConvertTo-SignalJson -Payload $Payload
+    [System.IO.File]::WriteAllText($tmp, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+  } catch {
+    try { if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force } } catch {}
+    throw
+  }
 }
 
 function Build-IncidentSignals {
   $restartsPath = Join-Path $script:RuntimeRoot "restarts.jsonl"
-  $restartRows = @()
+  $restartRows = New-Object 'System.Collections.Generic.List[object]'
   $restartCounts = @{}
   $cbActivations = 0
   $restartsReadable = $false
   $cbReadable = $false
-  $reasons = @()
+  $hasPartialData = $false
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
 
   try {
-    foreach ($row in (Read-JsonLines -Path $restartsPath)) {
+    $readResult = Read-JsonLines -Path $restartsPath
+    if (@($readResult.Errors).Count -gt 0) {
+      $hasPartialData = $true
+      Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "restarts.jsonl"
+    }
+
+    foreach ($row in $readResult.Rows) {
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
         $cause = Get-StringValue -Object $row -Name "cause"
         Add-Count -Map $restartCounts -Key $cause
-        $restartRows += [pscustomobject]@{
+        [void]$restartRows.Add([pscustomobject]@{
           ts = $ts
           cause = $cause
           detail = [string](Get-Prop -Object $row -Name "detail" -Default "")
-        }
+        })
       }
     }
     $restartsReadable = $true
   } catch {
-    $reasons += "restarts.jsonl unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("restarts.jsonl unreadable: $($_.Exception.Message)")
   }
 
   try {
@@ -302,10 +366,10 @@ function Build-IncidentSignals {
     }
     $cbReadable = $true
   } catch {
-    $reasons += "circuit-breaker files unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("circuit-breaker files unreadable: $($_.Exception.Message)")
   }
 
-  if ($restartsReadable -and $cbReadable) {
+  if ($restartsReadable -and $cbReadable -and -not $hasPartialData) {
     $quality = "full"
     $reason = $null
   } elseif ($restartsReadable -or $cbReadable) {
@@ -317,7 +381,7 @@ function Build-IncidentSignals {
   }
 
   $recentRestarts = @(
-    $restartRows |
+    $restartRows.ToArray() |
       Sort-Object @{ Expression = "ts"; Descending = $true }, @{ Expression = "cause"; Ascending = $true } |
       Select-Object -First 10 |
       ForEach-Object {
@@ -345,89 +409,107 @@ function Build-SpeedSignals {
   $metricsPath = Join-Path $script:BridgeRoot "metrics.jsonl"
   $probePath = Join-Path $script:RuntimeRoot "probe-durations.jsonl"
 
-  $turnRows = @()
+  $turnRows = New-Object 'System.Collections.Generic.List[object]'
   $turnsByMode = @{}
   $turnsBySpeaker = @{}
   $turnsReadable = $false
   $metricsReadable = $false
+  $hasPrimaryPartialData = $false
   $latestSnapshotAvgSec = $null
   $latestSnapshotTimeoutPct = $null
   $probeComputedMs = $null
   $probeActualMs = $null
-  $reasons = @()
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
 
   try {
-    foreach ($row in (Read-JsonLines -Path $turnsPath)) {
+    $readResult = Read-JsonLines -Path $turnsPath
+    if (@($readResult.Errors).Count -gt 0) {
+      $hasPrimaryPartialData = $true
+      Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "turns.jsonl"
+    }
+
+    foreach ($row in $readResult.Rows) {
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
         $mode = Get-StringValue -Object $row -Name "mode"
         $speaker = Get-StringValue -Object $row -Name "speaker"
         Add-Count -Map $turnsByMode -Key $mode
         Add-Count -Map $turnsBySpeaker -Key $speaker
-        $turnRows += [pscustomobject]@{
+        [void]$turnRows.Add([pscustomobject]@{
           ts = $ts
           speaker = $speaker
           mode = $mode
           sec = Get-DoubleValue -Object $row -Name "sec"
           status = Get-StringValue -Object $row -Name "status"
-        }
+        })
       }
     }
     $turnsReadable = $true
   } catch {
-    $reasons += "turns.jsonl unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("turns.jsonl unreadable: $($_.Exception.Message)")
   }
 
   try {
-    $snapshots = @()
-    foreach ($row in (Read-JsonLines -Path $metricsPath)) {
+    $snapshots = New-Object 'System.Collections.Generic.List[object]'
+    $readResult = Read-JsonLines -Path $metricsPath
+    if (@($readResult.Errors).Count -gt 0) {
+      $hasPrimaryPartialData = $true
+      Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "metrics.jsonl"
+    }
+
+    foreach ($row in $readResult.Rows) {
       if ((Get-StringValue -Object $row -Name "type" -Default "") -ne "snapshot") {
         continue
       }
 
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
-        $snapshots += [pscustomobject]@{
+        [void]$snapshots.Add([pscustomobject]@{
           ts = $ts
           avg_sec = Get-DoubleValue -Object $row -Name "avg_sec"
           timeout_pct = Get-DoubleValue -Object $row -Name "timeout_pct"
-        }
+        })
       }
     }
 
-    $latest = @($snapshots | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
+    $latest = @($snapshots.ToArray() | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
     if ($latest.Count -gt 0) {
       $latestSnapshotAvgSec = [Math]::Round([double]$latest[0].avg_sec, 2)
       $latestSnapshotTimeoutPct = [Math]::Round([double]$latest[0].timeout_pct, 2)
     }
     $metricsReadable = $true
   } catch {
-    $reasons += "metrics.jsonl unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("metrics.jsonl unreadable: $($_.Exception.Message)")
   }
 
   try {
-    $probes = @()
-    foreach ($row in (Read-JsonLines -Path $probePath)) {
+    $probes = New-Object 'System.Collections.Generic.List[object]'
+    $readResult = Read-JsonLines -Path $probePath
+    if (@($readResult.Errors).Count -gt 0) {
+      Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "probe-durations.jsonl"
+    }
+
+    foreach ($row in $readResult.Rows) {
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
-        $probes += [pscustomobject]@{
+        [void]$probes.Add([pscustomobject]@{
           ts = $ts
           computed_timeout_ms = Get-Int64Value -Object $row -Name "computed_timeout_ms"
           actual_duration_ms = Get-Int64Value -Object $row -Name "actual_duration_ms"
-        }
+        })
       }
     }
 
-    $latestProbe = @($probes | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
+    $latestProbe = @($probes.ToArray() | Sort-Object @{ Expression = "ts"; Descending = $true } | Select-Object -First 1)
     if ($latestProbe.Count -gt 0) {
       $probeComputedMs = [Int64]$latestProbe[0].computed_timeout_ms
       $probeActualMs = [Int64]$latestProbe[0].actual_duration_ms
     }
   } catch {
-    $reasons += "probe-durations.jsonl unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("probe-durations.jsonl unreadable: $($_.Exception.Message)")
   }
 
-  if ($turnsReadable -and $metricsReadable) {
+  if ($turnsReadable -and $metricsReadable -and -not $hasPrimaryPartialData) {
     $quality = "full"
     $reason = $null
   } elseif ($turnsReadable -or $metricsReadable) {
@@ -446,7 +528,8 @@ function Build-SpeedSignals {
   $fastLanePct = 0
 
   if ($totalTurns -gt 0) {
-    $secs = [double[]]@($turnRows | ForEach-Object { [double]$_.sec })
+    $turnArray = @($turnRows.ToArray())
+    $secs = [double[]]@($turnArray | ForEach-Object { [double]$_.sec })
     $avgSec = [Math]::Round((($secs | Measure-Object -Average).Average), 2)
     $sortedSecs = [double[]]@($secs | Sort-Object)
     $p95Index = [Math]::Ceiling($totalTurns * 0.95) - 1
@@ -454,9 +537,9 @@ function Build-SpeedSignals {
     if ($p95Index -ge $totalTurns) { $p95Index = $totalTurns - 1 }
     $p95Sec = [Math]::Round($sortedSecs[$p95Index], 2)
 
-    $timeoutCount = @($turnRows | Where-Object { $_.status -ne "ok" }).Count
-    $successCount = @($turnRows | Where-Object { $_.status -eq "ok" }).Count
-    $fastCount = @($turnRows | Where-Object { $_.mode -eq "fast" }).Count
+    $timeoutCount = @($turnArray | Where-Object { $_.status -ne "ok" }).Count
+    $successCount = @($turnArray | Where-Object { $_.status -eq "ok" }).Count
+    $fastCount = @($turnArray | Where-Object { $_.mode -eq "fast" }).Count
     $timeoutPct = [Math]::Round(($timeoutCount / $totalTurns) * 100, 2)
     $successPct = [Math]::Round(($successCount / $totalTurns) * 100, 2)
     $fastLanePct = [Math]::Round(($fastCount / $totalTurns) * 100, 2)
@@ -482,15 +565,22 @@ function Build-SpeedSignals {
 
 function Build-CostSignals {
   $usagePath = Join-Path $script:BridgeRoot "usage.jsonl"
-  $usageRows = @()
+  $usageRows = New-Object 'System.Collections.Generic.List[object]'
   $costByProvider = @{}
   $costByPurpose = @{}
   $modelMap = @{}
   $usageReadable = $false
-  $reasons = @()
+  $hasPartialData = $false
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
 
   try {
-    foreach ($row in (Read-JsonLines -Path $usagePath)) {
+    $readResult = Read-JsonLines -Path $usagePath
+    if (@($readResult.Errors).Count -gt 0) {
+      $hasPartialData = $true
+      Add-ReadWarnings -Reasons $reasons -ReadResult $readResult -SourceName "usage.jsonl"
+    }
+
+    foreach ($row in $readResult.Rows) {
       $ts = ConvertTo-UtcDateTime (Get-Prop -Object $row -Name "ts")
       if (Test-InWindow -Timestamp $ts) {
         $cost = Get-DoubleValue -Object $row -Name "cost_usd"
@@ -510,17 +600,17 @@ function Build-CostSignals {
         $modelMap[$model].cost = [double]$modelMap[$model].cost + $cost
         $modelMap[$model].calls = [int]$modelMap[$model].calls + 1
 
-        $usageRows += [pscustomobject]@{
+        [void]$usageRows.Add([pscustomobject]@{
           prompt_tokens = Get-Int64Value -Object $row -Name "prompt_tokens"
           completion_tokens = Get-Int64Value -Object $row -Name "completion_tokens"
           cost_usd = $cost
           kind = Get-StringValue -Object $row -Name "kind"
-        }
+        })
       }
     }
     $usageReadable = $true
   } catch {
-    $reasons += "usage.jsonl unreadable: $($_.Exception.Message)"
+    [void]$reasons.Add("usage.jsonl unreadable: $($_.Exception.Message)")
   }
 
   if (-not $usageReadable) {
@@ -528,7 +618,15 @@ function Build-CostSignals {
     $reason = Join-Reasons -Reasons $reasons
   } elseif ($usageRows.Count -eq 0) {
     $quality = "partial"
-    $reason = "usage.jsonl readable but no rows in window"
+    $existingReason = Join-Reasons -Reasons $reasons
+    if ($existingReason) {
+      $reason = "${existingReason}; usage.jsonl readable but no rows in window"
+    } else {
+      $reason = "usage.jsonl readable but no rows in window"
+    }
+  } elseif ($hasPartialData) {
+    $quality = "partial"
+    $reason = Join-Reasons -Reasons $reasons
   } else {
     $quality = "full"
     $reason = $null
@@ -575,7 +673,10 @@ function Build-CostSignals {
   return New-SignalDocument -Quality $quality -Reason $reason -Signals $signals
 }
 
-if ($BridgePath -and (Test-Path -LiteralPath $BridgePath)) {
+if (-not [string]::IsNullOrWhiteSpace($BridgePath)) {
+  if (-not (Test-Path -LiteralPath $BridgePath -PathType Container)) {
+    throw "BridgePath not found or not a directory: $BridgePath"
+  }
   $script:BridgeRoot = (Resolve-Path -LiteralPath $BridgePath).Path
 } else {
   $script:BridgeRoot = Split-Path -Parent $PSScriptRoot

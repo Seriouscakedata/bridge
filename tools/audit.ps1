@@ -813,8 +813,41 @@ function Invoke-BridgeAudit {
   try {
     $sigScript = Join-Path $PSScriptRoot 'audit-signals.ps1'
     if (Test-Path -LiteralPath $sigScript -PathType Leaf) {
-      $sigOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $sigScript -BridgePath $root -WindowHours 24 2>&1
-      Write-AuditLog -BridgePath $root -Message "signals: $([string]($sigOut -join ' '))"
+      $sigPowerShell = Join-Path $PSHOME 'powershell.exe'
+      if (-not (Test-Path -LiteralPath $sigPowerShell -PathType Leaf)) { throw "powershell.exe not found under PSHOME: $PSHOME" }
+      $sigJob = $null
+      try {
+        $sigJob = Start-Job -ScriptBlock {
+          param($PowerShellPath, $ScriptPath, $BridgeRoot)
+          $output = & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -BridgePath $BridgeRoot -WindowHours 24 2>&1
+          $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+          [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = @($output | ForEach-Object { [string]$_ })
+          }
+        } -ArgumentList $sigPowerShell, $sigScript, $root
+
+        if (-not (Wait-Job -Job $sigJob -Timeout 30)) {
+          Stop-Job -Job $sigJob -ErrorAction SilentlyContinue
+          Write-AuditLog -BridgePath $root -Message "signal-collector timeout after 30s; job stopped"
+        } else {
+          $sigResult = @(Receive-Job -Job $sigJob -ErrorAction SilentlyContinue)
+          if ($sigResult.Count -gt 0) {
+            $sigExitCode = [int]$sigResult[-1].ExitCode
+            $sigText = (@($sigResult[-1].Output) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' '
+          } else {
+            $sigExitCode = 1
+            $sigText = 'no output from signal collector job'
+          }
+          if ($sigExitCode -eq 0) {
+            Write-AuditLog -BridgePath $root -Message "signals: $sigText"
+          } else {
+            Write-AuditLog -BridgePath $root -Message "signal-collector exit=${sigExitCode}: $sigText"
+          }
+        }
+      } finally {
+        if ($sigJob) { Remove-Job -Job $sigJob -Force -ErrorAction SilentlyContinue }
+      }
     }
   } catch { Write-AuditLog -BridgePath $root -Message "signal-collector error: $_" }
 
