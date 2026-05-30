@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet('security-model','functional-model','reliability-model','architecture-model','dependency-model')]
+  [ValidateSet('security-model','functional-model','reliability-model','architecture-model','dependency-model','runtime-incident-model')]
   [string]$Role,
   [string]$Model = '',
   [string]$BridgePath = '',
@@ -53,6 +53,7 @@ function Get-AgentConfidence {
   if ($RoleName -eq 'security-model') { return 0.85 }
   if ($RoleName -eq 'functional-model') { return 0.80 }
   if ($RoleName -eq 'reliability-model') { return 0.75 }
+  if ($RoleName -eq 'runtime-incident-model') { return 0.80 }
   if ($RoleName -eq 'architecture-model') { return 0.70 }
   if ($RoleName -eq 'dependency-model') { return 0.65 }
   return 0.50
@@ -168,6 +169,89 @@ function New-AgentPrompt {
         [void]$sb.AppendLine((Get-AgentFileContentCapped -Path $full -Cap 10000))
       }
     }
+  } elseif ($Role -eq 'runtime-incident-model') {
+    [void]$sb.AppendLine('Role: runtime-incident model. Your job: analyse the attached incident-bundle and produce structured findings.')
+    [void]$sb.AppendLine('Tasks:')
+    [void]$sb.AppendLine('1. ATTRIBUTION: for every restart/CB event in incident-bundle, identify the nearest active task (by timestamp delta <= 5 min). If no task is within 5 min, flag as orphan-restart.')
+    [void]$sb.AppendLine('2. CB-LOOP: if two or more CB activations appear within any 30-minute window, or if a task appears in restarts with cause=task-survived-3x, flag as cb-loop with the task description and file diffs present.')
+    [void]$sb.AppendLine('3. DIFF-CORRELATION: for each CB event that has diff_files populated, list which files changed just before the CB. If diff_files is empty, note "no-diff-captured" as an attribution gap.')
+    [void]$sb.AppendLine('4. ATTRIBUTION-GAP: flag any restart where task_id is missing/unknown and no task turn is within 10 minutes.')
+    [void]$sb.AppendLine('Severity: critical=cb-loop or >=3 orphan-restarts; warning=single orphan-restart or attribution-gap; info=everything else.')
+    [void]$sb.AppendLine('')
+
+    # --- build incident-bundle ---
+    $runtimeRoot = Join-Path $env:USERPROFILE '.bridge-runtime'
+    $coverage.Add('restarts.jsonl')
+    $coverage.Add('turns.jsonl')
+    $coverage.Add('state.json')
+
+    # recent restarts (last 30 lines)
+    $restartsPath = Join-Path $runtimeRoot 'restarts.jsonl'
+    $restartsSnippet = ''
+    try {
+      if (Test-Path -LiteralPath $restartsPath -PathType Leaf) {
+        $lines = [System.IO.File]::ReadAllLines($restartsPath)
+        $recent = if ($lines.Count -gt 30) { $lines[($lines.Count-30)..($lines.Count-1)] } else { $lines }
+        $restartsSnippet = ($recent -join "`n")
+      }
+    } catch {}
+
+    # recent turns (last 20 lines of turns.jsonl)
+    $turnsPath = Join-Path $BridgeRoot 'turns.jsonl'
+    $turnsSnippet = ''
+    try {
+      if (Test-Path -LiteralPath $turnsPath -PathType Leaf) {
+        $lines = [System.IO.File]::ReadAllLines($turnsPath)
+        $recent = if ($lines.Count -gt 20) { $lines[($lines.Count-20)..($lines.Count-1)] } else { $lines }
+        $turnsSnippet = ($recent -join "`n")
+      }
+    } catch {}
+
+    # state.json current task
+    $stateSnippet = ''
+    try {
+      $statePath = Join-Path $BridgeRoot 'state.json'
+      if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        $stateSnippet = Get-AgentFileContentCapped -Path $statePath -Cap 2000
+      }
+    } catch {}
+
+    # circuit-breaker snapshots (last 5)
+    $cbSnippet = ''
+    try {
+      if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+        $cbItems = @(Get-ChildItem -LiteralPath $runtimeRoot -Filter 'circuit-breaker.*' -ErrorAction SilentlyContinue |
+          Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+        $cbLines = New-Object System.Collections.Generic.List[string]
+        foreach ($item in $cbItems) {
+          $diffPath = $null
+          if ($item.PSIsContainer) { $diffPath = Join-Path $item.FullName 'git-diff.patch' }
+          else { $diffPath = $item.FullName }
+          $diffFiles = @()
+          if ($diffPath -and (Test-Path -LiteralPath $diffPath -PathType Leaf)) {
+            foreach ($line in [System.IO.File]::ReadAllLines($diffPath)) {
+              if ($line -match '^diff --git a/.+ b/(.+)$') { $diffFiles += $Matches[1] }
+              if ($diffFiles.Count -ge 10) { break }
+            }
+          }
+          [void]$cbLines.Add(("{0} | diff_files=[{1}]" -f $item.Name, ($diffFiles -join ',')))
+        }
+        $cbSnippet = ($cbLines -join "`n")
+      }
+    } catch {}
+
+    [void]$sb.AppendLine('=== incident-bundle/restarts (last 30) ===')
+    [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($restartsSnippet)) { '(empty)' } else { $restartsSnippet }))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('=== incident-bundle/turns (last 20) ===')
+    [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($turnsSnippet)) { '(empty)' } else { $turnsSnippet }))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('=== incident-bundle/state (current task) ===')
+    [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($stateSnippet)) { '(empty)' } else { $stateSnippet }))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('=== incident-bundle/circuit-breaker (last 5) ===')
+    [void]$sb.AppendLine($(if ([string]::IsNullOrWhiteSpace($cbSnippet)) { '(empty)' } else { $cbSnippet }))
+    [void]$sb.AppendLine('')
   } elseif ($Role -eq 'architecture-model') {
     [void]$sb.AppendLine('Role: architecture audit. Find dead functions/unused exports, architecture antipatterns, layer violations such as driver->lib misuse or server->driver without API, and very long functions over 150 lines that need decomposition.')
     [void]$sb.AppendLine('Context: all .ps1 files with line counts and the top 5 longest functions.')
