@@ -1,6 +1,7 @@
 # Runtime/state and secrets -- NOT tracked, so rollback never wipes them.
 state.json
 features/state.json
+features/verifier.last
 conversation.jsonl
 conversation.archive.jsonl
 summary.txt
@@ -14,7 +15,6 @@ runtime/
 projects/
 decisions/*
 !decisions/
-!decisions/session-ledger.jsonl
 sandbox/
 tmp/
 memory/
