@@ -4230,9 +4230,21 @@ while ($true) {
   foreach ($m in [regex]::Matches($reply, $runjobPattern)) {
     $spec = $m.Groups[1].Value.Trim()
     if ([string]::IsNullOrWhiteSpace($spec)) { continue }
-    $parts = $spec -split '\|', 2
-    $jcmd = $parts[0].Trim()
-    $jdir = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
+    # Split on the LAST '|' only if the right-hand side looks like a workdir path.
+    # This keeps PowerShell pipelines intact, e.g. "Get-Content x | Where-Object {...}".
+    $lastPipe = $spec.LastIndexOf('|')
+    $jcmd = $spec.Trim()
+    $jdir = ''
+    if ($lastPipe -ge 0) {
+      $candidate = $spec.Substring($lastPipe + 1).Trim()
+      # Plausible workdir: Windows abs (C:\...), UNC (\\...), relative (./, ..\), or tilde (~).
+      $isPath = $candidate -match '^([A-Za-z]:\\|\\\\|~[\\\/]|\.\.?[\\\/]|\.\.?$)'
+      $hasMeta = $candidate -match '[{}$;()|]'
+      if ($isPath -and -not $hasMeta) {
+        $jcmd = $spec.Substring(0, $lastPipe).Trim()
+        $jdir = $candidate
+      }
+    }
     if ([string]::IsNullOrWhiteSpace($jcmd)) { continue }
     # IDEMPOTENCY (2026-05-29): do NOT relaunch a job whose command is ALREADY running, or that ran in
     # the last 15 min. ROOT CAUSE of "аудит запустился 3-й раз без команды": a discuss-loop + resume +
