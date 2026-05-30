@@ -1787,6 +1787,24 @@ function Add-Message {
     $state = Read-State
     if ($null -eq $state) { throw 'state.json missing; run init first' }
     $seq = [int]$state.lastSeq + 1
+    # 2026-05-30: dedup identical system events. A recycle mid-task replays a step
+    # (claim / compaction), so the SAME "Беру задачу" / "История свёрнута" event
+    # gets posted twice. Skip if the previous message is an identical system event
+    # from the last 3 minutes. Only applies to system events (user/agent repeats
+    # can be legitimate).
+    if ($From -eq 'system') {
+      try {
+        $cpDedup = Get-ConversationPath
+        $lastLn = Get-Content -LiteralPath $cpDedup -Tail 1 -ErrorAction SilentlyContinue
+        if ($lastLn) {
+          $lm = $lastLn | ConvertFrom-Json
+          if ((([string]$lm.from) -eq 'system') -and (([string]$lm.text) -eq ([string]$Text))) {
+            $ageSec = ((Get-Date).ToUniversalTime() - ([datetimeoffset]$lm.ts).UtcDateTime).TotalSeconds
+            if ($ageSec -lt 180) { return }
+          }
+        }
+      } catch {}
+    }
     $msg = [ordered]@{
       seq  = $seq
       ts   = (Get-Date).ToUniversalTime().ToString('o')
