@@ -698,8 +698,14 @@ function Start-DeepThinkDialog {
   # single Opus monologue). Convergence cap is enforced by the existing discuss-mode max
   # turns. After STATUS: DONE the planner files 1-3 ideas via the normal pipeline.
   $ctx = Get-ArchitectContext
+  # 2026-05-30: [[DEEP-THINK]] MUST be alone on its own line. The driver's deepThinkMark regex
+  # (FIX 2026-05-27) is '(?m)^\s*\[\[DEEP-THINK\]\]\s*$' -- anchored to a whole line to avoid
+  # prose/example false-matches. With the marker inline ("[[DEEP-THINK]] Архитектурная...") it did
+  # NOT match -> discuss-mode was NOT forced -> the intent classifier mis-routed this huge meta-task
+  # to FAST-LANE (critic skipped, Codex faked the whole dialog in one turn). Marker on its own line.
   $prompt = @"
-[[DEEP-THINK]] Архитектурная мета-задача (ежедневно, ночь).
+[[DEEP-THINK]]
+Архитектурная мета-задача (ежедневно, ночь).
 
 ТЕМА: какой ОДИН следующий шаг сильнее всего улучшит САМ МОСТ — автономность, стабильность, скорость,
 безопасность, саморазвитие/самообучение? Фокус ТОЛЬКО на улучшении самой системы изнутри.
