@@ -175,6 +175,58 @@ function Start-ThinkingReflectionIfDue {
   try { Invoke-ThinkingReflection | Out-Null } catch { try { Add-Message -From system -Text ('🪞 Рефлексия: ошибка цикла: ' + $_.Exception.Message) -Kind event | Out-Null } catch {} }
 }
 
+function Format-FileAgeTag {
+  # 2026-05-30: staleness suffix for a file-based context block. The Architect reads several
+  # files (capability matrix, ARCHITECTURE_V2, external systems, radar) that are refreshed only
+  # manually/periodically and lag 4-5 days. Tagging their age tells the Architect how much to
+  # trust them vs the LIVE block below.
+  param([string]$Path)
+  try {
+    if (Test-Path -LiteralPath $Path) {
+      $ageD = ((Get-Date) - (Get-Item -LiteralPath $Path).LastWriteTime).TotalDays
+      if ($ageD -ge 2) { return ("  [⚠ обновлён {0:N1}д назад — мог устареть; при расхождении верь LIVE-блоку]" -f $ageD) }
+    }
+  } catch {}
+  return ''
+}
+
+function Get-ArchitectLiveState {
+  # 2026-05-30: LIVE snapshot recomputed on EVERY brainstorm so the prompt never goes stale.
+  # The file-based context blocks lag 4-5 days between refreshes; this is derived FRESH from
+  # git + backlog + settings + clock at call time, so the Architect always reasons about the
+  # CURRENT system (what shipped this week, the live autonomy dial, the funnel right now).
+  $sb = New-Object System.Text.StringBuilder
+  $now = Get-Date
+  [void]$sb.AppendLine('=== LIVE-СОСТОЯНИЕ (пересчитывается КАЖДЫЙ запуск — самый свежий сигнал, ему верь в первую очередь) ===')
+  [void]$sb.AppendLine('Сегодня: ' + $now.ToString('yyyy-MM-dd HH:mm') + ' (' + $now.DayOfWeek + ')')
+  try {
+    $au = Get-AutonomySettings
+    $dis = (@($au.autonomyDisabledChannels) -join ',')
+    [void]$sb.AppendLine('Автономия: enabled=' + [bool]$au.enabled + ' selfExecuteTier=' + [string]$au.selfExecuteTier + ' disabled_channels=[' + $dis + ']')
+  } catch {}
+  try {
+    $bk = @(Get-Backlog)
+    $tot = $bk.Count
+    $by = @{}; foreach ($x in ($bk | Group-Object status)) { $by[$x.Name] = $x.Count }
+    $drop = [int]$by['auto-dropped']
+    $dr = if ($tot -gt 0) { [math]::Round(100 * $drop / $tot) } else { 0 }
+    [void]$sb.AppendLine('Backlog-воронка: new=' + [int]$by['new'] + ' approved=' + [int]$by['approved'] + ' running=' + [int]$by['running'] + ' done=' + [int]$by['done'] + ' auto-dropped=' + $drop + ' rejected=' + [int]$by['rejected'] + ' (drop-rate ' + $dr + '%, всего ' + $tot + ')')
+    $recentDone = @($bk | Where-Object { [string]$_.status -eq 'done' } | Select-Object -Last 6)
+    if ($recentDone.Count -gt 0) {
+      [void]$sb.AppendLine('Недавно завершено (мост УЖЕ это сделал — НЕ предлагай повторно):')
+      foreach ($d in $recentDone) { $t = ([string]$d.text -replace '\s+', ' '); if ($t.Length -gt 90) { $t = $t.Substring(0, 90) + '…' }; [void]$sb.AppendLine('  • ' + $t) }
+    }
+  } catch {}
+  try {
+    $since = $now.AddDays(-7).ToString('yyyy-MM-dd')
+    $commits = @(& git -C (Get-BridgeRoot) log --oneline --since=$since 2>$null)
+    [void]$sb.AppendLine('Коммиты за 7д: ' + $commits.Count + ' — что РЕАЛЬНО менялось в коде (свежие 18; это сильнейший сигнал «что уже трогали»):')
+    foreach ($c in ($commits | Select-Object -First 18)) { $cc = [string]$c; if ($cc.Length -gt 110) { $cc = $cc.Substring(0, 110) + '…' }; [void]$sb.AppendLine('  ' + $cc) }
+  } catch {}
+  [void]$sb.AppendLine('')
+  return $sb.ToString()
+}
+
 function Get-ArchitectContext {
   # Compact diagnostic dump for the Architect prompt. All strings, no ETS.
   param([int]$WindowDays = 7)
@@ -186,6 +238,10 @@ function Get-ArchitectContext {
   [void]$sb.AppendLine("project_root=$($scope.project_root)")
   [void]$sb.AppendLine("backlog_path=$($scope.backlog_path)")
   [void]$sb.AppendLine('')
+
+  # LIVE state FIRST -- recomputed every run (git/backlog/autonomy/clock) so the prompt never
+  # goes stale even when the file-based blocks below lag a few days.
+  try { [void]$sb.Append((Get-ArchitectLiveState)) } catch {}
 
   # 0) thinking journal -- past conclusions so this cycle builds on prior thought, not a blank slate
   try {
@@ -200,7 +256,7 @@ function Get-ArchitectContext {
   # 1) capability matrix
   $matrixPath = Get-ArchitectMatrixPath
   if (Test-Path $matrixPath) {
-    [void]$sb.AppendLine('=== CAPABILITY MATRIX (текущее состояние) ===')
+    [void]$sb.AppendLine('=== CAPABILITY MATRIX (текущее состояние) ===' + (Format-FileAgeTag $matrixPath))
     try {
       $mtx = [System.IO.File]::ReadAllText($matrixPath, [System.Text.Encoding]::UTF8)
       if ($mtx.Length -gt 8000) { $mtx = $mtx.Substring(0, 8000) + "`n...[truncated]" }
@@ -212,7 +268,7 @@ function Get-ArchitectContext {
   # 2) ARCHITECTURE_V2 (the plan / north-star architecture)
   $archPath = Join-Path (Get-BridgeRoot) 'ARCHITECTURE_V2.md'
   if (Test-Path $archPath) {
-    [void]$sb.AppendLine('=== ARCHITECTURE_V2.md (план) ===')
+    [void]$sb.AppendLine('=== ARCHITECTURE_V2.md (план) ===' + (Format-FileAgeTag $archPath))
     try {
       $arch = [System.IO.File]::ReadAllText($archPath, [System.Text.Encoding]::UTF8)
       if ($arch.Length -gt 4000) { $arch = $arch.Substring(0, 4000) + "`n...[truncated]" }
@@ -224,7 +280,7 @@ function Get-ArchitectContext {
   # 3) goals.md
   $goalsPath = Join-Path (Get-BridgeRoot) 'goals.md'
   if (Test-Path $goalsPath) {
-    [void]$sb.AppendLine('=== goals.md (north-star) ===')
+    [void]$sb.AppendLine('=== goals.md (north-star) ===' + (Format-FileAgeTag $goalsPath))
     try {
       $gc = [System.IO.File]::ReadAllText($goalsPath, [System.Text.Encoding]::UTF8)
       if ($gc.Length -gt 2000) { $gc = $gc.Substring(0, 2000) + "`n...[truncated]" }
@@ -267,7 +323,7 @@ function Get-ArchitectContext {
   # 7) latest radar digest (top 3 items)
   $radarPath = Join-Path (Get-BridgeRoot) 'radar\digest.md'
   if (Test-Path $radarPath) {
-    [void]$sb.AppendLine('=== RADAR DIGEST (latest, top of file) ===')
+    [void]$sb.AppendLine('=== RADAR DIGEST (latest, top of file) ===' + (Format-FileAgeTag $radarPath))
     try {
       $rd = [System.IO.File]::ReadAllText($radarPath, [System.Text.Encoding]::UTF8)
       if ($rd.Length -gt 2500) { $rd = $rd.Substring(0, 2500) + "`n...[truncated]" }
@@ -279,7 +335,7 @@ function Get-ArchitectContext {
   # 8) external systems for comparison
   $extPath = Get-ArchitectExternalSystemsPath
   if (Test-Path $extPath) {
-    [void]$sb.AppendLine('=== EXTERNAL AI SYSTEMS (для сравнения) ===')
+    [void]$sb.AppendLine('=== EXTERNAL AI SYSTEMS (для сравнения) ===' + (Format-FileAgeTag $extPath))
     try {
       $ext = [System.IO.File]::ReadAllText($extPath, [System.Text.Encoding]::UTF8)
       if ($ext.Length -gt 3500) { $ext = $ext.Substring(0, 3500) + "`n...[truncated]" }
