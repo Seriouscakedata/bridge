@@ -1118,6 +1118,75 @@ function Invoke-AutoPush {
   } catch {}
 }
 
+function Get-FileReferenceCount {
+  # How many times $FileName appears across core code (driver/server/lib/tools),
+  # excluding the file itself. >0 means the file is USED (launched/called/referenced).
+  param([string]$FileName, [string]$BridgeRoot)
+  $refs = 0
+  try {
+    foreach ($d in @($BridgeRoot, (Join-Path $BridgeRoot 'lib'), (Join-Path $BridgeRoot 'tools'))) {
+      foreach ($sf in @(Get-ChildItem -LiteralPath $d -Filter *.ps1 -File -ErrorAction SilentlyContinue)) {
+        if ($sf.Name -eq $FileName) { continue }
+        try { if (([System.IO.File]::ReadAllText($sf.FullName)) -match [regex]::Escape($FileName)) { $refs++ } } catch {}
+      }
+    }
+  } catch {}
+  return $refs
+}
+
+function Test-AutonomousTaskSafe {
+  # 2026-05-30 PRE-EXECUTION SAFETY GATE. Critic/QA validate the RESULTING code but
+  # NOT the task itself -- a task to delete a still-used file passes smoke yet causes
+  # irreversible damage (a deep-audit false-positive nearly deleted the whole audit
+  # pipeline). This gate vets the TASK before the bridge runs it. Returns
+  # @{ safe=$bool; risk='low|high'; reason='...' }. Fail-OPEN on internal error
+  # (never wedge the loop), but block on any confirmed danger.
+  param([string]$TaskText, [string]$BridgeRoot)
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  $txt = [string]$TaskText
+  try {
+    $coreRe = '^(driver|server|supervisor|watchdog|circuit-breaker|common|backlog|audit|deep-audit|deep-audit-agent|audit-runner|audit-functional|audit-security|audit-signals|parallel|foundry|memory|doctor|channels|settings|metrics|plan|toolforge|intent|postmortem)'
+    $files = @([regex]::Matches($txt, '([\w\-]+\.ps1)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+
+    # Gate 1: destructive operation on a CORE or still-USED file.
+    $isDestructive = ($txt -match '(?i)(\bdelete\b|\bremove\b|удал|\brm\s|Remove-Item|drop\s+table|truncate|снес|очист\w*\s+(файл|таблиц))')
+    if ($isDestructive) {
+      foreach ($fn in $files) {
+        if ($fn -match $coreRe) { [void]$reasons.Add("деструктив над CORE-файлом моста ($fn)") ; continue }
+        $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot
+        if ($rc -gt 0) { [void]$reasons.Add("деструктив над используемым файлом $fn (ссылок: $rc)") }
+      }
+    }
+
+    # Gate 2: orphaned-claim verification -- 'orphaned X.ps1' but X is referenced.
+    if ($txt -match '(?i)orphan') {
+      foreach ($fn in $files) {
+        $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot
+        if ($rc -gt 0) { [void]$reasons.Add("ложная orphaned-предпосылка: $fn реально используется (ссылок: $rc)") }
+      }
+    }
+
+    # If deterministic gates already flagged danger, no need to spend an LLM call.
+    if ($reasons.Count -gt 0) { return [pscustomobject]@{ safe=$false; risk='high'; reason=($reasons -join '; ') } }
+
+    # Gate 3: generic cheap LLM pre-flight for everything the rules don't cover.
+    try {
+      if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
+        $q = "Ты — предохранитель автономного агента (мост Claude+Codex, ~200 PowerShell-файлов). Агент собирается ВЫПОЛНИТЬ БЕЗ ЧЕЛОВЕКА такую задачу из бэклога:`n`n""$txt""`n`nМожет ли эта задача нанести НЕОБРАТИМЫЙ вред: удалить нужный код/файлы/данные, сломать сборку, отключить защиту (watchdog/circuit-breaker/supervisor), выполнить опасную необратимую операцию? Будь строг, но не параноидален: обычная правка/фикс/добавление — SAFE. Ответь СТРОГО: первая строка ровно одно слово SAFE или RISKY; вторая строка — причина (<15 слов)."
+        $reply = Invoke-LLM -Purpose 'preflight-safety' -Model 'gemini-2.5-flash-lite' -Prompt $q -TimeoutSec 25 -Temperature 0.1
+        if ([string]$reply -match '(?im)^\s*RISKY') {
+          $why = (($reply -split "`r?`n") | Where-Object { $_ -notmatch '(?i)^\s*RISKY\s*$' -and -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+          [void]$reasons.Add('LLM pre-flight RISKY: ' + ([string]$why).Trim())
+        }
+      }
+    } catch {}
+  } catch {
+    return [pscustomobject]@{ safe=$true; risk='low'; reason='gate-error-failopen' }
+  }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ safe=$false; risk='high'; reason=($reasons -join '; ') } }
+  return [pscustomobject]@{ safe=$true; risk='low'; reason='ok' }
+}
+
 function Get-RecallKeywords {
   param([string]$TaskText = '')
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
@@ -3646,6 +3715,22 @@ while ($true) {
                 try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='shadow-pick'; item_id=$shadowId; tier=$tier; reason=$why; dial=$selfTier; would_execute=$false }) } catch {}
               }
             }
+          }
+        } catch {}
+      }
+      if ($claimedIdea) {
+        # 2026-05-30 PRE-EXECUTION SAFETY GATE: vet the TASK itself before running it.
+        # Critic/QA validate the resulting code, not whether the task is harmful (a task
+        # to delete a still-used file passes smoke). Blocked tasks -> 'held' (selectors
+        # only pick new/approved, so they won't be re-claimed) + operator escalation.
+        try {
+          $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$claimedIdea.text) -BridgeRoot $bridgeRoot
+          if (-not $gate.safe) {
+            $gid = [string]$claimedIdea.id
+            try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
+            Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gate.risk + "): " + [string]$gate.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
+            try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gate.risk; reason=[string]$gate.reason }) } catch {}
+            $claimedIdea = $null
           }
         } catch {}
       }
