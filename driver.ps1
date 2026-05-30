@@ -1135,44 +1135,63 @@ function Get-FileReferenceCount {
 }
 
 function Test-AutonomousTaskSafe {
-  # 2026-05-30 PRE-EXECUTION SAFETY GATE. Critic/QA validate the RESULTING code but
-  # NOT the task itself -- a task to delete a still-used file passes smoke yet causes
-  # irreversible damage (a deep-audit false-positive nearly deleted the whole audit
-  # pipeline). This gate vets the TASK before the bridge runs it. Returns
-  # @{ safe=$bool; risk='low|high'; reason='...' }. Fail-OPEN on internal error
-  # (never wedge the loop), but block on any confirmed danger.
+  # 2026-05-30 GENERIC PRE-EXECUTION SAFETY GATE (deliberately NOT tuned to one bug).
+  # Critic/QA validate the RESULTING code, not whether the TASK itself is destructive
+  # (deleting a used file / dropping data / breaking a feature passes smoke). This gate
+  # vets the task by CLASS of danger so it catches ANY critical mistake -- deleting
+  # critical files of any type, wiping data/history, disabling protection, removing or
+  # breaking existing features, irreversible ops. The orphaned-tool case is just one
+  # instance of "destructive op on a still-used file". Returns @{ safe; risk; reason }.
+  # Fail-OPEN on internal error (never wedge the loop); block on any confirmed danger.
   param([string]$TaskText, [string]$BridgeRoot)
   $reasons = New-Object 'System.Collections.Generic.List[string]'
   $txt = [string]$TaskText
   try {
-    $coreRe = '^(driver|server|supervisor|watchdog|circuit-breaker|common|backlog|audit|deep-audit|deep-audit-agent|audit-runner|audit-functional|audit-security|audit-signals|parallel|foundry|memory|doctor|channels|settings|metrics|plan|toolforge|intent|postmortem)'
-    $files = @([regex]::Matches($txt, '([\w\-]+\.ps1)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    $coreRe = '^(driver|server|supervisor|watchdog|circuit-breaker|common|backlog|audit|deep-audit|deep-audit-agent|audit-runner|audit-functional|audit-security|audit-signals|parallel|foundry|memory|doctor|channels|settings|metrics|plan|toolforge|intent|postmortem|llm|usage|notify|replay|radar|features|codemem)'
+    # any code/config/data file the task names -- NOT just .ps1
+    $files = @([regex]::Matches($txt, '([\w\-]+\.(ps1|psm1|json|html|js|md|jsonl))') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
 
-    # Gate 1: destructive operation on a CORE or still-USED file.
-    $isDestructive = ($txt -match '(?i)(\bdelete\b|\bremove\b|удал|\brm\s|Remove-Item|drop\s+table|truncate|снес|очист\w*\s+(файл|таблиц))')
+    # --- A. Irreversible operations (any class, deterministic) ---
+    $irrev = @(
+      @{ re='(?i)git\s+reset\s+--hard';                         why='git reset --hard (необратимая потеря правок)' },
+      @{ re='(?i)git\s+push\b[^\n]*--force';                    why='git push --force (перезапись истории)' },
+      @{ re='(?i)git\s+branch\s+-D|git\s+clean\s+-[a-z]*[fdx]'; why='удаление веток / git clean -fd (необратимо)' },
+      @{ re='(?i)\brm\s+-[a-z]*[rf]|Remove-Item[^\n]*-Recurse'; why='рекурсивное/принудительное удаление' },
+      @{ re='(?i)drop\s+(table|database)|truncate\s+table';     why='drop/truncate (удаление данных)' },
+      @{ re='(?i)(удал|снес|очист|wipe|purge)\w*\s+(вс[её]|базу|таблиц|истори|реестр|memory|память|backlog|бэклог|логи)'; why='массовое удаление данных/истории' }
+    )
+    foreach ($p in $irrev) { if ($txt -match $p.re) { [void]$reasons.Add($p.why) } }
+
+    # --- B. Disabling / bypassing ANY protection or safety mechanism ---
+    if ($txt -match '(?i)(disable|remove|удал|отключ|снес|убер|обойти|bypass|skip|drop)\w*') {
+      if ($txt -match '(?i)(watchdog|circuit.?breaker|supervisor|security|\bauth\b|sandbox|guard|validator|safety|secret|tripwire|preflight|pre-flight|защит|предохранитель|проверк|валидат)') {
+        [void]$reasons.Add('отключение/обход защитного или проверочного механизма')
+      }
+    }
+
+    # --- C. Destructive op on a CORE, critical-config/state, or still-USED file (ANY type) ---
+    $isDestructive = ($txt -match '(?i)(\bdelete\b|\bremove\b|удал|\brm\s|Remove-Item|снес|\bdrop\b|очист\w*\s+(файл|таблиц))')
     if ($isDestructive) {
+      if ($txt -match '(?i)(config\.json|secrets\.json|auth\.json|settings\.json|\.git\b|web[\\/]index\.html|registry\.json|state\.json|backlog\.jsonl)') {
+        [void]$reasons.Add('деструктив над критическим файлом конфигурации/состояния/данных')
+      }
       foreach ($fn in $files) {
-        if ($fn -match $coreRe) { [void]$reasons.Add("деструктив над CORE-файлом моста ($fn)") ; continue }
-        $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot
-        if ($rc -gt 0) { [void]$reasons.Add("деструктив над используемым файлом $fn (ссылок: $rc)") }
+        if ($fn -match $coreRe) { [void]$reasons.Add("деструктив над CORE-файлом ($fn)"); continue }
+        if ($fn -match '(?i)\.ps1$') { $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot; if ($rc -gt 0) { [void]$reasons.Add("деструктив над используемым файлом $fn (ссылок: $rc)") } }
       }
     }
-
-    # Gate 2: orphaned-claim verification -- 'orphaned X.ps1' but X is referenced.
+    # Orphaned-claim is a special case of C: 'orphaned X.ps1' where X is actually referenced.
     if ($txt -match '(?i)orphan') {
-      foreach ($fn in $files) {
-        $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot
-        if ($rc -gt 0) { [void]$reasons.Add("ложная orphaned-предпосылка: $fn реально используется (ссылок: $rc)") }
-      }
+      foreach ($fn in $files) { if ($fn -match '(?i)\.ps1$') { $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot; if ($rc -gt 0) { [void]$reasons.Add("ложная orphaned-предпосылка: $fn используется (ссылок: $rc)") } } }
     }
 
-    # If deterministic gates already flagged danger, no need to spend an LLM call.
-    if ($reasons.Count -gt 0) { return [pscustomobject]@{ safe=$false; risk='high'; reason=($reasons -join '; ') } }
+    if ($reasons.Count -gt 0) { return [pscustomobject]@{ safe=$false; risk='high'; reason=(@($reasons | Select-Object -Unique) -join '; ') } }
 
-    # Gate 3: generic cheap LLM pre-flight for everything the rules don't cover.
+    # --- D. Generic LLM pre-flight: covers ANY harm the rules miss -- breaking/removing
+    #        existing features (regressions), subtle destruction, irreversibility, wide blast radius. ---
     try {
       if (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
-        $q = "Ты — предохранитель автономного агента (мост Claude+Codex, ~200 PowerShell-файлов). Агент собирается ВЫПОЛНИТЬ БЕЗ ЧЕЛОВЕКА такую задачу из бэклога:`n`n""$txt""`n`nМожет ли эта задача нанести НЕОБРАТИМЫЙ вред: удалить нужный код/файлы/данные, сломать сборку, отключить защиту (watchdog/circuit-breaker/supervisor), выполнить опасную необратимую операцию? Будь строг, но не параноидален: обычная правка/фикс/добавление — SAFE. Ответь СТРОГО: первая строка ровно одно слово SAFE или RISKY; вторая строка — причина (<15 слов)."
+        $q = "Ты — предохранитель автономного само-развивающегося агента (мост Claude+Codex, ~200 PowerShell-файлов и критичная инфраструктура). Агент собирается ВЫПОЛНИТЬ БЕЗ ЧЕЛОВЕКА такую задачу из бэклога:`n`n""$txt""`n`nОцени, может ли задача нанести КРИТИЧЕСКИЙ или НЕОБРАТИМЫЙ вред по ЛЮБОЙ категории: (1) удаление/порча нужного кода или файлов; (2) удаление/порча данных, истории, памяти, конфигов; (3) удаление или поломка существующих рабочих фич/функций (регрессия); (4) отключение/обход защиты (watchdog/circuit-breaker/supervisor/security/sandbox); (5) необратимая операция (force-push, reset --hard, drop, массовое удаление); (6) широкий радиус поражения (ядро/много модулей). Будь строг к удалению/отключению/перезаписи существующего, но НЕ параноидален: обычное добавление/исправление/улучшение/документация — SAFE. Ответь СТРОГО: первая строка ровно одно слово SAFE или RISKY; вторая строка — категория и краткая причина (<18 слов)."
         $reply = Invoke-LLM -Purpose 'preflight-safety' -Model 'gemini-2.5-flash-lite' -Prompt $q -TimeoutSec 25 -Temperature 0.1
         if ([string]$reply -match '(?im)^\s*RISKY') {
           $why = (($reply -split "`r?`n") | Where-Object { $_ -notmatch '(?i)^\s*RISKY\s*$' -and -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
