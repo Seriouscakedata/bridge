@@ -2131,7 +2131,13 @@ function Invoke-Planner {
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
                   else { @('Read','Grep','Glob','Bash') }
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
-  if ($Model) { $claudeArgs += @('--model', $Model) }
+  if ($Model) {
+    $claudeArgs += @('--model', $Model)
+    # 2026-05-30: MAX reasoning effort on the heavy/architecture model (Opus, any version incl. 4.8).
+    # Operator wants the strongest possible reasoning on complex architectural planning. The triage
+    # model (Sonnet) keeps the CLI default to preserve speed/quota on routine tasks.
+    if ($Model -match '(?i)opus') { $claudeArgs += @('--effort', 'max') }
+  }
   $reply = ''
   $claudeTimedOut = $false
   $claudeSilentExit = $false

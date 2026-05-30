@@ -18,7 +18,7 @@
   "fullContextCount": 20,
   "summarizeBatch": 15,
   "triageModel": "sonnet",
-  "deepModel": "opus",
+  "deepModel": "claude-opus-4-8",
   "sttModel": "gemini-2.5-flash",
   "router": {
     "minSuccess": 0.5,
@@ -203,7 +203,7 @@
       { "id": "codex-alt",        "cli": "codex",  "model": "gpt-5.4",         "reasoning": "high",   "strength": 3, "speed": 3, "cost": 2, "domains": ["any","backend","scripts"], "purpose": "Alternative when 5.5 is saturated; balanced quality."                                   },
       { "id": "codex-specialist", "cli": "codex",  "model": "gpt-5.3-codex",   "reasoning": "high",   "strength": 3, "speed": 2, "cost": 3, "domains": ["backend","scripts"], "purpose": "Code-tuned specialist for routine code generation, precise edits."                            },
       { "id": "claude-sonnet",    "cli": "claude", "model": "sonnet",          "strength": 3, "speed": 3, "cost": 3, "domains": ["frontend","docs","config","any"], "purpose": "UI work (HTML/CSS/JS), narrative/markdown, mixed natural-language+code tasks."                                                },
-      { "id": "claude-opus",      "cli": "claude", "model": "opus",            "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs"], "purpose": "Heavy architectural work, design decisions. RESERVE: only for complexity=architectural or explicit [[OPUS]] marker. Expensive quota."  }
+      { "id": "claude-opus",      "cli": "claude", "model": "claude-opus-4-8",   "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs"], "purpose": "Heavy architectural work, design decisions. RESERVE: only for complexity=architectural or explicit [[OPUS]] marker. Opus 4.8 + max reasoning effort."  }
     ]
   },
   "coderTimeoutMs": 1500000,
