@@ -216,6 +216,18 @@ $script:startupFailureCount = 0
 $script:startupFailureLimit = 10
 $script:startupFailureBackoffBaseSec = 3
 $script:startupFailureBackoffMaxSec = 120
+# Health-check state
+$hcSrvIntervalSec  = 30    # server HTTP probe interval
+$hcSrvTimeoutSec   = 8     # HTTP timeout per probe
+$hcSrvHungLimit    = 3     # consecutive failures before kill+restart
+$hcSrvLastTs       = [datetime]::MinValue
+$hcSrvFails        = 0
+$hcDrvIntervalSec  = 60    # driver CPU-stagnation probe interval
+$hcDrvHungLimit    = 5     # consecutive zero-CPU intervals before kill+restart
+$hcDrvGraceSec     = 300   # skip check if driver uptime < 5 min
+$hcDrvLastTs       = [datetime]::MinValue
+$hcDrvCpuSnaps     = @{}   # slug -> last TotalProcessorTime.Ticks (long)
+$hcDrvFails        = @{}   # slug -> consecutive stagnant count
 function Reset-StartupFailures {
   param([string]$Operation)
   if ($script:startupFailureCount -gt 0) {
@@ -276,6 +288,8 @@ while ($true) {
         Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
         try { foreach ($_slug in (Get-ActiveSlugs)) { try { Save-StateSnapshot -Reason 'restart_flag' -Channel $_slug } catch {} } } catch {}
         Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
+        $hcSrvFails = 0; $hcSrvLastTs = [datetime]::MinValue
+        $hcDrvCpuSnaps = @{}; $hcDrvFails = @{}; $hcDrvLastTs = [datetime]::MinValue
         $lastRecycleTs = Get-Date
         Record-CircuitRestart -Detail 'restart.flag recycle' -ReapFired:$false -FlagPresent:$true
       }
@@ -293,6 +307,8 @@ while ($true) {
             if ($null -eq $srv) { throw "Start-Srv returned no process" }
             if ($srv.HasExited) { throw ("server exited immediately with code " + $srv.ExitCode) }
             Reset-StartupFailures -Operation 'Start-Srv'
+            $hcSrvFails = 0
+            $hcSrvLastTs = Get-Date
           } catch {
             Register-StartupFailure -Operation 'Start-Srv' -ErrorRecord $_
             continue
@@ -316,6 +332,8 @@ while ($true) {
             if ($null -eq $proc) { throw ("Start-Drv[" + $slug + "] returned no process") }
             if ($proc.HasExited) { throw ("driver[" + $slug + "] exited immediately with code " + $proc.ExitCode) }
             Reset-StartupFailures -Operation ("Start-Drv[" + $slug + "]")
+            $hcDrvFails[$slug] = 0
+            $hcDrvCpuSnaps[$slug] = $null
           } catch {
             Register-StartupFailure -Operation ("Start-Drv[" + $slug + "]") -ErrorRecord $_
             $driverStartupFailed = $true
@@ -326,6 +344,87 @@ while ($true) {
         }
       }
       if ($driverStartupFailed) { continue }
+    }
+    # --- Server HTTP health-check (hung detection) ---
+    $hcNow = Get-Date
+    if ($srv -and -not $srv.HasExited -and ($hcNow - $hcSrvLastTs).TotalSeconds -ge $hcSrvIntervalSec) {
+      $hcSrvLastTs = $hcNow
+      $srvHcOk = $false
+      $srvHcError = ''
+      $resp = $null
+      try {
+        $req = [System.Net.HttpWebRequest]::Create("http://localhost:$port/api/health")
+        $req.Method = 'GET'
+        $req.UserAgent = 'bridge-supervisor-healthcheck/1.0'
+        $req.Timeout = $hcSrvTimeoutSec * 1000
+        $req.ReadWriteTimeout = $hcSrvTimeoutSec * 1000
+        $resp = $req.GetResponse()
+        $statusCode = [int]$resp.StatusCode
+        if ($statusCode -ge 200 -and $statusCode -lt 300) { $srvHcOk = $true }
+        else { $srvHcError = "status=" + $statusCode }
+      } catch {
+        $srvHcError = $_.Exception.Message
+      } finally {
+        if ($resp) { $resp.Close() }
+      }
+      if ($srvHcOk) {
+        if ($hcSrvFails -gt 0) { Log ("server health-check recovered after " + $hcSrvFails + " failure(s)") }
+        $hcSrvFails = 0
+      } else {
+        $hcSrvFails++
+        if ([string]::IsNullOrWhiteSpace($srvHcError)) { $srvHcError = 'no response' }
+        Log ("server health-check FAIL (" + $hcSrvFails + "/" + $hcSrvHungLimit + "): " + $srvHcError)
+        if ($hcSrvFails -ge $hcSrvHungLimit) {
+          Log ("server HUNG (" + $hcSrvFails + " consecutive health-check failures) -> kill+restart")
+          Add-Message -From system -Text ("⚠ Сервер не отвечает на /api/health " + $hcSrvHungLimit + " раз подряд — принудительный перезапуск.") -Kind event | Out-Null
+          $null = Stop-TrackedBridgeProcess -Process $srv -Reason 'health-check: server hung'
+          $srv = $null
+          $hcSrvFails = 0
+          $hcSrvLastTs = [datetime]::MinValue
+          Record-CircuitRestart -Detail 'server unresponsive (health-check)'
+        }
+      }
+    }
+
+    # --- Driver CPU-stagnation health-check ---
+    if (($hcNow - $hcDrvLastTs).TotalSeconds -ge $hcDrvIntervalSec) {
+      $hcDrvLastTs = $hcNow
+      foreach ($slug in @($drivers.Keys)) {
+        $dproc = $drivers[$slug]
+        if (-not $dproc -or $dproc.HasExited) { continue }
+        try {
+          $freshProc = Get-Process -Id $dproc.Id -ErrorAction Stop
+          $uptimeSec = ($hcNow - $freshProc.StartTime).TotalSeconds
+          if ($uptimeSec -lt $hcDrvGraceSec) { continue }
+          $curTicks = $freshProc.TotalProcessorTime.Ticks
+          $prevTicks = $hcDrvCpuSnaps[$slug]
+          if ($null -ne $prevTicks -and $curTicks -eq $prevTicks) {
+            $failCount = $hcDrvFails[$slug]
+            if ($null -eq $failCount) { $failCount = 0 }
+            $failCount++
+            $hcDrvFails[$slug] = $failCount
+            Log ("driver[" + $slug + "] CPU stagnant check " + $failCount + "/" + $hcDrvHungLimit + " (ticks=" + $curTicks + ")")
+            if ($failCount -ge $hcDrvHungLimit) {
+              Log ("driver[" + $slug + "] HUNG (CPU stagnant " + $hcDrvHungLimit + " x " + $hcDrvIntervalSec + "s) -> kill+restart")
+              Add-Message -From system -Text ("⚠ Driver[" + $slug + "] завис (CPU не менялся " + ($hcDrvHungLimit * $hcDrvIntervalSec / 60) + " мин) — принудительный перезапуск.") -Kind event | Out-Null
+              $null = Stop-TrackedBridgeProcess -Process $dproc -Reason ("health-check: driver[" + $slug + "] hung")
+              $drivers[$slug] = $null
+              $hcDrvFails[$slug] = 0
+              $hcDrvCpuSnaps[$slug] = $null
+              Record-CircuitRestart -Detail ("driver[" + $slug + "] unresponsive (CPU-stagnation health-check)")
+            }
+          } else {
+            $prevFails = $hcDrvFails[$slug]
+            if ($null -ne $prevFails -and $prevFails -gt 0) {
+              Log ("driver[" + $slug + "] CPU active again after " + $prevFails + " stagnant check(s)")
+            }
+            $hcDrvFails[$slug] = 0
+          }
+          $hcDrvCpuSnaps[$slug] = $curTicks
+        } catch {
+          Log ("driver[" + $slug + "] health-check error: " + $_.Exception.Message)
+        }
+      }
     }
     # Ensure the INDEPENDENT watchdog safety-net is alive. By design it's a separate
     # scheduled task (install-watchdog.ps1), but task registration needs elevation and the
