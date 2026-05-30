@@ -45,6 +45,13 @@ function Get-OperatorInterventions {
   $hits = New-Object 'System.Collections.Generic.List[object]'
   foreach ($m in $msgs) {
     $t = [string]$m.text
+    # 2026-05-30: exclude AUTO-injected meta-tasks -- they are NOT operator interventions. The
+    # auto-brainstorm ("[[DEEP-THINK]] Архитектурная мета-задача") embeds the 5-whys instruction
+    # «спроси «почему»», which false-matched the 'почему' pattern and made the brainstorm count its
+    # OWN past runs as operator interventions -- a self-pollution loop. Doctor self-repair tasks and
+    # reflect/architect wake-ups are likewise system-generated, not the operator stepping in.
+    if ($t -match '\[\[DEEP-THINK\]\]\s*Архитектурн\w*\s+мета-задач') { continue }
+    if ($t -match 'задача\s+саморемонта|🩺\s*ДОКТОР|Архитектор просыпается|Рефлексия:') { continue }
     $found = [regex]::Match($t, $combined)
     if (-not $found.Success) { continue }
     $snippet = $t -replace '\s+', ' '
@@ -211,7 +218,9 @@ function Get-ArchitectLiveState {
     $drop = [int]$by['auto-dropped']
     $dr = if ($tot -gt 0) { [math]::Round(100 * $drop / $tot) } else { 0 }
     [void]$sb.AppendLine('Backlog-воронка: new=' + [int]$by['new'] + ' approved=' + [int]$by['approved'] + ' running=' + [int]$by['running'] + ' done=' + [int]$by['done'] + ' auto-dropped=' + $drop + ' rejected=' + [int]$by['rejected'] + ' (drop-rate ' + $dr + '%, всего ' + $tot + ')')
-    $recentDone = @($bk | Where-Object { [string]$_.status -eq 'done' } | Select-Object -Last 6)
+    # exclude deep-agent audit findings (orphaned_tool etc.) -- they are auto-resolved findings,
+    # not real "the bridge built X" tasks, and just add noise to the recently-done signal.
+    $recentDone = @($bk | Where-Object { [string]$_.status -eq 'done' -and ([string]$_.text) -notmatch '^\s*\[deep-|orphaned_tool|orphaned_finding|hardcoded_secret|auth_bypass|unsafe_dynamic' } | Select-Object -Last 6)
     if ($recentDone.Count -gt 0) {
       [void]$sb.AppendLine('Недавно завершено (мост УЖЕ это сделал — НЕ предлагай повторно):')
       foreach ($d in $recentDone) { $t = ([string]$d.text -replace '\s+', ' '); if ($t.Length -gt 90) { $t = $t.Substring(0, 90) + '…' }; [void]$sb.AppendLine('  • ' + $t) }
