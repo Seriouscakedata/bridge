@@ -11,7 +11,8 @@ function Start-BridgeJob {
   if ([string]::IsNullOrWhiteSpace($Command)) { return $null }
   $dir = Get-JobsDir
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  $id   = [guid]::NewGuid().ToString('N').Substring(0,8)
+  $id      = [guid]::NewGuid().ToString('N').Substring(0,8)
+  $mtxName = "Global\BridgeJob-$id"
   $log  = Join-Path $dir "$id.log"
   $done = Join-Path $dir "$id.done"
   $cmdF = Join-Path $dir "$id.cmd"
@@ -19,15 +20,21 @@ function Start-BridgeJob {
   if ([string]::IsNullOrWhiteSpace($WorkDir)) { try { $WorkDir = [string](Get-BridgeConfig).workRoot } catch { $WorkDir = (Get-BridgeRoot) } }
   $u8 = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($cmdF, [string]$Command, $u8)
-  # Runner: cd to workdir, run the command via cmd.exe, tee everything to the log, then
-  # write the exit code to the .done file (completion signal -- avoids PID/exit-code gotchas).
+  # Runner: holds Global\BridgeJob-<id> mutex for identity verification throughout execution.
+  # Stop-BridgeJob uses this: if mutex acquirable (or abandoned), original process already exited.
   $runner = @"
 `$ErrorActionPreference='Continue'
-try { Set-Location -LiteralPath '$WorkDir' } catch {}
-`$c = (Get-Content -LiteralPath '$cmdF' -Raw)
-try { & `$env:ComSpec /c `$c *>> '$log' 2>&1 } catch { `$_ | Out-File -Append -LiteralPath '$log' }
-`$code = `$LASTEXITCODE; if (`$null -eq `$code) { `$code = 0 }
-[System.IO.File]::WriteAllText('$done', [string]`$code)
+`$_jm = `$null
+try { `$_jm = New-Object System.Threading.Mutex(`$true, '$mtxName') } catch {}
+try {
+  try { Set-Location -LiteralPath '$WorkDir' } catch {}
+  `$c = (Get-Content -LiteralPath '$cmdF' -Raw)
+  try { & `$env:ComSpec /c `$c *>> '$log' 2>&1 } catch { `$_ | Out-File -Append -LiteralPath '$log' }
+  `$code = `$LASTEXITCODE; if (`$null -eq `$code) { `$code = 0 }
+  [System.IO.File]::WriteAllText('$done', [string]`$code)
+} finally {
+  if (`$_jm) { try { `$_jm.ReleaseMutex() } catch {}; `$_jm.Dispose() }
+}
 "@
   [System.IO.File]::WriteAllText($run, $runner, (New-Object System.Text.UTF8Encoding($true)))
   try {
@@ -39,6 +46,7 @@ try { & `$env:ComSpec /c `$c *>> '$log' 2>&1 } catch { `$_ | Out-File -Append -L
     return [ordered]@{
       id = $id; cmd = [string]$Command; dir = $WorkDir; pid = $p.Id; startTicks = $ticks
       log = $log; done = $done; started = (Get-Date).ToUniversalTime().ToString('o')
+      mutexName = $mtxName
     }
   } catch { return $null }
 }
@@ -61,15 +69,40 @@ function Get-JobResult {
 }
 
 function Stop-BridgeJob {
-  # Kill a job's process tree -- verified by PID + start-time (never a recycled foreign PID).
+  # Kill a job's process tree -- 3-layer identity verification:
+  #   1. .done exists -> job completed naturally, skip.
+  #   2. startTicks > 0 AND matches live process -> avoids killing when ticks unavailable
+  #      (old: $ticks-le-0 killed blindly; fixed: require valid ticks).
+  #   3. Named mutex Global\BridgeJob-<id>: acquirable or abandoned -> process already exited.
+  #      Falls back to PID+ticks only for legacy records without mutexName.
   param($Job)
   $jp = 0; try { $jp = [int]$Job.pid } catch {}
   if ($jp -le 0) { return }
+  if (Test-JobDone $Job) { return }
   try {
     $proc = Get-Process -Id $jp -ErrorAction SilentlyContinue
     $ticks = 0; try { $ticks = [long]$Job.startTicks } catch {}
-    if ($proc -and ($ticks -le 0 -or $proc.StartTime.Ticks -eq $ticks)) {
-      & taskkill /PID $jp /T /F 2>$null | Out-Null
+    if ($proc -and $ticks -gt 0 -and $proc.StartTime.Ticks -eq $ticks) {
+      $mtxName = ''; try { $mtxName = [string]$Job.mutexName } catch {}
+      $kill = $true
+      if ($mtxName -ne '') {
+        try {
+          $m = [System.Threading.Mutex]::OpenExisting($mtxName)
+          try {
+            if ($m.WaitOne(0)) {
+              $kill = $false   # acquired -> process released -> already exited
+              try { $m.ReleaseMutex() } catch {}
+            }
+            # WaitOne(0)=false -> mutex still held -> process running -> kill proceeds
+          } catch [System.Threading.AbandonedMutexException] {
+            $kill = $false     # abandoned -> process crashed/exited
+            try { $m.ReleaseMutex() } catch {}
+          } finally { $m.Dispose() }
+        } catch {
+          $kill = $false       # OpenExisting threw -> mutex gone -> process already exited
+        }
+      }
+      if ($kill) { & taskkill /PID $jp /T /F 2>$null | Out-Null }
     }
   } catch {}
 }
