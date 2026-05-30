@@ -3079,22 +3079,39 @@ while ($true) {
       }
       elseif (Test-Path -LiteralPath $rcDefer) {
         $rcAge = 999999; try { $rcAge = ((Get-Date) - (Get-Item -LiteralPath $rcDefer).LastWriteTime).TotalSeconds } catch {}
-        # 2026-05-30 BATCH-AWARE restore. The old code restored the instant ALL
-        # channels went idle -- but that idle moment is often just the GAP between
-        # two tasks of a self-dev batch, so the restart interrupted the batch ("мост
-        # сам себя обрывает"). Now we hold the deferred restart until the bridge has
-        # been continuously quiet for $rcIdleSettle seconds = the batch is truly DONE
-        # (no next task is mid-claim). Any new task flips $rcBusy above and re-defers,
-        # collapsing the WHOLE batch into ONE restart taken after the last task.
-        $rcIdleSettle = 120
+        # 2026-05-30 v2 PLAN-AWARE batch-done detection (operator: a blind timeout
+        # could fire while a slow Codex is mid-batch -> "выстрел в ногу"). Two facts:
+        #   1. $rcBusy above ALREADY keeps the restart deferred while a task RUNS
+        #      (status working/coding/etc + current_task + doctor) -- so a slow Codex
+        #      NEVER triggers a restart; the channel stays busy until it's actually done.
+        #   2. Between tasks we now look at the PLAN, not a clock: hold the restart
+        #      while there is still work the bridge will pick up next --
+        #        * background jobs still running (state.active_jobs), OR
+        #        * claimable backlog (approved/green/yellow/new) and autonomy enabled.
+        # The restart fires only when the plan is DRAINED (the batch is truly over).
+        # A long quiet period is a FAILSAFE for when backlog is unreadable or the
+        # bridge is gated and will never pick the work up; the 600s cap is the hard stop.
+        $rcPlanHasWork = $false
+        try { $rcSt2 = Read-State; if (@($rcSt2.active_jobs).Count -gt 0) { $rcPlanHasWork = $true } } catch {}
+        if (-not $rcPlanHasWork) {
+          try {
+            if ([bool](Get-AutonomySettings).enabled) {
+              $rcClaim = @((Get-Backlog) | Where-Object { [string]$_.status -in @('approved','green','yellow','new') }).Count
+              if ($rcClaim -gt 0) { $rcPlanHasWork = $true }
+            }
+          } catch {}
+        }
         $rcQuietSec = 0
         try { $rcCp = Get-ConversationPath; $rcQuietSec = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $rcCp).LastWriteTimeUtc).TotalSeconds } catch {}
-        if ((-not $rcBusy) -and ($rcQuietSec -ge $rcIdleSettle)) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — пачка self-dev правок завершена (тихо ' + [int]$rcQuietSec + 'с), объединено в один recycle.') -Kind event | Out-Null } catch {}
+        $rcFailsafeQuiet = 300
+        if (-not $rcPlanHasWork) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Применяю отложенный перезапуск — план пуст, пачка self-dev правок завершена (один recycle).' -Kind event | Out-Null } catch {}
+        } elseif ($rcQuietSec -ge $rcFailsafeQuiet) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
         } elseif ($rcAge -ge $rcMaxDefer) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту (макс. отсрочка). ' -Kind event | Out-Null } catch {}
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту (макс. отсрочка).' -Kind event | Out-Null } catch {}
         }
-        # else: idle-but-not-settled (gap between batch tasks) OR a channel is busy -> keep holding
+        # else: plan still has queued work, not failsafe-quiet, under cap -> keep holding
       }
     } catch {}
   }
