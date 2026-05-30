@@ -128,7 +128,7 @@ function Write-AtomicFile {
   # 2026-05-27v6: tmp-leak fix. Removal failures now log to control/tmp-leak.log
   # (was SilentlyContinue silent-swallow leading to 100+ orphan .tmp.* files).
   # On startup, Sweep-OrphanTmpFiles() picks them up.
-  param([string]$Path, [string]$Content)
+  param([string]$Path, [string]$Content, [switch]$NoCopyFallback)
   $tmp = "$Path.tmp.$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
   [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
   $tries = 0; $maxTries = 6
@@ -143,6 +143,10 @@ function Write-AtomicFile {
     } catch {
       $tries++
       if ($tries -ge $maxTries) {
+        if ($NoCopyFallback) {
+          Remove-FileWithRetry -Path $tmp -Reason 'atomic-nocopy-fail' | Out-Null
+          throw "Write-AtomicFile: exhausted $maxTries retries on '$Path' (-NoCopyFallback: refusing Copy-Item torn write)"
+        }
         try {
           Copy-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
           Remove-FileWithRetry -Path $tmp -Reason 'atomic-fallback-copy-success' | Out-Null
@@ -626,23 +630,82 @@ function Save-Decision {
   return $path
 }
 
+function Read-StateJsonRawValidated {
+  # Raw read+parse without calling Read-State/Write-State — safe on the recovery path (no recursion).
+  param([string]$Path)
+  if ([string]::IsNullOrEmpty($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
+  try {
+    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    return ($text | ConvertFrom-Json)
+  } catch { return $null }
+}
+
+function Restore-StateFromBackup {
+  # Recover state.json from the write-through backup (.bak file).
+  # Uses raw helpers only — does NOT call Read-State or Write-State (no recursion).
+  # Returns restored PSObject on success; $null if backup is missing, invalid, or restore write failed.
+  $statePath  = Get-StatePath
+  $backupPath = $statePath + '.bak'
+  $bak = Read-StateJsonRawValidated -Path $backupPath
+  if ($null -eq $bak) { return $null }
+  $check = Test-StateShape -State $bak
+  if (-not $check.ok) {
+    try {
+      $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+      Add-Content -LiteralPath $alog -Value ("{0}  BACKUP-INVALID shape-fail: {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $check.reason) -Encoding utf8 -ErrorAction SilentlyContinue
+    } catch {}
+    return $null
+  }
+  try {
+    $json = $bak | ConvertTo-Json -Depth 10
+    Write-AtomicFile -Path $statePath -Content $json -NoCopyFallback
+  } catch { return $null }
+  return $bak
+}
+
 function Read-State {
-  # FIX 2026-05-27: if state.json exists but is structurally broken (missing critical fields,
-  # e.g. after a buggy partial-write), return $null so Initialize-Bridge recreates defaults.
-  # Before: a broken state was returned as PSCustomObject with 1-2 fields, driver crashed
-  # silently trying to access $state.status etc. Now broken state == "no state", auto-recover.
+  # FIX 2026-05-27: shape-guard — broken state forces Initialize-Bridge recreate.
+  # FIX 2026-05-30: 3×50ms retry-backoff on transient parse-fail before returning $null;
+  #   on real corruption quarantines bytes + tries Restore-StateFromBackup before defaults.
+  #   Protects all ~40 call-sites, not only driver:3178.
   $p = Get-StatePath
   if (-not (Test-Path $p)) { return $null }
   $state = $null
-  try { $state = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+  $maxRetry = 3; $retryMs = 50
+  for ($attempt = 1; $attempt -le $maxRetry; $attempt++) {
+    try {
+      $state = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+      break
+    } catch {
+      if ($attempt -lt $maxRetry) {
+        Start-Sleep -Milliseconds $retryMs
+      } else {
+        # All retries exhausted: quarantine corrupt bytes for forensics, then try backup
+        try {
+          $qDir = Join-Path (Get-BridgeRoot) 'control\quarantine'
+          if (-not (Test-Path -LiteralPath $qDir)) { New-Item -ItemType Directory -Path $qDir -Force | Out-Null }
+          $qFile = Join-Path $qDir ("state-corrupt-$(Get-Date -Format 'yyyyMMdd-HHmmss').json")
+          Copy-Item -LiteralPath $p -Destination $qFile -Force -ErrorAction SilentlyContinue
+          $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+          Add-Content -LiteralPath $alog -Value ("{0}  PARSE-FAIL quarantined to $qFile — trying backup" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8 -ErrorAction SilentlyContinue
+        } catch {}
+        $restored = Restore-StateFromBackup
+        if ($null -ne $restored) { return $restored }
+        return $null  # degrade: Initialize-Bridge defaults (same as current behaviour)
+      }
+    }
+  }
   if ($null -eq $state) { return $null }
   $check = Test-StateShape -State $state
   if (-not $check.ok) {
     try {
       $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
-      Add-Content -LiteralPath $alog -Value ("{0}  BROKEN-DETECTED {1} (auto-recover via Initialize-Bridge defaults)" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $check.reason) -Encoding utf8 -ErrorAction SilentlyContinue
+      Add-Content -LiteralPath $alog -Value ("{0}  BROKEN-DETECTED {1} — trying backup before defaults" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $check.reason) -Encoding utf8 -ErrorAction SilentlyContinue
     } catch {}
-    return $null   # forces Initialize-Bridge to recreate defaults
+    $restored = Restore-StateFromBackup
+    if ($null -ne $restored) { return $restored }
+    return $null
   }
   return $state
 }
@@ -670,8 +733,8 @@ function Test-StateShape {
 
 function Write-State {
   param($State, [switch]$AllowPartial)
-  # FIX 2026-05-27: guard against state-wipe. Reject writes that lack the minimum runtime
-  # fields, UNLESS explicit -AllowPartial (used only by Initialize-Bridge default-create branch).
+  # FIX 2026-05-27: guard against state-wipe. Reject writes that lack minimum runtime fields,
+  # UNLESS explicit -AllowPartial (only Initialize-Bridge default-create branch uses this).
   if (-not $AllowPartial) {
     $check = Test-StateShape -State $State
     if (-not $check.ok) {
@@ -684,7 +747,19 @@ function Write-State {
     }
   }
   $json = $State | ConvertTo-Json -Depth 10
-  Write-AtomicFile -Path (Get-StatePath) -Content $json
+  $sp = Get-StatePath
+  # -NoCopyFallback: for state files fail-write is better than torn-write
+  Write-AtomicFile -Path $sp -Content $json -NoCopyFallback
+  # Write-through backup (best-effort: fail = warning only, not rollback of the main write)
+  try {
+    Write-AtomicFile -Path ($sp + '.bak') -Content $json
+  } catch {
+    try {
+      $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+      Add-Content -LiteralPath $alog -Value ("{0}  BACKUP-WARN write failed: $($_.Exception.Message)" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8 -ErrorAction SilentlyContinue
+    } catch {}
+    # Do NOT rethrow — main write succeeded; backup is best-effort
+  }
 }
 
 # A named mutex serializes appends + seq increment across the server and driver processes.
