@@ -1206,6 +1206,55 @@ function Test-AutonomousTaskSafe {
   return [pscustomobject]@{ safe=$true; risk='low'; reason='ok' }
 }
 
+function Test-RunjobCommandSafe {
+  # 2026-05-30 SECOND AUTONOMOUS PATH: [[RUNJOB: cmd]] runs an agent-emitted command in the
+  # background, bypassing the backlog pre-flight gate entirely. A confused/compacted agent
+  # could emit a destructive command (rm -rf, reset --hard, drop) and it would just run.
+  # This vets the COMMAND by the same classes of danger as Test-AutonomousTaskSafe -- but
+  # DETERMINISTIC ONLY (no LLM): RUNJOB fires often (audit etc.), so keep it fast. Returns
+  # @{ safe; risk; reason }. Fail-OPEN on internal error (never wedge the loop).
+  param([string]$Command, [string]$BridgeRoot)
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  $txt = [string]$Command
+  try {
+    # A. Irreversible operations (PS + cmd + git + sql forms).
+    $irrev = @(
+      @{ re='(?i)git\s+reset\s+--hard';                         why='git reset --hard (необратимая потеря правок)' },
+      @{ re='(?i)git\s+push\b[^\n]*--force|--force-with-lease'; why='git push --force (перезапись истории)' },
+      @{ re='(?i)git\s+branch\s+-D|git\s+clean\s+-[a-z]*[fdx]'; why='удаление веток / git clean -fd (необратимо)' },
+      @{ re='(?i)\brm\s+-[a-z]*[rf]|Remove-Item[^\n]*-Recurse|Remove-Item[^\n]*-Force'; why='рекурсивное/принудительное удаление' },
+      @{ re='(?i)\bdel\s+/[a-z]*[sq]|\brmdir\s+/[a-z]*s|\brd\s+/[a-z]*s'; why='del /s / rmdir /s (рекурсивное удаление)' },
+      @{ re='(?i)Clear-Content|Set-Content[^\n]*\$null|Out-File[^\n]*-Force[^\n]*(state|backlog|config|registry|secrets|auth)'; why='перезапись/обнуление критического файла' },
+      @{ re='(?i)drop\s+(table|database)|truncate\s+table';     why='drop/truncate (удаление данных)' },
+      @{ re='(?i)Stop-Computer|Restart-Computer|shutdown\s+/';   why='выключение/перезагрузка машины' },
+      @{ re='(?i)Format-Volume|format\s+[a-z]:';                why='форматирование тома' }
+    )
+    foreach ($p in $irrev) { if ($txt -match $p.re) { [void]$reasons.Add($p.why) } }
+
+    # B. Disabling / bypassing ANY protection or safety mechanism.
+    if ($txt -match '(?i)(disable|remove|удал|отключ|снес|убер|обойти|bypass|skip|kill|stop|drop)\w*') {
+      if ($txt -match '(?i)(watchdog|circuit.?breaker|supervisor|security|sandbox|guard|validator|safety|secret|tripwire|preflight|pre-flight|защит|предохранитель|валидат)') {
+        [void]$reasons.Add('отключение/обход защитного механизма')
+      }
+    }
+
+    # C. Destructive op naming a critical config/state/data file (ANY delete form).
+    if ($txt -match '(?i)(\bdel\b|\brm\b|Remove-Item|\bdrop\b|удал|снес|Clear-Content)') {
+      if ($txt -match '(?i)(config\.json|secrets\.json|auth\.json|settings\.json|\.git\b|web[\\/]index\.html|registry\.json|state\.json|backlog\.jsonl|restart\.flag|watchdog\.pause)') {
+        [void]$reasons.Add('деструктив над критическим файлом конфигурации/состояния/данных')
+      }
+      # destructive on a still-referenced .ps1
+      foreach ($fn in @([regex]::Matches($txt, '([\w\-]+\.ps1)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)) {
+        try { $rc = Get-FileReferenceCount -FileName $fn -BridgeRoot $BridgeRoot; if ($rc -gt 0) { [void]$reasons.Add("деструктив над используемым файлом $fn (ссылок: $rc)") } } catch {}
+      }
+    }
+  } catch {
+    return [pscustomobject]@{ safe=$true; risk='low'; reason='runjob-gate-error-failopen' }
+  }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ safe=$false; risk='high'; reason=(@($reasons | Select-Object -Unique) -join '; ') } }
+  return [pscustomobject]@{ safe=$true; risk='low'; reason='ok' }
+}
+
 function Get-RecallKeywords {
   param([string]$TaskText = '')
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
@@ -4304,6 +4353,16 @@ while ($true) {
       Add-Message -From system -Text ("⏭ Не дублирую фоновую задачу ($why): $jcmd`nИспользуй предыдущий результат вместо повторного запуска.") -Kind event | Out-Null
       continue
     }
+    # 2026-05-30 RUNJOB SAFETY GATE: this is the SECOND autonomous execution path (agent-emitted
+    # background command), so it gets the same danger-class vetting as the backlog pre-flight gate.
+    try {
+      $jGate = Test-RunjobCommandSafe -Command $jcmd -BridgeRoot $bridgeRoot
+      if (-not $jGate.safe) {
+        Add-Message -From system -Text ("🛑 Фоновая команда ЗАБЛОКИРОВАНА (риск=" + [string]$jGate.risk + "): " + [string]$jGate.reason + ".`nКоманда: " + $jcmd + "`nНужна проверка оператора — мост её НЕ запускает.") -Kind event | Out-Null
+        try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='runjob-blocked'; cmd=$jcmd; risk=[string]$jGate.risk; reason=[string]$jGate.reason }) } catch {}
+        continue
+      }
+    } catch {}
     try { $job = Start-BridgeJob -Command $jcmd -WorkDir $jdir; if ($job) { $startedJobs += $job } } catch {}
   }
   if ($startedJobs.Count -gt 0) {

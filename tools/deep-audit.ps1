@@ -39,7 +39,8 @@ param(
   # Writing directly to a file with [System.IO.File]::WriteAllText + UTF-8
   # NoBOM sidesteps the console layer completely. If empty, falls back to
   # stdout (legacy behavior).
-  [string]$OutputFile = ''
+  [string]$OutputFile = '',
+  [switch]$NoLLM
 )
 
 # Resolve default BridgePath: param-default can't use $PSScriptRoot reliably
@@ -588,7 +589,7 @@ function New-DeepAuditAgentResult {
 }
 
 function Start-DeepAuditAgentProcess {
-  param($Spec, [string]$BridgeRoot, [string]$ProjRoot, [int]$TimeoutSec)
+  param($Spec, [string]$BridgeRoot, [string]$ProjRoot, [int]$TimeoutSec, [bool]$RunLLM = $true)
   $tmpDir = Join-Path $BridgeRoot 'audit\tmp'
   if (-not (Test-Path -LiteralPath $tmpDir -PathType Container)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
   $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,8))
@@ -606,9 +607,9 @@ function Start-DeepAuditAgentProcess {
     '-BridgePath',$BridgeRoot,
     '-ProjectRoot',$ProjRoot,
     '-OutputFile',$resultF,
-    '-TimeoutSec',[string]$TimeoutSec,
-    '-RunLLM'
+    '-TimeoutSec',[string]$TimeoutSec
   )
+  if ($RunLLM) { $args += '-RunLLM' } else { $args += '-NoLLM' }
   $proc = Start-Process -FilePath $psExe -ArgumentList $args -WorkingDirectory $ProjRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
   return [pscustomobject]@{
     spec = $Spec
@@ -712,10 +713,10 @@ function Invoke-DeepAuditSynthesis {
 }
 
 function Invoke-MultiAgentDeepAudit {
-  param([string]$BridgeRoot, [string]$ProjRoot, $Cfg, [int]$TimeoutSec)
+  param([string]$BridgeRoot, [string]$ProjRoot, $Cfg, [int]$TimeoutSec, [bool]$RunLLM = $true)
   $agentSpecs = @(Get-DeepAuditAgentSpecs -Cfg $Cfg)
   if ($agentSpecs.Count -eq 0) {
-    return [pscustomobject]@{ agents = @(); findings = @(); synthesis = $null }
+    return [pscustomobject]@{ agents = @(); findings = @(); synthesis = $null; coverage_gap = @(); required_slices = @() }
   }
 
   $maxPar = 3
@@ -725,18 +726,51 @@ function Invoke-MultiAgentDeepAudit {
   if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'minSuccessfulAgents')) { $minSuccess = [int]$Cfg.audit.minSuccessfulAgents }
   if ($minSuccess -lt 1) { $minSuccess = 1 }
 
+  # requiredSlices: always run to completion; never get aborted_by_quorum.
+  $defaultRequired = @('security-model', 'functional-model', 'runtime-incident-model')
+  $requiredSlices = $defaultRequired
+  if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'requiredSlices')) {
+    $requiredSlices = @($Cfg.audit.requiredSlices)
+  }
+  $requiredFallbackModel = 'deepseek-v4-flash'
+  if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'defaultModel')) {
+    $configuredDefaultModel = [string]$Cfg.audit.defaultModel
+    if (-not [string]::IsNullOrWhiteSpace($configuredDefaultModel)) { $requiredFallbackModel = $configuredDefaultModel }
+  }
+  foreach ($reqRole in @($requiredSlices)) {
+    if ([string]::IsNullOrWhiteSpace([string]$reqRole)) { continue }
+    $existing = @($agentSpecs | Where-Object { $_.role -eq $reqRole } | Select-Object -First 1)
+    if ($existing.Count -eq 0) {
+      $agentSpecs += [pscustomobject]@{ role = [string]$reqRole; model = $requiredFallbackModel }
+    }
+  }
+
   $queue = New-Object System.Collections.Queue
   foreach ($spec in $agentSpecs) { [void]$queue.Enqueue($spec) }
   $running = New-Object System.Collections.ArrayList
   $agents = New-Object System.Collections.ArrayList
   $succeeded = 0
+  $quorumMet = $false
 
-  while (($queue.Count -gt 0 -or $running.Count -gt 0) -and $succeeded -lt $minSuccess) {
+  while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+    if ($quorumMet -and $queue.Count -gt 0) {
+      $reqDeferred = New-Object System.Collections.Queue
+      while ($queue.Count -gt 0) {
+        $spec = $queue.Dequeue()
+        if ($requiredSlices -contains $spec.role) {
+          [void]$reqDeferred.Enqueue($spec)
+        } else {
+          [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$spec.role) -Model ([string]$spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec 0.0))
+        }
+      }
+      while ($reqDeferred.Count -gt 0) { [void]$queue.Enqueue($reqDeferred.Dequeue()) }
+    }
+
     while ($queue.Count -gt 0 -and $running.Count -lt $maxPar) {
       $spec = $queue.Dequeue()
       try {
         Write-Host "[deep-audit] agent start role=$($spec.role) model=$($spec.model)"
-        [void]$running.Add((Start-DeepAuditAgentProcess -Spec $spec -BridgeRoot $BridgeRoot -ProjRoot $ProjRoot -TimeoutSec $TimeoutSec))
+        [void]$running.Add((Start-DeepAuditAgentProcess -Spec $spec -BridgeRoot $BridgeRoot -ProjRoot $ProjRoot -TimeoutSec $TimeoutSec -RunLLM $RunLLM))
       } catch {
         [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$spec.role) -Model ([string]$spec.model) -Status 'error' -Errors @('spawn_failed', $_.Exception.Message) -RuntimeSec 0.0))
       }
@@ -754,21 +788,47 @@ function Invoke-MultiAgentDeepAudit {
       }
     }
     foreach ($i in @($completedIdx | Sort-Object -Descending)) { $running.RemoveAt($i) }
-    if ($succeeded -ge $minSuccess) { break }
+
+    if (-not $quorumMet -and $succeeded -ge $minSuccess) {
+      $quorumMet = $true
+      $keepRunning = New-Object System.Collections.ArrayList
+      foreach ($state in @($running)) {
+        if ($requiredSlices -contains $state.spec.role) {
+          [void]$keepRunning.Add($state)
+        } else {
+          try { if ($state.proc -and -not $state.proc.HasExited) { $state.proc.Kill() } } catch {}
+          $runtime = 0.0
+          try { $runtime = ((Get-Date) - $state.startedAt).TotalSeconds } catch {}
+          [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$state.spec.role) -Model ([string]$state.spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec $runtime))
+          Remove-Item $state.resultF,$state.outF,$state.errF -ErrorAction SilentlyContinue
+        }
+      }
+      $running = $keepRunning
+    }
+
+    if ($queue.Count -eq 0 -and $running.Count -eq 0) { break }
+
+    if ($quorumMet) {
+      $hasRequired = $false
+      foreach ($state in @($running)) {
+        if ($requiredSlices -contains $state.spec.role) { $hasRequired = $true; break }
+      }
+      if (-not $hasRequired) {
+        foreach ($spec in @($queue)) {
+          if ($requiredSlices -contains $spec.role) { $hasRequired = $true; break }
+        }
+      }
+      if (-not $hasRequired) { break }
+    }
+
     if ($running.Count -gt 0 -or $queue.Count -gt 0) { Start-Sleep -Seconds 1 }
   }
 
-  if ($succeeded -ge $minSuccess) {
-    foreach ($state in @($running)) {
-      try { if ($state.proc -and -not $state.proc.HasExited) { $state.proc.Kill() } } catch {}
-      $runtime = 0.0
-      try { $runtime = ((Get-Date) - $state.startedAt).TotalSeconds } catch {}
-      [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$state.spec.role) -Model ([string]$state.spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec $runtime))
-      Remove-Item $state.resultF,$state.outF,$state.errF -ErrorAction SilentlyContinue
-    }
-    while ($queue.Count -gt 0) {
-      $spec = $queue.Dequeue()
-      [void]$agents.Add((New-DeepAuditAgentResult -Role ([string]$spec.role) -Model ([string]$spec.model) -Status 'error' -Errors @('aborted_by_quorum') -RuntimeSec 0.0))
+  $coverageGap = @()
+  foreach ($reqRole in $requiredSlices) {
+    $match = @($agents | Where-Object { $_.role -eq $reqRole } | Select-Object -First 1)
+    if ($match.Count -eq 0 -or ($match[0].status -ne 'ok' -and $match[0].status -ne 'prompt_ready')) {
+      $coverageGap += $reqRole
     }
   }
 
@@ -782,6 +842,8 @@ function Invoke-MultiAgentDeepAudit {
     agents = @($agents)
     findings = @($deduped)
     synthesis = $synthesis
+    coverage_gap = @($coverageGap)
+    required_slices = @($requiredSlices)
   }
 }
 
@@ -817,7 +879,7 @@ Write-Host "[deep-audit] bridge=$bridgeRoot"
 Write-Host "[deep-audit] project=$projRoot"
 Write-Host "[deep-audit] mode=multi-agent-$mode"
 $multiStart = Get-Date
-$multiAgent = Invoke-MultiAgentDeepAudit -BridgeRoot $bridgeRoot -ProjRoot $projRoot -Cfg $cfg -TimeoutSec ([Math]::Max($CodexTimeoutSec, $ClaudeTimeoutSec))
+$multiAgent = Invoke-MultiAgentDeepAudit -BridgeRoot $bridgeRoot -ProjRoot $projRoot -Cfg $cfg -TimeoutSec ([Math]::Max($CodexTimeoutSec, $ClaudeTimeoutSec)) -RunLLM:(-not $NoLLM)
 $multiRuntimeSec = [Math]::Round(((Get-Date) - $multiStart).TotalSeconds, 1)
 # 2026-05-30 ROOT-CAUSE FIX: do NOT name these $securityAgent/$functionalAgent.
 # PowerShell variables are case-insensitive, so $functionalAgent collides with the
@@ -851,6 +913,8 @@ $output = [pscustomobject]@{
   agents = @($multiAgent.agents)
   findings = @($multiAgent.findings)
   synthesis = $multiAgent.synthesis
+  coverage_gap = @($multiAgent.coverage_gap)
+  required_slices = @($multiAgent.required_slices)
   codex_security = $codexCompat
   claude_functional = $claudeCompat
 }
