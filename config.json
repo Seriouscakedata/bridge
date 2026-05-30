@@ -167,7 +167,9 @@
     "deepAgents": [
       { "role": "security-model", "model": "deepseek-v4-pro", "timeoutSec": 140 },
       { "role": "functional-model", "model": "gemini-2.5-flash", "timeoutSec": 140 },
-      { "role": "reliability-model", "model": "deepseek-v4-flash", "timeoutSec": 120 }
+      { "role": "reliability-model", "model": "deepseek-v4-flash", "timeoutSec": 120 },
+      { "role": "architecture-model", "model": "deepseek-v4-pro", "timeoutSec": 140 },
+      { "role": "dependency-model", "model": "deepseek-v4-flash", "timeoutSec": 120 }
     ]
   },
   "chunking": {

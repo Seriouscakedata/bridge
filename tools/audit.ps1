@@ -503,6 +503,89 @@ function Write-FindingsLedger {
   Write-AuditAtomicFile -Path $LedgerPath -Content $content
 }
 
+function Get-AuditUsefulnessPath {
+  param([string]$BridgePath)
+  Join-Path (Get-AuditDir -BridgePath $BridgePath) 'usefulness.jsonl'
+}
+
+function Write-AuditUsefulnessScore {
+  # Idea 11: after each audit, score how USEFUL it was -- so a noisy / low-value
+  # audit becomes visible over time (and a noisy slice can later be downgraded to
+  # a cheaper model). Appends one JSON line to audit/usefulness.jsonl.
+  #   action_rate           = critical findings that became backlog tasks
+  #   resolved_signal_delta = open signals the ledger closed since last run
+  #   incident_capture_rate = share of findings that touch runtime reliability
+  param(
+    [string]$BridgePath,
+    $ReportFindings,
+    [int]$FiledToBacklog = 0,
+    [int]$SuppressedKnown = 0,
+    [int]$PrevOpenCount = 0,
+    $NewLedger = $null,
+    [datetime]$Now = ([datetime]::Now)
+  )
+  try {
+    $path = Get-AuditUsefulnessPath -BridgePath $BridgePath
+    $findings = @($ReportFindings)
+    $total = $findings.Count
+    $critical = @($findings | Where-Object { ([string](Get-AuditFindingField -Raw $_ -Names @('severity'))) -eq 'critical' }).Count
+    $reliability = @($findings | Where-Object { $s = [string]$_.source; $s -eq 'reliability' -or $s -eq 'functional' }).Count
+
+    $actionRate = 0.0
+    if ($critical -gt 0) { $actionRate = [Math]::Round([double]$FiledToBacklog / $critical, 3) }
+
+    $curOpen = 0
+    if ($NewLedger) {
+      $openStates = @('open','new','regressed')
+      $curOpen = @($NewLedger.Values | Where-Object { (Normalize-AuditLedgerToken -Value ([string]$_.state) -Fallback 'open') -in $openStates }).Count
+    }
+    $resolvedDelta = $PrevOpenCount - $curOpen
+
+    $incidentCapture = 0.0
+    if ($total -gt 0) { $incidentCapture = [Math]::Round([double]$reliability / $total, 3) }
+
+    $resolvedNorm = 0.0
+    if ($PrevOpenCount -gt 0) { $resolvedNorm = [Math]::Max(0.0, [Math]::Min(1.0, [double]$resolvedDelta / $PrevOpenCount)) }
+    $usefulness = [Math]::Round(($actionRate * 0.4) + ($resolvedNorm * 0.35) + ($incidentCapture * 0.25), 3)
+
+    $prevUsefulness = $null
+    try {
+      if (Test-Path -LiteralPath $path) {
+        $lastLine = @(Get-Content -LiteralPath $path -Tail 1 -ErrorAction SilentlyContinue)
+        if ($lastLine.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($lastLine[0])) {
+          $prevRec = $lastLine[0] | ConvertFrom-Json
+          $prevUsefulness = [double]$prevRec.usefulness
+        }
+      }
+    } catch {}
+    $trend = 0.0
+    if ($null -ne $prevUsefulness) { $trend = [Math]::Round($usefulness - $prevUsefulness, 3) }
+
+    $rec = [ordered]@{
+      ts                    = $Now.ToUniversalTime().ToString('o')
+      report_findings       = $total
+      critical              = $critical
+      filed_to_backlog      = $FiledToBacklog
+      suppressed_known      = $SuppressedKnown
+      action_rate           = $actionRate
+      resolved_signal_delta = $resolvedDelta
+      ledger_open_prev      = $PrevOpenCount
+      ledger_open_now       = $curOpen
+      incident_capture_rate = $incidentCapture
+      usefulness            = $usefulness
+      prev_usefulness       = $prevUsefulness
+      trend                 = $trend
+    }
+    $line = ($rec | ConvertTo-Json -Compress -Depth 6)
+    [System.IO.File]::AppendAllText($path, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    Write-AuditLog -BridgePath $BridgePath -Message ("audit usefulness={0} trend={1} action_rate={2} resolved_delta={3}" -f $usefulness, $trend, $actionRate, $resolvedDelta)
+    return $rec
+  } catch {
+    try { Write-AuditLog -BridgePath $BridgePath -Message ("usefulness-score failed: " + $_.Exception.Message) } catch {}
+    return $null
+  }
+}
+
 function Format-AuditFindingMarkdown {
   param($F)
   $line = "- **$($F.title)**"
@@ -750,9 +833,13 @@ function Invoke-BridgeAudit {
     $mergedFindings = Merge-AuditFindings -Findings $allFindings.ToArray()
     # findings-ledger suppresses known open findings while keeping critical/regressed visible.
     $ledgerSuppressedCount = 0
+    $ledgerPrevOpenCount = 0
+    $ledgerResult = $null
     try {
       $ledgerPath = Get-FindingsLedgerPath -BridgePath $root
       $ledger = Read-FindingsLedger -LedgerPath $ledgerPath
+      # snapshot open-signal count BEFORE update (Update mutates $ledger in place)
+      try { $ledgerPrevOpenCount = @($ledger.Values | Where-Object { (Normalize-AuditLedgerToken -Value ([string]$_.state) -Fallback 'open') -in @('open','new','regressed') }).Count } catch {}
       $ledgerResult = Update-FindingsLedger -CurrentFindings $mergedFindings -Ledger $ledger -Now (Get-Date).ToUniversalTime()
       Write-FindingsLedger -LedgerPath $ledgerPath -Ledger $ledgerResult.ledger
       $mergedFindings = @($ledgerResult.reportFindings)
@@ -808,6 +895,13 @@ function Invoke-BridgeAudit {
     if ($secCounts.critical -gt 0 -or $fncCounts.critical -gt 0) {
       $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings
     }
+
+    # 10b. usefulness score (idea 11): record how useful this audit was
+    try {
+      $newLedgerForScore = $null
+      if ($ledgerResult) { $newLedgerForScore = $ledgerResult.ledger }
+      Write-AuditUsefulnessScore -BridgePath $root -ReportFindings $mergedFindings -FiledToBacklog $filed -SuppressedKnown $ledgerSuppressedCount -PrevOpenCount $ledgerPrevOpenCount -NewLedger $newLedgerForScore -Now (Get-Date) | Out-Null
+    } catch {}
 
     # 11. DEEP-AUDIT phase (Codex security + multi-agent model fan-out)
     # 2026-05-28: implements backlog item 90747e410b. Runs after the static+
@@ -902,7 +996,12 @@ function Invoke-BridgeAudit {
             $deepParsed = $deepJson | ConvertFrom-Json
             $deepCodexResult  = $deepParsed.codex_security
             $deepClaudeResult = $deepParsed.claude_functional
-            if ($deepParsed.PSObject.Properties.Name -contains 'model_agents') {
+            # 2026-05-30: orchestrator emits 'agents' (multi-agent path); older
+            # versions used 'model_agents'. Read 'agents' first, fall back to the
+            # legacy name -- the mismatch made every deep-audit report agents=0.
+            if ($deepParsed.PSObject.Properties.Name -contains 'agents') {
+              $deepModelAgentResults = @($deepParsed.agents)
+            } elseif ($deepParsed.PSObject.Properties.Name -contains 'model_agents') {
               $deepModelAgentResults = @($deepParsed.model_agents)
             }
             if (-not $deepWatchdogFired -and $deepExitCode -eq 0) { $deepStatus = 'ok' }

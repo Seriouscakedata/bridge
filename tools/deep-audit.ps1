@@ -518,14 +518,19 @@ function Get-DeepAuditAgentSpecs {
   $allowedRoles = @('security-model','functional-model','reliability-model','architecture-model','dependency-model')
   $defaults = @(
     [pscustomobject]@{ role = 'security-model'; model = 'deepseek-v4-flash' },
-    [pscustomobject]@{ role = 'functional-model'; model = 'gemini-3-flash' },
+    [pscustomobject]@{ role = 'functional-model'; model = 'gemini-2.5-flash' },
     [pscustomobject]@{ role = 'reliability-model'; model = 'deepseek-v4-flash' },
     [pscustomobject]@{ role = 'architecture-model'; model = 'deepseek-v4-pro' },
     [pscustomobject]@{ role = 'dependency-model'; model = 'deepseek-v4-flash' }
   )
   $rawSpecs = $defaults
   try {
-    if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'agentSpecs')) {
+    # config-drift fix: deepAgents is the canonical config key (config.json audit.deepAgents).
+    # Read it first so editing config actually changes the audit roster; fall back to
+    # legacy agentSpecs/roles keys, then hardcoded defaults.
+    if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'deepAgents')) {
+      $rawSpecs = @($Cfg.audit.deepAgents)
+    } elseif ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'agentSpecs')) {
       $rawSpecs = @($Cfg.audit.agentSpecs)
     } elseif ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'roles')) {
       $rawSpecs = @($Cfg.audit.roles | ForEach-Object {
@@ -538,16 +543,20 @@ function Get-DeepAuditAgentSpecs {
   foreach ($spec in @($rawSpecs)) {
     $role = ''
     $model = ''
+    $timeout = 0
     try { $role = [string]$spec.role } catch { $role = [string]$spec }
     try { $model = [string]$spec.model } catch {}
+    try { if ($spec -and ($spec.PSObject.Properties.Name -contains 'timeoutSec')) { $timeout = [int]$spec.timeoutSec } } catch { $timeout = 0 }
     if ([string]::IsNullOrWhiteSpace($role)) { continue }
     if ($role -notin @('security-model','functional-model','reliability-model','architecture-model','dependency-model')) { continue }
     if ([string]::IsNullOrWhiteSpace($model)) {
       $model = 'deepseek-v4-flash'
-      if ($role -eq 'functional-model') { $model = 'gemini-3-flash' }
+      if ($role -eq 'functional-model') { $model = 'gemini-2.5-flash' }
       if ($role -eq 'architecture-model') { $model = 'deepseek-v4-pro' }
     }
-    $agentSpecs += [pscustomobject]@{ role = $role; model = $model }
+    $specObj = [pscustomobject]@{ role = $role; model = $model }
+    if ($timeout -gt 0) { $specObj | Add-Member -MemberType NoteProperty -Name 'timeoutSec' -Value $timeout }
+    $agentSpecs += $specObj
   }
   return @($agentSpecs)
 }
@@ -798,20 +807,26 @@ Write-Host "[deep-audit] mode=multi-agent-$mode"
 $multiStart = Get-Date
 $multiAgent = Invoke-MultiAgentDeepAudit -BridgeRoot $bridgeRoot -ProjRoot $projRoot -Cfg $cfg -TimeoutSec ([Math]::Max($CodexTimeoutSec, $ClaudeTimeoutSec))
 $multiRuntimeSec = [Math]::Round(((Get-Date) - $multiStart).TotalSeconds, 1)
-$securityAgent = @($multiAgent.agents | Where-Object { $_.role -eq 'security-model' } | Select-Object -First 1)
-$functionalAgent = @($multiAgent.agents | Where-Object { $_.role -eq 'functional-model' } | Select-Object -First 1)
+# 2026-05-30 ROOT-CAUSE FIX: do NOT name these $securityAgent/$functionalAgent.
+# PowerShell variables are case-insensitive, so $functionalAgent collides with the
+# param $FunctionalAgent (which carries [ValidateSet('auto','gemini-only')]). Assigning
+# an agent OBJECT to it threw ValidationMetadataException AFTER agents started but
+# BEFORE Write-DeepAuditOutput -> result file never written -> every deep-audit
+# reported deep_failed agents=0. Suffixed with -Res to break the collision.
+$securityAgentRes = @($multiAgent.agents | Where-Object { $_.role -eq 'security-model' } | Select-Object -First 1)
+$functionalAgentRes = @($multiAgent.agents | Where-Object { $_.role -eq 'functional-model' } | Select-Object -First 1)
 $codexCompat = @{
-  skipped = (-not $securityAgent)
-  findings = if ($securityAgent) { @($securityAgent.findings) } else { @() }
-  errors = if ($securityAgent) { @($securityAgent.errors) } else { @('security-model_not_run') }
-  runtime_sec = if ($securityAgent) { [double]$securityAgent.runtime_sec } else { 0.0 }
+  skipped = (-not $securityAgentRes)
+  findings = if ($securityAgentRes) { @($securityAgentRes.findings) } else { @() }
+  errors = if ($securityAgentRes) { @($securityAgentRes.errors) } else { @('security-model_not_run') }
+  runtime_sec = if ($securityAgentRes) { [double]$securityAgentRes.runtime_sec } else { 0.0 }
   source = 'multi-agent/security-model'
 }
 $claudeCompat = @{
-  skipped = (-not $functionalAgent)
-  findings = if ($functionalAgent) { @($functionalAgent.findings) } else { @() }
-  errors = if ($functionalAgent) { @($functionalAgent.errors) } else { @('functional-model_not_run') }
-  runtime_sec = if ($functionalAgent) { [double]$functionalAgent.runtime_sec } else { 0.0 }
+  skipped = (-not $functionalAgentRes)
+  findings = if ($functionalAgentRes) { @($functionalAgentRes.findings) } else { @() }
+  errors = if ($functionalAgentRes) { @($functionalAgentRes.errors) } else { @('functional-model_not_run') }
+  runtime_sec = if ($functionalAgentRes) { [double]$functionalAgentRes.runtime_sec } else { 0.0 }
   source = 'multi-agent/functional-model'
 }
 
