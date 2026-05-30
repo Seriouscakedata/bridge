@@ -515,7 +515,6 @@ function Invoke-ClaudeFunctionalPass {
 
 function Get-DeepAuditAgentSpecs {
   param($Cfg)
-  $allowedRoles = @('security-model','functional-model','reliability-model','architecture-model','dependency-model')
   $defaults = @(
     [pscustomobject]@{ role = 'security-model'; model = 'deepseek-v4-flash' },
     [pscustomobject]@{ role = 'functional-model'; model = 'gemini-2.5-flash' },
@@ -548,11 +547,23 @@ function Get-DeepAuditAgentSpecs {
     try { $model = [string]$spec.model } catch {}
     try { if ($spec -and ($spec.PSObject.Properties.Name -contains 'timeoutSec')) { $timeout = [int]$spec.timeoutSec } } catch { $timeout = 0 }
     if ([string]::IsNullOrWhiteSpace($role)) { continue }
-    if ($role -notin @('security-model','functional-model','reliability-model','architecture-model','dependency-model')) { continue }
+    if ($role -notmatch '^[a-z][a-z0-9-]*$') {
+      Write-Verbose "DeepAudit: skipping invalid role '$role'"
+      continue
+    }
     if ([string]::IsNullOrWhiteSpace($model)) {
-      $model = 'deepseek-v4-flash'
-      if ($role -eq 'functional-model') { $model = 'gemini-2.5-flash' }
-      if ($role -eq 'architecture-model') { $model = 'deepseek-v4-pro' }
+      $fallbackModel = 'deepseek-v4-flash'
+      if ($Cfg -and $Cfg.audit -and ($Cfg.audit.PSObject.Properties.Name -contains 'defaultModel')) {
+        $configuredDefaultModel = [string]$Cfg.audit.defaultModel
+        if (-not [string]::IsNullOrWhiteSpace($configuredDefaultModel)) {
+          $fallbackModel = $configuredDefaultModel
+        }
+      }
+      $model = $fallbackModel
+    }
+    if ($model -match '\s') {
+      Write-Verbose "DeepAudit: skipping role '$role' with invalid model '$model'"
+      continue
     }
     $specObj = [pscustomobject]@{ role = $role; model = $model }
     if ($timeout -gt 0) { $specObj | Add-Member -MemberType NoteProperty -Name 'timeoutSec' -Value $timeout }
