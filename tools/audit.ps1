@@ -806,6 +806,9 @@ function Invoke-BridgeAudit {
   New-AuditLock -BridgePath $root
   $scopeLabel = if ($resolvedProject -ne $root) { "channel=$resolvedChannel project=$resolvedProject" } else { 'bridge-self' }
   Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID, scope=$scopeLabel)"
+  # 2026-05-30: surface audit lifecycle in the chat so the user can SEE it run/finish
+  # (previously the audit only wrote audit.log -> invisible in the UI).
+  try { if (Get-Command Add-Message -ErrorAction SilentlyContinue) { [void](Add-Message -From system -Text '🔍 Аудит запущен (статика + deep multi-agent)…' -Kind event) } } catch {}
 
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $allFindings = New-Object 'System.Collections.Generic.List[object]'
@@ -1302,6 +1305,17 @@ function Invoke-BridgeAudit {
     Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f `
       $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, `
       $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus, $deepModelAgentCount)
+
+    # 2026-05-30: post a completion summary into the chat (visible audit finish)
+    try {
+      if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
+        $auditIcon = if ($finalStatus -eq 'ok') { '✅' } else { '⚠️' }
+        $totalFindings = [int]$secCounts.critical + [int]$secCounts.warning + [int]$secCounts.info + [int]$fncCounts.critical + [int]$fncCounts.warning + [int]$fncCounts.info
+        $deepLabel = if ($deepStatus -eq 'ok') { "deep ok · агентов:$deepModelAgentCount" } else { "deep:$deepStatus" }
+        $doneMsg = "$auditIcon Аудит завершён за $($report.runtime_sec)s · $deepLabel · находок:$totalFindings · в backlog:+$($filed + $deepFiled)"
+        [void](Add-Message -From system -Text $doneMsg -Kind event)
+      }
+    } catch {}
 
     return [pscustomobject]@{
       status            = $finalStatus

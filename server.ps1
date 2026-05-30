@@ -1370,8 +1370,9 @@ try {
         } else {
           $ok = Set-ActiveChannel -Slug $slug
           if ($ok) {
-            # Post the event into the NEW channel's conversation so the user sees the switch landed.
-            [void](Add-Message -From system -Text ("🧵 Активный канал: " + $slug) -Kind event)
+            # 2026-05-30: do NOT post a chat event on every switch. The UI header
+            # already shows the active channel, and UI-driven poll/refresh switches
+            # spammed the conversation (travel/main/travel/main). Switch stays silent.
             Send-Text $ctx ('{"ok":true,"active":' + (("" + $slug) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8'
           } else {
             Send-Text $ctx '{"ok":false,"error":"channel not found"}' 'application/json; charset=utf-8' 404
