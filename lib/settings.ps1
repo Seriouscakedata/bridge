@@ -22,6 +22,10 @@ function Get-AutonomySettings {
     requireApproval          = $false
     idleQuietMinutes         = 10
     maxAutonomousTasksPerDay = 0
+    # 2026-05-30: per-channel autonomy. Channels listed here do NOT auto-claim
+    # backlog tasks (they still respond to explicit user messages). Default: travel
+    # off, main on -- so the two channels don't fight over the single shared Codex.
+    autonomyDisabledChannels = @('travel')
     reflectEveryHours        = 6
     maxIdeasPerReflect       = 3
     stablePromoteMinutes     = 30

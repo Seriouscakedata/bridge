@@ -1281,6 +1281,9 @@ try {
         if ($null -ne $body.reflectEveryHours)        { $v=0.0; if([double]::TryParse([string]$body.reflectEveryHours,[ref]$v)){ if($v -lt 0.1){$v=0.1}; $upd['reflectEveryHours'] = $v } }
         if ($null -ne $body.maxAutonomousTasksPerDay) { $v=0;   if([int]::TryParse([string]$body.maxAutonomousTasksPerDay,[ref]$v)){ if($v -lt 0){$v=0}; $upd['maxAutonomousTasksPerDay'] = $v } }
         if ($null -ne $body.scope)                    { $sc=[string]$body.scope; if($sc -eq 'bridge' -or $sc -eq 'projects'){ $upd['scope'] = $sc } }
+        # 2026-05-30: per-channel autonomy. Body sends the full list of channels where
+        # autonomy is OFF (e.g. ["travel"]). Stored verbatim; the driver gate reads it.
+        if ($null -ne $body.autonomyDisabledChannels) { $upd['autonomyDisabledChannels'] = @(@($body.autonomyDisabledChannels) | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
         if ($upd.Count -gt 0) { Set-AutonomySetting -Updates $upd | Out-Null }
 
         # Advanced fields: body.advanced = { 'parallel.maxStreams': 8, ... }

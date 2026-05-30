@@ -2573,6 +2573,7 @@ const settingsToggle = document.getElementById('settingsToggle');
 const settingsPanel = document.getElementById('settingsPanel');
 const settingsClose = document.getElementById('settingsClose');
 const settingAutonomyScope = document.getElementById('settingAutonomyScope');
+let autonomyDisabledChannels = [];  // 2026-05-30: channels where autonomy is OFF
 const usageBurn24 = document.getElementById('usageBurn24');
 const usageTotalCost = document.getElementById('usageTotalCost');
 const usagePrepaidCalls = document.getElementById('usagePrepaidCalls');
@@ -3031,6 +3032,24 @@ async function loadSettings(){
     const data = await fetchJson('/api/settings');
     const scope = (data && data.autonomy && data.autonomy.scope) || 'bridge';
     if(settingAutonomyScope) settingAutonomyScope.value = scope;
+    // 2026-05-30: per-channel autonomy state
+    autonomyDisabledChannels = (data && data.settings && Array.isArray(data.settings.autonomyDisabledChannels))
+      ? data.settings.autonomyDisabledChannels.map(String) : [];
+    try{ renderChannels(); }catch(_e){}
+  }catch(e){}
+}
+async function toggleChannelAutonomy(slug){
+  slug = String(slug || '');
+  if(!slug) return;
+  const idx = autonomyDisabledChannels.indexOf(slug);
+  if(idx >= 0) autonomyDisabledChannels.splice(idx, 1);   // was OFF -> turn ON
+  else autonomyDisabledChannels.push(slug);               // was ON  -> turn OFF
+  try{ renderChannels(); }catch(_e){}
+  try{
+    await fetchJson('/api/settings', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({autonomyDisabledChannels: autonomyDisabledChannels})
+    });
   }catch(e){}
 }
 async function saveSettingAutonomyScope(val){
@@ -5838,6 +5857,15 @@ function renderChannels(){
     item.appendChild(nameWrap);
     const acts = document.createElement('div');
     acts.className = 'ch-actions';
+    // 2026-05-30: per-channel autonomy toggle (travel off by default)
+    const autoOn = !autonomyDisabledChannels.includes(slug);
+    const autoBtn = document.createElement('button');
+    autoBtn.className = 'ch-mini' + (autoOn ? ' on' : '');
+    autoBtn.type = 'button';
+    autoBtn.textContent = autoOn ? '🤖' : '🚫';
+    autoBtn.title = autoOn ? 'Автономия ВКЛ — кликни, чтобы выключить' : 'Автономия ВЫКЛ — кликни, чтобы включить';
+    autoBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleChannelAutonomy(slug); });
+    acts.appendChild(autoBtn);
     if(!isActive){
       const switchBtn = document.createElement('button');
       switchBtn.className = 'ch-mini';
@@ -5873,6 +5901,7 @@ function openChannelMenu(){
   if(channelMenu) channelMenu.setAttribute('aria-hidden', 'false');
   if(channelBtn) channelBtn.setAttribute('aria-expanded', 'true');
   pollChannels();
+  try{ loadSettings(); }catch(_e){}   // 2026-05-30: refresh per-channel autonomy state
 }
 function closeChannelMenu(){
   channelSelector.classList.remove('open');
