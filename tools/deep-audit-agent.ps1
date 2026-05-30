@@ -179,8 +179,11 @@ function New-AgentPrompt {
     [void]$sb.AppendLine('=== TOP 5 LONGEST FUNCTIONS ===')
     [void]$sb.AppendLine(($funcs | ConvertTo-Json -Depth 4))
   } elseif ($Role -eq 'dependency-model') {
-    [void]$sb.AppendLine('Role: dependency/config audit. Find orphaned config keys, orphaned tools/ scripts not called from anywhere, duplicate config keys, and missing required config keys.')
-    [void]$sb.AppendLine('Context: config.json content and tools/*.ps1 list.')
+    [void]$sb.AppendLine('Role: dependency/config audit. Find orphaned config keys, duplicate config keys, missing required config keys, and TRULY orphaned tools.')
+    # 2026-05-30: this prompt previously gave only a bare filename list, and the model
+    # mislabeled Start-Process-launched tools as orphaned -- the resulting tasks nearly
+    # deleted the ENTIRE audit pipeline (audit.ps1, deep-audit*.ps1, ...). Hard rule below.
+    [void]$sb.AppendLine('CRITICAL orphaned-tool rule: a tool is orphaned ONLY if its filename appears NOWHERE else in the codebase. Tools are launched many ways -- Start-Process, the & call operator, a -File argument, dynamic path building, Task Scheduler -- NOT just dot-source/import. Each tool below is annotated with how many times its filename is referenced across driver/server/lib/tools (excluding itself). references>=1 => NOT orphaned: DO NOT flag it. Only consider references=0, and even then be cautious. NEVER flag audit*/deep-audit*/audit-runner -- that is the audit engine currently running you.')
     $configPath = Join-Path $BridgeRoot 'config.json'
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
       $coverage.Add('config.json')
@@ -189,8 +192,21 @@ function New-AgentPrompt {
     }
     $tools = @(Get-ChildItem -LiteralPath (Join-Path $BridgeRoot 'tools') -Filter *.ps1 -File -ErrorAction SilentlyContinue | Sort-Object Name)
     foreach ($t in $tools) { $coverage.Add((Get-AgentRelativePath -Root $BridgeRoot -Path $t.FullName)) }
-    [void]$sb.AppendLine('=== tools/*.ps1 ===')
-    [void]$sb.AppendLine((@($tools | ForEach-Object { Get-AgentRelativePath -Root $BridgeRoot -Path $_.FullName }) | ConvertTo-Json))
+    # Build a reference index across core code so each tool gets a real usage count.
+    $scanFiles = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($d in @($BridgeRoot, (Join-Path $BridgeRoot 'lib'), (Join-Path $BridgeRoot 'tools'))) {
+      foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter *.ps1 -File -ErrorAction SilentlyContinue)) { [void]$scanFiles.Add($f.FullName) }
+    }
+    $scanText = @{}
+    foreach ($sf in $scanFiles) { try { $scanText[$sf] = [System.IO.File]::ReadAllText($sf) } catch { $scanText[$sf] = '' } }
+    $refLines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($t in $tools) {
+      $refs = 0
+      foreach ($sf in $scanFiles) { if ($sf -eq $t.FullName) { continue }; if ($scanText[$sf] -match [regex]::Escape($t.Name)) { $refs++ } }
+      [void]$refLines.Add(($t.Name + ' : referenced ' + $refs + 'x'))
+    }
+    [void]$sb.AppendLine('=== tools/*.ps1 (with reference counts -- references>=1 means NOT orphaned, do not flag) ===')
+    [void]$sb.AppendLine(($refLines -join "`n"))
   }
 
   return [pscustomobject]@{
