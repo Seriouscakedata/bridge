@@ -35,6 +35,24 @@ function Test-AutoToolName {
   return $n
 }
 
+function Get-AutoToolFileHash {
+  # SHA-256 of file bytes as lowercase hex. $null on error.
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $bytes = [System.IO.File]::ReadAllBytes($Path)
+      $hash = $sha.ComputeHash($bytes)
+      return [BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant()
+    } finally {
+      if ($sha) { $sha.Dispose() }
+    }
+  } catch {
+    return $null
+  }
+}
+
 function New-ToolRegistry {
   [pscustomobject]@{ version = 1; tools = @() }
 }
@@ -86,7 +104,8 @@ function Register-AutoTool {
     [string]$Status = 'active',
     [string]$SmokeTest = '',
     [string]$Provenance = '',
-    [string]$Critic = ''
+    [string]$Critic = '',
+    [string]$Sha256 = ''
   )
   $n = Test-AutoToolName -Name $Name
   if (-not $n) { return $null }
@@ -109,6 +128,7 @@ function Register-AutoTool {
     smoke_test = [string]$SmokeTest
     provenance = [string]$Provenance
     critic     = [string]$Critic
+    sha256     = [string]$Sha256
     created_at = $createdAt
     updated_at = $now
     last_used  = $lastUsed
@@ -156,6 +176,12 @@ function Get-ActiveAutoToolPaths {
     $pt = $null; $pe = $null
     try { [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$pt, [ref]$pe) } catch { $pe = $null }
     if ($pe -and $pe.Count -gt 0) { continue }
+    # Integrity check: if a hash was stored at approval time, verify it now.
+    $storedHash = [string]$t.sha256
+    if (-not [string]::IsNullOrWhiteSpace($storedHash)) {
+      $actualHash = Get-AutoToolFileHash -Path $path
+      if ($actualHash -ne $storedHash) { continue }
+    }
     [void]$paths.Add($path)
   }
   return @($paths.ToArray())
@@ -434,8 +460,9 @@ function Build-AutoTool {
     # GREEN + APPROVED -> promote to the live path + register active
     try { [System.IO.File]::WriteAllText($finalFile, $toolCode, $enc) }
     catch { $lastReason = 'failed to write tool file: ' + $_.Exception.Message; try { Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue } catch {}; $result.reason=$lastReason; return $result }
+    $toolHash = Get-AutoToolFileHash -Path $finalFile
     try { Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue } catch {}
-    $rec = Register-AutoTool -Name $n -Contract $Contract -File "tools/auto/$n.ps1" -Status 'active' -SmokeTest $smokeCode -Provenance "gen=$GenModel; attempt=$i" -Critic ([string]$verdict)
+    $rec = Register-AutoTool -Name $n -Contract $Contract -File "tools/auto/$n.ps1" -Status 'active' -SmokeTest $smokeCode -Provenance "gen=$GenModel; attempt=$i" -Critic ([string]$verdict) -Sha256 ([string]$toolHash)
     if ($rec) { $result.ok=$true; $result.status='active'; $result.reason='built+smoked+approved'; $result.file="tools/auto/$n.ps1"; return $result }
     $result.reason='register failed'; return $result
   }
