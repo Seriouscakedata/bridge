@@ -227,6 +227,36 @@ function Get-ArchitectLiveState {
   return $sb.ToString()
 }
 
+function Get-CapabilityMatrixLive {
+  # 2026-05-30: generate the capability matrix FRESH from features/registry.json on every run,
+  # instead of reading a hand-maintained architecture-matrix.md that lagged 4+ days and marked
+  # LIVE features (Architect agent, deep-think, operator-interventions, external-systems) as ❌
+  # "отсутствует" -- self-contradicting, since the brainstorm prompt IS their output. The registry
+  # is updated whenever a feature is registered, so it's the source of truth for "what exists".
+  $sb = New-Object System.Text.StringBuilder
+  $regPath = Join-Path (Get-BridgeRoot) 'features\registry.json'
+  if (-not (Test-Path -LiteralPath $regPath)) { return '' }
+  $feats = $null
+  # PS 5.1 gotcha: @(ConvertFrom-Json ...) wraps the returned Object[] as ONE element (Count=1).
+  # Must assign to a variable FIRST, then @() unwraps the array correctly (Count=40).
+  try { $parsed = [System.IO.File]::ReadAllText($regPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json; $feats = @($parsed) } catch { return '' }
+  if (-not $feats -or $feats.Count -eq 0) { return '' }
+  [void]$sb.AppendLine('=== CAPABILITY MATRIX (генерируется из features/registry.json — ВСЕГДА актуально, НЕ файл) ===')
+  [void]$sb.AppendLine('Зарегистрировано подсистем: ' + $feats.Count + '. Это РЕАЛЬНО существующие механизмы — НЕ предлагай построить то, что уже здесь есть.')
+  foreach ($lg in ($feats | Group-Object layer | Sort-Object Name)) {
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('## Слой ' + $lg.Name + ' (' + $lg.Group.Count + ')')
+    foreach ($f in ($lg.Group | Sort-Object { [string]$_.name })) {
+      $st = switch ([string]$f.status) { 'active' { '✅' } 'partial' { '⚠' } 'planned' { '🔄' } 'deprecated' { '🚫' } default { '•' } }
+      $mod = (@($f.owner_files) -join ',')
+      $desc = ([string]$f.description -replace '\s+', ' ')
+      if ($desc.Length -gt 140) { $desc = $desc.Substring(0, 140) + '…' }
+      [void]$sb.AppendLine('- ' + $st + ' **' + [string]$f.name + '** (' + $mod + ') — ' + $desc)
+    }
+  }
+  return $sb.ToString()
+}
+
 function Get-ArchitectContext {
   # Compact diagnostic dump for the Architect prompt. All strings, no ETS.
   param([int]$WindowDays = 7)
@@ -253,16 +283,24 @@ function Get-ArchitectContext {
     }
   } catch {}
 
-  # 1) capability matrix
-  $matrixPath = Get-ArchitectMatrixPath
-  if (Test-Path $matrixPath) {
-    [void]$sb.AppendLine('=== CAPABILITY MATRIX (текущее состояние) ===' + (Format-FileAgeTag $matrixPath))
-    try {
-      $mtx = [System.IO.File]::ReadAllText($matrixPath, [System.Text.Encoding]::UTF8)
-      if ($mtx.Length -gt 8000) { $mtx = $mtx.Substring(0, 8000) + "`n...[truncated]" }
-      [void]$sb.AppendLine($mtx)
-    } catch {}
+  # 1) capability matrix -- generated LIVE from features/registry.json (was a hand-maintained .md
+  #    that lagged days and marked live features as ❌). Fall back to the file only if registry fails.
+  $mtxLive = ''
+  try { $mtxLive = Get-CapabilityMatrixLive } catch {}
+  if (-not [string]::IsNullOrWhiteSpace($mtxLive)) {
+    [void]$sb.AppendLine($mtxLive)
     [void]$sb.AppendLine('')
+  } else {
+    $matrixPath = Get-ArchitectMatrixPath
+    if (Test-Path $matrixPath) {
+      [void]$sb.AppendLine('=== CAPABILITY MATRIX (файл-резерв) ===' + (Format-FileAgeTag $matrixPath))
+      try {
+        $mtx = [System.IO.File]::ReadAllText($matrixPath, [System.Text.Encoding]::UTF8)
+        if ($mtx.Length -gt 8000) { $mtx = $mtx.Substring(0, 8000) + "`n...[truncated]" }
+        [void]$sb.AppendLine($mtx)
+      } catch {}
+      [void]$sb.AppendLine('')
+    }
   }
 
   # 2) ARCHITECTURE_V2 (the plan / north-star architecture)
