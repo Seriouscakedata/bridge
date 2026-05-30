@@ -220,6 +220,5 @@
       "restartsHour": { "weight": 45000, "capMs": 270000 }
     }
   },
-  "radarEveryHours": 168,
-  "goal": "(interactive mode -- tasks come from [USER] messages in the chat)"
+  "radarEveryHours": 168
 }
