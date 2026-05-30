@@ -12,9 +12,17 @@ foreach ($name in @('ClaudeCodexBridgeRestart')) {
 }
 
 # 2. kill ALL bridge processes (repeat)
+$currentUser = "$env:USERDOMAIN\$env:USERNAME"
 1..3 | ForEach-Object {
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $_.CommandLine -like '*\driver.ps1*' -or $_.CommandLine -like '*\server.ps1*' } |
+    Where-Object {
+      if ($_.ProcessId -eq $PID) { return $false }
+      try {
+        $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+        "$($owner.Domain)\$($owner.User)" -eq $currentUser
+      } catch { $false }
+    } |
     ForEach-Object { taskkill /PID $_.ProcessId /F /T 2>$null | Out-Null }
   Start-Sleep -Seconds 1
 }
