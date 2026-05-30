@@ -1,0 +1,122 @@
+{
+    "status":  "idle",
+    "paused":  false,
+    "stop":  false,
+    "abort":  false,
+    "active_agent":  null,
+    "active_model":  null,
+    "status_text":  null,
+    "agent_pid":  null,
+    "current_task":  null,
+    "task_turn":  0,
+    "task_mode":  "normal",
+    "discuss_turn":  0,
+    "discuss_snapshot":  "",
+    "study_phase":  "",
+    "study_subtype":  "",
+    "study_snapshot":  "",
+    "research_count":  0,
+    "task_start_seq":  302,
+    "no_progress_count":  0,
+    "timeout_retry_count":  0,
+    "task_did_actions":  false,
+    "verify_retry_count":  0,
+    "force_planner":  false,
+    "last_user_seq":  302,
+    "turn":  19,
+    "lastSeq":  378,
+    "heartbeat":  "2026-05-30T20:05:50.9924085+03:00",
+    "driver_started":  "2026-05-30T19:58:48.1663354+03:00",
+    "claimed_at":  "2026-05-30T15:24:03.7757429+03:00",
+    "current_backlog_id":  null,
+    "autonomous_day":  "2026-05-29",
+    "autonomous_count":  1,
+    "active_jobs":  [
+
+                    ],
+    "coder_fired":  false,
+    "coder_bypass_retry_count":  0,
+    "held_task":  null,
+    "doctor_active":  false,
+    "doctor_attempts":  0,
+    "doctor_reason":  "",
+    "doctor_started_at":  null,
+    "auditor":  {
+                    "suppressed_hashes":  [
+
+                                          ]
+                },
+    "task_checkpoints":  [
+                             {
+                                 "kind":  "verified",
+                                 "text":  "синтаксис common.ps1/driver.ps1/supervisor.ps1 (0 ошибок); smoke-тест dedup (skip=True/False по порогу); логика restarts_last_hour; 3 коммита в main | PASS",
+                                 "key":  "verified|синтаксис common.ps1/driver.ps1/supervisor.ps1 (0 ошибок); smoke-тест dedup (skip=true/false по порогу); логика restarts_last_hour; 3 коммита в main | pass",
+                                 "seq":  169,
+                                 "ts":  "2026-05-29T17:19:29.2455319+03:00"
+                             },
+                             {
+                                 "kind":  "verified",
+                                 "text":  "код-проверка диагноза | driver.ps1:2453 всё ещё `Args=@(\u0027exec\u0027,…,\u0027-o\u0027,$msgF,\u0027-\u0027)` с хвостовым \u0027-\u0027; промпт подаётся отдельно через -RedirectStandardInput на :2464 → \u0027-\u0027 избыточен и отвергается новым `codex exec [PROMPT]`. Коммиты 4eee1ac/301...",
+                                 "key":  "verified|код-проверка диагноза | driver.ps1:2453 всё ещё `args=@(\u0027exec\u0027,…,\u0027-o\u0027,$msgf,\u0027-\u0027)` с хвостовым \u0027-\u0027; промпт подаётся отдельно через -redirectstandardinput на :2464 → \u0027-\u0027 избыточен и отвергается новым `c",
+                                 "seq":  344,
+                                 "ts":  "2026-05-30T15:26:47.2787956+03:00"
+                             }
+                         ],
+    "task_last_failure":  null,
+    "session_mission":  {
+                            "goal":  "[Автозадача из бэклога] Добавить дедупликацию снимков state перед рестартом: если снимок за последние N минут уже есть — не создавать новый, чтобы избежать спама 10+ снимков за час Добавить в telemetry Wait-AgentProcess метрику \u0027количество рестартов за последний час\u0027 — чтобы отслеживать циклы перезапуска и выявлять нестабильные состояния Автоматически чистить snapshots/ старше 7 дней при старте моста — чтобы не забивать диск и не замедлять работу с файловой системой",
+                            "next_step":  "",
+                            "accepted_decisions":  [
+
+                                                   ],
+                            "constraints":  [
+
+                                            ],
+                            "recent_done":  [
+
+                                            ],
+                            "blockers":  [
+
+                                         ]
+                        },
+    "parallel_streams":  [
+
+                         ],
+    "autonomy_streak_best":  1,
+    "canary_state":  {
+                         "last_heartbeat_at":  "2026-05-29T12:23:41.5253076Z",
+                         "last_outcome":  "fail",
+                         "consecutive_failures":  2,
+                         "quarantine_until":  "2026-05-30T15:35:07.4933387+03:00",
+                         "total_heartbeats":  0,
+                         "total_failures":  2
+                     },
+    "autonomy_streak":  0,
+    "task_base_commit":  "5cd7f7baef5bbd21cc8ab18fb117e919799bae24",
+    "critic_retry_count":  0,
+    "task_intent":  null,
+    "summarized_seq":  317,
+    "agent_telemetry":  null,
+    "current_agent":  null,
+    "current_agent_pid":  0,
+    "current_agent_ticks":  0,
+    "current_agent_since":  null,
+    "progress_fingerprints":  [
+                                  "c0f7cbbc",
+                                  "ac31963c",
+                                  "e3e395a6"
+                              ],
+    "task_loop_count":  0,
+    "last_task_agent_duration_sec":  1033,
+    "current_task_id":  null,
+    "task_restart_count":  0,
+    "task_agent_duration_sec":  0,
+    "last_task_skip_reflect":  false,
+    "skip_planner":  false,
+    "skip_critic":  false,
+    "skip_reflect":  false,
+    "fast_lane_reason":  "",
+    "chunk_progress":  "",
+    "chunk_base_commit":  "",
+    "force_coder":  false
+}
