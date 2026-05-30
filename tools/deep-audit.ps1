@@ -521,6 +521,8 @@ function Get-DeepAuditAgentSpecs {
     [pscustomobject]@{ role = 'functional-model'; model = 'gemini-2.5-flash' },
     [pscustomobject]@{ role = 'reliability-model'; model = 'deepseek-v4-flash' },
     [pscustomobject]@{ role = 'runtime-incident-model'; model = 'deepseek-v4-flash' },
+    [pscustomobject]@{ role = 'latency-speed-model'; model = 'deepseek-v4-flash' },
+    [pscustomobject]@{ role = 'cost-burn-model'; model = 'deepseek-v4-flash' },
     [pscustomobject]@{ role = 'architecture-model'; model = 'deepseek-v4-pro' },
     [pscustomobject]@{ role = 'dependency-model'; model = 'deepseek-v4-flash' }
   )
