@@ -155,7 +155,7 @@ function Invoke-RunbookProcess {
     [string]$FileName,
     [string[]]$ArgsList = @(),
     [string]$WorkingDirectory = '',
-    [int]$TimeoutMs = 15000
+    [int]$TimeoutMs = 300000
   )
   $result = [ordered]@{
     fileName = $FileName
@@ -183,6 +183,7 @@ function Invoke-RunbookProcess {
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     if (-not $proc.WaitForExit($TimeoutMs)) {
       $result.timedOut = $true
+      Write-Warning ("Invoke-RunbookProcess: process '$FileName' timed out after " + $TimeoutMs + "ms")
       try { $proc.Kill() } catch {}
       try { $proc.WaitForExit(5000) | Out-Null } catch {}
     } else {
