@@ -18,18 +18,43 @@ $flagRestart = Join-Path $ctl 'restart.flag'
 $flagStop    = Join-Path $ctl 'stop.flag'
 $supLog = Join-Path $ctl 'supervisor.log'
 $srvOut = Join-Path $ctl 'server.out.log'; $srvErr = Join-Path $ctl 'server.err.log'
-function Log($m) {
-  $line = "{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m
-  $mtx = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeSupervisorLog')
+function Invoke-SupervisorLogMutex {
+  param(
+    [Parameter(Mandatory=$true)][scriptblock]$Body,
+    [int]$TimeoutMs = 5000
+  )
+  $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeSupervisorLog')
   $got = $false
   try {
-    try { $got = $mtx.WaitOne(5000) }
+    try { $got = $mutex.WaitOne($TimeoutMs) }
     catch [System.Threading.AbandonedMutexException] { $got = $true }
-    if (-not $got) { return }
-    $line | Out-File $supLog -Append -Encoding utf8
+    if (-not $got) { throw "Could not acquire supervisor-log mutex within ${TimeoutMs}ms" }
+    return (& $Body)
   } finally {
-    if ($got) { try { $mtx.ReleaseMutex() } catch {} }
-    try { $mtx.Dispose() } catch {}
+    if ($got) {
+      try { $mutex.ReleaseMutex() }
+      catch { [System.Diagnostics.Trace]::TraceError("supervisor Log ReleaseMutex failed: " + $_.Exception.Message) }
+    }
+    if ($mutex) { $mutex.Dispose() }
+  }
+}
+function Log($m) {
+  try {
+    $line = "{0}  {1}`r`n" -f (Get-Date -Format 'HH:mm:ss'), $m
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $enc.GetBytes($line)
+    Invoke-SupervisorLogMutex -TimeoutMs 5000 -Body {
+      $fs = $null
+      try {
+        $fs = New-Object System.IO.FileStream($supLog, ([System.IO.FileMode]::Append), ([System.IO.FileAccess]::Write), ([System.IO.FileShare]::Read))
+        $fs.Write($bytes, 0, $bytes.Length)
+        $fs.Flush($true)
+      } finally {
+        if ($fs) { $fs.Dispose() }
+      }
+    }
+  } catch {
+    [System.Diagnostics.Trace]::TraceError("supervisor Log failed: " + $_.Exception.Message)
   }
 }
 $null = Initialize-Bridge
