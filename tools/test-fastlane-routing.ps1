@@ -9,6 +9,10 @@ $driverPath = Join-Path $root 'driver.ps1'
 . $intentPath
 
 $driverSrc = Get-Content -LiteralPath $driverPath -Raw -Encoding UTF8
+$markerMatch = [regex]::Match($driverSrc, '(?ms)function\s+Test-TaskControlMarker\s*\{.*?\n\}(?=\s*function\s+Get-PlannerModel)')
+if (-not $markerMatch.Success) { throw 'Test-TaskControlMarker not found in driver.ps1' }
+Invoke-Expression $markerMatch.Value
+
 $m = [regex]::Match($driverSrc, '(?ms)function\s+Test-IsTrivialTask\s*\{.*?\n\}')
 if (-not $m.Success) { throw 'Test-IsTrivialTask not found in driver.ps1' }
 Invoke-Expression $m.Value
@@ -32,6 +36,11 @@ function Add-Check {
 
 $results = [System.Collections.ArrayList]::new()
 
+Add-Check $results 'marker: standalone [[FAST]]' $true ([bool](Test-TaskControlMarker "[[FAST]]" 'FAST'))
+Add-Check $results 'marker: leading blank then [[FAST]]' $true ([bool](Test-TaskControlMarker "`n  [[FAST]]  `nпокажи логи" 'FAST'))
+Add-Check $results 'marker: inline [[FAST]] ignored' $false ([bool](Test-TaskControlMarker "Feature says [[FAST]] skips planner" 'FAST'))
+Add-Check $results 'marker: brainstorm context [[FAST]] ignored' $false ([bool](Test-TaskControlMarker "Fast-lane (driver.ps1) — тривиальные задачи или маркер [[FAST]] -> Codex" 'FAST'))
+Add-Check $results 'marker: body standalone [[FAST]] ignored' $false ([bool](Test-TaskControlMarker "before`n[[FAST]]`nafter" 'FAST'))
 Add-Check $results 'safe: сделай скриншот' $true ([bool](Test-IsSafeOsFastLaneTask 'сделай скриншот'))
 Add-Check $results 'safe: запусти калькулятор' $true ([bool](Test-IsSafeOsFastLaneTask 'запусти калькулятор'))
 Add-Check $results 'safe: найди chrome на компьютере' $true ([bool](Test-IsSafeOsFastLaneTask 'найди chrome на компьютере'))

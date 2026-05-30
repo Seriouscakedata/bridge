@@ -133,6 +133,17 @@ function Close-ReplayForStateTask {
   }
 }
 
+function Test-TaskControlMarker {
+  param([string]$TaskText, [string]$Marker)
+  if ([string]::IsNullOrWhiteSpace($TaskText) -or [string]::IsNullOrWhiteSpace($Marker)) { return $false }
+  $markerRegex = '(?m)^\s*\[\[' + [regex]::Escape($Marker.Trim()) + '\]\]\s*$'
+  foreach ($line in ([string]$TaskText -split '\r?\n')) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    return [bool]([regex]::IsMatch($line, $markerRegex))
+  }
+  return $false
+}
+
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
 
@@ -3514,7 +3525,9 @@ while ($true) {
       # the already-finished work. Operator phrasing must override the heuristic.
       $normalOverride = ([bool]([regex]::IsMatch($taskMsg, '(?m)^\s*\[\[NORMAL\]\]\s*$'))) -or ([bool]([regex]::IsMatch($taskMsg, '(?i)(не\s+зациклив|без\s+дебат|не\s+обсужда|не\s+уходи\s+в\s+обсужд|status:\s*done\b|это\s+разведка,?\s+не\s+стройка|один\s+сфокусированн\w*\s+проход)')))
       $fastLaneCfg = Get-FastLaneSettings
-      $fastMark = [bool]([regex]::IsMatch($taskMsg, '\[\[FAST\]\]'))
+      # Control markers are commands only in the task header. Long prompts often
+      # contain marker names in feature descriptions/examples.
+      $fastMark = Test-TaskControlMarker -TaskText $taskMsg -Marker 'FAST'
       $reasoningHighMark = [bool]([regex]::IsMatch($taskMsg, '\[\[REASONING:high\]\]'))
       $autoFastLane = $false
       if (-not $fastMark -and -not $reasoningHighMark -and [bool]$fastLaneCfg.autoDetect) {
