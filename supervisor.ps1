@@ -45,8 +45,16 @@ try {
 $drivers = @{}
 
 function Kill-Bridge {
+  $currentUser = "$env:USERDOMAIN\$env:USERNAME"
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $_.CommandLine -like '*\server.ps1*' -or $_.CommandLine -like '*\driver.ps1*' } |
+    Where-Object {
+      if ($_.ProcessId -eq $PID) { return $false }
+      try {
+        $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+        "$($owner.Domain)\$($owner.User)" -eq $currentUser
+      } catch { $false }
+    } |
     ForEach-Object { taskkill /PID $_.ProcessId /F /T 2>$null | Out-Null }
 }
 function Reap-Bloated {
