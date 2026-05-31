@@ -1253,6 +1253,12 @@ try {
         $status = if ([bool]$res.ok) { 200 } else { 400 }
         Send-Text $ctx ($res | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8' $status
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/backlog/health') {
+        $addIdeaOk = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
+        $getBacklogPathOk = [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
+        $payload = '{"ok":true,"addIdea":' + ($addIdeaOk.ToString().ToLower()) + ',"getBacklogPath":' + ($getBacklogPathOk.ToString().ToLower()) + '}'
+        Send-Text $ctx $payload 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/add') {
         $body = Read-Body $ctx | ConvertFrom-Json
         $text = [string]$body.text
