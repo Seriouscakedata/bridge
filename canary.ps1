@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
+$root = $PSScriptRoot
 . (Join-Path $root 'lib\common.ps1')
 try {
   . (Join-Path $root 'lib\channels.ps1')

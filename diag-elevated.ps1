@@ -1,7 +1,7 @@
 ﻿# diag-elevated.ps1 -- run ELEVATED. Cleanly (re)start server+driver elevated and
 # capture their stderr so we can see why the driver wasn't starting.
 $ErrorActionPreference = 'Continue'
-$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
+$root = $PSScriptRoot
 $log  = "$env:TEMP\bridge_elev_diag.txt"
 "=== elevated restart diag $(Get-Date -Format o) ===" | Out-File $log -Encoding utf8
 
