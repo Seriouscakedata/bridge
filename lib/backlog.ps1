@@ -1908,6 +1908,12 @@ function Get-NextApprovedIdea {
           action = 'freshness-skip-limit'
           skipped_ids = @($skipped.ToArray())
         })
+        # M5 FIX (load audit): with 90+ runnable approved items behind the 3 stale ones, returning
+        # null IDLES the driver on a FULL queue. The 3-skip cap is only a per-tick budget for the
+        # (expensive) freshness probe -- once spent, take the next not-yet-probed approved item AS-IS
+        # (its freshness is re-checked next tick / by the verify gate) instead of wedging the drain.
+        $nextUnprobed = @($items | Where-Object { $skipped -notcontains [string]$_.id } | Select-Object -First 1)
+        if (@($nextUnprobed).Count -gt 0) { return $nextUnprobed[0] }
         return $null
       }
       continue
