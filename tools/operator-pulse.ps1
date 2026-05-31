@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # operator-pulse.ps1 -- one-glance bridge status for the OPERATOR (Claude as conductor).
 # File-based first (works even when the bridge is DEAD -- the case where I need it most), with a
 # live API health probe on top. No dependency on the engine being up. ASCII labels; data read UTF-8.
@@ -66,20 +66,24 @@ foreach ($ch in $channels) {
 
 # ---------- QUEUE (backlog, main) ----------
 $bk = Join-Path $root 'channels\main\backlog.jsonl'
-$lastStatus = @{}; $doneRecent = 0
+$lastStatus = @{}; $lastObj = @{}; $doneRecent = 0
 if (Test-Path $bk) {
   $doneCut = $nowU.AddHours(-$DoneHours)
   foreach ($ln in [System.IO.File]::ReadAllLines($bk, [System.Text.Encoding]::UTF8)) {
     if ([string]::IsNullOrWhiteSpace($ln)) { continue }
-    try { $o = $ln | ConvertFrom-Json; if ($o.id) { $lastStatus[[string]$o.id] = [string]$o.status } } catch {}
+    try { $o = $ln | ConvertFrom-Json; if ($o.id) { $lastStatus[[string]$o.id] = [string]$o.status; $lastObj[[string]$o.id] = $o } } catch {}
   }
 }
 $grp = @{}; foreach ($s in $lastStatus.Values) { if (-not $grp.ContainsKey($s)) { $grp[$s] = 0 }; $grp[$s]++ }
 Write-Host "QUEUE (backlog):" -ForegroundColor Yellow
 $qline = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('approved','running','new','held','failed') } | Sort-Object Name | ForEach-Object { $_.Key + "=" + $_.Value }) -join "  "
 Write-Host ("  " + $(if ($qline) { $qline } else { '(empty)' }))
-$closed = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('done','auto-resolved') } | ForEach-Object { $_.Value } | Measure-Object -Sum).Sum
 Write-Host ("  closed total: done=" + [int]$grp['done'] + " auto-resolved=" + [int]$grp['auto-resolved'] + " dropped=" + [int]$grp['auto-dropped'])
+# #1 THROUGHPUT-METRIC: honest autonomy -- of tasks the bridge ATTEMPTED, how many closed without me.
+$cleanClosed = [int]$grp['done'] + [int]$grp['auto-resolved']
+$attempted = $cleanClosed + [int]$grp['failed']
+$autoPct = if ($attempted -gt 0) { [math]::Round(100.0 * $cleanClosed / $attempted, 1) } else { 0 }
+Write-Host ("  autonomy: " + $autoPct + "% (" + $cleanClosed + " closed without operator / " + $attempted + " attempted)") -ForegroundColor $(if ($autoPct -ge 80) { 'Green' } elseif ($autoPct -ge 50) { 'Yellow' } else { 'Red' })
 
 # ---------- OPERATOR BATCHES (Block C) -- my handle on what I delegated ----------
 $opLast = @{}
@@ -119,7 +123,23 @@ $susp = Join-Path $root 'control\sentinel.suspect'
 if (Test-Path $susp) { $sp = JFile $susp; if ($sp) { [void]$waiting.Add("sentinel: storm suspect sig=" + $sp.sig + " '" + (Trunc $sp.sample 50) + "'") } }
 $heldCount = [int]$grp['held']; $failedCount = [int]$grp['failed']
 if ($heldCount -gt 0) { [void]$waiting.Add("$heldCount task(s) HELD in backlog") }
-if ($failedCount -gt 0) { [void]$waiting.Add("$failedCount task(s) FAILED in backlog") }
+# #4 FAILURE-CLASSIFIER (pulse-side heuristic, no LLM): group failed tasks so I know WHAT broke.
+if ($failedCount -gt 0) {
+  $failClasses = @{}
+  foreach ($it in $lastObj.Values) {
+    if ([string]$it.status -ne 'failed') { continue }
+    $reason = ([string]$it.reason).ToLowerInvariant()
+    $txt = ([string]$it.text).ToLowerInvariant()
+    $cls = if ($reason -match 'restart.?loop|task_restart|survived') { 'flaky/timeout' }
+           elseif ($txt -match 'watchdog|supervisor|process.?supervision|circuit.?break|runtime.?incident') { 'control-plane (operator-only)' }
+           elseif ($reason -match 'parse|smoke|broken') { 'real-bug' }
+           else { 'needs-review' }
+    if (-not $failClasses.ContainsKey($cls)) { $failClasses[$cls] = 0 }
+    $failClasses[$cls]++
+  }
+  $clsLine = ($failClasses.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { $_.Key + '=' + $_.Value }) -join ', '
+  [void]$waiting.Add("$failedCount FAILED -> " + $clsLine)
+}
 Write-Host "NEEDS YOU:" -ForegroundColor Yellow
 if ($waiting.Count -eq 0) { Write-Host "  (nothing waiting)" -ForegroundColor Green }
 else { foreach ($w in $waiting) { Write-Host ("  - " + $w) -ForegroundColor Magenta } }
