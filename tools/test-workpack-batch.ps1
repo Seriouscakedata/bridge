@@ -93,11 +93,15 @@ try {
   $auditText = '[deep-claude/Functional Bug] : The deep-audit phase of audit-self-diag is encountering Get-BacklogPath exceptions during drift analysis.'
   $orphanRestartText = '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Multiple orphan restarts detected with no associated task turn within 5 minutes. Consider adding task attribution to restart events.'
   $featureStateText = "[deep-claude/Data Structure / Registry Drift] : The 'features\state.json' file contains a single, very long key that concatenates multiple feature IDs and scenario_results."
+  $commandInjectionText = '[deep-agent/security-model/deepseek-v4-pro] command_injection -- The script passes user-supplied arguments directly to powershell.exe via -File; sub-scripts tools\replay-cli.ps1 and tools\live-status.ps1 receive unsanitized input.'
+  $taskkillText = '[deep-agent/security-model/deepseek-v4-pro] command_injection -- The script constructs and executes ''taskkill /PID $_.ProcessId /F /T'' using string interpolation.'
   $startClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $startSrvText })
   $reapClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $reapText })
   $auditClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $auditText })
   $orphanClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $orphanRestartText })
   $featureStateClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $featureStateText })
+  $commandInjectionClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $commandInjectionText })
+  $taskkillClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $taskkillText })
   Assert-True (@($startClass.touch_set) -contains 'supervisor.ps1') 'Start-Srv/Start-Drv should infer supervisor.ps1'
   Assert-True (@($reapClass.touch_set) -contains 'supervisor.ps1') 'Reap-Bloated should infer supervisor.ps1'
   Assert-True ([string]$startClass.key -eq 'file:supervisor.ps1') ("expected supervisor key for Start-Srv, got {0}" -f [string]$startClass.key)
@@ -111,6 +115,10 @@ try {
   Assert-True ([string]$orphanClass.conflict_group -eq 'safety') 'orphan-restart should be safety conflict'
   Assert-True ([string]$featureStateClass.key -eq 'file:features/state.js') ("expected feature state key, got {0}" -f [string]$featureStateClass.key)
   Assert-True ([string]$featureStateClass.conflict_group -eq 'state') 'feature state drift should be state conflict'
+  Assert-True ([string]$commandInjectionClass.conflict_group -eq 'safety') 'command injection should be safety conflict'
+  Assert-True (-not ([string]$taskkillClass.key -eq 'module:ui')) 'taskkill text should not be misread as ui'
+  Assert-True (@($taskkillClass.touch_set) -contains 'supervisor.ps1') 'taskkill ProcessId text should infer supervisor.ps1'
+  Assert-True ([string]$taskkillClass.conflict_group -eq 'safety') 'taskkill text should be safety conflict'
 
   $idStale = Add-Idea -Text $startSrvText -From 'test' -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
