@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # ASCII-only self-test for Test-CircuitCooldown + watchdog hold-on-cooldown (deadlock fix).
 $ErrorActionPreference = 'Stop'
 $realWatchdog = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'watchdog.ps1'

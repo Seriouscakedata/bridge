@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # operator-delegate.ps1 -- the conductor (Claude) hands the bridge a batch of well-specified tasks.
 # They enter the queue tagged 'operator' (claimed FIRST, ahead of audit/auto ideas), pre-approved,
 # with a shared batch id so the pulse can track them. This is how hundreds of tasks reach the worker
