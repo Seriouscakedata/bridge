@@ -8,6 +8,59 @@ function Get-BridgeRoot {
   Split-Path -Parent $PSScriptRoot
 }
 
+function Resolve-BridgeContainedPath {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [string]$BasePath = $null,
+    [string]$Purpose = 'bridge path'
+  )
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw "Resolve-BridgeContainedPath: empty path for $Purpose"
+  }
+  if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = Get-BridgeRoot }
+
+  try {
+    $baseInfo = Resolve-Path -LiteralPath $BasePath -ErrorAction Stop
+    $baseResolved = [string]$baseInfo.ProviderPath
+  } catch {
+    $baseResolved = [System.IO.Path]::GetFullPath($BasePath)
+  }
+  $baseFull = [System.IO.Path]::GetFullPath($baseResolved).TrimEnd('\','/')
+
+  $targetInput = $Path
+  if (-not [System.IO.Path]::IsPathRooted($targetInput)) {
+    $targetInput = Join-Path $baseFull $targetInput
+  }
+
+  if (Test-Path -LiteralPath $targetInput) {
+    try {
+      $targetInfo = Resolve-Path -LiteralPath $targetInput -ErrorAction Stop
+      $targetResolved = [string]$targetInfo.ProviderPath
+    } catch {
+      throw "Resolve-BridgeContainedPath: cannot resolve $Purpose '$Path': $($_.Exception.Message)"
+    }
+  } else {
+    $parent = Split-Path -Parent $targetInput
+    $leaf = Split-Path -Leaf $targetInput
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -LiteralPath $parent)) {
+      try {
+        $parentInfo = Resolve-Path -LiteralPath $parent -ErrorAction Stop
+        $targetResolved = Join-Path ([string]$parentInfo.ProviderPath) $leaf
+      } catch {
+        throw "Resolve-BridgeContainedPath: cannot resolve parent for $Purpose '$Path': $($_.Exception.Message)"
+      }
+    } else {
+      $targetResolved = [System.IO.Path]::GetFullPath($targetInput)
+    }
+  }
+  $targetFull = [System.IO.Path]::GetFullPath($targetResolved).TrimEnd('\','/')
+
+  if ($targetFull.Equals($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($targetFull.StartsWith($basePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  throw "Resolve-BridgeContainedPath: $Purpose escapes bridge root: $targetFull (base: $baseFull)"
+}
+
 function Get-BridgeConfig {
   # Loads config.json then overlays settings.json (gitignored, survives rollbacks).
   # Keys: flat ("maxAutonomousTasksPerDay") or dotted ("parallel.maxStreams").
@@ -656,7 +709,7 @@ function Write-Summary {
   Write-AtomicFile -Path (Get-SummaryPath) -Content ([string]$Text)
 }
 
-function Get-DecisionsPath { Join-Path (Get-BridgeRoot) 'decisions' }
+function Get-DecisionsPath { Resolve-BridgeContainedPath -Path 'decisions' -Purpose 'decisions directory' }
 
 function Save-Decision {
   # Durable, uncompressed record of a conclusion/decision. Returns the file path.

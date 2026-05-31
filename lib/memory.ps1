@@ -22,6 +22,35 @@ function Get-EmbedCacheKey {
 }
 
 # ---- paths ----
+function Resolve-MemoryContainedPath {
+  param([Parameter(Mandatory=$true)][string]$Path, [string]$Purpose = 'memory path')
+  if (Get-Command Resolve-BridgeContainedPath -ErrorAction SilentlyContinue) {
+    return (Resolve-BridgeContainedPath -Path $Path -Purpose $Purpose)
+  }
+
+  $baseFull = [System.IO.Path]::GetFullPath((Get-BridgeRoot)).TrimEnd('\','/')
+  $targetInput = $Path
+  if (-not [System.IO.Path]::IsPathRooted($targetInput)) {
+    $targetInput = Join-Path $baseFull $targetInput
+  }
+  if (Test-Path -LiteralPath $targetInput) {
+    $targetResolved = [string](Resolve-Path -LiteralPath $targetInput -ErrorAction Stop).ProviderPath
+  } else {
+    $parent = Split-Path -Parent $targetInput
+    $leaf = Split-Path -Leaf $targetInput
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -LiteralPath $parent)) {
+      $targetResolved = Join-Path ([string](Resolve-Path -LiteralPath $parent -ErrorAction Stop).ProviderPath) $leaf
+    } else {
+      $targetResolved = [System.IO.Path]::GetFullPath($targetInput)
+    }
+  }
+  $targetFull = [System.IO.Path]::GetFullPath($targetResolved).TrimEnd('\','/')
+  if ($targetFull.Equals($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($targetFull.StartsWith($basePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  throw "Resolve-MemoryContainedPath: $Purpose escapes bridge root: $targetFull (base: $baseFull)"
+}
+
 function Get-MemoryScope {
   param([string]$Slug = $null)
   if ([string]::IsNullOrWhiteSpace($Slug)) {
@@ -41,8 +70,14 @@ function Get-MemoryScope {
     bridge_memory_store = (Join-Path $memoryRoot 'memory.jsonl')
   }
 }
-function Get-MemoryDir { param([string]$Slug = $null) [string]((Get-MemoryScope -Slug $Slug).memory_root) }
-function Get-MemoryStorePath { param([string]$Slug = $null) [string]((Get-MemoryScope -Slug $Slug).memory_store) }
+function Get-MemoryDir {
+  param([string]$Slug = $null)
+  Resolve-MemoryContainedPath -Path ([string]((Get-MemoryScope -Slug $Slug).memory_root)) -Purpose 'memory root'
+}
+function Get-MemoryStorePath {
+  param([string]$Slug = $null)
+  Resolve-MemoryContainedPath -Path ([string]((Get-MemoryScope -Slug $Slug).memory_store)) -Purpose 'memory store'
+}
 function Get-MemoryMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
 function Get-MemoryMapPathForChannel { param([string]$Slug) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
 function Get-MemorySharedMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.shared.md' }
@@ -53,7 +88,7 @@ function Get-MemoryMapPathsForChannel {
     Shared  = (Get-MemorySharedMapPath -Slug $Slug)
   }
 }
-function Get-MemoryLogPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.log' }
+function Get-MemoryLogPath { param([string]$Slug = $null) Resolve-MemoryContainedPath -Path (Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.log') -Purpose 'librarian log' }
 function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.last' }
 
 # ---- secrets / config ----
@@ -352,10 +387,9 @@ function Add-Memory {
   if (-not $mc.enabled) { return $null }
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
   Assert-MemoryWriteAllowed -TargetSlug $Channel
-  $scope = Get-MemoryScope -Slug $Channel
   $vec = Get-Embedding -Text $Text -TaskType 'RETRIEVAL_DOCUMENT'
   if (-not $vec) { return $null }
-  $dir = [string]$scope.memory_root
+  $dir = Get-MemoryDir -Slug $Channel
   if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $rec = [ordered]@{
     id         = [guid]::NewGuid().ToString('N')
@@ -376,7 +410,7 @@ function Add-Memory {
   if ($null -ne $Evidence) { $rec.evidence = $Evidence }
   if ($null -ne $Meta) { $rec.meta = $Meta }
   $line = ($rec | ConvertTo-Json -Compress -Depth 10)
-  $storePath = [string]$scope.memory_store
+  $storePath = Get-MemoryStorePath -Slug $Channel
   Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $line -Encoding UTF8 }.GetNewClosure())
   return $rec.id
 }
@@ -444,8 +478,7 @@ function Add-ProjectMemoryBatch {
   if (-not $mc.enabled) { return @() }
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
   Assert-MemoryWriteAllowed -TargetSlug $Channel
-  $scope = Get-MemoryScope -Slug $Channel
-  $dir = [string]$scope.memory_root
+  $dir = Get-MemoryDir -Slug $Channel
   if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
   $clean = New-Object 'System.Collections.Generic.List[object]'
@@ -507,7 +540,7 @@ function Add-ProjectMemoryBatch {
   }
 
   if ($lines.Count -gt 0) {
-    $storePath = [string]$scope.memory_store
+    $storePath = Get-MemoryStorePath -Slug $Channel
     $payload = ($lines.ToArray() -join "`n") + "`n"
     Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $payload -Encoding UTF8 -NoNewline }.GetNewClosure())
   }
