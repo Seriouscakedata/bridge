@@ -161,6 +161,7 @@
     "requireApproval": false,
     "idleQuietMinutes": 1,
     "maxAutonomousTasksPerDay": 150,
+    "autonomyDisabledChannels": ["travel", "main"],
     "reflectEveryHours": 6,
     "maxIdeasPerReflect": 3,
     "stablePromoteMinutes": 30
