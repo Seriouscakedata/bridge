@@ -3795,12 +3795,25 @@ while ($true) {
       # wasn't committed. Hold the task and ping the operator instead.
       if ($claimedIdea) {
         try {
-          $dirty = (& git -C $bridgeRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          # Filter out the perennial autosaved files that aren't real edits
-          $dirty = @($dirty | Where-Object {
-            $line = ([string]$_).Substring(3).Trim()
-            $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
-          })
+          # 2026-05-31 (Foundation #4 lesson): per-channel dirty-guard. For a PROJECT
+          # channel, check ITS OWN repo (project_root), NOT the bridge -- otherwise an
+          # operator edit to the bridge control plane falsely freezes unrelated project
+          # channels (this happened twice during the YoungChef run). Bridge channel keeps
+          # the original bridge-root check + autosave filter.
+          $guardRoot = $bridgeRoot
+          $isProjectChannel = $false
+          try {
+            $pr = Get-EffectiveProjectRoot
+            if (-not [string]::IsNullOrWhiteSpace([string]$pr) -and ([string]$pr -ne [string]$bridgeRoot)) { $guardRoot = [string]$pr; $isProjectChannel = $true }
+          } catch {}
+          $dirty = (& git -C $guardRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if (-not $isProjectChannel) {
+            # Bridge-only: filter out the perennial autosaved files that aren't real edits
+            $dirty = @($dirty | Where-Object {
+              $line = ([string]$_).Substring(3).Trim()
+              $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
+            })
+          }
           if ($dirty.Count -gt 0) {
             # Dirty tree is a TRANSIENT condition (uncommitted edits), so do NOT change the idea's
             # status -- marking it 'held' would STRAND it, since the selectors only pick 'new'/
@@ -4068,7 +4081,11 @@ while ($true) {
       # Only files this turn NEWLY dirtied (After \ Before) or a HEAD move by THIS turn implicate
       # this channel. Pre-existing dirt (another channel working in parallel on the shared tree)
       # is excluded -> no more false halts from a sibling channel's legitimate edits.
-      $newlyDirty = @($bridgeDirtyAfterGuard | Where-Object { $_ -notin $dirtyBeforeTurn })
+      # 2026-05-31 (Foundation #4): exclude operator control-config edits (config/settings.json)
+      # from the guard trigger. A PROJECT channel's coder is sandboxed to project_root and CANNOT
+      # write the bridge -- so a config/settings change during its turn is the operator tuning the
+      # bridge in parallel, not the coder escaping. Counting it falsely halted the project run.
+      $newlyDirty = @($bridgeDirtyAfterGuard | Where-Object { $_ -notin $dirtyBeforeTurn -and $_ -notmatch '(^|/)(config|settings)\.json$' })
       $headMoved  = ($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard)
       if ($headMoved -or @($newlyDirty).Count -gt 0) {
         $changed = if (@($newlyDirty).Count -gt 0) { @($newlyDirty) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
