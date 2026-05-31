@@ -791,11 +791,14 @@ function Get-BacklogInferredFiles {
   if ($t -match '(librarian|embedding|recall|vector|cosine)') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/memory.ps1'
   }
-  if ($t -match '(parallel dispatch|parallel worker|worktree|trivial-fallback|\[\[parallel)') {
+  if ($t -match '(parallel dispatch|parallel worker|trivial-fallback|\[\[parallel|worktree (cleanup|janitor|merge|isolation|lock)|\bworktrees?\b.*(parallel|worker|merge))') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/parallel.ps1'
   }
   if ($t -match '(fast-lane|fast lane|intent classifier|detect-study|task_mode)') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'driver.ps1'
+  }
+  if ($t -match '(hardcoded[_ -]?secrets?|hardcoded paths?|configuration file|config file|environment variables|tool discovery|well-known installation)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'config.json'
   }
   if ($t -match '(feature verifier|features[/\\]state|features[/\\]registry|feature states|feature id|scenario_results)') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'features/state.js'
@@ -836,7 +839,7 @@ function Get-BacklogWorkpackModule {
   $all = ((@($Files) + @($t)) -join ' ').ToLowerInvariant()
   if ($all -match 'lib/circuit-breaker\.ps1|orphan[- ]restart|restart attribution|restart mechanism|restarts? without associated task|restarts\.jsonl|cb-loop') { return 'safety' }
   if ($all -match 'supervisor\.ps1|start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|bloated pid') { return 'supervisor' }
-  if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
+  if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|hardcoded[_ -]?secrets?|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|snapshot|checkpoint|restart|resume') { return 'state' }
   if ($all -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
   if ($all -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
@@ -853,7 +856,7 @@ function Get-BacklogWorkpackConflictGroup {
   $signalText = Get-BacklogWorkpackSignalText -Text $Text
   $all = ((@($Files) + @([string]$signalText)) -join ' ').ToLowerInvariant()
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
-  if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
+  if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|hardcoded[_ -]?secrets?|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|checkpoint|restart') { return 'state' }
   if ($all -match 'audit|doctor|scenario') { return 'audit' }
   if ($all -match 'backlog|curator|workpack') { return 'backlog' }
@@ -1752,7 +1755,7 @@ function Get-BacklogMentionedFiles {
   param([string]$Text)
   $set = @{}
   $patterns = @(
-    '(?i)(?:[\w.-]+[\\/])*[\w.-]+\.(?:ps1|psm1|html|js|css|json|jsonl|md|yml|yaml|txt)',
+    '(?i)(?:[\w.-]+[\\/])*[\w.-]+\.(?:jsonl|json|psm1|ps1|html|css|js|yaml|yml|md|txt)',
     '(?i)(?:lib|web|memory|control|tools|docs|channels)[\\/][\w.\\/:-]*'
   )
   foreach ($pat in $patterns) {
