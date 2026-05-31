@@ -1,0 +1,102 @@
+#Requires -Version 5.1
+# operator-pulse.ps1 -- one-glance bridge status for the OPERATOR (Claude as conductor).
+# File-based first (works even when the bridge is DEAD -- the case where I need it most), with a
+# live API health probe on top. No dependency on the engine being up. ASCII labels; data read UTF-8.
+#   Usage: powershell -NoProfile -File tools\operator-pulse.ps1 [-DoneHours 24]
+param([int]$DoneHours = 24)
+$ErrorActionPreference = 'Continue'
+$root = if ($env:BRIDGE_ROOT) { $env:BRIDGE_ROOT } else { 'C:\Users\rafie\OneDrive\Documents\bridge' }
+$git  = if ($env:BRIDGE_GIT) { $env:BRIDGE_GIT } else { 'C:\Program Files\Git\cmd\git.exe' }
+$now  = Get-Date
+$nowU = $now.ToUniversalTime()
+function JFile($p) { try { [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { $null } }
+function AgeS($iso) { try { [math]::Round(($nowU - ([datetimeoffset]::Parse([string]$iso)).UtcDateTime).TotalSeconds, 0) } catch { '?' } }
+function Trunc($s, $n) { $s = [string]$s; if ($s.Length -gt $n) { $s.Substring(0, $n) + '...' } else { $s } }
+
+Write-Host ("=== BRIDGE :: OPERATOR PULSE @ " + $now.ToString('yyyy-MM-dd HH:mm:ss') + " ===") -ForegroundColor Cyan
+
+# ---------- HEALTH ----------
+$apiCode = 'DOWN'
+try {
+  $privAuth = Join-Path $env:USERPROFILE '.bridge-private\auth.json'
+  $authP = if (Test-Path $privAuth) { $privAuth } else { Join-Path $root 'auth.json' }
+  $pw = (Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json).password
+  $cred = New-Object System.Management.Automation.PSCredential('timur', (ConvertTo-SecureString $pw -AsPlainText -Force))
+  $r = Invoke-WebRequest -UseBasicParsing 'http://localhost:8787/api/status' -Credential $cred -TimeoutSec 5
+  $apiCode = [string]$r.StatusCode
+} catch {}
+
+# circuit-breaker mode (mirror Test-CircuitTrip: restarts in 30m vs max 5)
+$winMin = 30; $maxR = 5
+$cfg = JFile (Join-Path $root 'config.json')
+if ($cfg -and $cfg.circuitBreaker) { if ($cfg.circuitBreaker.windowMin) { $winMin = [int]$cfg.circuitBreaker.windowMin }; if ($cfg.circuitBreaker.maxRestarts) { $maxR = [int]$cfg.circuitBreaker.maxRestarts } }
+$rj = Join-Path $env:USERPROFILE '.bridge-runtime\restarts.jsonl'
+$cut = $nowU.AddMinutes(-$winMin); $rCount = 0; $lastR = ''
+if (Test-Path $rj) { foreach ($ln in [System.IO.File]::ReadAllLines($rj, [System.Text.Encoding]::UTF8)) { if ([string]::IsNullOrWhiteSpace($ln)) { continue }; try { $e = $ln | ConvertFrom-Json; $ts = ([datetimeoffset]::Parse([string]$e.ts)).UtcDateTime; if ($ts -ge $cut) { $rCount++; $lastR = [string]$e.cause } } catch {} } }
+$cbMode = if ($rCount -ge $maxR) { "COOLDOWN (TRIPPED)" } else { "allow" }
+$wdPaused = Test-Path (Join-Path $env:USERPROFILE '.bridge-private\watchdog.pause')
+
+$head = (([string](& $git -C $root rev-parse --short HEAD 2>$null)).Trim())
+$dirty = @(& $git -C $root status --porcelain 2>$null | Where-Object { $_ -match '\S' }).Count
+
+Write-Host "HEALTH:" -ForegroundColor Yellow
+$apiColor = if ($apiCode -eq '200') { 'Green' } else { 'Red' }
+Write-Host ("  API=" + $apiCode + "  circuit-breaker=" + $cbMode + " (" + $rCount + "/" + $maxR + " restarts/" + $winMin + "m)  watchdog=" + $(if ($wdPaused) { 'PAUSED' } else { 'armed' })) -ForegroundColor $apiColor
+Write-Host ("  git: HEAD " + $head + "  " + $(if ($dirty -gt 0) { "DIRTY ($dirty files)" } else { "clean" }))
+
+# ---------- PER-CHANNEL ----------
+$channels = @(Get-ChildItem (Join-Path $root 'channels') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^[_.]' } | ForEach-Object { $_.Name })
+$waiting = New-Object System.Collections.ArrayList
+Write-Host "CHANNELS:" -ForegroundColor Yellow
+foreach ($ch in $channels) {
+  $st = JFile (Join-Path $root "channels\$ch\state.json")
+  if (-not $st) { Write-Host ("  " + $ch + ": (no state)"); continue }
+  $hb = AgeS $st.heartbeat
+  $hbFlag = if ($hb -is [int] -and $hb -gt 300) { " STALE!" } else { "" }
+  $line = "  " + $ch + ": " + [string]$st.status + " hb=" + $hb + "s" + $hbFlag
+  if (-not [string]::IsNullOrWhiteSpace([string]$st.active_agent)) { $line += " agent=" + $st.active_agent }
+  if ([bool]$st.doctor_active) { $line += " [DOCTOR:" + $st.doctor_reason + "]" }
+  Write-Host $line -ForegroundColor $(if ($hbFlag) { 'Red' } else { 'White' })
+  if (-not [string]::IsNullOrWhiteSpace([string]$st.current_task)) {
+    $dur = if ($st.claimed_at) { AgeS $st.claimed_at } else { '?' }
+    Write-Host ("      working: " + (Trunc $st.current_task 90) + "  (" + $dur + "s, turn " + $st.task_turn + ")") -ForegroundColor DarkGray
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$st.held_task)) { [void]$waiting.Add("[" + $ch + "] held_task: " + (Trunc $st.held_task 80)) }
+}
+
+# ---------- QUEUE (backlog, main) ----------
+$bk = Join-Path $root 'channels\main\backlog.jsonl'
+$lastStatus = @{}; $doneRecent = 0
+if (Test-Path $bk) {
+  $doneCut = $nowU.AddHours(-$DoneHours)
+  foreach ($ln in [System.IO.File]::ReadAllLines($bk, [System.Text.Encoding]::UTF8)) {
+    if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+    try { $o = $ln | ConvertFrom-Json; if ($o.id) { $lastStatus[[string]$o.id] = [string]$o.status } } catch {}
+  }
+}
+$grp = @{}; foreach ($s in $lastStatus.Values) { if (-not $grp.ContainsKey($s)) { $grp[$s] = 0 }; $grp[$s]++ }
+Write-Host "QUEUE (backlog):" -ForegroundColor Yellow
+$qline = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('approved','running','new','held','failed') } | Sort-Object Name | ForEach-Object { $_.Key + "=" + $_.Value }) -join "  "
+Write-Host ("  " + $(if ($qline) { $qline } else { '(empty)' }))
+$closed = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('done','auto-resolved') } | ForEach-Object { $_.Value } | Measure-Object -Sum).Sum
+Write-Host ("  closed total: done=" + [int]$grp['done'] + " auto-resolved=" + [int]$grp['auto-resolved'] + " dropped=" + [int]$grp['auto-dropped'])
+
+# ---------- DONE (window: git commits) ----------
+$sinceArg = "--since=$DoneHours.hours.ago"
+$commits = @(& $git -C $root log $sinceArg --oneline 2>$null)
+Write-Host ("PROGRESS (" + $DoneHours + "h):") -ForegroundColor Yellow
+$mainState = JFile (Join-Path $root 'channels\main\state.json')
+$autoCount = if ($mainState) { [string]$mainState.autonomous_count } else { '?' }
+$streak = if ($mainState) { [string]$mainState.autonomy_streak } else { '?' }
+Write-Host ("  commits=" + $commits.Count + "  autonomous_today=" + $autoCount + "  autonomy_streak=" + $streak)
+
+# ---------- WAITING FOR OPERATOR ----------
+if (Test-Path (Join-Path $root 'control\repair.signal')) { [void]$waiting.Add("repair.signal pending (Doctor dispatch)") }
+$susp = Join-Path $root 'control\sentinel.suspect'
+if (Test-Path $susp) { $sp = JFile $susp; if ($sp) { [void]$waiting.Add("sentinel: storm suspect sig=" + $sp.sig + " '" + (Trunc $sp.sample 50) + "'") } }
+$heldCount = [int]$grp['held']; $failedCount = [int]$grp['failed']
+if ($heldCount -gt 0) { [void]$waiting.Add("$heldCount task(s) HELD in backlog") }
+if ($failedCount -gt 0) { [void]$waiting.Add("$failedCount task(s) FAILED in backlog") }
+Write-Host "NEEDS YOU:" -ForegroundColor Yellow
+if ($waiting.Count -eq 0) { Write-Host "  (nothing waiting)" -ForegroundColor Green }
+else { foreach ($w in $waiting) { Write-Host ("  - " + $w) -ForegroundColor Magenta } }
