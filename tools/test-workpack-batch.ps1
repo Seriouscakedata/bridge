@@ -91,9 +91,13 @@ try {
   $startSrvText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Start-Srv and Start-Drv use Start-Process with -NoNewWindow but redirect stdout/stderr to files. If the log file path is unavailable, supervisor can fail silently.'
   $reapText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Reap-Bloated kills tracked processes with private memory > 8GB. The threshold is hardcoded.'
   $auditText = '[deep-claude/Functional Bug] : The deep-audit phase of audit-self-diag is encountering Get-BacklogPath exceptions during drift analysis.'
+  $orphanRestartText = '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Multiple orphan restarts detected with no associated task turn within 5 minutes. Consider adding task attribution to restart events.'
+  $featureStateText = "[deep-claude/Data Structure / Registry Drift] : The 'features\state.json' file contains a single, very long key that concatenates multiple feature IDs and scenario_results."
   $startClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $startSrvText })
   $reapClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $reapText })
   $auditClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $auditText })
+  $orphanClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $orphanRestartText })
+  $featureStateClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $featureStateText })
   Assert-True (@($startClass.touch_set) -contains 'supervisor.ps1') 'Start-Srv/Start-Drv should infer supervisor.ps1'
   Assert-True (@($reapClass.touch_set) -contains 'supervisor.ps1') 'Reap-Bloated should infer supervisor.ps1'
   Assert-True ([string]$startClass.key -eq 'file:supervisor.ps1') ("expected supervisor key for Start-Srv, got {0}" -f [string]$startClass.key)
@@ -102,6 +106,11 @@ try {
   Assert-True ([string]$reapClass.conflict_group -eq 'safety') 'supervisor Reap-Bloated should be safety conflict'
   Assert-True (@($auditClass.touch_set) -contains 'tools/audit.ps1') 'deep-audit Get-BacklogPath should infer tools/audit.ps1'
   Assert-True (@($auditClass.touch_set) -contains 'lib/backlog.ps1') 'deep-audit Get-BacklogPath should infer lib/backlog.ps1'
+  Assert-True (@($orphanClass.touch_set) -contains 'lib/circuit-breaker.ps1') 'orphan-restart should infer circuit breaker'
+  Assert-True (-not (@($orphanClass.touch_set) -contains 'llm')) 'orphan-restart source model should not become llm touch'
+  Assert-True ([string]$orphanClass.conflict_group -eq 'safety') 'orphan-restart should be safety conflict'
+  Assert-True ([string]$featureStateClass.key -eq 'file:features/state.js') ("expected feature state key, got {0}" -f [string]$featureStateClass.key)
+  Assert-True ([string]$featureStateClass.conflict_group -eq 'state') 'feature state drift should be state conflict'
 
   $idStale = Add-Idea -Text $startSrvText -From 'test' -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
