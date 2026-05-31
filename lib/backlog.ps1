@@ -797,7 +797,7 @@ function Get-BacklogInferredFiles {
   if ($t -match '(parallel dispatch|parallel worker|trivial-fallback|\[\[parallel|worktree (cleanup|janitor|merge|isolation|lock)|\bworktrees?\b.*(parallel|worker|merge))') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/parallel.ps1'
   }
-  if ($t -match '(fast-lane|fast lane|intent classifier|detect-study|task_mode)') {
+  if ($t -match '(fast-lane|fast lane|intent classifier|классификатор намерений|detect-study|task_mode|discuss-mode|discuss prompt|discuss-промпт|codex exec.*unexpected argument|stdin-редирект|лишний [`''"]?-|explicit-инструкц|без дебатов)') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'driver.ps1'
   }
   if ($t -match '(hardcoded[_ -]?secrets?|hardcoded paths?|configuration file|config file|environment variables|tool discovery|well-known installation)') {
