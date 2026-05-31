@@ -154,6 +154,99 @@ function Get-CodeSymbolsFromFile {
   return @($out.ToArray())
 }
 
+function Get-CodeIndexExtensions {
+  return @(
+    '.ps1','.psm1','.psd1',
+    '.js','.jsx','.ts','.tsx',
+    '.py','.json','.yaml','.yml',
+    '.md','.mdx','.html','.css','.scss',
+    '.vue','.svelte','.cs','.java','.go','.rs',
+    '.php','.rb','.sql'
+  )
+}
+
+function Test-CodeIndexPath {
+  param([string]$Path, [string]$MemoryPrefix = '')
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $full = [System.IO.Path]::GetFullPath($Path)
+  if (-not [string]::IsNullOrWhiteSpace($MemoryPrefix) -and $full.StartsWith($MemoryPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+  $parts = @($full -split '[\\/]')
+  $blocked = @{
+    '.git' = $true; '.hg' = $true; '.svn' = $true
+    'node_modules' = $true; 'vendor' = $true; '.venv' = $true; 'venv' = $true
+    'dist' = $true; 'build' = $true; 'coverage' = $true; '.next' = $true
+    '.turbo' = $true; '.cache' = $true; '__pycache__' = $true
+  }
+  foreach ($p in $parts) {
+    if ($blocked.ContainsKey(([string]$p).ToLowerInvariant())) { return $false }
+  }
+  $ext = [System.IO.Path]::GetExtension($full).ToLowerInvariant()
+  return @((Get-CodeIndexExtensions)) -contains $ext
+}
+
+function Get-CodeGenericSymbolName {
+  param([string[]]$Lines, [int]$StartIndex, [string]$Fallback)
+  $max = [Math]::Min($Lines.Count - 1, $StartIndex + 20)
+  for ($i = $StartIndex; $i -le $max; $i++) {
+    $l = [string]$Lines[$i]
+    foreach ($pat in @(
+      '^\s*(export\s+)?(async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)',
+      '^\s*(export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)',
+      '^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)',
+      '^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)',
+      '^\s*(export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=',
+      '^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)'
+    )) {
+      $m = [regex]::Match($l, $pat)
+      if ($m.Success) {
+        for ($g = $m.Groups.Count - 1; $g -ge 1; $g--) {
+          $v = [string]$m.Groups[$g].Value
+          if ($v -match '^[A-Za-z_][A-Za-z0-9_]*$') { return $v }
+        }
+      }
+    }
+    $h = [regex]::Match($l, '^\s{0,3}#{1,6}\s+(.+)$')
+    if ($h.Success) { return (($h.Groups[1].Value -replace '\s+', ' ').Trim()) }
+  }
+  return $Fallback
+}
+
+function Get-CodeGenericSymbolsFromFile {
+  param([string]$Path, [string]$ProjectRoot)
+  $rel = ConvertTo-CodeRelativePath -Root $ProjectRoot -Path $Path
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+  if ($item.Length -gt 1048576) { return @() }
+  $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+  $lines = [regex]::Split($raw, '\r?\n')
+  $chunkSize = 80
+  $maxChunks = 24
+  $chunkIndex = 0
+  for ($start = 0; $start -lt $lines.Count -and $chunkIndex -lt $maxChunks; $start += $chunkSize) {
+    $end = [Math]::Min($lines.Count - 1, $start + $chunkSize - 1)
+    $slice = @($lines[$start..$end])
+    $snippet = (($slice -join "`n") -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($snippet)) { continue }
+    if ($snippet.Length -gt 700) { $snippet = $snippet.Substring(0, 700).TrimEnd() + '...' }
+    $name = Get-CodeGenericSymbolName -Lines $lines -StartIndex $start -Fallback ("chunk" + ($chunkIndex + 1))
+    $line = $start + 1
+    $sig = "$name@${rel}:$line"
+    $words = ConvertTo-CodeWords -Name $name
+    $text = "$sig $words - ${rel}:$line. $snippet"
+    [void]$out.Add([pscustomobject]@{
+      kind = 'chunk'
+      name = $name
+      signature = $sig
+      file = $rel
+      line = $line
+      text = $text
+    })
+    $chunkIndex++
+  }
+  return @($out.ToArray())
+}
+
 function Get-CodeManifestMap {
   param([string]$Slug = '')
   $path = Get-CodeManifestPath -Slug $Slug
@@ -236,12 +329,10 @@ function Index-CodeBase {
   $memoryRoot = [System.IO.Path]::GetFullPath((Get-MemoryDir)).TrimEnd('\','/')
   $memoryPrefix = $memoryRoot + [System.IO.Path]::DirectorySeparatorChar
 
-  $files = @(Get-ChildItem -LiteralPath $rootFull -Recurse -Filter *.ps1 -File -ErrorAction SilentlyContinue |
+  $files = @(Get-ChildItem -LiteralPath $rootFull -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object {
       $full = [System.IO.Path]::GetFullPath($_.FullName)
-      if ($full -match '\\\.') { return $false }
-      if ($full.StartsWith($memoryPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-      return $true
+      return (Test-CodeIndexPath -Path $full -MemoryPrefix $memoryPrefix)
     } |
     Sort-Object FullName)
 
@@ -290,10 +381,27 @@ function Index-CodeBase {
     $fileOk = $true
     $fileRecords = New-Object 'System.Collections.Generic.List[object]'
     try {
-      $syms = @(Get-CodeSymbolsFromFile -Path $c.File.FullName -ProjectRoot $rootFull)
+      $ext = [System.IO.Path]::GetExtension([string]$c.File.FullName).ToLowerInvariant()
+      if (@('.ps1','.psm1','.psd1') -contains $ext) {
+        $syms = @(Get-CodeSymbolsFromFile -Path $c.File.FullName -ProjectRoot $rootFull)
+      } else {
+        $syms = @(Get-CodeGenericSymbolsFromFile -Path $c.File.FullName -ProjectRoot $rootFull)
+      }
       $symbols += $syms.Count
-      foreach ($sym in $syms) {
-        $vec = Get-Embedding -Text ([string]$sym.text) -TaskType 'RETRIEVAL_DOCUMENT'
+      $texts = @($syms | ForEach-Object { [string]$_.text })
+      $vecList = New-Object 'System.Collections.Generic.List[object]'
+      if ($texts.Count -gt 0) {
+        try {
+          foreach ($v in (Get-EmbeddingBatch -Texts $texts -TaskType 'RETRIEVAL_DOCUMENT')) { [void]$vecList.Add($v) }
+        } catch {}
+        if ($vecList.Count -ne $texts.Count) {
+          $vecList.Clear()
+          foreach ($txt in $texts) { [void]$vecList.Add((Get-Embedding -Text $txt -TaskType 'RETRIEVAL_DOCUMENT')) }
+        }
+      }
+      for ($si = 0; $si -lt $syms.Count; $si++) {
+        $sym = $syms[$si]
+        $vec = $vecList[$si]
         if (-not $vec) { $fileOk = $false; break }
         $rec = [ordered]@{
           id = [guid]::NewGuid().ToString('N')

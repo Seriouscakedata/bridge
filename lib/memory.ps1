@@ -333,7 +333,20 @@ function Add-Memory {
   # Embed $Text and append a memory record. Returns the new id, or $null.
   # -Channel: explicit channel slug; default = current active channel.
   # -Shared:  if $true, memory is recallable inside the current channel store.
-  param([string]$Text, [string[]]$Tags = @(), [string]$Source = 'task', [double]$Importance = 0.5, [string]$Channel = $null, [bool]$Shared = $false)
+  param(
+    [string]$Text,
+    [string[]]$Tags = @(),
+    [string]$Source = 'task',
+    [double]$Importance = 0.5,
+    [string]$Channel = $null,
+    [bool]$Shared = $false,
+    [string]$Kind = 'memory_note',
+    [string]$Trust = 'legacy',
+    [string]$Status = 'active',
+    $Evidence = $null,
+    $Meta = $null,
+    [int]$SchemaVersion = 1
+  )
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $mc = Get-MemoryConfig
   if (-not $mc.enabled) { return $null }
@@ -353,13 +366,152 @@ function Add-Memory {
     pinned     = $false
     channel    = [string]$Channel
     shared     = [bool]$Shared
+    schema_version = [int]$SchemaVersion
+    kind       = [string]$Kind
+    trust      = [string]$Trust
+    status     = [string]$Status
     text       = [string]$Text
     vec        = @($vec)
   }
-  $line = ($rec | ConvertTo-Json -Compress -Depth 6)
+  if ($null -ne $Evidence) { $rec.evidence = $Evidence }
+  if ($null -ne $Meta) { $rec.meta = $Meta }
+  $line = ($rec | ConvertTo-Json -Compress -Depth 10)
   $storePath = [string]$scope.memory_store
   Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $line -Encoding UTF8 }.GetNewClosure())
   return $rec.id
+}
+
+function Get-MemoryKind {
+  param($Mem)
+  try {
+    if ($Mem -and $Mem.PSObject.Properties['kind'] -and -not [string]::IsNullOrWhiteSpace([string]$Mem.kind)) {
+      return [string]$Mem.kind
+    }
+  } catch {}
+  return 'memory_note'
+}
+
+function Get-MemoryTrust {
+  param($Mem)
+  try {
+    if ($Mem -and $Mem.PSObject.Properties['trust'] -and -not [string]::IsNullOrWhiteSpace([string]$Mem.trust)) {
+      return [string]$Mem.trust
+    }
+  } catch {}
+  return 'legacy'
+}
+
+function Get-MemoryStatus {
+  param($Mem)
+  try {
+    if ($Mem -and $Mem.PSObject.Properties['status'] -and -not [string]::IsNullOrWhiteSpace([string]$Mem.status)) {
+      return [string]$Mem.status
+    }
+  } catch {}
+  return 'active'
+}
+
+function Add-ProjectMemory {
+  # Typed project memory on top of the existing vector store. This is append-only
+  # and backwards-compatible: old memory records simply read as kind=memory_note.
+  param(
+    [Parameter(Mandatory=$true)][string]$Text,
+    [ValidateSet('project_fact','project_decision','project_risk','project_test','project_invariant','project_worklog','project_open_question','memory_note')]
+    [string]$Kind = 'project_fact',
+    [ValidateSet('legacy','inferred','observed','verified','operator_confirmed','stale','rejected')]
+    [string]$Trust = 'observed',
+    [ValidateSet('active','stale','rejected','archived')]
+    [string]$Status = 'active',
+    [string[]]$Tags = @(),
+    [string]$Source = 'project',
+    [double]$Importance = 0.65,
+    [string]$Channel = $null,
+    [bool]$Shared = $false,
+    $Evidence = $null,
+    $Meta = $null
+  )
+  $allTags = @('project-memory', $Kind) + @($Tags)
+  return (Add-Memory -Text $Text -Tags $allTags -Source $Source -Importance $Importance -Channel $Channel -Shared:$Shared -Kind $Kind -Trust $Trust -Status $Status -Evidence $Evidence -Meta $Meta -SchemaVersion 2)
+}
+
+function Add-ProjectMemoryBatch {
+  # Scalable path for onboarding large projects: one embedding batch and one
+  # append under the bridge lock. Records: @{ text; kind; trust; status; tags;
+  # evidence; meta; importance; source; shared }.
+  param([object[]]$Records, [string]$Channel = $null)
+  if (-not $Records -or @($Records).Count -eq 0) { return @() }
+  $mc = Get-MemoryConfig
+  if (-not $mc.enabled) { return @() }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  Assert-MemoryWriteAllowed -TargetSlug $Channel
+  $scope = Get-MemoryScope -Slug $Channel
+  $dir = [string]$scope.memory_root
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+  $clean = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($r in @($Records)) {
+    $txt = ''
+    try { $txt = [string]$r.text } catch {}
+    if ([string]::IsNullOrWhiteSpace($txt)) { continue }
+    [void]$clean.Add($r)
+  }
+  if ($clean.Count -eq 0) { return @() }
+
+  $texts = @($clean.ToArray() | ForEach-Object { [string]$_.text })
+  $vecList = New-Object 'System.Collections.Generic.List[object]'
+  try {
+    foreach ($v in (Get-EmbeddingBatch -Texts $texts -TaskType 'RETRIEVAL_DOCUMENT')) {
+      [void]$vecList.Add($v)
+    }
+  } catch {}
+  if ($vecList.Count -ne $texts.Count) {
+    $vecList.Clear()
+    foreach ($txt in $texts) { [void]$vecList.Add((Get-Embedding -Text $txt -TaskType 'RETRIEVAL_DOCUMENT')) }
+  }
+
+  $ids = New-Object 'System.Collections.Generic.List[string]'
+  $lines = New-Object 'System.Collections.Generic.List[string]'
+  for ($i = 0; $i -lt $clean.Count; $i++) {
+    $r = $clean[$i]
+    $vec = $vecList[$i]
+    if (-not $vec) { continue }
+    $kind = 'project_fact'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.kind)) { $kind = [string]$r.kind } } catch {}
+    $trust = 'observed'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.trust)) { $trust = [string]$r.trust } } catch {}
+    $status = 'active'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.status)) { $status = [string]$r.status } } catch {}
+    $source = 'project:batch'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.source)) { $source = [string]$r.source } } catch {}
+    $importance = 0.65; try { if ($null -ne $r.importance) { $importance = [double]$r.importance } } catch {}
+    $shared = $false; try { if ($null -ne $r.shared) { $shared = [bool]$r.shared } } catch {}
+    $tags = @('project-memory', $kind)
+    try { if ($r.tags) { $tags += @($r.tags | ForEach-Object { [string]$_ }) } } catch {}
+    $id = [guid]::NewGuid().ToString('N')
+    $rec = [ordered]@{
+      id             = $id
+      ts             = (Get-Date).ToUniversalTime().ToString('o')
+      source         = $source
+      tags           = @($tags)
+      importance     = [double]$importance
+      pinned         = $false
+      channel        = [string]$Channel
+      shared         = [bool]$shared
+      schema_version = 2
+      kind           = [string]$kind
+      trust          = [string]$trust
+      status         = [string]$status
+      text           = [string]$r.text
+      vec            = @($vec)
+    }
+    try { if ($null -ne $r.evidence) { $rec.evidence = $r.evidence } } catch {}
+    try { if ($null -ne $r.meta) { $rec.meta = $r.meta } } catch {}
+    [void]$ids.Add($id)
+    [void]$lines.Add(($rec | ConvertTo-Json -Compress -Depth 10))
+  }
+
+  if ($lines.Count -gt 0) {
+    $storePath = [string]$scope.memory_store
+    $payload = ($lines.ToArray() -join "`n") + "`n"
+    Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $payload -Encoding UTF8 -NoNewline }.GetNewClosure())
+  }
+  return @($ids.ToArray())
 }
 
 function Get-MemoryChannel {
@@ -496,6 +648,54 @@ function Search-Memory {
     }
   }
   return $result
+}
+
+function Search-ProjectMemory {
+  # Typed memory retrieval for project context packs. Uses the same vectors/store
+  # as Search-Memory but filters by kind/trust/status before scoring.
+  param(
+    [string]$Query,
+    [string[]]$Kind = @(),
+    [string[]]$Trust = @(),
+    [string[]]$Status = @('active'),
+    [int]$TopK = 0,
+    [double]$MinScore = -1,
+    [string]$Channel = $null
+  )
+  $mc = Get-MemoryConfig
+  if (-not $mc.enabled) { return @() }
+  if ([string]::IsNullOrWhiteSpace($Query)) { return @() }
+  if ($TopK -le 0) { $TopK = [int]$mc.recallTopK }
+  if ($MinScore -lt 0) { $MinScore = [double]$mc.recallMinScore }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
+  $storeSlug = if ($Channel -eq '__all__') { Get-CurrentMemoryChannel } else { $Channel }
+
+  $mems = @(Get-AllMemories -Channel $storeSlug)
+  if ($Channel -ne '__all__') {
+    $mems = @($mems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
+  }
+  if ($Kind -and @($Kind).Count -gt 0) {
+    $kindSet = @{}
+    foreach ($k in @($Kind)) { if (-not [string]::IsNullOrWhiteSpace($k)) { $kindSet[[string]$k] = $true } }
+    if ($kindSet.Count -gt 0) { $mems = @($mems | Where-Object { $kindSet.ContainsKey((Get-MemoryKind $_)) }) }
+  }
+  if ($Trust -and @($Trust).Count -gt 0) {
+    $trustSet = @{}
+    foreach ($t in @($Trust)) { if (-not [string]::IsNullOrWhiteSpace($t)) { $trustSet[[string]$t] = $true } }
+    if ($trustSet.Count -gt 0) { $mems = @($mems | Where-Object { $trustSet.ContainsKey((Get-MemoryTrust $_)) }) }
+  }
+  if ($Status -and @($Status).Count -gt 0) {
+    $statusSet = @{}
+    foreach ($s in @($Status)) { if (-not [string]::IsNullOrWhiteSpace($s)) { $statusSet[[string]$s] = $true } }
+    if ($statusSet.Count -gt 0) { $mems = @($mems | Where-Object { $statusSet.ContainsKey((Get-MemoryStatus $_)) }) }
+  }
+  if ($mems.Count -eq 0) { return @() }
+
+  $qvec = Get-Embedding -Text $Query -TaskType 'RETRIEVAL_QUERY'
+  if (-not $qvec) { return @() }
+  $result = @(Select-MemoryHits -Mems $mems -QueryVector $qvec -TopK $TopK -MinScore $MinScore)
+  Set-MemoryHitsLastRecalled -StoreSlug $storeSlug -Hits $result
+  return @($result)
 }
 
 function Get-MemoryRecall {

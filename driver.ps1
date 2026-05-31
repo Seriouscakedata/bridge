@@ -1116,7 +1116,7 @@ function Test-AutonomousTaskSafe {
   $reasons = New-Object 'System.Collections.Generic.List[string]'
   $txt = [string]$TaskText
   try {
-    $coreRe = '^(driver|server|supervisor|watchdog|circuit-breaker|common|backlog|audit|deep-audit|deep-audit-agent|audit-runner|audit-functional|audit-security|audit-signals|parallel|foundry|memory|doctor|channels|settings|metrics|plan|toolforge|intent|postmortem|llm|usage|notify|replay|radar|features|codemem)'
+    $coreRe = '^(driver|server|supervisor|watchdog|circuit-breaker|common|backlog|audit|deep-audit|deep-audit-agent|audit-runner|audit-functional|audit-security|audit-signals|parallel|foundry|memory|project-context|doctor|channels|settings|metrics|plan|toolforge|intent|postmortem|llm|usage|notify|replay|radar|features|codemem)'
     # any code/config/data file the task names -- NOT just .ps1
     $files = @([regex]::Matches($txt, '([\w\-]+\.(ps1|psm1|json|html|js|md|jsonl))') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
 
@@ -1387,6 +1387,12 @@ function Format-Transcript {
   }
   $decSect = Get-DecisionsRecall -TaskText $TaskText
   $evSect = Get-EvidenceRecall -TaskText $TaskText
+  $projectCtxSect = ''
+  try {
+    if (Get-Command Get-ProjectContextPack -ErrorAction SilentlyContinue) {
+      $projectCtxSect = Get-ProjectContextPack -TaskText $TaskText -MaxChars 2600
+    }
+  } catch { $projectCtxSect = '' }
   $memSect = ''
   try { $memSect = Get-MemoryRecall -TaskText $TaskText } catch { $memSect = '' }
   $skillSect = ''
@@ -1426,6 +1432,7 @@ function Format-Transcript {
   } catch { $dedupSect = '' }
   $decAppend = if ($decSect) { "`n`n$decSect" } else { '' }
   $evAppend = if ($evSect) { "`n`n$evSect" } else { '' }
+  $projectCtxAppend = if ($projectCtxSect) { "`n`n$projectCtxSect" } else { '' }
   $memAppend = if ($memSect) { "`n`n$memSect" } else { '' }
   $skillAppend = if ($skillSect) { "`n`n$skillSect" } else { '' }
   $antiSkillAppend = if ($antiSkillSect) { "`n`n$antiSkillSect" } else { '' }
@@ -1434,9 +1441,9 @@ function Format-Transcript {
   $intentAppend = if ($intentSect) { "`n`n$intentSect" } else { '' }
   $dedupAppend = if ($dedupSect) { "`n`n$dedupSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $projectCtxAppend + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
   }
-  return $body + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend
+  return $body + $projectCtxAppend + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend
 }
 
 function Get-ActiveProjectBinding {
@@ -1648,6 +1655,7 @@ $autoScopeLine
 - У вас полный доступ: чтение/запись файлов где угодно и запуск команд. Будь аккуратен с необратимыми действиями (удаление, перезапись, сеть).
 - Чтобы прислать файл/скриншот пользователю в чат, помести в ответ отдельной строкой маркер `[[FILE: C:\полный\путь]]` (можно несколько).
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
+- ПРОЕКТНАЯ ПАМЯТЬ: для фактов о текущем проекте используй типизированные маркеры отдельной строкой: `[[PROJECT_FACT: факт | file=path | line=12 | trust=observed]]`, `[[PROJECT_TEST: как проверять | file=...]]`, `[[PROJECT_RISK: риск]]`, `[[PROJECT_INVARIANT: правило]]`, `[[PROJECT_DECISION: решение]]`, `[[PROJECT_OPEN_QUESTION: вопрос]]`. Пиши только проверяемое и переиспользуемое; `file/line/sha1/commit` повышают доверие и помогают ловить stale-факты.
 - ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
 - ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
 - САМО-ПОСТРОЕННЫЕ ИНСТРУМЕНТЫ (Tool Foundry, заказывает планировщик): нужна ПЕРЕИСПОЛЬЗУЕМАЯ возможность, которой ещё нет (спец-парсер, конвертер, генератор, валидатор)? Закажи её ОТДЕЛЬНОЙ строкой [[NEED-TOOL: имя | контракт-что-делает]] (имя латиницей: буква, далее буквы/цифры/_ и дефис). Мост синтезирует её в песочнице (parse → smoke-тест → критик на ДРУГОЙ модели) и при успехе даст функцию Invoke-<имя> в tools/auto/, доступную сразу и впредь. Разовую мелочь делай напрямую; не дублируй уже существующее.$autoToolsLine
@@ -4155,6 +4163,35 @@ while ($true) {
       if ($rid) { $rememberedFacts += $fact }
     } catch {}
   }
+  # [[PROJECT_FACT: ...]] / [[PROJECT_TEST: ...]] / ... -> typed, evidence-backed
+  # per-channel project memory. This stays in the same memory.jsonl store and is
+  # retrieved by Get-ProjectContextPack before future tasks.
+  $projectMemoryPattern = '(?m)^\s*\[\[PROJECT_(FACT|DECISION|RISK|TEST|INVARIANT|WORKLOG|OPEN_QUESTION):\s*(.+?)\s*\]\]\s*$'
+  $projectMemoryCount = 0
+  foreach ($pm in [regex]::Matches($reply, $projectMemoryPattern)) {
+    $kindToken = $pm.Groups[1].Value.Trim().ToUpperInvariant()
+    $rawProjectMemory = $pm.Groups[2].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($rawProjectMemory)) { continue }
+    $kindMap = @{
+      FACT = 'project_fact'
+      DECISION = 'project_decision'
+      RISK = 'project_risk'
+      TEST = 'project_test'
+      INVARIANT = 'project_invariant'
+      WORKLOG = 'project_worklog'
+      OPEN_QUESTION = 'project_open_question'
+    }
+    if (-not $kindMap.ContainsKey($kindToken)) { continue }
+    try {
+      if (Get-Command Add-ProjectMemoryFromMarker -ErrorAction SilentlyContinue) {
+        $pid = Add-ProjectMemoryFromMarker -Kind ([string]$kindMap[$kindToken]) -RawText $rawProjectMemory -Channel ([string]$pbForMarkers.slug) -Source ('project-marker:' + $speaker)
+        if ($pid) { $projectMemoryCount++ }
+      }
+    } catch {}
+  }
+  if ($projectMemoryCount -gt 0) {
+    try { Add-Message -From system -Text ("🧠 Проектная память: сохранено typed-записей " + $projectMemoryCount) -Kind event | Out-Null } catch {}
+  }
   # [[IDEA: ...]] -> agent raises a self-improvement idea into the backlog (status 'new').
   $ideaPattern = '(?m)^\s*\[\[IDEA:\s*(.+?)\s*\]\]\s*$'
   $proposedIdeas = New-Object System.Collections.Generic.List[string]
@@ -5407,6 +5444,21 @@ $diff
     try {
       $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
       if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
+    } catch {}
+    try {
+      $stWorklog = Read-State
+      $didWorklogActions = [bool]$stWorklog.task_did_actions
+      if (($didWorklogActions -or $mode -eq 'study') -and (Get-Command Update-ProjectMemoryAfterTask -ErrorAction SilentlyContinue)) {
+        $commitForWorklog = ''
+        try {
+          $rootForWorklog = Get-ActiveProjectRoot
+          if (-not [string]::IsNullOrWhiteSpace($rootForWorklog)) {
+            $commitForWorklog = (& git -C $rootForWorklog rev-parse --short HEAD 2>$null).Trim()
+          }
+        } catch {}
+        $worklogId = Update-ProjectMemoryAfterTask -TaskText $task -Outcome $visibleReply -Channel $Channel -Commit $commitForWorklog
+        if ($worklogId) { Add-Message -From system -Text "🧠 Проектная память: worklog обновлён." -Kind event | Out-Null }
+      }
     } catch {}
     try {
       $stMem = Read-State

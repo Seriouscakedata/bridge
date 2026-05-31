@@ -2326,6 +2326,9 @@ try { . (Join-Path $PSScriptRoot 'channels.ps1') } catch { Write-Warning "channe
 # Run channel migration once — moves legacy bridge-root files into channels/main/ if needed.
 # Idempotent; safe to call on every Initialize-Bridge.
 try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
+# Evidence-backed per-project memory layer (typed memory + context pack) on top
+# of memory.ps1/codemem.ps1/channels.ps1. Best-effort and non-fatal.
+try { . (Join-Path $PSScriptRoot 'project-context.ps1') } catch { Write-Warning "project-context.ps1 failed to load: $($_.Exception.Message)" }
 # Telegram push notifications (best-effort, non-fatal).
 try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
 # Study-mode detection (single source of truth; bounded command-verb gate).
