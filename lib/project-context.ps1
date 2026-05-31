@@ -119,12 +119,24 @@ function Format-ProjectMemoryHits {
 function Get-ProjectMapSnippet {
   param([string]$Channel = $null, [int]$MaxChars = 700)
   try {
-    $path = Get-MemoryMapPath -Slug $Channel
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
-    $txt = ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)).Trim()
-    if ($txt.Length -gt $MaxChars) { $txt = $txt.Substring(0, $MaxChars).TrimEnd() + "`n...[truncated]" }
-    return $txt
+    $scope = Get-ProjectContextScope -Channel $Channel
+    $slug = [string]$scope.slug
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    $root = [string]$scope.project_root
+    if (-not [string]::IsNullOrWhiteSpace($root)) {
+      [void]$candidates.Add((Join-Path $root 'PROJECT_MAP.md'))
+      [void]$candidates.Add((Join-Path $root 'docs\PROJECT_MAP.md'))
+    }
+    [void]$candidates.Add((Get-MemoryMapPath -Slug $slug))
+    foreach ($path in @($candidates.ToArray())) {
+      if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+      $txt = ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)).Trim()
+      if ([string]::IsNullOrWhiteSpace($txt)) { continue }
+      if ($txt.Length -gt $MaxChars) { $txt = $txt.Substring(0, $MaxChars).TrimEnd() + "`n...[truncated]" }
+      return $txt
+    }
   } catch { return '' }
+  return ''
 }
 
 function Test-ProjectReadiness {

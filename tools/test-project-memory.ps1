@@ -89,6 +89,7 @@ try {
   Set-Content -LiteralPath (Join-Path $projectRoot 'src\booking.ts') -Encoding UTF8 -Value 'export function createBooking() { return authMiddleware() }'
   Set-Content -LiteralPath (Join-Path $projectRoot 'src\worker.py') -Encoding UTF8 -Value "def payment_worker():`n    return 'ok'"
   Set-Content -LiteralPath (Join-Path $projectRoot 'package.json') -Encoding UTF8 -Value '{"scripts":{"test":"npm test"}}'
+  Set-Content -LiteralPath (Join-Path $projectRoot 'PROJECT_MAP.md') -Encoding UTF8 -Value "# Canonical Project Map`n- project-root-map-wins`n- Tests: npm test"
   Set-Content -LiteralPath (Join-Path $memoryRoot 'map.md') -Encoding UTF8 -Value "# Big Project`n- Stack: TypeScript`n- Auth entrypoint: src/auth.ts`n- Tests: npm test"
   $sha = Get-ProjectFileSha1 -Path $authPath
 
@@ -109,6 +110,7 @@ try {
 
   $pack = Get-ProjectContextPack -TaskText 'change auth middleware and run auth tests' -Channel 'bigproj' -IncludeCode -MaxChars 6000
   Add-Check $results 'context pack includes header' ($pack -match 'PROJECT CONTEXT PACK')
+  Add-Check $results 'context pack prefers root PROJECT_MAP.md' ($pack -match 'project-root-map-wins' -and $pack -notmatch 'Stack: TypeScript')
   Add-Check $results 'context pack includes verified fact' ($pack -match 'Auth middleware starts')
   Add-Check $results 'context pack includes tests' ($pack -match 'npm test')
   Add-Check $results 'context pack includes code recall' ($pack -match 'AuthMiddleware')
