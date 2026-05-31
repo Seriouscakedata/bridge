@@ -8,6 +8,7 @@
 param([string]$Channel = $null, [switch]$SelfTest)
 
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\agent-wait.ps1')
 . (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 . (Join-Path $PSScriptRoot 'lib\plan.ps1')
 # Project Foundry (Фаза 2): New-Project pipeline + the dispatched-DAG executor
@@ -1963,101 +1964,6 @@ function Sweep-AgentOrphans {
   try { [System.IO.File]::WriteAllText($agentPidsFile, '', $Utf8NoBom) } catch {}
 }
 
-function Wait-AgentProcess {
-  # Wait for an agent process up to $TimeoutMs, refreshing the heartbeat every ~5s so a
-  # long turn doesn't look "dead" to the watchdog (which else false-positive rolls back).
-  # Returns $true if the process exited within the timeout.
-  # MsgFile/ErrFile/OutFile: optional temp-file paths; used for 60s telemetry ticks
-  # (stagnation observability — no hard abort, data only).
-  param($Proc, [int]$TimeoutMs, [string]$MsgFile='', [string]$ErrFile='', [string]$OutFile='', [int]$FirstOutputGraceMs=0)
-  # 2026-05-29: ADAPTIVE timeout — kill by STAGNATION, not by the wall clock. The old code aborted at a
-  # hard $TimeoutMs even while the agent was actively writing (thinking) -> false coder_timeout -> Doctor
-  # -> lost work + restart-loop (operator saw this live). Now: while the agent's output (out+err bytes)
-  # keeps GROWING it is ALIVE -> we extend; we abort only when it is past the soft timeout AND has produced
-  # NO new output for $stallGraceMs (truly hung), or hits an absolute ceiling $hardMs (runaway guard).
-  # Backward-compatible: with no Out/Err file (no progress signal) it falls back to the plain soft timeout.
-  $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $softMs = [int]$TimeoutMs
-  $stallGraceMs = 300000                                  # 5 min of ZERO output growth past soft = hung
-  $hardMs = [Math]::Max([int]$TimeoutMs * 2, 3600000)     # absolute ceiling: 2x soft or 1h, whichever larger
-  $haveSignal = (-not [string]::IsNullOrWhiteSpace($OutFile)) -or (-not [string]::IsNullOrWhiteSpace($ErrFile))
-  $lastProgressMs = 0
-  $lastTotLen = [long](-1)
-  $lastTelemetrySec = -1
-  $announcedAlive = $false
-  while ($true) {
-    if ($Proc.WaitForExit(5000)) { return $true }
-    try { Update-State { param($s) $s.heartbeat=(Get-Date).ToString('o') } | Out-Null } catch {}
-    # recycle coalescer (MID-TURN): we are busy waiting on an agent right now. If a restart.flag
-    # appears (coder edited a .ps1 and flagged it), DEFER it immediately so the supervisor can't kill
-    # THIS turn. The main-loop coalescer restores it once all channels go idle -> a burst of self-dev
-    # edits collapses into one clean recycle. Only the 'main' driver manages the shared flag.
-    if ($Channel -eq 'main') {
-      try {
-        $rcCtl = Join-Path $bridgeRoot 'control'
-        $rcF = Join-Path $rcCtl 'restart.flag'
-        if (Test-Path -LiteralPath $rcF) { Move-Item -LiteralPath $rcF -Destination (Join-Path $rcCtl 'restart.deferred') -Force; Write-Host 'recycle: deferred mid-turn restart.flag' }
-      } catch {}
-    }
-    $elapsedMs = $sw.ElapsedMilliseconds
-    $elapsedSec = [int]($elapsedMs / 1000)
-    # liveness signal: total bytes written to out+err. Growth => agent is alive and making progress.
-    $totLen = [long]0
-    foreach ($fp in @($OutFile, $ErrFile)) {
-      if (-not [string]::IsNullOrWhiteSpace($fp)) { $fi = Get-Item -LiteralPath $fp -ErrorAction SilentlyContinue; if ($fi) { $totLen += [long]$fi.Length } }
-    }
-    if ($totLen -gt $lastTotLen) { $lastProgressMs = $elapsedMs; $lastTotLen = $totLen }
-    $stalledMs = $elapsedMs - $lastProgressMs
-    if ($elapsedSec - $lastTelemetrySec -ge 60) {
-      $lastTelemetrySec = $elapsedSec
-      try {
-        $cpuSec = $null
-        try { $cpuSec = [math]::Round((Get-Process -Id $Proc.Id -ErrorAction Stop).TotalProcessorTime.TotalSeconds, 2) } catch {}
-        $fInfo = [ordered]@{}
-        foreach ($pair in @(,@('msgF',$MsgFile),@('errF',$ErrFile),@('outF',$OutFile))) {
-          $label = $pair[0]; $fpath = $pair[1]
-          if (-not [string]::IsNullOrWhiteSpace($fpath)) {
-            $fi = Get-Item $fpath -ErrorAction SilentlyContinue
-            $fInfo[$label] = if ($fi) { [ordered]@{ len=[long]$fi.Length; mtime=$fi.LastWriteTime.ToString('o') } } else { [ordered]@{ len=0; mtime=$null } }
-          }
-        }
-        $restartsHour = 0
-        try {
-          $rlPath = Join-Path (Get-RuntimeRoot) 'restarts.jsonl'
-          if (Test-Path -LiteralPath $rlPath) {
-            $since = (Get-Date).ToUniversalTime().AddHours(-1)
-            $enc8 = New-Object System.Text.UTF8Encoding($false)
-            $lines = [System.IO.File]::ReadAllLines($rlPath, $enc8)
-            foreach ($rl in $lines) {
-              $rlt = ([string]$rl).Trim()
-              if ([string]::IsNullOrWhiteSpace($rlt)) { continue }
-              try {
-                $rev = $rlt | ConvertFrom-Json
-                if ($rev.ts -and [datetime]::Parse($rev.ts, $null, [System.Globalization.DateTimeStyles]::RoundtripKind) -ge $since) { $restartsHour++ }
-              } catch {}
-            }
-          }
-        } catch {}
-        $telem = [ordered]@{ ts=(Get-Date).ToString('o'); elapsed_sec=$elapsedSec; cpu_sec=$cpuSec; stalled_sec=[int]($stalledMs/1000); files=$fInfo; restarts_last_hour=$restartsHour }
-        Update-State ({ param($s) $s | Add-Member -NotePropertyName agent_telemetry -NotePropertyValue $telem -Force }.GetNewClosure()) | Out-Null
-      } catch {}
-      # operator visibility: past the soft timeout but still writing -> say so, don't silently hang
-      if ($haveSignal -and $elapsedMs -ge $softMs -and $stalledMs -lt $stallGraceMs -and -not $announcedAlive) {
-        try { Add-Message -From system -Text ("⏳ Агент работает дольше обычного (${elapsedSec}с), но ЖИВ — вывод растёт. Продлеваю ожидание, не прерываю.") -Kind event | Out-Null } catch {}
-        $announcedAlive = $true
-      }
-    }
-    # Cold-start zero-output fast-fail: abort early if opted-in and agent produced nothing within grace.
-    if ($FirstOutputGraceMs -gt 0 -and $haveSignal -and $lastTotLen -le 0 -and $elapsedMs -ge $FirstOutputGraceMs) { return $false }
-    # ABORT — by stagnation, not by clock:
-    if ($elapsedMs -ge $hardMs) { return $false }                       # absolute ceiling (runaway, even if writing)
-    if ($elapsedMs -ge $softMs) {
-      if (-not $haveSignal) { return $false }                           # no liveness signal -> legacy plain-timeout
-      if ($stalledMs -ge $stallGraceMs) { return $false }               # past soft AND no output for grace = hung
-    }
-  }
-}
-
 function Get-OtherChannelsAgents { Get-OtherChannelsAgentsImpl }
 function Set-CurrentAgent {
   param([string]$Agent)
@@ -2137,17 +2043,11 @@ function Invoke-Planner {
     # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
     # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs $plannerFirstOutputGraceMs)) {
-      $waitElapsedMs = [int]$sw.ElapsedMilliseconds
-      $outLen0 = [long]0
-      $errLen0 = [long]0
-      $outInfo0 = Get-Item -LiteralPath $outF -ErrorAction SilentlyContinue
-      $errInfo0 = Get-Item -LiteralPath $errF -ErrorAction SilentlyContinue
-      if ($outInfo0) { $outLen0 = [long]$outInfo0.Length }
-      if ($errInfo0) { $errLen0 = [long]$errInfo0.Length }
+    $waitReason = $null
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs $plannerFirstOutputGraceMs -StopReason ([ref]$waitReason))) {
       Stop-AgentTree $p.Id
-      # Detect the opt-in zero-output grace kill, not a regular 900s timeout or later stagnation abort.
-      if ($waitElapsedMs -lt ($plannerFirstOutputGraceMs + 30000) -and ($outLen0 + $errLen0) -le 0) {
+      # Detect the opt-in zero-output grace kill, not a regular timeout or later stagnation abort.
+      if ([string]$waitReason -eq 'zero_output_grace') {
         $claudeZeroOutputTimeout = $true
       }
       $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }

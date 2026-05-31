@@ -13,25 +13,17 @@ function Update-State { param([scriptblock]$Action) }
 function Get-RuntimeRoot { return $env:TEMP }
 function Add-Message { param([string]$From, [string]$Text, [string]$Kind) }
 
-# --- Load Wait-AgentProcess from driver.ps1 via AST (no IEX/eval) ---
-$driverPath = Join-Path $root 'driver.ps1'
-$tokens = $null
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$parseErrors)
-if ($parseErrors -and $parseErrors.Count -gt 0) {
-    Write-Host "FAIL: driver.ps1 parse error: $($parseErrors[0].Message)"
-    exit 1
-}
-$fnAst = $ast.FindAll({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -eq 'Wait-AgentProcess'
-}, $false) | Select-Object -First 1
-if (-not $fnAst) { Write-Host 'FAIL: Wait-AgentProcess not found in driver.ps1'; exit 1 }
-. ([scriptblock]::Create($fnAst.Extent.Text))
+# --- Load the shared Wait-AgentProcess implementation directly ---
+$waitLib = Join-Path $root 'lib\agent-wait.ps1'
+if (-not (Test-Path -LiteralPath $waitLib)) { Write-Host 'FAIL: lib\agent-wait.ps1 not found'; exit 1 }
+. $waitLib
 $waitCommand = Get-Command Wait-AgentProcess -ErrorAction SilentlyContinue
 if (-not $waitCommand -or -not $waitCommand.Parameters.ContainsKey('FirstOutputGraceMs')) {
     Write-Host 'FAIL: Wait-AgentProcess lacks -FirstOutputGraceMs'
+    exit 1
+}
+if (-not $waitCommand.Parameters.ContainsKey('StopReason')) {
+    Write-Host 'FAIL: Wait-AgentProcess lacks -StopReason'
     exit 1
 }
 
@@ -64,10 +56,12 @@ $p = $null
 try {
     $p = Start-SmokePowerShell -Script 'Start-Sleep -Seconds 60'
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $result = Wait-AgentProcess -Proc $p -TimeoutMs 900000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs
+    $reason = $null
+    $result = Wait-AgentProcess -Proc $p -TimeoutMs 900000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs -StopReason ([ref]$reason)
     $elapsed = $sw.ElapsedMilliseconds
     $margin  = $GraceMs + 7000   # one 5s WaitForExit tick + 2s overhead
     Assert 'returns false (early abort)' ($result -eq $false) "result=$result"
+    Assert 'stop reason is zero_output_grace' ([string]$reason -eq 'zero_output_grace') "reason=$reason"
     Assert "elapsed < grace+7s margin"   ($elapsed -lt $margin) "elapsed=${elapsed}ms margin=${margin}ms"
     Write-Host "  (elapsed ${elapsed}ms, grace ${GraceMs}ms)"
 } finally {
@@ -84,9 +78,11 @@ try {
     $escapedOut = $outF.Replace("'", "''")
     $p = Start-SmokePowerShell -Script "Set-Content -LiteralPath '$escapedOut' -Value 'ready' -Encoding UTF8; Start-Sleep -Seconds 8"
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $result = Wait-AgentProcess -Proc $p -TimeoutMs 30000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs
+    $reason = $null
+    $result = Wait-AgentProcess -Proc $p -TimeoutMs 30000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs -StopReason ([ref]$reason)
     $elapsed = $sw.ElapsedMilliseconds
     Assert 'returns true after observed output' ($result -eq $true) "result=$result"
+    Assert 'stop reason is exited' ([string]$reason -eq 'exited') "reason=$reason"
     Assert 'output file grew' ((Get-Item -LiteralPath $outF).Length -gt 0) "length=$((Get-Item -LiteralPath $outF).Length)"
     Write-Host "  (elapsed ${elapsed}ms, grace ${GraceMs}ms)"
 } finally {
