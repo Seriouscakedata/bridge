@@ -2913,6 +2913,10 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
     } | Out-Null
     Add-Message -From system -Text ("⚠ Задача пережила " + $prevRestartCount + " рестартов без закрытия — помечаю как failed и перехожу к следующей. Текст: «" + $stuckTaskShort + "»") -Kind event | Out-Null
+    # Pick up the tail: a failed task often leaves a VALID uncommitted fix behind (the bridge
+    # crashed on orchestration, not on the code). Auto-commit it if it parses (tree clean again,
+    # autonomy unblocked) or reversibly stash it if broken — so no operator has to do it by hand.
+    try { Invoke-FailedTaskSalvage -TaskText $stuckTaskShort -BacklogId $stuckBacklogId | Out-Null } catch { try { Write-DoctorLog ("salvage call error: " + $_.Exception.Message) } catch {} }
   } else {
     Update-State {
       param($s)

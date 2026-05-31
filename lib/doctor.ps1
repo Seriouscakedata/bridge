@@ -263,3 +263,92 @@ function Test-DoctorSignal {
   try { Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue } catch {}
   return $reason
 }
+
+function Invoke-FailedTaskSalvage {
+  # Called right after a task is marked FAILED (restart-loop bail-out). The bridge often leaves a
+  # VALID working tail behind — the task died on process/orchestration, not on the code. Real case:
+  # the 2026-05-31 StopReason storm left a sound fix (smoke green) sitting UNCOMMITTED, which blocks
+  # the dirty-tree guard and risks loss on a watchdog rollback; the operator had to commit it by hand.
+  # This automates that judgment so no human is needed to pick up the tail:
+  #   parse-clean tail  -> auto-commit (tree clean again, autonomy unblocked)
+  #   parse-broken tail -> `git stash` of ONLY those files (reversible) + page the operator
+  # Gate is PARSE, not smoke: this runs at driver boot when endpoints may not be up yet, so a red
+  # smoke would be ambiguous. smoke is captured as an advisory signal. Never destroys work, and
+  # never touches runtime/state files (so it can't undo the failed-cleanup that just ran).
+  param([string]$TaskText = '', [string]$BacklogId = '')
+  $root = Get-BridgeRoot
+  $result = @{ action = 'none' }
+
+  # 1) Collect dirty CODE files (reuse the driver auto-commit runtime-exclusion set).
+  $files = @()
+  try {
+    foreach ($d in @(& git -C $root status --porcelain 2>$null)) {
+      $l = [string]$d; if ($l.Length -le 3) { continue }
+      $nm = $l.Substring(3).Trim()
+      if ($nm -match ' -> ') { $nm = ($nm -split ' -> ', 2)[1].Trim() }
+      $nm = $nm.Trim('"'); if ([string]::IsNullOrWhiteSpace($nm)) { continue }
+      # Exclude ALL runtime/state churn (whole dirs, so a wholly-untracked dir like 'channels/'
+      # is caught too). features/state.json is excluded but features/registry.json (code data) is not.
+      if ($nm -match '^(decisions/.*|turns\.jsonl|channels/.*|features/state\.json|control/.*|audit/.*|logs/.*|radar/.*|jobs/.*|sandbox/.*|replay/.*|reports/.*|memory/.*)$') { continue }
+      $files += $nm
+    }
+  } catch {}
+  if ($files.Count -eq 0) { return $result }   # clean, or runtime-only churn — nothing to salvage
+
+  $taskShort = ([string]$TaskText -replace '\s+', ' ').Trim()
+  if ($taskShort.Length -gt 100) { $taskShort = $taskShort.Substring(0,100) + '…' }
+
+  # 2) GATE: every changed .ps1 must parse (boot-safe, deterministic).
+  $parseBad = @()
+  foreach ($f in $files) {
+    if ($f -notmatch '\.ps1$') { continue }
+    $full = Join-Path $root $f
+    if (-not (Test-Path -LiteralPath $full)) { continue }   # deleted file is fine
+    $errs = $null; $toks = $null
+    try { [void][System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$toks, [ref]$errs) } catch {}
+    if ($errs -and $errs.Count -gt 0) { $parseBad += ($f + ' (' + $errs.Count + ' err)') }
+  }
+
+  # 2b) Advisory smoke (signal only — not a gate).
+  $smokeOk = $true; $smokeTail = '(skipped)'
+  if ($parseBad.Count -eq 0) {
+    try {
+      $smokeScript = Join-Path $root 'smoke.ps1'
+      if (Test-Path $smokeScript) {
+        $out = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $smokeScript 2>&1
+        $smokeOk = ($LASTEXITCODE -eq 0)
+        $smokeTail = (@($out) | Select-Object -Last 1) -join ' '
+      }
+    } catch { $smokeOk = $false; $smokeTail = $_.Exception.Message }
+  }
+
+  if ($parseBad.Count -eq 0) {
+    # 3a) VALID tail -> commit it.
+    try {
+      $msg = '[salvage] спасён хвост failed-задачи: ' + $taskShort + $(if ($smokeOk) { ' (parse+smoke OK)' } else { ' (parse OK; smoke red — see note)' })
+      if ($msg.Length -gt 180) { $msg = $msg.Substring(0,180) }
+      & git -C $root add -- @($files) 2>$null | Out-Null
+      & git -C $root commit -m $msg 2>$null | Out-Null
+      $head = (& git -C $root rev-parse --short HEAD 2>$null); if ($head) { $head = ([string]$head).Trim() }
+      try { Invoke-AutoPush -Root $root } catch {}
+      try { Write-DoctorLog ("salvage COMMIT " + $head + " (" + $files.Count + " files, smokeOk=" + $smokeOk + "): " + $taskShort) } catch {}
+      $warn = if ($smokeOk) { '' } else { (' ⚠ smoke красный (' + $smokeTail + ') — код синтаксически валиден, но проверь; сентинел подстрахует.') }
+      try { Add-Message -From system -Text ('💾 Спасён хвост failed-задачи — авто-коммит ' + $head + ' (' + $files.Count + ' файлов, parse OK). Дерево чистое, автономия разблокирована.' + $warn) -Kind event | Out-Null } catch {}
+      if (-not $smokeOk) { try { Send-PushEvent -Kind need_you -Text ('salvage committed but smoke red: ' + $smokeTail) } catch {} }
+      $result = @{ action='committed'; head=$head; files=$files.Count; smokeOk=$smokeOk }
+    } catch { try { Write-DoctorLog ('salvage commit error: ' + $_.Exception.Message) } catch {} }
+  } else {
+    # 3b) BROKEN tail -> reversibly stash ONLY those files; page operator.
+    $why = 'parse: ' + (($parseBad | Select-Object -First 3) -join ', ')
+    try {
+      $stashMsg = 'salvage-invalid: ' + $taskShort + ' | ' + $why
+      if ($stashMsg.Length -gt 160) { $stashMsg = $stashMsg.Substring(0,160) }
+      & git -C $root stash push -u -m $stashMsg -- @($files) 2>$null | Out-Null
+      try { Write-DoctorLog ('salvage STASH invalid tail (' + $why + '): ' + $taskShort) } catch {}
+      try { Add-Message -From system -Text ('📦 Хвост failed-задачи не парсится (' + $why + ') — спрятал эти файлы в git stash (обратимо: `git stash pop`), дерево очищено. Нужен ты для разбора.') -Kind event | Out-Null } catch {}
+      try { Send-PushEvent -Kind need_you -Text ('salvage: invalid tail stashed — ' + $why) } catch {}
+      $result = @{ action='stashed'; why=$why }
+    } catch { try { Write-DoctorLog ('salvage stash error: ' + $_.Exception.Message) } catch {} }
+  }
+  return $result
+}
