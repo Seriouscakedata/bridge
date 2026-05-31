@@ -133,17 +133,6 @@ function Close-ReplayForStateTask {
   }
 }
 
-function Test-TaskControlMarker {
-  param([string]$TaskText, [string]$Marker)
-  if ([string]::IsNullOrWhiteSpace($TaskText) -or [string]::IsNullOrWhiteSpace($Marker)) { return $false }
-  $markerRegex = '(?m)^\s*\[\[' + [regex]::Escape($Marker.Trim()) + '\]\]\s*$'
-  foreach ($line in ([string]$TaskText -split '\r?\n')) {
-    if ([string]::IsNullOrWhiteSpace($line)) { continue }
-    return [bool]([regex]::IsMatch($line, $markerRegex))
-  }
-  return $false
-}
-
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
 
@@ -184,21 +173,6 @@ function Get-PlannerModel {
   }
 
   return $triageModel
-}
-
-function Get-FastLaneSettings {
-  $out = @{ autoDetect = $false; minChars = 100; embedBatchEnabled = $true }
-  try {
-    $cfgF = Get-BridgeConfig
-    if ($cfgF -and ($cfgF.PSObject.Properties.Name -contains 'fastLane') -and $cfgF.fastLane) {
-      $fl = $cfgF.fastLane
-      if (($fl.PSObject.Properties.Name -contains 'autoDetect') -and $null -ne $fl.autoDetect) { $out.autoDetect = [bool]$fl.autoDetect }
-      if (($fl.PSObject.Properties.Name -contains 'minChars') -and $fl.minChars) { $out.minChars = [int]$fl.minChars }
-      if (($fl.PSObject.Properties.Name -contains 'embedBatchEnabled') -and $null -ne $fl.embedBatchEnabled) { $out.embedBatchEnabled = [bool]$fl.embedBatchEnabled }
-    }
-  } catch {}
-  if ([int]$out.minChars -le 0) { $out.minChars = 100 }
-  return $out
 }
 
 function Get-ChunkingSettings {
@@ -445,23 +419,6 @@ function Test-CoderClaims {
   $result.violations = @($violations.ToArray())
   $result.checks = @($checks.ToArray())
   return $result
-}
-
-function Test-IsTrivialTask {
-  param([string]$TaskText, [int]$MinChars = 0)
-  $t = ([string]$TaskText -replace '\[\[FAST\]\]', '').Trim()
-  if ($MinChars -le 0) {
-    try { $MinChars = [int](Get-FastLaneSettings).minChars } catch { $MinChars = 100 }
-  }
-  if ($MinChars -le 0) { $MinChars = 100 }
-  if ($t.Length -ge $MinChars) { return $false }
-  if ($t -match '\[\[REASONING:high\]\]') { return $false }
-  if ($t -match '(?m)^#+\s') { return $false }
-  if ($t -match '(?m)^\d+\.\s') { return $false }
-  if ($t -match '```') { return $false }
-  if ($t -match '(?i)(архитектур|разбер|исследу|спроектир|design|refactor|audit)') { return $false }
-  if (Test-IsUnsafeFastLaneTask -TaskText $t) { return $false }
-  return [bool](Test-IsSafeOsFastLaneTask -TaskText $t)
 }
 
 function Set-FastLaneFlags {
