@@ -50,3 +50,4 @@ logs/heartbeat.jsonl
 channels/*/snapshots/
 channels/*/checkpoints/
 channels/*/qa-results.jsonl
+channels/*/workpacks/
