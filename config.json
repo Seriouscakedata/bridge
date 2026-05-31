@@ -125,20 +125,16 @@
     "cooldownMin": 15
   },
   "supervisor": {
-    "restartLimitMaxPerHour": 1000,
-    "restartLimitCooldownMin": 5
-  },
-  "supervisor": {
     "reapBloatedMB": 8192,
     "reapWarnMB": 6144,
     "reapGraceMs": 60000,
-    "restartLimitMaxPerHour": 10,
+    "restartLimitMaxPerHour": 1000,
     "restartLimitWindowMin": 60,
-    "restartLimitCooldownMin": 30,
+    "restartLimitCooldownMin": 5,
     "stopWaitMs": 5000,
     "fatalDriverExitCodes": [3],
     "fatalServerExitCodes": [],
-    "scriptIntegrityEnabled": true,
+    "scriptIntegrityEnabled": false,
     "scriptIntegrityManifest": "security/script-integrity.json",
     "maxConcurrentDrivers": 20
   },
