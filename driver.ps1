@@ -1969,7 +1969,7 @@ function Wait-AgentProcess {
   # Returns $true if the process exited within the timeout.
   # MsgFile/ErrFile/OutFile: optional temp-file paths; used for 60s telemetry ticks
   # (stagnation observability — no hard abort, data only).
-  param($Proc, [int]$TimeoutMs, [string]$MsgFile='', [string]$ErrFile='', [string]$OutFile='')
+  param($Proc, [int]$TimeoutMs, [string]$MsgFile='', [string]$ErrFile='', [string]$OutFile='', [int]$FirstOutputGraceMs=0)
   # 2026-05-29: ADAPTIVE timeout — kill by STAGNATION, not by the wall clock. The old code aborted at a
   # hard $TimeoutMs even while the agent was actively writing (thinking) -> false coder_timeout -> Doctor
   # -> lost work + restart-loop (operator saw this live). Now: while the agent's output (out+err bytes)
@@ -2047,6 +2047,8 @@ function Wait-AgentProcess {
         $announcedAlive = $true
       }
     }
+    # Cold-start zero-output fast-fail: abort early if opted-in and agent produced nothing within grace.
+    if ($FirstOutputGraceMs -gt 0 -and $haveSignal -and $lastTotLen -le 0 -and $elapsedMs -ge $FirstOutputGraceMs) { return $false }
     # ABORT — by stagnation, not by clock:
     if ($elapsedMs -ge $hardMs) { return $false }                       # absolute ceiling (runaway, even if writing)
     if ($elapsedMs -ge $softMs) {
@@ -2109,6 +2111,7 @@ function Invoke-Planner {
   $reply = ''
   $claudeTimedOut = $false
   $claudeSilentExit = $false
+  $claudeZeroOutputTimeout = $false
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $launch = [pscustomobject]@{
@@ -2132,11 +2135,18 @@ function Invoke-Planner {
     # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
     # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF)) {
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs 150000)) {
       Stop-AgentTree $p.Id
+      # Detect zero-output early kill (grace 150s) vs regular timeout (900s).
+      if ($sw.ElapsedMilliseconds -lt 850000) {
+        $so0 = if (Test-Path -LiteralPath $outF) { Get-Content $outF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { '' }
+        $se0 = if (Test-Path -LiteralPath $errF) { Get-Content $errF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { '' }
+        if ([string]::IsNullOrWhiteSpace($so0) -and [string]::IsNullOrWhiteSpace($se0)) { $claudeZeroOutputTimeout = $true }
+      }
       $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
+      $replayErrorType = if ($claudeZeroOutputTimeout) { 'planner_zero_output_timeout' } else { 'planner_timeout' }
       Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response '' `
-        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'planner_timeout' -Provider 'claude'
+        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType $replayErrorType -Provider 'claude'
       # 2026-05-28: NO longer early-return on timeout — fall through to Codex
       # then Gemini-3-flash fallback ladder below. The old behavior bubbled up
       # 'planner_timeout' which triggered Doctor, which then ran ANOTHER hung
@@ -2162,7 +2172,7 @@ function Invoke-Planner {
         $soTail = if ($so.Length -gt 2000) { '...(truncated, last 2000)' + $so.Substring($so.Length - 2000) } else { $so }
         Add-Message -From system -Text ("⚠ [Claude stdout tail]:`n" + $soTail) -Kind event | Out-Null
       }
-      if ([string]::IsNullOrWhiteSpace($se) -and [string]::IsNullOrWhiteSpace($so)) {
+      if ([string]::IsNullOrWhiteSpace($se) -and [string]::IsNullOrWhiteSpace($so) -and (-not $claudeZeroOutputTimeout)) {
         Add-Message -From system -Text "⚠ [Claude silent exit]: stdout+stderr пусты (планировщик завис без вывода)" -Kind event | Out-Null
         $claudeSilentExit = $true
       }
@@ -2179,10 +2189,10 @@ function Invoke-Planner {
   #   2. gemini-3-flash via Invoke-LLM — text-only reserve, ~30-60s.
   # Both alternates are skipped when -NoFallback is set (e.g. when planner
   # is itself being called as a coder-fallback to avoid recursion).
-  $claudeUsable = (-not [string]::IsNullOrWhiteSpace($reply)) -and (-not $claudeTimedOut) -and (-not $claudeSilentExit)
+  $claudeUsable = (-not [string]::IsNullOrWhiteSpace($reply)) -and (-not $claudeTimedOut) -and (-not $claudeSilentExit) -and (-not $claudeZeroOutputTimeout)
   if ((-not $claudeUsable) -and (-not $NoFallback)) {
     # ---- Ladder step 1: Codex as planner ----
-    $reason = if ($claudeTimedOut) { 'timeout (900с)' } elseif ($claudeSilentExit) { 'silent exit' } else { 'пустой ответ' }
+    $reason = if ($claudeZeroOutputTimeout) { 'zero-output timeout (150с)' } elseif ($claudeTimedOut) { 'timeout (900с)' } elseif ($claudeSilentExit) { 'silent exit' } else { 'пустой ответ' }
     Add-Message -From system -Text ("🔀 Fallback ladder 1/2: Claude — " + $reason + " → Codex берёт planner-турн.") -Kind event | Out-Null
     $fallbackPrefix = @"
 ⚠ FALLBACK MODE: Ты сейчас замещаешь Claude-планировщика (он завис/silent-exit). Твоя роль — ПЛАНИРОВЩИК, не кодер. Разбери задачу, при необходимости прочитай файлы для контекста, дай инструкции/решение, заверши маркером STATUS (DONE / CHAT / CONTINUE / DISCUSS / RESEARCH). НЕ редактируй файлы и не запускай git-команд. Будь короче обычного — это резервный ход.
@@ -2242,7 +2252,7 @@ $Prompt
     }
 
     # All three failed — return the original Claude failure for Doctor escalation.
-    $finalError = if ($claudeTimedOut) { 'planner_timeout' } elseif ($claudeSilentExit) { 'planner_silent_exit' } else { 'planner_empty' }
+    $finalError = if ($claudeZeroOutputTimeout) { 'planner_zero_output_timeout' } elseif ($claudeTimedOut) { 'planner_timeout' } elseif ($claudeSilentExit) { 'planner_silent_exit' } else { 'planner_empty' }
     return [pscustomobject]@{
       text = ''
       status = 'timeout'
