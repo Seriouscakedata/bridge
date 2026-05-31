@@ -81,6 +81,7 @@ try {
 # Phase 3 (full): supervisor keeps ONE driver per non-archived channel. Each driver is
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
 $drivers = @{}
+$script:bloatedSince = @{}
 
 function Get-TrackedBridgeProcesses {
   $tracked = @()
@@ -147,33 +148,96 @@ function Reap-Bloated {
   # never recovers and strangles the whole machine. The loop below then restarts a fresh one.
   # The supervisor is ELEVATED, so it CAN kill these (a non-elevated watchdog cannot). Match by
   # PRIVATE memory (zombies had small working sets but 70GB private). /F only (no /T) to spare
-  # any codex children. Cap 8GB: no healthy bridge powershell ever approaches this.
+  # any codex children. Defaults: cap 8GB, warn 6GB; no healthy bridge powershell approaches this.
   $reaped = $false
   try {
+    $reapCapMb = 8192
+    $reapWarnMb = 6144
+    $reapGraceMs = 60000
+    try {
+      $reapCfg = Get-BridgeConfig
+      if ($reapCfg -and $reapCfg.supervisor) {
+        if ($null -ne $reapCfg.supervisor.reapBloatedMB) { $reapCapMb = [int]$reapCfg.supervisor.reapBloatedMB }
+        if ($null -ne $reapCfg.supervisor.reapWarnMB) { $reapWarnMb = [int]$reapCfg.supervisor.reapWarnMB }
+        if ($null -ne $reapCfg.supervisor.reapGraceMs) { $reapGraceMs = [int]$reapCfg.supervisor.reapGraceMs }
+      }
+    } catch {
+      Log ("WARN: Reap-Bloated config read failed, using defaults: " + $_.Exception.Message)
+    }
+    if ($reapCapMb -le 0) { $reapCapMb = 8192 }
+    if ($reapWarnMb -le 0) { $reapWarnMb = 6144 }
+    if ($reapGraceMs -lt 0) { $reapGraceMs = 60000 }
+    $now = Get-Date
     foreach ($proc in (Get-TrackedBridgeProcesses)) {
       if (Test-TrackedBridgeProcess -Process $proc) {
         $priv = 0; try { $priv = [int64](Get-Process -Id $proc.Id -ErrorAction SilentlyContinue).PrivateMemorySize64 } catch {}
-        if ($priv -gt 8GB) {
-          Log ("REAP: bloated tracked PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > 8GB -> kill (mem-leak guard)")
-          $null = Stop-TrackedBridgeProcess -Process $proc -Reason 'REAP'
-          $reaped = $true
+        if ($priv -gt ($reapCapMb * 1MB)) {
+          if (-not $script:bloatedSince.ContainsKey($proc.Id)) {
+            $script:bloatedSince[$proc.Id] = $now
+            Log ("WARN: bloated PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > cap threshold " + $reapCapMb + "MB; grace started")
+          }
+          $elapsedMs = ($now - $script:bloatedSince[$proc.Id]).TotalMilliseconds
+          if ($elapsedMs -ge $reapGraceMs) {
+            Log ("REAP: bloated tracked PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > " + $reapCapMb + "MB for " + [int]$elapsedMs + "ms -> kill (mem-leak guard)")
+            $null = Stop-TrackedBridgeProcess -Process $proc -Reason 'REAP'
+            $script:bloatedSince.Remove($proc.Id)
+            $reaped = $true
+          }
+        } else {
+          if ($script:bloatedSince.ContainsKey($proc.Id)) { $script:bloatedSince.Remove($proc.Id) }
+          if ($priv -gt ($reapWarnMb * 1MB)) {
+            Log ("WARN: bloated PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > warn threshold")
+          }
         }
       }
     }
   } catch { Log ("reap error: " + $_.Exception.Message) }
   return $reaped
 }
+function Test-RedirectLogWritable {
+  param([string]$Path, [string]$Label)
+  $target = $Path
+  try {
+    $fs = [System.IO.File]::Open($target, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    if ($fs) { $fs.Dispose() }
+  } catch {
+    $fallback = [System.IO.Path]::GetTempFileName()
+    Log ("WARN: cannot write " + $Label + " log " + $target + ", fallback to " + $fallback + ": " + $_.Exception.Message)
+    $target = $fallback
+  }
+  return $target
+}
 function Start-Srv {
-  Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'server.ps1') `
-    -NoNewWindow -PassThru -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
+  $out = Test-RedirectLogWritable -Path $srvOut -Label 'server stdout'
+  $err = Test-RedirectLogWritable -Path $srvErr -Label 'server stderr'
+  try {
+    $proc = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'server.ps1') `
+      -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err -ErrorAction Stop
+    if ($null -eq $proc) { Log "WARN: Start-Srv returned null process" }
+    elseif ($proc.HasExited) { Log ("WARN: Start-Srv process exited immediately with code " + $proc.ExitCode) }
+    return $proc
+  } catch {
+    Log ("START-FAIL: " + $_.Exception.Message)
+    return $null
+  }
 }
 function Start-Drv {
   # Spawn a driver pinned to a specific channel. Per-channel log files keep crashes attributable.
   param([string]$Slug)
   $drvOut = Join-Path $ctl ("driver." + $Slug + ".out.log")
   $drvErr = Join-Path $ctl ("driver." + $Slug + ".err.log")
-  Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'driver.ps1'),'-Channel',$Slug `
-    -NoNewWindow -PassThru -RedirectStandardOutput $drvOut -RedirectStandardError $drvErr
+  $out = Test-RedirectLogWritable -Path $drvOut -Label ("driver[" + $Slug + "] stdout")
+  $err = Test-RedirectLogWritable -Path $drvErr -Label ("driver[" + $Slug + "] stderr")
+  try {
+    $proc = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'driver.ps1'),'-Channel',$Slug `
+      -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err -ErrorAction Stop
+    if ($null -eq $proc) { Log ("WARN: Start-Drv[" + $Slug + "] returned null process") }
+    elseif ($proc.HasExited) { Log ("WARN: Start-Drv[" + $Slug + "] process exited immediately with code " + $proc.ExitCode) }
+    return $proc
+  } catch {
+    Log ("START-FAIL: " + $_.Exception.Message)
+    return $null
+  }
 }
 function Get-ActiveSlugs {
   # Non-archived channel slugs, in stable order.
