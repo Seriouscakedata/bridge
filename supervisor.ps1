@@ -6,6 +6,7 @@
 . (Join-Path $PSScriptRoot 'lib\circuit-breaker.ps1')
 . (Join-Path $PSScriptRoot 'lib\supervisor-restart-limit.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
+. (Join-Path $PSScriptRoot 'lib\script-integrity.ps1')
 $ErrorActionPreference = 'Continue'
 $enc = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = $enc
 try { [Console]::OutputEncoding = $enc } catch {}
@@ -83,6 +84,7 @@ try {
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
 $drivers = @{}
 $script:bloatedSince = @{}
+$script:integrityFailureLogged = @{}
 $script:stopWaitMs = 5000
 
 function Get-SupervisorStopWaitMs {
@@ -460,6 +462,33 @@ function Invoke-DriverExitHandling {
   return $false
 }
 function Start-Srv {
+  $integrityEnabled = [bool]($cfg.supervisor.scriptIntegrityEnabled)
+  $manifestRelPath  = if ($cfg.supervisor.scriptIntegrityManifest) { [string]$cfg.supervisor.scriptIntegrityManifest } else { 'security/script-integrity.json' }
+  if ($integrityEnabled) {
+    $guardResult = Invoke-BridgeIntegrityGuard -Root $root -RelativePath 'server.ps1' -ManifestRelativePath $manifestRelPath -Action {
+      $out2 = Test-RedirectLogWritable -Path $srvOut -Label 'server stdout'
+      $err2 = Test-RedirectLogWritable -Path $srvErr -Label 'server stderr'
+      try {
+        $proc = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'server.ps1') `
+          -NoNewWindow -PassThru -RedirectStandardOutput $out2 -RedirectStandardError $err2 -ErrorAction Stop
+        if ($null -eq $proc) { Log "WARN: Start-Srv returned null process" }
+        elseif ($proc.HasExited) { Log ("WARN: Start-Srv process exited immediately with code " + $proc.ExitCode) }
+        return $proc
+      } catch {
+        Log ("START-FAIL: " + $_.Exception.Message)
+        return $null
+      }
+    }
+    if (-not $guardResult.Ok) {
+      $failKey = 'server.ps1:' + $guardResult.Reason
+      if (-not $script:integrityFailureLogged[$failKey]) {
+        Log ("ERROR: integrity check failed for server.ps1 reason=" + $guardResult.Reason + " expected=" + $guardResult.Expected + " actual=" + $guardResult.Actual)
+        $script:integrityFailureLogged[$failKey] = $true
+      }
+      return $null
+    }
+    return $guardResult.ActionResult
+  }
   $out = Test-RedirectLogWritable -Path $srvOut -Label 'server stdout'
   $err = Test-RedirectLogWritable -Path $srvErr -Label 'server stderr'
   try {
@@ -474,10 +503,36 @@ function Start-Srv {
   }
 }
 function Start-Drv {
-  # Spawn a driver pinned to a specific channel. Per-channel log files keep crashes attributable.
   param([string]$Slug)
+  $integrityEnabled = [bool]($cfg.supervisor.scriptIntegrityEnabled)
+  $manifestRelPath  = if ($cfg.supervisor.scriptIntegrityManifest) { [string]$cfg.supervisor.scriptIntegrityManifest } else { 'security/script-integrity.json' }
   $drvOut = Join-Path $ctl ("driver." + $Slug + ".out.log")
   $drvErr = Join-Path $ctl ("driver." + $Slug + ".err.log")
+  if ($integrityEnabled) {
+    $guardResult = Invoke-BridgeIntegrityGuard -Root $root -RelativePath 'driver.ps1' -ManifestRelativePath $manifestRelPath -Action {
+      $out2 = Test-RedirectLogWritable -Path $drvOut -Label ("driver[" + $Slug + "] stdout")
+      $err2 = Test-RedirectLogWritable -Path $drvErr -Label ("driver[" + $Slug + "] stderr")
+      try {
+        $proc = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'driver.ps1'),'-Channel',$Slug `
+          -NoNewWindow -PassThru -RedirectStandardOutput $out2 -RedirectStandardError $err2 -ErrorAction Stop
+        if ($null -eq $proc) { Log ("WARN: Start-Drv[" + $Slug + "] returned null process") }
+        elseif ($proc.HasExited) { Log ("WARN: Start-Drv[" + $Slug + "] process exited immediately with code " + $proc.ExitCode) }
+        return $proc
+      } catch {
+        Log ("START-FAIL: " + $_.Exception.Message)
+        return $null
+      }
+    }
+    if (-not $guardResult.Ok) {
+      $failKey = 'driver.ps1:' + $guardResult.Reason
+      if (-not $script:integrityFailureLogged[$failKey]) {
+        Log ("ERROR: integrity check failed for driver.ps1 reason=" + $guardResult.Reason + " expected=" + $guardResult.Expected + " actual=" + $guardResult.Actual)
+        $script:integrityFailureLogged[$failKey] = $true
+      }
+      return $null
+    }
+    return $guardResult.ActionResult
+  }
   $out = Test-RedirectLogWritable -Path $drvOut -Label ("driver[" + $Slug + "] stdout")
   $err = Test-RedirectLogWritable -Path $drvErr -Label ("driver[" + $Slug + "] stderr")
   try {

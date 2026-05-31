@@ -133,7 +133,9 @@
     "restartLimitCooldownMin": 30,
     "stopWaitMs": 5000,
     "fatalDriverExitCodes": [3],
-    "fatalServerExitCodes": []
+    "fatalServerExitCodes": [],
+    "scriptIntegrityEnabled": true,
+    "scriptIntegrityManifest": "security/script-integrity.json"
   },
   "auditor": {
     "enabled": true,
