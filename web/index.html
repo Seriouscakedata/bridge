@@ -3212,8 +3212,12 @@ async function pollAudit(){
   const badge = document.getElementById('auditBadge');
   const statusEl = document.getElementById('auditStatus');
   if(!badge || !statusEl) return;
+  const myEpoch = channelEpoch;
+  const ch = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
   try{
-    const r = await fetch('/api/audit/latest', {cache:'no-store'});
+    const url = '/api/audit/latest' + (ch ? ('?channel=' + encodeURIComponent(ch)) : '');
+    const r = await fetch(url, {cache:'no-store'});
+    if(myEpoch !== channelEpoch) return;
     if(r.status === 404){
       statusEl.textContent = 'no audit';
       badge.style.background = '';
@@ -3223,6 +3227,7 @@ async function pollAudit(){
     }
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
+    if(myEpoch !== channelEpoch) return;
     if(d.total_critical > 0){
       badge.style.background = '#f44336';
       badge.style.borderColor = 'rgba(244,67,54,.6)';

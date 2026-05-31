@@ -111,6 +111,33 @@ function Get-ActiveScopeDto {
     }
   }
 }
+function Get-AuditApiScope {
+  param($ctx)
+  $slug = Get-QueryParamUtf8 $ctx 'channel'
+  if ([string]::IsNullOrWhiteSpace($slug) -or $slug -eq '__active__') {
+    try { $slug = Get-EffectiveChannel } catch { $slug = 'main' }
+  }
+  try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $slug = Normalize-ChannelSlug $slug } } catch {}
+  if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'main' }
+  $dir = $null
+  if ($slug -eq 'main') {
+    $dir = Join-Path $root 'audit'
+  } else {
+    try {
+      if (Get-Command Get-ChannelDir -ErrorAction SilentlyContinue) {
+        $dir = Join-Path (Get-ChannelDir -Slug $slug) 'audit'
+      }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+      $dir = Join-Path (Join-Path (Join-Path $root 'channels') $slug) 'audit'
+    }
+  }
+  [pscustomobject]@{
+    channel = $slug
+    kind    = if ($slug -eq 'main') { 'bridge' } else { 'project' }
+    dir     = $dir
+  }
+}
 function Quote-RunbookProcessArgument {
   param([AllowNull()][string]$Value)
   if ($null -eq $Value) { $Value = '' }
@@ -1130,7 +1157,8 @@ try {
         Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/audit/latest') {
-        $auditDir = Join-Path $root 'audit'
+        $auditScope = Get-AuditApiScope $ctx
+        $auditDir = [string]$auditScope.dir
         if (-not (Test-Path -LiteralPath $auditDir -PathType Container)) {
           Send-Text $ctx '{"error":"no audit available"}' 'application/json; charset=utf-8' 404
         } else {
@@ -1166,6 +1194,10 @@ try {
                 total_critical = ($secCritical + $fncCritical)
                 report_md = $reportMd
                 generated_at = [string]$auditObj.generated_at
+                channel = [string]$auditScope.channel
+                audit_kind = if ($auditObj.PSObject.Properties.Name -contains 'audit_kind') { [string]$auditObj.audit_kind } else { [string]$auditScope.kind }
+                target_root = if ($auditObj.PSObject.Properties.Name -contains 'target_root') { [string]$auditObj.target_root } else { '' }
+                report_root = $auditDir
               }
               Send-Text $ctx ($apiObj | ConvertTo-Json -Compress -Depth 8) 'application/json; charset=utf-8'
             } catch {
@@ -1176,7 +1208,8 @@ try {
         }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/audit/list') {
-        $auditDir = Join-Path $root 'audit'
+        $auditScope = Get-AuditApiScope $ctx
+        $auditDir = [string]$auditScope.dir
         $dates = New-Object 'System.Collections.Generic.List[string]'
         if (Test-Path -LiteralPath $auditDir -PathType Container) {
           $auditFiles = @(Get-ChildItem -LiteralPath $auditDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
@@ -1186,7 +1219,9 @@ try {
           }
         }
         $datesJson = '[' + (($dates.ToArray() | ForEach-Object { (("" + $_) | ConvertTo-Json -Depth 10 -Compress) }) -join ',') + ']'
-        Send-Text $ctx ('{"audits":' + $datesJson + '}') 'application/json; charset=utf-8'
+        $chJson = ([string]$auditScope.channel) | ConvertTo-Json -Depth 10 -Compress
+        $kindJson = ([string]$auditScope.kind) | ConvertTo-Json -Depth 10 -Compress
+        Send-Text $ctx ('{"audits":' + $datesJson + ',"channel":' + $chJson + ',"audit_kind":' + $kindJson + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/memory/count') {
         $total = @(Get-AllMemories).Count

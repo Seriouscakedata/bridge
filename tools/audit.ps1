@@ -22,19 +22,98 @@ function Get-AuditDir {
   Join-Path $BridgePath 'audit'
 }
 
+function Normalize-AuditChannelSlug {
+  param([string]$Channel)
+  if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) {
+    try { return (Normalize-ChannelSlug $Channel) } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { return 'main' }
+  $slug = ([string]$Channel).Trim().ToLowerInvariant()
+  $slug = ($slug -replace '\s+', '-' -replace '[^a-z0-9_-]+', '-').Trim('-','_')
+  if ([string]::IsNullOrWhiteSpace($slug)) { return 'main' }
+  return $slug
+}
+
+function Test-AuditSamePath {
+  param([string]$Left, [string]$Right)
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+  try {
+    $trim = [char[]]@('\','/')
+    $a = [System.IO.Path]::GetFullPath($Left).TrimEnd($trim)
+    $b = [System.IO.Path]::GetFullPath($Right).TrimEnd($trim)
+    return [string]::Equals($a, $b, [System.StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return ([string]::Equals($Left.TrimEnd('\','/'), $Right.TrimEnd('\','/'), [System.StringComparison]::OrdinalIgnoreCase))
+  }
+}
+
+function Get-AuditChannelDir {
+  param([string]$BridgePath, [string]$Channel)
+  $slug = Normalize-AuditChannelSlug -Channel $Channel
+  if (Get-Command Get-ChannelDir -ErrorAction SilentlyContinue) {
+    try { return (Get-ChannelDir -Slug $slug) } catch {}
+  }
+  return (Join-Path (Join-Path $BridgePath 'channels') $slug)
+}
+
+function Get-AuditReportDir {
+  param(
+    [string]$BridgePath,
+    [string]$Channel = 'main',
+    [string]$Kind = 'bridge'
+  )
+  $slug = Normalize-AuditChannelSlug -Channel $Channel
+  $kindNorm = ([string]$Kind).ToLowerInvariant()
+  if ($slug -eq 'main' -or $kindNorm -eq 'bridge') {
+    return (Get-AuditDir -BridgePath $BridgePath)
+  }
+  return (Join-Path (Get-AuditChannelDir -BridgePath $BridgePath -Channel $slug) 'audit')
+}
+
+function New-AuditContext {
+  param(
+    [string]$BridgePath,
+    [string]$Channel = 'main',
+    [string]$ProjectRoot = $null
+  )
+  $bridgeRoot = Get-AuditBridgeRoot -Hint $BridgePath
+  $slug = Normalize-AuditChannelSlug -Channel $Channel
+  $target = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    if ($slug -eq 'main') { $bridgeRoot } else { '' }
+  } else {
+    [string]$ProjectRoot
+  }
+  try { $target = [System.IO.Path]::GetFullPath($target) } catch {}
+  $isBridge = ($slug -eq 'main')
+  $kind = if ($isBridge) { 'bridge' } else { 'project' }
+  $reportRoot = Get-AuditReportDir -BridgePath $bridgeRoot -Channel $slug -Kind $kind
+  $backlogChannel = if ($kind -eq 'bridge') { 'main' } else { $slug }
+  [pscustomobject][ordered]@{
+    kind            = $kind
+    channel         = $slug
+    bridge_root     = $bridgeRoot
+    target_root     = $target
+    report_root     = $reportRoot
+    backlog_channel = $backlogChannel
+    profile         = if ($kind -eq 'bridge') { 'bridge-self' } else { 'external-project' }
+  }
+}
+
 function Get-AuditLockPath {
   param([string]$BridgePath)
   Join-Path (Get-AuditDir -BridgePath $BridgePath) '.audit.lock'
 }
 
 function Get-AuditLastMarker {
-  param([string]$BridgePath)
-  Join-Path (Get-AuditDir -BridgePath $BridgePath) 'audit.last'
+  param([string]$BridgePath, [string]$AuditDir = $null)
+  $dir = if ([string]::IsNullOrWhiteSpace($AuditDir)) { Get-AuditDir -BridgePath $BridgePath } else { $AuditDir }
+  Join-Path $dir 'audit.last'
 }
 
 function Get-FindingsLedgerPath {
-  param([string]$BridgePath)
-  Join-Path (Get-AuditDir -BridgePath $BridgePath) 'findings-ledger.jsonl'
+  param([string]$BridgePath, [string]$AuditDir = $null)
+  $dir = if ([string]::IsNullOrWhiteSpace($AuditDir)) { Get-AuditDir -BridgePath $BridgePath } else { $AuditDir }
+  Join-Path $dir 'findings-ledger.jsonl'
 }
 
 function Get-AuditMainBacklogPath {
@@ -43,6 +122,25 @@ function Get-AuditMainBacklogPath {
   $channelDir = Split-Path -Parent $channelPath
   if (Test-Path -LiteralPath $channelDir -PathType Container) { return $channelPath }
   return (Join-Path $BridgePath 'backlog.jsonl')
+}
+
+function Get-AuditBacklogPath {
+  param([string]$BridgePath, [string]$Channel = 'main')
+  $slug = Normalize-AuditChannelSlug -Channel $Channel
+  if ($slug -eq 'main') { return (Get-AuditMainBacklogPath -BridgePath $BridgePath) }
+  if (Get-Command Get-ChannelBacklogPath -ErrorAction SilentlyContinue) {
+    try { return (Get-ChannelBacklogPath -Slug $slug) } catch {}
+  }
+  return (Join-Path (Get-AuditChannelDir -BridgePath $BridgePath -Channel $slug) 'backlog.jsonl')
+}
+
+function Format-AuditNativeArg {
+  param([AllowNull()][string]$Value)
+  if ($null -eq $Value) { return '""' }
+  $s = [string]$Value
+  if ($s.Length -eq 0) { return '""' }
+  if ($s -notmatch '[\s"]') { return $s }
+  return '"' + ($s -replace '"','\"') + '"'
 }
 
 function Invoke-AuditBridgeLocked {
@@ -124,7 +222,13 @@ function Remove-AuditLock {
 function Invoke-AuditSubcomponent {
   # Dot-sources an auditor script (lives in tools/) and invokes its entry function.
   # Returns @{ findings = @(...); runtime_sec = N; error = $null|string }.
-  param([string]$BridgePath, [string]$ScriptName, [string]$EntryFunction)
+  param(
+    [string]$BridgePath,
+    [string]$ScriptName,
+    [string]$EntryFunction,
+    [string]$TargetRoot = $null,
+    [string]$AuditKind = 'bridge'
+  )
   $result = @{ findings = @(); runtime_sec = 0.0; error = $null }
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
@@ -140,7 +244,7 @@ function Invoke-AuditSubcomponent {
       $result.error = "function $EntryFunction not exported by $ScriptName"
       return $result
     }
-    $raw = & $EntryFunction -BridgePath $BridgePath
+    $raw = & $EntryFunction -BridgePath $BridgePath -TargetRoot $TargetRoot -AuditKind $AuditKind
     if ($null -ne $raw) {
       # Accept either an array of finding objects, or @{ findings = @(...) }
       if ($raw -is [System.Collections.IDictionary] -and $raw.Contains('findings')) {
@@ -504,8 +608,9 @@ function Write-FindingsLedger {
 }
 
 function Get-AuditUsefulnessPath {
-  param([string]$BridgePath)
-  Join-Path (Get-AuditDir -BridgePath $BridgePath) 'usefulness.jsonl'
+  param([string]$BridgePath, [string]$AuditDir = $null)
+  $dir = if ([string]::IsNullOrWhiteSpace($AuditDir)) { Get-AuditDir -BridgePath $BridgePath } else { $AuditDir }
+  Join-Path $dir 'usefulness.jsonl'
 }
 
 function Write-AuditUsefulnessScore {
@@ -522,10 +627,11 @@ function Write-AuditUsefulnessScore {
     [int]$SuppressedKnown = 0,
     [int]$PrevOpenCount = 0,
     $NewLedger = $null,
-    [datetime]$Now = ([datetime]::Now)
+    [datetime]$Now = ([datetime]::Now),
+    [string]$AuditDir = $null
   )
   try {
-    $path = Get-AuditUsefulnessPath -BridgePath $BridgePath
+    $path = Get-AuditUsefulnessPath -BridgePath $BridgePath -AuditDir $AuditDir
     $findings = @($ReportFindings)
     $total = $findings.Count
     $critical = @($findings | Where-Object { ([string](Get-AuditFindingField -Raw $_ -Names @('severity'))) -eq 'critical' }).Count
@@ -600,8 +706,12 @@ function Format-AuditFindingMarkdown {
 }
 
 function Write-AuditReports {
-  param([string]$BridgePath, $Report)
-  $dir = Get-AuditDir -BridgePath $BridgePath
+  param([string]$BridgePath, $Report, $AuditContext = $null)
+  $dir = $null
+  if ($AuditContext) {
+    try { $dir = [string]$AuditContext.report_root } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($dir)) { $dir = Get-AuditDir -BridgePath $BridgePath }
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $date = (Get-Date -Format 'yyyy-MM-dd')
   $jsonPath = Join-Path $dir "$date.json"
@@ -612,12 +722,36 @@ function Write-AuditReports {
 
   $sec = $Report.security_counts
   $fnc = $Report.functional_counts
+  $kind = 'bridge'
+  $channel = 'main'
+  $targetRoot = $BridgePath
+  $reportRoot = $dir
+  try {
+    if ($AuditContext) {
+      $kind = [string]$AuditContext.kind
+      $channel = [string]$AuditContext.channel
+      $targetRoot = [string]$AuditContext.target_root
+      $reportRoot = [string]$AuditContext.report_root
+    } elseif ($Report.PSObject.Properties.Name -contains 'audit_context' -and $Report.audit_context) {
+      $kind = [string]$Report.audit_context.kind
+      $channel = [string]$Report.audit_context.channel
+      $targetRoot = [string]$Report.audit_context.target_root
+      $reportRoot = [string]$Report.audit_context.report_root
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($kind)) { $kind = 'bridge' }
+  if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'main' }
+  $titlePrefix = if ($kind -eq 'project') { 'Project Audit Report' } else { 'Bridge Audit Report' }
   $sb = New-Object System.Text.StringBuilder
-  [void]$sb.AppendLine("# Bridge Audit Report — $date")
+  [void]$sb.AppendLine("# $titlePrefix — $date")
   [void]$sb.AppendLine('')
   [void]$sb.AppendLine('## Summary')
   [void]$sb.AppendLine("- Security: $($sec.critical) critical, $($sec.warning) warning, $($sec.info) info")
   [void]$sb.AppendLine("- Functional: $($fnc.critical) critical, $($fnc.warning) warning, $($fnc.info) info")
+  [void]$sb.AppendLine("- Channel: $channel")
+  [void]$sb.AppendLine("- Scope: $kind")
+  [void]$sb.AppendLine("- Target root: $targetRoot")
+  [void]$sb.AppendLine("- Report root: $reportRoot")
   [void]$sb.AppendLine('')
 
   $all = @($Report.findings)
@@ -658,12 +792,40 @@ function Write-AuditReports {
   return @{ json = $jsonPath; md = $mdPath }
 }
 
+function Write-AuditIndexEntry {
+  param([string]$BridgePath, $AuditContext, $Paths, $Report)
+  try {
+    $dir = Get-AuditDir -BridgePath $BridgePath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $indexPath = Join-Path $dir 'index.jsonl'
+    $rec = [ordered]@{
+      ts          = (Get-Date).ToUniversalTime().ToString('o')
+      date        = (Get-Date -Format 'yyyy-MM-dd')
+      channel     = if ($AuditContext) { [string]$AuditContext.channel } else { 'main' }
+      kind        = if ($AuditContext) { [string]$AuditContext.kind } else { 'bridge' }
+      target_root = if ($AuditContext) { [string]$AuditContext.target_root } else { [string]$BridgePath }
+      report_root = if ($AuditContext) { [string]$AuditContext.report_root } else { (Get-AuditDir -BridgePath $BridgePath) }
+      report_json = if ($Paths) { [string]$Paths.json } else { '' }
+      report_md   = if ($Paths) { [string]$Paths.md } else { '' }
+      status      = if ($Report -and ($Report.PSObject.Properties.Name -contains 'status')) { [string]$Report.status } else { '' }
+    }
+    [System.IO.File]::AppendAllText($indexPath, (($rec | ConvertTo-Json -Compress -Depth 6) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
+
 function Add-AuditCriticalsToBacklog {
-  param([string]$BridgePath, $Findings)
+  param([string]$BridgePath, $Findings, $AuditContext = $null)
   $added = 0
   $crit = @($Findings | Where-Object { $_.severity -eq 'critical' })
   if ($crit.Count -eq 0) { return 0 }
-  $backlogPath = Get-AuditMainBacklogPath -BridgePath $BridgePath
+  $auditKind = 'bridge'
+  $backlogChannel = 'main'
+  if ($AuditContext) {
+    try { if (-not [string]::IsNullOrWhiteSpace([string]$AuditContext.kind)) { $auditKind = [string]$AuditContext.kind } } catch {}
+    try { if (-not [string]::IsNullOrWhiteSpace([string]$AuditContext.backlog_channel)) { $backlogChannel = [string]$AuditContext.backlog_channel } } catch {}
+  }
+  $isProjectAudit = ($auditKind -eq 'project')
+  $backlogPath = Get-AuditBacklogPath -BridgePath $BridgePath -Channel $backlogChannel
   $backlogDir = Split-Path -Parent $backlogPath
   if (-not (Test-Path -LiteralPath $backlogDir)) {
     try { New-Item -ItemType Directory -Path $backlogDir -Force | Out-Null } catch {}
@@ -688,7 +850,8 @@ function Add-AuditCriticalsToBacklog {
       $localAdded = 0
       foreach ($f in $crit) {
         try {
-          $text = "[audit/$($f.source)] $($f.title)"
+          $prefix = if ($isProjectAudit) { "audit/$backlogChannel/$($f.source)" } else { "audit/$($f.source)" }
+          $text = "[$prefix] $($f.title)"
           if ($f.area)   { $text += " ($($f.area))" }
           if ($f.detail) {
             $det = ($f.detail -replace '\s+', ' ').Trim()
@@ -696,21 +859,19 @@ function Add-AuditCriticalsToBacklog {
             $text += " — $det"
           }
           if ($existingTexts.ContainsKey($text)) { continue }
-          # Audit criticals auto-approve so the bridge fixes them AUTONOMOUSLY -- self-development is the
-          # whole point. The risk-classifier still blocks red-tier, the funnel still dedupes, and the
-          # operator can un-approve in the UI. If flaky findings get noisy, fix it at the SOURCE (audit
-          # must not flag a flaky scenario as 'critical') -- NOT by trimming autonomy here. Hand-rolled
-          # record (not Add-Idea) keeps dedupe-by-exact-text semantics in the audit's locked write path.
+          # Bridge self-audit criticals auto-approve because the bridge may fix itself autonomously.
+          # Project audits are written as held review items: the operator decides before the bridge
+          # touches an external codebase.
           $rec = [ordered]@{
             id       = [guid]::NewGuid().ToString('N')
             ts       = (Get-Date).ToUniversalTime().ToString('o')
             from     = 'audit'
-            status   = 'approved'
-            tags     = @('audit', [string]$f.source, 'critical')
+            status   = if ($isProjectAudit) { 'held' } else { 'approved' }
+            tags     = if ($isProjectAudit) { @('audit', 'project-audit', $backlogChannel, [string]$f.source, 'critical') } else { @('audit', [string]$f.source, 'critical') }
             attempts = 0
             score    = 0.0
-            project  = 'main'
-            scope    = 'bridge'
+            project  = $backlogChannel
+            scope    = $auditKind
             severity = 'critical'
             text     = $text
           }
@@ -759,10 +920,12 @@ function Invoke-BridgeAudit {
 
   # Resolve target project root: explicit -ProjectRoot > Get-EffectiveScope($Channel).project_root > $root.
   $resolvedProject = $root
+  $projectResolved = $false
   $resolvedChannel = if (-not [string]::IsNullOrWhiteSpace($Channel)) { $Channel } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
     if (Test-Path -LiteralPath $ProjectRoot -PathType Container) {
       try { $resolvedProject = [System.IO.Path]::GetFullPath($ProjectRoot) } catch { $resolvedProject = $ProjectRoot }
+      $projectResolved = $true
     }
   } else {
     try {
@@ -779,6 +942,7 @@ function Invoke-BridgeAudit {
         } catch {}
         if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr -PathType Container)) {
           try { $resolvedProject = [System.IO.Path]::GetFullPath($pr) } catch { $resolvedProject = $pr }
+          $projectResolved = $true
         }
       } elseif (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
         if ([string]::IsNullOrWhiteSpace($resolvedChannel) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
@@ -788,6 +952,7 @@ function Invoke-BridgeAudit {
         try { $pr = [string](Get-EffectiveProjectRoot -Slug $resolvedChannel) } catch {}
         if (-not [string]::IsNullOrWhiteSpace($pr) -and (Test-Path -LiteralPath $pr -PathType Container)) {
           try { $resolvedProject = [System.IO.Path]::GetFullPath($pr) } catch { $resolvedProject = $pr }
+          $projectResolved = $true
         }
       }
     } catch {}
@@ -796,6 +961,11 @@ function Invoke-BridgeAudit {
     try { $resolvedChannel = [string](Get-EffectiveChannel) } catch {}
   }
   if ([string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel = 'main' }
+  $resolvedChannel = Normalize-AuditChannelSlug -Channel $resolvedChannel
+  if ($resolvedChannel -ne 'main' -and -not $projectResolved) { $resolvedProject = '' }
+  $auditCtx = New-AuditContext -BridgePath $root -Channel $resolvedChannel -ProjectRoot $resolvedProject
+  $reportDir = [string]$auditCtx.report_root
+  try { if (-not (Test-Path -LiteralPath $reportDir)) { New-Item -ItemType Directory -Path $reportDir -Force | Out-Null } } catch {}
 
   # 1. lock
   $existing = Test-AuditLock -BridgePath $root
@@ -804,7 +974,7 @@ function Invoke-BridgeAudit {
     return @{ status = 'locked'; pid = $existing }
   }
   New-AuditLock -BridgePath $root
-  $scopeLabel = if ($resolvedProject -ne $root) { "channel=$resolvedChannel project=$resolvedProject" } else { 'bridge-self' }
+  $scopeLabel = "kind=$($auditCtx.kind) channel=$($auditCtx.channel) target=$($auditCtx.target_root)"
   Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID, scope=$scopeLabel)"
   # 2026-05-30: surface audit lifecycle in the chat so the user can SEE it run/finish
   # (previously the audit only wrote audit.log -> invisible in the UI).
@@ -857,7 +1027,7 @@ function Invoke-BridgeAudit {
   $fncFindings = @()
   try {
     # 5. security audit
-    $sec = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-security.ps1' -EntryFunction 'Invoke-SecurityAudit'
+    $sec = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-security.ps1' -EntryFunction 'Invoke-SecurityAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
     if ($sec.error) { [void]$errors.Add("security: $($sec.error)") }
     foreach ($f in @($sec.findings)) {
       $norm = Format-AuditFindings -Source 'security' -Raw $f
@@ -866,7 +1036,7 @@ function Invoke-BridgeAudit {
     }
 
     # 6. functional audit
-    $fnc = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-functional.ps1' -EntryFunction 'Invoke-FunctionalAudit'
+    $fnc = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-functional.ps1' -EntryFunction 'Invoke-FunctionalAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
     if ($fnc.error) { [void]$errors.Add("functional: $($fnc.error)") }
     foreach ($f in @($fnc.findings)) {
       $norm = Format-AuditFindings -Source 'functional' -Raw $f
@@ -880,7 +1050,7 @@ function Invoke-BridgeAudit {
     $ledgerPrevOpenCount = 0
     $ledgerResult = $null
     try {
-      $ledgerPath = Get-FindingsLedgerPath -BridgePath $root
+      $ledgerPath = Get-FindingsLedgerPath -BridgePath $root -AuditDir $reportDir
       $ledger = Read-FindingsLedger -LedgerPath $ledgerPath
       # snapshot open-signal count BEFORE update (Update mutates $ledger in place)
       try { $ledgerPrevOpenCount = @($ledger.Values | Where-Object { (Normalize-AuditLedgerToken -Value ([string]$_.state) -Fallback 'open') -in @('open','new','regressed') }).Count } catch {}
@@ -909,7 +1079,12 @@ function Invoke-BridgeAudit {
       metadata          = [ordered]@{
         bridge_path          = $root
         channel              = $resolvedChannel
+        audit_kind           = [string]$auditCtx.kind
         project_root         = $resolvedProject
+        target_root          = [string]$auditCtx.target_root
+        report_root          = [string]$auditCtx.report_root
+        backlog_channel      = [string]$auditCtx.backlog_channel
+        profile              = [string]$auditCtx.profile
         generated_at         = $generatedAtLocal
         gen_timestamp        = $generatedAtUtc
         runtime_seconds      = $runtimeSeconds
@@ -921,30 +1096,35 @@ function Invoke-BridgeAudit {
       functional_counts = $fncCounts
       security_runtime_sec   = $sec.runtime_sec
       functional_runtime_sec = $fnc.runtime_sec
+      audit_kind       = [string]$auditCtx.kind
+      channel          = [string]$auditCtx.channel
+      target_root      = [string]$auditCtx.target_root
+      report_root      = [string]$auditCtx.report_root
+      audit_context    = $auditCtx
       findings          = @($mergedFindings)
       errors            = @($errors.ToArray())
     }
 
     # 7-8. write reports
-    $paths = Write-AuditReports -BridgePath $root -Report $report
+    $paths = Write-AuditReports -BridgePath $root -Report $report -AuditContext $auditCtx
 
     # 9. update audit.last
     try {
-      $marker = Get-AuditLastMarker -BridgePath $root
+      $marker = Get-AuditLastMarker -BridgePath $root -AuditDir $reportDir
       [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
     } catch {}
 
     # 10. file critical findings into backlog
     $filed = 0
     if ($secCounts.critical -gt 0 -or $fncCounts.critical -gt 0) {
-      $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings
+      $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings -AuditContext $auditCtx
     }
 
     # 10b. usefulness score (idea 11): record how useful this audit was
     try {
       $newLedgerForScore = $null
       if ($ledgerResult) { $newLedgerForScore = $ledgerResult.ledger }
-      Write-AuditUsefulnessScore -BridgePath $root -ReportFindings $mergedFindings -FiledToBacklog $filed -SuppressedKnown $ledgerSuppressedCount -PrevOpenCount $ledgerPrevOpenCount -NewLedger $newLedgerForScore -Now (Get-Date) | Out-Null
+      Write-AuditUsefulnessScore -BridgePath $root -ReportFindings $mergedFindings -FiledToBacklog $filed -SuppressedKnown $ledgerSuppressedCount -PrevOpenCount $ledgerPrevOpenCount -NewLedger $newLedgerForScore -Now (Get-Date) -AuditDir $reportDir | Out-Null
     } catch {}
 
     # 11. DEEP-AUDIT phase (Codex security + multi-agent model fan-out)
@@ -966,7 +1146,7 @@ function Invoke-BridgeAudit {
         $deepStdout = ''
         $deepStderr = ''
         $deepExitCode = 0
-        $deepTmpDir = Join-Path (Get-AuditDir -BridgePath $root) 'tmp'
+        $deepTmpDir = Join-Path $reportDir 'tmp'
         if (-not (Test-Path -LiteralPath $deepTmpDir)) { New-Item -ItemType Directory -Path $deepTmpDir -Force | Out-Null }
         $deepStamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
         $deepOutPath = Join-Path $deepTmpDir ("audit-deep-stdout_$deepStamp.txt")
@@ -984,7 +1164,16 @@ function Invoke-BridgeAudit {
           # channel's codebase (not the bridge). Parallel is the default;
           # add -Sequential to fall back to back-to-back execution.
           # Also pass -FunctionalAgent (auto/gemini-only) for A/B testing.
-          $deepArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$deepScript,'-BridgePath',$root,'-ProjectRoot',$resolvedProject,'-FunctionalAgent',$FunctionalAgent,'-OutputFile',$deepResultPath)
+          $deepArgValues = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $deepScript,
+            '-BridgePath', $root,
+            '-ProjectRoot', ([string]$auditCtx.target_root),
+            '-FunctionalAgent', $FunctionalAgent,
+            '-OutputFile', $deepResultPath
+          )
+          $deepArgs = @($deepArgValues | ForEach-Object { Format-AuditNativeArg ([string]$_) })
           $startDeepProcess = {
             Start-Process -FilePath 'powershell.exe' `
               -ArgumentList $deepArgs `
@@ -1102,12 +1291,9 @@ function Invoke-BridgeAudit {
     } catch {
       [void]$errors.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
     }
-    # 2026-05-28: audit findings are pre-validated by the deep-audit pipeline
-    # (codex + claude). They go in as status='approved' + -SkipCurator so the
-    # gemini curator doesn't second-guess them, and with -Severity so the
-    # picker (Get-NextRunnableIdea / Get-NextApprovedIdea) sorts them by
-    # severity rank above plain ideas. Order in backlog picker:
-    #   critical > warning > info > regular ideas.
+    # Bridge deep-audit findings are pre-validated and go in approved. Project
+    # deep-audit findings go in held so an external codebase is never changed
+    # just because a tab-level audit found something.
     # 2026-05-28: diagnostic — earlier "deep[claude=10] backlog+=0+0" runs lost
     # findings silently because Write-AuditReports already ran and errors-list
     # had nowhere to go. Log every decision (filed/skipped/failed) directly to
@@ -1121,6 +1307,10 @@ function Invoke-BridgeAudit {
     if (-not $addIdeaAvailable) {
       & $writeDiag 'init' '' 'add-idea-unavailable' ('common-lib-loaded=' + [bool](Get-Command Get-BacklogPath -EA SilentlyContinue))
     }
+    $deepBacklogStatus = if ([string]$auditCtx.kind -eq 'project') { 'held' } else { 'approved' }
+    $deepBacklogProject = [string]$auditCtx.backlog_channel
+    $deepBacklogScope = [string]$auditCtx.kind
+    $deepBaseTags = if ([string]$auditCtx.kind -eq 'project') { @('audit','project-audit',$deepBacklogProject,'deep-audit') } else { @('audit','deep-audit') }
     if ($deepCodexResult) {
       $cf = @($deepCodexResult.findings)
       $deepCodexCount = $cf.Count
@@ -1134,7 +1324,7 @@ function Invoke-BridgeAudit {
         try {
           $bText = "[deep-codex/security] " + [string]$f.category + " (" + [string]$f.file + ":" + [string]$f.line + ") -- " + [string]$f.finding + " | Recommend: " + [string]$f.recommendation
           if ($addIdeaAvailable) {
-            $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @('audit','deep-audit','codex','security',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            $bid = Add-Idea -Text $bText -From 'audit-deep-codex' -Tags @($deepBaseTags + @('codex','security',$sev)) -Status $deepBacklogStatus -Severity $sev -SkipCurator -Project $deepBacklogProject -Scope $deepBacklogScope
             if ($bid) {
               $deepFiled++
               & $writeDiag 'codex' $sev 'filed' "id=$bid"
@@ -1167,7 +1357,7 @@ function Invoke-BridgeAudit {
         try {
           $bText = "[deep-claude/" + [string]$f.category + "] " + [string]$f.feature_id + ": " + [string]$f.observation + " | Предлагает: " + [string]$f.recommendation
           if ($addIdeaAvailable) {
-            $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @('audit','deep-audit','claude','functional',$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            $bid = Add-Idea -Text $bText -From 'audit-deep-claude' -Tags @($deepBaseTags + @('claude','functional',$sev)) -Status $deepBacklogStatus -Severity $sev -SkipCurator -Project $deepBacklogProject -Scope $deepBacklogScope
             if ($bid) {
               $deepFiled++
               & $writeDiag 'claude' $sev 'filed' "id=$bid"
@@ -1207,7 +1397,7 @@ function Invoke-BridgeAudit {
           if (-not [string]::IsNullOrWhiteSpace($area)) { $bText += " ($area)" }
           $bText += " -- $obs | Recommend: $rec"
           if ($addIdeaAvailable) {
-            $bid = Add-Idea -Text $bText -From 'audit-deep-agent' -Tags @('audit','deep-audit','agent',$agentRole,$sev) -Status 'approved' -Severity $sev -SkipCurator -Project 'main' -Scope 'bridge'
+            $bid = Add-Idea -Text $bText -From 'audit-deep-agent' -Tags @($deepBaseTags + @('agent',$agentRole,$sev)) -Status $deepBacklogStatus -Severity $sev -SkipCurator -Project $deepBacklogProject -Scope $deepBacklogScope
             if ($bid) {
               $deepFiled++
               & $writeDiag $agentRole $sev 'filed' "id=$bid"
@@ -1339,6 +1529,7 @@ function Invoke-BridgeAudit {
       if ($paths -and $paths.json) {
         Write-AuditAtomicFile -Path $paths.json -Content ($report | ConvertTo-Json -Depth 8)
       }
+      Write-AuditIndexEntry -BridgePath $root -AuditContext $auditCtx -Paths $paths -Report $report
     } catch {
       [void]$errors.Add('audit report deep-status update failed: ' + $_.Exception.Message)
     }
@@ -1361,6 +1552,9 @@ function Invoke-BridgeAudit {
     return [pscustomobject]@{
       status            = $finalStatus
       deep_status       = $deepStatus
+      audit_kind        = [string]$auditCtx.kind
+      channel           = [string]$auditCtx.channel
+      target_root       = [string]$auditCtx.target_root
       report_json       = $paths.json
       report_md         = $paths.md
       security_counts   = $secCounts

@@ -721,11 +721,26 @@ function Start-LibrarianIfDue {
   } catch {}
 }
 
+function Get-AuditMaintenanceDir {
+  param([string]$Channel = 'main')
+  $slug = $Channel
+  try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $slug = Normalize-ChannelSlug $slug } } catch {}
+  if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'main' }
+  if ($slug -eq 'main') { return (Join-Path $bridgeRoot 'audit') }
+  try {
+    if (Get-Command Get-ChannelDir -ErrorAction SilentlyContinue) {
+      return (Join-Path (Get-ChannelDir -Slug $slug) 'audit')
+    }
+  } catch {}
+  return (Join-Path (Join-Path (Join-Path $bridgeRoot 'channels') $slug) 'audit')
+}
+
 function Test-AuditMaintenanceBusy {
-  param([int]$MaxWaitMinutes = 60)
-  $auditDir = Join-Path $bridgeRoot 'audit'
+  param([int]$MaxWaitMinutes = 60, [string]$AuditDir = $null)
+  if ([string]::IsNullOrWhiteSpace($AuditDir)) { $AuditDir = Join-Path $bridgeRoot 'audit' }
+  $auditDir = $AuditDir
   $waitMarker = Join-Path $auditDir 'audit.waiting'
-  $lockMarker = Join-Path $auditDir '.audit.lock'
+  $lockMarker = Join-Path (Join-Path $bridgeRoot 'audit') '.audit.lock'
   $freshFor = [TimeSpan]::FromMinutes([Math]::Max(1, $MaxWaitMinutes + 10))
 
   if (Test-Path -LiteralPath $waitMarker) {
@@ -750,10 +765,10 @@ function Test-AuditMaintenanceBusy {
 }
 
 function Start-AuditIfDue {
-  # Run the daily bridge audit detached during the configured night window:
+  # Run the daily audit for this driver's channel during the configured night window:
   #   - audit.enabled in config.json gates the whole thing.
   #   - current local hour must be inside [windowStartHour..windowEndHour] (wraps midnight if start > end).
-  #   - audit/audit.last marker must be older than floorHours (default 20h) so we run ~once/day.
+  #   - channel-specific audit.last marker must be older than floorHours (default 20h) so we run ~once/day.
   # The detached audit runner dot-sources lib/common.ps1 + tools/audit.ps1, waits
   # for stable idle, then calls Invoke-BridgeAudit. audit.last is written only by
   # a successful audit; audit.waiting only prevents duplicate waiting processes.
@@ -782,7 +797,11 @@ function Start-AuditIfDue {
     if ($hourNow -ge $startH -or $hourNow -le $endH) { $inWindow = $true }
   }
   if (-not $inWindow) { return }
-  $auditDir = Join-Path $bridgeRoot 'audit'
+  $auditChannel = 'main'
+  try { $auditChannel = [string](Get-EffectiveChannel) } catch {}
+  if ([string]::IsNullOrWhiteSpace($auditChannel)) { $auditChannel = 'main' }
+  try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $auditChannel = Normalize-ChannelSlug $auditChannel } } catch {}
+  $auditDir = Get-AuditMaintenanceDir -Channel $auditChannel
   $marker   = Join-Path $auditDir 'audit.last'
   $waitMarker = Join-Path $auditDir 'audit.waiting'
   if (Test-Path -LiteralPath $marker) {
@@ -795,7 +814,7 @@ function Start-AuditIfDue {
   if (-not (Test-Path -LiteralPath $auditScript)) { return }
   $auditRunner = Join-Path $bridgeRoot 'tools\audit-runner.ps1'
   if (-not (Test-Path -LiteralPath $auditRunner)) { return }
-  if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait) { return }
+  if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) { return }
   $waitMarkerWritten = $false
   try {
     if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
@@ -814,9 +833,10 @@ function Start-AuditIfDue {
       '-BridgePath', $bridgeRoot,
       '-StateFile', $stateFile,
       '-MaxWaitMinutes', [string]$maxWait,
-      '-WaitMarker', $waitMarker
+      '-WaitMarker', $waitMarker,
+      '-Channel', $auditChannel
     )
-    $launch = [pscustomobject]@{ Args = $args; Channel = (Get-EffectiveChannel) }
+    $launch = [pscustomobject]@{ Args = $args; Channel = $auditChannel }
     $auditProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
       param($Launch)
       Start-Process -FilePath 'powershell.exe' -ArgumentList $Launch.Args -WindowStyle Hidden -PassThru
@@ -825,7 +845,8 @@ function Start-AuditIfDue {
     $auditTicks = 0L
     try { $auditTicks = (Get-Process -Id $auditProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
     try { Register-ChildProcess -Label 'audit' -ProcessId $auditProc.Id -Ticks $auditTicks } catch {}
-    Add-Message -From system -Text ("🔍 Запущен аудит моста (фоновое задание, ожидание idle до {0} мин)." -f $maxWait) -Kind event | Out-Null
+    $auditLabel = if ($auditChannel -eq 'main') { 'моста' } else { "проекта канала $auditChannel" }
+    Add-Message -From system -Text ("🔍 Запущен аудит {0} (фоновое задание, ожидание idle до {1} мин)." -f $auditLabel, $maxWait) -Kind event | Out-Null
   } catch {
     try { if (Test-Path -LiteralPath $waitMarker) { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } } catch {}
   }

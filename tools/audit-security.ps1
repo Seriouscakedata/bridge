@@ -1,7 +1,11 @@
 ﻿Set-StrictMode -Version Latest
 
 function Invoke-SecurityAudit {
-  param([string]$BridgePath)
+  param(
+    [string]$BridgePath,
+    [string]$TargetRoot = $null,
+    [string]$AuditKind = 'bridge'
+  )
 
   $results = @{
     findings = @()
@@ -92,7 +96,15 @@ function Invoke-SecurityAudit {
     return ($relative -match '^(?:\.git|worktrees|node_modules|\.venv|venv|tmp|temp|logs|artifacts)[\\/]')
   }
 
-  $root = if ([string]::IsNullOrWhiteSpace($BridgePath)) { (Get-Location).Path } else { $BridgePath }
+  if ([string]$AuditKind -eq 'project' -and [string]::IsNullOrWhiteSpace($TargetRoot)) {
+    Add-Finding -Severity critical -Category 'configuration' -File '' -Line 0 -Message 'Project audit target root is empty.'
+    Write-Host "Security scan: $($results.summary.critical) critical, $($results.summary.warning) warning, $($results.summary.info) info"
+    return $results
+  }
+
+  $bridgeRoot = if ([string]::IsNullOrWhiteSpace($BridgePath)) { (Get-Location).Path } else { $BridgePath }
+  $root = if ([string]::IsNullOrWhiteSpace($TargetRoot)) { $bridgeRoot } else { $TargetRoot }
+  $bridgeFull = Get-FullPathSafe $bridgeRoot
   $selfWhitelist = @(
     'tools\audit-security.ps1',
     'tools\wave-a-helper-tests.ps1',
@@ -101,11 +113,13 @@ function Invoke-SecurityAudit {
   )
   $root = Get-FullPathSafe $root
   if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) {
-    Add-Finding -Severity critical -Category 'configuration' -File '' -Line 0 -Message "BridgePath does not exist: $BridgePath"
+    Add-Finding -Severity critical -Category 'configuration' -File '' -Line 0 -Message "Audit target root does not exist: $TargetRoot"
     Write-Host "Security scan: $($results.summary.critical) critical, $($results.summary.warning) warning, $($results.summary.info) info"
     return $results
   }
   $root = $root.TrimEnd('\','/')
+  if ($bridgeFull) { $bridgeFull = $bridgeFull.TrimEnd('\','/') }
+  $isBridgeScan = ([string]$AuditKind -eq 'bridge' -or ($bridgeFull -and [string]::Equals($root, $bridgeFull, [System.StringComparison]::OrdinalIgnoreCase)))
 
   $psFiles = @()
   try {
@@ -124,7 +138,7 @@ function Invoke-SecurityAudit {
 
   foreach ($file in $psFiles) {
     $relative = Get-RelativePath -Root $root -Path $file.FullName
-    if ($selfWhitelist -contains $relative) { continue }
+    if ($isBridgeScan -and $selfWhitelist -contains $relative) { continue }
     $lines = @($linesByPath[$file.FullName])
     $raw = [string]$contentByPath[$file.FullName]
 

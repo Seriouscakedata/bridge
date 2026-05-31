@@ -428,8 +428,119 @@ function Invoke-AuditFunctionalLlm {
   return @(ConvertFrom-AuditLlmJsonFindings -Raw $raw)
 }
 
+function Test-AuditSameResolvedPath {
+  param([string]$Left, [string]$Right)
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+  try {
+    $trim = [char[]]@('\','/')
+    $a = [System.IO.Path]::GetFullPath($Left).TrimEnd($trim)
+    $b = [System.IO.Path]::GetFullPath($Right).TrimEnd($trim)
+    return [string]::Equals($a, $b, [System.StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+function Get-AuditProjectManifestSummary {
+  param([string]$Root)
+  $known = @(
+    'package.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'package-lock.json',
+    'pyproject.toml',
+    'requirements.txt',
+    'poetry.lock',
+    'go.mod',
+    'Cargo.toml',
+    'pom.xml',
+    'build.gradle',
+    'composer.json',
+    'Gemfile',
+    'deno.json'
+  )
+  $found = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in $known) {
+    if (Test-Path -LiteralPath (Join-Path $Root $name) -PathType Leaf) { [void]$found.Add($name) }
+  }
+  return @($found.ToArray())
+}
+
+function Invoke-ProjectFunctionalAudit {
+  param([string]$ProjectRoot, [string]$BridgePath)
+  $findings = New-Object 'System.Collections.Generic.List[object]'
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
+    Add-AuditFinding -Findings $findings -Severity 'critical' -Category 'project_binding' -Component 'project_root' `
+      -Message "Project audit target does not exist: $ProjectRoot" `
+      -Recommendation 'Fix the channel project_root before running project audits.'
+    return (New-AuditResult -Findings $findings)
+  }
+  try { $root = (Resolve-Path -LiteralPath $ProjectRoot -ErrorAction Stop).Path } catch { $root = $ProjectRoot }
+
+  $docs = @('PROJECT_MAP.md','README.md','README.txt') | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) -PathType Leaf }
+  if (@($docs).Count -eq 0) {
+    Add-AuditFinding -Findings $findings -Severity 'warning' -Category 'project_map' -Component 'PROJECT_MAP.md' `
+      -Message 'No PROJECT_MAP.md or README was found at the project root.' `
+      -Recommendation 'Create a compact project map so the bridge can keep long-lived context while working in this tab.'
+  } else {
+    Add-AuditFinding -Findings $findings -Severity 'info' -Category 'project_map' -Component ((@($docs) -join ', ')) `
+      -Message 'Project documentation entrypoint exists at the root.' `
+      -Recommendation 'Keep it current when major modules or workflows change.'
+  }
+
+  $manifests = @(Get-AuditProjectManifestSummary -Root $root)
+  if ($manifests.Count -eq 0) {
+    Add-AuditFinding -Findings $findings -Severity 'warning' -Category 'project_profile' -Component 'manifest' `
+      -Message 'No common build/runtime manifest was found at the project root.' `
+      -Recommendation 'If this is a nonstandard project layout, add setup and test commands to PROJECT_MAP.md.'
+  } else {
+    Add-AuditFinding -Findings $findings -Severity 'info' -Category 'project_profile' -Component (($manifests -join ', ')) `
+      -Message 'Project manifest files were detected.' `
+      -Recommendation 'Use these manifests to derive safe build and test commands for this tab.'
+  }
+
+  $packageJson = Join-Path $root 'package.json'
+  $hasDeclaredTest = $false
+  if (Test-Path -LiteralPath $packageJson -PathType Leaf) {
+    try {
+      $pkg = [System.IO.File]::ReadAllText($packageJson, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      if ($pkg -and $pkg.PSObject.Properties.Name -contains 'scripts' -and $pkg.scripts) {
+        if ($pkg.scripts.PSObject.Properties.Name -contains 'test') { $hasDeclaredTest = $true }
+      }
+    } catch {}
+  }
+  $testDirs = @('test','tests','spec','__tests__') | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) -PathType Container }
+  if ($hasDeclaredTest -or @($testDirs).Count -gt 0) {
+    $component = if ($hasDeclaredTest) { 'package.json:scripts.test' } else { (@($testDirs) -join ', ') }
+    Add-AuditFinding -Findings $findings -Severity 'info' -Category 'test_surface' -Component $component `
+      -Message 'A likely test entrypoint exists.' `
+      -Recommendation 'Run the project-specific test command before accepting nontrivial changes.'
+  } else {
+    Add-AuditFinding -Findings $findings -Severity 'warning' -Category 'test_surface' -Component 'tests' `
+      -Message 'No obvious root-level tests or package.json test script were found.' `
+      -Recommendation 'Record the correct verification command in PROJECT_MAP.md or add a standard test entrypoint.'
+  }
+
+  $gitDir = Join-Path $root '.git'
+  if (-not (Test-Path -LiteralPath $gitDir)) {
+    Add-AuditFinding -Findings $findings -Severity 'warning' -Category 'version_control' -Component '.git' `
+      -Message 'Project root does not look like a git worktree.' `
+      -Recommendation 'Bind the channel to the repository root so audit and memory can reason over commits and diffs.'
+  } else {
+    Add-AuditFinding -Findings $findings -Severity 'info' -Category 'version_control' -Component '.git' `
+      -Message 'Project root is a git worktree.' `
+      -Recommendation 'No action required.'
+  }
+
+  return (New-AuditResult -Findings $findings)
+}
+
 function Invoke-FunctionalAudit {
-  param([string]$BridgePath)
+  param(
+    [string]$BridgePath,
+    [string]$TargetRoot = $null,
+    [string]$AuditKind = 'bridge'
+  )
   $findings = New-Object 'System.Collections.Generic.List[object]'
 
   if ([string]::IsNullOrWhiteSpace($BridgePath)) { $BridgePath = (Get-Location).Path }
@@ -440,6 +551,16 @@ function Invoke-FunctionalAudit {
       -Message "BridgePath does not exist: $BridgePath" `
       -Recommendation 'Pass a valid bridge repository path.'
     return (New-AuditResult -Findings $findings)
+  }
+
+  if ([string]::IsNullOrWhiteSpace($TargetRoot)) {
+    if ([string]$AuditKind -eq 'project') {
+      return (Invoke-ProjectFunctionalAudit -ProjectRoot $TargetRoot -BridgePath $root)
+    }
+    $TargetRoot = $root
+  }
+  if ([string]$AuditKind -eq 'project' -or -not (Test-AuditSameResolvedPath -Left $root -Right $TargetRoot)) {
+    return (Invoke-ProjectFunctionalAudit -ProjectRoot $TargetRoot -BridgePath $root)
   }
 
   $serverPath = Join-Path $root 'server.ps1'

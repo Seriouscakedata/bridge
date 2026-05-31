@@ -6,7 +6,8 @@ param(
   [string]$BridgePath,
   [string]$StateFile,
   [int]$MaxWaitMinutes = 60,
-  [string]$WaitMarker
+  [string]$WaitMarker,
+  [string]$Channel = 'main'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -30,17 +31,22 @@ try {
   } else {
     $BridgePath = [System.IO.Path]::GetFullPath($BridgePath)
   }
-  if ([string]::IsNullOrWhiteSpace($StateFile)) {
-    $StateFile = Join-Path $BridgePath 'channels\main\state.json'
-  }
   if ($MaxWaitMinutes -lt 0) { $MaxWaitMinutes = 0 }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
 
   $commonScript = Join-Path $BridgePath 'lib\common.ps1'
   if (Test-Path -LiteralPath $commonScript) {
     . $commonScript
     try {
-      if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel 'main' }
+      if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $Channel = Normalize-ChannelSlug $Channel }
+      if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel $Channel }
+      if ([string]::IsNullOrWhiteSpace($StateFile) -and (Get-Command Get-ChannelStatePath -ErrorAction SilentlyContinue)) {
+        $StateFile = Get-ChannelStatePath -Slug $Channel
+      }
     } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($StateFile)) {
+    $StateFile = if ($Channel -eq 'main') { Join-Path $BridgePath 'channels\main\state.json' } else { Join-Path (Join-Path (Join-Path $BridgePath 'channels') $Channel) 'state.json' }
   }
 
   $auditScript = Join-Path $BridgePath 'tools\audit.ps1'
@@ -52,9 +58,9 @@ try {
 
   $idle = Wait-BridgeIdle -StateFile $StateFile -MaxMinutes $MaxWaitMinutes -StablePolls 2
   if ($idle) {
-    Invoke-BridgeAudit -BridgePath $BridgePath | Out-Null
+    Invoke-BridgeAudit -BridgePath $BridgePath -Channel $Channel | Out-Null
   } else {
-    Write-AuditRunnerLog -Root $BridgePath -Message ("audit skipped: bridge did not stay idle for {0} min" -f $MaxWaitMinutes)
+    Write-AuditRunnerLog -Root $BridgePath -Message ("audit skipped: channel={0} did not stay idle for {1} min" -f $Channel, $MaxWaitMinutes)
   }
 } catch {
   $rootForLog = if ([string]::IsNullOrWhiteSpace($BridgePath)) { [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)) } else { $BridgePath }
