@@ -17,7 +17,7 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
       $false
     }
   } |
-  ForEach-Object { taskkill /PID $_.ProcessId /F /T 2>$null | Out-Null }
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
 
 $serr = "$env:TEMP\bridge_srv_err.txt"; $sout = "$env:TEMP\bridge_srv_out.txt"
