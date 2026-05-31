@@ -131,6 +131,7 @@
     "restartLimitMaxPerHour": 10,
     "restartLimitWindowMin": 60,
     "restartLimitCooldownMin": 30,
+    "stopWaitMs": 5000,
     "fatalDriverExitCodes": [3],
     "fatalServerExitCodes": []
   },

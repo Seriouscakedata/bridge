@@ -83,6 +83,14 @@ try {
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
 $drivers = @{}
 $script:bloatedSince = @{}
+$script:stopWaitMs = 5000
+
+function Get-SupervisorStopWaitMs {
+  param([int]$WaitMs = 0)
+  if ($WaitMs -gt 0) { return $WaitMs }
+  if ($script:stopWaitMs -gt 0) { return [int]$script:stopWaitMs }
+  return 5000
+}
 
 function Get-TrackedBridgeProcesses {
   $tracked = @()
@@ -117,13 +125,24 @@ function Test-TrackedBridgeProcess {
 function Stop-TrackedBridgeProcess {
   param(
     [System.Diagnostics.Process]$Process,
-    [string]$Reason
+    [string]$Reason,
+    [int]$WaitMs = 0
   )
   if (-not (Test-TrackedBridgeProcess -Process $Process)) { return $false }
   $trackedPid = [int]$Process.Id
+  $waitForExitMs = Get-SupervisorStopWaitMs -WaitMs $WaitMs
   try {
     Log ($Reason + " -> stopping tracked PID " + $trackedPid)
-    Stop-Process -Id $trackedPid -Force -ErrorAction SilentlyContinue
+    $null = taskkill /PID $trackedPid /F /T 2>$null
+    $exited = $Process.WaitForExit($waitForExitMs)
+    if (-not $exited) {
+      Log ("WARN: PID " + $trackedPid + " did not exit within " + $waitForExitMs + "ms after kill - possible zombie; issuing secondary kill")
+      try {
+        $null = taskkill /PID $trackedPid /F /T 2>$null
+      } catch {
+        Log ("WARN: secondary kill failed for PID " + $trackedPid + ": " + $_.Exception.Message)
+      }
+    }
     return $true
   } catch {
     Log ($Reason + " stop error for PID " + $trackedPid + ": " + $_.Exception.Message)
@@ -353,6 +372,13 @@ function Test-CircuitSpawnPaused {
 $script:restartLimitState = New-SupervisorRestartLimitState
 $script:restartLimitSettings = Get-SupervisorRestartLimitSettings -Config $cfg
 $script:fatalExitSettings = Get-SupervisorFatalExitCodeSettings -Config $cfg
+try {
+  if ($cfg -and $cfg.supervisor -and $null -ne $cfg.supervisor.stopWaitMs) {
+    $script:stopWaitMs = [int]$cfg.supervisor.stopWaitMs
+  }
+} catch {
+  Log ("WARN: supervisor.stopWaitMs config read failed, using " + $script:stopWaitMs + "ms: " + $_.Exception.Message)
+}
 $script:driverFatalBlock = @{}
 $script:serverFatalBlock = $null
 function Test-SupervisorProcessStartAllowed {
