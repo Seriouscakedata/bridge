@@ -433,6 +433,462 @@ function Invoke-BacklogStaleSweep {
   return $n
 }
 
+function Get-BacklogPackObjectValue {
+  param($Obj, [string]$Name, $Default = $null)
+  try {
+    if ($Obj -and ($Obj.PSObject.Properties.Name -contains $Name) -and $null -ne $Obj.PSObject.Properties[$Name].Value) {
+      return $Obj.PSObject.Properties[$Name].Value
+    }
+  } catch {}
+  return $Default
+}
+
+function ConvertTo-BacklogPackBool {
+  param($Value, [bool]$Default = $true)
+  try {
+    if ($Value -is [bool]) { return [bool]$Value }
+    $s = ([string]$Value).Trim().ToLowerInvariant()
+    if (@('true','1','yes','on','enabled') -contains $s) { return $true }
+    if (@('false','0','no','off','disabled') -contains $s) { return $false }
+  } catch {}
+  return $Default
+}
+
+function ConvertTo-BacklogPackInt {
+  param($Value, [int]$Default, [int]$Min = 0, [int]$Max = 1000000)
+  $n = 0.0
+  try {
+    if ([double]::TryParse([string]$Value, [ref]$n)) {
+      $i = [int][Math]::Round($n)
+      if ($i -lt $Min) { return $Min }
+      if ($i -gt $Max) { return $Max }
+      return $i
+    }
+  } catch {}
+  return $Default
+}
+
+function Get-BacklogPackConfig {
+  $cfg = [ordered]@{
+    enabled            = $true
+    burstCount         = 5
+    windowMinutes      = 60
+    unpackedOpenCount  = 8
+    auditBurstCount    = 3
+    auditWindowMinutes = 30
+    cooldownMinutes    = 30
+    minItems           = 2
+  }
+  $dotted = @{
+    'backlogPack.enabled'            = 'enabled'
+    'backlogPack.burstCount'         = 'burstCount'
+    'backlogPack.windowMinutes'      = 'windowMinutes'
+    'backlogPack.unpackedOpenCount'  = 'unpackedOpenCount'
+    'backlogPack.auditBurstCount'    = 'auditBurstCount'
+    'backlogPack.auditWindowMinutes' = 'auditWindowMinutes'
+    'backlogPack.cooldownMinutes'    = 'cooldownMinutes'
+    'backlogPack.minItems'           = 'minItems'
+  }
+  $flat = @{
+    backlogPackEnabled            = 'enabled'
+    backlogPackBurstCount         = 'burstCount'
+    backlogPackWindowMinutes      = 'windowMinutes'
+    backlogPackUnpackedOpenCount  = 'unpackedOpenCount'
+    backlogPackAuditBurstCount    = 'auditBurstCount'
+    backlogPackAuditWindowMinutes = 'auditWindowMinutes'
+    backlogPackCooldownMinutes    = 'cooldownMinutes'
+    backlogPackMinItems           = 'minItems'
+  }
+  try {
+    if (Get-Command Get-AdvancedSettings -ErrorAction SilentlyContinue) {
+      $adv = Get-AdvancedSettings
+      foreach ($k in $dotted.Keys) {
+        if ($adv -and $adv.Contains($k) -and $null -ne $adv[$k]) { $cfg[$dotted[$k]] = $adv[$k] }
+      }
+    }
+  } catch {}
+  try {
+    if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
+      $auto = Get-AutonomySettings
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $auto -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+  try {
+    if (Get-Command Get-Settings -ErrorAction SilentlyContinue) {
+      $settings = Get-Settings
+      foreach ($k in $dotted.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$dotted[$k]] = $v }
+      }
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+
+  $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
+  $cfg.burstCount = ConvertTo-BacklogPackInt -Value $cfg.burstCount -Default 5 -Min 2 -Max 1000
+  $cfg.windowMinutes = ConvertTo-BacklogPackInt -Value $cfg.windowMinutes -Default 60 -Min 1 -Max 1440
+  $cfg.unpackedOpenCount = ConvertTo-BacklogPackInt -Value $cfg.unpackedOpenCount -Default 8 -Min 2 -Max 1000
+  $cfg.auditBurstCount = ConvertTo-BacklogPackInt -Value $cfg.auditBurstCount -Default 3 -Min 2 -Max 1000
+  $cfg.auditWindowMinutes = ConvertTo-BacklogPackInt -Value $cfg.auditWindowMinutes -Default 30 -Min 1 -Max 1440
+  $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 30 -Min 1 -Max 1440
+  $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 1 -Max 50
+  return [pscustomobject]$cfg
+}
+
+function Get-BacklogPackChannel {
+  try {
+    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+      $slug = [string](Get-EffectiveChannel)
+      if (-not [string]::IsNullOrWhiteSpace($slug)) { return $slug }
+    }
+  } catch {}
+  if (-not [string]::IsNullOrWhiteSpace([string]$env:BRIDGE_CHANNEL)) { return [string]$env:BRIDGE_CHANNEL }
+  return 'main'
+}
+
+function Get-BacklogPackDir {
+  $dir = $null
+  try {
+    if (Get-Command Get-ChannelDir -ErrorAction SilentlyContinue) {
+      $dir = Join-Path (Get-ChannelDir) 'workpacks'
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace([string]$dir)) {
+    $dir = Join-Path (Get-BacklogControlDir) 'workpacks'
+  }
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  return $dir
+}
+
+function Get-BacklogPackRequestPath { Join-Path (Get-BacklogPackDir) 'pack.request.json' }
+function Get-BacklogPackLatestPath { Join-Path (Get-BacklogPackDir) 'latest.json' }
+function Get-BacklogPackRunsPath { Join-Path (Get-BacklogPackDir) 'runs.jsonl' }
+
+function Test-BacklogPackItemOpen {
+  param($Item)
+  $status = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '')
+  return ($status -in @('new','approved','held'))
+}
+
+function Test-BacklogPackItemUnpacked {
+  param($Item)
+  $packId = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default '')
+  return [string]::IsNullOrWhiteSpace($packId)
+}
+
+function Test-BacklogPackItemAuditSource {
+  param($Item)
+  $from = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'from' -Default '')).ToLowerInvariant()
+  if ($from -match 'audit') { return $true }
+  $text = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')).ToLowerInvariant()
+  if ($text -match '^\s*\[(deep-)?audit[/: -]') { return $true }
+  try {
+    $tags = @(Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @() | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    foreach ($tag in $tags) {
+      if ($tag -match 'audit') { return $true }
+    }
+  } catch {}
+  return $false
+}
+
+function Get-BacklogPackLastRun {
+  $p = Get-BacklogPackLatestPath
+  if (-not (Test-Path -LiteralPath $p)) { return $null }
+  try { return (Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+}
+
+function Get-BacklogPackPressure {
+  param($Config = $null)
+  if (-not $Config) { $Config = Get-BacklogPackConfig }
+  $now = (Get-Date).ToUniversalTime()
+  $recentCut = $now.AddMinutes(-[Math]::Abs([int]$Config.windowMinutes))
+  $auditCut = $now.AddMinutes(-[Math]::Abs([int]$Config.auditWindowMinutes))
+  $recent = 0
+  $auditRecent = 0
+  $openUnpacked = 0
+  $sample = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($item in @(Get-Backlog)) {
+    if (-not (Test-BacklogPackItemOpen -Item $item)) { continue }
+    if (-not (Test-BacklogPackItemUnpacked -Item $item)) { continue }
+    $openUnpacked++
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($id) -and $sample.Count -lt 10) { [void]$sample.Add($id) }
+    $ts = $null
+    try { $ts = [datetime]::Parse([string](Get-BacklogPackObjectValue -Obj $item -Name 'ts' -Default '')).ToUniversalTime() } catch { $ts = $null }
+    if ($ts -and $ts -ge $recentCut) { $recent++ }
+    if ($ts -and $ts -ge $auditCut -and (Test-BacklogPackItemAuditSource -Item $item)) { $auditRecent++ }
+  }
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  if ($recent -ge [int]$Config.burstCount) { [void]$reasons.Add(("burst:{0}/{1}m" -f $recent, [int]$Config.windowMinutes)) }
+  if ($openUnpacked -ge [int]$Config.unpackedOpenCount) { [void]$reasons.Add(("open-unpacked:{0}" -f $openUnpacked)) }
+  if ($auditRecent -ge [int]$Config.auditBurstCount) { [void]$reasons.Add(("audit-burst:{0}/{1}m" -f $auditRecent, [int]$Config.auditWindowMinutes)) }
+  return [pscustomobject]@{
+    needed                = ($reasons.Count -gt 0)
+    reasons               = @($reasons.ToArray())
+    recent_unpacked_open  = $recent
+    open_unpacked         = $openUnpacked
+    recent_audit_unpacked = $auditRecent
+    sample_ids            = @($sample.ToArray())
+    channel               = Get-BacklogPackChannel
+  }
+}
+
+function Request-BacklogPackIfNeeded {
+  param([string]$NewItemId = '')
+  try {
+    $cfg = Get-BacklogPackConfig
+    if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ requested=$false; reason='disabled' } }
+    $pressure = Get-BacklogPackPressure -Config $cfg
+    if (-not [bool]$pressure.needed) { return [pscustomobject]@{ requested=$false; reason='below-threshold'; pressure=$pressure } }
+    $requestPath = Get-BacklogPackRequestPath
+    if (Test-Path -LiteralPath $requestPath) {
+      return [pscustomobject]@{ requested=$true; existing=$true; path=$requestPath; pressure=$pressure }
+    }
+    $last = Get-BacklogPackLastRun
+    if ($last) {
+      try {
+        $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
+        $ageMin = ((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes
+        if ($ageMin -lt [int]$cfg.cooldownMinutes) {
+          return [pscustomobject]@{ requested=$false; reason='cooldown'; cooldown_remaining_minutes=[int]([int]$cfg.cooldownMinutes - [Math]::Floor($ageMin)); pressure=$pressure }
+        }
+      } catch {}
+    }
+    $req = [ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      channel = [string]$pressure.channel
+      reasons = @($pressure.reasons)
+      counts = [ordered]@{
+        recent_unpacked_open = [int]$pressure.recent_unpacked_open
+        open_unpacked = [int]$pressure.open_unpacked
+        recent_audit_unpacked = [int]$pressure.recent_audit_unpacked
+      }
+      sample_ids = @($pressure.sample_ids)
+      new_item_id = [string]$NewItemId
+    }
+    $json = ($req | ConvertTo-Json -Compress -Depth 6) + "`n"
+    Write-BacklogAtomicFile -Path $requestPath -Content $json
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = $req.ts
+        action = 'pack-request'
+        channel = [string]$pressure.channel
+        reasons = @($pressure.reasons)
+        open_unpacked = [int]$pressure.open_unpacked
+        recent_unpacked_open = [int]$pressure.recent_unpacked_open
+        recent_audit_unpacked = [int]$pressure.recent_audit_unpacked
+        new_item_id = [string]$NewItemId
+      })
+    } catch {}
+    return [pscustomobject]@{ requested=$true; existing=$false; path=$requestPath; pressure=$pressure }
+  } catch {
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='pack-request-error'; error=[string]$_.Exception.Message }) } catch {}
+    return [pscustomobject]@{ requested=$false; reason='error'; error=[string]$_.Exception.Message }
+  }
+}
+
+function Get-BacklogWorkpackModule {
+  param([string]$Text)
+  $t = ([string]$Text).ToLowerInvariant()
+  if ($t -match 'watchdog|supervisor|circuit|sandbox|security|preflight|permission|защит') { return 'safety' }
+  if ($t -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
+  if ($t -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
+  if ($t -match 'memory|librarian|embedding|recall|памят') { return 'memory' }
+  if ($t -match 'web/index\.html|ui|badge|status badge|frontend|интерфейс') { return 'ui' }
+  if ($t -match 'llm|codex|claude|gemini|deepseek|timeout|model') { return 'llm' }
+  if ($t -match 'state|snapshot|checkpoint|restart|resume') { return 'state' }
+  if ($t -match 'parallel|lane|worktree|concurrent|паралл') { return 'parallel' }
+  if ($t -match 'readme|docs|documentation|runbook|guide|докум') { return 'docs' }
+  return 'general'
+}
+
+function Get-BacklogWorkpackConflictGroup {
+  param([string]$Text, [string[]]$Files = @())
+  $all = ((@($Files) + @([string]$Text)) -join ' ').ToLowerInvariant()
+  if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
+  if ($all -match 'watchdog|supervisor|circuit|sandbox|security|preflight|permissions|защит') { return 'safety' }
+  if ($all -match 'audit|doctor|scenario') { return 'audit' }
+  if ($all -match 'backlog|curator|workpack') { return 'backlog' }
+  if ($all -match 'memory|librarian|embedding') { return 'memory' }
+  if ($all -match 'web/|ui|badge|frontend') { return 'ui' }
+  if ($all -match 'state|checkpoint|restart') { return 'state' }
+  if ($all -match 'llm|codex|claude|gemini|deepseek') { return 'llm' }
+  if ($all -match 'parallel|worktree|lane') { return 'parallel' }
+  if ($all -match '\.md|docs/|readme|runbook|guide') { return 'docs' }
+  return 'general'
+}
+
+function New-BacklogWorkpackId {
+  param([string]$Key)
+  $slug = ([string]$Key).ToLowerInvariant() -replace '[^a-z0-9]+','-'
+  $slug = $slug.Trim('-')
+  if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'general' }
+  if ($slug.Length -gt 36) { $slug = $slug.Substring(0, 36).Trim('-') }
+  return ('wp-{0}-{1}-{2}' -f (Get-Date -Format 'yyyyMMddHHmmss'), $slug, ([guid]::NewGuid().ToString('N').Substring(0,6)))
+}
+
+function Get-BacklogWorkpackClassification {
+  param($Item)
+  $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  $files = @(Get-BacklogMentionedFiles -Text $text | Sort-Object)
+  $module = Get-BacklogWorkpackModule -Text $text
+  $touch = @()
+  $key = ''
+  if ($files.Count -gt 0) {
+    $touch = @($files | Select-Object -First 8)
+    $primary = [string]$touch[0]
+    if ($primary -match '^(lib|tools|web|memory|control|docs|channels)/') {
+      $parts = $primary -split '/'
+      if ($parts.Count -ge 2) { $key = 'file:' + $parts[0] + '/' + $parts[1] }
+      else { $key = 'file:' + $primary }
+    } else {
+      $key = 'file:' + $primary
+    }
+  } else {
+    $keywords = @(Get-BacklogIdeaKeywords -Text $text | Select-Object -First 2)
+    if ($module -ne 'general') { $key = 'module:' + $module }
+    elseif ($keywords.Count -gt 0) { $key = 'module:' + $module + ':' + (($keywords | ForEach-Object { [string]$_ }) -join '-') }
+    else { $key = 'module:' + $module }
+    $touch = @($module)
+  }
+  if ([string]::IsNullOrWhiteSpace($key)) { $key = 'module:general' }
+  $conflict = Get-BacklogWorkpackConflictGroup -Text $text -Files $files
+  return [pscustomobject]@{
+    key            = $key.ToLowerInvariant()
+    touch_set      = @($touch)
+    conflict_group = $conflict
+    lane_hint      = ('serial:' + $conflict)
+  }
+}
+
+function Invoke-BacklogPacker {
+  param([string[]]$Reason = @('manual'), $Config = $null)
+  if (-not $Config) { $Config = Get-BacklogPackConfig }
+  if (-not [bool]$Config.enabled) { return [pscustomobject]@{ ran=$false; reason='disabled'; packed_items=0; workpack_count=0 } }
+
+  return (Invoke-BacklogLocked {
+    $items = @(Get-Backlog)
+    $candidates = @($items | Where-Object { (Test-BacklogPackItemOpen -Item $_) -and (Test-BacklogPackItemUnpacked -Item $_) })
+    if ($candidates.Count -lt [int]$Config.minItems) {
+      return [pscustomobject]@{ ran=$true; reason='not-enough-items'; packed_items=0; workpack_count=0; candidate_count=$candidates.Count }
+    }
+
+    $groups = @{}
+    $classes = @{}
+    foreach ($item in $candidates) {
+      $class = Get-BacklogWorkpackClassification -Item $item
+      $key = [string]$class.key
+      if ([string]::IsNullOrWhiteSpace($key)) { $key = 'module:general' }
+      if (-not $groups.ContainsKey($key)) { $groups[$key] = New-Object 'System.Collections.Generic.List[object]' }
+      [void]$groups[$key].Add($item)
+      $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($id)) { $classes[$id] = $class }
+    }
+
+    $now = (Get-Date).ToUniversalTime().ToString('o')
+    $packSummaries = New-Object 'System.Collections.Generic.List[object]'
+    $packed = 0
+    foreach ($key in @($groups.Keys | Sort-Object)) {
+      $groupItems = @($groups[$key].ToArray())
+      if ($groupItems.Count -eq 0) { continue }
+      $packId = New-BacklogWorkpackId -Key $key
+      $firstClass = $null
+      foreach ($g in $groupItems) {
+        $gid = [string](Get-BacklogPackObjectValue -Obj $g -Name 'id' -Default '')
+        if ($classes.ContainsKey($gid)) { $firstClass = $classes[$gid]; break }
+      }
+      if (-not $firstClass) { $firstClass = [pscustomobject]@{ touch_set=@('general'); conflict_group='general'; lane_hint='serial:general' } }
+      $ids = @()
+      foreach ($g in $groupItems) {
+        $gid = [string](Get-BacklogPackObjectValue -Obj $g -Name 'id' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($gid)) { $ids += $gid }
+        $g | Add-Member -NotePropertyName workpack_id -NotePropertyValue $packId -Force
+        $g | Add-Member -NotePropertyName workpack_ts -NotePropertyValue $now -Force
+        $g | Add-Member -NotePropertyName workpack_root_cause_key -NotePropertyValue $key -Force
+        $g | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($firstClass.touch_set) -Force
+        $g | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ([string]$firstClass.conflict_group) -Force
+        $g | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ([string]$firstClass.lane_hint) -Force
+        $g | Add-Member -NotePropertyName workpack_status -NotePropertyValue 'planned' -Force
+        $g | Add-Member -NotePropertyName workpack_reason -NotePropertyValue ((@($Reason) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ',') -Force
+        $g | Add-Member -NotePropertyName workpack_size -NotePropertyValue $groupItems.Count -Force
+        $packed++
+      }
+      [void]$packSummaries.Add([ordered]@{
+        id = $packId
+        key = $key
+        size = $groupItems.Count
+        conflict_group = [string]$firstClass.conflict_group
+        touch_set = @($firstClass.touch_set)
+        item_ids = @($ids)
+      })
+    }
+
+    if ($packed -gt 0) { Save-Backlog $items }
+    $summary = [ordered]@{
+      ts = $now
+      channel = Get-BacklogPackChannel
+      reason = @($Reason)
+      packed_items = $packed
+      workpack_count = $packSummaries.Count
+      workpacks = @($packSummaries.ToArray())
+    }
+    $latestJson = ($summary | ConvertTo-Json -Compress -Depth 6) + "`n"
+    Write-BacklogAtomicFile -Path (Get-BacklogPackLatestPath) -Content $latestJson
+    $line = $summary | ConvertTo-Json -Compress -Depth 6
+    [System.IO.File]::AppendAllText((Get-BacklogPackRunsPath), ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = $now
+        action = 'pack-run'
+        channel = [string]$summary.channel
+        reason = @($Reason)
+        packed_items = $packed
+        workpack_count = $packSummaries.Count
+      })
+    } catch {}
+    return [pscustomobject]@{
+      ran = $true
+      packed_items = $packed
+      workpack_count = $packSummaries.Count
+      workpacks = @($packSummaries.ToArray())
+    }
+  }.GetNewClosure())
+}
+
+function Invoke-BacklogPackerIfDue {
+  $cfg = Get-BacklogPackConfig
+  if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ ran=$false; reason='disabled'; packed_items=0; workpack_count=0 } }
+  $requestPath = Get-BacklogPackRequestPath
+  if (-not (Test-Path -LiteralPath $requestPath)) { return [pscustomobject]@{ ran=$false; reason='no-request'; packed_items=0; workpack_count=0 } }
+  $req = $null
+  try { $req = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+  $last = Get-BacklogPackLastRun
+  if ($last) {
+    try {
+      $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
+      if ((((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes) -lt [int]$cfg.cooldownMinutes) {
+        return [pscustomobject]@{ ran=$false; reason='cooldown'; packed_items=0; workpack_count=0 }
+      }
+    } catch {}
+  }
+  $reason = @('request')
+  try {
+    if ($req -and ($req.PSObject.Properties.Name -contains 'reasons')) { $reason = @($req.reasons | ForEach-Object { [string]$_ }) }
+  } catch {}
+  if ($reason.Count -eq 0) { $reason = @('request') }
+  $result = Invoke-BacklogPacker -Reason $reason -Config $cfg
+  if ($result -and [bool]$result.ran) {
+    try { Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue } catch {}
+  }
+  return $result
+}
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(
@@ -536,6 +992,7 @@ function Add-Idea {
     similar_to = @($rec.similar_to)
     curator_started = [bool]$curatorStarted
   })
+  try { Request-BacklogPackIfNeeded -NewItemId ([string]$rec.id) | Out-Null } catch {}
   return [string]$rec.id
 }
 

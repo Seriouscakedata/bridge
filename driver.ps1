@@ -3612,6 +3612,17 @@ while ($true) {
         }
       } catch {}
 
+      # Backlog packer: when many ideas arrived in a short window, annotate them into workpacks
+      # before the autonomy picker starts draining the queue one task at a time. This only groups
+      # metadata; approval/preflight/execution stay in the existing backlog pipeline.
+      try {
+        Request-BacklogPackIfNeeded | Out-Null
+        $packRun = Invoke-BacklogPackerIfDue
+        if ($packRun -and [bool]$packRun.ran -and [int]$packRun.packed_items -gt 0) {
+          Add-Message -From system -Text ("📦 Бэклог упакован: {0} задач → {1} workpack(s). Исполнение не меняю: approval и pre-flight остаются обязательными." -f [int]$packRun.packed_items, [int]$packRun.workpack_count) -Kind event | Out-Null
+        }
+      } catch {}
+
       # Autonomy: after enough idle quiet, take the next approved backlog idea and run it
       # as a self-task. Freshness skips are logged by backlog/curator and surfaced via poll.
       $claimedIdea = $null

@@ -48,6 +48,17 @@ function Get-AutonomySettings {
     maxOpenIdeas             = 12
     ideaStaleDays            = 14
     dedupDroppedDays         = 30
+    # Backlog packer: when many ideas arrive quickly, group them into workpacks
+    # before autonomy starts draining them one-by-one. The packer only annotates
+    # existing backlog items; execution remains controlled by the normal backlog path.
+    backlogPackEnabled       = $true
+    backlogPackBurstCount    = 5
+    backlogPackWindowMinutes = 60
+    backlogPackUnpackedOpenCount = 8
+    backlogPackAuditBurstCount = 3
+    backlogPackAuditWindowMinutes = 30
+    backlogPackCooldownMinutes = 30
+    backlogPackMinItems      = 2
   }
   try {
     $cfg = Get-BridgeConfig
@@ -98,6 +109,14 @@ function Get-AdvancedSettings {
     'librarian.deltaTriggerCount'    = 10
     'librarian.ceilingHours'         = 6
     'reflect.minTaskDurationSec'     = 60
+    'backlogPack.enabled'            = $true
+    'backlogPack.burstCount'         = 5
+    'backlogPack.windowMinutes'      = 60
+    'backlogPack.unpackedOpenCount'  = 8
+    'backlogPack.auditBurstCount'    = 3
+    'backlogPack.auditWindowMinutes' = 30
+    'backlogPack.cooldownMinutes'    = 30
+    'backlogPack.minItems'           = 2
   }
   try {
     $cfg = Get-BridgeConfig
@@ -141,6 +160,14 @@ function Test-AdvancedSettingValue {
     'librarian.deltaTriggerCount'   = @{ type='int';   min=1;   max=1000 }
     'librarian.ceilingHours'        = @{ type='int';   min=1;   max=720  }
     'reflect.minTaskDurationSec'    = @{ type='int';   min=0;   max=86400 }
+    'backlogPack.enabled'           = @{ type='bool'                    }
+    'backlogPack.burstCount'        = @{ type='int';   min=2;   max=1000 }
+    'backlogPack.windowMinutes'     = @{ type='int';   min=1;   max=1440 }
+    'backlogPack.unpackedOpenCount' = @{ type='int';   min=2;   max=1000 }
+    'backlogPack.auditBurstCount'   = @{ type='int';   min=2;   max=1000 }
+    'backlogPack.auditWindowMinutes'= @{ type='int';   min=1;   max=1440 }
+    'backlogPack.cooldownMinutes'   = @{ type='int';   min=1;   max=1440 }
+    'backlogPack.minItems'          = @{ type='int';   min=1;   max=50   }
   }
   if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
   $r = $ranges[$Key]
@@ -176,7 +203,10 @@ function Set-AdvancedSetting {
     'fastLane.autoDetect','fastLane.minChars',
     'memory.recallTopK','memory.recallMinScore','memory.dedupThreshold','memory.ageDaysPrune',
     'librarian.deltaTriggerCount','librarian.ceilingHours',
-    'reflect.minTaskDurationSec'
+    'reflect.minTaskDurationSec',
+    'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',
+    'backlogPack.unpackedOpenCount','backlogPack.auditBurstCount','backlogPack.auditWindowMinutes',
+    'backlogPack.cooldownMinutes','backlogPack.minItems'
   )
   $h = @{}
   $s = Get-Settings
