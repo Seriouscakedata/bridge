@@ -535,6 +535,19 @@ function Test-CanParallelize {
   return @($streams.ToArray())
 }
 
+function Get-ParallelRepoRoot {
+  # 2026-05-31 (Foundation #4 scale): the git repo a parallel worker's worktree branches from.
+  # PROJECT channel -> its project_root (isolated git) => safe high-fan-out parallelism with no
+  # cross-worker conflicts. main/bridge channel -> the bridge root (unchanged behaviour).
+  try {
+    if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+      $pr = Get-EffectiveProjectRoot
+      if (-not [string]::IsNullOrWhiteSpace([string]$pr) -and (Test-Path (Join-Path ([string]$pr) '.git'))) { return [string]$pr }
+    }
+  } catch {}
+  return (Get-BridgeRoot)
+}
+
 function Get-ParallelTaskBaseCommit {
   $ErrorActionPreference = 'Continue'
   $base = ''
@@ -543,7 +556,7 @@ function Get-ParallelTaskBaseCommit {
     if ($st -and ($st.PSObject.Properties.Name -contains 'task_base_commit')) { $base = [string]$st.task_base_commit }
   } catch {}
   if ([string]::IsNullOrWhiteSpace($base)) {
-    try { $base = ((& git -C (Get-BridgeRoot) rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
+    try { $base = ((& git -C (Get-ParallelRepoRoot) rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
   }
   return ([string]$base).Trim()
 }
@@ -563,16 +576,17 @@ function Get-WorkerWorktree {
   if ([string]::IsNullOrWhiteSpace($base)) { throw 'parallel: cannot resolve task_base_commit or HEAD' }
   $git = Get-GitExe
 
+  $repoRoot = Get-ParallelRepoRoot
   $branchExists = $false
   try {
-    & $git -C (Get-BridgeRoot) show-ref --verify --quiet "refs/heads/$branch"
+    & $git -C $repoRoot show-ref --verify --quiet "refs/heads/$branch"
     $branchExists = ($LASTEXITCODE -eq 0)
   } catch { $branchExists = $false }
 
   if ($branchExists) {
-    & $git -C (Get-BridgeRoot) worktree add $path $branch 2>&1 | Out-Null
+    & $git -C $repoRoot worktree add $path $branch 2>&1 | Out-Null
   } else {
-    & $git -C (Get-BridgeRoot) worktree add -b $branch $path $base 2>&1 | Out-Null
+    & $git -C $repoRoot worktree add -b $branch $path $base 2>&1 | Out-Null
   }
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $path)) { throw "parallel: git worktree add failed for $branch" }
   return [System.IO.Path]::GetFullPath($path)
@@ -588,7 +602,7 @@ function Cleanup-WorkerWorktree {
   if (-not $path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { throw "parallel: unsafe worktree path $path" }
 
   $git = Get-GitExe
-  try { & $git -C (Get-BridgeRoot) worktree remove --force $path 2>&1 | Out-Null } catch {}
+  try { & $git -C (Get-ParallelRepoRoot) worktree remove --force $path 2>&1 | Out-Null } catch {}
   if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
   # L2 (load audit): also reap this worker's job files (worker_<sid>_*.{in,msg,out,err}.txt).
   # Invoke-ParallelDispatch leaked them (only Invoke-CodexParallel cleaned up) -- 4 files/spawn x
@@ -743,7 +757,7 @@ function Spawn-Worker {
   # the dispatch poll to detect whether the worker actually committed before
   # claiming CONTINUE-CHUNK:N/M (no advance = worker lied, kill).
   $startSha = ''
-  try { $startSha = ((& git -C (Get-BridgeRoot) rev-parse $BranchName 2>$null) | Select-Object -First 1).Trim() } catch {}
+  try { $startSha = ((& git -C (Get-ParallelRepoRoot) rev-parse $BranchName 2>$null) | Select-Object -First 1).Trim() } catch {}
   return [pscustomobject]@{
     id            = $sid
     coder         = $cli                       # back-compat field (= CLI)
@@ -842,7 +856,7 @@ function Get-WorkerCommits {
   $base = Get-ParallelTaskBaseCommit
   $range = if ([string]::IsNullOrWhiteSpace($base)) { $branch } else { "$base..$branch" }
   try {
-    return @(& git -C (Get-BridgeRoot) rev-list --reverse $range 2>$null | ForEach-Object { [string]$_ })
+    return @(& git -C (Get-ParallelRepoRoot) rev-list --reverse $range 2>$null | ForEach-Object { [string]$_ })
   } catch {
     return @()
   }
@@ -1165,7 +1179,7 @@ function Invoke-ParallelDispatch {
         $chunkN = [int]$res.chunkN
         $chunkM = [int]$res.chunkM
         $branchHead = ''
-        try { $branchHead = ((& git -C (Get-BridgeRoot) rev-parse $w.branch 2>$null) | Select-Object -First 1).Trim() } catch {}
+        try { $branchHead = ((& git -C (Get-ParallelRepoRoot) rev-parse $w.branch 2>$null) | Select-Object -First 1).Trim() } catch {}
         $advanced = (-not [string]::IsNullOrWhiteSpace($branchHead)) -and ($branchHead -ne [string]$w.chunkLastSha)
         if (-not $advanced) {
           # No commit since last chunk — worker lied / forgot to commit. Mark failed.
@@ -1198,9 +1212,10 @@ function Invoke-ParallelDispatch {
     }
   }
 
-  # Merge phase: fast-forward each wip-branch into HEAD on main worktree
+  # Merge phase: fast-forward each wip-branch into HEAD on the channel's repo (project_root for
+  # project channels, bridge for main). 2026-05-31 Foundation #4 scale.
   $merged = 0
-  $bridgeRoot = Get-BridgeRoot
+  $bridgeRoot = Get-ParallelRepoRoot
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
     $res = $completed[$w.id]

@@ -869,6 +869,29 @@ function Get-BacklogWorkpackConflictGroup {
   if ($all -match 'llm|codex|claude|gemini|deepseek') { return 'llm' }
   if ($all -match 'parallel|worktree|lane') { return 'parallel' }
   if ($all -match '\.md|docs/|readme|runbook|guide') { return 'docs' }
+  # 2026-05-31 (Foundation #4 scale): bridge module patterns above don't match PROJECT-channel
+  # tasks (auth.ts/checkout/recipe...), so they ALL collapsed to 'general' -> the batch selector's
+  # usedGroups guard then took only ONE per cycle, forcing serial execution. For a PROJECT channel
+  # (isolated git -> parallel merge is conflict-safe), derive a per-FILE conflict group from the
+  # primary touched file: different files => different groups => they batch & run in PARALLEL; two
+  # tasks on the SAME file still share a group => stay serial (correct). main/bridge keeps 'general'
+  # (one shared tree -> serial is the safe default).
+  if (@($Files).Count -gt 0) {
+    $isProject = $false
+    try {
+      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+        $pr = Get-EffectiveProjectRoot
+        $isProject = (-not [string]::IsNullOrWhiteSpace([string]$pr) -and ([string]$pr -ne (Get-BridgeRoot)))
+      }
+    } catch {}
+    if ($isProject) {
+      $primary = @($Files | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object | Select-Object -First 1)
+      if ($primary) {
+        $norm = ([string]$primary).ToLowerInvariant() -replace '\\', '/'
+        return ('file:' + ($norm -replace '[^a-z0-9/._-]+', '-'))
+      }
+    }
+  }
   return 'general'
 }
 
@@ -1083,7 +1106,7 @@ function Get-BacklogWorkpackExecConfig {
   $cfg = [ordered]@{
     enabled          = $true
     minItems         = 2
-    maxItems         = 3
+    maxItems         = 6
     includeProtected = $false
   }
   $dotted = @{
