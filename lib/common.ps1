@@ -792,9 +792,18 @@ function Write-State {
   $json = $State | ConvertTo-Json -Depth 10
   $sp = Get-StatePath
   Write-AtomicFile -Path $sp -Content $json
-  # Write-through backup (best-effort: fail = warning only, not rollback of the main write)
+  # Write-through backup (best-effort: fail = warning only, not rollback of the main write).
+  # M1 (load audit): throttle the .bak to ~10s. It used to be written on EVERY state write -- but
+  # heartbeat ticks (~every 5s x N drivers) dominate, doubling the work done INSIDE the bridge lock
+  # and feeding the 15s-timeout contention under load. The live state.json is always current; the
+  # crash backup only needs to be RECENT, so skip it when a fresh .bak already exists.
   try {
-    Write-AtomicFile -Path ($sp + '.bak') -Content $json
+    $bakPath = $sp + '.bak'
+    $bakFresh = $false
+    if (Test-Path -LiteralPath $bakPath) {
+      try { $bakFresh = (((Get-Date) - (Get-Item -LiteralPath $bakPath).LastWriteTime).TotalSeconds -lt 10) } catch {}
+    }
+    if (-not $bakFresh) { Write-AtomicFile -Path $bakPath -Content $json }
   } catch {
     try {
       $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'

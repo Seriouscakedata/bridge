@@ -590,6 +590,17 @@ function Cleanup-WorkerWorktree {
   $git = Get-GitExe
   try { & $git -C (Get-BridgeRoot) worktree remove --force $path 2>&1 | Out-Null } catch {}
   if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+  # L2 (load audit): also reap this worker's job files (worker_<sid>_*.{in,msg,out,err}.txt).
+  # Invoke-ParallelDispatch leaked them (only Invoke-CodexParallel cleaned up) -- 4 files/spawn x
+  # respawns x 100s of tasks bloated jobs/parallel and inflated the jobs-weighted adaptive probe
+  # timeout. Cleanup-WorkerWorktree runs on every exit path, so this reaps them everywhere.
+  try {
+    $jobsDir = Get-ParallelJobsDir
+    if (Test-Path -LiteralPath $jobsDir) {
+      Get-ChildItem -LiteralPath $jobsDir -Filter ("worker_${sid}_*") -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
+  } catch {}
 }
 
 function New-ParallelWorkerPrompt {
