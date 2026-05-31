@@ -27,8 +27,9 @@ function Request-Restart { $script:restarted = $true }
 
 $rj = Join-Path $sandbox '.bridge-runtime\restarts.jsonl'
 function UtcAgo($sec) { ((Get-Date).ToUniversalTime().AddSeconds(-$sec)).ToString('o') }
-function WriteRestarts($n, $agoBaseSec) {
-  $lines = 1..$n | ForEach-Object { '{"ts":"' + (UtcAgo ($agoBaseSec + $_*5)) + '","cause":"explicit-flag","signature":"abc","detail":"x"}' }
+function WriteRestarts($n, $agoBaseSec, $cause = 'task-survived-3x') {
+  # default cause is a FAILURE (trips the breaker); pass 'explicit-flag' to test managed-recycle exclusion
+  $lines = 1..$n | ForEach-Object { '{"ts":"' + (UtcAgo ($agoBaseSec + $_*5)) + '","cause":"' + $cause + '","signature":"abc","detail":"x"}' }
   [System.IO.File]::WriteAllLines($rj, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
 }
 $fails = 0
@@ -69,6 +70,10 @@ Write-Host "`n[C5] Check-Once: NO cooldown + unhealthy -> acts (sanity: fix didn
 $script:restarted = $false; $script:rolledBack = $false
 Check-Once
 Assert 'C5 acted (restart or rollback)' ($script:restarted -or $script:rolledBack)
+
+Write-Host "`n[C7] 6 MANAGED (explicit-flag) restarts -> NOT cooldown (self-deploy recycles don't trip)"
+WriteRestarts 6 0 'explicit-flag'
+Assert 'C7 managed recycles do not trip' (-not (Test-CircuitCooldown))
 
 Write-Host "`n[C6] heartbeat stale + parallel ACTIVE in a channel -> HOLD rollback (H1 guard)"
 [System.IO.File]::WriteAllText($rj, '')   # no cooldown, so only the parallel guard can hold

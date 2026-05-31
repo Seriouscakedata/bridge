@@ -237,6 +237,13 @@ function Test-CircuitTrip {
     }
   }
   $count = @($events).Count
+  # 2026-05-31 ROOT FIX: MANAGED restarts must NOT trip the breaker. 'explicit-flag' is a
+  # restart.flag recycle -- a self-deploy after a code edit (coalescer) or a watchdog recovery,
+  # NOT a crash. Counting it tripped the breaker on normal self-edit showers (41 supervisor-
+  # hardening deploys in a row -> false cooldown -> driver blocked -> watchdog rollback wiped the
+  # work). Only FAILURE causes (task-survived-3x, parse-fail, state-corrupt, OOM, unknown) trip.
+  $failureEvents = @($events | Where-Object { [string]$_.cause -ne 'explicit-flag' })
+  $tripCount = @($failureEvents).Count
   $dominantCause = ''
   $dominantSignature = ''
   $dominantSignatureCause = ''
@@ -253,8 +260,9 @@ function Test-CircuitTrip {
     }
   }
   return [pscustomobject]@{
-    tripped                = ($count -ge [Math]::Max(1, $MaxRestarts))
+    tripped                = ($tripCount -ge [Math]::Max(1, $MaxRestarts))
     countInWindow          = $count
+    failureCountInWindow   = $tripCount
     dominantCause          = $dominantCause
     dominantSignature      = $dominantSignature
     dominantSignatureCause = $dominantSignatureCause

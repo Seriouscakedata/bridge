@@ -328,7 +328,8 @@ function Test-CircuitCooldown {
   try {
     foreach ($line in ([System.IO.File]::ReadAllLines($rj, [System.Text.Encoding]::UTF8))) {
       if ([string]::IsNullOrWhiteSpace($line)) { continue }
-      try { $e = $line | ConvertFrom-Json; $ts = ([datetimeoffset]::Parse([string]$e.ts)).UtcDateTime; if ($ts -ge $cutoff) { $count++ } } catch {}
+      # mirror circuit-breaker: MANAGED 'explicit-flag' recycles (self-deploy/recovery) don't count.
+      try { $e = $line | ConvertFrom-Json; $ts = ([datetimeoffset]::Parse([string]$e.ts)).UtcDateTime; if ($ts -ge $cutoff -and [string]$e.cause -ne 'explicit-flag') { $count++ } } catch {}
     }
   } catch {}
   return ($count -ge $maxRestarts)
