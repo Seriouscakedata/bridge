@@ -889,6 +889,208 @@ function Invoke-BacklogPackerIfDue {
   return $result
 }
 
+function Get-BacklogWorkpackExecConfig {
+  $cfg = [ordered]@{
+    enabled          = $true
+    minItems         = 2
+    maxItems         = 3
+    includeProtected = $false
+  }
+  $dotted = @{
+    'workpackExec.enabled'          = 'enabled'
+    'workpackExec.minItems'         = 'minItems'
+    'workpackExec.maxItems'         = 'maxItems'
+    'workpackExec.includeProtected' = 'includeProtected'
+  }
+  $flat = @{
+    workpackExecEnabled          = 'enabled'
+    workpackExecMinItems         = 'minItems'
+    workpackExecMaxItems         = 'maxItems'
+    workpackExecIncludeProtected = 'includeProtected'
+  }
+  try {
+    if (Get-Command Get-AdvancedSettings -ErrorAction SilentlyContinue) {
+      $adv = Get-AdvancedSettings
+      foreach ($k in $dotted.Keys) {
+        if ($adv -and $adv.Contains($k) -and $null -ne $adv[$k]) { $cfg[$dotted[$k]] = $adv[$k] }
+      }
+    }
+  } catch {}
+  try {
+    if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
+      $auto = Get-AutonomySettings
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $auto -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+  try {
+    if (Get-Command Get-Settings -ErrorAction SilentlyContinue) {
+      $settings = Get-Settings
+      foreach ($k in $dotted.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$dotted[$k]] = $v }
+      }
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+
+  $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
+  $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 2 -Max 12
+  $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 3 -Min 2 -Max 12
+  $cfg.includeProtected = ConvertTo-BacklogPackBool -Value $cfg.includeProtected -Default $false
+  if ([int]$cfg.maxItems -lt [int]$cfg.minItems) { $cfg.maxItems = [int]$cfg.minItems }
+  return [pscustomobject]$cfg
+}
+
+function Get-BacklogWorkpackItemTouches {
+  param($Item)
+  $touches = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_touch_set' -Default @())) {
+      $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
+      if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$touches.Add($v) }
+    }
+  } catch {}
+  if ($touches.Count -eq 0) {
+    try {
+      foreach ($f in @(Get-BacklogMentionedFiles -Text ([string]$Item.text))) {
+        $v = ([string]$f).Trim().ToLowerInvariant() -replace '\\','/'
+        if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$touches.Add($v) }
+      }
+    } catch {}
+  }
+  if ($touches.Count -eq 0) {
+    $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($cg)) { [void]$touches.Add($cg) }
+  }
+  return @($touches.ToArray() | Sort-Object -Unique)
+}
+
+function Test-BacklogWorkpackTouchesOverlap {
+  param([string[]]$Left, [string[]]$Right)
+  $seen = @{}
+  foreach ($l in @($Left)) {
+    $v = ([string]$l).Trim().ToLowerInvariant() -replace '\\','/'
+    if (-not [string]::IsNullOrWhiteSpace($v)) { $seen[$v] = $true }
+  }
+  foreach ($r in @($Right)) {
+    $v = ([string]$r).Trim().ToLowerInvariant() -replace '\\','/'
+    if ([string]::IsNullOrWhiteSpace($v)) { continue }
+    if ($seen.ContainsKey($v)) { return $true }
+  }
+  return $false
+}
+
+function Test-BacklogWorkpackExecEligible {
+  param($Item, $Config = $null)
+  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
+  if (-not [bool]$Config.enabled) { return $false }
+  if (-not $Item) { return $false }
+  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') { return $false }
+  if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default ''))) { return $false }
+  try { if (Test-IdeaExternal $Item) { return $false } } catch {}
+  $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+  if ((-not [bool]$Config.includeProtected) -and ($cg -in @('core','safety'))) { return $false }
+  return $true
+}
+
+function Get-NextBacklogWorkpackBatch {
+  param($Config = $null)
+  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
+  if (-not [bool]$Config.enabled) { return $null }
+
+  $eligible = @(
+    Get-Backlog |
+    Where-Object { Test-BacklogWorkpackExecEligible -Item $_ -Config $Config } |
+    Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+                @{Expression={[string]$_.ts}}
+  )
+  if ($eligible.Count -lt [int]$Config.minItems) { return $null }
+
+  $selected = New-Object 'System.Collections.Generic.List[object]'
+  $usedPacks = @{}
+  $usedGroups = @{}
+  $usedTouches = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($item in $eligible) {
+    if ($selected.Count -ge [int]$Config.maxItems) { break }
+    $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($packId)) { continue }
+    if ($usedPacks.ContainsKey($packId)) { continue }
+
+    $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
+    if ($usedGroups.ContainsKey($group)) { continue }
+
+    $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+    if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { continue }
+
+    [void]$selected.Add($item)
+    $usedPacks[$packId] = $true
+    $usedGroups[$group] = $true
+    foreach ($t in $touches) { [void]$usedTouches.Add($t) }
+  }
+
+  if ($selected.Count -lt [int]$Config.minItems) { return $null }
+  $ids = @($selected.ToArray() | ForEach-Object { [string]$_.id })
+  $packs = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
+  $groups = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
+  return [pscustomobject]@{
+    items = @($selected.ToArray())
+    ids = @($ids)
+    workpacks = @($packs)
+    conflict_groups = @($groups)
+    count = $selected.Count
+  }
+}
+
+function New-BacklogWorkpackBatchTaskText {
+  param([object[]]$Items)
+  $itemsArr = @($Items | Where-Object { $_ })
+  $n = $itemsArr.Count
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.AppendLine("[Автозадача из workpack-batch] Выполни $n независимых approved задач бэклога одним проверяемым проходом.")
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('Цель слоя: не идти по очереди, а отдать независимые workpacks существующему parallel dispatcher.')
+  [void]$sb.AppendLine('Правила:')
+  [void]$sb.AppendLine('- Не обходи safety: если задача стала нерелевантной или опасной, явно скажи это в отчёте.')
+  [void]$sb.AppendLine('- Для независимых пунктов в первом ходе выдай STATUS: CONTINUE и отдельные [[PARALLEL:<id>]] блоки.')
+  [void]$sb.AppendLine('- В каждом [[PARALLEL]] блоке обязательно укажи Files: с разрешёнными файлами/touch set.')
+  [void]$sb.AppendLine('- После merge обычные verify/critic/smoke gates должны подтвердить общий результат.')
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine('Шаблон первого ответа для planner-а: скопируй эти блоки, если задачи всё ещё независимы.')
+  [void]$sb.AppendLine('')
+  $idx = 0
+  foreach ($item in $itemsArr) {
+    $idx++
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
+    $group = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')
+    $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+    if ($touches.Count -eq 0) { $touches = @($group) }
+    $files = ($touches | Select-Object -First 8) -join ', '
+    $text = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '') -replace '\s+', ' ').Trim()
+    [void]$sb.AppendLine(("ITEM {0}: backlog_id={1}" -f $idx, $id))
+    [void]$sb.AppendLine(("workpack={0}; conflict_group={1}" -f $packId, $group))
+    [void]$sb.AppendLine(("Files: {0}" -f $files))
+    [void]$sb.AppendLine(("Task: {0}" -f $text))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine(("[[PARALLEL:wp{0}]]" -f $idx))
+    [void]$sb.AppendLine(("Files: {0}" -f $files))
+    [void]$sb.AppendLine('Complexity: moderate')
+    [void]$sb.AppendLine(("Task: {0}" -f $text))
+    [void]$sb.AppendLine(("[[/PARALLEL:wp{0}]]" -f $idx))
+    [void]$sb.AppendLine('')
+  }
+  [void]$sb.AppendLine('STATUS: CONTINUE')
+  return $sb.ToString().Trim()
+}
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(

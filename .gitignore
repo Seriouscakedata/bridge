@@ -16,6 +16,7 @@ settings.json
 control/
 files/
 runtime/
+worktrees/
 projects/
 decisions/*
 !decisions/

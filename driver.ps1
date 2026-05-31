@@ -3575,9 +3575,27 @@ while ($true) {
     } else {
       # Reconcile: a backlog task that ended without success leaves current_backlog_id set.
       $leftBid = [string]$state.current_backlog_id
-      if ($leftBid) {
-        try { if ((Get-IdeaById -Id $leftBid).status -eq 'running') { Set-Idea -Id $leftBid -Status 'failed' | Out-Null; Add-Message -From system -Text "⚠ Автозадача из бэклога не завершилась успешно — помечена 'failed'." -Kind event | Out-Null } } catch {}
-        Update-State { param($s) $s.current_backlog_id=$null } | Out-Null
+      $leftBatchIds = @()
+      try {
+        if ($state.PSObject.Properties.Name -contains 'workpack_batch_ids' -and $null -ne $state.workpack_batch_ids) {
+          $leftBatchIds = @($state.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+      } catch { $leftBatchIds = @() }
+      $leftIds = @(@($leftBid) + @($leftBatchIds) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+      if ($leftIds.Count -gt 0) {
+        $failedN = 0
+        foreach ($leftId in $leftIds) {
+          try {
+            if ((Get-IdeaById -Id $leftId).status -eq 'running') {
+              Set-Idea -Id $leftId -Status 'failed' | Out-Null
+              $failedN++
+            }
+          } catch {}
+        }
+        if ($failedN -gt 0) {
+          Add-Message -From system -Text "⚠ Автозадача из бэклога не завершилась успешно — помечено failed: $failedN." -Kind event | Out-Null
+        }
+        Update-State { param($s) $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force } | Out-Null
         $state = Read-State
       }
       # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
@@ -3627,9 +3645,59 @@ while ($true) {
       # as a self-task. Freshness skips are logged by backlog/curator and surfaced via poll.
       $claimedIdea = $null
       $claimedIdeaSelection = $null
+      $claimedWorkpackBatch = $false
       $auditBusyForAutonomy = $false
       try { $auditBusyForAutonomy = Test-AuditMaintenanceBusy } catch {}
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
+        # Workpack execution layer: before claiming a single backlog item, try to claim a small
+        # batch of already-approved, non-conflicting workpack items. The batch still enters the
+        # normal task pipeline, so planner parallel-dispatch, critic, smoke, and pre-flight gates
+        # remain the authority.
+        try {
+          $wpBatch = Get-NextBacklogWorkpackBatch
+          if ($wpBatch -and [int]$wpBatch.count -ge 2) {
+            $wpCfg = Get-BacklogWorkpackExecConfig
+            $safeItems = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($wpItem in @($wpBatch.items)) {
+              $wpId = [string]$wpItem.id
+              $wpGate = $null
+              try { $wpGate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpGate = [pscustomobject]@{ safe=$true; risk='unknown'; reason='gate exception fail-open' } }
+              if ($wpGate -and -not [bool]$wpGate.safe) {
+                try { Set-Idea -Id $wpId -Status 'held' | Out-Null } catch {}
+                Add-Message -From system -Text ("🛑 Workpack pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpGate.risk + "): " + [string]$wpGate.reason) -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-preflight-blocked'; item_id=$wpId; risk=[string]$wpGate.risk; reason=[string]$wpGate.reason }) } catch {}
+                continue
+              }
+              [void]$safeItems.Add($wpItem)
+            }
+            if ($safeItems.Count -ge [int]$wpCfg.minItems) {
+              $safeArr = @($safeItems.ToArray())
+              $batchText = New-BacklogWorkpackBatchTaskText -Items $safeArr
+              $batchIds = @($safeArr | ForEach-Object { [string]$_.id })
+              $claimedIdea = [pscustomobject]@{
+                id = [string]$batchIds[0]
+                text = $batchText
+                workpack_batch = $true
+                workpack_batch_ids = @($batchIds)
+                workpack_batch_count = $safeArr.Count
+                preflight_checked = $true
+              }
+              $claimedWorkpackBatch = $true
+              try {
+                Write-BacklogJsonLine ([ordered]@{
+                  ts=(Get-Date).ToUniversalTime().ToString('o')
+                  action='workpack-batch-claim'
+                  item_ids=@($batchIds)
+                  count=$safeArr.Count
+                  workpacks=@($safeArr | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
+                  conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
+                })
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         try {
           $claimedIdeaSelection = Get-NextApprovedIdea
           if ($claimedIdeaSelection -and ($claimedIdeaSelection.PSObject.Properties.Name -contains 'skipped')) {
@@ -3755,20 +3823,33 @@ while ($true) {
         # to delete a still-used file passes smoke). Blocked tasks -> 'held' (selectors
         # only pick new/approved, so they won't be re-claimed) + operator escalation.
         try {
-          $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$claimedIdea.text) -BridgeRoot $bridgeRoot
-          if (-not $gate.safe) {
-            $gid = [string]$claimedIdea.id
-            try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
-            Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gate.risk + "): " + [string]$gate.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
-            try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gate.risk; reason=[string]$gate.reason }) } catch {}
-            $claimedIdea = $null
+          $preflightChecked = $false
+          try {
+            if ($claimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$claimedIdea.preflight_checked }
+          } catch {}
+          if (-not $preflightChecked) {
+            $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$claimedIdea.text) -BridgeRoot $bridgeRoot
+            if (-not $gate.safe) {
+              $gid = [string]$claimedIdea.id
+              try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
+              Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gate.risk + "): " + [string]$gate.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
+              try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gate.risk; reason=[string]$gate.reason }) } catch {}
+              $claimedIdea = $null
+            }
           }
         } catch {}
       }
       if ($claimedIdea) {
         $script:idleStreak = 0   # autonomous task claimed -> snappy idle again once it finishes
         $bid = [string]$claimedIdea.id
-        $btext = '[Автозадача из бэклога] ' + [string]$claimedIdea.text
+        $batchIdsForState = @()
+        try {
+          if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_batch_ids') {
+            $batchIdsForState = @($claimedIdea.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+        } catch { $batchIdsForState = @() }
+        $isWorkpackBatch = ($batchIdsForState.Count -ge 2)
+        $btext = if ($isWorkpackBatch) { [string]$claimedIdea.text } else { '[Автозадача из бэклога] ' + [string]$claimedIdea.text }
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
         $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
@@ -3780,6 +3861,8 @@ while ($true) {
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
           $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($batchIdsForState) -Force
+          $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $isWorkpackBatch -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -3798,8 +3881,18 @@ while ($true) {
         } catch {}
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
         try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
-        try { Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null } catch {}
-        Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
+        try {
+          if ($isWorkpackBatch) {
+            foreach ($batchId in $batchIdsForState) { Set-Idea -Id $batchId -Status 'running' -IncrementAttempts $true | Out-Null }
+          } else {
+            Set-Idea -Id $bid -Status 'running' -IncrementAttempts $true | Out-Null
+          }
+        } catch {}
+        if ($isWorkpackBatch) {
+          Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks. Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
+        }
         if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: backlog" -Kind event | Out-Null }
         $state = Read-State
       } else {
@@ -5531,15 +5624,24 @@ $diff
     } catch {}
     # If this was an autonomous backlog task, close it out.
     try {
-      $doneBid = [string](Read-State).current_backlog_id
-      if ($doneBid) {
-        Set-Idea -Id $doneBid -Status 'done' | Out-Null
+      $stDoneBacklog = Read-State
+      $doneBid = [string]$stDoneBacklog.current_backlog_id
+      $doneBatchIds = @()
+      try {
+        if ($stDoneBacklog.PSObject.Properties.Name -contains 'workpack_batch_ids' -and $null -ne $stDoneBacklog.workpack_batch_ids) {
+          $doneBatchIds = @($stDoneBacklog.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        }
+      } catch { $doneBatchIds = @() }
+      $doneIds = if ($doneBatchIds.Count -gt 0) { @($doneBatchIds) } elseif ($doneBid) { @($doneBid) } else { @() }
+      if ($doneIds.Count -gt 0) {
+        foreach ($doneId in $doneIds) { Set-Idea -Id $doneId -Status 'done' | Out-Null }
         # 🤖 Autonomy metric (Foundation #3): the honest self-sufficiency number — autonomous backlog
         # tasks closed IN A ROW with zero operator messages between them. Increment on each autonomous
         # done; the user-message handler resets the running streak to 0 (best is preserved here).
+        $doneIncrement = [Math]::Max(1, [int]$doneIds.Count)
         Update-State ({ param($s)
           $cur = 0; try { $cur = [int]$s.autonomy_streak } catch {}
-          $cur++
+          $cur += $doneIncrement
           $best = 0; try { $best = [int]$s.autonomy_streak_best } catch {}
           if ($cur -gt $best) { $best = $cur }
           $s | Add-Member -NotePropertyName autonomy_streak      -NotePropertyValue $cur  -Force
@@ -5549,7 +5651,11 @@ $diff
         $sNow = 0; try { $sNow = [int]$stk.autonomy_streak } catch {}
         $sBest = 0; try { $sBest = [int]$stk.autonomy_streak_best } catch {}
         $bestTxt = if ($sBest -gt $sNow) { " (рекорд: $sBest)" } else { '' }
-        Add-Message -From system -Text ("✅ Автозадача из бэклога выполнена и закрыта. 🤖 Автономных задач подряд без вмешательства: $sNow$bestTxt") -Kind event | Out-Null
+        if ($doneIds.Count -gt 1) {
+          Add-Message -From system -Text ("✅ Workpack-batch выполнен: закрыто задач бэклога: " + $doneIds.Count + ". 🤖 Автономных задач подряд без вмешательства: $sNow$bestTxt") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text ("✅ Автозадача из бэклога выполнена и закрыта. 🤖 Автономных задач подряд без вмешательства: $sNow$bestTxt") -Kind event | Out-Null
+        }
       }
     } catch {}
     # Mark ANY self-improvement commit as a hypothesis for the 24h verdict cycle (was previously
@@ -5591,7 +5697,7 @@ $diff
       if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = 'task-' + [string]$stDoneCp.task_start_seq }
       Clear-TaskCheckpoint -TaskId $doneCpTaskId -Channel $Channel
     } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {

@@ -59,6 +59,13 @@ function Get-AutonomySettings {
     backlogPackAuditWindowMinutes = 30
     backlogPackCooldownMinutes = 30
     backlogPackMinItems      = 2
+    # Workpack execution: when the backlog has already been grouped, claim several
+    # independent approved workpack items as one batch task. The normal planner,
+    # parallel workers, critic, smoke, and pre-flight gates still own execution.
+    workpackExecEnabled      = $true
+    workpackExecMinItems     = 2
+    workpackExecMaxItems     = 3
+    workpackExecIncludeProtected = $false
   }
   try {
     $cfg = Get-BridgeConfig
@@ -117,6 +124,10 @@ function Get-AdvancedSettings {
     'backlogPack.auditWindowMinutes' = 30
     'backlogPack.cooldownMinutes'    = 30
     'backlogPack.minItems'           = 2
+    'workpackExec.enabled'           = $true
+    'workpackExec.minItems'          = 2
+    'workpackExec.maxItems'          = 3
+    'workpackExec.includeProtected'  = $false
   }
   try {
     $cfg = Get-BridgeConfig
@@ -168,6 +179,10 @@ function Test-AdvancedSettingValue {
     'backlogPack.auditWindowMinutes'= @{ type='int';   min=1;   max=1440 }
     'backlogPack.cooldownMinutes'   = @{ type='int';   min=1;   max=1440 }
     'backlogPack.minItems'          = @{ type='int';   min=1;   max=50   }
+    'workpackExec.enabled'          = @{ type='bool'                    }
+    'workpackExec.minItems'         = @{ type='int';   min=2;   max=12   }
+    'workpackExec.maxItems'         = @{ type='int';   min=2;   max=12   }
+    'workpackExec.includeProtected' = @{ type='bool'                    }
   }
   if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
   $r = $ranges[$Key]
@@ -206,7 +221,8 @@ function Set-AdvancedSetting {
     'reflect.minTaskDurationSec',
     'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',
     'backlogPack.unpackedOpenCount','backlogPack.auditBurstCount','backlogPack.auditWindowMinutes',
-    'backlogPack.cooldownMinutes','backlogPack.minItems'
+    'backlogPack.cooldownMinutes','backlogPack.minItems',
+    'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected'
   )
   $h = @{}
   $s = Get-Settings
