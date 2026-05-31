@@ -63,6 +63,17 @@ $claudeExe  = Resolve-ClaudeExe $cfg
 $codexExe   = Resolve-CodexExe  $cfg
 $workRoot   = [string]$cfg.workRoot
 $bridgeRoot = Get-BridgeRoot
+
+# 2026-05-31 (Foundation #4): ensure node/npm on PATH for PROJECT channels (build/test/verify).
+# The driver starts -NoProfile inheriting the supervisor's stale PATH (captured before node was
+# installed), so child coder processes can't find node. Locate it once and prepend to this
+# process's PATH; spawned codex/claude inherit it. No-op if node is already visible.
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  $nodeDirs = @()
+  try { $nodeDirs += @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\OpenJS.NodeJS*\node-*-win-x64\node.exe') -ErrorAction SilentlyContinue | ForEach-Object { $_.DirectoryName }) } catch {}
+  $nodeDirs += @((Join-Path $env:ProgramFiles 'nodejs'), (Join-Path $env:LOCALAPPDATA 'Programs\nodejs'))
+  foreach ($d in $nodeDirs) { if ($d -and (Test-Path (Join-Path $d 'node.exe'))) { $env:Path = [string]$d + ';' + $env:Path; break } }
+}
 $maxTurns   = [int]$cfg.maxTurns
 $loopDelay  = [int]$cfg.loopDelaySeconds
 $idlePoll   = if ($cfg.idlePollSeconds) { [int]$cfg.idlePollSeconds } else { 3 }
