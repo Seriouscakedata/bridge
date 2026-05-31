@@ -1,10 +1,21 @@
 ﻿[CmdletBinding()]
 param(
-  [string]$BridgePath = (Split-Path -Parent $PSScriptRoot),
+  [string]$BridgePath = $null,
   [int]$ScenarioTimeoutSec = 60,
   [switch]$Force,
   [switch]$NoChat
 )
+
+$scriptRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+  $PSScriptRoot
+} elseif (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+  Split-Path -Parent $PSCommandPath
+} else {
+  (Get-Location).Path
+}
+if ([string]::IsNullOrWhiteSpace($BridgePath)) {
+  $BridgePath = Split-Path -Parent $scriptRoot
+}
 
 # tools\feature-verifier.ps1 -- Phase 4 of the feature-registry initiative.
 #
@@ -52,6 +63,95 @@ function Send-VerifierChatAlert {
   } catch {}
 }
 
+function ConvertTo-FeatureVerifierRegistryList {
+  param($Value)
+  $items = New-Object 'System.Collections.Generic.List[object]'
+
+  function Add-RegistryValue {
+    param($Item)
+    if ($null -eq $Item) { return }
+    if ($Item -is [System.Array]) {
+      foreach ($child in @($Item)) { Add-RegistryValue -Item $child }
+      return
+    }
+    if ($Item.PSObject -and $Item.PSObject.Properties['value']) {
+      Add-RegistryValue -Item $Item.value
+      return
+    }
+    if ($Item.PSObject -and $Item.PSObject.Properties['id'] -and -not [string]::IsNullOrWhiteSpace([string]$Item.id)) {
+      [void]$items.Add($Item)
+    }
+  }
+
+  Add-RegistryValue -Item $Value
+  return @($items.ToArray())
+}
+
+function Repair-FeatureVerifierState {
+  param(
+    [hashtable]$State,
+    [object[]]$Registry
+  )
+  if (-not $State) { return 0 }
+
+  $scenarioOwners = @{}
+  foreach ($f in @($Registry)) {
+    $id = [string]$f.id
+    if ([string]::IsNullOrWhiteSpace($id)) { continue }
+    $scenarios = @()
+    try {
+      if ($f.scenarios) { $scenarios = @($f.scenarios) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } }
+    } catch {}
+    foreach ($scn in $scenarios) {
+      $scenarioName = [System.IO.Path]::GetFileNameWithoutExtension([string]$scn)
+      if (-not [string]::IsNullOrWhiteSpace($scenarioName)) { $scenarioOwners[$scenarioName] = $id }
+    }
+  }
+
+  $removed = 0
+  foreach ($key in @($State.Keys)) {
+    if ([string]$key -notmatch '\s') { continue }
+    $entry = $State[$key]
+    $scenarioResults = @()
+    try {
+      if ($entry -and $entry.PSObject -and $entry.PSObject.Properties['scenario_results'] -and $entry.scenario_results) {
+        $scenarioResults = @($entry.scenario_results)
+      }
+    } catch {}
+
+    foreach ($sr in $scenarioResults) {
+      $scenarioName = [string]$sr.scenario
+      if ([string]::IsNullOrWhiteSpace($scenarioName) -or -not $scenarioOwners.ContainsKey($scenarioName)) { continue }
+      $ownerId = [string]$scenarioOwners[$scenarioName]
+      $target = $State[$ownerId]
+      if (-not $target -or -not $target.PSObject) { $target = [pscustomobject]@{} }
+
+      $verifiedAt = $null
+      $aggregateHealth = $null
+      try {
+        if ($entry.PSObject.Properties['last_verified_at']) { $verifiedAt = $entry.last_verified_at }
+        if ($entry.PSObject.Properties['last_health']) { $aggregateHealth = $entry.last_health }
+      } catch {}
+      if ($verifiedAt) { Add-Member -InputObject $target -MemberType NoteProperty -Name 'last_verified_at' -Value $verifiedAt -Force }
+      $health = if ($null -ne $sr.ok -and -not [bool]$sr.ok) { 'broken' } elseif ($aggregateHealth) { [string]$aggregateHealth } else { 'passing' }
+      Add-Member -InputObject $target -MemberType NoteProperty -Name 'last_health' -Value $health -Force
+
+      $existingResults = @()
+      try {
+        if ($target.PSObject.Properties['scenario_results'] -and $target.scenario_results) {
+          $existingResults = @($target.scenario_results) | Where-Object { [string]$_.scenario -ne $scenarioName }
+        }
+      } catch {}
+      Add-Member -InputObject $target -MemberType NoteProperty -Name 'scenario_results' -Value @($existingResults + $sr) -Force
+      $State[$ownerId] = $target
+    }
+
+    $State.Remove($key)
+    $removed++
+  }
+  return $removed
+}
+
 $scope = $null
 try {
   if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) { $scope = Get-EffectiveScope }
@@ -79,6 +179,7 @@ if (-not (Test-Path -LiteralPath $registryPath)) {
   exit 0
 }
 $registry = @(Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+$registry = @(ConvertTo-FeatureVerifierRegistryList -Value $registry)
 
 $statePath = [string]$scope.features_state
 $state = @{}
@@ -93,6 +194,7 @@ if (Test-Path -LiteralPath $statePath) {
     }
   } catch {}
 }
+[void](Repair-FeatureVerifierState -State $state -Registry $registry)
 
 $now = (Get-Date).ToString('o')
 $results = New-Object 'System.Collections.Generic.List[object]'
