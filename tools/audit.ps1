@@ -1279,6 +1279,14 @@ function Invoke-BridgeAudit {
         $commonLib = Join-Path $root 'lib\common.ps1'
         if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
       }
+      $initializeChannelsLoaded = Get-Command Initialize-Channels -ErrorAction SilentlyContinue
+      if ($initializeChannelsLoaded) {
+        try {
+          Initialize-Channels | Out-Null
+        } catch {
+          Write-Warning ("audit-self-diag: Initialize-Channels failed after common.ps1 load: " + $_.Exception.Message)
+        }
+      }
       # Pin the channel so Get-BacklogPath resolves to the active channel's
       # backlog.jsonl. 2026-05-28: was hard-pinned to 'main' — that meant a
       # travel-channel audit would file its findings into the bridge backlog,
@@ -1288,6 +1296,9 @@ function Invoke-BridgeAudit {
       if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
         $pinSlug = if (-not [string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel } else { 'main' }
         try { Set-PinnedChannel $pinSlug } catch {}
+      }
+      if (-not (Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)) {
+        Write-Warning 'audit-self-diag: Get-BacklogPath unavailable after common.ps1 load and Initialize-Channels; skipping Add-Idea filing for deep-audit findings'
       }
       $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue) -and [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
     } catch {
