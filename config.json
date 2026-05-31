@@ -125,6 +125,10 @@
     "cooldownMin": 15
   },
   "supervisor": {
+    "restartLimitMaxPerHour": 1000,
+    "restartLimitCooldownMin": 5
+  },
+  "supervisor": {
     "reapBloatedMB": 8192,
     "reapWarnMB": 6144,
     "reapGraceMs": 60000,
