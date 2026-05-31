@@ -97,6 +97,7 @@ try {
   $taskkillText = '[deep-agent/security-model/deepseek-v4-pro] command_injection -- The script constructs and executes ''taskkill /PID $_.ProcessId /F /T'' using string interpolation.'
   $configSecretText = '[deep-codex/security] hardcoded_secrets (config.json:1) -- Recommend: Use environment variables or relative paths instead of hardcoded absolute paths.'
   $toolPathSecretText = "[deep-agent/security-model/deepseek-v4-pro] hardcoded_secrets -- The configuration file contains hardcoded paths: 'C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe', 'C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe', 'C:/Users/rafie/OneDrive/Documents/bridge-canary-worktree'."
+  $unsafeDynamicText = '[deep-codex/security] unsafe_dynamic_execution (canary.ps1:1) -- Recommend: If channels.ps1 is optional, make this explicit rather than silently continuing.'
   $startClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $startSrvText })
   $reapClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $reapText })
   $auditClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $auditText })
@@ -106,6 +107,7 @@ try {
   $taskkillClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $taskkillText })
   $configSecretClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $configSecretText })
   $toolPathSecretClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $toolPathSecretText })
+  $unsafeDynamicClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $unsafeDynamicText })
   Assert-True (@($startClass.touch_set) -contains 'supervisor.ps1') 'Start-Srv/Start-Drv should infer supervisor.ps1'
   Assert-True (@($reapClass.touch_set) -contains 'supervisor.ps1') 'Reap-Bloated should infer supervisor.ps1'
   Assert-True ([string]$startClass.key -eq 'file:supervisor.ps1') ("expected supervisor key for Start-Srv, got {0}" -f [string]$startClass.key)
@@ -127,6 +129,8 @@ try {
   Assert-True ([string]$configSecretClass.conflict_group -eq 'safety') 'hardcoded secrets should be safety conflict'
   Assert-True ([string]$toolPathSecretClass.key -eq 'file:config.json') ("expected tool path hardcoded secret to map to config.json, got {0}" -f [string]$toolPathSecretClass.key)
   Assert-True (-not (@($toolPathSecretClass.touch_set) -contains 'lib/parallel.ps1')) 'worktree path alone should not infer lib/parallel.ps1'
+  Assert-True (@($unsafeDynamicClass.touch_set) -contains 'lib/channels.ps1') 'bare channels.ps1 should infer lib/channels.ps1'
+  Assert-True (@('core','safety') -contains [string]$unsafeDynamicClass.conflict_group) 'unsafe dynamic execution should be protected'
 
   $idStale = Add-Idea -Text $startSrvText -From 'test' -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)

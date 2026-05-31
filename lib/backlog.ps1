@@ -774,6 +774,9 @@ function Get-BacklogInferredFiles {
   if ($t -match 'taskkill\s+/pid\s+\$_\.processid') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'supervisor.ps1'
   }
+  if ($t -match '\bchannels\.ps1\b') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/channels.ps1'
+  }
   if ($t -match '(get-backlogpath|add-idea|backlog path|backlog-curator|curator)') {
     Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/backlog.ps1'
   }
@@ -814,6 +817,7 @@ function Get-BacklogPrimaryWorkpackFile {
   foreach ($preferred in @(
       'lib/circuit-breaker.ps1',
       'supervisor.ps1',
+      'canary.ps1',
       'driver.ps1',
       'server.ps1',
       'watchdog.ps1',
@@ -839,7 +843,7 @@ function Get-BacklogWorkpackModule {
   $all = ((@($Files) + @($t)) -join ' ').ToLowerInvariant()
   if ($all -match 'lib/circuit-breaker\.ps1|orphan[- ]restart|restart attribution|restart mechanism|restarts? without associated task|restarts\.jsonl|cb-loop') { return 'safety' }
   if ($all -match 'supervisor\.ps1|start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|bloated pid') { return 'supervisor' }
-  if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|hardcoded[_ -]?secrets?|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
+  if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|snapshot|checkpoint|restart|resume') { return 'state' }
   if ($all -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
   if ($all -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
@@ -856,7 +860,7 @@ function Get-BacklogWorkpackConflictGroup {
   $signalText = Get-BacklogWorkpackSignalText -Text $Text
   $all = ((@($Files) + @([string]$signalText)) -join ' ').ToLowerInvariant()
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
-  if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|hardcoded[_ -]?secrets?|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
+  if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|checkpoint|restart') { return 'state' }
   if ($all -match 'audit|doctor|scenario') { return 'audit' }
   if ($all -match 'backlog|curator|workpack') { return 'backlog' }
