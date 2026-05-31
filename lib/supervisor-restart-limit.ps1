@@ -31,6 +31,69 @@ function Get-SupervisorRestartLimitSettings {
   return [pscustomobject]$out
 }
 
+function Convert-SupervisorExitCodeList {
+  param(
+    [object]$Value,
+    [int[]]$Default = @()
+  )
+  if ($null -eq $Value) { return @($Default) }
+  $codes = @()
+  foreach ($item in @($Value)) {
+    try { $codes += [int]$item }
+    catch { Write-Verbose ("Ignoring invalid supervisor fatal exit code '" + $item + "': " + $_.Exception.Message) }
+  }
+  return @($codes | Select-Object -Unique)
+}
+
+function Get-SupervisorFatalExitCodeSettings {
+  param([object]$Config = $null)
+  $driverCodes = @(3)
+  $serverCodes = @()
+  try {
+    if ($null -eq $Config -and (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue)) {
+      $Config = Get-BridgeConfig
+    }
+    if ($Config -and ($Config.PSObject.Properties.Name -contains 'supervisor') -and $Config.supervisor) {
+      $sup = $Config.supervisor
+      if ($sup.PSObject.Properties.Name -contains 'fatalDriverExitCodes') {
+        $driverCodes = @(Convert-SupervisorExitCodeList -Value $sup.fatalDriverExitCodes -Default @())
+      }
+      if ($sup.PSObject.Properties.Name -contains 'fatalServerExitCodes') {
+        $serverCodes = @(Convert-SupervisorExitCodeList -Value $sup.fatalServerExitCodes -Default @())
+      }
+    }
+  } catch {
+    Write-Verbose ("Get-SupervisorFatalExitCodeSettings fallback to defaults: " + $_.Exception.Message)
+  }
+  return [pscustomobject]@{
+    fatalDriverExitCodes = @($driverCodes)
+    fatalServerExitCodes = @($serverCodes)
+  }
+}
+
+function Test-SupervisorFatalExitCode {
+  param(
+    [Parameter(Mandatory=$true)][int]$ExitCode,
+    [object]$FatalCodes
+  )
+  foreach ($code in @($FatalCodes)) {
+    try {
+      if ([int]$code -eq $ExitCode) { return $true }
+    } catch {
+      Write-Verbose ("Ignoring invalid fatal exit code '" + $code + "': " + $_.Exception.Message)
+    }
+  }
+  return $false
+}
+
+function Format-SupervisorProcessExitLine {
+  param(
+    [Parameter(Mandatory=$true)][string]$ProcessKey,
+    [Parameter(Mandatory=$true)][int]$ExitCode
+  )
+  return ($ProcessKey + " EXITED exitCode=" + $ExitCode + " - reading stderr tail...")
+}
+
 function New-SupervisorRestartLimitState {
   return @{}
 }

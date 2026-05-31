@@ -208,6 +208,89 @@ function Test-RedirectLogWritable {
   }
   return $target
 }
+function Get-ProcessExitTail {
+  param(
+    [string]$ErrLogPath,
+    [int]$Lines = 20
+  )
+  if ([string]::IsNullOrWhiteSpace($ErrLogPath) -or -not (Test-Path -LiteralPath $ErrLogPath)) {
+    return "(no stderr output)"
+  }
+  try {
+    $tail = @(Get-Content -LiteralPath $ErrLogPath -Encoding UTF8 -Tail $Lines -ErrorAction Stop)
+    if ($tail.Count -eq 0 -or [string]::IsNullOrWhiteSpace(($tail -join "`n"))) {
+      return "(no stderr output)"
+    }
+    return ($tail -join "`n")
+  } catch {
+    return "(no stderr output)"
+  }
+}
+function Write-ProcessExitTailLog {
+  param(
+    [Parameter(Mandatory=$true)][string]$ProcessKey,
+    [Parameter(Mandatory=$true)][string]$ErrLogPath,
+    [int]$Lines = 20
+  )
+  $tail = Get-ProcessExitTail -ErrLogPath $ErrLogPath -Lines $Lines
+  foreach ($line in @($tail -split "\r?\n")) {
+    Log ("  stderr> " + $line)
+  }
+}
+function Invoke-FatalProcessExitBlock {
+  param(
+    [Parameter(Mandatory=$true)][string]$ProcessKey,
+    [Parameter(Mandatory=$true)][int]$ExitCode,
+    [Parameter(Mandatory=$true)][string]$FatalListName,
+    [Parameter(Mandatory=$true)][string]$OperatorText
+  )
+  Log ($ProcessKey + " FATAL exitCode=" + $ExitCode + " in " + $FatalListName + " - NOT restarting. Manual fix required.")
+  try { Add-Message -From system -Text $OperatorText -Kind event | Out-Null }
+  catch { Log ("WARN: failed to add fatal-exit operator message: " + $_.Exception.Message) }
+  try { Send-PushEvent -Kind need_you -Text $OperatorText }
+  catch { Log ("WARN: failed to send fatal-exit push event: " + $_.Exception.Message) }
+}
+function Invoke-ServerExitHandling {
+  param(
+    [Parameter(Mandatory=$true)][System.Diagnostics.Process]$Process,
+    [bool]$ReapFired = $false
+  )
+  $exitCode = 0
+  try { $exitCode = [int]$Process.ExitCode } catch { $exitCode = -1 }
+  Log (Format-SupervisorProcessExitLine -ProcessKey 'server' -ExitCode $exitCode)
+  Write-ProcessExitTailLog -ProcessKey 'server' -ErrLogPath $srvErr
+  if (-not $ReapFired) {
+    Record-CircuitRestart -Detail ("server exited with code " + $exitCode) -ReapFired:$false -FlagPresent:$false
+  }
+  if (Test-SupervisorFatalExitCode -ExitCode $exitCode -FatalCodes $script:fatalExitSettings.fatalServerExitCodes) {
+    $script:serverFatalBlock = Get-Date
+    Invoke-FatalProcessExitBlock -ProcessKey 'server' -ExitCode $exitCode -FatalListName 'fatalServerExitCodes' -OperatorText ("🚨 Server завершился с фатальным кодом " + $exitCode + ". Авто-рестарт ЗАБЛОКИРОВАН. Нужно вмешательство оператора.")
+    return $true
+  }
+  return $false
+}
+function Invoke-DriverExitHandling {
+  param(
+    [Parameter(Mandatory=$true)][string]$Slug,
+    [Parameter(Mandatory=$true)][System.Diagnostics.Process]$Process,
+    [bool]$ReapFired = $false
+  )
+  $exitCode = 0
+  try { $exitCode = [int]$Process.ExitCode } catch { $exitCode = -1 }
+  $processKey = "driver[" + $Slug + "]"
+  $errPath = Join-Path $ctl ("driver." + $Slug + ".err.log")
+  Log (Format-SupervisorProcessExitLine -ProcessKey $processKey -ExitCode $exitCode)
+  Write-ProcessExitTailLog -ProcessKey $processKey -ErrLogPath $errPath
+  if (-not $ReapFired) {
+    Record-CircuitRestart -Detail ("driver[" + $Slug + "] exited with code " + $exitCode) -ReapFired:$false -FlagPresent:$false
+  }
+  if (Test-SupervisorFatalExitCode -ExitCode $exitCode -FatalCodes $script:fatalExitSettings.fatalDriverExitCodes) {
+    $script:driverFatalBlock[$Slug] = Get-Date
+    Invoke-FatalProcessExitBlock -ProcessKey $processKey -ExitCode $exitCode -FatalListName 'fatalDriverExitCodes' -OperatorText ("🚨 Driver[" + $Slug + "] завершился с фатальным кодом " + $exitCode + " (конфиг/инициализация). Авто-рестарт ЗАБЛОКИРОВАН. Нужно вмешательство оператора.")
+    return $true
+  }
+  return $false
+}
 function Start-Srv {
   $out = Test-RedirectLogWritable -Path $srvOut -Label 'server stdout'
   $err = Test-RedirectLogWritable -Path $srvErr -Label 'server stderr'
@@ -269,6 +352,9 @@ function Test-CircuitSpawnPaused {
 
 $script:restartLimitState = New-SupervisorRestartLimitState
 $script:restartLimitSettings = Get-SupervisorRestartLimitSettings -Config $cfg
+$script:fatalExitSettings = Get-SupervisorFatalExitCodeSettings -Config $cfg
+$script:driverFatalBlock = @{}
+$script:serverFatalBlock = $null
 function Test-SupervisorProcessStartAllowed {
   param([Parameter(Mandatory=$true)][string]$Key)
   $res = Test-SupervisorRestartAllowed -State $script:restartLimitState -Key $Key -Settings $script:restartLimitSettings `
@@ -363,7 +449,7 @@ while ($true) {
         Log "restart flag -> recycle"
         Add-Message -From system -Text "Перезапуск по запросу (без UAC)." -Kind event | Out-Null
         try { foreach ($_slug in (Get-ActiveSlugs)) { try { Save-StateSnapshot -Reason 'restart_flag' -Channel $_slug } catch {} } } catch {}
-        Kill-Bridge; $srv = $null; $drivers = @{}; Start-Sleep -Seconds 3
+        Kill-Bridge; $srv = $null; $drivers = @{}; $script:driverFatalBlock = @{}; $script:serverFatalBlock = $null; Start-Sleep -Seconds 3
         $hcSrvFails = 0; $hcSrvLastTs = [datetime]::MinValue
         $hcDrvCpuSnaps = @{}; $hcDrvFails = @{}; $hcDrvLastTs = [datetime]::MinValue
         $lastRecycleTs = Get-Date
@@ -374,15 +460,22 @@ while ($true) {
     if (-not (Test-CircuitSpawnPaused)) {
       if ($null -eq $srv -or $srv.HasExited) {
         if ($null -ne $srv -and $srv.HasExited -and -not $reapFired) {
-          Record-CircuitRestart -Detail ("server exited with code " + $srv.ExitCode) -ReapFired:$false -FlagPresent:$false
+          $serverFatal = Invoke-ServerExitHandling -Process $srv -ReapFired:$false
+          if ($serverFatal) { $srv = $null }
         }
-        if (-not (Test-CircuitSpawnPaused)) {
+        if ($script:serverFatalBlock) {
+          # Fatal server exits require operator action or a supervisor recycle.
+        } elseif (-not (Test-CircuitSpawnPaused)) {
           if (-not (Test-SupervisorProcessStartAllowed -Key 'server')) { continue }
           Log "starting server..."
           try {
             $srv = Start-Srv; Start-Sleep -Seconds 3
             if ($null -eq $srv) { throw "Start-Srv returned no process" }
-            if ($srv.HasExited) { throw ("server exited immediately with code " + $srv.ExitCode) }
+            if ($srv.HasExited) {
+              $serverFatal = Invoke-ServerExitHandling -Process $srv -ReapFired:$false
+              if ($serverFatal) { $srv = $null; continue }
+              throw ("server exited immediately with code " + $srv.ExitCode)
+            }
             Reset-StartupFailures -Operation 'Start-Srv'
             $hcSrvFails = 0
             $hcSrvLastTs = Get-Date
@@ -396,10 +489,12 @@ while ($true) {
       # Spawn one driver per non-archived channel; restart any that died.
       $driverStartupFailed = $false
       foreach ($slug in $slugs) {
+        if ($script:driverFatalBlock.ContainsKey($slug)) { continue }
         $proc = $drivers[$slug]
         if ($null -eq $proc -or $proc.HasExited) {
           if ($null -ne $proc -and $proc.HasExited -and -not $reapFired) {
-            Record-CircuitRestart -Detail ("driver[" + $slug + "] exited with code " + $proc.ExitCode) -ReapFired:$false -FlagPresent:$false
+            $driverFatal = Invoke-DriverExitHandling -Slug $slug -Process $proc -ReapFired:$false
+            if ($driverFatal) { $drivers[$slug] = $null; continue }
           }
           if (Test-CircuitSpawnPaused) { break }
           if (-not (Test-SupervisorProcessStartAllowed -Key ("driver:" + $slug))) { continue }
@@ -408,7 +503,11 @@ while ($true) {
             $proc = Start-Drv -Slug $slug
             Start-Sleep -Seconds 2
             if ($null -eq $proc) { throw ("Start-Drv[" + $slug + "] returned no process") }
-            if ($proc.HasExited) { throw ("driver[" + $slug + "] exited immediately with code " + $proc.ExitCode) }
+            if ($proc.HasExited) {
+              $driverFatal = Invoke-DriverExitHandling -Slug $slug -Process $proc -ReapFired:$false
+              if ($driverFatal) { $drivers[$slug] = $null; continue }
+              throw ("driver[" + $slug + "] exited immediately with code " + $proc.ExitCode)
+            }
             Reset-StartupFailures -Operation ("Start-Drv[" + $slug + "]")
             $hcDrvFails[$slug] = 0
             $hcDrvCpuSnaps[$slug] = $null

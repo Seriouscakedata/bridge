@@ -130,7 +130,9 @@
     "reapGraceMs": 60000,
     "restartLimitMaxPerHour": 10,
     "restartLimitWindowMin": 60,
-    "restartLimitCooldownMin": 30
+    "restartLimitCooldownMin": 30,
+    "fatalDriverExitCodes": [3],
+    "fatalServerExitCodes": []
   },
   "auditor": {
     "enabled": true,

@@ -46,7 +46,19 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 try { [Console]::OutputEncoding = $Utf8NoBom; [Console]::InputEncoding = $Utf8NoBom } catch {}
 
-$cfg        = Get-BridgeConfig
+try {
+  $cfg = Get-BridgeConfig
+  $requiredConfigKeys = @('port','maxTurns','loopDelaySeconds','workRoot')
+  foreach ($requiredConfigKey in $requiredConfigKeys) {
+    if ($cfg.PSObject.Properties.Name -notcontains $requiredConfigKey -or $null -eq $cfg.$requiredConfigKey) {
+      Write-Error ("FATAL driver config error: missing required config key '" + $requiredConfigKey + "'")
+      exit 3
+    }
+  }
+} catch {
+  Write-Error ("FATAL driver config error: " + $_.Exception.Message)
+  exit 3
+}
 $claudeExe  = Resolve-ClaudeExe $cfg
 $codexExe   = Resolve-CodexExe  $cfg
 $workRoot   = [string]$cfg.workRoot
