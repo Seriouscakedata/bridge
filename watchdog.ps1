@@ -334,6 +334,31 @@ function Test-CircuitCooldown {
   return ($count -ge $maxRestarts)
 }
 
+function Test-ParallelActive {
+  # Returns $true if a parallel dispatch is in flight in ANY channel (workers merging into the bridge
+  # repo). The watchdog only reads main's heartbeat, but a parallel run lives in the dispatching
+  # channel and merges into the shared bridge repo for up to ~25min; a git reset --hard then trashes
+  # the in-flight merge (load-audit finding #1). "In flight" = a channel state.json with non-empty
+  # parallel_streams AND a recent mtime; if older than ~30min the run is hung -> allow the rollback.
+  # Self-contained file read, no engine dependency.
+  try {
+    $chDir = Join-Path $b 'channels'
+    if (-not (Test-Path $chDir)) { return $false }
+    foreach ($d in (Get-ChildItem $chDir -Directory -ErrorAction SilentlyContinue)) {
+      $sp = Join-Path $d.FullName 'state.json'
+      if (-not (Test-Path $sp)) { continue }
+      try { if (((Get-Date) - (Get-Item $sp).LastWriteTime).TotalMinutes -gt 30) { continue } } catch {}
+      try {
+        $st = Get-Content $sp -Raw -Encoding UTF8 | ConvertFrom-Json
+        # NB: @($null).Count is 1, not 0 -- filter null/empty so an ABSENT parallel_streams field
+        # doesn't read as "active". Only real stream entries count.
+        if (@($st.parallel_streams | Where-Object { $_ }).Count -gt 0) { return $true }
+      } catch {}
+    }
+  } catch {}
+  return $false
+}
+
 function Check-Once {
   if (Test-Path $pauseFile) { WLog 'paused (.bridge-private\watchdog.pause present) - no action'; return }
 
@@ -416,6 +441,14 @@ function Check-Once {
 
   # Heartbeat is STALE -> driver dead/stuck. Engine may be broken -> rollback (safely) after threshold.
   if ($fails -ge $rollbackThreshold) {
+    # H1 GUARD (2026-05-31 load audit, #1): do NOT reset --hard while a parallel dispatch is mid-merge.
+    # The watchdog reads only main's heartbeat, but parallel runs in ANY channel merge into the bridge
+    # repo for up to ~25min; rolling back then destroys in-flight merges. Hold while a fresh parallel
+    # run is active anywhere (Test-ParallelActive caps the hold at ~30min so a hung run still recovers).
+    if (Test-ParallelActive) {
+      WLog "heartbeat STALE but a parallel dispatch is ACTIVE (workers mid-merge) -> HOLDING rollback to avoid trashing the merge"
+      return
+    }
     WLog "driver heartbeat STALE -> ROLLBACK to stable (safety branch first) + restart"
     Invoke-Rollback
     # 🩺 Doctor signal: bridge picks this up on next loop and runs auto-repair.

@@ -1584,6 +1584,13 @@ function Set-Idea {
   # Edit a backlog item. Pass $null to leave a field unchanged.
   param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false, [bool]$ClearAutoCurator = $false, [string]$Reason = $null)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  # H2 FIX (2026-05-31 load audit): the read-modify-write was NOT transactional. Get-Backlog (read)
+  # and Save-Backlog (write) each took the lock independently, so a concurrent Set-Idea / curator /
+  # packer landing between them caused a LOST UPDATE -- a status mutation (approved->running, or a
+  # curator approval) silently overwritten, leaving a task re-claimed twice or stuck forever. Under
+  # 100 queued items the rewrite window is large and collisions frequent. Hold the bridge lock across
+  # the WHOLE RMW; the named mutex is thread-reentrant so Save-Backlog's nested lock is safe.
+  return (Invoke-BacklogLocked ({
   $items = @(Get-Backlog)
   $found = $false
   foreach ($i in $items) {
@@ -1624,6 +1631,7 @@ function Set-Idea {
   if (-not $found) { return $false }
   Save-Backlog $items
   return $true
+  }.GetNewClosure()))
 }
 
 function Remove-Idea {
@@ -1942,12 +1950,60 @@ function Get-NextRunnableIdea {
       elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
       else { $false }
     } |
-    Sort-Object @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
+    Sort-Object @{Expression={ if (@($_.tags) -contains 'operator') {0} else {1} }},
+                @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
                 @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}})
   if ($items.Count -gt 0) { return $items[0] }
   return $null
+}
+
+function Add-OperatorBatch {
+  # Block C -- operator delegation. The conductor (Claude) hands the bridge a batch of
+  # well-specified tasks; they are tagged 'operator' (claimed FIRST -- ahead of audit/auto ideas
+  # via the operator-tier sort key in Get-NextRunnableIdea), tagged with a shared batch id for
+  # progress tracking, pre-approved (the operator is trusted), and SkipCurator (no LLM gate on a
+  # human-vetted instruction). Returns the batch id. This is how 100s of tasks enter the massive
+  # worker pool under my orchestration, with a single handle to watch them by.
+  param(
+    [string[]]$Tasks,
+    [string]$BatchLabel = '',
+    [string]$Project = '',
+    [string]$Scope = 'bridge'
+  )
+  $clean = @($Tasks | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($clean.Count -eq 0) { return $null }
+  $batchId = 'opb-' + ([guid]::NewGuid().ToString('N').Substring(0,10))
+  $ids = @()
+  $idx = 0
+  foreach ($t in $clean) {
+    $idx++
+    $label = if ([string]::IsNullOrWhiteSpace($BatchLabel)) { '' } else { "[$BatchLabel $idx/$($clean.Count)] " }
+    $id = Add-Idea -Text ($label + $t) -From 'operator' -Tags @('operator', 'batch:' + $batchId) -Status 'approved' -Severity 'critical' -Project $Project -Scope $Scope -SkipCurator
+    if ($id) { $ids += $id }
+  }
+  try { Add-Message -From system -Text ("🎛 Оператор делегировал batch " + $batchId + ": " + $ids.Count + " задач (приоритет operator, исполняются первыми).") -Kind event | Out-Null } catch {}
+  return [pscustomobject]@{ batchId = $batchId; count = $ids.Count; ids = $ids }
+}
+
+function Get-OperatorBatchProgress {
+  # Progress of operator-delegated batches for the pulse: per batch id, how many done/total.
+  $items = @(Get-Backlog | Where-Object { @($_.tags) -contains 'operator' })
+  $byBatch = @{}
+  foreach ($it in $items) {
+    $bid = @($it.tags | Where-Object { $_ -like 'batch:*' } | Select-Object -First 1)
+    $bid = if ($bid.Count) { [string]$bid[0] } else { 'batch:?' }
+    if (-not $byBatch.ContainsKey($bid)) { $byBatch[$bid] = [pscustomobject]@{ total = 0; done = 0; failed = 0; running = 0 } }
+    $byBatch[$bid].total++
+    switch ([string]$it.status) {
+      'done'         { $byBatch[$bid].done++ }
+      'auto-resolved'{ $byBatch[$bid].done++ }
+      'failed'       { $byBatch[$bid].failed++ }
+      'running'      { $byBatch[$bid].running++ }
+    }
+  }
+  return $byBatch
 }
 
 function Get-NextSelfExecIdea {

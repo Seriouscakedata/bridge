@@ -70,6 +70,22 @@ $script:restarted = $false; $script:rolledBack = $false
 Check-Once
 Assert 'C5 acted (restart or rollback)' ($script:restarted -or $script:rolledBack)
 
+Write-Host "`n[C6] heartbeat stale + parallel ACTIVE in a channel -> HOLD rollback (H1 guard)"
+[System.IO.File]::WriteAllText($rj, '')   # no cooldown, so only the parallel guard can hold
+'9' | Out-File (Join-Path $sandbox 'control\watchdog.fails') -Encoding ascii
+New-Item -ItemType Directory -Path (Join-Path $sandbox 'channels\travel') -Force | Out-Null
+('{"heartbeat":"' + (UtcAgo 10) + '","parallel_streams":[{"id":"s1"},{"id":"s2"}]}') | Out-File (Join-Path $sandbox 'channels\travel\state.json') -Encoding ascii
+$script:restarted = $false; $script:rolledBack = $false
+Check-Once
+Assert 'C6 no rollback while parallel active' (-not $script:rolledBack)
+
+Write-Host "`n[C6b] parallel cleared -> rollback proceeds again"
+Remove-Item (Join-Path $sandbox 'channels\travel\state.json') -Force -ErrorAction SilentlyContinue
+'9' | Out-File (Join-Path $sandbox 'control\watchdog.fails') -Encoding ascii
+$script:restarted = $false; $script:rolledBack = $false
+Check-Once
+Assert 'C6b rollback proceeds once parallel clears' ($script:rolledBack -or $script:restarted)
+
 Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fails -eq 0) { Write-Host 'CIRCUIT-COOLDOWN-SELFTEST: PASS' } else { Write-Host "CIRCUIT-COOLDOWN-SELFTEST: FAIL ($fails assertion(s))"; exit 1 }

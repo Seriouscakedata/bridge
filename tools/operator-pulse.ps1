@@ -81,6 +81,29 @@ Write-Host ("  " + $(if ($qline) { $qline } else { '(empty)' }))
 $closed = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('done','auto-resolved') } | ForEach-Object { $_.Value } | Measure-Object -Sum).Sum
 Write-Host ("  closed total: done=" + [int]$grp['done'] + " auto-resolved=" + [int]$grp['auto-resolved'] + " dropped=" + [int]$grp['auto-dropped'])
 
+# ---------- OPERATOR BATCHES (Block C) -- my handle on what I delegated ----------
+$opLast = @{}
+if (Test-Path $bk) {
+  foreach ($ln in [System.IO.File]::ReadAllLines($bk, [System.Text.Encoding]::UTF8)) {
+    if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+    try { $o = $ln | ConvertFrom-Json; if ($o.id -and (@($o.tags) -contains 'operator')) { $opLast[[string]$o.id] = $o } } catch {}
+  }
+}
+$activeBatches = @{}
+foreach ($it in $opLast.Values) {
+  if ([string]$it.status -eq 'rejected') { continue }
+  $bn = @($it.tags | Where-Object { $_ -like 'batch:*' } | Select-Object -First 1)
+  $bn = if ($bn.Count) { [string]$bn[0] } else { 'batch:?' }
+  if (-not $activeBatches.ContainsKey($bn)) { $activeBatches[$bn] = [pscustomobject]@{ total = 0; done = 0; failed = 0 } }
+  $activeBatches[$bn].total++
+  $s = [string]$it.status
+  if ($s -in @('done', 'auto-resolved')) { $activeBatches[$bn].done++ } elseif ($s -eq 'failed') { $activeBatches[$bn].failed++ }
+}
+if ($activeBatches.Count -gt 0) {
+  Write-Host "OPERATOR BATCHES (delegated):" -ForegroundColor Yellow
+  foreach ($bn in $activeBatches.Keys) { $v = $activeBatches[$bn]; Write-Host ("  " + $bn + ": " + $v.done + "/" + $v.total + " done" + $(if ($v.failed) { " (" + $v.failed + " failed)" } else { "" })) }
+}
+
 # ---------- DONE (window: git commits) ----------
 $sinceArg = "--since=$DoneHours.hours.ago"
 $commits = @(& $git -C $root log $sinceArg --oneline 2>$null)

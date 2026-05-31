@@ -1134,6 +1134,13 @@ function Invoke-ParallelDispatch {
       break
     }
     Start-Sleep -Seconds $PollSec
+    # H1 FIX (2026-05-31 load audit): refresh the channel heartbeat each poll. A parallel run can
+    # last up to $TimeoutMin (25m); without this the heartbeat goes stale past the watchdog's 300s
+    # window -> watchdog sees "driver dead" -> git reset --hard stable WHILE workers are mid-merge,
+    # destroying in-flight work (the exact false-rollback class, re-introduced by parallel mode).
+    # Sibling poll loops (Invoke-ParallelWorkers/CodexParallel) already tick via $OnTick; this one
+    # didn't. Inline refresh keeps the watchdog calm; the parallel $deadline still bounds a true hang.
+    try { Update-State { param($s) $s.heartbeat = (Get-Date).ToString('o') } | Out-Null } catch {}
     foreach ($w in $workers) {
       if ($completed.ContainsKey($w.id)) { continue }
       $res = Get-WorkerResult $w
