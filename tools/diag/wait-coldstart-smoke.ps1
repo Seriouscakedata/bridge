@@ -15,46 +15,24 @@ function Add-Message { param([string]$From, [string]$Text, [string]$Kind) }
 
 # --- Load Wait-AgentProcess from driver.ps1 via AST (no IEX/eval) ---
 $driverPath = Join-Path $root 'driver.ps1'
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$null, [ref]$null)
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors -and $parseErrors.Count -gt 0) {
+    Write-Host "FAIL: driver.ps1 parse error: $($parseErrors[0].Message)"
+    exit 1
+}
 $fnAst = $ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
     $node.Name -eq 'Wait-AgentProcess'
 }, $false) | Select-Object -First 1
 if (-not $fnAst) { Write-Host 'FAIL: Wait-AgentProcess not found in driver.ps1'; exit 1 }
-$hasFirstOutputGrace = @($fnAst.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -contains 'FirstOutputGraceMs'
 . ([scriptblock]::Create($fnAst.Extent.Text))
-if (-not $hasFirstOutputGrace) {
-    $legacyWaitAgentProcess = ${function:Wait-AgentProcess}
-    function Wait-AgentProcess {
-        param(
-            $Proc,
-            [int]$TimeoutMs,
-            [string]$MsgFile = '',
-            [string]$ErrFile = '',
-            [string]$OutFile = '',
-            [int]$FirstOutputGraceMs = 0
-        )
-        if ($FirstOutputGraceMs -le 0) {
-            return & $legacyWaitAgentProcess -Proc $Proc -TimeoutMs $TimeoutMs -MsgFile $MsgFile -ErrFile $ErrFile -OutFile $OutFile
-        }
-        $graceSw = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($true) {
-            if ($Proc.WaitForExit(500)) { return $true }
-            $totLen = [long]0
-            foreach ($fp in @($OutFile, $ErrFile)) {
-                if (-not [string]::IsNullOrWhiteSpace($fp)) {
-                    $fi = Get-Item -LiteralPath $fp -ErrorAction SilentlyContinue
-                    if ($fi) { $totLen += [long]$fi.Length }
-                }
-            }
-            if ($totLen -gt 0) {
-                $remainingMs = [Math]::Max($TimeoutMs - [int]$graceSw.ElapsedMilliseconds, 0)
-                return & $legacyWaitAgentProcess -Proc $Proc -TimeoutMs $remainingMs -MsgFile $MsgFile -ErrFile $ErrFile -OutFile $OutFile
-            }
-            if ($graceSw.ElapsedMilliseconds -ge $FirstOutputGraceMs) { return $false }
-        }
-    }
+$waitCommand = Get-Command Wait-AgentProcess -ErrorAction SilentlyContinue
+if (-not $waitCommand -or -not $waitCommand.Parameters.ContainsKey('FirstOutputGraceMs')) {
+    Write-Host 'FAIL: Wait-AgentProcess lacks -FirstOutputGraceMs'
+    exit 1
 }
 
 # --- Test helpers ---
@@ -65,22 +43,26 @@ function Assert {
     else { Write-Host "  FAIL: $Name$(if ($Detail) { ' | ' + $Detail })"; $script:fails++ }
 }
 
+function Start-SmokePowerShell {
+    param([string]$Script)
+    $powerShellExe = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellExe)) { $powerShellExe = 'powershell.exe' }
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Script))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $powerShellExe
+    $psi.Arguments = "-NoProfile -EncodedCommand $encoded"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
 # --- Test 1: zero-output process aborts within GraceMs + one-tick margin ---
 Write-Host "`n[Test 1] No-output process aborts within grace + 7s margin"
 $outF = [System.IO.Path]::GetTempFileName()
 $errF = [System.IO.Path]::GetTempFileName()
 $p = $null
-$processPath = [System.Environment]::GetEnvironmentVariable('Path', 'Process')
-$processPATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Process')
 try {
-    if ($processPath -and $processPATH) {
-        # PowerShell 5.1 Start-Process can fail if both Path and PATH exist in the process environment.
-        [System.Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
-    }
-    $p = Start-Process -FilePath 'powershell.exe' `
-         -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 60') `
-         -NoNewWindow -PassThru `
-         -RedirectStandardOutput $outF -RedirectStandardError $errF
+    $p = Start-SmokePowerShell -Script 'Start-Sleep -Seconds 60'
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $result = Wait-AgentProcess -Proc $p -TimeoutMs 900000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs
     $elapsed = $sw.ElapsedMilliseconds
@@ -89,9 +71,25 @@ try {
     Assert "elapsed < grace+7s margin"   ($elapsed -lt $margin) "elapsed=${elapsed}ms margin=${margin}ms"
     Write-Host "  (elapsed ${elapsed}ms, grace ${GraceMs}ms)"
 } finally {
-    if ($processPATH) {
-        [System.Environment]::SetEnvironmentVariable('PATH', $processPATH, 'Process')
-    }
+    if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {} }
+    Remove-Item $outF, $errF -ErrorAction SilentlyContinue
+}
+
+# --- Test 2: output growth before grace prevents early abort ---
+Write-Host "`n[Test 2] Output before grace is treated as liveness"
+$outF = [System.IO.Path]::GetTempFileName()
+$errF = [System.IO.Path]::GetTempFileName()
+$p = $null
+try {
+    $escapedOut = $outF.Replace("'", "''")
+    $p = Start-SmokePowerShell -Script "Set-Content -LiteralPath '$escapedOut' -Value 'ready' -Encoding UTF8; Start-Sleep -Seconds 8"
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $result = Wait-AgentProcess -Proc $p -TimeoutMs 30000 -OutFile $outF -ErrFile $errF -FirstOutputGraceMs $GraceMs
+    $elapsed = $sw.ElapsedMilliseconds
+    Assert 'returns true after observed output' ($result -eq $true) "result=$result"
+    Assert 'output file grew' ((Get-Item -LiteralPath $outF).Length -gt 0) "length=$((Get-Item -LiteralPath $outF).Length)"
+    Write-Host "  (elapsed ${elapsed}ms, grace ${GraceMs}ms)"
+} finally {
     if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {} }
     Remove-Item $outF, $errF -ErrorAction SilentlyContinue
 }

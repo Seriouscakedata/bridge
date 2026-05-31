@@ -2112,6 +2112,8 @@ function Invoke-Planner {
   $claudeTimedOut = $false
   $claudeSilentExit = $false
   $claudeZeroOutputTimeout = $false
+  $plannerFirstOutputGraceMs = 150000
+  $plannerFirstOutputGraceSec = [int]($plannerFirstOutputGraceMs / 1000)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $launch = [pscustomobject]@{
@@ -2135,13 +2137,18 @@ function Invoke-Planner {
     # Codex не отвечает в travel-planner" hit 606s on Opus+ultrathink). Now symmetric
     # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs 150000)) {
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs $plannerFirstOutputGraceMs)) {
+      $waitElapsedMs = [int]$sw.ElapsedMilliseconds
+      $outLen0 = [long]0
+      $errLen0 = [long]0
+      $outInfo0 = Get-Item -LiteralPath $outF -ErrorAction SilentlyContinue
+      $errInfo0 = Get-Item -LiteralPath $errF -ErrorAction SilentlyContinue
+      if ($outInfo0) { $outLen0 = [long]$outInfo0.Length }
+      if ($errInfo0) { $errLen0 = [long]$errInfo0.Length }
       Stop-AgentTree $p.Id
-      # Detect zero-output early kill (grace 150s) vs regular timeout (900s).
-      if ($sw.ElapsedMilliseconds -lt 850000) {
-        $so0 = if (Test-Path -LiteralPath $outF) { Get-Content $outF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { '' }
-        $se0 = if (Test-Path -LiteralPath $errF) { Get-Content $errF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { '' }
-        if ([string]::IsNullOrWhiteSpace($so0) -and [string]::IsNullOrWhiteSpace($se0)) { $claudeZeroOutputTimeout = $true }
+      # Detect the opt-in zero-output grace kill, not a regular 900s timeout or later stagnation abort.
+      if ($waitElapsedMs -lt ($plannerFirstOutputGraceMs + 30000) -and ($outLen0 + $errLen0) -le 0) {
+        $claudeZeroOutputTimeout = $true
       }
       $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
       $replayErrorType = if ($claudeZeroOutputTimeout) { 'planner_zero_output_timeout' } else { 'planner_timeout' }
@@ -2192,7 +2199,7 @@ function Invoke-Planner {
   $claudeUsable = (-not [string]::IsNullOrWhiteSpace($reply)) -and (-not $claudeTimedOut) -and (-not $claudeSilentExit) -and (-not $claudeZeroOutputTimeout)
   if ((-not $claudeUsable) -and (-not $NoFallback)) {
     # ---- Ladder step 1: Codex as planner ----
-    $reason = if ($claudeZeroOutputTimeout) { 'zero-output timeout (150с)' } elseif ($claudeTimedOut) { 'timeout (900с)' } elseif ($claudeSilentExit) { 'silent exit' } else { 'пустой ответ' }
+    $reason = if ($claudeZeroOutputTimeout) { "zero-output timeout (${plannerFirstOutputGraceSec}s)" } elseif ($claudeTimedOut) { 'timeout (900с)' } elseif ($claudeSilentExit) { 'silent exit' } else { 'пустой ответ' }
     Add-Message -From system -Text ("🔀 Fallback ladder 1/2: Claude — " + $reason + " → Codex берёт planner-турн.") -Kind event | Out-Null
     $fallbackPrefix = @"
 ⚠ FALLBACK MODE: Ты сейчас замещаешь Claude-планировщика (он завис/silent-exit). Твоя роль — ПЛАНИРОВЩИК, не кодер. Разбери задачу, при необходимости прочитай файлы для контекста, дай инструкции/решение, заверши маркером STATUS (DONE / CHAT / CONTINUE / DISCUSS / RESEARCH). НЕ редактируй файлы и не запускай git-команд. Будь короче обычного — это резервный ход.
