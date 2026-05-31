@@ -39,6 +39,24 @@ $rollbackThreshold   = 4    # driver heartbeat stale (~8 min): engine dead -> ro
 $criticalExitThreshold = if ($env:WATCHDOG_CRIT_THRESHOLD) { [int]$env:WATCHDOG_CRIT_THRESHOLD } else { 10 }
 $loopSleepSec          = if ($env:WATCHDOG_SLEEP_SEC) { [int]$env:WATCHDOG_SLEEP_SEC } else { 120 }
 $criticalStreak        = 0
+# === System Sentinel config (storm detector) ===
+# The watchdog judges health by heartbeat ("dead vs alive"). A driver that is ALIVE but
+# restart-LOOPING, or spamming the SAME error every few seconds, is invisible to that check
+# (fresh heartbeat the whole time). The 2026-05-31 StopReason storm proved the gap: ~6 identical
+# driver errors + restarts, and the only thing that noticed was the operator. This sentinel adds
+# a content sense: deterministic signature-counting (no LLM, self-contained), a self-heal GRACE
+# window (the bridge often fixes its own bug within minutes — don't trample that), then dispatch
+# via the existing repair.signal -> Doctor channel; if Doctor doesn't heal it, rollback + page.
+$stormWindowMin     = if ($env:WATCHDOG_STORM_WINDOW_MIN) { [int]$env:WATCHDOG_STORM_WINDOW_MIN } else { 15 }
+$stormSigThreshold  = 3     # same error/restart signature >= this many times in window = storm
+$stormRestartTotal  = 4     # OR >= this many restarts (any cause) in window = storm
+$stormRecencySec    = 240   # storm is "live" only if its newest hit is within this (else aging out)
+$stormGraceSec      = 480   # 8 min: give the bridge time to self-heal BEFORE acting (key safety)
+$stormCooldownSec   = 3600  # at most one Doctor dispatch per signature per hour
+$stormEscalateSec   = 900   # 15 min still-active AFTER Doctor -> rollback + page operator
+$sentinelSuspect    = Join-Path $ctl 'sentinel.suspect'
+$sentinelCooldown   = Join-Path $ctl 'sentinel.cooldown'
+$sentinelIncidents  = Join-Path $ctl 'sentinel.incidents.jsonl'
 function WLog($m) {
   $line = ("{0}  {1}`n" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m)
   $mtx = $null
@@ -104,6 +122,185 @@ function Invoke-Rollback {
 function Request-Restart {
   Set-Content -LiteralPath (Join-Path $ctl 'restart.flag') -Value '1' -Encoding ascii
   Start-ScheduledTask -TaskName 'ClaudeCodexBridge' -ErrorAction SilentlyContinue
+}
+
+# --- System Sentinel helpers (self-contained; no common.ps1) ---
+function Get-Sig8($text) {
+  # Short stable key for a normalized signature (first 4 bytes of MD5, hex).
+  try {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $h = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$text))
+    return (($h[0..3] | ForEach-Object { $_.ToString('x2') }) -join '')
+  } catch { return 'nosig' }
+}
+function Get-NormSig($text) {
+  # Collapse the variable parts of an error so repeats of the SAME error share one signature.
+  $s = [string]$text
+  $s = $s -replace '[0-9a-fA-F]{8,}', 'HEX'          # hashes/GUIDs/sha
+  $s = $s -replace '\d+', 'N'                        # any number (seq, ms, counts)
+  $s = $s -replace '[A-Za-z]:\\[^\s''""]+', 'PATH'   # windows paths
+  $s = $s -replace '\s+', ' '
+  return $s.Trim()
+}
+function Test-StormCooldown($sig) {
+  if (-not (Test-Path $sentinelCooldown)) { return $false }
+  try {
+    $cd = Get-Content $sentinelCooldown -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$cd.sig -ne [string]$sig) { return $false }
+    return ((((Get-Date).ToUniversalTime()) - ([datetime]$cd.ts).ToUniversalTime()).TotalSeconds -lt $stormCooldownSec)
+  } catch { return $false }
+}
+function Set-StormCooldown($sig) {
+  try { (@{ sig=$sig; ts=(Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress) | Out-File $sentinelCooldown -Encoding utf8 } catch {}
+}
+function Add-StormIncident($Sig,$Count,$Source,$Sample,$Action) {
+  # Durable incident log -> feeds postmortem learning even when the storm self-heals.
+  try {
+    $s = [string]$Sample; if ($s.Length -gt 160) { $s = $s.Substring(0,160) }
+    (@{ ts=(Get-Date).ToUniversalTime().ToString('o'); sig=$Sig; count=$Count; source=$Source; sample=$s; action=$Action } | ConvertTo-Json -Compress) |
+      ForEach-Object { Add-Content -LiteralPath $sentinelIncidents -Value $_ -Encoding UTF8 }
+  } catch {}
+}
+
+function Get-StormSignals {
+  # Deterministic, LLM-free. Returns the worst storm signature crossing threshold, or $null.
+  # Two sources: structured restarts.jsonl (cause+signature) and system error messages.
+  $cutoff = (Get-Date).AddMinutes(-$stormWindowMin).ToUniversalTime()
+  $nowU   = (Get-Date).ToUniversalTime()
+  $counts = @{}   # sig8 -> @{ count; source; sample; lastU }
+
+  # Source 1: restart events (structured) — survives driver restart-loops since it's a side file.
+  try {
+    $rj = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-runtime\restarts.jsonl' } else { '' }
+    if ($rj -and (Test-Path $rj)) {
+      $totalRestarts = 0; $lastRestartU = $null
+      foreach ($line in ([System.IO.File]::ReadAllLines($rj, [System.Text.Encoding]::UTF8) | Select-Object -Last 80)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $r = $line | ConvertFrom-Json } catch { continue }
+        $tu = $null; try { $tu = ([datetime]$r.ts).ToUniversalTime() } catch { continue }
+        if ($tu -lt $cutoff) { continue }
+        $totalRestarts++; if (-not $lastRestartU -or $tu -gt $lastRestartU) { $lastRestartU = $tu }
+        $key = 'restart-cause:' + [string]$r.cause
+        $sig = Get-Sig8 $key
+        if (-not $counts.ContainsKey($sig)) { $counts[$sig] = @{ count=0; source='restart'; sample=([string]$r.cause); lastU=$tu } }
+        $counts[$sig].count++
+        if ($tu -gt $counts[$sig].lastU) { $counts[$sig].lastU = $tu }
+      }
+      if ($totalRestarts -ge $stormRestartTotal -and $lastRestartU) {
+        $sig = Get-Sig8 'restart-volume'
+        $counts[$sig] = @{ count=$totalRestarts; source='restart-volume'; sample=("$totalRestarts restarts in ${stormWindowMin}min"); lastU=$lastRestartU }
+      }
+    }
+  } catch {}
+
+  # Source 2: repeating system ERROR messages (the StopReason class). Read as UTF-8 so the
+  # Cyrillic 'Ошибка драйвера' marker matches instead of arriving as mojibake.
+  try {
+    $conv = Join-Path $b 'channels\main\conversation.jsonl'
+    if (Test-Path $conv) {
+      $errPat = 'Ошибк|ошибк|не справил|пережила|таймаут|stderr|Cannot |Exception|\bError\b|argument transformation|timeout|rollback|❌|⚠'
+      foreach ($line in ([System.IO.File]::ReadAllLines($conv, [System.Text.Encoding]::UTF8) | Select-Object -Last 200)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $m = $line | ConvertFrom-Json } catch { continue }
+        if ([string]$m.from -ne 'system') { continue }
+        $tu = $null; try { $tu = ([datetime]$m.ts).ToUniversalTime() } catch { continue }
+        if ($tu -lt $cutoff) { continue }
+        $txt = [string]$m.text
+        if ($txt -notmatch $errPat) { continue }
+        $norm = Get-NormSig $txt; if ($norm.Length -gt 100) { $norm = $norm.Substring(0,100) }
+        $sig = Get-Sig8 $norm
+        if (-not $counts.ContainsKey($sig)) { $counts[$sig] = @{ count=0; source='error'; sample=$txt; lastU=$tu } }
+        $counts[$sig].count++
+        if ($tu -gt $counts[$sig].lastU) { $counts[$sig].lastU = $tu }
+      }
+    }
+  } catch {}
+
+  # Worst signature that crosses threshold (restart-volume always counts).
+  $worst = $null
+  foreach ($k in $counts.Keys) {
+    $c = $counts[$k]
+    $isStorm = ($c.count -ge $stormSigThreshold) -or ($c.source -eq 'restart-volume')
+    if (-not $isStorm) { continue }
+    if (-not $worst -or $c.count -gt $worst.count) {
+      $lastSeenSec = [int]($nowU - $c.lastU).TotalSeconds
+      $worst = @{ sig=$k; count=$c.count; source=$c.source; sample=$c.sample; lastSeenSec=$lastSeenSec }
+    }
+  }
+  return $worst
+}
+
+function Check-Storm {
+  # Patient detector: suspect -> grace (self-heal) -> Doctor -> (if unhealed) rollback + page.
+  # State lives in files so it survives the watchdog's own ~2-min task recycle.
+  if (Test-Path $pauseFile) { return }   # honor the operator PAUSE kill-switch
+
+  $storm = Get-StormSignals
+  $suspect = $null
+  if (Test-Path $sentinelSuspect) { try { $suspect = Get-Content $sentinelSuspect -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
+  $nowU = (Get-Date).ToUniversalTime()
+
+  # A storm is only ACTIONABLE if it is still live (recent hit). An old-but-in-window cluster
+  # that stopped firing is self-healing — let it age out of the window instead of acting on it.
+  $live = ($storm -and $storm.lastSeenSec -le $stormRecencySec)
+
+  if (-not $live) {
+    if ($suspect) {
+      $tag = if ($storm) { "aging out (last hit $($storm.lastSeenSec)s ago)" } else { "cleared" }
+      WLog ("sentinel: storm self-healed/$tag (was sig=$($suspect.sig) '$($suspect.sample)') - no action")
+      try { Add-StormIncident -Sig $suspect.sig -Count ([int]$suspect.count) -Source ([string]$suspect.source) -Sample ([string]$suspect.sample) -Action 'self-healed' } catch {}
+      Remove-Item $sentinelSuspect -Force -ErrorAction SilentlyContinue
+    }
+    return
+  }
+
+  # New storm (or a different signature) -> start the grace timer, DO NOT act yet.
+  if (-not $suspect -or [string]$suspect.sig -ne [string]$storm.sig) {
+    (@{ sig=$storm.sig; firstSeen=$nowU.ToString('o'); count=$storm.count; source=$storm.source; sample=$storm.sample; dispatched=$false; dispatchedAt='' } | ConvertTo-Json -Compress) | Out-File $sentinelSuspect -Encoding utf8
+    WLog ("sentinel: STORM suspected sig=$($storm.sig) src=$($storm.source) count=$($storm.count) '$($storm.sample)' - grace ${stormGraceSec}s before acting")
+    return
+  }
+
+  $firstSeen = $nowU; try { $firstSeen = ([datetime]$suspect.firstSeen).ToUniversalTime() } catch {}
+  $ageSec = [int]($nowU - $firstSeen).TotalSeconds
+  $dispatched = [bool]$suspect.dispatched
+
+  if (-not $dispatched) {
+    if ($ageSec -lt $stormGraceSec) {
+      WLog ("sentinel: storm sig=$($storm.sig) persisting ${ageSec}s/${stormGraceSec}s grace (count=$($storm.count)) - waiting for self-heal")
+      $suspect.count = $storm.count; ($suspect | ConvertTo-Json -Compress) | Out-File $sentinelSuspect -Encoding utf8
+      return
+    }
+    if (Test-StormCooldown $storm.sig) {
+      WLog ("sentinel: storm sig=$($storm.sig) past grace but in cooldown - not re-dispatching")
+      return
+    }
+    # ACT (level 1): hand off to Doctor via the existing repair.signal channel.
+    try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value ("storm_detected:" + $storm.source + ":" + $storm.sig) -Encoding ascii } catch {}
+    Set-StormCooldown $storm.sig
+    try { Add-StormIncident -Sig $storm.sig -Count $storm.count -Source $storm.source -Sample $storm.sample -Action 'doctor' } catch {}
+    $suspect.dispatched = $true; $suspect.dispatchedAt = $nowU.ToString('o'); $suspect.count = $storm.count
+    ($suspect | ConvertTo-Json -Compress) | Out-File $sentinelSuspect -Encoding utf8
+    WLog ("sentinel: STORM CONFIRMED after ${ageSec}s grace -> repair.signal (Doctor) sig=$($storm.sig) src=$($storm.source) count=$($storm.count) '$($storm.sample)'")
+    return
+  }
+
+  # ACT (level 2): Doctor was dispatched but the storm is STILL live after the escalate window.
+  $dispatchedAt = $nowU; try { $dispatchedAt = ([datetime]$suspect.dispatchedAt).ToUniversalTime() } catch {}
+  $sinceDispatch = [int]($nowU - $dispatchedAt).TotalSeconds
+  if ($sinceDispatch -ge $stormEscalateSec) {
+    WLog ("sentinel: storm sig=$($storm.sig) STILL live ${sinceDispatch}s after Doctor -> ROLLBACK + page operator")
+    Invoke-Rollback
+    try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value ("storm_unhealed_rollback:" + $storm.sig) -Encoding ascii } catch {}
+    Request-Restart
+    '0' | Out-File $failFile -Encoding ascii
+    try { Add-StormIncident -Sig $storm.sig -Count $storm.count -Source $storm.source -Sample $storm.sample -Action 'rollback+page' } catch {}
+    Remove-Item $sentinelSuspect -Force -ErrorAction SilentlyContinue   # post-rollback is a fresh start
+    WLog ("sentinel: rollback applied (storm-unhealed) sig=$($storm.sig)")
+  } else {
+    WLog ("sentinel: storm sig=$($storm.sig) dispatched to Doctor ${sinceDispatch}s ago, watching (escalate at ${stormEscalateSec}s)")
+    $suspect.count = $storm.count; ($suspect | ConvertTo-Json -Compress) | Out-File $sentinelSuspect -Encoding utf8
+  }
 }
 
 function Check-Once {
@@ -201,6 +398,9 @@ while ($true) {
   elseif (-not (Test-Path -LiteralPath $git)) { $critReason = "git.exe missing ($git)" }
   else {
     try { Check-Once } catch { $critReason = "loop error: " + $_.Exception.Message }
+    # System Sentinel runs AFTER the core liveness check, in its own guard: a storm-detector
+    # bug must never take down the watchdog's primary job (heartbeat + rollback).
+    try { Check-Storm } catch { WLog ("sentinel: check error: " + $_.Exception.Message) }
   }
 
   if ($critReason) {
