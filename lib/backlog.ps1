@@ -1867,7 +1867,9 @@ function Get-NextApprovedIdea {
   # warnings before info, info before plain ideas.
   $skipped = New-Object 'System.Collections.Generic.List[string]'
   while ($true) {
-    $items = @(Get-Backlog | Where-Object { [string]$_.status -eq 'approved' } |
+    # SYSTEMIC GUARD 2026-05-31: even an APPROVED control-plane task does not auto-run unless the
+    # operator delegated it (tag 'operator'). Auto-approved deep-audit self-edits deadlocked the bridge.
+    $items = @(Get-Backlog | Where-Object { ([string]$_.status -eq 'approved') -and ((@($_.tags) -contains 'operator') -or -not (Test-IdeaTouchesControlPlane -Idea $_)) } |
       Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
@@ -1952,7 +1954,11 @@ function Get-NextRunnableIdea {
   # Audit criticals always outrank warnings, warnings outrank info, info outranks plain ideas.
   $items = @(Get-Backlog | Where-Object {
       $st = [string]$_.status
-      if ($st -eq 'approved') { $true }
+      # SYSTEMIC GUARD 2026-05-31: never AUTO-claim a task that edits the bridge's own control plane
+      # (supervisor/watchdog/circuit-breaker/...). Those repeatedly deadlocked the bridge. Only the
+      # OPERATOR (tag 'operator') may delegate control-plane work; auto-generated ones are skipped.
+      if ((Test-IdeaTouchesControlPlane -Idea $_) -and -not (@($_.tags) -contains 'operator')) { $false }
+      elseif ($st -eq 'approved') { $true }
       elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
       else { $false }
     } |
@@ -2044,6 +2050,20 @@ function Get-NextSelfExecIdea {
   return $null
 }
 
+function Test-IdeaTouchesControlPlane {
+  # TRUE if the task edits the bridge's own control/safety plane (supervisor, watchdog, circuit-
+  # breaker, the driver core loop, restart-limit, script-integrity). Autonomously editing these is
+  # what repeatedly deadlocked the bridge on 2026-05-31 (a cascade of conflicting over-protections
+  # the bridge generated for itself). Used to (1) classify such ideas as red, and (2) HARD-BLOCK
+  # auto-claim of them unless the OPERATOR explicitly delegated (tag 'operator'). Deterministic.
+  param($Idea)
+  $t = ''
+  try { $t = ([string]$Idea.text).ToLowerInvariant() } catch {}
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  $cpPat = '(watchdog|supervisor|process[_ -]?supervision|runtime[_ -]?incident|circuit[_ -]?break|restart[_ -]?limit|script[_ -]?integrit|concurrent.{0,4}driver|control[_ -]?plane|driver\.ps1|server\.ps1|supervisor\.ps1|watchdog\.ps1|circuit-breaker\.ps1|kill-bridge|self[_ -]?edit)'
+  return [bool]($t -match $cpPat)
+}
+
 function Get-IdeaRiskTier {
   # Heuristic risk classifier for graduated self-execution. CONSERVATIVE by design:
   #   red    = never auto-executes — externally-sourced (anti-backdoor) OR touches the
@@ -2062,6 +2082,12 @@ function Get-IdeaRiskTier {
   # task (split SPEED/COST slices in deep-audit) sat unapproved 18h on that false red. Narrow
   # 'token' to auth-context via negative-lookahead that excludes the cost vocabulary; auth/API
   # tokens still match (secret|credential|api-key|auth.json also cover the security cases).
+  # 2026-05-31: the bridge's own CONTROL PLANE is now red = operator-only. A cascade of
+  # autonomously-generated 'process_supervision' / 'runtime-incident' tasks edited supervisor /
+  # watchdog / circuit-breaker / restart-limit / script-integrity and repeatedly DEADLOCKED the
+  # bridge ("we keep raising it from the dead"). Self-editing the safety/control surface autonomously
+  # is the single highest-risk class -- it must go through the operator, never auto-exec.
+  if (Test-IdeaTouchesControlPlane -Idea $Idea) { return [pscustomobject]@{ tier = 'red'; reason = 'правка собственного контура моста (supervisor/watchdog/circuit-breaker) — только оператор' } }
   $redPat = '(watchdog|supervisor|kill[- ]?switch|\.git|force[- ]?push|reset --hard|secret|credential|пароль|password|auth\.json|tokens?\b(?![-\s]?(?:burn|usage|count|budget|spent|cost|drain|throughput|per\b|/))|api[- ]?key|sandbox|permission|разрешени|удал|delete|drop\s+table|rm\s+-rf|encrypt|шифр|биллинг|billing|оплат|payment)'
   if ($text -match $redPat) { return [pscustomobject]@{ tier = 'red'; reason = 'затрагивает безопасность/необратимое/деньги' } }
   $greenPat = '(коммент|comment|документац|\bdocs?\b|readme|typo|опечат|орфограф|wording|форматир|\bformat\b|\blint\b|мёртв\w* код|dead code|unused|неиспольз|лог[- ]?сообщен|log message|whitespace|пробел|отступ|переименован\w* переменн|rename \w+ variable)'
