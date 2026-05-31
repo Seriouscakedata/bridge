@@ -56,7 +56,7 @@ try {
 }
 
 $script:OutsideMemoryRoot = Join-Path $bridgeRoot '..\outside-memory'
-function Get-EffectiveScope {
+function Get-MemoryScope {
   param([string]$Slug = $null)
   [pscustomobject]@{
     slug = 'main'
@@ -71,10 +71,24 @@ function Get-EffectiveScope {
 
 Add-ThrowCheck $results 'relative outside memory_root is rejected by Get-MemoryDir' { Get-MemoryDir }
 Add-ThrowCheck $results 'relative outside memory_root is rejected by Get-MemoryLogPath' { Get-MemoryLogPath }
+Add-ThrowCheck $results 'relative outside memory_store is rejected by Get-MemoryStorePath' { Get-MemoryStorePath }
 
 $script:OutsideMemoryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-memory-outside-' + [guid]::NewGuid().ToString('N'))
 Add-ThrowCheck $results 'absolute outside memory_root is rejected by Get-MemoryDir' { Get-MemoryDir }
 Add-ThrowCheck $results 'absolute outside memory_root is rejected by Get-MemoryLogPath' { Get-MemoryLogPath }
+Add-ThrowCheck $results 'absolute outside memory_store is rejected by Get-MemoryStorePath' { Get-MemoryStorePath }
+
+$jsonlProbe = Join-Path $bridgeRoot ('librarian_path_traversal_' + [guid]::NewGuid().ToString('N') + '.jsonl')
+try {
+  Add-MemoryJsonlContent -Path $jsonlProbe -Content ("{}" + "`n")
+  $bytes = [System.IO.File]::ReadAllBytes($jsonlProbe)
+  $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+  Add-Check $results 'memory JSONL append creates UTF-8 without BOM' (-not $hasBom) ('bytes=' + $bytes.Length)
+} catch {
+  Add-Check $results 'memory JSONL append creates UTF-8 without BOM' $false $_.Exception.Message
+} finally {
+  if (Test-Path -LiteralPath $jsonlProbe) { Remove-Item -LiteralPath $jsonlProbe -Force }
+}
 
 $failed = @($results | Where-Object { $_.status -ne 'PASS' })
 $out = [pscustomobject]@{

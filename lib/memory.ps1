@@ -24,31 +24,20 @@ function Get-EmbedCacheKey {
 # ---- paths ----
 function Resolve-MemoryContainedPath {
   param([Parameter(Mandatory=$true)][string]$Path, [string]$Purpose = 'memory path')
-  if (Get-Command Resolve-BridgeContainedPath -ErrorAction SilentlyContinue) {
-    return (Resolve-BridgeContainedPath -Path $Path -Purpose $Purpose)
+  if (-not (Get-Command Resolve-BridgeContainedPath -ErrorAction SilentlyContinue)) {
+    throw "Resolve-MemoryContainedPath: Resolve-BridgeContainedPath is not loaded"
   }
+  return (Resolve-BridgeContainedPath -Path $Path -Purpose $Purpose)
+}
 
-  $baseFull = [System.IO.Path]::GetFullPath((Get-BridgeRoot)).TrimEnd('\','/')
-  $targetInput = $Path
-  if (-not [System.IO.Path]::IsPathRooted($targetInput)) {
-    $targetInput = Join-Path $baseFull $targetInput
-  }
-  if (Test-Path -LiteralPath $targetInput) {
-    $targetResolved = [string](Resolve-Path -LiteralPath $targetInput -ErrorAction Stop).ProviderPath
-  } else {
-    $parent = Split-Path -Parent $targetInput
-    $leaf = Split-Path -Leaf $targetInput
-    if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -LiteralPath $parent)) {
-      $targetResolved = Join-Path ([string](Resolve-Path -LiteralPath $parent -ErrorAction Stop).ProviderPath) $leaf
-    } else {
-      $targetResolved = [System.IO.Path]::GetFullPath($targetInput)
-    }
-  }
-  $targetFull = [System.IO.Path]::GetFullPath($targetResolved).TrimEnd('\','/')
-  if ($targetFull.Equals($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
-  $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
-  if ($targetFull.StartsWith($basePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
-  throw "Resolve-MemoryContainedPath: $Purpose escapes bridge root: $targetFull (base: $baseFull)"
+function Add-MemoryJsonlContent {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [AllowEmptyString()][string]$Content
+  )
+  if ([string]::IsNullOrEmpty($Content)) { return }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::AppendAllText($Path, $Content, $utf8NoBom)
 }
 
 function Get-MemoryScope {
@@ -411,7 +400,7 @@ function Add-Memory {
   if ($null -ne $Meta) { $rec.meta = $Meta }
   $line = ($rec | ConvertTo-Json -Compress -Depth 10)
   $storePath = Get-MemoryStorePath -Slug $Channel
-  Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $line -Encoding UTF8 }.GetNewClosure())
+  Use-BridgeLock ({ Add-MemoryJsonlContent -Path $storePath -Content ($line + "`n") }.GetNewClosure())
   return $rec.id
 }
 
@@ -542,7 +531,7 @@ function Add-ProjectMemoryBatch {
   if ($lines.Count -gt 0) {
     $storePath = Get-MemoryStorePath -Slug $Channel
     $payload = ($lines.ToArray() -join "`n") + "`n"
-    Use-BridgeLock ({ Add-Content -LiteralPath $storePath -Value $payload -Encoding UTF8 -NoNewline }.GetNewClosure())
+    Use-BridgeLock ({ Add-MemoryJsonlContent -Path $storePath -Content $payload }.GetNewClosure())
   }
   return @($ids.ToArray())
 }
