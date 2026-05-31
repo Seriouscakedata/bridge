@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # ASCII-only self-test for the System Sentinel storm detector (watchdog.ps1).
 # Extracts the config+functions (everything before the main loop), stubs side effects,
 # and exercises: calm / detect / grace / dispatch / cooldown / self-heal / escalation.
@@ -20,7 +20,7 @@ $src = [System.IO.File]::ReadAllText($realWatchdog, [System.Text.Encoding]::UTF8
 $marker = 'WLog "=== watchdog loop started'
 $idx = $src.IndexOf($marker)
 if ($idx -lt 0) { Write-Host 'FAIL: loop marker not found'; exit 1 }
-Invoke-Expression $src.Substring(0, $idx)
+. ([scriptblock]::Create($src.Substring(0, $idx)))
 
 # 3) stub side effects AFTER extract (late binding -> these win at call time)
 $script:logs = New-Object System.Collections.ArrayList

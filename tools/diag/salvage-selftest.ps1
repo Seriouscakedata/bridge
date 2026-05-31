@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # ASCII-only self-test for Invoke-FailedTaskSalvage (lib/doctor.ps1).
 # Sandbox git repo; stubs common helpers; extracts ONLY the salvage function.
 $ErrorActionPreference = 'Stop'
@@ -26,7 +26,7 @@ function Send-PushEvent { param($Kind, $Text) [void]$script:pushes.Add([string]$
 $src = [System.IO.File]::ReadAllText($doctorLib, [System.Text.Encoding]::UTF8)
 $i = $src.IndexOf('function Invoke-FailedTaskSalvage')
 if ($i -lt 0) { Write-Host 'FAIL: salvage function not found'; exit 1 }
-Invoke-Expression $src.Substring($i)
+. ([scriptblock]::Create($src.Substring($i)))
 
 $fails = 0
 function Assert($n, $c) { if ($c) { Write-Host "  PASS: $n" } else { Write-Host "  FAIL: $n"; $script:fails++ } }
