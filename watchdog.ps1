@@ -303,6 +303,37 @@ function Check-Storm {
   }
 }
 
+function Test-CircuitCooldown {
+  # Self-contained mirror of the supervisor's circuit-breaker trip check (lib/circuit-breaker.ps1
+  # Test-CircuitTrip): count restart events in restarts.jsonl within the window; if >= maxRestarts
+  # the breaker is TRIPPED (in cooldown) and the supervisor will NOT start the driver. The watchdog
+  # must not restart during that window — its restart adds +1 to this very count and extends the
+  # cooldown forever (the 2026-05-31 deadlock). Reads config for window/max with safe defaults.
+  $windowMin = 30; $maxRestarts = 5
+  try {
+    $cfgP = Join-Path $b 'config.json'
+    if (Test-Path $cfgP) {
+      $cfg = Get-Content $cfgP -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($cfg.circuitBreaker) {
+        if ($cfg.circuitBreaker.windowMin)   { $windowMin   = [int]$cfg.circuitBreaker.windowMin }
+        if ($cfg.circuitBreaker.maxRestarts) { $maxRestarts = [int]$cfg.circuitBreaker.maxRestarts }
+      }
+    }
+  } catch {}
+  if ($maxRestarts -lt 1) { $maxRestarts = 5 }
+  $rj = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-runtime\restarts.jsonl' } else { '' }
+  if (-not $rj -or -not (Test-Path $rj)) { return $false }
+  $cutoff = (Get-Date).ToUniversalTime().AddMinutes(-1 * [Math]::Max(1, $windowMin))
+  $count = 0
+  try {
+    foreach ($line in ([System.IO.File]::ReadAllLines($rj, [System.Text.Encoding]::UTF8))) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      try { $e = $line | ConvertFrom-Json; $ts = ([datetimeoffset]::Parse([string]$e.ts)).UtcDateTime; if ($ts -ge $cutoff) { $count++ } } catch {}
+    }
+  } catch {}
+  return ($count -ge $maxRestarts)
+}
+
 function Check-Once {
   if (Test-Path $pauseFile) { WLog 'paused (.bridge-private\watchdog.pause present) - no action'; return }
 
@@ -352,6 +383,17 @@ function Check-Once {
   $fails++
   "$fails" | Out-File $failFile -Encoding ascii
   WLog "UNHEALTHY (api=$apiOk hbAge=${hbAge}s), consecutive=$fails"
+
+  # 2026-05-31 DEADLOCK FIX: respect the supervisor's circuit-breaker. If it is already TRIPPED
+  # (too many restarts in the window), a watchdog restart adds +1 to that very count and extends
+  # the cooldown forever -> driver never starts -> heartbeat stays stale -> watchdog restarts
+  # again. That loop killed the bridge for 45min today. While the breaker is tripped we HOLD:
+  # no restart, no rollback. The window drains, the supervisor starts the driver cleanly, and
+  # only THEN (if still unhealthy) do we act.
+  if (Test-CircuitCooldown) {
+    WLog "UNHEALTHY but circuit-breaker TRIPPED (cooldown) -> HOLDING; a restart now would extend the deadlock. Waiting for the restart window to drain."
+    return
+  }
 
   if ($hbOk) {
     # Driver is ALIVE; only the API is down -> server restarting/crashed after a self-edit.
