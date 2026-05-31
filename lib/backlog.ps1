@@ -1992,7 +1992,10 @@ function Add-OperatorBatch {
   foreach ($t in $clean) {
     $idx++
     $label = if ([string]::IsNullOrWhiteSpace($BatchLabel)) { '' } else { "[$BatchLabel $idx/$($clean.Count)] " }
-    $id = Add-Idea -Text ($label + $t) -From 'operator' -Tags @('operator', 'batch:' + $batchId) -Status 'approved' -Severity 'critical' -Project $Project -Scope $Scope -SkipCurator
+    # NOTE: parentheses around the concat are REQUIRED — `@('operator', 'batch:' + $batchId)`
+    # parses as THREE elements in PowerShell (the `+` binds as unary), splitting the batch tag
+    # into "batch:" + "<id>" and breaking every batch-progress metric. Verified 2026-05-31.
+    $id = Add-Idea -Text ($label + $t) -From 'operator' -Tags @('operator', ('batch:' + $batchId)) -Status 'approved' -Severity 'critical' -Project $Project -Scope $Scope -SkipCurator
     if ($id) { $ids += $id }
   }
   try { Add-Message -From system -Text ("🎛 Оператор делегировал batch " + $batchId + ": " + $ids.Count + " задач (приоритет operator, исполняются первыми).") -Kind event | Out-Null } catch {}

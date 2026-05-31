@@ -3,7 +3,7 @@
 # File-based first (works even when the bridge is DEAD -- the case where I need it most), with a
 # live API health probe on top. No dependency on the engine being up. ASCII labels; data read UTF-8.
 #   Usage: powershell -NoProfile -File tools\operator-pulse.ps1 [-DoneHours 24]
-param([int]$DoneHours = 24)
+param([int]$DoneHours = 24, [string]$Channel = 'main')
 $ErrorActionPreference = 'Continue'
 $root = if ($env:BRIDGE_ROOT) { $env:BRIDGE_ROOT } else { 'C:\Users\rafie\OneDrive\Documents\bridge' }
 $git  = if ($env:BRIDGE_GIT) { $env:BRIDGE_GIT } else { 'C:\Program Files\Git\cmd\git.exe' }
@@ -12,6 +12,32 @@ $nowU = $now.ToUniversalTime()
 function JFile($p) { try { [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { $null } }
 function AgeS($iso) { try { [math]::Round(($nowU - ([datetimeoffset]::Parse([string]$iso)).UtcDateTime).TotalSeconds, 0) } catch { '?' } }
 function Trunc($s, $n) { $s = [string]$s; if ($s.Length -gt $n) { $s.Substring(0, $n) + '...' } else { $s } }
+# 2026-05-31 (Foundation #4): file-based "why is this channel idle" — no engine dependency.
+function WhyIdle($chName) {
+  $cfg = JFile (Join-Path $root 'config.json'); $set = JFile (Join-Path $root 'settings.json')
+  $enabled = $true; $quiet = 10.0; $cap = 0; $disabled = @('travel')
+  if ($cfg -and $cfg.autonomy) {
+    if ($null -ne $cfg.autonomy.enabled) { $enabled = [bool]$cfg.autonomy.enabled }
+    if ($null -ne $cfg.autonomy.idleQuietMinutes) { $quiet = [double]$cfg.autonomy.idleQuietMinutes }
+    if ($null -ne $cfg.autonomy.maxAutonomousTasksPerDay) { $cap = [int]$cfg.autonomy.maxAutonomousTasksPerDay }
+    if ($cfg.autonomy.autonomyDisabledChannels) { $disabled = @($cfg.autonomy.autonomyDisabledChannels) }
+  }
+  if ($set) {
+    if ($null -ne $set.enabled) { $enabled = [bool]$set.enabled }
+    if ($null -ne $set.idleQuietMinutes) { $quiet = [double]$set.idleQuietMinutes }
+    if ($null -ne $set.maxAutonomousTasksPerDay) { $cap = [int]$set.maxAutonomousTasksPerDay }
+  }
+  if (-not $enabled) { return 'autonomy disabled' }
+  if ($disabled -contains $chName) { return 'paused (autonomyDisabledChannels)' }
+  $conv = Join-Path $root "channels\$chName\conversation.jsonl"; $lua = 99999.0
+  if (Test-Path $conv) { try { $lua = ($nowU - (Get-Item $conv).LastWriteTimeUtc).TotalMinutes } catch {} }
+  if ($lua -lt $quiet) { return ("idle-quiet: {0:N1}m < {1}m tишины" -f $lua, $quiet) }
+  if ($cap -gt 0) {
+    $st = JFile (Join-Path $root "channels\$chName\state.json"); $today = $now.ToString('yyyy-MM-dd')
+    if ($st -and [string]$st.autonomous_day -eq $today -and [int]$st.autonomous_count -ge $cap) { return ('daily cap ' + $st.autonomous_count + '/' + $cap) }
+  }
+  return 'ready'
+}
 
 Write-Host ("=== BRIDGE :: OPERATOR PULSE @ " + $now.ToString('yyyy-MM-dd HH:mm:ss') + " ===") -ForegroundColor Cyan
 
@@ -60,12 +86,15 @@ foreach ($ch in $channels) {
   if (-not [string]::IsNullOrWhiteSpace([string]$st.current_task)) {
     $dur = if ($st.claimed_at) { AgeS $st.claimed_at } else { '?' }
     Write-Host ("      working: " + (Trunc $st.current_task 90) + "  (" + $dur + "s, turn " + $st.task_turn + ")") -ForegroundColor DarkGray
+  } elseif ([string]$st.status -eq 'idle') {
+    $wi = WhyIdle $ch
+    if ($wi -and $wi -ne 'ready') { Write-Host ("      why-idle: " + $wi) -ForegroundColor DarkYellow }
   }
   if (-not [string]::IsNullOrWhiteSpace([string]$st.held_task)) { [void]$waiting.Add("[" + $ch + "] held_task: " + (Trunc $st.held_task 80)) }
 }
 
-# ---------- QUEUE (backlog, main) ----------
-$bk = Join-Path $root 'channels\main\backlog.jsonl'
+# ---------- QUEUE (backlog, per -Channel) ----------
+$bk = Join-Path $root "channels\$Channel\backlog.jsonl"
 $lastStatus = @{}; $lastObj = @{}; $doneRecent = 0
 if (Test-Path $bk) {
   $doneCut = $nowU.AddHours(-$DoneHours)
@@ -75,7 +104,7 @@ if (Test-Path $bk) {
   }
 }
 $grp = @{}; foreach ($s in $lastStatus.Values) { if (-not $grp.ContainsKey($s)) { $grp[$s] = 0 }; $grp[$s]++ }
-Write-Host "QUEUE (backlog):" -ForegroundColor Yellow
+Write-Host ("QUEUE (backlog: " + $Channel + "):") -ForegroundColor Yellow
 $qline = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('approved','running','new','held','failed') } | Sort-Object Name | ForEach-Object { $_.Key + "=" + $_.Value }) -join "  "
 Write-Host ("  " + $(if ($qline) { $qline } else { '(empty)' }))
 Write-Host ("  closed total: done=" + [int]$grp['done'] + " auto-resolved=" + [int]$grp['auto-resolved'] + " dropped=" + [int]$grp['auto-dropped'])
@@ -112,7 +141,7 @@ if ($activeBatches.Count -gt 0) {
 $sinceArg = "--since=$DoneHours.hours.ago"
 $commits = @(& $git -C $root log $sinceArg --oneline 2>$null)
 Write-Host ("PROGRESS (" + $DoneHours + "h):") -ForegroundColor Yellow
-$mainState = JFile (Join-Path $root 'channels\main\state.json')
+$mainState = JFile (Join-Path $root "channels\$Channel\state.json")
 $autoCount = if ($mainState) { [string]$mainState.autonomous_count } else { '?' }
 $streak = if ($mainState) { [string]$mainState.autonomy_streak } else { '?' }
 Write-Host ("  commits=" + $commits.Count + "  autonomous_today=" + $autoCount + "  autonomy_streak=" + $streak)

@@ -1104,6 +1104,33 @@ function Test-AutonomyReady {
   return $true
 }
 
+function Get-AutonomyIdleReason {
+  # 2026-05-31 (Foundation #4): human-readable reason WHY the channel is not claiming an
+  # autonomous task right now. Mirrors Test-AutonomyReady but returns a string for the operator
+  # (surfaced by pulse / why-idle) so diagnosing a stalled channel no longer means reading driver.ps1.
+  $a = $null
+  try { $a = Get-AutonomySettings } catch { return 'settings-error' }
+  if (-not $a) { return 'no-settings' }
+  if (-not [bool]$a.enabled) { return 'autonomy disabled (settings.enabled=false)' }
+  $curCh = ''
+  try { $curCh = [string](Get-PinnedChannel) } catch {}
+  if ([string]::IsNullOrWhiteSpace($curCh)) { $curCh = 'main' }
+  if (@($a.autonomyDisabledChannels) -contains $curCh) { return ("channel '" + $curCh + "' is paused (autonomyDisabledChannels)") }
+  $quietMin = [double]$a.idleQuietMinutes
+  $lua = 99999.0
+  try { $lua = [double](Get-LastUserActivityMinutes) } catch {}
+  if ($lua -lt $quietMin) { return ("idle-quiet: last activity {0:N1}m < required {1}m" -f $lua, $quietMin) }
+  $cap = [int]$a.maxAutonomousTasksPerDay
+  if ($cap -gt 0) {
+    $st = Read-State
+    $today = (Get-Date).ToString('yyyy-MM-dd')
+    $cnt = 0
+    if (($st.PSObject.Properties.Name -contains 'autonomous_day') -and ([string]$st.autonomous_day -eq $today)) { $cnt = [int]$st.autonomous_count }
+    if ($cnt -ge $cap) { return ("daily cap reached (" + $cnt + "/" + $cap + ")") }
+  }
+  return 'ready (will claim next runnable/approved idea)'
+}
+
 function Invoke-AutoPush {
   # 2026-05-30: after the driver commits work, push it to origin so everything
   # lands on GitHub automatically. Non-fatal: only runs if a remote + upstream
