@@ -4,6 +4,7 @@
 # Instrumented: captures child stdout/stderr to control/*.log for diagnosis.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\circuit-breaker.ps1')
+. (Join-Path $PSScriptRoot 'lib\supervisor-restart-limit.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 $ErrorActionPreference = 'Continue'
 $enc = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = $enc
@@ -266,6 +267,17 @@ function Test-CircuitSpawnPaused {
   }
 }
 
+$script:restartLimitState = New-SupervisorRestartLimitState
+$script:restartLimitSettings = Get-SupervisorRestartLimitSettings -Config $cfg
+function Test-SupervisorProcessStartAllowed {
+  param([Parameter(Mandatory=$true)][string]$Key)
+  $res = Test-SupervisorRestartAllowed -State $script:restartLimitState -Key $Key -Settings $script:restartLimitSettings `
+    -LogCallback { param($m) Log $m } `
+    -MessageCallback { param($m) Add-Message -From system -Text $m -Kind event | Out-Null } `
+    -PushCallback { param($m) try { Send-PushEvent -Kind need_you -Text $m } catch {} }
+  return [bool]$res.allowed
+}
+
 Log "=== supervisor start, PID $PID ==="
 Kill-Bridge
 Start-Sleep -Seconds 2
@@ -365,6 +377,7 @@ while ($true) {
           Record-CircuitRestart -Detail ("server exited with code " + $srv.ExitCode) -ReapFired:$false -FlagPresent:$false
         }
         if (-not (Test-CircuitSpawnPaused)) {
+          if (-not (Test-SupervisorProcessStartAllowed -Key 'server')) { continue }
           Log "starting server..."
           try {
             $srv = Start-Srv; Start-Sleep -Seconds 3
@@ -389,6 +402,7 @@ while ($true) {
             Record-CircuitRestart -Detail ("driver[" + $slug + "] exited with code " + $proc.ExitCode) -ReapFired:$false -FlagPresent:$false
           }
           if (Test-CircuitSpawnPaused) { break }
+          if (-not (Test-SupervisorProcessStartAllowed -Key ("driver:" + $slug))) { continue }
           Log ("starting driver for channel '" + $slug + "'...")
           try {
             $proc = Start-Drv -Slug $slug

@@ -127,7 +127,10 @@
   "supervisor": {
     "reapBloatedMB": 8192,
     "reapWarnMB": 6144,
-    "reapGraceMs": 60000
+    "reapGraceMs": 60000,
+    "restartLimitMaxPerHour": 10,
+    "restartLimitWindowMin": 60,
+    "restartLimitCooldownMin": 30
   },
   "auditor": {
     "enabled": true,
