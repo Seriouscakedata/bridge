@@ -2308,6 +2308,12 @@ try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 fai
 try { . (Join-Path $PSScriptRoot 'usage.ps1') } catch { Write-Warning "usage.ps1 failed to load: $($_.Exception.Message)" }
 # Planner model router layered on top of Get-PlannerModel; learns from turns.jsonl outcomes.
 try { . (Join-Path $PSScriptRoot 'router.ps1') } catch { Write-Warning "router.ps1 failed to load: $($_.Exception.Message)" }
+# Channel layout helpers must load before backlog.ps1 because Get-BacklogPath
+# delegates to Get-ChannelBacklogPath when channels are available.
+try { . (Join-Path $PSScriptRoot 'channels.ps1') } catch { Write-Warning "channels.ps1 failed to load: $($_.Exception.Message)" }
+# Run channel migration once — moves legacy bridge-root files into channels/main/ if needed.
+# Idempotent; safe to call on every Initialize-Bridge.
+try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
 # Self-improvement backlog (ideas the agents raise themselves).
 try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }
 # User-tunable settings (gitignored overrides: idle-quiet, autonomy scope, etc.).
@@ -2322,10 +2328,6 @@ try { . (Join-Path $PSScriptRoot 'toolforge.ps1') } catch { Write-Warning "toolf
 try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'doctor.ps1') } catch { Write-Warning "doctor.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'architect.ps1') } catch { Write-Warning "architect.ps1 failed to load: $($_.Exception.Message)" }
-try { . (Join-Path $PSScriptRoot 'channels.ps1') } catch { Write-Warning "channels.ps1 failed to load: $($_.Exception.Message)" }
-# Run channel migration once — moves legacy bridge-root files into channels/main/ if needed.
-# Idempotent; safe to call on every Initialize-Bridge.
-try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
 # Evidence-backed per-project memory layer (typed memory + context pack) on top
 # of memory.ps1/codemem.ps1/channels.ps1. Best-effort and non-fatal.
 try { . (Join-Path $PSScriptRoot 'project-context.ps1') } catch { Write-Warning "project-context.ps1 failed to load: $($_.Exception.Message)" }

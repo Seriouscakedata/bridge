@@ -1273,7 +1273,9 @@ function Invoke-BridgeAudit {
       # (lib/backlog.ps1). Loading common.ps1 brings the whole stack in the right
       # order so audit can actually file findings instead of throwing
       # "Get-BacklogPath not recognized".
-      if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
+      $addIdeaLoaded = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
+      $getBacklogPathLoaded = [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
+      if (-not $addIdeaLoaded -or -not $getBacklogPathLoaded) {
         $commonLib = Join-Path $root 'lib\common.ps1'
         if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
       }
@@ -1287,7 +1289,7 @@ function Invoke-BridgeAudit {
         $pinSlug = if (-not [string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel } else { 'main' }
         try { Set-PinnedChannel $pinSlug } catch {}
       }
-      $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue)
+      $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue) -and [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
     } catch {
       [void]$errors.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
     }
@@ -1305,7 +1307,7 @@ function Invoke-BridgeAudit {
       } catch {}
     }
     if (-not $addIdeaAvailable) {
-      & $writeDiag 'init' '' 'add-idea-unavailable' ('common-lib-loaded=' + [bool](Get-Command Get-BacklogPath -EA SilentlyContinue))
+      & $writeDiag 'init' '' 'add-idea-unavailable' ('add-idea-loaded=' + [bool](Get-Command Add-Idea -EA SilentlyContinue) + ' get-backlogpath-loaded=' + [bool](Get-Command Get-BacklogPath -EA SilentlyContinue))
     }
     $deepBacklogStatus = if ([string]$auditCtx.kind -eq 'project') { 'held' } else { 'approved' }
     $deepBacklogProject = [string]$auditCtx.backlog_channel
