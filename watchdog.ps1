@@ -399,6 +399,7 @@ function Check-Once {
   if ($apiOk -and $hbOk) {
     if ($fails -ne 0) { WLog "healthy again (was failing $fails)" }
     '0' | Out-File $failFile -Encoding ascii
+    try { Remove-Item -LiteralPath (Join-Path $ctl 'watchdog.stale-restart-tried') -Force -ErrorAction SilentlyContinue } catch {}
     if (-not (Test-Path $healthyFile)) { (Get-Date).ToString('o') | Out-File $healthyFile -Encoding ascii }
     Promote-Stable
     return
@@ -450,13 +451,42 @@ function Check-Once {
       WLog "heartbeat STALE but a parallel dispatch is ACTIVE (workers mid-merge) -> HOLDING rollback to avoid trashing the merge"
       return
     }
-    WLog "driver heartbeat STALE -> ROLLBACK to stable (safety branch first) + restart"
-    Invoke-Rollback
-    # 🩺 Doctor signal: bridge picks this up on next loop and runs auto-repair.
-    try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value 'watchdog_rollback_driver_dead' -Encoding ascii } catch {}
-    Request-Restart
-    '0' | Out-File $failFile -Encoding ascii
-    WLog "rollback applied (driver-dead)"
+    # SYSTEMIC FIX 2026-05-31: heartbeat stale = driver HUNG, not necessarily broken CODE. A
+    # destructive `git reset --hard stable` here repeatedly destroyed the very fixes that stabilize
+    # the bridge: rollback to an OLD stable -> the bug returns -> driver hangs again -> rollback,
+    # forever ("we keep raising it from the dead"). RESTART FIRST (kills+respawns the hung driver,
+    # code intact). Escalate to rollback ONLY if the code is provably broken: the restart did not
+    # revive it AND smoke is red. The stale-restart marker is cleared on the next healthy check.
+    $staleRestartFile = Join-Path $ctl 'watchdog.stale-restart-tried'
+    if (-not (Test-Path $staleRestartFile)) {
+      WLog "driver heartbeat STALE -> RESTART driver (code intact); rollback only if this fails + smoke red"
+      try { Set-Content -LiteralPath $staleRestartFile -Value ((Get-Date).ToString('o')) -Encoding ascii } catch {}
+      Request-Restart
+      '0' | Out-File $failFile -Encoding ascii
+      return
+    }
+    # Restart already tried and STILL stale -> is the code actually broken? Gate the destructive
+    # rollback on smoke.
+    $smokeRed = $false
+    $smokeScript2 = Join-Path $b 'smoke.ps1'
+    if (Test-Path $smokeScript2) {
+      $so = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $smokeScript2 2>&1
+      $smokeRed = ($LASTEXITCODE -ne 0)
+      WLog ("post-restart smoke: " + $(if ($smokeRed) { 'RED -> code broken' } else { 'OK -> code fine, driver just hung' }))
+    }
+    try { Remove-Item -LiteralPath $staleRestartFile -Force -ErrorAction SilentlyContinue } catch {}
+    if ($smokeRed) {
+      WLog "driver heartbeat STALE after restart AND smoke RED -> ROLLBACK to stable + restart"
+      Invoke-Rollback
+      try { Set-Content -LiteralPath (Join-Path $ctl 'repair.signal') -Value 'watchdog_rollback_driver_dead' -Encoding ascii } catch {}
+      Request-Restart
+      '0' | Out-File $failFile -Encoding ascii
+      WLog "rollback applied (code broken)"
+    } else {
+      WLog "heartbeat STALE but smoke OK -> NOT rolling back (would lose good code); restarting driver again"
+      Request-Restart
+      '0' | Out-File $failFile -Encoding ascii
+    }
   }
 }
 
