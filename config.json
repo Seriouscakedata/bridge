@@ -157,7 +157,7 @@
     "branchName": "canary/heartbeat"
   },
   "autonomy": {
-    "enabled": false,
+    "enabled": true,
     "requireApproval": false,
     "idleQuietMinutes": 10,
     "maxAutonomousTasksPerDay": 8,
