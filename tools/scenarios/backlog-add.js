@@ -21,6 +21,17 @@ async function scenario(s) {
   const marker = 'scenario-backlog-' + Date.now().toString(36);
   const taskText = '[scenario test] please ignore — verifying backlog add flow with marker ' + marker;
 
+  // 0. Verify function dependencies are loaded in the server process
+  let healthResp = null;
+  try {
+    const r = await scenarioFetch('/api/backlog/health');
+    if (!r.ok) { s.fail('GET /api/backlog/health HTTP ' + r.status); return; }
+    healthResp = await r.json();
+  } catch (e) { s.fail('GET /api/backlog/health failed: ' + e.message); return; }
+  s.assert(healthResp && healthResp.addIdea === true, 'Add-Idea function loaded on server');
+  s.assert(healthResp && healthResp.getBacklogPath === true, 'Get-BacklogPath function loaded on server');
+  s.log('function health: addIdea=' + (healthResp && healthResp.addIdea) + ' getBacklogPath=' + (healthResp && healthResp.getBacklogPath));
+
   // 1. POST add
   let addResp = null;
   try {
