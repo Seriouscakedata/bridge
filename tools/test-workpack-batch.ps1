@@ -88,6 +88,39 @@ try {
   Assert-True ($taskText -match '\[\[PARALLEL:wp2\]\]') 'expected parallel template wp2'
   Assert-True ($taskText -match 'STATUS:\s*CONTINUE') 'expected planner status hint'
 
+  $startSrvText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Start-Srv and Start-Drv use Start-Process with -NoNewWindow but redirect stdout/stderr to files. If the log file path is unavailable, supervisor can fail silently.'
+  $reapText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Reap-Bloated kills tracked processes with private memory > 8GB. The threshold is hardcoded.'
+  $auditText = '[deep-claude/Functional Bug] : The deep-audit phase of audit-self-diag is encountering Get-BacklogPath exceptions during drift analysis.'
+  $startClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $startSrvText })
+  $reapClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $reapText })
+  $auditClass = Get-BacklogWorkpackClassification -Item ([pscustomobject]@{ text = $auditText })
+  Assert-True (@($startClass.touch_set) -contains 'supervisor.ps1') 'Start-Srv/Start-Drv should infer supervisor.ps1'
+  Assert-True (@($reapClass.touch_set) -contains 'supervisor.ps1') 'Reap-Bloated should infer supervisor.ps1'
+  Assert-True ([string]$startClass.key -eq 'file:supervisor.ps1') ("expected supervisor key for Start-Srv, got {0}" -f [string]$startClass.key)
+  Assert-True ([string]$reapClass.key -eq 'file:supervisor.ps1') ("expected supervisor key for Reap-Bloated, got {0}" -f [string]$reapClass.key)
+  Assert-True ([string]$startClass.conflict_group -eq 'safety') 'supervisor Start-Srv should be safety conflict'
+  Assert-True ([string]$reapClass.conflict_group -eq 'safety') 'supervisor Reap-Bloated should be safety conflict'
+  Assert-True (@($auditClass.touch_set) -contains 'tools/audit.ps1') 'deep-audit Get-BacklogPath should infer tools/audit.ps1'
+  Assert-True (@($auditClass.touch_set) -contains 'lib/backlog.ps1') 'deep-audit Get-BacklogPath should infer lib/backlog.ps1'
+
+  $idStale = Add-Idea -Text $startSrvText -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idStale) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-stale-supervisor' -Force
+      $item | Add-Member -NotePropertyName workpack_root_cause_key -NotePropertyValue 'module:llm' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'llm' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('llm') -Force
+    }
+  }
+  Save-Backlog $items
+  $updated = Update-BacklogWorkpackClassifications
+  Assert-True ([int]$updated -ge 1) 'expected stale workpack classification to be refreshed'
+  $stale = @(Get-Backlog | Where-Object { [string]$_.id -eq [string]$idStale })[0]
+  Assert-True ([string]$stale.workpack_root_cause_key -eq 'file:supervisor.ps1') 'expected stale supervisor task key to be refreshed'
+  Assert-True ([string]$stale.workpack_conflict_group -eq 'safety') 'expected stale supervisor task conflict group to be refreshed'
+  Assert-True (@($stale.workpack_touch_set) -contains 'supervisor.ps1') 'expected stale supervisor task touch set to be refreshed'
+
   Write-Host ('OK workpack batch: selected {0} independent items' -f [int]$batch.count)
 } finally {
   try {

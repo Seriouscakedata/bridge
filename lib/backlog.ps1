@@ -693,18 +693,142 @@ function Request-BacklogPackIfNeeded {
   }
 }
 
-function Get-BacklogWorkpackModule {
+function Add-BacklogWorkpackFileCandidate {
+  param([System.Collections.Generic.List[string]]$List, [string]$Path)
+  if ($null -eq $List) { return }
+  $v = ([string]$Path).Trim().Trim(" `t`r`n""'`.,;")
+  if ([string]::IsNullOrWhiteSpace($v)) { return }
+  if ($v.StartsWith('./') -or $v.StartsWith('.\')) { $v = $v.Substring(2) }
+  $v = $v.Replace('\', '/').ToLowerInvariant()
+  while ($v.StartsWith('/')) { $v = $v.Substring(1) }
+  if ([string]::IsNullOrWhiteSpace($v)) { return }
+  if (-not $List.Contains($v)) { [void]$List.Add($v) }
+}
+
+function Get-BacklogRelativeWorkpackPath {
+  param([string]$Path)
+  try {
+    $root = [System.IO.Path]::GetFullPath((Get-BacklogFallbackBridgeRoot)).TrimEnd('\') + '\'
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return ($full.Substring($root.Length).Replace('\', '/').ToLowerInvariant())
+    }
+  } catch {}
+  return ((Split-Path -Leaf $Path).ToLowerInvariant())
+}
+
+function Get-BacklogFunctionFileMap {
+  if ($script:BacklogFunctionFileMap) { return $script:BacklogFunctionFileMap }
+  $map = @{}
+  try {
+    $root = Get-BacklogFallbackBridgeRoot
+    $dirs = @($root, (Join-Path $root 'lib'), (Join-Path $root 'tools'))
+    foreach ($dir in $dirs) {
+      if (-not (Test-Path -LiteralPath $dir)) { continue }
+      foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
+        $raw = ''
+        try { $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) } catch { continue }
+        foreach ($m in [regex]::Matches($raw, '(?im)^\s*function\s+([A-Za-z_][A-Za-z0-9_-]*)\b')) {
+          $fn = $m.Groups[1].Value.ToLowerInvariant()
+          if (-not $map.ContainsKey($fn)) { $map[$fn] = New-Object 'System.Collections.Generic.List[string]' }
+          Add-BacklogWorkpackFileCandidate -List $map[$fn] -Path (Get-BacklogRelativeWorkpackPath -Path $file.FullName)
+        }
+      }
+    }
+  } catch {}
+  $script:BacklogFunctionFileMap = $map
+  return $script:BacklogFunctionFileMap
+}
+
+function Get-BacklogInferredFiles {
   param([string]$Text)
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  $textRaw = [string]$Text
+  $t = $textRaw.ToLowerInvariant()
+
+  try {
+    $fnMap = Get-BacklogFunctionFileMap
+    foreach ($m in [regex]::Matches($textRaw, '\b[A-Z][A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9-]*\b')) {
+      $fn = $m.Value.ToLowerInvariant()
+      if (-not $fnMap.ContainsKey($fn)) { continue }
+      foreach ($p in @($fnMap[$fn].ToArray())) { Add-BacklogWorkpackFileCandidate -List $files -Path $p }
+    }
+  } catch {}
+
+  if ($t -match '(start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|redirect stdout|stderr|log file path|bloated pid)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'supervisor.ps1'
+  }
+  if ($t -match '(supervisor|watchdog|restart\.flag|explicit-flag|recycle|circuit-breaker|cooldown)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'supervisor.ps1'
+  }
+  if ($t -match '(get-backlogpath|add-idea|backlog path|backlog-curator|curator)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/backlog.ps1'
+  }
+  if (($t -match '(get-backlogpath|add-idea|backlog path)') -and ($t -match '(audit|deep-audit|audit-self-diag|drift analysis)')) {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'tools/audit.ps1'
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/common.ps1'
+  }
+  if ($t -match '(backlog-add\.js|/api/backlog/add|post /api/backlog/add)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'tools/scenarios/backlog-add.js'
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'server.ps1'
+  }
+  if ($t -match '(memory\.html|/memory|settings cells|api\(\).*503|transient 503|transient 502|transient 504)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'web/memory.html'
+  }
+  if ($t -match '(librarian|embedding|recall|vector|cosine)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/memory.ps1'
+  }
+  if ($t -match '(parallel dispatch|parallel worker|worktree|trivial-fallback|\[\[parallel)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'lib/parallel.ps1'
+  }
+  if ($t -match '(fast-lane|fast lane|intent classifier|detect-study|task_mode)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'driver.ps1'
+  }
+  if ($t -match '(feature verifier|features/state|features/registry)') {
+    Add-BacklogWorkpackFileCandidate -List $files -Path 'features/state.js'
+  }
+
+  return @($files.ToArray())
+}
+
+function Get-BacklogPrimaryWorkpackFile {
+  param([string[]]$Files)
+  $arr = @($Files | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($arr.Count -eq 0) { return '' }
+  foreach ($preferred in @(
+      'supervisor.ps1',
+      'driver.ps1',
+      'server.ps1',
+      'watchdog.ps1',
+      'lib/common.ps1',
+      'lib/backlog.ps1',
+      'lib/channels.ps1',
+      'tools/audit.ps1',
+      'lib/parallel.ps1',
+      'lib/memory.ps1',
+      'web/memory.html',
+      'tools/scenarios/backlog-add.js',
+      'config.json'
+    )) {
+    if ($arr -contains $preferred) { return $preferred }
+  }
+  return [string]$arr[0]
+}
+
+function Get-BacklogWorkpackModule {
+  param([string]$Text, [string[]]$Files = @())
   $t = ([string]$Text).ToLowerInvariant()
-  if ($t -match 'watchdog|supervisor|circuit|sandbox|security|preflight|permission|защит') { return 'safety' }
-  if ($t -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
-  if ($t -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
-  if ($t -match 'memory|librarian|embedding|recall|памят') { return 'memory' }
-  if ($t -match 'web/index\.html|ui|badge|status badge|frontend|интерфейс') { return 'ui' }
-  if ($t -match 'llm|codex|claude|gemini|deepseek|timeout|model') { return 'llm' }
-  if ($t -match 'state|snapshot|checkpoint|restart|resume') { return 'state' }
-  if ($t -match 'parallel|lane|worktree|concurrent|паралл') { return 'parallel' }
-  if ($t -match 'readme|docs|documentation|runbook|guide|докум') { return 'docs' }
+  $all = ((@($Files) + @($t)) -join ' ').ToLowerInvariant()
+  if ($all -match 'supervisor\.ps1|start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|bloated pid') { return 'supervisor' }
+  if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|защит') { return 'safety' }
+  if ($all -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
+  if ($all -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
+  if ($all -match 'memory|librarian|embedding|recall|памят') { return 'memory' }
+  if ($all -match 'web/index\.html|web/memory\.html|ui|badge|status badge|frontend|интерфейс') { return 'ui' }
+  if ($all -match 'llm|codex|claude|gemini|deepseek|timeout|model') { return 'llm' }
+  if ($all -match 'state|snapshot|checkpoint|restart|resume') { return 'state' }
+  if ($all -match 'parallel|lane|worktree|concurrent|паралл') { return 'parallel' }
+  if ($all -match 'readme|docs|documentation|runbook|guide|докум') { return 'docs' }
   return 'general'
 }
 
@@ -712,7 +836,7 @@ function Get-BacklogWorkpackConflictGroup {
   param([string]$Text, [string[]]$Files = @())
   $all = ((@($Files) + @([string]$Text)) -join ' ').ToLowerInvariant()
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
-  if ($all -match 'watchdog|supervisor|circuit|sandbox|security|preflight|permissions|защит') { return 'safety' }
+  if ($all -match 'supervisor\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|circuit|sandbox|security|preflight|permissions|защит') { return 'safety' }
   if ($all -match 'audit|doctor|scenario') { return 'audit' }
   if ($all -match 'backlog|curator|workpack') { return 'backlog' }
   if ($all -match 'memory|librarian|embedding') { return 'memory' }
@@ -736,13 +860,16 @@ function New-BacklogWorkpackId {
 function Get-BacklogWorkpackClassification {
   param($Item)
   $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
-  $files = @(Get-BacklogMentionedFiles -Text $text | Sort-Object)
-  $module = Get-BacklogWorkpackModule -Text $text
+  $fileList = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($f in @(Get-BacklogMentionedFiles -Text $text | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+  foreach ($f in @(Get-BacklogInferredFiles -Text $text)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+  $files = @($fileList.ToArray())
+  $module = Get-BacklogWorkpackModule -Text $text -Files $files
   $touch = @()
   $key = ''
   if ($files.Count -gt 0) {
-    $touch = @($files | Select-Object -First 8)
-    $primary = [string]$touch[0]
+    $primary = Get-BacklogPrimaryWorkpackFile -Files $files
+    $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
     if ($primary -match '^(lib|tools|web|memory|control|docs|channels)/') {
       $parts = $primary -split '/'
       if ($parts.Count -ge 2) { $key = 'file:' + $parts[0] + '/' + $parts[1] }
@@ -887,6 +1014,45 @@ function Invoke-BacklogPackerIfDue {
     try { Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue } catch {}
   }
   return $result
+}
+
+function Update-BacklogWorkpackClassifications {
+  param([string[]]$Statuses = @('new','approved','held'))
+  $allowed = @{}
+  foreach ($s in @($Statuses)) {
+    $v = ([string]$s).ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($v)) { $allowed[$v] = $true }
+  }
+  return (Invoke-BacklogLocked {
+    $items = @(Get-Backlog)
+    $updated = 0
+    foreach ($item in $items) {
+      $status = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).ToLowerInvariant()
+      if (-not $allowed.ContainsKey($status)) { continue }
+      if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default ''))) { continue }
+      $class = Get-BacklogWorkpackClassification -Item $item
+      $newTouch = @($class.touch_set | ForEach-Object { [string]$_ })
+      $oldTouch = @(Get-BacklogPackObjectValue -Obj $item -Name 'workpack_touch_set' -Default @() | ForEach-Object { [string]$_ })
+      $oldKey = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_root_cause_key' -Default '')
+      $oldGroup = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default '')
+      $changed = $false
+      if ($oldKey -ne [string]$class.key) { $changed = $true }
+      if ($oldGroup -ne [string]$class.conflict_group) { $changed = $true }
+      if ((@($oldTouch) -join '|') -ne ((@($newTouch)) -join '|')) { $changed = $true }
+      if (-not $changed) { continue }
+      $item | Add-Member -NotePropertyName workpack_root_cause_key -NotePropertyValue ([string]$class.key) -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($newTouch) -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ([string]$class.conflict_group) -Force
+      $item | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ([string]$class.lane_hint) -Force
+      $item | Add-Member -NotePropertyName workpack_reclassified_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+      $updated++
+    }
+    if ($updated -gt 0) {
+      Save-Backlog $items
+      try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-reclassify'; updated=$updated; statuses=@($Statuses) }) } catch {}
+    }
+    return $updated
+  }.GetNewClosure())
 }
 
 function Get-BacklogWorkpackExecConfig {

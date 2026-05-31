@@ -3639,6 +3639,21 @@ while ($true) {
         if ($packRun -and [bool]$packRun.ran -and [int]$packRun.packed_items -gt 0) {
           Add-Message -From system -Text ("📦 Бэклог упакован: {0} задач → {1} workpack(s). Исполнение не меняю: approval и pre-flight остаются обязательными." -f [int]$packRun.packed_items, [int]$packRun.workpack_count) -Kind event | Out-Null
         }
+        $reclassifyDue = $false
+        $reclassifyNow = [DateTime]::UtcNow
+        if ($packRun -and [bool]$packRun.ran -and [int]$packRun.packed_items -gt 0) { $reclassifyDue = $true }
+        if ($null -eq $script:LastBacklogWorkpackReclassifyAt) {
+          $reclassifyDue = $true
+        } elseif (($reclassifyNow - [DateTime]$script:LastBacklogWorkpackReclassifyAt).TotalMinutes -ge 10) {
+          $reclassifyDue = $true
+        }
+        if ($reclassifyDue) {
+          $script:LastBacklogWorkpackReclassifyAt = $reclassifyNow
+          $reclassified = Update-BacklogWorkpackClassifications
+          if ([int]$reclassified -gt 0) {
+            Add-Message -From system -Text ("🧭 Workpack classification refreshed: {0} open packed task(s)." -f [int]$reclassified) -Kind event | Out-Null
+          }
+        }
       } catch {}
 
       # Autonomy: after enough idle quiet, take the next approved backlog idea and run it
