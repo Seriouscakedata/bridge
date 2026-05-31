@@ -124,6 +124,11 @@
     "maxRestarts": 5,
     "cooldownMin": 15
   },
+  "supervisor": {
+    "reapBloatedMB": 8192,
+    "reapWarnMB": 6144,
+    "reapGraceMs": 60000
+  },
   "auditor": {
     "enabled": true,
     "intervalMin": 15,
