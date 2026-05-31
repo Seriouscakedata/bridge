@@ -38,7 +38,7 @@ function Get-CanaryConfig {
     llmModel           = 'gemini-2.5-flash-lite'
     quarantineFailures = 2
     quarantineHours    = 12
-    worktreePath       = 'C:\Users\rafie\OneDrive\Documents\bridge-canary-worktree'
+    worktreePath       = (Join-Path (Split-Path (Get-BridgeRoot) -Parent) 'bridge-canary-worktree')
     branchName         = 'canary/heartbeat'
   }
 
@@ -237,7 +237,7 @@ function Invoke-CanaryGit {
 }
 
 function Initialize-CanaryWorktree {
-  param([string]$RepoRoot = 'C:\Users\rafie\OneDrive\Documents\bridge')
+  param([string]$RepoRoot = (Get-BridgeRoot))
 
   $cfg = Get-CanaryConfig
   $wtPath = [string]$cfg.worktreePath
