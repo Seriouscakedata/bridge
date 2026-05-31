@@ -585,6 +585,19 @@ try {
 }
 $script:driverFatalBlock = @{}
 $script:serverFatalBlock = $null
+$script:maxConcurrentDrivers = 20
+try {
+  if ($cfg -and $cfg.supervisor -and $null -ne $cfg.supervisor.maxConcurrentDrivers) {
+    $parsed = 0
+    if ([int]::TryParse(([string]$cfg.supervisor.maxConcurrentDrivers), [ref]$parsed) -and $parsed -gt 0) {
+      $script:maxConcurrentDrivers = $parsed
+    } else {
+      Log ("WARN: invalid supervisor.maxConcurrentDrivers='" + $cfg.supervisor.maxConcurrentDrivers + "', using default " + $script:maxConcurrentDrivers)
+    }
+  }
+} catch {
+  Log ("WARN: supervisor.maxConcurrentDrivers config read failed, using default " + $script:maxConcurrentDrivers + ": " + $_.Exception.Message)
+}
 function Test-SupervisorProcessStartAllowed {
   param([Parameter(Mandatory=$true)][string]$Key)
   $res = Test-SupervisorRestartAllowed -State $script:restartLimitState -Key $Key -Settings $script:restartLimitSettings `
@@ -718,6 +731,8 @@ while ($true) {
       }
       # Spawn one driver per non-archived channel; restart any that died.
       $driverStartupFailed = $false
+      $activeDriverCount = @($drivers.Values | Where-Object { $_ -and -not $_.HasExited }).Count
+      $maxDrvLimitWarnedThisPass = $false
       foreach ($slug in $slugs) {
         if ($script:driverFatalBlock.ContainsKey($slug)) { continue }
         $proc = $drivers[$slug]
@@ -728,6 +743,14 @@ while ($true) {
           }
           if (Test-CircuitSpawnPaused) { break }
           if (-not (Test-SupervisorProcessStartAllowed -Key ("driver:" + $slug))) { continue }
+          # Enforce concurrent driver limit
+          if ($activeDriverCount -ge $script:maxConcurrentDrivers) {
+            if (-not $maxDrvLimitWarnedThisPass) {
+              Log ("WARN: concurrent driver limit reached (" + $activeDriverCount + "/" + $script:maxConcurrentDrivers + ") - skipping spawn for '" + $slug + "' and possibly other channels (total channels: " + $slugs.Count + ")")
+              $maxDrvLimitWarnedThisPass = $true
+            }
+            continue
+          }
           Log ("starting driver for channel '" + $slug + "'...")
           try {
             $proc = Start-Drv -Slug $slug
@@ -748,6 +771,7 @@ while ($true) {
           }
           Log ("driver[" + $slug + "] pid=" + $(if($proc){$proc.Id}else{'?'}) + " hasExited=" + $(if($proc){$proc.HasExited}else{'?'}))
           $drivers[$slug] = $proc
+          $activeDriverCount++
         }
       }
       if ($driverStartupFailed) { continue }

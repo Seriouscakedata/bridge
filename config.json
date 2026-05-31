@@ -135,7 +135,8 @@
     "fatalDriverExitCodes": [3],
     "fatalServerExitCodes": [],
     "scriptIntegrityEnabled": true,
-    "scriptIntegrityManifest": "security/script-integrity.json"
+    "scriptIntegrityManifest": "security/script-integrity.json",
+    "maxConcurrentDrivers": 20
   },
   "auditor": {
     "enabled": true,
