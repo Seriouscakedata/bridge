@@ -1425,7 +1425,13 @@ function Format-Transcript {
   $projectCtxSect = ''
   try {
     if (Get-Command Get-ProjectContextPack -ErrorAction SilentlyContinue) {
-      $projectCtxSect = Get-ProjectContextPack -TaskText $TaskText -MaxChars 2600
+      # Richer context for EXTERNAL projects: unfamiliar code needs more facts/risks/decisions/tests
+      # to avoid shallow conclusions on a big codebase. The bridge's own 'main' channel is familiar,
+      # so it stays lean. (Code snippets are injected separately as $codeSect, so no -IncludeCode here.)
+      $pcScope = $null; try { $pcScope = Get-ProjectContextScope } catch {}
+      $isBridgeProj = (-not $pcScope) -or [bool]$pcScope.is_bridge
+      $pcMax = if ($isBridgeProj) { 2600 } else { 4200 }
+      $projectCtxSect = Get-ProjectContextPack -TaskText $TaskText -MaxChars $pcMax
     }
   } catch { $projectCtxSect = '' }
   $memSect = ''
