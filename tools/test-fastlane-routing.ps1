@@ -3,19 +3,9 @@
 $root = Split-Path -Parent $PSScriptRoot
 $commonPath = Join-Path $root 'lib\common.ps1'
 $intentPath = Join-Path $root 'lib\intent.ps1'
-$driverPath = Join-Path $root 'driver.ps1'
 
 . $commonPath
 . $intentPath
-
-$driverSrc = Get-Content -LiteralPath $driverPath -Raw -Encoding UTF8
-$markerMatch = [regex]::Match($driverSrc, '(?ms)function\s+Test-TaskControlMarker\s*\{.*?\n\}(?=\s*function\s+Get-PlannerModel)')
-if (-not $markerMatch.Success) { throw 'Test-TaskControlMarker not found in driver.ps1' }
-Invoke-Expression $markerMatch.Value
-
-$m = [regex]::Match($driverSrc, '(?ms)function\s+Test-IsTrivialTask\s*\{.*?\n\}')
-if (-not $m.Success) { throw 'Test-IsTrivialTask not found in driver.ps1' }
-Invoke-Expression $m.Value
 
 function Add-Check {
   param(
