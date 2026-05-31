@@ -9,15 +9,42 @@ function Stop-TestProcessTree {
   param([Parameter(Mandatory=$true)][System.Diagnostics.Process]$Process)
 
   $targetPid = [int]$Process.Id
-  $null = & cmd.exe /c "taskkill /PID $targetPid /F /T >nul 2>nul"
-  $taskkillExitCode = $LASTEXITCODE
+  $taskkillPath = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+  if (-not (Test-Path -LiteralPath $taskkillPath)) { $taskkillPath = 'taskkill.exe' }
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  $previousErrorActionPreference = $ErrorActionPreference
+  $taskkillExitCode = -1
+  $taskkillError = ''
+  $taskkillOutput = ''
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $taskkillPath /PID $targetPid /F /T 1>$stdoutPath 2>$stderrPath
+    $taskkillExitCode = [int]$LASTEXITCODE
+    $rawTaskkillOutput = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+    $rawTaskkillError = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+    if ($null -ne $rawTaskkillOutput) { $taskkillOutput = (([string]$rawTaskkillOutput).Trim() -split '\r?\n')[0] }
+    if ($null -ne $rawTaskkillError) { $taskkillError = (([string]$rawTaskkillError).Trim() -split '\r?\n')[0] }
+  } catch {
+    $taskkillExitCode = -1
+    $taskkillError = $_.Exception.Message
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    foreach ($path in @($stdoutPath, $stderrPath)) {
+      try {
+        if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+      } catch {
+        [System.Diagnostics.Trace]::TraceError("taskkill temp cleanup failed: " + $_.Exception.Message)
+      }
+    }
+  }
   $Process.Refresh()
   if ($taskkillExitCode -eq 0 -or $Process.HasExited) {
-    return [pscustomobject]@{ method = 'taskkill'; taskkillExitCode = $taskkillExitCode }
+    return [pscustomobject]@{ method = 'taskkill'; taskkillExitCode = $taskkillExitCode; taskkillOutput = $taskkillOutput; taskkillError = $taskkillError }
   }
 
   Stop-Process -Id $targetPid -Force -ErrorAction Stop
-  return [pscustomobject]@{ method = 'stop-process'; taskkillExitCode = $taskkillExitCode }
+  return [pscustomobject]@{ method = 'stop-process'; taskkillExitCode = $taskkillExitCode; taskkillOutput = $taskkillOutput; taskkillError = $taskkillError }
 }
 
 $proc = $null
@@ -27,6 +54,8 @@ $timedOutPath = $false
 $timedOutFallback = $false
 $killMethod = ''
 $taskkillExitCode = $null
+$taskkillError = ''
+$taskkillOutput = ''
 
 try {
   $proc = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
@@ -34,6 +63,8 @@ try {
   $killResult = Stop-TestProcessTree -Process $proc
   $killMethod = $killResult.method
   $taskkillExitCode = $killResult.taskkillExitCode
+  $taskkillError = $killResult.taskkillError
+  $taskkillOutput = $killResult.taskkillOutput
   $waitExited = [bool]$proc.WaitForExit(5000)
 
   $proc2 = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
@@ -53,6 +84,10 @@ try {
         [System.Diagnostics.Trace]::TraceError("cleanup failed for PID " + $p.Id + ": " + $_.Exception.Message)
       }
     }
+    if ($p) {
+      try { $p.Dispose() }
+      catch { [System.Diagnostics.Trace]::TraceError("test process dispose failed: " + $_.Exception.Message) }
+    }
   }
 }
 
@@ -61,11 +96,13 @@ if (-not $testPassed) {
   throw ("supervisor zombie reap smoke failed: waitExited=" + $waitExited + " timedOutPath=" + $timedOutPath + " timedOutFallback=" + $timedOutFallback)
 }
 
-[pscustomobject]@{
+[ordered]@{
   waitExited = $waitExited
   timedOutPath = $timedOutPath
   timedOutFallback = $timedOutFallback
   killMethod = $killMethod
   taskkillExitCode = $taskkillExitCode
+  taskkillOutput = $taskkillOutput
+  taskkillError = $taskkillError
   testPassed = $testPassed
-} | ConvertTo-Json -Compress -Depth 5
+} | ConvertTo-Json -Compress

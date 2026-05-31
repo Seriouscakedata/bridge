@@ -86,10 +86,84 @@ $script:bloatedSince = @{}
 $script:stopWaitMs = 5000
 
 function Get-SupervisorStopWaitMs {
-  param([int]$WaitMs = 0)
-  if ($WaitMs -gt 0) { return $WaitMs }
+  param([int]$RequestedWaitMs = 0)
+  if ($RequestedWaitMs -gt 0) { return $RequestedWaitMs }
   if ($script:stopWaitMs -gt 0) { return [int]$script:stopWaitMs }
   return 5000
+}
+
+function ConvertTo-SupervisorStopWaitMs {
+  param(
+    [object]$Value,
+    [int]$DefaultMs = 5000,
+    [string]$Source = 'supervisor.stopWaitMs'
+  )
+  $parsed = 0
+  if ($null -ne $Value -and [int]::TryParse(([string]$Value), [ref]$parsed) -and $parsed -gt 0) {
+    return $parsed
+  }
+  Log ("WARN: invalid " + $Source + "='" + $Value + "', using " + $DefaultMs + "ms")
+  return $DefaultMs
+}
+
+function Invoke-TaskkillTree {
+  param(
+    [Parameter(Mandatory=$true)][int]$TargetPid,
+    [string]$Reason = 'taskkill'
+  )
+  $taskkillPath = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+  if (-not (Test-Path -LiteralPath $taskkillPath)) { $taskkillPath = 'taskkill.exe' }
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  $previousErrorActionPreference = $ErrorActionPreference
+  $taskkillExitCode = -1
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $taskkillPath /PID $TargetPid /F /T 1>$stdoutPath 2>$stderrPath
+    $taskkillExitCode = [int]$LASTEXITCODE
+    $stdoutText = ''
+    $stderrText = ''
+    try {
+      if (Test-Path -LiteralPath $stdoutPath) {
+        $rawStdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        if ($null -ne $rawStdout) { $stdoutText = (([string]$rawStdout).Trim() -split '\r?\n')[0] }
+      }
+    } catch {
+      [System.Diagnostics.Trace]::TraceError("taskkill stdout read failed: " + $_.Exception.Message)
+    }
+    try {
+      if (Test-Path -LiteralPath $stderrPath) {
+        $rawStderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        if ($null -ne $rawStderr) { $stderrText = (([string]$rawStderr).Trim() -split '\r?\n')[0] }
+      }
+    } catch {
+      [System.Diagnostics.Trace]::TraceError("taskkill stderr read failed: " + $_.Exception.Message)
+    }
+    return [pscustomobject]@{
+      success = ($taskkillExitCode -eq 0)
+      exitCode = $taskkillExitCode
+      stdout = $stdoutText
+      stderr = $stderrText
+      reason = $Reason
+    }
+  } catch {
+    return [pscustomobject]@{
+      success = $false
+      exitCode = -1
+      stdout = ''
+      stderr = $_.Exception.Message
+      reason = $Reason
+    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    foreach ($path in @($stdoutPath, $stderrPath)) {
+      try {
+        if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+      } catch {
+        [System.Diagnostics.Trace]::TraceError("taskkill temp cleanup failed: " + $_.Exception.Message)
+      }
+    }
+  }
 }
 
 function Get-TrackedBridgeProcesses {
@@ -130,23 +204,36 @@ function Stop-TrackedBridgeProcess {
   )
   if (-not (Test-TrackedBridgeProcess -Process $Process)) { return $false }
   $trackedPid = [int]$Process.Id
-  $waitForExitMs = Get-SupervisorStopWaitMs -WaitMs $WaitMs
+  $waitForExitMs = Get-SupervisorStopWaitMs -RequestedWaitMs $WaitMs
   try {
     Log ($Reason + " -> stopping tracked PID " + $trackedPid)
-    $null = taskkill /PID $trackedPid /F /T 2>$null
+    $killResult = Invoke-TaskkillTree -TargetPid $trackedPid -Reason $Reason
+    if (-not $killResult.success) {
+      Log ("WARN: taskkill failed for PID " + $trackedPid + " exitCode=" + $killResult.exitCode + " stdout=" + $killResult.stdout + " stderr=" + $killResult.stderr)
+    }
     $exited = $Process.WaitForExit($waitForExitMs)
     if (-not $exited) {
       Log ("WARN: PID " + $trackedPid + " did not exit within " + $waitForExitMs + "ms after kill - possible zombie; issuing secondary kill")
-      try {
-        $null = taskkill /PID $trackedPid /F /T 2>$null
-      } catch {
-        Log ("WARN: secondary kill failed for PID " + $trackedPid + ": " + $_.Exception.Message)
+      $secondaryKill = Invoke-TaskkillTree -TargetPid $trackedPid -Reason ($Reason + ' secondary')
+      if (-not $secondaryKill.success) {
+        Log ("WARN: secondary taskkill failed for PID " + $trackedPid + " exitCode=" + $secondaryKill.exitCode + " stdout=" + $secondaryKill.stdout + " stderr=" + $secondaryKill.stderr)
+        try {
+          Stop-Process -Id $trackedPid -Force -ErrorAction Stop
+        } catch {
+          Log ("WARN: Stop-Process fallback failed for PID " + $trackedPid + ": " + $_.Exception.Message)
+        }
+      }
+      if (-not [bool]$Process.WaitForExit(1000)) {
+        Log ("WARN: PID " + $trackedPid + " still did not report exit after secondary kill; disposing process handle and continuing")
       }
     }
     return $true
   } catch {
     Log ($Reason + " stop error for PID " + $trackedPid + ": " + $_.Exception.Message)
     return $false
+  } finally {
+    try { $Process.Dispose() }
+    catch { [System.Diagnostics.Trace]::TraceError("tracked process dispose failed for PID " + $trackedPid + ": " + $_.Exception.Message) }
   }
 }
 function Kill-Bridge {
@@ -160,7 +247,7 @@ function Kill-Bridge {
         "$($owner.Domain)\$($owner.User)" -eq $currentUser
       } catch { $false }
     } |
-    ForEach-Object { taskkill /PID $_.ProcessId /F /T 2>$null | Out-Null }
+    ForEach-Object { $null = Invoke-TaskkillTree -TargetPid ([int]$_.ProcessId) -Reason 'Kill-Bridge' }
 }
 function Reap-Bloated {
   # Memory-leak guard: kill any bridge server/driver powershell whose PRIVATE memory exceeds the
@@ -374,7 +461,7 @@ $script:restartLimitSettings = Get-SupervisorRestartLimitSettings -Config $cfg
 $script:fatalExitSettings = Get-SupervisorFatalExitCodeSettings -Config $cfg
 try {
   if ($cfg -and $cfg.supervisor -and $null -ne $cfg.supervisor.stopWaitMs) {
-    $script:stopWaitMs = [int]$cfg.supervisor.stopWaitMs
+    $script:stopWaitMs = ConvertTo-SupervisorStopWaitMs -Value $cfg.supervisor.stopWaitMs -DefaultMs 5000
   }
 } catch {
   Log ("WARN: supervisor.stopWaitMs config read failed, using " + $script:stopWaitMs + "ms: " + $_.Exception.Message)
