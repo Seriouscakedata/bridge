@@ -887,7 +887,9 @@ function Start-ReflectIfDue {
     }
   } catch {}
   $auto = $null
-  try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $auto = $cfgA.autonomy } } catch { return }
+  try { $auto = Get-AutonomySettings } catch {
+    try { $cfgA = Get-BridgeConfig; if ($cfgA.PSObject.Properties.Name -contains 'autonomy') { $auto = $cfgA.autonomy } } catch { return }
+  }
   $enabled = if ($auto -and $null -ne $auto.enabled) { [bool]$auto.enabled } else { $true }
   if (-not $enabled) { return }
   $everyH = if ($auto -and $auto.reflectEveryHours) { [double]$auto.reflectEveryHours } else { 6 }
