@@ -6,9 +6,8 @@ $root = Get-BridgeRoot
 $wd   = Join-Path $root 'watchdog.ps1'
 $name = 'ClaudeCodexBridge-Watchdog'
 
-$argList = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ('"' + ($wd -replace '"', '\"') + '"'))
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument ($argList -join ' ')
+  -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wd + '"')
 $tLogon = New-ScheduledTaskTrigger -AtLogOn
 $tRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(45) `
   -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 365)
