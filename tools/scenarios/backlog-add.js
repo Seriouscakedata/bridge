@@ -53,7 +53,7 @@ async function scenario(s) {
   let listResp = null;
   try {
     const ch = (window.__bridge && window.__bridge.channelsCache && window.__bridge.channelsCache.active) || 'main';
-    const r = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(ch));
+    const r = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(ch) + '&include=all');
     listResp = await r.json();
   } catch (e) { s.fail('GET /api/backlog failed: ' + e.message); return; }
 
@@ -64,7 +64,11 @@ async function scenario(s) {
   s.assert(!!found, 'item with marker found in backlog');
   if (found) {
     s.assert(found.id === addResp.id, 'id matches POST response');
-    s.assert(found.status === 'new', 'initial status is "new"');
+    const allowedStatuses = ['new', 'approved', 'held', 'auto-dropped'];
+    s.assert(allowedStatuses.includes(found.status), 'item status is a known post-add status');
+    if (found.status !== 'new') {
+      s.log('curator updated item before list: ' + found.status);
+    }
   }
 
   // 3. Clean up — drop the scenario item so it doesn't pollute the queue.
