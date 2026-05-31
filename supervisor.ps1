@@ -121,24 +121,8 @@ function Invoke-TaskkillTree {
     $ErrorActionPreference = 'Continue'
     & $taskkillPath /PID $TargetPid /F /T 1>$stdoutPath 2>$stderrPath
     $taskkillExitCode = [int]$LASTEXITCODE
-    $stdoutText = ''
-    $stderrText = ''
-    try {
-      if (Test-Path -LiteralPath $stdoutPath) {
-        $rawStdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
-        if ($null -ne $rawStdout) { $stdoutText = (([string]$rawStdout).Trim() -split '\r?\n')[0] }
-      }
-    } catch {
-      [System.Diagnostics.Trace]::TraceError("taskkill stdout read failed: " + $_.Exception.Message)
-    }
-    try {
-      if (Test-Path -LiteralPath $stderrPath) {
-        $rawStderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
-        if ($null -ne $rawStderr) { $stderrText = (([string]$rawStderr).Trim() -split '\r?\n')[0] }
-      }
-    } catch {
-      [System.Diagnostics.Trace]::TraceError("taskkill stderr read failed: " + $_.Exception.Message)
-    }
+    $stdoutText = Read-SupervisorTempFirstLine -Path $stdoutPath -Label 'taskkill stdout'
+    $stderrText = Read-SupervisorTempFirstLine -Path $stderrPath -Label 'taskkill stderr'
     return [pscustomobject]@{
       success = ($taskkillExitCode -eq 0)
       exitCode = $taskkillExitCode
@@ -163,6 +147,22 @@ function Invoke-TaskkillTree {
         [System.Diagnostics.Trace]::TraceError("taskkill temp cleanup failed: " + $_.Exception.Message)
       }
     }
+  }
+}
+
+function Read-SupervisorTempFirstLine {
+  param(
+    [string]$Path,
+    [string]$Label = 'temp output'
+  )
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return '' }
+  try {
+    $lines = @(Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop)
+    if ($lines.Count -eq 0) { return '' }
+    return ([string]$lines[0]).Trim()
+  } catch {
+    [System.Diagnostics.Trace]::TraceError($Label + " read failed: " + $_.Exception.Message)
+    return ''
   }
 }
 
@@ -196,6 +196,68 @@ function Test-TrackedBridgeProcess {
   }
   return $true
 }
+
+function Close-BridgeProcessHandle {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$Reason = 'cleanup'
+  )
+  if ($null -eq $Process) { return }
+  $pidForLog = '?'
+  try { $pidForLog = [string]([int]$Process.Id) } catch {}
+  try {
+    $Process.Dispose()
+  } catch {
+    [System.Diagnostics.Trace]::TraceError($Reason + " process handle cleanup failed for PID " + $pidForLog + ": " + $_.Exception.Message)
+  }
+}
+
+function Clear-TrackedBridgeProcessReference {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$Reason = 'cleanup'
+  )
+  if ($null -eq $Process) { return $false }
+  $targetPid = $null
+  $targetStartTime = $null
+  try { $targetPid = [int]$Process.Id } catch {}
+  try { $targetStartTime = $Process.StartTime } catch {}
+  $cleared = $false
+  if (Test-SameBridgeProcessHandle -Candidate $script:srv -Target $Process -TargetPid $targetPid -TargetStartTime $targetStartTime) {
+    $script:srv = $null
+    $cleared = $true
+  }
+  if ($script:drivers) {
+    foreach ($slug in @($script:drivers.Keys)) {
+      if (Test-SameBridgeProcessHandle -Candidate $script:drivers[$slug] -Target $Process -TargetPid $targetPid -TargetStartTime $targetStartTime) {
+        $script:drivers[$slug] = $null
+        $cleared = $true
+      }
+    }
+  }
+  Close-BridgeProcessHandle -Process $Process -Reason $Reason
+  return $cleared
+}
+
+function Test-SameBridgeProcessHandle {
+  param(
+    [System.Diagnostics.Process]$Candidate,
+    [System.Diagnostics.Process]$Target,
+    [object]$TargetPid = $null,
+    [object]$TargetStartTime = $null
+  )
+  if ($null -eq $Candidate -or $null -eq $Target) { return $false }
+  if ([object]::ReferenceEquals($Candidate, $Target)) { return $true }
+  if ($null -eq $TargetPid) { return $false }
+  try {
+    if ([int]$Candidate.Id -ne [int]$TargetPid) { return $false }
+    if ($null -ne $TargetStartTime) { return ($Candidate.StartTime -eq $TargetStartTime) }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Stop-TrackedBridgeProcess {
   param(
     [System.Diagnostics.Process]$Process,
@@ -224,16 +286,13 @@ function Stop-TrackedBridgeProcess {
         }
       }
       if (-not [bool]$Process.WaitForExit(1000)) {
-        Log ("WARN: PID " + $trackedPid + " still did not report exit after secondary kill; disposing process handle and continuing")
+        Log ("WARN: PID " + $trackedPid + " still did not report exit after secondary kill; caller will clear tracked handle and continue")
       }
     }
     return $true
   } catch {
     Log ($Reason + " stop error for PID " + $trackedPid + ": " + $_.Exception.Message)
     return $false
-  } finally {
-    try { $Process.Dispose() }
-    catch { [System.Diagnostics.Trace]::TraceError("tracked process dispose failed for PID " + $trackedPid + ": " + $_.Exception.Message) }
   }
 }
 function Kill-Bridge {
@@ -285,10 +344,13 @@ function Reap-Bloated {
           }
           $elapsedMs = ($now - $script:bloatedSince[$proc.Id]).TotalMilliseconds
           if ($elapsedMs -ge $reapGraceMs) {
-            Log ("REAP: bloated tracked PID " + $proc.Id + " private=" + [int]($priv/1MB) + "MB > " + $reapCapMb + "MB for " + [int]$elapsedMs + "ms -> kill (mem-leak guard)")
-            $null = Stop-TrackedBridgeProcess -Process $proc -Reason 'REAP'
-            $script:bloatedSince.Remove($proc.Id)
-            $reaped = $true
+            $reapedPid = [int]$proc.Id
+            Log ("REAP: bloated tracked PID " + $reapedPid + " private=" + [int]($priv/1MB) + "MB > " + $reapCapMb + "MB for " + [int]$elapsedMs + "ms -> kill (mem-leak guard)")
+            if (Stop-TrackedBridgeProcess -Process $proc -Reason 'REAP') {
+              $script:bloatedSince.Remove($reapedPid)
+              $null = Clear-TrackedBridgeProcessReference -Process $proc -Reason 'REAP'
+              $reaped = $true
+            }
           }
         } else {
           if ($script:bloatedSince.ContainsKey($proc.Id)) { $script:bloatedSince.Remove($proc.Id) }
@@ -667,7 +729,9 @@ while ($true) {
         if ($hcSrvFails -ge $hcSrvHungLimit) {
           Log ("server HUNG (" + $hcSrvFails + " consecutive health-check failures) -> kill+restart")
           Add-Message -From system -Text ("⚠ Сервер не отвечает на /api/health " + $hcSrvHungLimit + " раз подряд — принудительный перезапуск.") -Kind event | Out-Null
-          $null = Stop-TrackedBridgeProcess -Process $srv -Reason 'health-check: server hung'
+          $stoppedSrv = $srv
+          $null = Stop-TrackedBridgeProcess -Process $stoppedSrv -Reason 'health-check: server hung'
+          $null = Clear-TrackedBridgeProcessReference -Process $stoppedSrv -Reason 'health-check: server hung'
           $srv = $null
           $hcSrvFails = 0
           $hcSrvLastTs = [datetime]::MinValue
@@ -697,7 +761,9 @@ while ($true) {
             if ($failCount -ge $hcDrvHungLimit) {
               Log ("driver[" + $slug + "] HUNG (CPU stagnant " + $hcDrvHungLimit + " x " + $hcDrvIntervalSec + "s) -> kill+restart")
               Add-Message -From system -Text ("⚠ Driver[" + $slug + "] завис (CPU не менялся " + ($hcDrvHungLimit * $hcDrvIntervalSec / 60) + " мин) — принудительный перезапуск.") -Kind event | Out-Null
-              $null = Stop-TrackedBridgeProcess -Process $dproc -Reason ("health-check: driver[" + $slug + "] hung")
+              $stoppedDriver = $dproc
+              $null = Stop-TrackedBridgeProcess -Process $stoppedDriver -Reason ("health-check: driver[" + $slug + "] hung")
+              $null = Clear-TrackedBridgeProcessReference -Process $stoppedDriver -Reason ("health-check: driver[" + $slug + "] hung")
               $drivers[$slug] = $null
               $hcDrvFails[$slug] = 0
               $hcDrvCpuSnaps[$slug] = $null
@@ -748,7 +814,10 @@ while ($true) {
       if (-not ($slugs -contains $k)) {
         Log ("channel '" + $k + "' archived -> stopping its driver")
         $p = $drivers[$k]
-        if ($p -and -not $p.HasExited) { $null = Stop-TrackedBridgeProcess -Process $p -Reason ("archive channel '" + $k + "'") }
+        if ($p) {
+          if (-not $p.HasExited) { $null = Stop-TrackedBridgeProcess -Process $p -Reason ("archive channel '" + $k + "'") }
+          $null = Clear-TrackedBridgeProcessReference -Process $p -Reason ("archive channel '" + $k + "'")
+        }
         $drivers.Remove($k)
       }
     }

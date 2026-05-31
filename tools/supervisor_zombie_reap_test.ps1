@@ -5,6 +5,22 @@ $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'lib\common.ps1')
 . (Join-Path $root 'lib\supervisor-restart-limit.ps1')
 
+function Read-TestTempFirstLine {
+  param(
+    [string]$Path,
+    [string]$Label = 'temp output'
+  )
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return '' }
+  try {
+    $lines = @(Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop)
+    if ($lines.Count -eq 0) { return '' }
+    return ([string]$lines[0]).Trim()
+  } catch {
+    [System.Diagnostics.Trace]::TraceError($Label + " read failed: " + $_.Exception.Message)
+    return ''
+  }
+}
+
 function Stop-TestProcessTree {
   param([Parameter(Mandatory=$true)][System.Diagnostics.Process]$Process)
 
@@ -21,10 +37,8 @@ function Stop-TestProcessTree {
     $ErrorActionPreference = 'Continue'
     & $taskkillPath /PID $targetPid /F /T 1>$stdoutPath 2>$stderrPath
     $taskkillExitCode = [int]$LASTEXITCODE
-    $rawTaskkillOutput = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
-    $rawTaskkillError = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
-    if ($null -ne $rawTaskkillOutput) { $taskkillOutput = (([string]$rawTaskkillOutput).Trim() -split '\r?\n')[0] }
-    if ($null -ne $rawTaskkillError) { $taskkillError = (([string]$rawTaskkillError).Trim() -split '\r?\n')[0] }
+    $taskkillOutput = Read-TestTempFirstLine -Path $stdoutPath -Label 'taskkill stdout'
+    $taskkillError = Read-TestTempFirstLine -Path $stderrPath -Label 'taskkill stderr'
   } catch {
     $taskkillExitCode = -1
     $taskkillError = $_.Exception.Message
@@ -105,4 +119,4 @@ if (-not $testPassed) {
   taskkillOutput = $taskkillOutput
   taskkillError = $taskkillError
   testPassed = $testPassed
-} | ConvertTo-Json -Compress
+} | ConvertTo-Json -Depth 5 -Compress
