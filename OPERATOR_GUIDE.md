@@ -21,8 +21,8 @@ Task Scheduler (ClaudeCodexBridge, elevated)
               ├─ server.ps1   — веб-пульт + API (порт из config.json .port, обычно 8787)
               ├─ driver.ps1 -Channel aipartners   — рабочий цикл канала проекта
               ├─ driver.ps1 -Channel main          — рабочий цикл канала самого моста
-              ├─ driver.ps1 -Channel travel        — ещё один проектный канал
               └─ watchdog.ps1 — аварийный откат (git) при поломке
+        (по одному driver на КАЖДЫЙ активный канал; новый проект → новый канал)
 ```
 
 **Ключевые пути:**
@@ -203,8 +203,7 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 |---|---|
 | `aipartners` | проект — платформа видео-рецептов (`C:\Users\rafie\aipartners`) |
 | `main` | развитие самого моста (его инфраструктура) |
-| `travel` | ещё один проектный канал |
-| `_archive` | архив |
+| `_archive` | архив старых/тестовых каналов (напр. бывший `travel` — учебный прогон, к мосту не относится) |
 
 Каждый канал — свой driver, своё состояние, свой бэклог, своя история. Codex общий на все каналы
 (поэтому иногда «⏳ Codex занят другим каналом — жду»).
