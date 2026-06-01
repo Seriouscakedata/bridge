@@ -1149,6 +1149,29 @@ function Invoke-ParallelDispatch {
   # built-in default pool if config.parallel.workers is missing.
   $workers = New-Object 'System.Collections.Generic.List[object]'
   $usedIds = New-Object 'System.Collections.Generic.List[string]'
+
+  # 2026-06-01 VISIBILITY: announce the TEAM PLAN in chat BEFORE spawning, so the operator sees WHAT
+  # each parallel stream actually does. The deterministic/batch dispatch had hidden this — the planner
+  # discussion was skipped for speed, leaving only aggregate "N streams" + per-worker system lines, so
+  # the operator could no longer see the task content. This restores the pre-parallel transparency
+  # ("какая задача, кто делает") without giving up the parallel speed-up.
+  try {
+    $planLines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$planLines.Add("🔀 Запускаю команду из " + @($Streams).Count + " параллельных потоков:")
+    foreach ($s0 in @($Streams)) {
+      $body0 = ''
+      try { $body0 = ([string]$s0.body -replace '\s+', ' ').Trim() } catch {}
+      if ([string]::IsNullOrWhiteSpace($body0)) { try { $body0 = ([string]$s0.task -replace '\s+',' ').Trim() } catch {} }
+      if ($body0.Length -gt 100) { $body0 = $body0.Substring(0, 100) + '…' }
+      $files0 = ''
+      try { $files0 = (@($s0.files) -join ', ') } catch {}
+      $filePart = ''
+      if (-not [string]::IsNullOrWhiteSpace($files0)) { $filePart = " [" + $files0 + "]" }
+      [void]$planLines.Add("  • поток " + [string]$s0.id + $filePart + ": " + $body0)
+    }
+    Add-Message -From system -Text ($planLines -join "`n") -Kind event | Out-Null
+  } catch {}
+
   foreach ($s in @($Streams)) {
     $spec = $null
     try { $spec = Select-WorkerForStream -Stream $s -AlreadyUsedIds @($usedIds.ToArray()) } catch {
