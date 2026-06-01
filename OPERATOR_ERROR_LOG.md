@@ -115,6 +115,42 @@ This file records concrete errors, weak spots, and recovery notes observed while
 
 **Status:** Open. Need enforce verification failure or escalation before another collect-commit is allowed for the same workpack batch.
 
+### ERR-2026-06-01-009 - Bridge repair is claimed fixed but targeted code still shows old failure paths
+
+**Context:** Post-repair check after bridge commits `08dc1f0` and `4206a9e`.
+
+**Observed:** Bridge log contains commits claiming ERR-001..008 are fixed. A targeted grep still shows `tools/parallel-llm-worker.ps1` setting `STATUS: DONE` when commit reports non-zero, and `driver.ps1` still has a generic `STATUS: DONE / Параллельно выполнено потоков: N` path.
+
+**Impact:** The original mixed-parallel loop may be avoided in the current run because the failed workpack was marked failed and execution resumed sequentially, but the root code path is not proven closed.
+
+**Action taken:** Did not stop the bridge because the live channel is healthy and no workpack-batch is active. Continue monitoring; do not trust parallel batching until a targeted mixed-parallel replay proves the fix.
+
+**Status:** Open. Need a real targeted verification: worker non-zero commit must not be success, and mixed `4 failed + 1 done` parallel result must not produce generic DONE.
+
+### ERR-2026-06-01-010 - Private Community typecheck fails after scaffold
+
+**Context:** Project `C:\Users\rafie\bridge-projects\private-community`, after scaffold commits `f08f654` and `9957cf5`.
+
+**Observed:** Operator-run `npm.cmd run typecheck` fails. Missing modules/imports include `bcryptjs`, `@prisma/client`, `jose`, and local paths like `../../../lib/prisma` / `../../../lib/session`. These files came from earlier parallel collect auth work and are not aligned with the current package/dependency state.
+
+**Impact:** The project is not build-ready yet. Current scaffold files are present, but existing auth/Prisma files make TypeScript fail.
+
+**Action taken:** Ran typecheck and confirmed failure. Removed only local verification artifacts (`.next`, `tsconfig.tsbuildinfo`, Next's generated edits to `next-env.d.ts`/`tsconfig.json`) so the project tree returned clean.
+
+**Status:** Open. Expected to be handled by Chapter 2 atoms B-D, but should be explicitly verified before declaring auth/database work complete.
+
+### ERR-2026-06-01-011 - npm install reports dependency security risk
+
+**Context:** `npm install` in `private-community` during scaffold verification.
+
+**Observed:** Install completed, but npm reported `8 vulnerabilities` (`1 moderate`, `6 high`, `1 critical`) and warned that `next@14.2.3` has a security vulnerability and should be upgraded to a patched version.
+
+**Impact:** Not immediately blocking for a local MVP scaffold, but it is a real security and maintenance risk before any broader use.
+
+**Action taken:** Recorded risk. Did not run `npm audit fix --force` because it may introduce breaking dependency changes and was not part of the scaffold atom.
+
+**Status:** Open. Need choose a patched Next version and rerun install/typecheck/lint/build in a controlled dependency-update atom.
+
 ---
 
 ## Operator Resolution — 2026-06-01 (Claude, commits 9dc4316 + 08dc1f0)
