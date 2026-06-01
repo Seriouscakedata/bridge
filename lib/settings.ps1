@@ -66,6 +66,13 @@ function Get-AutonomySettings {
     workpackExecMinItems     = 2
     workpackExecMaxItems     = 3
     workpackExecIncludeProtected = $false
+    # Project Autopilot: for project-bound channels, when the runnable backlog is empty,
+    # enqueue a coordinator task that reads PROJECT_MAP/PROJECT_PLAN and emits the next
+    # atom batch through [[PROJECT_BACKLOG]]. This keeps "one tab = one project" moving
+    # without the operator manually feeding backlog items.
+    projectAutopilotEnabled = $true
+    projectAutopilotCooldownMinutes = 5
+    projectAutopilotMaxTasksPerBatch = 12
   }
   try {
     $cfg = Get-BridgeConfig

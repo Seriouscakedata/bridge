@@ -2150,6 +2150,348 @@ function Add-OperatorBatch {
   return [pscustomobject]@{ batchId = $batchId; count = $ids.Count; ids = $ids }
 }
 
+function Get-ProjectAutopilotConfig {
+  $cfg = [ordered]@{
+    enabled = $true
+    cooldownMinutes = 5
+    maxTasksPerBatch = 12
+  }
+  $dotted = @{
+    'projectAutopilot.enabled' = 'enabled'
+    'projectAutopilot.cooldownMinutes' = 'cooldownMinutes'
+    'projectAutopilot.maxTasksPerBatch' = 'maxTasksPerBatch'
+  }
+  $flat = @{
+    projectAutopilotEnabled = 'enabled'
+    projectAutopilotCooldownMinutes = 'cooldownMinutes'
+    projectAutopilotMaxTasksPerBatch = 'maxTasksPerBatch'
+  }
+  try {
+    if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
+      $auto = Get-AutonomySettings
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $auto -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+  try {
+    if (Get-Command Get-Settings -ErrorAction SilentlyContinue) {
+      $settings = Get-Settings
+      foreach ($k in $dotted.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$dotted[$k]] = $v }
+      }
+      foreach ($k in $flat.Keys) {
+        $v = Get-BacklogPackObjectValue -Obj $settings -Name $k -Default $null
+        if ($null -ne $v) { $cfg[$flat[$k]] = $v }
+      }
+    }
+  } catch {}
+
+  $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
+  $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 5 -Min 1 -Max 240
+  $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 50
+  return [pscustomobject]$cfg
+}
+
+function Get-ProjectAutopilotStatePath {
+  $dir = ''
+  try { $dir = Split-Path -Parent (Get-BacklogPath) } catch {}
+  if ([string]::IsNullOrWhiteSpace($dir)) { $dir = Get-BacklogFallbackBridgeRoot }
+  return (Join-Path $dir 'project-autopilot.last.json')
+}
+
+function Read-ProjectAutopilotState {
+  $p = Get-ProjectAutopilotStatePath
+  if (-not (Test-Path -LiteralPath $p)) { return $null }
+  try { return ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) } catch { return $null }
+}
+
+function Write-ProjectAutopilotState {
+  param($State)
+  try {
+    $json = ($State | ConvertTo-Json -Compress -Depth 6) + "`n"
+    Write-BacklogAtomicFile -Path (Get-ProjectAutopilotStatePath) -Content $json
+  } catch {}
+}
+
+function Get-ProjectAutopilotSlug {
+  try {
+    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { return [string](Get-EffectiveChannel) }
+  } catch {}
+  if (-not [string]::IsNullOrWhiteSpace([string]$env:BRIDGE_CHANNEL)) { return [string]$env:BRIDGE_CHANNEL }
+  return 'main'
+}
+
+function Get-ProjectAutopilotBinding {
+  $slug = Get-ProjectAutopilotSlug
+  if ([string]::IsNullOrWhiteSpace($slug) -or $slug -eq 'main') { return $null }
+  try {
+    if (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue) {
+      $b = Get-ChannelProjectBinding -Slug $slug
+      if ($b -and [bool]$b.ok -and -not [string]::IsNullOrWhiteSpace([string]$b.project_root)) { return $b }
+    }
+  } catch {}
+  return $null
+}
+
+function Get-ProjectAutopilotBacklogPressure {
+  $items = @(Get-Backlog)
+  $approved = 0; $running = 0; $new = 0; $held = 0; $autopilotOpen = 0
+  foreach ($it in $items) {
+    $st = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
+    $tags = @()
+    try { $tags = @($it.tags | ForEach-Object { [string]$_ }) } catch { $tags = @() }
+    if ($st -eq 'approved') { $approved++ }
+    elseif ($st -eq 'running') { $running++ }
+    elseif ($st -eq 'new') { $new++ }
+    elseif ($st -eq 'held') { $held++ }
+    if (($st -eq 'approved' -or $st -eq 'running') -and ($tags -contains 'project-autopilot')) { $autopilotOpen++ }
+  }
+  return [pscustomobject]@{
+    approved = $approved
+    running = $running
+    new = $new
+    held = $held
+    runnable = ($approved + $running)
+    autopilot_open = $autopilotOpen
+  }
+}
+
+function Test-ProjectAutopilotProjectClean {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return $false }
+  try {
+    $git = 'git'
+    try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $git = Get-GitExe } } catch { $git = 'git' }
+    $dirty = @(& $git -C $ProjectRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    return ($dirty.Count -eq 0)
+  } catch {
+    return $false
+  }
+}
+
+function New-ProjectAutopilotCoordinatorTaskText {
+  param([string]$Slug, [string]$ProjectRoot, [int]$MaxTasks = 12)
+  $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
+  return @"
+[project-autopilot $Slug] [[NORMAL]]
+
+Project Autopilot coordinator for channel '$Slug'.
+
+Work only in $ProjectRoot.
+
+Mission: keep this project moving without the operator manually feeding backlog items.
+
+Rules:
+- Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
+- Read PROJECT_MAP.md, PROJECT_PLAN.md, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
+- Determine the next approved/incomplete chapter or the next missing planning step.
+- Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
+- Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
+- If a product decision is truly blocking, do not invent it: emit [[PROJECT_OPEN_QUESTION: ...]] and finish without PROJECT_BACKLOG.
+- Never put real secrets, local DB files, uploads, .next, or node_modules in git.
+- For Next.js/TypeScript work, each atom should normally require npm run typecheck and npm run build unless the atom is docs-only.
+
+When you have the next atom batch, output it as STRICT JSON inside this exact marker:
+[[PROJECT_BACKLOG]]
+[
+  {
+    "slug": "short-stable-atom-id",
+    "title": "Human readable atom title",
+    "task": "Full task text for the worker. Include project path, dependencies, acceptance checks, and commit requirement.",
+    "files": ["relative/path/or/directory"],
+    "depends_on": ["slug-of-prerequisite-if-any"],
+    "severity": "normal"
+  }
+]
+[[/PROJECT_BACKLOG]]
+
+The driver will add those atoms to approved project backlog automatically. Do not use operator-delegate and do not edit backlog.jsonl manually.
+
+Finish with STATUS: DONE after emitting the marker, or STATUS: DONE without the marker if no work remains.
+"@
+}
+
+function Start-ProjectAutopilotIfNeeded {
+  param([string]$Reason = 'idle-empty-backlog')
+  $cfg = Get-ProjectAutopilotConfig
+  if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ queued=$false; reason='disabled' } }
+  $binding = Get-ProjectAutopilotBinding
+  if (-not $binding) { return [pscustomobject]@{ queued=$false; reason='not-project-channel' } }
+
+  $slug = [string]$binding.slug
+  $root = [string]$binding.project_root
+  $pressure = Get-ProjectAutopilotBacklogPressure
+  if ([int]$pressure.runnable -gt 0) { return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure } }
+  if ([int]$pressure.autopilot_open -gt 0) { return [pscustomobject]@{ queued=$false; reason='autopilot-already-open'; pressure=$pressure } }
+
+  $last = Read-ProjectAutopilotState
+  if ($last) {
+    try {
+      $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
+      $ageMin = ((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes
+      if ($ageMin -lt [int]$cfg.cooldownMinutes) {
+        return [pscustomobject]@{ queued=$false; reason='cooldown'; cooldown_remaining_minutes=[int]([int]$cfg.cooldownMinutes - [Math]::Floor($ageMin)); pressure=$pressure }
+      }
+    } catch {}
+  }
+
+  if (-not (Test-ProjectAutopilotProjectClean -ProjectRoot $root)) {
+    return [pscustomobject]@{ queued=$false; reason='project-dirty-or-git-unavailable'; pressure=$pressure }
+  }
+
+  $task = New-ProjectAutopilotCoordinatorTaskText -Slug $slug -ProjectRoot $root -MaxTasks ([int]$cfg.maxTasksPerBatch)
+  $id = Add-Idea -Text $task -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'approved' -Severity 'critical' -Project $slug -Scope 'project' -SkipCurator
+  if ([string]::IsNullOrWhiteSpace([string]$id)) { return [pscustomobject]@{ queued=$false; reason='add-idea-failed'; pressure=$pressure } }
+
+  $st = [ordered]@{
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    channel = $slug
+    project_root = $root
+    queued_id = [string]$id
+    reason = [string]$Reason
+  }
+  Write-ProjectAutopilotState ([pscustomobject]$st)
+  try {
+    Write-BacklogJsonLine ([ordered]@{ ts=$st.ts; action='project-autopilot-queued'; channel=$slug; item_id=[string]$id; reason=[string]$Reason })
+  } catch {}
+  try {
+    Add-Message -From system -Text ("🧭 Project Autopilot: backlog пуст, поставил coordinator-задачу " + [string]$id + " для следующей главы проекта.") -Kind event | Out-Null
+  } catch {}
+  return [pscustomobject]@{ queued=$true; id=[string]$id; reason=[string]$Reason; pressure=$pressure }
+}
+
+function ConvertTo-ProjectAutopilotSlug {
+  param([string]$Text)
+  $v = ([string]$Text).Trim().ToLowerInvariant()
+  $v = $v -replace '[^a-z0-9а-яё._-]+','-'
+  $v = $v.Trim([char[]]@('-','_','.'))
+  if ($v.Length -gt 80) { $v = $v.Substring(0,80).Trim([char[]]@('-','_','.')) }
+  if ([string]::IsNullOrWhiteSpace($v)) {
+    try {
+      $sha = [System.Security.Cryptography.SHA1]::Create()
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+      $hash = ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()
+      $v = 'atom-' + $hash.Substring(0,10)
+    } catch { $v = 'atom-' + ([guid]::NewGuid().ToString('N').Substring(0,10)) }
+  }
+  return $v
+}
+
+function Get-ProjectAutopilotTaskArrayFromMarker {
+  param([string]$Block)
+  $raw = ([string]$Block).Trim()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+  $raw = ($raw -replace '```json','' -replace '```','').Trim()
+  $json = ''
+  $arrMatch = [regex]::Match($raw, '(?s)\[.*\]')
+  if ($arrMatch.Success) { $json = $arrMatch.Value }
+  else {
+    $objMatch = [regex]::Match($raw, '(?s)\{.*\}')
+    if ($objMatch.Success) { $json = $objMatch.Value }
+  }
+  if ([string]::IsNullOrWhiteSpace($json)) { return @() }
+  try {
+    $parsed = $json | ConvertFrom-Json
+    if ($parsed -is [array]) { return @($parsed) }
+    if ($parsed -and $parsed.PSObject.Properties.Name -contains 'tasks') { return @($parsed.tasks) }
+    return @($parsed)
+  } catch {
+    return @()
+  }
+}
+
+function Set-ProjectAutopilotIdeaMetadata {
+  param([string]$Id, $Task, [string]$SourceTaskId = '')
+  if ([string]::IsNullOrWhiteSpace($Id) -or -not $Task) { return $false }
+  return (Invoke-BacklogLocked ({
+    $items = @(Get-Backlog)
+    $found = $false
+    foreach ($i in $items) {
+      if ([string]$i.id -ne $Id) { continue }
+      $found = $true
+      $slug = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $Task -Name 'slug' -Default (Get-BacklogPackObjectValue -Obj $Task -Name 'title' -Default $Id)))
+      $title = [string](Get-BacklogPackObjectValue -Obj $Task -Name 'title' -Default $slug)
+      $files = @()
+      try { $files = @((Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
+      $deps = @()
+      try { $deps = @((Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()) | ForEach-Object { ConvertTo-ProjectAutopilotSlug ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $deps = @() }
+      $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
+      $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
+      $i | Add-Member -NotePropertyName autopilot_generated -NotePropertyValue $true -Force
+      $i | Add-Member -NotePropertyName autopilot_source_task -NotePropertyValue ([string]$SourceTaskId) -Force
+      if ($deps.Count -gt 0) { $i | Add-Member -NotePropertyName depends_on -NotePropertyValue @($deps) -Force }
+      if ($files.Count -gt 0) {
+        $normFiles = @($files | ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        if ($normFiles.Count -gt 0) {
+          $i | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($normFiles) -Force
+          $i | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ('file:' + [string]$normFiles[0]) -Force
+          $i | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ('serial:file:' + [string]$normFiles[0]) -Force
+        }
+      }
+      break
+    }
+    if ($found) { Save-Backlog $items }
+    return $found
+  }.GetNewClosure()))
+}
+
+function Add-ProjectBacklogFromMarker {
+  param(
+    [string]$Block,
+    [string]$Channel = '',
+    [string]$Source = 'agent',
+    [string]$SourceTaskId = '',
+    [int]$MaxTasks = 12
+  )
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-ProjectAutopilotSlug }
+  if ([string]::IsNullOrWhiteSpace($Channel) -or $Channel -eq 'main') {
+    return [pscustomobject]@{ created=0; skipped=0; errors=@('project backlog marker ignored outside project channel'); ids=@() }
+  }
+  $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
+  $tasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block | Select-Object -First $max)
+  if ($tasks.Count -eq 0) { return [pscustomobject]@{ created=0; skipped=0; errors=@('no valid JSON tasks found'); ids=@() } }
+
+  $existing = @(Get-Backlog)
+  $existingSlugs = @{}
+  foreach ($it in $existing) {
+    $st = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
+    if ($st -in @('rejected','auto-dropped','failed')) { continue }
+    $sl = [string](Get-BacklogPackObjectValue -Obj $it -Name 'slug' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($sl)) { $existingSlugs[$sl] = $true }
+  }
+
+  $created = New-Object 'System.Collections.Generic.List[string]'
+  $errors = New-Object 'System.Collections.Generic.List[string]'
+  $skipped = 0
+  foreach ($t in $tasks) {
+    $slug = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $t -Name 'slug' -Default (Get-BacklogPackObjectValue -Obj $t -Name 'title' -Default '')))
+    if ($existingSlugs.ContainsKey($slug)) { $skipped++; continue }
+    $title = [string](Get-BacklogPackObjectValue -Obj $t -Name 'title' -Default $slug)
+    $body = [string](Get-BacklogPackObjectValue -Obj $t -Name 'task' -Default '')
+    if ([string]::IsNullOrWhiteSpace($body)) { $body = $title }
+    if ([string]::IsNullOrWhiteSpace($body) -or $body.Length -lt 40) { [void]$errors.Add("task '$slug' too short"); continue }
+    $severity = ([string](Get-BacklogPackObjectValue -Obj $t -Name 'severity' -Default '')).ToLowerInvariant()
+    if ($severity -eq 'normal') { $severity = '' }
+    if ($severity -notin @('critical','warning','info','')) { $severity = '' }
+    $files = @()
+    try { $files = @((Get-BacklogPackObjectValue -Obj $t -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
+    $fileLine = if ($files.Count -gt 0) { "`n`nFiles: " + (($files | Select-Object -First 12) -join ', ') } else { '' }
+    $text = "[project-autopilot $slug] [[NORMAL]]`n`n$title`n`n$body$fileLine"
+    $id = Add-Idea -Text $text -From 'project-autopilot' -Tags @('project-autopilot','auto-generated','atom') -Status 'approved' -Severity $severity -Project $Channel -Scope 'project' -SkipCurator
+    if ([string]::IsNullOrWhiteSpace([string]$id)) { [void]$errors.Add("Add-Idea failed for '$slug'"); continue }
+    try { Set-ProjectAutopilotIdeaMetadata -Id ([string]$id) -Task $t -SourceTaskId $SourceTaskId | Out-Null } catch {}
+    $existingSlugs[$slug] = $true
+    [void]$created.Add([string]$id)
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-backlog-add'; channel=$Channel; item_id=[string]$id; slug=$slug; source=$Source }) } catch {}
+  }
+
+  try { Request-BacklogPackIfNeeded | Out-Null } catch {}
+  return [pscustomobject]@{ created=$created.Count; skipped=$skipped; errors=@($errors.ToArray()); ids=@($created.ToArray()) }
+}
+
 function Get-OperatorBatchProgress {
   # Progress of operator-delegated batches for the pulse: per batch id, how many done/total.
   $items = @(Get-Backlog | Where-Object { @($_.tags) -contains 'operator' })

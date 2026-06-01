@@ -1741,6 +1741,7 @@ $autoScopeLine
 - ПАМЯТЬ: заметил устойчивый факт, полезный в будущем (решение, грабли, предпочтение пользователя, важная деталь проекта/настройки)? Добавь отдельной строкой `[[REMEMBER: краткий факт одной фразой]]` — он сразу попадёт в долговременную память (semantic recall). Только то, что реально стоит помнить надолго, без мусора и без повторов уже известного.
 - ПРОЕКТНАЯ ПАМЯТЬ: для фактов о текущем проекте используй типизированные маркеры отдельной строкой: `[[PROJECT_FACT: факт | file=path | line=12 | trust=observed]]`, `[[PROJECT_TEST: как проверять | file=...]]`, `[[PROJECT_RISK: риск]]`, `[[PROJECT_INVARIANT: правило]]`, `[[PROJECT_DECISION: решение]]`, `[[PROJECT_OPEN_QUESTION: вопрос]]`. Пиши только проверяемое и переиспользуемое; `file/line/sha1/commit` повышают доверие и помогают ловить stale-факты.
 - ИНИЦИАТИВА: заметил, как улучшить сам мост или процесс (надёжность, скорость, UX, память, автономия) — НЕ отвлекайся от текущей задачи, просто оставь отдельной строкой `[[IDEA: суть улучшения одной-двумя фразами]]`. Идея уйдёт в бэклог на одобрение пользователю. Это поощряется; будь конкретен (что и зачем), без дублей уже предложенного.
+- PROJECT AUTOPILOT: если текущая задача-координатор просит пополнить проектный backlog, верни СТРОГО JSON-массив атомов внутри `[[PROJECT_BACKLOG]] ... [[/PROJECT_BACKLOG]]`. Каждый atom: `slug`, `title`, `task`, `files`, `depends_on`, `severity`. Driver сам добавит их как approved project tasks; НЕ редактируй backlog.jsonl вручную.
 - ДОЛГИЕ ПРОЦЕССЫ: если нужно запустить команду, которая работает ДОЛГО (сборка, тесты, прогон проекта на минуты/часы) — НЕ запускай её обычным образом (будет таймаут хода). Вместо этого оставь отдельной строкой `[[RUNJOB: команда | рабочая_папка]]` (папка необязательна). Мост запустит её в фоне, дождётся завершения БЕЗ таймаута и пришлёт тебе вывод и код выхода отдельным [SYSTEM]-сообщением — тогда продолжишь. Для быстрых команд (секунды) RUNJOB не нужен.
 - САМО-ПОСТРОЕННЫЕ ИНСТРУМЕНТЫ (Tool Foundry, заказывает планировщик): нужна ПЕРЕИСПОЛЬЗУЕМАЯ возможность, которой ещё нет (спец-парсер, конвертер, генератор, валидатор)? Закажи её ОТДЕЛЬНОЙ строкой [[NEED-TOOL: имя | контракт-что-делает]] (имя латиницей: буква, далее буквы/цифры/_ и дефис). Мост синтезирует её в песочнице (parse → smoke-тест → критик на ДРУГОЙ модели) и при успехе даст функцию Invoke-<имя> в tools/auto/, доступную сразу и впредь. Разовую мелочь делай напрямую; не дублируй уже существующее.$autoToolsLine
 - ПАРАЛЛЕЛЬ (только планировщик): если задачу можно разбить на 2+ НЕЗАВИСИМЫЕ части — есть ДВЕ формы:
@@ -3754,6 +3755,12 @@ while ($true) {
       $auditBusyForAutonomy = $false
       try { $auditBusyForAutonomy = Test-AuditMaintenanceBusy } catch {}
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
+        # Project Autopilot: project-bound channels should not need the operator to keep
+        # feeding atoms. When their runnable backlog is empty, enqueue a coordinator task
+        # that reads the durable project plan and emits the next [[PROJECT_BACKLOG]] batch.
+        try { Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog' | Out-Null } catch {}
+      }
+      if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         # Workpack execution layer: before claiming a single backlog item, try to claim a small
         # batch of already-approved, non-conflicting workpack items. The batch still enters the
         # normal task pipeline, so planner parallel-dispatch, critic, smoke, and pre-flight gates
@@ -4528,6 +4535,38 @@ while ($true) {
   if ($projectMemoryCount -gt 0) {
     try { Add-Message -From system -Text ("🧠 Проектная память: сохранено typed-записей " + $projectMemoryCount) -Kind event | Out-Null } catch {}
   }
+  # [[PROJECT_BACKLOG]] JSON [[/PROJECT_BACKLOG]] -> Project Autopilot atom batch.
+  # The coordinator task thinks/decomposes; the driver owns durable backlog mutation.
+  $projectBacklogPattern = '(?is)\[\[PROJECT_BACKLOG\]\](.*?)\[\[/PROJECT_BACKLOG\]\]'
+  $projectBacklogCreated = 0
+  foreach ($pbm in [regex]::Matches($reply, $projectBacklogPattern)) {
+    $pbBlock = [string]$pbm.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($pbBlock)) { continue }
+    try {
+      if (Get-Command Add-ProjectBacklogFromMarker -ErrorAction SilentlyContinue) {
+        $pbMax = 12
+        try { $pbMax = [int](Get-ProjectAutopilotConfig).maxTasksPerBatch } catch { $pbMax = 12 }
+        $sourceTaskId = ''
+        try {
+          $stPb = Read-State
+          $sourceTaskId = [string]$stPb.current_task_id
+          if ([string]::IsNullOrWhiteSpace($sourceTaskId)) { $sourceTaskId = [string]$stPb.current_backlog_id }
+        } catch {}
+        $pbResult = Add-ProjectBacklogFromMarker -Block $pbBlock -Channel ([string]$pbForMarkers.slug) -Source $speaker -SourceTaskId $sourceTaskId -MaxTasks $pbMax
+        $projectBacklogCreated += [int]$pbResult.created
+        if ([int]$pbResult.created -gt 0) {
+          Add-Message -From system -Text ("🧭 Project Autopilot: добавлено approved atom-задач: " + [int]$pbResult.created + $(if([int]$pbResult.skipped -gt 0){" (пропущено дублей: " + [int]$pbResult.skipped + ")"}else{""})) -Kind event | Out-Null
+        } else {
+          $errText = ''
+          try { $errText = (@($pbResult.errors) -join '; ') } catch {}
+          if ([string]::IsNullOrWhiteSpace($errText)) { $errText = 'валидных новых атомов нет' }
+          Add-Message -From system -Text ("🧭 Project Autopilot: atom batch не добавлен — " + $errText) -Kind event | Out-Null
+        }
+      }
+    } catch {
+      try { Add-Message -From system -Text ("⚠ Project Autopilot marker parse failed: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+  }
   # [[IDEA: ...]] -> agent raises a self-improvement idea into the backlog (status 'new').
   $ideaPattern = '(?m)^\s*\[\[IDEA:\s*(.+?)\s*\]\]\s*$'
   $proposedIdeas = New-Object System.Collections.Generic.List[string]
@@ -4808,6 +4847,7 @@ while ($true) {
   $visibleReply = [regex]::Replace($visibleReply, $evidencePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $verifiedPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $findingPattern, '')
+  $visibleReply = [regex]::Replace($visibleReply, $projectBacklogPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $studyFallbackPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $rememberPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $ideaPattern, '')
