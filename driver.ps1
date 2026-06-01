@@ -4885,6 +4885,24 @@ while ($true) {
   foreach ($rf in $rememberedFacts) { Add-Message -From system -Text "🧠 Запомнено агентом: $rf" -Kind event | Out-Null }
   foreach ($pi in $proposedIdeas) { Add-Message -From system -Text "💡 Идея в бэклог (от $speaker): $pi" -Kind event | Out-Null }
 
+  # Quality gate: autonomous implementation backlog items must not close as DONE after a
+  # plan-only/no-op reply. This caught project tasks being marked done with no commit/build.
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $stNoop = Read-State
+      $noopBacklogId = [string]$stNoop.current_backlog_id
+      $noopTask = [string]$stNoop.current_task
+      $noopDidActions = [bool]$stNoop.task_did_actions
+      $noopCovered = [bool]([regex]::IsMatch([string]$reply, '(?im)^\s*COVERED:\s*'))
+      $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
+      if (-not [string]::IsNullOrWhiteSpace($noopBacklogId) -and -not $noopDidActions -and -not $noopCovered -and -not $noopProjectAutopilot -and [int]$projectBacklogCreated -le 0) {
+        $plannerStatus = 'CONTINUE'
+        try { Set-TaskLastFailure -Kind test_failed -Text 'DONE rejected: no file changes, no commands, no commit, no COVERED marker' } catch {}
+        Add-Message -From system -Text "🚫 DONE отклонён: это backlog-задача, но в ходе не было действий/коммита/проверок. Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE." -Kind event | Out-Null
+      }
+    } catch {}
+  }
+
   # [[PARALLEL: <repo> || подзадача1 ;; подзадача2 ;; ...]] -> планировщик запускает
   # независимые под-задачи ПАРАЛЛЕЛЬНО (каждая в своём worktree), затем мерж. Блокирует
   # ход на время выполнения (heartbeat обновляется), потом постит сводку.
