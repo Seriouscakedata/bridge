@@ -117,6 +117,66 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 
 ---
 
+## 4-bis. Управление КОМАНДОЙ (состав, масштаб, модели, стоимость)
+
+Команда задаётся в `config.json → parallel.workers`. Сейчас 20 воркеров, `maxStreams=20`.
+
+### Состав команды
+| id (примеры) | CLI / модель | strength | cost | speed | для чего |
+|---|---|---|---|---|---|
+| codex-xhigh | codex gpt-5.5/xhigh | 5 | 5 | 1 | самое сложное, backend/scripts |
+| codex-high ×3 | codex gpt-5.5/high | 4 | 4 | 2 | сложное, любой домен |
+| codex-medium ×3 | codex gpt-5.5/medium | 3 | 3 | 3 | средние задачи |
+| codex-alt ×2 | codex gpt-5.4/high | 3 | 2 | 3 | дешевле, запас |
+| codex-specialist ×2 | codex gpt-5.3-codex/high | 3 | 3 | 2 | код-специфика |
+| claude-sonnet ×3 | claude sonnet | 3 | 3 | 3 | frontend/docs/config |
+| **claude-opus ×2** | claude opus-4-8 | **5** | **5** | 2 | **только сложное/architectural** |
+| deepseek-pro ×2 | deepseek v4-pro | 4 | **2** | 3 | сильный и дешёвый |
+| gemini-flash ×2 | gemini 2.5-flash | 3 | **1** | 4 | дешёвый, быстрый, простое |
+
+`strength/cost/speed` — шкала 1–5. `domains` — backend / frontend / docs / config / scripts / any.
+
+### Как масштабировать
+- **Больше потоков:** добавь записи воркеров в `parallel.workers` (дублируй: `id-2`, `id-3`) и подними
+  `parallel.maxStreams`. Реально параллелятся ровно столько, сколько НЕЗАВИСИМЫХ задач в batch.
+- **Меньше / экономия:** убери записи дорогих воркеров или снизь `maxStreams`.
+- После правки config → `restart.flag` (§5), чтобы driver перечитал пул.
+
+### Как добавить нового воркера / модель
+1. Запись в `parallel.workers`: `{id, cli, model, reasoning?, strength, cost, speed, domains[]}`.
+2. CLI должен быть в реестре (`lib/parallel.ps1 → $Script:ParallelCliRegistry`): codex/claude/gemini/deepseek.
+   Для нового CLI — добавь `Invoke-ParallelXxxCli` (см. DEVELOPER_GUIDE) и строку в реестр.
+3. `restart.flag`.
+
+### Роутинг — кто берёт задачу (`Select-WorkerForStream`)
+1. `strength ≥ complexityFloor[сложность]` — порог силы: **simple→2, moderate→3, complex→4, architectural→5**.
+2. Совпадение `domains` с доменом задачи (specialist'ы в приоритете).
+3. **opus-guard:** claude-opus берётся ТОЛЬКО на `architectural` (или явный `[[OPUS]]`) — он дорогой.
+4. Сортировка кандидатов: **дешевле (cost↑), потом быстрее (speed↓)** — экономия по умолчанию.
+5. Без двойного бронирования (один воркер — один поток, пока пул не исчерпан).
+
+Сложность определяется автоматически из текста задачи (`Get-TaskComplexityHeuristic`): «перепиши/рефактор»
+→ complex; «схема БД/миграция/архитектура» → architectural; «создай файл одной строкой» → simple.
+
+### Форсировать выбор (override в тексте задачи / [[PARALLEL]]-блоке)
+- `worker: codex-xhigh` — взять конкретного воркера.
+- `Complexity: complex` — задать сложность вручную (поднимет порог силы).
+
+### Модель-политика (СТОИМОСТЬ — соблюдать!)
+- ⛔ **НИКОГДА `gemini-2.5-pro`** — слишком дорогой. Удалять из конфига, если случайно вернётся.
+- ⚠️ `gemini-3-flash` — **только резерв** (дорогой), когда основной агент недоступен/вернул пусто.
+- Рутина (curator, intent-classifier, smoke) → `gemini-2.5-flash-lite` / `gemini-2.5-flash` (дёшево).
+- `opus` — отличный кодер, но дорогой → держать на сложных/architectural, не на мелочь (opus-guard это и обеспечивает).
+- Основная масса — codex (по подписке, prepaid) + дешёвый deepseek/gemini.
+
+### Контроль стоимости
+- `usage.jsonl` логирует каждый вызов: `kind` = **prepaid** (codex/claude по подписке, $0 сверху) или
+  **paid** (deepseek/gemini API → `cost_usd`). Цены — `config.usage.prices`.
+- Сводка burn-rate — через API пульта / `Get-UsageSummary` (см. MONITORING_RUNBOOK).
+- Хочешь дешевле — больше gemini-flash/deepseek (cost 1–2) в пуле, меньше opus/codex-xhigh (cost 5).
+
+---
+
 ## 5. Управление процессами
 
 ```powershell
@@ -274,6 +334,10 @@ cd C:\Users\rafie\aipartners
 | Разморозить застрявший канал | §9 (lease/paused) |
 | Сбросить ложный cooldown | §9 (restarts.jsonl) |
 | Проверить, собирается ли проект | §9 (tsc + next build) |
+| Больше/меньше потоков команды | правь `config.parallel.workers` + `maxStreams` → restart.flag (§4-bis) |
+| Сделать команду дешевле | больше gemini/deepseek (cost 1–2), меньше opus/codex-xhigh (cost 5) (§4-bis) |
+| Форсировать модель на задачу | `worker: <id>` в тексте задачи (§4-bis) |
+| Посмотреть расходы | usage.jsonl / Get-UsageSummary (§4-bis) |
 
 ---
 
