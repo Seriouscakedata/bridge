@@ -1258,6 +1258,11 @@ function Test-RunjobCommandSafe {
   param([string]$Command, [string]$BridgeRoot)
   $reasons = New-Object 'System.Collections.Generic.List[string]'
   $txt = [string]$Command
+  # 2026-06-01 ERR-015: Remove-Item on the Env: drive clears a PROCESS environment variable, NOT a
+  # filesystem path — it is not destructive. Neutralize those forms BEFORE the destructive scan so a
+  # legitimate seed/test cleanup like `Remove-Item Env:ADMIN_SECRET -Force` (scrubbing a secret from
+  # the process env) isn't blocked as "forced deletion". Filesystem Remove-Item is untouched.
+  try { $txt = $txt -replace '(?i)Remove-Item\s+(-(?:Path|LiteralPath)\s+)?Env:\\?[A-Za-z_][A-Za-z0-9_]*(\s+-[A-Za-z]+(\s+\w+)?)*', ' env-var-clear ' } catch {}
   try {
     # A. Irreversible operations (PS + cmd + git + sql forms).
     $irrev = @(
@@ -4612,27 +4617,33 @@ while ($true) {
       try {
         $jobsD = Join-Path $bridgeRoot 'jobs'
         $cutoff = (Get-Date).AddMinutes(-15)
-        # 2026-06-01 ERR-012 fix: build/verify commands (typecheck/lint/build/test/tsc/next/prisma)
-        # depend on installed dependencies. A PRE-install run fails with "tsc/next not found" and is
-        # NOT valid verification; deduping a POST-install rerun against it reused that stale env-failure
-        # and let unbuilt code look verified. So: if node_modules/lockfile in the workdir is NEWER than
-        # a prior identical run, the precondition changed -> do NOT dedupe, allow the rerun.
-        $isBuildGate = ($jnorm -match '(npm|pnpm|yarn).*(run\s+)?(typecheck|lint|build|test)|(^|\s)tsc(\s|$)|next\s+build|prisma\s+(generate|migrate|db)')
-        $depsMtime = [datetime]::MinValue
-        if ($isBuildGate) {
-          $pdir = $jdir
-          if ([string]::IsNullOrWhiteSpace($pdir)) { try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $pdir = [string](Get-EffectiveProjectRoot) } } catch {} }
-          if (-not [string]::IsNullOrWhiteSpace($pdir)) {
-            foreach ($dep in @('node_modules','package-lock.json','pnpm-lock.yaml','yarn.lock')) {
-              try { $dp = Join-Path $pdir $dep; if (Test-Path -LiteralPath $dp) { $dt = (Get-Item -LiteralPath $dp).LastWriteTime; if ($dt -gt $depsMtime) { $depsMtime = $dt } } } catch {}
-            }
+        # 2026-06-01 ERR-014 fix (generalizes ERR-012): a deduped RUNJOB result is only valid if the
+        # repo state it depended on hasn't changed since the prior run. The first attempt may have run
+        # BEFORE its target existed (e.g. `npx tsx scripts/seed-admin.ts` before the script was created,
+        # or `npm run build` before `npm install`) and failed; deduping the retry against that stale
+        # failure reused a precondition-invalid result. So INVALIDATE the dedupe when the project's git
+        # HEAD (last commit) OR node_modules/lockfile is NEWER than the prior run -> precondition changed
+        # -> allow the rerun. General (every command), not just build/verify (that was ERR-012's gap).
+        $pdir = $jdir
+        if ([string]::IsNullOrWhiteSpace($pdir)) { try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $pdir = [string](Get-EffectiveProjectRoot) } } catch {} }
+        $precondMtime = [datetime]::MinValue
+        if (-not [string]::IsNullOrWhiteSpace($pdir)) {
+          # (a) last commit time — covers committed target creation (seed script, generated routes, etc.)
+          try {
+            $gitX = Get-GitExe
+            $ct = & $gitX -C $pdir log -1 --format=%cI 2>$null
+            if ($ct) { $dt = [datetime]::Parse(([string]$ct).Trim(), $null, [System.Globalization.DateTimeStyles]::RoundtripKind); if ($dt -gt $precondMtime) { $precondMtime = $dt } }
+          } catch {}
+          # (b) node_modules / lockfile — covers `npm install` (not committed)
+          foreach ($dep in @('node_modules','package-lock.json','pnpm-lock.yaml','yarn.lock')) {
+            try { $dp = Join-Path $pdir $dep; if (Test-Path -LiteralPath $dp) { $dt = (Get-Item -LiteralPath $dp).LastWriteTime; if ($dt -gt $precondMtime) { $precondMtime = $dt } } } catch {}
           }
         }
         foreach ($cf in @(Get-ChildItem $jobsD -Filter '*.cmd' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff })) {
           $cc = (([string]([System.IO.File]::ReadAllText($cf.FullName))) -replace '\s+',' ').Trim().ToLowerInvariant()
           if ($cc -eq $jnorm) {
-            # ERR-012: deps (re)installed AFTER this prior run => prior result is precondition-invalid => rerun.
-            if ($isBuildGate -and $depsMtime -gt $cf.LastWriteTime) { continue }
+            # ERR-014: repo/deps changed AFTER this prior run => prior result precondition-invalid => rerun.
+            if ($precondMtime -gt $cf.LastWriteTime) { continue }
             $dupRecent = $true; break
           }
         }
