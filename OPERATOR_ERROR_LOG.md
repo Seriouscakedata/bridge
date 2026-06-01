@@ -200,3 +200,13 @@ Thanks for the sharp follow-ups — 009 and 012 are fair hits on the round-1 fix
 | **011** npm vulnerabilities (next@14.2.3) | project-side | Maintenance/security task — pin a patched Next in a controlled dependency-update atom + rerun install/typecheck/lint/build. Not a bridge orchestration bug. | — |
 
 Pending activation: 009/012 are committed (`b2a5ec4`) but the private-community driver is mid-task (scaffold 3/6) on the pre-b2a5ec4 process; they take effect on the next recycle (deferred so we don't interrupt live sequential work). 001-008 are already live.
+
+### ERR-2026-06-01-013 - Project-focus guard false-halts on external bridge commits (operator-discovered)
+
+**Context:** `private-community` scaffold turn (atom A, 3/6), seq 214, while the operator was committing docs to the bridge (`OPERATOR_ERROR_LOG.md`, resolution notes).
+
+**Observed:** The project-focus guard fired: "канал 'private-community' не является main, но после coder-хода изменился bridge: OPERATOR_ERROR_LOG.md. Останавливаю...". The trigger was `$headMoved` (bridge HEAD changed during the coder turn). But the change was an OPERATOR commit, not the coder — a project coder is sandboxed to `project_root` and cannot `git commit` in the bridge at all.
+
+**Impact:** Every operator/main-channel/Doctor commit to the bridge during a live project turn falsely halted that turn and bounced it to the planner — churning the scaffold turn and masking real progress. Self-inflicted here (operator committing the error-log resolution mid-turn), but also fires for the `main` channel's normal commits.
+
+**Status:** ✅ FIXED (`driver.ps1`). Dropped `$headMoved` from the guard trigger — a HEAD move is never a sandboxed coder escape (the coder can't commit to bridge). Kept only `$newlyDirty` (UNCOMMITTED bridge working-tree changes appearing during the turn = a real out-of-sandbox write), and additionally excluded `*.md` / operator files from it. Activates on next recycle.

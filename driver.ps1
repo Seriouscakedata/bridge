@@ -4203,11 +4203,20 @@ while ($true) {
       # from the guard trigger. A PROJECT channel's coder is sandboxed to project_root and CANNOT
       # write the bridge -- so a config/settings change during its turn is the operator tuning the
       # bridge in parallel, not the coder escaping. Counting it falsely halted the project run.
-      $newlyDirty = @($bridgeDirtyAfterGuard | Where-Object { $_ -notin $dirtyBeforeTurn -and $_ -notmatch '(^|/)(config|settings)\.json$' })
-      $headMoved  = ($headBeforeTurn -and $bridgeHeadAfterGuard -and $headBeforeTurn -ne $bridgeHeadAfterGuard)
-      if ($headMoved -or @($newlyDirty).Count -gt 0) {
-        $changed = if (@($newlyDirty).Count -gt 0) { @($newlyDirty) -join ', ' } else { "commit $($headBeforeTurn.Substring(0,7))..$($bridgeHeadAfterGuard.Substring(0,7))" }
-        $guardMsg = "⚠ Project-focus guard: канал '$guardChannelSlug' не является main, но после coder-хода изменился bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
+      # 2026-06-01 fix (false-halt): exclude docs/operator files too. A project coder is sandboxed to
+      # project_root and never writes these; if they changed, it's the operator/docs, not an escape.
+      $newlyDirty = @($bridgeDirtyAfterGuard | Where-Object { $_ -notin $dirtyBeforeTurn -and $_ -notmatch '(^|/)(config|settings)\.json$' -and $_ -notmatch '\.md$' -and $_ -notmatch '(^|/)OPERATOR_ERROR_LOG' })
+      # 2026-06-01 ROOT FIX: a bridge HEAD MOVE is NOT a coder-escape signal. A project coder is
+      # sandboxed to project_root and CANNOT git-commit in the bridge (no .git access) — so a HEAD move
+      # during its turn is ALWAYS an external commit (operator editing docs/config, the main channel's
+      # driver, or Doctor), never the coder escaping. Counting it falsely halted live project tasks
+      # (observed 2026-06-01: operator committing OPERATOR_ERROR_LOG.md mid-turn halted the
+      # private-community scaffold turn). The genuine escape signal is UNCOMMITTED bridge working-tree
+      # changes newly appearing during the turn ($newlyDirty) — a coder writing outside its sandbox,
+      # before any commit. Keep ONLY that; drop the $headMoved trigger.
+      if (@($newlyDirty).Count -gt 0) {
+        $changed = @($newlyDirty) -join ', '
+        $guardMsg = "⚠ Project-focus guard: канал '$guardChannelSlug' не является main, но coder оставил НЕзакоммиченные правки в bridge: $changed. Останавливаю дальнейшие шаги и возвращаю планировщику для разбора."
         try { Set-TaskLastFailure -Kind bridge_guard -Text $guardMsg } catch {}
         Add-Message -From system -Text $guardMsg -Kind event | Out-Null
         Update-State { param($s) $s.force_planner=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
