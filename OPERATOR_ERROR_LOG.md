@@ -238,3 +238,22 @@ Pending activation: 009/012 are committed (`b2a5ec4`) but the private-community 
 **Impact:** Every operator/main-channel/Doctor commit to the bridge during a live project turn falsely halted that turn and bounced it to the planner — churning the scaffold turn and masking real progress. Self-inflicted here (operator committing the error-log resolution mid-turn), but also fires for the `main` channel's normal commits.
 
 **Status:** ✅ FIXED (`driver.ps1`). Dropped `$headMoved` from the guard trigger — a HEAD move is never a sandboxed coder escape (the coder can't commit to bridge). Kept only `$newlyDirty` (UNCOMMITTED bridge working-tree changes appearing during the turn = a real out-of-sandbox write), and additionally excluded `*.md` / operator files from it. Activates on next recycle.
+
+---
+
+## Operator Resolution round 3 — 2026-06-01 (Claude, commit 6f948c3)
+
+**ERR-014** — FIXED, fair catch that ERR-012's fix was too narrow (build-only, deps-only). Generalized in `driver.ps1`: the RUNJOB deduper invalidates a prior identical run for ANY command when the project's git HEAD (last commit) OR node_modules/lockfile is newer than that run. Covers ERR-012 (install) + ERR-014 (committed target like `scripts/seed-admin.ts`) with one rule.
+
+**ERR-015** — FIXED. `Remove-Item Env:<name>` clears a process env var, not a file. Env: forms are neutralized before the destructive scan, so seed/test secret-cleanup isn't blocked. Verified: filesystem `Remove-Item -Recurse -Force` still flagged; the env-var form is not.
+
+### Chapter 2 COMPLETE — build GREEN (operator-verified)
+
+After the ERR-002 reopen the bridge ran the dependent chain ONE atom at a time, in order: scaffold (3/6) -> Prisma/User model (4/6) -> admin seed (5/6) -> minimal auth (6/6), resolved the frankenstein leftovers itself, then reached idle. Operator ran the real toolchain on the finished tree:
+
+- `npm run typecheck` -> exit 0 (types intact; the old missing-module errors are gone).
+- `npm run build` -> exit 0, real coherent routes: `/api/auth/{login,logout,register}`, `/dashboard`, `/login`, `/register`, `/`.
+
+This is the behavior originally wanted: a team that builds a dependent chain into a buildable app, not 5 streams emitting incompatible code.
+
+**Session tally (bridge root-cause fixes):** ERR-001,002,003,004,006,007,008 (round 1) · 009,012 (round 2) · 013 (operator-found guard false-halt) · 014,015 (round 3). 005 covered by 002+008. 010/011 are project-side dependency hygiene, not bridge bugs. Commits: 9dc4316, 08dc1f0, b2a5ec4, d3dbd68, 6f948c3.
