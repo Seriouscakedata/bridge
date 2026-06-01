@@ -8,6 +8,11 @@
 #   -Model <deepseek-v4-pro|gemini-2.5-flash|...> -Worktree <path> -InFile <prompt> -MsgFile <out>
 param([string]$Model, [string]$Worktree, [string]$InFile, [string]$MsgFile)
 $ErrorActionPreference = 'Continue'
+# 2026-06-01: guarantee a STATUS line on ANY terminating failure (incl. the PS 5.1 NativeCommandError
+# that fires when a native exe writes to stderr even on exit 0) so the worker is NEVER scored 'failed'
+# silently with no reason. Get-WorkerResult defaults to 'failed' when no STATUS is found; this trap
+# makes every exit path emit a parseable STATUS with a diagnosable cause.
+trap { try { Set-Content $MsgFile ("STATUS: FAILED (trap: " + (($_ | Out-String) -replace '\s+',' ').Trim() + ")") -Encoding UTF8 } catch {}; exit 1 }
 $bridge = Split-Path -Parent $PSScriptRoot
 try { . (Join-Path $bridge 'lib\common.ps1') } catch { Set-Content $MsgFile ("STATUS: FAILED (lib load: " + $_.Exception.Message + ")") -Encoding UTF8; exit 1 }
 
