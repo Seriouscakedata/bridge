@@ -154,10 +154,10 @@ function Invoke-CodexParallel {
 # return a System.Diagnostics.Process. Keep -Script scope so we can extend
 # at runtime if needed.
 $Script:ParallelCliRegistry = @{
-  'codex'  = 'Invoke-ParallelCodexCli'
-  'claude' = 'Invoke-ParallelClaudeCli'
-  # 'gemini'   = 'Invoke-ParallelGeminiCli'    # future
-  # 'deepseek' = 'Invoke-ParallelDeepSeekCli'  # future
+  'codex'    = 'Invoke-ParallelCodexCli'
+  'claude'   = 'Invoke-ParallelClaudeCli'
+  'gemini'   = 'Invoke-ParallelLLMCli'   # 2026-06-01: API-LLM worker (no agentic CLI)
+  'deepseek' = 'Invoke-ParallelLLMCli'   # 2026-06-01: API-LLM worker (no agentic CLI)
 }
 
 function Get-ParallelWorkerPool {
@@ -397,9 +397,25 @@ function Invoke-ParallelClaudeCli {
   }
 }
 
-# To add Gemini/DeepSeek/etc: implement Invoke-ParallelXxxCli with the same
-# signature (returns System.Diagnostics.Process), then add to
-# $Script:ParallelCliRegistry above and add worker entries to config.json.
+function Invoke-ParallelLLMCli {
+  # 2026-06-01 (Foundation #4 scale): parallel worker backed by an API LLM (DeepSeek/Gemini) which has
+  # NO agentic CLI. Launches a powershell process running tools/parallel-llm-worker.ps1 — it asks the
+  # model for full file contents, writes them into the worktree, and commits. Same contract as the
+  # codex/claude CLIs (returns System.Diagnostics.Process).
+  param([object]$Worker, [string]$Worktree, [string]$InFile, [string]$MsgFile, [string]$OutFile, [string]$ErrFile)
+  $model = [string]$Worker.model
+  if ([string]::IsNullOrWhiteSpace($model)) { $model = 'deepseek-v4-pro' }
+  $script = Join-Path (Get-BridgeRoot) 'tools\parallel-llm-worker.ps1'
+  $cliArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-Model', $model, '-Worktree', $Worktree, '-InFile', $InFile, '-MsgFile', $MsgFile)
+  return Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $cliArgs `
+      -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile -NoNewWindow -PassThru
+  }.GetNewClosure()
+}
+
+# To add another CLI/LLM: implement Invoke-ParallelXxxCli with the same signature
+# (returns System.Diagnostics.Process), then add to $Script:ParallelCliRegistry above
+# and add worker entries to config.json.
 
 function Get-ParallelRoot {
   Join-Path (Get-BridgeRoot) 'worktrees\parallel'
