@@ -2057,6 +2057,21 @@ function Set-CurrentAgent {
   Set-CurrentAgentImpl -Agent $Agent
 }
 
+function Test-DirectCoderTask {
+  # 2026-06-01 ROOT FIX (efficiency, re-applied after a watchdog "moving to stable" rollback dropped
+  # the first copy): a SINGLE explicit file edit ("Перепиши/Создай <file>") does NOT need the claude
+  # planner stage — the planner just burns the 150s zero-output grace before falling back to codex
+  # anyway. Route such tasks straight to the codex coder. Planner stays for multi-file / architectural
+  # / discussion tasks where a coordinating plan genuinely matters. Universal: any channel, any task.
+  param([string]$TaskText)
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
+  $tgt = ''
+  try { if (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue) { $tgt = [string](Get-BacklogTaskTargetFile -Text $TaskText) } } catch {}
+  if ([string]::IsNullOrWhiteSpace($tgt)) { return $false }
+  if ($TaskText -match '(?i)обсуди|спроектируй|архитектур|схему\s+(бд|баз)|миграци|несколько\s+файл|по\s+шагам|и\s+зат[ае]м|разбери|исследуй|многофайл|design\s+system|migration') { return $false }
+  return $true
+}
+
 function Invoke-Planner {
   param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal', [switch]$NoFallback)
   if (-not $NoFallback) {
@@ -4070,6 +4085,7 @@ while ($true) {
               elseif ($mode -eq 'research') { 'claude' }
               elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
               elseif ($skipPlanner -and $mode -eq 'normal' -and $tt -eq 0) { 'codex' }
+              elseif ($tt -eq 0 -and $mode -eq 'normal' -and (Test-DirectCoderTask -TaskText $task)) { 'codex' }
               elseif ($tt -eq 0) { 'claude' }
               else { Next-Speaker }
   if ($forcePlanner) { Update-State { param($s) $s.force_planner=$false } | Out-Null }
