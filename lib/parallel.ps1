@@ -1297,10 +1297,21 @@ function Invoke-ParallelDispatch {
   # Each stream owns a disjoint touch-set (workpack conflict_group), so there are no add/add conflicts.
   # This makes delivery independent of each CLI's git behaviour and of merge/cleanup timing.
   $collected = 0; $collectedStreams = 0
+  $quarantined = New-Object System.Collections.Generic.List[string]
   $base0 = Get-ParallelTaskBaseCommit
   $gitC = Get-GitExe
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
+    # 2026-06-01 ERR-004 fix: QUARANTINE failed streams — never collect a failed worker's worktree
+    # files into the main repo. Before the ERR-003 CRLF fix, workers were falsely marked 'failed' even
+    # though their files were valid, so collecting-regardless was a (lossy) safety net. Now that 003
+    # removed the false-failure path, a 'failed' status means a REAL failure (LLM error, empty reply,
+    # no FILE blocks, trap) — collecting those is exactly how broken/unverified code (e.g. the
+    # inconsistent auth baseline, ERR-005) entered main. Collect only non-failed terminal statuses
+    # (done / paused-for-restart); failed streams are skipped and reported for re-dispatch/verify.
+    $wst = ''
+    try { $wst = [string]$completed[$w.id].status } catch {}
+    if ($wst -eq 'failed') { $quarantined.Add([string]$w.id); continue }
     try {
       $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
       if (-not (Test-Path -LiteralPath $wtPath)) { continue }
@@ -1334,6 +1345,14 @@ function Invoke-ParallelDispatch {
       $merged += $collectedStreams
       Add-Message -From system -Text ("📦 Collect-commit: собрано " + $collected + " файлов из " + $collectedStreams + " потоков напрямую в репо (надёжный путь, не зависит от git-поведения воркеров)") -Kind event | Out-Null
     } catch {}
+  }
+  # 2026-06-01 ERR-004: surface quarantined (failed) streams so the operator/driver knows their work
+  # was deliberately NOT merged. $quarantinedStreams is also consumed by the terminal-result logic
+  # (ERR-006) so a batch with failures is finalized as 'partial' (needs re-dispatch), not silently
+  # repeated as a generic "parallel completed".
+  $quarantinedStreams = @($quarantined)
+  if ($quarantinedStreams.Count -gt 0) {
+    try { Add-Message -From system -Text ("⚠️ Карантин: " + $quarantinedStreams.Count + " поток(ов) со статусом failed НЕ собраны в репо (защита от непроверенного/битого кода, ERR-004): " + ($quarantinedStreams -join ', ') + ". Требуется повторный прогон этих потоков.") -Kind event | Out-Null } catch {}
   }
 
   foreach ($w in $workers) {

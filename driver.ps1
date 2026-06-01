@@ -2442,8 +2442,22 @@ function Invoke-Coder {
       reason           = $reason
     }
   }
-  $coderCwd = if ($coderBinding -and [bool]$coderBinding.ok) { [string]$coderBinding.project_root } else { $bridgeRoot }
+  # 2026-06-01 ERR-007: when Doctor is active, the coder MUST be rooted at the bridge repo, not the
+  # active channel's project_root. Doctor (Get-DoctorTaskText) is ALWAYS bridge self-repair — it
+  # diagnoses bridge logs and fixes bridge code via `repair(<area>):` commits — but it can be TRIGGERED
+  # inside a PROJECT channel (e.g. loop_detected during that project's parallel dispatch). With cwd set
+  # to project_root, the coder's workspace-write sandbox rejected every apply_patch to bridge files as
+  # "outside project", so the bridge could diagnose but never self-repair. Rooting Doctor's coder at the
+  # bridge restores the self-repair loop. (bridgeRoot is always in Get-AllowedCoderRoots, so the
+  # path-confinement tripwire below still passes.)
+  $doctorActiveNow = $false; try { $doctorActiveNow = [bool](Read-State).doctor_active } catch {}
+  $coderCwd = if ($doctorActiveNow) { $bridgeRoot }
+              elseif ($coderBinding -and [bool]$coderBinding.ok) { [string]$coderBinding.project_root }
+              else { $bridgeRoot }
   if ([string]::IsNullOrWhiteSpace($coderCwd)) { $coderCwd = $bridgeRoot }
+  if ($doctorActiveNow -and ([string]$coderBinding.slug -ne 'main')) {
+    try { Add-Message -From system -Text "🩺 Doctor self-repair: coder укоренён в bridge-репо (не в проекте), чтобы фикс кода моста проходил sandbox (ERR-007)." -Kind event | Out-Null } catch {}
+  }
   # Path-confinement tripwire (fail-closed): refuse to launch the coder if its working
   # directory is not inside an allowlisted root (bridge / sandbox / bound project). Under
   # normal operation cwd is always one of these; this only fires on a corrupted binding or
@@ -3666,7 +3680,7 @@ while ($true) {
         if ($failedN -gt 0) {
           Add-Message -From system -Text "⚠ Автозадача из бэклога не завершилась успешно — помечено failed: $failedN." -Kind event | Out-Null
         }
-        Update-State { param($s) $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force } | Out-Null
+        Update-State { param($s) $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force } | Out-Null
         $state = Read-State
       }
       # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
@@ -3962,6 +3976,7 @@ while ($true) {
           $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($batchIdsForState) -Force
           $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $isWorkpackBatch -Force
+          $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force  # ERR-006: fresh batch, not yet dispatched
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -4121,17 +4136,30 @@ while ($true) {
   $turnResult = $null
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
     $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
+    # 2026-06-01 ERR-006 fix: a workpack-batch must be dispatched to the worker pool EXACTLY ONCE.
+    # Previously, if the post-dispatch verify/critic/smoke gate returned the task for rework, the next
+    # turn re-entered this block (workpack_batch_active was still true) and blindly re-ran the WHOLE
+    # batch — producing repeated collect-commits (observed: 23→22→16 files) until the loop-detector
+    # fired Doctor. Now the first dispatch sets workpack_batch_dispatched; subsequent turns skip the
+    # deterministic dispatch and fall through to the normal planner, which inspects the already-merged
+    # result and drives it to DONE (or fixes it) instead of churning the repo.
+    $wpDispatched = $false; try { $wpDispatched = [bool](Read-State).workpack_batch_dispatched } catch {}
     $projRootDet = ''; try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRootDet = [string](Get-EffectiveProjectRoot) } } catch {}
-    if ($wpActive -and $projRootDet -and ($projRootDet -ne $bridgeRoot)) {
+    if ($wpActive -and -not $wpDispatched -and $projRootDet -and ($projRootDet -ne $bridgeRoot)) {
       $detStreams = $null; try { $detStreams = Test-CanParallelize -PlanText $task } catch {}
       if ($detStreams -and @($detStreams).Count -ge 2) {
         try {
           Add-Message -From system -Text ("🔀 Детерминированный parallel dispatch: " + @($detStreams).Count + " потоков из workpack-batch (без планировщика)") -Kind event | Out-Null
           $detRes = Invoke-ParallelDispatch -Streams $detStreams -TimeoutMin 25 -PollSec 10
+          # Mark dispatched REGARDLESS of ok, so a fully-failed batch goes to the planner for diagnosis
+          # rather than re-dispatching the same broken streams over and over (the ERR-006 loop).
+          Update-State { param($s) $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $true -Force } | Out-Null
           if ($detRes -and $detRes.ok) {
             Add-Message -From system -Text ("✅ Parallel завершён: " + $detRes.merged + " потоков слито в проект") -Kind event | Out-Null
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
             $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно выполнено потоков: " + $detRes.merged); fallback = '' }
+          } else {
+            Add-Message -From system -Text "⚠ Parallel dispatch не слил ни одного потока (все в карантине/провал) — передаю планировщику для разбора, без повторного слепого dispatch." -Kind event | Out-Null
           }
         } catch { try { Add-Message -From system -Text ("⚠ Детерминированный dispatch: " + $_.Exception.Message + " — обычный planner-ход") -Kind event | Out-Null } catch {} }
       }
@@ -5850,7 +5878,7 @@ $diff
       if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = 'task-' + [string]$stDoneCp.task_start_seq }
       Clear-TaskCheckpoint -TaskId $doneCpTaskId -Channel $Channel
     } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
   if (([int](Read-State).task_turn) -ge $maxTurns) {

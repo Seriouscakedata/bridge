@@ -66,8 +66,16 @@ foreach ($m in $rx.Matches($reply)) {
 if ($written -eq 0) { Set-Content $MsgFile 'STATUS: FAILED (no FILE blocks returned)' -Encoding UTF8; exit 1 }
 
 $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } else { 'git' }
-& $git -C $Worktree add -A 2>$null | Out-Null
-& $git -C $Worktree commit -m ("parallel-llm (" + $Model + "): " + $written + " file(s)") 2>$null | Out-Null
+# 2026-06-01 ERR-003 fix: `-c core.autocrlf=false -c core.safecrlf=false` suppresses the
+# "LF will be replaced by CRLF" stderr warning that PS 5.1 turns into a NativeCommandError, which
+# falsely marked workers as failed even though files were written. Status is decided by the commit
+# result below (real $LASTEXITCODE), NOT by stderr noise.
+& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree add -A 2>$null | Out-Null
+& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree commit -m ("parallel-llm (" + $Model + "): " + $written + " file(s)") 2>$null | Out-Null
+$committed = ($LASTEXITCODE -eq 0)
 
-Set-Content $MsgFile ("LLM-worker " + $Model + " wrote " + $written + " file(s)`nSTATUS: DONE") -Encoding UTF8
+# Report wrote-count + a parseable STATUS regardless of CRLF/stderr noise.
+$tail = "STATUS: DONE"
+if (-not $committed) { $tail = "STATUS: DONE (files written; commit reported non-zero — host collect-then-commit will pick them up)" }
+Set-Content $MsgFile ("LLM-worker " + $Model + " wrote " + $written + " file(s)`n" + $tail) -Encoding UTF8
 exit 0

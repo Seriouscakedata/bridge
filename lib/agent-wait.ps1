@@ -29,6 +29,7 @@ function Wait-AgentProcess {
   $lastTotLen = [long](-1)
   $lastTelemetrySec = -1
   $announcedAlive = $false
+  $announcedZero = $false   # ERR-001: separate flag for the honest zero-output notice
   $sawAnyOutput = $false
 
   while ($true) {
@@ -101,9 +102,22 @@ function Wait-AgentProcess {
         Update-State ({ param($s) $s | Add-Member -NotePropertyName agent_telemetry -NotePropertyValue $telem -Force }.GetNewClosure()) | Out-Null
       } catch {}
 
-      if ($haveSignal -and $elapsedMs -ge $softMs -and $stalledMs -lt $stallGraceMs -and -not $announcedAlive) {
-        try { Add-Message -From system -Text ("Agent is past the soft timeout (${elapsedSec}s), but output is still growing; continuing to wait.") -Kind event | Out-Null } catch {}
-        $announcedAlive = $true
+      # 2026-06-01 ERR-001 fix: tell the TRUTH about output state past the soft timeout. The old code
+      # claimed "output is still growing" whenever a file PATH existed ($haveSignal) and we were inside
+      # the stall grace — even when out+err were 0 bytes the whole time (lastTotLen starts at -1, so the
+      # first 0-byte sample counts as "growth" and freezes lastProgressMs at ~5s, making stalledMs look
+      # small). Now we distinguish three real states using $sawAnyOutput and actual growth.
+      if ($haveSignal -and $elapsedMs -ge $softMs) {
+        $stSec = [int]($stalledMs / 1000)
+        if ($sawAnyOutput -and $stalledMs -lt $stallGraceMs) {
+          if (-not $announcedAlive) {
+            $announcedAlive = $true
+            try { Add-Message -From system -Text ("Agent is past the soft timeout (${elapsedSec}s), output is still growing (${totLen}B, last growth ${stSec}s ago); continuing to wait.") -Kind event | Out-Null } catch {}
+          }
+        } elseif (-not $sawAnyOutput -and -not $announcedZero) {
+          $announcedZero = $true
+          try { Add-Message -From system -Text ("⚠ Agent past soft timeout (${elapsedSec}s) with ZERO output so far (0 bytes in out+err). This is a stall, not progress — process is alive but silent; it will hit the stall-grace / hard ceiling if it stays silent.") -Kind event | Out-Null } catch {}
+        }
       }
     }
 

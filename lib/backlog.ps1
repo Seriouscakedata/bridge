@@ -1246,6 +1246,34 @@ function Test-BacklogWorkpackExecEligible {
   return $true
 }
 
+function Get-BacklogTaskDepSignal {
+  # 2026-06-01 ERR-002 (dependency-aware packing). Atoms carry no explicit depends_on, so this infers
+  # from task text whether a task is a structural BARRIER (must be serialized) vs a NEUTRAL independent
+  # edit (safe to parallelize). Returns 'foundation' (creates structure later tasks build on -> must
+  # precede them), 'dependent' (explicitly relies on another task's artifact -> must follow it), or
+  # 'neutral'. Consumed by Get-NextBacklogWorkpackBatch to force sequential waves for dependent chains
+  # (scaffold -> Prisma/User model -> admin seed -> auth) that the touch-set packer wrongly saw as
+  # independent because their files differ — which generated incompatible code (ERR-005).
+  param([string]$Text)
+  $t = ([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($t)) { return 'neutral' }
+  $t = $t.ToLowerInvariant()
+  $foundation = @(
+    'scaffold','boilerplate','каркас проект','инициализ','init project','project setup','настрой проект',
+    'prisma','\bschema\b','schema\.prisma','миграци','migration','db schema','database','схему базы','схему бд',
+    '\bmodel\b','data model','модель данных','модель данны','\bentity\b','\borm\b','create table','create\s+\w+\s+table','таблиц',
+    'package\.json','next\.config','tsconfig','определи модель','define\s+\w+\s+model','create\s+\w+\s+model','set up\s+.{0,20}(project|schema|database)'
+  )
+  $dependent = @(
+    'после того как','после создани','на основе созданн','поверх созданн','использует модель','использует схему','на базе модел','на базе схем',
+    '\bseed\b','seed script','using\s+.{0,25}(model|schema|table|api|prisma)','uses\s+.{0,25}(model|schema|table)','based on\s+.{0,25}(model|schema|table)','extends?\s+.{0,25}(model|schema)','подключ.{0,20}(модель|схему|бд)',
+    'depends on','requires\s+.{0,30}(to exist|exist|first)','once\s+.{0,30}exist','after\s+.{0,30}(is created|created|exists|set up|scaffold)','building on\s+.{0,30}(model|schema|scaffold)','расширяет существующ','интегрир.{0,30}с созданн'
+  )
+  foreach ($rx in $foundation) { if ($t -match $rx) { return 'foundation' } }
+  foreach ($rx in $dependent)  { if ($t -match $rx) { return 'dependent' } }
+  return 'neutral'
+}
+
 function Get-NextBacklogWorkpackBatch {
   param($Config = $null)
   if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
@@ -1259,6 +1287,17 @@ function Get-NextBacklogWorkpackBatch {
                 @{Expression={[string]$_.ts}}
   )
   if ($eligible.Count -lt [int]$Config.minItems) { return $null }
+
+  # 2026-06-01 ERR-002: dependency-aware gating. If ANY eligible task is a structural barrier
+  # (foundation that must precede others, or explicitly dependent on another's artifact), DISABLE the
+  # parallel batch path — return $null so the driver claims tasks one-by-one in priority/backlog order
+  # (sequential waves). This prevents parallelizing scaffold->model->auth chains (distinct files, so the
+  # touch-set packer wrongly treated them as independent) into incompatible code. Parallel packing
+  # resumes automatically once the remaining eligible tasks are all neutral independent edits.
+  foreach ($bItem in $eligible) {
+    $bTxt = [string](Get-BacklogPackObjectValue -Obj $bItem -Name 'text' -Default '')
+    if ((Get-BacklogTaskDepSignal -Text $bTxt) -ne 'neutral') { return $null }
+  }
 
   $selected = New-Object 'System.Collections.Generic.List[object]'
   $usedGroups = @{}
