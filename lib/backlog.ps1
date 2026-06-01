@@ -928,7 +928,15 @@ function Get-BacklogWorkpackClassification {
     $primary = Get-BacklogTaskTargetFile -Text $text
     if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
     $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
-    if ($primary -match '^(lib|tools|web|memory|control|docs|channels)/') {
+    # 2026-06-01 (Foundation #4 scale): for a PROJECT channel, key by the FULL file path so that N
+    # tasks editing N different files form N workpacks (=> up to N parallel streams). Bridge keeps
+    # dir-level-2 grouping (serial-by-module on a shared tree). Without this, e.g. docs/scale-test/*
+    # all collapsed into ONE 'file:docs/scale-test' workpack and the batch took only ~2.
+    $isProjectCh = $false
+    try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $prk = Get-EffectiveProjectRoot; $isProjectCh = (-not [string]::IsNullOrWhiteSpace([string]$prk) -and ([string]$prk -ne (Get-BridgeRoot))) } } catch {}
+    if ($isProjectCh) {
+      $key = 'file:' + (([string]$primary).ToLowerInvariant())
+    } elseif ($primary -match '^(lib|tools|web|memory|control|docs|channels)/') {
       $parts = $primary -split '/'
       if ($parts.Count -ge 2) { $key = 'file:' + $parts[0] + '/' + $parts[1] }
       else { $key = 'file:' + $primary }
