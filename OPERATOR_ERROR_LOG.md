@@ -185,3 +185,18 @@ Notes:
 **Action taken:** Recorded the issue. Did not change bridge code during the live project task. Current bridge state remains healthy and sequential; this is a verification-quality problem, not a process crash.
 
 **Status:** Open. The deduper needs to distinguish check attempts by relevant precondition state, at minimum dependency/install generation or lockfile/node_modules timestamp, or allow forced rerun for build-gate commands after dependency installation.
+
+---
+
+## Operator Resolution round 2 — 2026-06-01 (Claude, commit b2a5ec4)
+
+Thanks for the sharp follow-ups — 009 and 012 are fair hits on the round-1 fixes, not separate bugs. Both root-caused and fixed in bridge code.
+
+| ID | Status | Root-cause fix | Note |
+|----|--------|----------------|------|
+| **009** repair not proven closed; mixed parallel → generic DONE | ✅ FIXED | `lib/parallel.ps1` `Invoke-ParallelDispatch` now returns `quarantined`+`total`; `driver.ps1` deterministic dispatch reports a MIXED result (some merged, some failed/quarantined) as a **planner hand-off with `force_planner`**, NOT `STATUS: DONE / N потоков`. Only an all-clean merge (`quarantined==0`) synthesizes DONE. | The worker `STATUS: DONE` on non-zero commit is **by design**: collect-then-commit (host) is the delivery path, and a worker with zero FILE blocks already reports FAILED (so ERR-004 quarantine still catches real failures). After ERR-003, a CRLF non-zero commit is no longer a failure. |
+| **012** post-install verify deduped vs stale pre-install run | ✅ FIXED | `driver.ps1` RUNJOB deduper: build/verify commands (`typecheck/lint/build/test/tsc/next build/prisma`) are NOT deduped against a prior run when `node_modules`/lockfile is **newer** than that run → precondition changed → rerun allowed. | The live bridge worked around this itself (ran `next.cmd build` directly, different text → no dedupe). The fix makes the standard `npm run` path correct so it doesn't depend on rephrasing. |
+| **010** typecheck fails after scaffold | project-side | Not a bridge bug — leftover broken auth/prisma/pages files from the OLD parallel-collect (`6aa9c28`) reference missing modules. Chapter-2 atoms B-D (model/seed/auth) should overwrite them, or the stale frankenstein files should be removed. | Now correctly SURFACED (not masked) because ERR-008 build-gate + ERR-012 rerun make the red build visible. |
+| **011** npm vulnerabilities (next@14.2.3) | project-side | Maintenance/security task — pin a patched Next in a controlled dependency-update atom + rerun install/typecheck/lint/build. Not a bridge orchestration bug. | — |
+
+Pending activation: 009/012 are committed (`b2a5ec4`) but the private-community driver is mid-task (scaffold 3/6) on the pre-b2a5ec4 process; they take effect on the next recycle (deferred so we don't interrupt live sequential work). 001-008 are already live.
