@@ -1454,5 +1454,10 @@ function Invoke-ParallelDispatch {
     Update-State { param($s) $s | Add-Member -NotePropertyName parallel_streams -NotePropertyValue @() -Force } | Out-Null
   } catch {}
 
-  return @{ ok=($merged -ge 1); merged=$merged; reason='' }
+  # 2026-06-01 ERR-009: surface quarantined (failed) stream count + total so the driver can tell a
+  # CLEAN all-streams-merged result apart from a MIXED one (e.g. 4 failed + 1 done). A mixed result
+  # must NOT be reported to the user as a plain "DONE: N потоков" — the caller bounces it for rework.
+  $qCount = 0; try { $qCount = @($quarantinedStreams).Count } catch {}
+  $totalStreams = 0; try { $totalStreams = @($workers).Count } catch {}
+  return @{ ok=($merged -ge 1); merged=$merged; quarantined=$qCount; total=$totalStreams; reason='' }
 }

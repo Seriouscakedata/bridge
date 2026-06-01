@@ -4154,10 +4154,20 @@ while ($true) {
           # Mark dispatched REGARDLESS of ok, so a fully-failed batch goes to the planner for diagnosis
           # rather than re-dispatching the same broken streams over and over (the ERR-006 loop).
           Update-State { param($s) $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $true -Force } | Out-Null
-          if ($detRes -and $detRes.ok) {
-            Add-Message -From system -Text ("✅ Parallel завершён: " + $detRes.merged + " потоков слито в проект") -Kind event | Out-Null
+          $detQ = 0; try { $detQ = [int]$detRes.quarantined } catch {}
+          if ($detRes -and $detRes.ok -and $detQ -eq 0) {
+            # CLEAN: every stream merged, none quarantined -> safe to synthesize DONE for the gates.
+            Add-Message -From system -Text ("✅ Parallel завершён: " + $detRes.merged + " потоков слито в проект (все потоки успешны)") -Kind event | Out-Null
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
             $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно выполнено потоков: " + $detRes.merged); fallback = '' }
+          } elseif ($detRes -and $detRes.ok -and $detQ -gt 0) {
+            # 2026-06-01 ERR-009: MIXED result (some merged, some FAILED/quarantined). Do NOT report a
+            # generic "DONE: N потоков" — that masked failed streams. Partial work did land, so mark
+            # actions, but force a planner turn to finish/repair the quarantined streams (sequentially,
+            # since ERR-002 will gate them) instead of closing the task as done.
+            Add-Message -From system -Text ("⚠ Parallel: СМЕШАННЫЙ результат — слито " + $detRes.merged + " из " + $detRes.total + " потоков, " + $detQ + " в карантине (провалились). НЕ закрываю как DONE; передаю планировщику доделать/починить провалившиеся потоки.") -Kind event | Out-Null
+            Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true; $s.force_planner = $true } | Out-Null
+            # leave $turnResult null -> the planner runs this turn and drives the remaining work to DONE
           } else {
             Add-Message -From system -Text "⚠ Parallel dispatch не слил ни одного потока (все в карантине/провал) — передаю планировщику для разбора, без повторного слепого dispatch." -Kind event | Out-Null
           }
@@ -4593,9 +4603,29 @@ while ($true) {
       try {
         $jobsD = Join-Path $bridgeRoot 'jobs'
         $cutoff = (Get-Date).AddMinutes(-15)
+        # 2026-06-01 ERR-012 fix: build/verify commands (typecheck/lint/build/test/tsc/next/prisma)
+        # depend on installed dependencies. A PRE-install run fails with "tsc/next not found" and is
+        # NOT valid verification; deduping a POST-install rerun against it reused that stale env-failure
+        # and let unbuilt code look verified. So: if node_modules/lockfile in the workdir is NEWER than
+        # a prior identical run, the precondition changed -> do NOT dedupe, allow the rerun.
+        $isBuildGate = ($jnorm -match '(npm|pnpm|yarn).*(run\s+)?(typecheck|lint|build|test)|(^|\s)tsc(\s|$)|next\s+build|prisma\s+(generate|migrate|db)')
+        $depsMtime = [datetime]::MinValue
+        if ($isBuildGate) {
+          $pdir = $jdir
+          if ([string]::IsNullOrWhiteSpace($pdir)) { try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $pdir = [string](Get-EffectiveProjectRoot) } } catch {} }
+          if (-not [string]::IsNullOrWhiteSpace($pdir)) {
+            foreach ($dep in @('node_modules','package-lock.json','pnpm-lock.yaml','yarn.lock')) {
+              try { $dp = Join-Path $pdir $dep; if (Test-Path -LiteralPath $dp) { $dt = (Get-Item -LiteralPath $dp).LastWriteTime; if ($dt -gt $depsMtime) { $depsMtime = $dt } } } catch {}
+            }
+          }
+        }
         foreach ($cf in @(Get-ChildItem $jobsD -Filter '*.cmd' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff })) {
           $cc = (([string]([System.IO.File]::ReadAllText($cf.FullName))) -replace '\s+',' ').Trim().ToLowerInvariant()
-          if ($cc -eq $jnorm) { $dupRecent = $true; break }
+          if ($cc -eq $jnorm) {
+            # ERR-012: deps (re)installed AFTER this prior run => prior result is precondition-invalid => rerun.
+            if ($isBuildGate -and $depsMtime -gt $cf.LastWriteTime) { continue }
+            $dupRecent = $true; break
+          }
         }
       } catch {}
     }
