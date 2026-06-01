@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # project-verify.ps1 -- verification gate for a PROJECT channel: actually BUILD & TEST the code.
 # Foundation #4 lesson: the driver's critic is an LLM diff-review; it does NOT run the project, so
 # "done" did not guarantee "compiles". This tool RUNS the toolchain (install -> typecheck -> build

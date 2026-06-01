@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # parallel-llm-worker.ps1 -- a PARALLEL coder-worker backed by an API LLM (DeepSeek / Gemini) rather
 # than an agentic CLI (codex/claude). 2026-06-01 (Foundation #4 scale-out to 20 workers).
 # These models have no file-writing CLI, so this wrapper reads the worker prompt, asks the model to
