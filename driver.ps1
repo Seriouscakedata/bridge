@@ -4096,8 +4096,34 @@ while ($true) {
   # (false halt of a clean travel audit while main legitimately edited the bridge).
   $dirtyBeforeTurn = @()
   try { $dirtyBeforeTurn = @(& git -C $bridgeRoot diff --name-only HEAD 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) } catch {}
+  # 2026-06-01 (Foundation #4 scale): DETERMINISTIC parallel dispatch for a workpack-batch on a
+  # PROJECT channel. The batch task text already carries ready [[PARALLEL]] blocks (built by
+  # New-BacklogWorkpackBatchTaskText); dispatch them straight to the worker pool BEFORE the planner
+  # runs -- otherwise the planner inlines small independent tasks in a single turn (no parallelism,
+  # observed: 20 tasks done serially, worktrees=1). This guarantees up to N concurrent worktree
+  # workers. On success we synthesize a DONE turn so verify/critic gates run on the merged result.
+  $turnResult = $null
+  if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
+    $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
+    $projRootDet = ''; try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRootDet = [string](Get-EffectiveProjectRoot) } } catch {}
+    if ($wpActive -and $projRootDet -and ($projRootDet -ne $bridgeRoot)) {
+      $detStreams = $null; try { $detStreams = Test-CanParallelize -PlanText $task } catch {}
+      if ($detStreams -and @($detStreams).Count -ge 2) {
+        try {
+          Add-Message -From system -Text ("🔀 Детерминированный parallel dispatch: " + @($detStreams).Count + " потоков из workpack-batch (без планировщика)") -Kind event | Out-Null
+          $detRes = Invoke-ParallelDispatch -Streams $detStreams -TimeoutMin 25 -PollSec 10
+          if ($detRes -and $detRes.ok) {
+            Add-Message -From system -Text ("✅ Parallel завершён: " + $detRes.merged + " потоков слито в проект") -Kind event | Out-Null
+            Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
+            $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно выполнено потоков: " + $detRes.merged); fallback = '' }
+          }
+        } catch { try { Add-Message -From system -Text ("⚠ Детерминированный dispatch: " + $_.Exception.Message + " — обычный planner-ход") -Kind event | Out-Null } catch {} }
+      }
+    }
+  }
   try {
-    if ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
+    if ($turnResult) { }  # already produced by the deterministic dispatch above -> skip planner
+    elseif ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else {
       $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode
       # Track that the coder role actually ran for this task. A Claude fallback counts as
