@@ -65,6 +65,56 @@ function Quote-QAAgentArgument {
   return '"' + ([string]$Value).Replace('"', '\"') + '"'
 }
 
+function Invoke-ProjectBuildGate {
+  # 2026-06-01 ERR-008: bridge smoke proves the BRIDGE still runs; it does NOT prove a PROJECT channel's
+  # app compiles. "git clean" passed QA while generated code failed install/typecheck/build (ERR-005).
+  # This runs the real toolchain (tools\project-verify.ps1: install -> typecheck -> build) for a
+  # project-bound channel and returns {Ok; Ran; Summary}. Returns Ran=$false (treated as pass) for main,
+  # unbound channels, or non-node projects so it never blocks those.
+  param([string]$Channel, [string]$BridgeRoot)
+  $res = [pscustomobject]@{ Ok = $true; Ran = $false; Summary = '' }
+  if ([string]::IsNullOrWhiteSpace($Channel) -or $Channel -eq 'main') { return $res }
+  $pv = Join-Path (Join-Path $BridgeRoot 'tools') 'project-verify.ps1'
+  if (-not (Test-Path -LiteralPath $pv)) { return $res }
+  $pr = ''
+  try {
+    $chJson = Join-Path (Join-Path (Join-Path $BridgeRoot 'channels') $Channel) 'channel.json'
+    if (Test-Path -LiteralPath $chJson) { $pr = [string]((Get-Content $chJson -Raw -Encoding UTF8 | ConvertFrom-Json).project_root) }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($pr) -or -not (Test-Path -LiteralPath (Join-Path $pr 'package.json'))) { return $res }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'powershell.exe'
+  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-QAAgentArgument $pv) + ' -Channel ' + (Quote-QAAgentArgument $Channel)
+  $psi.WorkingDirectory = $BridgeRoot
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $res.Ran = $true
+  $done = $p.WaitForExit(600000)   # build/typecheck can take minutes; npm install is cached after first run
+  if (-not $done) {
+    try { $p.Kill() } catch {}
+    $res.Ok = $false; $res.Summary = 'project build/typecheck timed out after 600s'
+    return $res
+  }
+  $out = ''
+  try { $out += $p.StandardOutput.ReadToEnd() } catch {}
+  try { $e = $p.StandardError.ReadToEnd(); if (-not [string]::IsNullOrWhiteSpace($e)) { $out += "`n" + $e } } catch {}
+  if ($p.ExitCode -ne 0) {
+    $sum = ($out -replace '\s+', ' ').Trim()
+    if ($sum.Length -gt 600) { $sum = '...' + $sum.Substring($sum.Length - 600) }   # keep the TAIL — that's where build/typecheck errors are
+    if ([string]::IsNullOrWhiteSpace($sum)) { $sum = "project build/typecheck failed (exit $($p.ExitCode))" }
+    $res.Ok = $false; $res.Summary = $sum
+  } else {
+    $res.Summary = 'project install/typecheck/build PASS'
+  }
+  return $res
+}
+
 function Invoke-QAAgent {
   param(
     [string]$TaskId = '',
@@ -118,6 +168,18 @@ function Invoke-QAAgent {
       return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'FAIL' -Summary $summary -Bugs @($summary)
     }
 
+    # 2026-06-01 ERR-008: bridge smoke passed — now verify the PROJECT actually builds (non-main only).
+    # A red build returns FAIL so the driver bounces the task back to CONTINUE instead of closing broken
+    # code as done (which is how the inconsistent auth baseline, ERR-005, slipped through).
+    try {
+      $pbg = Invoke-ProjectBuildGate -Channel $channelName -BridgeRoot $bridgeRoot
+      if ($pbg.Ran -and -not $pbg.Ok) {
+        return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'FAIL' -Summary ('PROJECT BUILD FAILED — ' + $pbg.Summary) -Bugs @($pbg.Summary)
+      }
+      if ($pbg.Ran) {
+        return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary ('Smoke OK + ' + $pbg.Summary)
+      }
+    } catch {}
     return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary 'Smoke OK'
   } catch {
     $summary = $_.Exception.Message
