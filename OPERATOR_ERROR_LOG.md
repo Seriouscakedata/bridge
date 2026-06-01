@@ -114,3 +114,24 @@ This file records concrete errors, weak spots, and recovery notes observed while
 **Action taken:** Avoided running destructive fixes while Doctor was active. Manual inspection already found code/schema/dependency issues that should be verified after orchestration is repaired.
 
 **Status:** Open. Need enforce verification failure or escalation before another collect-commit is allowed for the same workpack batch.
+
+---
+
+## Operator Resolution — 2026-06-01 (Claude, commits 9dc4316 + 08dc1f0)
+
+All eight issues above were root-caused and fixed in the bridge code (not by hand-finishing the project). The error log was an excellent, accurate signal — three of these (002, 004, 006) were issues the operator's surface-level monitoring had missed; this log surfaced them. Live state at fix time confirmed every diagnosis (private-community seq 115-124: 4/5 workers false-`failed`, collect-commit pulled all 5 streams, `Loop detected 3×→Doctor`).
+
+| ID | Status | Root-cause fix | Verified |
+|----|--------|----------------|----------|
+| **001** zero-output stall | ✅ FIXED | `lib/agent-wait.ps1`: honest status — distinguishes growing / stalled / **0-byte** output; no more false "still growing" when out+err are empty (`lastTotLen` started at -1, so the first 0-byte sample looked like growth). | code live |
+| **002** dependent tasks packed parallel | ✅ FIXED | `lib/backlog.ps1`: `Get-BacklogTaskDepSignal` classifies foundation/dependent vs neutral; `Get-NextBacklogWorkpackBatch` disables the parallel batch when ANY eligible task is a barrier → sequential waves. | **LIVE-CONFIRMED**: after reopen, bridge claimed the 5-task chain ONE-BY-ONE (`wp_active=False`), not as a batch |
+| **003** git CRLF → false `failed` | ✅ FIXED | `tools/parallel-llm-worker.ps1`: `git add/commit -c core.autocrlf=false -c core.safecrlf=false`; status from `$LASTEXITCODE`, not stderr. | code live |
+| **004** collect merged failed workers | ✅ FIXED | `lib/parallel.ps1`: collect-then-commit QUARANTINES `failed` streams; only done/paused streams' files enter main; quarantined streams logged. | code live |
+| **005** inconsistent generated auth | ✅ ADDRESSED | Consequence of 002 (parallel deps) + 008 (no build gate). Fixed upstream: deps now run sequentially and a red build now bounces the task. | covered by 002+008 |
+| **006** batch repeated until loop-detector | ✅ FIXED | `driver.ps1`: `workpack_batch_dispatched` flag → batch dispatched EXACTLY once; post-dispatch rework goes to the planner, not a blind re-run. | code live; Doctor loop drained cleanly via auto-abort |
+| **007** Doctor can't self-repair bridge | ✅ FIXED | `driver.ps1`: when `doctor_active`, coder is rooted at the bridge repo (not the project), so `apply_patch` to bridge files passes the sandbox. | **LIVE-CONFIRMED**: seq 154/157 "coder укоренён в bridge-репо", Doctor then read bridge code it previously couldn't |
+| **008** "git clean" ≠ "project valid" | ✅ FIXED | `lib/qa-agent.ps1`: `Invoke-ProjectBuildGate` runs `tools/project-verify.ps1` (install→typecheck→build) for project channels; red build → QA FAIL → task bounced to CONTINUE. | code live |
+
+Notes:
+- The stale Chapter-2 batch (5 deps wrongly parallelized) was drained: Doctor auto-aborted after the restart-loop guard (3/3), the 5 tasks were marked failed, then reopened as `approved` so the FIXED pipeline replays them sequentially.
+- Parse-checked all six edited files; bridge smoke green (106 ps1 ok, endpoints 200); watchdog `stable` already advanced onto the fix commit (no rollback risk).
