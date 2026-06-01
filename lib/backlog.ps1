@@ -1435,14 +1435,30 @@ function Add-Idea {
 }
 
 function Get-Backlog {
+  # 2026-06-01 ROOT FIX (re-claim loop): backlog.jsonl is an append-log, so a task can have MULTIPLE
+  # lines with the same id (status transitions: running -> approved -> done, plus operator re-adds /
+  # concurrent writes from 3 drivers + curator + packer on the OneDrive-hosted file). The old reader
+  # returned EVERY line as a separate item, so a stale 'approved' duplicate survived next to a fresh
+  # 'done' line — the claim picker saw the 'approved' copy and re-ran an already-finished task forever
+  # (observed: redesign-rest 16/18 delivered + closed, yet re-claimed every cycle; 23 duplicate ids in
+  # the file). Fold by id with LAST-line-wins so each id collapses to its newest status. Save-Backlog
+  # then rewrites the folded set, healing the duplicates on the next mutation.
   $p = Get-BacklogPath
   if (-not (Test-Path $p)) { return @() }
-  $out = New-Object 'System.Collections.Generic.List[object]'
+  $byId = New-Object 'System.Collections.Specialized.OrderedDictionary'
+  $noId = New-Object 'System.Collections.Generic.List[object]'
   foreach ($line in (Get-Content -LiteralPath $p -Encoding UTF8)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try { $i = $line | ConvertFrom-Json } catch { continue }
-    [void]$out.Add($i)
+    $iid = ''
+    try { $iid = [string]$i.id } catch { $iid = '' }
+    if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($i); continue }
+    # last line for this id wins; keep first-seen ORDER so the picker's ordering is stable
+    if ($byId.Contains($iid)) { $byId[$iid] = $i } else { $byId.Add($iid, $i) }
   }
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($k in $byId.Keys) { [void]$out.Add($byId[$k]) }
+  foreach ($v in $noId) { [void]$out.Add($v) }
   return @($out.ToArray())
 }
 
