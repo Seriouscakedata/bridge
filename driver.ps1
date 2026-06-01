@@ -323,6 +323,43 @@ function Test-CliFlagsInDiff {
   return @($issues.ToArray())
 }
 
+function Test-QualityBypassesInDiff {
+  # Deterministic project-quality guard: reject added lines that disable build,
+  # type, or lint gates instead of fixing the code. This is intentionally narrow:
+  # only obvious bypass switches are blocked; normal config changes still go to
+  # the LLM critic and project build gate.
+  param([string]$Diff)
+  if ([string]::IsNullOrWhiteSpace($Diff)) { return @() }
+
+  $issues = New-Object 'System.Collections.Generic.List[object]'
+  $patterns = @(
+    @{ key='next-ignore-build-errors'; pattern='(?i)\bignoreBuildErrors\s*:\s*true\b'; reason='Next.js TypeScript build errors are disabled' },
+    @{ key='next-ignore-lint';         pattern='(?i)\bignoreDuringBuilds\s*:\s*true\b'; reason='Next.js lint failures are disabled during build' },
+    @{ key='ts-nocheck';               pattern='(?i)@ts-nocheck\b'; reason='TypeScript checking is disabled for a file' },
+    @{ key='swallow-verify-failure';   pattern='(?i)(npm\s+run\s+(?:typecheck|build|lint)|\btsc\b|\bnext\s+build\b|\bnext\s+lint\b).*(\|\|\s*(?:true|exit\s+0)|;\s*exit\s+0)'; reason='verification command failure is swallowed' }
+  )
+  $seen = @{}
+
+  foreach ($rawLine in @($Diff -split "`r?`n")) {
+    if ($rawLine.Length -lt 2 -or $rawLine[0] -ne '+' -or $rawLine[1] -eq '+') { continue }
+    $line = $rawLine.Substring(1)
+    foreach ($pat in $patterns) {
+      if ($line -match $pat.pattern) {
+        $key = [string]$pat.key
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$issues.Add([pscustomobject]@{
+          key    = $key
+          reason = [string]$pat.reason
+          sample = $line.Trim()
+        })
+      }
+    }
+  }
+
+  return @($issues.ToArray())
+}
+
 function Test-CoderClaims {
   # Deterministic gate: scan Codex reply for verifiable claims (HTTP status,
   # ParseFile OK assertions, git SHA references) and check each against ground
@@ -1557,6 +1594,16 @@ function Get-ActiveProjectRoot {
     return [string]$binding.project_root
   }
   return ''
+}
+
+function Get-TaskRepoRoot {
+  try {
+    $projectRoot = Get-ActiveProjectRoot
+    if (-not [string]::IsNullOrWhiteSpace($projectRoot) -and (Test-Path -LiteralPath (Join-Path $projectRoot '.git'))) {
+      return [System.IO.Path]::GetFullPath($projectRoot)
+    }
+  } catch {}
+  return $bridgeRoot
 }
 
 function Get-ProjectFocusPromptBlock {
@@ -2964,8 +3011,14 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Activate-Doctor','Complete-Doctor','Abort-Doctor')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
+  }
+  try {
+    $qbProbe = @(Test-QualityBypassesInDiff -Diff "+  typescript: { ignoreBuildErrors: true },")
+    if ($qbProbe.Count -lt 1) { [void]$stFail.Add('quality-bypass detector missed ignoreBuildErrors') }
+  } catch {
+    [void]$stFail.Add('quality-bypass detector threw: ' + $_.Exception.Message)
   }
   if ($stFail.Count -gt 0) { foreach ($f in $stFail) { Write-Output ('DRIVER SELFTEST FAIL: ' + $f) }; exit 1 }
   Write-Output 'DRIVER SELFTEST OK'
@@ -3977,7 +4030,8 @@ while ($true) {
         $btext = if ($isWorkpackBatch) { [string]$claimedIdea.text } else { '[Автозадача из бэклога] ' + [string]$claimedIdea.text }
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
-        $baseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+        $taskRepoRootForBacklog = Get-TaskRepoRoot
+        $baseCommit = try { (& git -C $taskRepoRootForBacklog rev-parse HEAD 2>$null).Trim() } catch { '' }
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           Start-ReplayForStateTask -State $s -TaskText $btext -ChannelName $Channel
@@ -5337,8 +5391,17 @@ while ($true) {
       $vfDiff = ''
       try {
         $vfBase = [string](Read-State).task_base_commit
+        $vfRepoRoot = Get-TaskRepoRoot
         if (-not [string]::IsNullOrWhiteSpace($vfBase)) {
-          $vfDiff = (& git -C $bridgeRoot diff $vfBase -- 2>$null | Out-String).Trim()
+          $vfBaseOk = $false
+          try {
+            $vfBaseType = (& git -C $vfRepoRoot cat-file -t $vfBase 2>$null | Select-Object -First 1)
+            if ([string]$vfBaseType -eq 'commit') { $vfBaseOk = $true }
+          } catch {}
+          if (-not $vfBaseOk) { $vfBase = '' }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($vfBase)) {
+          $vfDiff = (& git -C $vfRepoRoot diff $vfBase -- 2>$null | Out-String).Trim()
           if ($vfDiff.Length -gt 2000) { $vfDiff = $vfDiff.Substring(0,2000) + "`n...[truncated]" }
         }
       } catch {}
@@ -5388,12 +5451,21 @@ while ($true) {
         try { $cfgCr = Get-BridgeConfig; if ($cfgCr.PSObject.Properties.Name -contains 'criticMaxRetries') { $criticMaxRetries = [int]$cfgCr.criticMaxRetries } } catch {}
         $crc  = [int]$stC.critic_retry_count
         $base = [string]$stC.task_base_commit
+        $criticRepoRoot = Get-TaskRepoRoot
+        if (-not [string]::IsNullOrWhiteSpace($base)) {
+          $baseOkForCritic = $false
+          try {
+            $baseTypeForCritic = (& git -C $criticRepoRoot cat-file -t $base 2>$null | Select-Object -First 1)
+            if ([string]$baseTypeForCritic -eq 'commit') { $baseOkForCritic = $true }
+          } catch {}
+          if (-not $baseOkForCritic) { $base = '' }
+        }
         $diff = ''
         if (-not [string]::IsNullOrWhiteSpace($base)) {
-          try { $diff = (& git -C $bridgeRoot diff $base -- 2>$null | Out-String) } catch { $diff = '' }
+          try { $diff = (& git -C $criticRepoRoot diff $base -- 2>$null | Out-String) } catch { $diff = '' }
         }
         if ([string]::IsNullOrWhiteSpace($diff)) {
-          try { $diff = (& git -C $bridgeRoot diff HEAD -- 2>$null | Out-String) } catch { $diff = '' }
+          try { $diff = (& git -C $criticRepoRoot diff HEAD -- 2>$null | Out-String) } catch { $diff = '' }
         }
         if (-not [string]::IsNullOrWhiteSpace($diff)) {
           if ($crc -ge $criticMaxRetries) {
@@ -5406,14 +5478,14 @@ while ($true) {
             $criticHeavy = if ($llmCfg -and $llmCfg.ContainsKey('criticHeavy')) { [string]$llmCfg['criticHeavy'] } else { 'deepseek-v4-pro' }
             $diffNames = @()
             try {
-              if (-not [string]::IsNullOrWhiteSpace($base)) { $diffNames = @(& git -C $bridgeRoot diff --name-only $base -- 2>$null) }
-              if (@($diffNames).Count -eq 0) { $diffNames = @(& git -C $bridgeRoot diff --name-only HEAD -- 2>$null) }
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $diffNames = @(& git -C $criticRepoRoot diff --name-only $base -- 2>$null) }
+              if (@($diffNames).Count -eq 0) { $diffNames = @(& git -C $criticRepoRoot diff --name-only HEAD -- 2>$null) }
             } catch {}
             $linesChanged = 0
             try {
               $numstat = @()
-              if (-not [string]::IsNullOrWhiteSpace($base)) { $numstat = @(& git -C $bridgeRoot diff --numstat $base -- 2>$null) }
-              if (@($numstat).Count -eq 0) { $numstat = @(& git -C $bridgeRoot diff --numstat HEAD -- 2>$null) }
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $numstat = @(& git -C $criticRepoRoot diff --numstat $base -- 2>$null) }
+              if (@($numstat).Count -eq 0) { $numstat = @(& git -C $criticRepoRoot diff --numstat HEAD -- 2>$null) }
               foreach ($lnStat in @($numstat)) {
                 $parts = @(([string]$lnStat) -split '\s+')
                 if ($parts.Count -ge 2) {
@@ -5452,6 +5524,20 @@ while ($true) {
               Add-Message -From system -Text ("🔎 CLI-flag-check: " + $cliFlagIssuesText) -Kind event | Out-Null
             }
 
+            $qualityBypassIssues = @()
+            try { $qualityBypassIssues = @(Test-QualityBypassesInDiff -Diff $diff) } catch {
+              Add-Message -From system -Text ("⚠ Quality-bypass check failed: " + $_.Exception.Message) -Kind event | Out-Null
+            }
+            $qualityBypassIssuesText = ''
+            if ($qualityBypassIssues.Count -gt 0) {
+              $qbParts = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($iss in $qualityBypassIssues) {
+                [void]$qbParts.Add(("$($iss.reason). Пример строки: " + ($iss.sample -replace '\s+',' ')))
+              }
+              $qualityBypassIssuesText = [string]::Join(' ; ', $qbParts.ToArray())
+              Add-Message -From system -Text ("🔎 Quality-bypass-check: " + $qualityBypassIssuesText) -Kind event | Out-Null
+            }
+
             $diffWasTruncated = $false
             $diffBytes = 0
             try { $diffBytes = [Text.Encoding]::UTF8.GetByteCount($diff) } catch { $diffBytes = $diff.Length }
@@ -5466,8 +5552,8 @@ while ($true) {
             $changedFilesText = ''
             try {
               $changedLines = @()
-              if (-not [string]::IsNullOrWhiteSpace($base)) { $changedLines = @(& git -C $bridgeRoot diff --name-status $base -- 2>$null) }
-              if (@($changedLines).Count -eq 0) { $changedLines = @(& git -C $bridgeRoot diff --name-status HEAD -- 2>$null) }
+              if (-not [string]::IsNullOrWhiteSpace($base)) { $changedLines = @(& git -C $criticRepoRoot diff --name-status $base -- 2>$null) }
+              if (@($changedLines).Count -eq 0) { $changedLines = @(& git -C $criticRepoRoot diff --name-status HEAD -- 2>$null) }
               $changedFilesText = [string]::Join("`n", @($changedLines))
               if ($changedFilesText.Length -gt 3000) { $changedFilesText = $changedFilesText.Substring(0, 3000) + "`n...[changed-files truncated]..." }
             } catch {
@@ -5476,7 +5562,7 @@ while ($true) {
             $taskHistory = ''
             if (-not [string]::IsNullOrWhiteSpace($base)) {
               try {
-                $histLines = @(& git -C $bridgeRoot log --oneline --name-status "$base..HEAD" 2>$null)
+                $histLines = @(& git -C $criticRepoRoot log --oneline --name-status "$base..HEAD" 2>$null)
                 $taskHistory = [string]::Join("`n", @($histLines))
                 if ($taskHistory.Length -gt 6000) {
                   $taskHistory = $taskHistory.Substring(0, 6000) + "`n...[история обрезана]..."
@@ -5490,7 +5576,7 @@ while ($true) {
             $symbolEvidence = ''
             try {
               $repoPs1Files = @()
-              try { $repoPs1Files = @(& git -C $bridgeRoot ls-files --cached '*.ps1' 2>$null) } catch { $repoPs1Files = @() }
+              try { $repoPs1Files = @(& git -C $criticRepoRoot ls-files --cached '*.ps1' 2>$null) } catch { $repoPs1Files = @() }
               $repoPs1List = if ($repoPs1Files.Count -gt 0) { [string]::Join(', ', $repoPs1Files) } else { '(none)' }
 
               $funcLines = New-Object 'System.Collections.Generic.List[string]'
@@ -5498,11 +5584,11 @@ while ($true) {
               $diffPs1Set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
               foreach ($relDiffPs1 in $diffPs1Names) { [void]$diffPs1Set.Add([string]$relDiffPs1) }
               foreach ($relf in $diffPs1Names) {
-                $fullF = Join-Path $bridgeRoot $relf
+                $fullF = Join-Path $criticRepoRoot $relf
                 if (Test-Path $fullF) {
                   $fns = @()
                   try {
-                    $fns = @(& git -C $bridgeRoot show ('HEAD:' + ($relf -replace '\\','/')) 2>$null |
+                    $fns = @(& git -C $criticRepoRoot show ('HEAD:' + ($relf -replace '\\','/')) 2>$null |
                       Select-String -Pattern '^\s*function\s+([A-Za-z][\w-]*)' -AllMatches |
                       ForEach-Object { $_.Matches | ForEach-Object { $_.Groups[1].Value } })
                   } catch { $fns = @() }
@@ -5544,11 +5630,11 @@ while ($true) {
                 if ($allFuncsInDiffedFiles.Contains($fn)) { continue }
                 $fnFiles = New-Object 'System.Collections.Generic.List[string]'
                 foreach ($rf in $repoPs1Files) {
-                  $fullRf = Join-Path $bridgeRoot $rf
+                  $fullRf = Join-Path $criticRepoRoot $rf
                   if (-not (Test-Path $fullRf)) { continue }
                   if ($diffPs1Set.Contains([string]$rf)) { continue }
                   try {
-                    $headLines = @(& git -C $bridgeRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null)
+                    $headLines = @(& git -C $criticRepoRoot show ('HEAD:' + ($rf -replace '\\','/')) 2>$null)
                     $fnPattern = '^\s*function\s+' + [regex]::Escape($fn) + '\b'
                     $hitIndex = -1
                     for ($idx = 0; $idx -lt $headLines.Count; $idx++) {
@@ -5631,7 +5717,7 @@ while ($true) {
 ЗАДАЧА: $task
 
 === КОНТЕКСТ ЗАДАЧИ ===
-DIFF_META: base=$base | diff_truncated=$diffTruncatedText | diff_bytes=$diffBytes
+DIFF_META: repo=$criticRepoRoot | base=$base | diff_truncated=$diffTruncatedText | diff_bytes=$diffBytes
 DIFF ниже — полный диф от начала задачи до HEAD. Если diff_truncated=true — файлы за пределом могут быть изменены; их отсутствие в DIFF не доказывает, что они не менялись.
 TASK_HISTORY показывает все коммиты задачи — используй его для проверки полноты фаз и файлов.
 SYMBOL_EVIDENCE — сигнатуры и первые строки функций, вызванных в DIFF, но определённых в других файлах. Если функция есть в SYMBOL_EVIDENCE или в блоке "ФУНКЦИИ В ИЗМЕНЁННЫХ ФАЙЛАХ" из HEAD-контекста — не флагируй её как отсутствующую. Duplicate/drift флагируй только если изменённые строки DIFF реально вводят конфликтующую реализацию.
@@ -5696,6 +5782,17 @@ $diff
               }
             }
             if ([string]::IsNullOrWhiteSpace($issuesText) -and -not [string]::IsNullOrWhiteSpace($summary)) { $issuesText = $summary }
+
+            # 2026-06-02: quality-bypass findings ALWAYS escalate to 'serious'.
+            # Passing build by disabling build/type/lint checks is not an implementation;
+            # project autonomy must fix the actual code and keep gates meaningful.
+            if ($qualityBypassIssues.Count -gt 0) {
+              $severity = 'serious'
+              $verdict = 'NEEDS_FIX'
+              $qbPrefix = "Отключение проверок качества (ground-truth diff check): " + $qualityBypassIssuesText
+              if ([string]::IsNullOrWhiteSpace($issuesText)) { $issuesText = $qbPrefix }
+              else { $issuesText = $qbPrefix + ' ; ' + $issuesText }
+            }
 
             # 2026-05-27: CLI-flag findings ALWAYS escalate to 'serious' regardless
             # of what the LLM critic decided. Deterministic checks override LLM
