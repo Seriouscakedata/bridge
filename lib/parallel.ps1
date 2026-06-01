@@ -291,7 +291,7 @@ function Select-WorkerForStream {
 
   # 4. Opus guard
   if (-not $opusOk) {
-    $woOpus = @($candidates | Where-Object { -not (([string]$_.cli -eq 'claude') -and ([string]$_.model -eq 'opus')) })
+    $woOpus = @($candidates | Where-Object { -not (([string]$_.cli -eq 'claude') -and ([string]$_.model -match 'opus')) })
     if ($woOpus.Count -gt 0) { $candidates = $woOpus }
   }
 
@@ -1246,6 +1246,29 @@ function Invoke-ParallelDispatch {
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
     $res = $completed[$w.id]
+    # 2026-06-01: HOST-COMMIT RECOVERY. A worker (especially codex in the Windows sandbox, but also
+    # the new DeepSeek/Gemini LLM-workers if their own commit didn't register) PRODUCES files in its
+    # worktree yet often can't git-commit them (sandbox user has no write to the linked .git), so
+    # commits=0 and the work was silently lost in the cleanup branch below (observed: only 9/19
+    # streams merged). If the worktree has uncommitted changes, the host (repo owner) commits them
+    # now and re-reads commits -> the stream still merges. This recovers ALL clis, not just claude.
+    if ($res.status -eq 'done' -and @($res.commits).Count -eq 0) {
+      try {
+        $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
+        $gitX = Get-GitExe
+        $dirtyWt = @(& $gitX -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if (@($dirtyWt).Count -gt 0) {
+          & $gitX -C $wtPath add -A 2>$null | Out-Null
+          & $gitX -C $wtPath commit -m ("host-commit parallel stream " + $w.id) 2>$null | Out-Null
+          $hc = @(Get-WorkerCommits -Worker $w)
+          if (@($hc).Count -gt 0) {
+            $res = [pscustomobject]@{ status = 'done'; reply = $res.reply; commits = $hc }
+            $completed[$w.id] = $res
+            try { Add-Message -From system -Text ("💾 Host закоммитил файлы воркера " + $w.id + " (" + @($hc).Count + " commit) — стрим спасён от потери") -Kind event | Out-Null } catch {}
+          }
+        }
+      } catch {}
+    }
     if ($res.status -ne 'done' -or $res.commits.Count -eq 0) {
       $fbRes = $null
       if (([string]$w.cli -eq 'claude') -and (@($w.files).Count -eq 1)) {
