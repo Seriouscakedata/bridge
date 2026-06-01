@@ -171,3 +171,17 @@ All eight issues above were root-caused and fixed in the bridge code (not by han
 Notes:
 - The stale Chapter-2 batch (5 deps wrongly parallelized) was drained: Doctor auto-aborted after the restart-loop guard (3/3), the 5 tasks were marked failed, then reopened as `approved` so the FIXED pipeline replays them sequentially.
 - Parse-checked all six edited files; bridge smoke green (106 ps1 ok, endpoints 200); watchdog `stable` already advanced onto the fix commit (no rollback risk).
+
+---
+
+### ERR-2026-06-01-012 - Post-install verification was deduped against stale pre-install checks
+
+**Context:** `private-community`, Chapter 2 atom A scaffold task, after `npm install` completed successfully and `package-lock.json` was committed.
+
+**Observed:** The bridge attempted to run `npm run typecheck`, `npm run lint`, and `npm run build` again after install, but the background command deduper skipped all three because the same commands had already run in the previous 15 minutes before dependencies existed. Those earlier results were environment failures (`tsc`/`next` not found), so they were not valid post-install verification.
+
+**Impact:** A task can look like it has gone through verification while actually reusing stale, precondition-invalid check results. In this case an operator-run post-install `npm run typecheck -- --incremental false` shows real TypeScript errors from missing auth/database dependencies and broken local imports.
+
+**Action taken:** Recorded the issue. Did not change bridge code during the live project task. Current bridge state remains healthy and sequential; this is a verification-quality problem, not a process crash.
+
+**Status:** Open. The deduper needs to distinguish check attempts by relevant precondition state, at minimum dependency/install generation or lockfile/node_modules timestamp, or allow forced rerun for build-gate commands after dependency installation.
