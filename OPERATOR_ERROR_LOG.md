@@ -188,6 +188,20 @@ Notes:
 
 ---
 
+### ERR-2026-06-01-014 - RUNJOB dedupe skipped a command after the target file was created
+
+**Context:** `private-community`, Chapter 2 atom C admin seed task.
+
+**Observed:** The bridge first ran `set ADMIN_LOGIN=seedtest@example.com && npx tsx scripts/seed-admin.ts` before `scripts/seed-admin.ts` existed, so it failed with `ERR_MODULE_NOT_FOUND`. After Codex created `scripts/seed-admin.ts` and the driver committed the changes, the bridge attempted the same command again, but RUNJOB dedupe skipped it because the text of the command had run in the previous 15 minutes.
+
+**Impact:** This is the same stale-result class as ERR-012, but broader than post-install verification. Any command can be incorrectly skipped if its result depends on files/dependencies/env that changed after the first attempt.
+
+**Action taken:** Recorded the issue while leaving the live project task untouched. The project tree was clean at the time of logging and the bridge was still working sequentially.
+
+**Status:** Open. RUNJOB dedupe needs an invalidation key based on repository HEAD/working-tree state, dependency state, and possibly env/cwd, or an explicit `force` path for verification/test commands after known precondition changes.
+
+---
+
 ## Operator Resolution round 2 — 2026-06-01 (Claude, commit b2a5ec4)
 
 Thanks for the sharp follow-ups — 009 and 012 are fair hits on the round-1 fixes, not separate bugs. Both root-caused and fixed in bridge code.
