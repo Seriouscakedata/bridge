@@ -241,6 +241,26 @@ function Get-StreamComplexity {
   return $c.ToLowerInvariant()
 }
 
+function Get-TaskComplexityHeuristic {
+  # 2026-06-01 AUTONOMY FIX: infer routing complexity from the task TEXT + touch-set size, so the
+  # parallel dispatcher assigns the RIGHT worker tier AUTOMATICALLY. Previously every workpack-batch
+  # stream was hardcoded 'Complexity: moderate' (New-BacklogWorkpackBatchTaskText), so a trivial
+  # one-line probe and a full component redesign got the same worker pool — routing never
+  # differentiated. Now: trivial one-liners -> 'simple' (cheap/fast gemini/deepseek/codex-medium),
+  # rewrites/refactors/integrations -> 'complex' (codex-xhigh), design/schema/migration or many
+  # files -> 'architectural' (unlocks opus via the existing opus-guard at Select-WorkerForStream).
+  # Returns simple|moderate|complex|architectural. Cyrillic + English keywords (project tasks are RU).
+  param([string]$Text, [int]$TouchCount = 1)
+  $t = ([string]$Text).ToLowerInvariant()
+  $len = $t.Length
+  if ($t -match 'архитектур|спроектируй|design system|схем[аы]\s+(бд|базы|данных)|миграци|migration|redesign\s+(всего|сайта|all)|переработа(й|ть)\s+вс[юё]' -or $TouchCount -ge 6) { return 'architectural' }
+  if ($t -match 'перепиш|переписать|рефактор|refactor|реализуй\s+полностью|полностью\s+реализ|интеграци|integrat|оркестрац|перепроектир|сложн|многошаг|end-to-end|переделай\s+полностью' -or $TouchCount -ge 3 -or $len -ge 600) { return 'complex' }
+  # simple ONLY on explicit trivial markers — a short task WITHOUT such a marker (e.g. "добавь кнопку
+  # в Hero") is a real component edit and must stay 'moderate', not drop to a weak worker.
+  if ($t -match 'одной строк|одну строку|export const|переименуй|^\s*rename\b|добавь строку|опечатк|typo|удали строку|закомментируй|smoke[- ]?тест|smoke check') { return 'simple' }
+  return 'moderate'
+}
+
 function Get-StreamExplicitWorkerId {
   # Planner can override routing with `worker: <id>` on its own line in body.
   param([object]$Stream)
@@ -1243,17 +1263,82 @@ function Invoke-ParallelDispatch {
   # project channels, bridge for main). 2026-05-31 Foundation #4 scale.
   $merged = 0
   $bridgeRoot = Get-ParallelRepoRoot
+
+  # 2026-06-01 COLLECT-THEN-COMMIT (root reliability fix). Empirically (probe3, 20 streams): workers
+  # RELIABLY produce files in their worktree working-tree, but UNreliably commit them — codex exits
+  # 'paused-for-restart' (sandbox user can't write linked .git), the LLM/claude workers often finish
+  # 'done' with commits=0, and the per-branch ff/merge path below then races Cleanup, so only ~7/20
+  # files survived a single pass (the rest were recovered only by repeated re-dispatch passes). FIX:
+  # before any branch operation, the HOST directly collects every worker's changed files (committed-
+  # vs-base + untracked/modified) straight into the repo working-tree and commits them in ONE pass.
+  # Each stream owns a disjoint touch-set (workpack conflict_group), so there are no add/add conflicts.
+  # This makes delivery independent of each CLI's git behaviour and of merge/cleanup timing.
+  $collected = 0; $collectedStreams = 0
+  $base0 = Get-ParallelTaskBaseCommit
+  $gitC = Get-GitExe
+  foreach ($w in $workers) {
+    if (-not $completed.ContainsKey($w.id)) { continue }
+    try {
+      $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
+      if (-not (Test-Path -LiteralPath $wtPath)) { continue }
+      $changed = New-Object System.Collections.Generic.HashSet[string]
+      if (-not [string]::IsNullOrWhiteSpace($base0)) {
+        try { @(& $gitC -C $wtPath diff --name-only $base0 2>$null) | Where-Object { $_ } | ForEach-Object { [void]$changed.Add(($_.Trim() -replace '"','')) } } catch {}
+      }
+      try { @(& $gitC -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
+      if ($changed.Count -eq 0) { continue }
+      $copiedHere = 0
+      foreach ($rel in $changed) {
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+        $src = Join-Path $wtPath $rel
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        $dst = Join-Path $bridgeRoot $rel
+        $dstDir = Split-Path $dst -Parent
+        if ($dstDir -and -not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        $copiedHere++
+      }
+      if ($copiedHere -gt 0) {
+        $collected += $copiedHere; $collectedStreams++
+        try { $completed[$w.id] | Add-Member -NotePropertyName _collected -NotePropertyValue $true -Force } catch {}
+      }
+    } catch {}
+  }
+  if ($collected -gt 0) {
+    try {
+      & $gitC -C $bridgeRoot add -A 2>$null | Out-Null
+      & $gitC -C $bridgeRoot commit -m ("parallel collect: " + $collectedStreams + " streams, " + $collected + " files") 2>$null | Out-Null
+      $merged += $collectedStreams
+      Add-Message -From system -Text ("📦 Collect-commit: собрано " + $collected + " файлов из " + $collectedStreams + " потоков напрямую в репо (надёжный путь, не зависит от git-поведения воркеров)") -Kind event | Out-Null
+    } catch {}
+  }
+
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
     $res = $completed[$w.id]
+    # Already delivered by collect-then-commit above — just clean its worktree and skip branch merge.
+    if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      continue
+    }
     # 2026-06-01: HOST-COMMIT RECOVERY. A worker (especially codex in the Windows sandbox, but also
     # the new DeepSeek/Gemini LLM-workers if their own commit didn't register) PRODUCES files in its
     # worktree yet often can't git-commit them (sandbox user has no write to the linked .git), so
     # commits=0 and the work was silently lost in the cleanup branch below (observed: only 9/19
     # streams merged). If the worktree has uncommitted changes, the host (repo owner) commits them
     # now and re-reads commits -> the stream still merges. This recovers ALL clis, not just claude.
-    if ($res.status -eq 'done' -and @($res.commits).Count -eq 0) {
+    # 2026-06-01 ROOT FIX: recovery must fire for ANY terminal status when commits=0, NOT just
+    # status='done'. Codex on Windows exits the sandbox in status='paused-for-restart' (the restricted
+    # CodexSandboxOffline user can't create .git/worktrees/<id>/index.lock, so codex aborts its own
+    # commit and reports paused-for-restart) — yet it HAS already written the files into the worktree
+    # cwd (which the sandbox CAN write). The old `status -eq 'done'` guard skipped exactly these
+    # workers, so they fell through to Cleanup below and their files were deleted (observed: only
+    # 9-13/20 streams merged, host-commit fired 0 times even though codex produced every file). Now the
+    # host (repo owner, full write) commits the worktree's pending changes regardless of how the CLI
+    # exited. If the worktree is genuinely empty (real failure), dirtyWt=0 and this is a safe no-op.
+    if (@($res.commits).Count -eq 0) {
       try {
+        $origStatus = [string]$res.status
         $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
         $gitX = Get-GitExe
         $dirtyWt = @(& $gitX -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1264,7 +1349,7 @@ function Invoke-ParallelDispatch {
           if (@($hc).Count -gt 0) {
             $res = [pscustomobject]@{ status = 'done'; reply = $res.reply; commits = $hc }
             $completed[$w.id] = $res
-            try { Add-Message -From system -Text ("💾 Host закоммитил файлы воркера " + $w.id + " (" + @($hc).Count + " commit) — стрим спасён от потери") -Kind event | Out-Null } catch {}
+            try { Add-Message -From system -Text ("💾 Host закоммитил файлы воркера " + $w.id + " (" + @($hc).Count + " commit, был " + $dirtyWt.Count + " файл, статус CLI=" + $origStatus + ") — стрим спасён от потери") -Kind event | Out-Null } catch {}
           }
         }
       } catch {}

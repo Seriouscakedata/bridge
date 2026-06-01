@@ -1314,7 +1314,11 @@ function New-BacklogWorkpackBatchTaskText {
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine(("[[PARALLEL:wp{0}]]" -f $idx))
     [void]$sb.AppendLine(("Files: {0}" -f $files))
-    [void]$sb.AppendLine('Complexity: moderate')
+    # 2026-06-01 AUTONOMY: complexity now inferred per-task (was hardcoded 'moderate' for every
+    # stream, which made the worker router blind to real task difficulty). Drives Select-WorkerForStream.
+    $cx = 'moderate'
+    try { if (Get-Command Get-TaskComplexityHeuristic -ErrorAction SilentlyContinue) { $cx = Get-TaskComplexityHeuristic -Text $text -TouchCount (@($touches).Count) } } catch {}
+    [void]$sb.AppendLine(("Complexity: {0}" -f $cx))
     [void]$sb.AppendLine(("Task: {0}" -f $text))
     [void]$sb.AppendLine(("[[/PARALLEL:wp{0}]]" -f $idx))
     [void]$sb.AppendLine('')
