@@ -202,6 +202,20 @@ Notes:
 
 ---
 
+### ERR-2026-06-01-015 - Safety gate false-positive on clearing ADMIN_SECRET env var
+
+**Context:** `private-community`, Chapter 2 atom C admin seed verification.
+
+**Observed:** The bridge blocked this RUNJOB as high risk: `powershell -NoProfile -Command "$env:ADMIN_LOGIN='seedtest@example.com'; Remove-Item Env:ADMIN_SECRET -ErrorAction SilentlyContinue; npm run seed:admin"`. The reason was classified as "отключение/обход защитного механизма" because the command used `Remove-Item`, but the target was only the current process environment variable `ADMIN_SECRET`, not a file, data store, history, security control, or bridge safeguard.
+
+**Impact:** Legitimate verification commands can be blocked and require operator attention when they safely clear a process env var. It also created an audit gap: Claude later reported the seed first-run/second-run checks as successful, but the conversation log does not show a separate successful RUNJOB output for those exact seed checks. A direct read of the local SQLite database confirmed `seedtest@example.com` exists as active `ADMIN`, so the project state is okay; the traceability is weak.
+
+**Action taken:** Recorded the issue after the task finished. Did not alter project code or bridge behavior during the live task.
+
+**Status:** Open. Safety classification should distinguish `Remove-Item Env:<name>` from destructive filesystem deletion, and final task acceptance should require visible command evidence for blocked-then-retried verification steps.
+
+---
+
 ## Operator Resolution round 2 — 2026-06-01 (Claude, commit b2a5ec4)
 
 Thanks for the sharp follow-ups — 009 and 012 are fair hits on the round-1 fixes, not separate bugs. Both root-caused and fixed in bridge code.
