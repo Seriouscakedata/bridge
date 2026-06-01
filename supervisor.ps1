@@ -429,7 +429,12 @@ function Invoke-ServerExitHandling {
   try { $exitCode = [int]$Process.ExitCode } catch { $exitCode = -1 }
   Log (Format-SupervisorProcessExitLine -ProcessKey 'server' -ExitCode $exitCode)
   Write-ProcessExitTailLog -ProcessKey 'server' -ErrLogPath $srvErr
-  if (-not $ReapFired) {
+  # 2026-06-01 ROOT FIX: a CLEAN exit (code 0) is a managed/normal restart (restart.flag recycle,
+  # operator stop/start, graceful supervisor reload), NOT a crash — it must NOT trip the circuit
+  # breaker. Only abnormal (non-zero) exits count toward the restart-storm window. Observed: a single
+  # operator restart cascaded into 4 clean "server exited with code 0" records, which (mislabeled
+  # cause=unknown) tripped a 15-min cooldown that froze ALL drivers across every channel.
+  if (-not $ReapFired -and $exitCode -ne 0) {
     Record-CircuitRestart -Detail ("server exited with code " + $exitCode) -ReapFired:$false -FlagPresent:$false
   }
   if (Test-SupervisorFatalExitCode -ExitCode $exitCode -FatalCodes $script:fatalExitSettings.fatalServerExitCodes) {
@@ -451,7 +456,9 @@ function Invoke-DriverExitHandling {
   $errPath = Join-Path $ctl ("driver." + $Slug + ".err.log")
   Log (Format-SupervisorProcessExitLine -ProcessKey $processKey -ExitCode $exitCode)
   Write-ProcessExitTailLog -ProcessKey $processKey -ErrLogPath $errPath
-  if (-not $ReapFired) {
+  # 2026-06-01 ROOT FIX: clean driver exit (code 0) = managed/normal restart (restart.flag, operator
+  # stop/start, graceful recycle), NOT a crash — must NOT trip the breaker. Only non-zero exits count.
+  if (-not $ReapFired -and $exitCode -ne 0) {
     Record-CircuitRestart -Detail ("driver[" + $Slug + "] exited with code " + $exitCode) -ReapFired:$false -FlagPresent:$false
   }
   if (Test-SupervisorFatalExitCode -ExitCode $exitCode -FatalCodes $script:fatalExitSettings.fatalDriverExitCodes) {
