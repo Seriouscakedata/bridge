@@ -108,7 +108,19 @@ function Add-UsageRecord {
       status            = [string]$Status
     }
     $line = $rec | ConvertTo-Json -Compress -Depth 5
-    Use-BridgeLock ({ Add-Content -LiteralPath (Get-UsagePath) -Value $line -Encoding UTF8 }.GetNewClosure())
+    # 2026-06-01: usage metering is BEST-EFFORT. Under parallel load (20 workers + 3 drivers all
+    # appending) the OneDrive-hosted usage.jsonl hits transient lock contention; Add-Content then
+    # emits a non-terminating IOException that the surrounding try/catch does NOT swallow, so it
+    # surfaced in driver.<ch>.err.log and READ like a driver crash during diagnosis (it is not — the
+    # driver keeps running). -ErrorAction SilentlyContinue keeps a dropped metric line from polluting
+    # stderr; one short retry recovers most contended writes without blocking the hot path.
+    Use-BridgeLock ({
+      Add-Content -LiteralPath (Get-UsagePath) -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+      if (-not $?) {
+        Start-Sleep -Milliseconds 40
+        Add-Content -LiteralPath (Get-UsagePath) -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+      }
+    }.GetNewClosure())
     return $true
   } catch {
     return $false
