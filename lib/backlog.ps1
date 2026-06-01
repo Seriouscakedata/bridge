@@ -1182,6 +1182,21 @@ function Get-BacklogWorkpackExecConfig {
 function Get-BacklogWorkpackItemTouches {
   param($Item)
   $touches = New-Object 'System.Collections.Generic.List[string]'
+  # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): prefer the SINGLE target file the task
+  # actually EDITS (action verb + path), not every path it mentions. redesign tasks cite a shared
+  # эталон (HeroSection.tsx) as a reference; the stored workpack_touch_set captured that эталон, so
+  # EVERY task overlapped on herosection.ts and the packer treated 6 independent file edits as mutually
+  # conflicting -> serial execution. The target file is the only path written, so overlap then reflects
+  # REAL conflicts. Falls back to the stored touch_set / mentioned files when no clear target exists.
+  try {
+    if (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue) {
+      $tgt = [string](Get-BacklogTaskTargetFile -Text ([string]$Item.text))
+      if (-not [string]::IsNullOrWhiteSpace($tgt)) {
+        $tv = $tgt.Trim().ToLowerInvariant() -replace '\\','/'
+        if (-not [string]::IsNullOrWhiteSpace($tv)) { return @($tv) }
+      }
+    }
+  } catch {}
   try {
     foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_touch_set' -Default @())) {
       $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
@@ -1246,15 +1261,19 @@ function Get-NextBacklogWorkpackBatch {
   if ($eligible.Count -lt [int]$Config.minItems) { return $null }
 
   $selected = New-Object 'System.Collections.Generic.List[object]'
-  $usedPacks = @{}
   $usedGroups = @{}
   $usedTouches = New-Object 'System.Collections.Generic.List[string]'
   foreach ($item in $eligible) {
     if ($selected.Count -ge [int]$Config.maxItems) { break }
     $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
     if ([string]::IsNullOrWhiteSpace($packId)) { continue }
-    if ($usedPacks.ContainsKey($packId)) { continue }
-
+    # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): do NOT dedupe by workpack_id. Truly
+    # independent tasks (distinct conflict_group + non-overlapping touch-set) frequently share a STALE
+    # workpack_id from an earlier packing pass — e.g. 5 redesign tasks for 5 different files all carried
+    # one 'erosection-ts' pack id from when they were collapsed under a common эталон. Blocking by
+    # workpack_id then capped real parallelism at 1-per-pack (6 independent file edits -> only 2
+    # streams), so the bridge ran near-serial instead of as a team. Independence is fully decided by
+    # conflict_group + touch overlap below; workpack_id is reporting-only.
     $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
     if ($usedGroups.ContainsKey($group)) { continue }
@@ -1263,7 +1282,6 @@ function Get-NextBacklogWorkpackBatch {
     if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { continue }
 
     [void]$selected.Add($item)
-    $usedPacks[$packId] = $true
     $usedGroups[$group] = $true
     foreach ($t in $touches) { [void]$usedTouches.Add($t) }
   }
