@@ -1,4 +1,4 @@
-[
+﻿[
     {
         "id":  "auditor",
         "owner_files":  [
@@ -979,11 +979,11 @@
 
                          ],
         "layer":  "L2",
-        "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
         "last_activated_at":  null,
-        "embedding":  null
+        "embedding":  null,
+        "status":  "dormant"
     },
     {
         "id":  "self-improvement-system",
