@@ -78,3 +78,39 @@ This file records concrete errors, weak spots, and recovery notes observed while
 **Action taken:** Detected by manual inspection while bridge verify-gate was still running.
 
 **Status:** Open. Need fix schema/code alignment, dependencies, route layout, and seed implementation, then run install/typecheck/build.
+
+### ERR-2026-06-01-006 - Workpack-batch repeated the same parallel run until loop detector fired
+
+**Context:** Channel `private-community`, workpack-batch task `20260601-202641-24c41cb3`.
+
+**Observed:** After the first mixed parallel completion, the bridge repeated deterministic parallel dispatch for the same 5 streams multiple times. Project commits show repeated collect commits: `b2ee0f0` (23 files), `0feaade` (22 files), `6aa9c28` (16 files). Conversation log reached `Loop detected: 3x same fingerprint` and activated Doctor.
+
+**Impact:** The project can receive repeated, inconsistent collect-commits from the same logical task. This can churn files and make verification harder.
+
+**Action taken:** Monitored and confirmed Doctor activation. Did not manually kill the bridge because heartbeat stayed fresh and Doctor started.
+
+**Status:** Open. Need repair mixed parallel result handling so failed/done/collected-file outcome is terminal or actionable, not a generic repeatable "parallel completed" progress marker.
+
+### ERR-2026-06-01-007 - Doctor repair blocked by bridge-agent writable root
+
+**Context:** Doctor task triggered by `loop_detected` in `private-community`.
+
+**Observed:** Claude diagnosed the bridge orchestration issue and delegated a repair in `C:\Users\rafie\OneDrive\Documents\bridge`. The bridge-hosted Codex reported it could only write to `C:\Users\rafie\bridge-projects\private-community` and `.codex\memories`; `apply_patch` to the bridge root was rejected as outside the project.
+
+**Impact:** The bridge can diagnose its own orchestration bug but fail to self-repair if the spawned coder sandbox is rooted in the project repo instead of the bridge repo.
+
+**Action taken:** Recorded the escalation. External operator Codex still has filesystem access, but the bridge's internal repair flow is blocked.
+
+**Status:** Open. Need repair tasks that target bridge code to run with writable root set to the bridge repo, not the active project repo.
+
+### ERR-2026-06-01-008 - Verify-gate did not stop repeated collect commits before project churn
+
+**Context:** `private-community` after commits `b2ee0f0`, `0feaade`, `6aa9c28`.
+
+**Observed:** Verify-gate asked for verification, but the system re-entered deterministic parallel dispatch before reaching a clean final verification result. The repo stayed git-clean, but multiple unverified collect commits were created.
+
+**Impact:** "Git clean" is not enough to mean "project valid." The app may still fail install/typecheck/build after several clean commits.
+
+**Action taken:** Avoided running destructive fixes while Doctor was active. Manual inspection already found code/schema/dependency issues that should be verified after orchestration is repaired.
+
+**Status:** Open. Need enforce verification failure or escalation before another collect-commit is allowed for the same workpack batch.
