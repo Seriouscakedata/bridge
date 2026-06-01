@@ -4211,6 +4211,29 @@ while ($true) {
     } catch {}
   }
 
+  # 2026-05-31 (Foundation #4): auto-commit PROJECT changes for project channels. The bridge
+  # auto-commit above targets bridgeRoot; a PROJECT channel's coder writes project_root, which the
+  # driver previously left uncommitted whenever the coder didn't self-commit -> the task wedged the
+  # tree dirty and the per-channel dirty-guard then blocked all following tasks (ValueSection/
+  # HowItWorks observed during the redesign run). Commit any project_root changes after the turn so
+  # 'done' always leaves a clean tree. No-op for main/bridge (projRoot == bridgeRoot).
+  try {
+    $projRoot = ''
+    try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRoot = [string](Get-EffectiveProjectRoot) } } catch {}
+    if ($projRoot -and ($projRoot -ne $bridgeRoot) -and (Test-Path (Join-Path $projRoot '.git'))) {
+      $pDirty = @(& git -C $projRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      if (@($pDirty).Count -gt 0) {
+        $pMsg = 'auto-commit (driver): ' + (($task -replace '\s+', ' ').Trim())
+        if ($pMsg.Length -gt 160) { $pMsg = $pMsg.Substring(0, 160) }
+        & git -C $projRoot add -A 2>$null | Out-Null
+        & git -C $projRoot commit -m $pMsg 2>$null | Out-Null
+        $pHead = ((& git -C $projRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
+        if ($pHead) { Add-Message -From system -Text ("💾 Драйвер зафиксировал правки проекта: " + $(if ($pHead.Length -ge 7) { $pHead.Substring(0,7) } else { $pHead })) -Kind event | Out-Null }
+        try { Invoke-AutoPush -Root $projRoot } catch {}
+      }
+    }
+  } catch {}
+
   # 2026-05-30: auto-push committed work to GitHub when HEAD moved this turn
   # (covers both driver auto-commit above and commits the coder made itself).
   try {

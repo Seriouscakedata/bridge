@@ -855,8 +855,39 @@ function Get-BacklogWorkpackModule {
   return 'general'
 }
 
+function Get-BacklogTaskTargetFile {
+  # 2026-05-31 (Foundation #4): the file a task is meant to EDIT — the path right after the action
+  # verb (Перепиши/Создай/реализуй <file>), NOT a reference/эталон path cited later in the prompt.
+  # Without this, redesign tasks that all referenced the same эталон (HeroSection.tsx) collapsed into
+  # ONE workpack and ran serial. Returns '' if no clear target file.
+  param([string]$Text)
+  $t = [string]$Text
+  if ([string]::IsNullOrWhiteSpace($t)) { return '' }
+  $rx = '(?im)(?:перепиши|создай|реализуй|оформлени[ея]|приведи)[^\n]{0,90}?((?:src|app|content|public|prisma|config|styles|components|pages|api|lib)[\\/][\w./\-\[\]]+\.\w{1,5})'
+  $m = [regex]::Match($t, $rx)
+  if ($m.Success) { return ($m.Groups[1].Value -replace '\\', '/') }
+  return ''
+}
+
 function Get-BacklogWorkpackConflictGroup {
   param([string]$Text, [string[]]$Files = @())
+  # 2026-05-31 (Foundation #4 scale): for a PROJECT channel, group by the TARGET file FIRST — BEFORE
+  # the bridge-module patterns below, which falsely match project text ("UI", "DESIGN.md", "frontend")
+  # and collapsed redesign tasks into one 'ui'/'docs' group => serial. Different target files =>
+  # different groups => parallel; same target file => same group => serial (correct).
+  $isProjectCh = $false
+  try {
+    if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
+      $prc = Get-EffectiveProjectRoot
+      $isProjectCh = (-not [string]::IsNullOrWhiteSpace([string]$prc) -and ([string]$prc -ne (Get-BridgeRoot)))
+    }
+  } catch {}
+  if ($isProjectCh) {
+    $tgt = Get-BacklogTaskTargetFile -Text $Text
+    if ([string]::IsNullOrWhiteSpace($tgt) -and @($Files).Count -gt 0) { $tgt = @($Files | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object | Select-Object -First 1) }
+    if ($tgt) { $n = ([string]$tgt).ToLowerInvariant() -replace '\\', '/'; return ('file:' + ($n -replace '[^a-z0-9/._-]+', '-')) }
+    return 'general'
+  }
   $signalText = Get-BacklogWorkpackSignalText -Text $Text
   $all = ((@($Files) + @([string]$signalText)) -join ' ').ToLowerInvariant()
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
@@ -869,29 +900,6 @@ function Get-BacklogWorkpackConflictGroup {
   if ($all -match 'llm|codex|claude|gemini|deepseek') { return 'llm' }
   if ($all -match 'parallel|worktree|lane') { return 'parallel' }
   if ($all -match '\.md|docs/|readme|runbook|guide') { return 'docs' }
-  # 2026-05-31 (Foundation #4 scale): bridge module patterns above don't match PROJECT-channel
-  # tasks (auth.ts/checkout/recipe...), so they ALL collapsed to 'general' -> the batch selector's
-  # usedGroups guard then took only ONE per cycle, forcing serial execution. For a PROJECT channel
-  # (isolated git -> parallel merge is conflict-safe), derive a per-FILE conflict group from the
-  # primary touched file: different files => different groups => they batch & run in PARALLEL; two
-  # tasks on the SAME file still share a group => stay serial (correct). main/bridge keeps 'general'
-  # (one shared tree -> serial is the safe default).
-  if (@($Files).Count -gt 0) {
-    $isProject = $false
-    try {
-      if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) {
-        $pr = Get-EffectiveProjectRoot
-        $isProject = (-not [string]::IsNullOrWhiteSpace([string]$pr) -and ([string]$pr -ne (Get-BridgeRoot)))
-      }
-    } catch {}
-    if ($isProject) {
-      $primary = @($Files | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object | Select-Object -First 1)
-      if ($primary) {
-        $norm = ([string]$primary).ToLowerInvariant() -replace '\\', '/'
-        return ('file:' + ($norm -replace '[^a-z0-9/._-]+', '-'))
-      }
-    }
-  }
   return 'general'
 }
 
@@ -915,7 +923,10 @@ function Get-BacklogWorkpackClassification {
   $touch = @()
   $key = ''
   if ($files.Count -gt 0) {
-    $primary = Get-BacklogPrimaryWorkpackFile -Files $files
+    # 2026-05-31 (Foundation #4): prefer the task's TARGET file (after the action verb) over an
+    # эталон/reference path, so independent tasks land in distinct workpacks and run in parallel.
+    $primary = Get-BacklogTaskTargetFile -Text $text
+    if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
     $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
     if ($primary -match '^(lib|tools|web|memory|control|docs|channels)/') {
       $parts = $primary -split '/'
@@ -1154,7 +1165,7 @@ function Get-BacklogWorkpackExecConfig {
 
   $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
   $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 2 -Max 12
-  $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 3 -Min 2 -Max 12
+  $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 6 -Min 2 -Max 24
   $cfg.includeProtected = ConvertTo-BacklogPackBool -Value $cfg.includeProtected -Default $false
   if ([int]$cfg.maxItems -lt [int]$cfg.minItems) { $cfg.maxItems = [int]$cfg.minItems }
   return [pscustomobject]$cfg
