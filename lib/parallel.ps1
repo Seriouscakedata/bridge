@@ -555,8 +555,19 @@ function Get-ParallelTaskBaseCommit {
     $st = Read-State
     if ($st -and ($st.PSObject.Properties.Name -contains 'task_base_commit')) { $base = [string]$st.task_base_commit }
   } catch {}
+  $repoRoot = Get-ParallelRepoRoot
+  # 2026-06-01 (Foundation #4): the base commit MUST exist in the repo the worktree branches from.
+  # For a PROJECT channel that's project_root, but task_base_commit was set to the BRIDGE HEAD ->
+  # 'git worktree add <path> <bridge-sha>' fails ("invalid reference"), which killed EVERY parallel
+  # run and forced serial fallback (worktrees=0). Drop a base that doesn't exist in this repo and
+  # fall back to its real HEAD.
+  if (-not [string]::IsNullOrWhiteSpace($base)) {
+    $baseOk = $false
+    try { $baseOk = ((& git -C $repoRoot cat-file -t $base 2>$null) -match 'commit') } catch {}
+    if (-not $baseOk) { $base = '' }
+  }
   if ([string]::IsNullOrWhiteSpace($base)) {
-    try { $base = ((& git -C (Get-ParallelRepoRoot) rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
+    try { $base = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
   }
   return ([string]$base).Trim()
 }
