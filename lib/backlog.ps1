@@ -1983,6 +1983,32 @@ $gitLog
   }
 }
 
+function Test-ProjectScopedApprovedBacklogAllowed {
+  # Project tabs are already isolated by channel + project_root binding. If the active
+  # channel is a real project channel, approved project-scoped backlog must drain there
+  # even when the global autonomy scope is left at the safer bridge default.
+  try {
+    $autoScopeSettings = Get-AutonomySettings
+    if ([string]$autoScopeSettings.scope -eq 'projects') { return $true }
+  } catch {}
+
+  try {
+    $slug = ''
+    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $slug = [string](Get-EffectiveChannel) }
+    if ([string]::IsNullOrWhiteSpace($slug)) { $slug = [string]$env:BRIDGE_CHANNEL }
+    if ([string]::IsNullOrWhiteSpace($slug) -or $slug -eq 'main') { return $false }
+
+    if (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue) {
+      $scope = Get-EffectiveScope -Slug $slug
+      if ($scope -and -not [bool]$scope.is_bridge -and -not [string]::IsNullOrWhiteSpace([string]$scope.project_root)) {
+        return $true
+      }
+    }
+  } catch {}
+
+  return $false
+}
+
 function Get-NextApprovedIdea {
   # Next approved item, checking whether recent commits already resolved stale work.
   # 2026-05-28: sort key chain is severity rank (critical=0 / warning=1 / info=2 / none=3)
@@ -1997,8 +2023,7 @@ function Get-NextApprovedIdea {
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
     try {
-      $autoScopeSettings = Get-AutonomySettings
-      if ([string]$autoScopeSettings.scope -ne 'projects') {
+      if (-not (Test-ProjectScopedApprovedBacklogAllowed)) {
         $items = @($items | Where-Object {
           -not ($_.PSObject.Properties.Name -contains 'scope') -or ([string]$_.scope -ne 'project')
         })
