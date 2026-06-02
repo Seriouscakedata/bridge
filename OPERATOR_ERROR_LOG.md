@@ -303,3 +303,19 @@ After the ERR-002 reopen the bridge ran the dependent chain ONE atom at a time, 
 This is the behavior originally wanted: a team that builds a dependent chain into a buildable app, not 5 streams emitting incompatible code.
 
 **Session tally (bridge root-cause fixes):** ERR-001,002,003,004,006,007,008 (round 1) · 009,012 (round 2) · 013 (operator-found guard false-halt) · 014,015 (round 3). 005 covered by 002+008. 010/011 are project-side dependency hygiene, not bridge bugs. Commits: 9dc4316, 08dc1f0, b2a5ec4, d3dbd68, 6f948c3.
+
+---
+
+### ERR-2026-06-02-016 - HTTP-only acceptance missed broken browser navigation
+
+**Context:** `private-community`, operator manually registered/logged in and hit broken UI navigation: post-login route and Profile route did not behave like a real user flow. Existing acceptance reported PASS earlier because it mostly checked HTTP responses, static fragments, API calls, and build success.
+
+**Observed:** The old smoke suite did not click through the app in a browser, did not fail on client-side `ChunkLoadError`, and did not assert the full register -> feed -> profile/upload/chat/member -> logout -> login journey. It also had stale checklist text saying registration/login should land on `/dashboard`, while the current product flow is `/feed`.
+
+**Impact:** A project could be marked accepted while the UI was unusable after login. This is exactly the class of issue the operator saw: route chunks, client navigation, and legacy redirects can fail even when server-side HTTP checks are green.
+
+**Action taken:** Added project-side `smoke:browser` using Playwright Core and wired it into `.bridge/acceptance.json`. `smoke:launch` now runs API, pages, UX/chunk, auth, photo, and browser suites. The browser suite creates a temporary user, performs real registration/login/logout and nav clicks, checks `/me`, `/photos/upload`, `/chat`, `/feed`, `/members/[id]`, legacy `/profile/me`, legacy `/profile/[id]`, and `/dashboard`, and fails on console/page errors or protected route/chunk network failures.
+
+**Secondary bug found by the new check:** Legacy profile redirects implemented in middleware converted `127.0.0.1` to `localhost`, losing the session cookie under bridge acceptance. Moved legacy redirects to App Router pages (`app/profile/me/page.tsx`, `app/profile/[id]/page.tsx`) using Next `redirect()`.
+
+**Status:** Closed for `private-community`. Project commits: `d4786c2` (browser navigation acceptance smoke), `6bd19e0` (host-safe legacy profile redirects). Bridge acceptance PASS report: `channels/private-community/acceptance/20260602-131336-PASS.md`.
