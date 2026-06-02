@@ -2264,16 +2264,19 @@ function Get-ProjectAutopilotConfig {
     enabled = $true
     cooldownMinutes = 5
     maxTasksPerBatch = 12
+    emptyCoordinatorLimit = 3
   }
   $dotted = @{
     'projectAutopilot.enabled' = 'enabled'
     'projectAutopilot.cooldownMinutes' = 'cooldownMinutes'
     'projectAutopilot.maxTasksPerBatch' = 'maxTasksPerBatch'
+    'projectAutopilot.emptyCoordinatorLimit' = 'emptyCoordinatorLimit'
   }
   $flat = @{
     projectAutopilotEnabled = 'enabled'
     projectAutopilotCooldownMinutes = 'cooldownMinutes'
     projectAutopilotMaxTasksPerBatch = 'maxTasksPerBatch'
+    projectAutopilotEmptyCoordinatorLimit = 'emptyCoordinatorLimit'
   }
   try {
     if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
@@ -2301,6 +2304,7 @@ function Get-ProjectAutopilotConfig {
   $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
   $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 5 -Min 1 -Max 240
   $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 50
+  $cfg.emptyCoordinatorLimit = ConvertTo-BacklogPackInt -Value $cfg.emptyCoordinatorLimit -Default 3 -Min 1 -Max 20
   return [pscustomobject]$cfg
 }
 
@@ -2323,6 +2327,188 @@ function Write-ProjectAutopilotState {
     $json = ($State | ConvertTo-Json -Compress -Depth 6) + "`n"
     Write-BacklogAtomicFile -Path (Get-ProjectAutopilotStatePath) -Content $json
   } catch {}
+}
+
+function Test-ProjectAutopilotCoordinatorItem {
+  param($Item)
+  if (-not $Item) { return $false }
+  $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+  return [bool]($text -match '(?is)^\s*\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel')
+}
+
+function Test-ProjectAutopilotCoordinatorHasChildren {
+  param(
+    [string]$CoordinatorId,
+    [object[]]$Items
+  )
+  if ([string]::IsNullOrWhiteSpace($CoordinatorId)) { return $false }
+  foreach ($it in @($Items)) {
+    $src = [string](Get-BacklogPackObjectValue -Obj $it -Name 'autopilot_source_task' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($src) -and $src -eq $CoordinatorId) { return $true }
+  }
+  return $false
+}
+
+function Get-ProjectAutopilotInferredEmptyCoordinatorStreak {
+  param([string]$ExcludeCoordinatorId = '')
+  $items = @(Get-Backlog)
+  $coordinators = @($items |
+    Where-Object {
+      (Test-ProjectAutopilotCoordinatorItem -Item $_) -and
+      ([string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '') -ne [string]$ExcludeCoordinatorId)
+    } |
+    Sort-Object {
+      try { [datetime]::Parse([string](Get-BacklogPackObjectValue -Obj $_ -Name 'ts' -Default '')).ToUniversalTime() } catch { [datetime]::MinValue }
+    } -Descending)
+
+  $streak = 0
+  foreach ($it in $coordinators) {
+    $status = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
+    if ($status -in @('approved','running','new')) { continue }
+    if ($status -ne 'done') { break }
+    $id = [string](Get-BacklogPackObjectValue -Obj $it -Name 'id' -Default '')
+    if (Test-ProjectAutopilotCoordinatorHasChildren -CoordinatorId $id -Items $items) { break }
+    $streak++
+  }
+  return $streak
+}
+
+function Get-ProjectAutopilotStateInt {
+  param($State, [string]$Name, [int]$Default = 0)
+  if (-not $State) { return $Default }
+  try {
+    if ($State.PSObject.Properties.Name -contains $Name) {
+      return [int]($State.$Name)
+    }
+  } catch {}
+  return $Default
+}
+
+function Get-ProjectAutopilotRecentOutcomes {
+  param($State)
+  if (-not $State) { return @() }
+  try { return @($State.recent_outcomes | Where-Object { $_ }) } catch { return @() }
+}
+
+function Record-ProjectAutopilotCoordinatorOutcome {
+  param(
+    [string]$Channel = '',
+    [string]$ProjectRoot = '',
+    [string]$CoordinatorId = '',
+    [int]$Created = 0,
+    [string]$Reason = 'coordinator-done'
+  )
+  $cfg = Get-ProjectAutopilotConfig
+  $limit = [Math]::Max(1, [Math]::Min(20, [int]$cfg.emptyCoordinatorLimit))
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-ProjectAutopilotSlug }
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    try {
+      $binding = Get-ProjectAutopilotBinding
+      if ($binding) { $ProjectRoot = [string]$binding.project_root }
+    } catch {}
+  }
+
+  $last = Read-ProjectAutopilotState
+  if (-not $last) { $last = [pscustomobject]@{} }
+  $recent = @(Get-ProjectAutopilotRecentOutcomes -State $last)
+  if (-not [string]::IsNullOrWhiteSpace($CoordinatorId)) {
+    foreach ($r in $recent) {
+      if ([string](Get-BacklogPackObjectValue -Obj $r -Name 'id' -Default '') -eq $CoordinatorId) {
+        return [pscustomobject]@{
+          recorded = $false
+          reason = 'already-recorded'
+          paused = [bool](Get-BacklogPackObjectValue -Obj $last -Name 'paused' -Default $false)
+          empty_coordinator_streak = (Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0)
+          limit = $limit
+        }
+      }
+    }
+  }
+
+  $createdCount = [Math]::Max(0, [int]$Created)
+  $hasStateStreak = $false
+  try { $hasStateStreak = ($last.PSObject.Properties.Name -contains 'empty_coordinator_streak') } catch {}
+  $streak = 0
+  if ($hasStateStreak) {
+    $streak = Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0
+  } else {
+    try { $streak = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak -ExcludeCoordinatorId $CoordinatorId) } catch { $streak = 0 }
+  }
+
+  $wasPaused = [bool](Get-BacklogPackObjectValue -Obj $last -Name 'paused' -Default $false)
+  $paused = $wasPaused
+  $pauseReason = [string](Get-BacklogPackObjectValue -Obj $last -Name 'pause_reason' -Default '')
+  $pausedAt = [string](Get-BacklogPackObjectValue -Obj $last -Name 'paused_at' -Default '')
+  $outcome = 'empty'
+
+  if ($createdCount -gt 0) {
+    $streak = 0
+    $paused = $false
+    $pauseReason = ''
+    $pausedAt = ''
+    $outcome = 'created'
+  } else {
+    $streak++
+    if ($streak -ge $limit) {
+      $paused = $true
+      if ([string]::IsNullOrWhiteSpace($pausedAt)) { $pausedAt = (Get-Date).ToUniversalTime().ToString('o') }
+      $pauseReason = "empty coordinator streak reached $streak/$limit without PROJECT_BACKLOG"
+    }
+  }
+
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $recent += [pscustomobject]@{
+    id = [string]$CoordinatorId
+    ts = $now
+    created = $createdCount
+    outcome = $outcome
+  }
+  $recent = @($recent | Select-Object -Last 10)
+
+  $last | Add-Member -NotePropertyName ts -NotePropertyValue $now -Force
+  $last | Add-Member -NotePropertyName channel -NotePropertyValue ([string]$Channel) -Force
+  if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $last | Add-Member -NotePropertyName project_root -NotePropertyValue ([string]$ProjectRoot) -Force }
+  $last | Add-Member -NotePropertyName empty_coordinator_streak -NotePropertyValue ([int]$streak) -Force
+  $last | Add-Member -NotePropertyName paused -NotePropertyValue ([bool]$paused) -Force
+  $last | Add-Member -NotePropertyName paused_at -NotePropertyValue ([string]$pausedAt) -Force
+  $last | Add-Member -NotePropertyName pause_reason -NotePropertyValue ([string]$pauseReason) -Force
+  $last | Add-Member -NotePropertyName recent_outcomes -NotePropertyValue @($recent) -Force
+  $last | Add-Member -NotePropertyName last_outcome_id -NotePropertyValue ([string]$CoordinatorId) -Force
+  $last | Add-Member -NotePropertyName last_outcome_created -NotePropertyValue ([int]$createdCount) -Force
+  $last | Add-Member -NotePropertyName last_outcome_reason -NotePropertyValue ([string]$Reason) -Force
+  Write-ProjectAutopilotState $last
+
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'project-autopilot-outcome'
+      channel = [string]$Channel
+      item_id = [string]$CoordinatorId
+      created = [int]$createdCount
+      empty_coordinator_streak = [int]$streak
+      paused = [bool]$paused
+      limit = [int]$limit
+    })
+  } catch {}
+
+  if ($paused -and -not $wasPaused) {
+    try {
+      Write-BacklogJsonLine ([ordered]@{ ts=$now; action='project-autopilot-paused'; channel=[string]$Channel; item_id=[string]$CoordinatorId; reason=$pauseReason })
+    } catch {}
+    try {
+      Add-Message -From system -Text ("⏸ Project Autopilot: проектный backlog исчерпан; последние " + [int]$streak + " coordinator-задачи не создали PROJECT_BACKLOG. Автопилот канала " + [string]$Channel + " поставлен на паузу. Нужно расширить PROJECT_PLAN/scope или вручную добавить задачи.") -Kind event | Out-Null
+    } catch {}
+  }
+
+  return [pscustomobject]@{
+    recorded = $true
+    reason = $outcome
+    created = [int]$createdCount
+    paused = [bool]$paused
+    empty_coordinator_streak = [int]$streak
+    limit = [int]$limit
+  }
 }
 
 function Get-ProjectAutopilotSlug {
@@ -2455,10 +2641,45 @@ function Start-ProjectAutopilotIfNeeded {
   $last = Read-ProjectAutopilotState
   if ($last) {
     try {
+      if ([bool](Get-BacklogPackObjectValue -Obj $last -Name 'paused' -Default $false)) {
+        return [pscustomobject]@{
+          queued = $false
+          reason = 'paused-empty-scope'
+          empty_coordinator_streak = (Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0)
+          pause_reason = [string](Get-BacklogPackObjectValue -Obj $last -Name 'pause_reason' -Default '')
+          pressure = $pressure
+        }
+      }
+    } catch {}
+    try {
       $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
       $ageMin = ((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes
       if ($ageMin -lt [int]$cfg.cooldownMinutes) {
         return [pscustomobject]@{ queued=$false; reason='cooldown'; cooldown_remaining_minutes=[int]([int]$cfg.cooldownMinutes - [Math]::Floor($ageMin)); pressure=$pressure }
+      }
+    } catch {}
+  } else {
+    try {
+      $inferredEmpty = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
+      if ($inferredEmpty -ge [int]$cfg.emptyCoordinatorLimit) {
+        $nowPause = (Get-Date).ToUniversalTime().ToString('o')
+        $pauseState = [pscustomobject]@{
+          ts = $nowPause
+          channel = $slug
+          project_root = $root
+          queued_id = ''
+          reason = [string]$Reason
+          empty_coordinator_streak = $inferredEmpty
+          paused = $true
+          paused_at = $nowPause
+          pause_reason = "legacy empty coordinator streak reached $inferredEmpty/$([int]$cfg.emptyCoordinatorLimit) without PROJECT_BACKLOG"
+          recent_outcomes = @()
+        }
+        Write-ProjectAutopilotState $pauseState
+        try {
+          Add-Message -From system -Text ("⏸ Project Autopilot: найден старый пустой цикл coordinator-задач (" + $inferredEmpty + "/" + [int]$cfg.emptyCoordinatorLimit + "). Автопилот канала " + $slug + " поставлен на паузу до расширения PROJECT_PLAN/scope.") -Kind event | Out-Null
+        } catch {}
+        return [pscustomobject]@{ queued=$false; reason='paused-empty-scope'; empty_coordinator_streak=$inferredEmpty; pressure=$pressure }
       }
     } catch {}
   }
@@ -2477,6 +2698,11 @@ function Start-ProjectAutopilotIfNeeded {
     project_root = $root
     queued_id = [string]$id
     reason = [string]$Reason
+    empty_coordinator_streak = (Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0)
+    paused = $false
+    paused_at = ''
+    pause_reason = ''
+    recent_outcomes = @(Get-ProjectAutopilotRecentOutcomes -State $last)
   }
   Write-ProjectAutopilotState ([pscustomobject]$st)
   try {
