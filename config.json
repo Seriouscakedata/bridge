@@ -156,6 +156,7 @@
                },
     "autonomy":  {
                      "enabled":  true,
+                     "operatorMode":  "autopilot",
                      "requireApproval":  false,
                      "idleQuietMinutes":  1,
                      "maxAutonomousTasksPerDay":  150,

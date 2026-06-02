@@ -19,6 +19,9 @@ function Get-AutonomySettings {
   # Effective autonomy config: built-in defaults <- config.json 'autonomy' <- settings.json.
   $out = [ordered]@{
     enabled                  = $true
+    # autopilot = may claim runnable backlog after quiet time.
+    # copilot = respond to direct operator messages, but do not claim backlog autonomously.
+    operatorMode             = 'autopilot'
     requireApproval          = $false
     idleQuietMinutes         = 10
     maxAutonomousTasksPerDay = 0
@@ -84,6 +87,9 @@ function Get-AutonomySettings {
   try {
     $s = Get-Settings
     foreach ($k in @($out.Keys)) { if (($s.PSObject.Properties.Name -contains $k) -and $null -ne $s.$k) { $out[$k] = $s.$k } }
+    if (($s.PSObject.Properties.Name -contains 'autonomy.operatorMode') -and $null -ne $s.'autonomy.operatorMode') {
+      $out['operatorMode'] = $s.'autonomy.operatorMode'
+    }
   } catch {}
   return $out
 }
@@ -190,9 +196,15 @@ function Test-AdvancedSettingValue {
     'workpackExec.minItems'         = @{ type='int';   min=2;   max=12   }
     'workpackExec.maxItems'         = @{ type='int';   min=2;   max=12   }
     'workpackExec.includeProtected' = @{ type='bool'                    }
+    'autonomy.operatorMode'         = @{ type='enum';  values=@('autopilot','copilot') }
   }
   if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
   $r = $ranges[$Key]
+  if ($r.type -eq 'enum') {
+    $s = ([string]$Value).Trim().ToLowerInvariant()
+    if (@($r.values) -contains $s) { return @{ ok=$true; value=$s } }
+    return @{ ok=$false; reason=("allowed values: " + (@($r.values) -join ', ')) }
+  }
   if ($r.type -eq 'bool') {
     try {
       if ($Value -is [bool]) { return @{ ok=$true; value=$Value } }
@@ -229,7 +241,8 @@ function Set-AdvancedSetting {
     'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',
     'backlogPack.unpackedOpenCount','backlogPack.auditBurstCount','backlogPack.auditWindowMinutes',
     'backlogPack.cooldownMinutes','backlogPack.minItems',
-    'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected'
+    'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected',
+    'autonomy.operatorMode'
   )
   $h = @{}
   $s = Get-Settings

@@ -39,6 +39,8 @@ notify.last
 turns.jsonl
 *.log
 *.tmp.*
+__pycache__/
+*.pyc
 tmp_*.png
 visit_*.png
 bridge_shot_*.png

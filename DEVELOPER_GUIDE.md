@@ -84,6 +84,8 @@ HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-д�
 
 ```
 bridge/
+├── bridgectl.py           # portable Python control CLI
+├── bridge_core/           # cross-platform config/status/platform adapters
 ├── driver.ps1            # главный цикл (монолит)
 ├── server.ps1            # HTTP API + UI
 ├── supervisor.ps1        # autostart-надзиратель + circuit-breaker
@@ -346,6 +348,9 @@ Collect-then-commit теперь проверяет declared touch-set пото�
 - **foundry/toolforge** — синтез новых инструментов (`[[NEED-TOOL]]`) и проектов на лету.
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
 
+### 4.8 Portable control layer
+`bridgectl.py` + `bridge_core/` — новый Python-слой для переносимости. Он читает config/settings/status без PowerShell, показывает capabilities/status/doctor, переключает `operatorMode`, а запуск legacy engine делегирует platform adapter. Цель: постепенно вынести core state/channel/backlog logic из Windows-only PowerShell, оставив PowerShell одним из адаптеров.
+
 ---
 
 ## 5. Recycle, Coalescer, Circuit-breaker (СТАБИЛЬНОСТЬ)
@@ -458,7 +463,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 ## 8. Конфигурация
 
 ### 8.1 config.json (в git — общий дефолт)
-Ключевое: `port`, `server.{allowLan,requireAuthForLan}`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
+Ключевое: `port`, `server.{allowLan,requireAuthForLan}`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*` включая `operatorMode`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
 
 ### 8.2 settings.json (runtime, НЕ в git)
 Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated).

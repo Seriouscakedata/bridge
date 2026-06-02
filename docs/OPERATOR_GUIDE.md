@@ -21,13 +21,19 @@ The operator's job is to give goals, watch progress, approve sensitive actions, 
 Start:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+py .\bridgectl.py start
 ```
 
 Stop:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\stop.ps1
+py .\bridgectl.py stop
+```
+
+Status:
+
+```powershell
+py .\bridgectl.py status
 ```
 
 Self-test:
@@ -161,6 +167,22 @@ The operator should approve or reject actions that involve:
 - Modifying watchdog/supervisor/autostart behavior.
 
 For normal implementation inside a project channel, MOS should be able to continue autonomously once the plan and backlog are accepted.
+
+## Operator Modes
+
+`autopilot` is the default long-running mode. MOS may claim approved backlog after quiet time and keep moving.
+
+```powershell
+py .\bridgectl.py mode set autopilot
+```
+
+`copilot` is the supervised mode. MOS still responds to direct chat messages, but it does not autonomously claim backlog.
+
+```powershell
+py .\bridgectl.py mode set copilot
+```
+
+Use `copilot` when an experienced developer wants frequent review points or when the project direction is uncertain.
 
 ## Quality Bar
 

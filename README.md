@@ -8,7 +8,8 @@ This repository is the clean transferable version. It intentionally does not inc
 
 Prerequisites:
 
-- Windows + PowerShell 5.1.
+- Python 3.10+ for portable `bridgectl.py` status/control.
+- Windows + PowerShell 5.1 for the current legacy engine.
 - Git.
 - Codex CLI and/or Claude CLI installed and logged in if you want the bridge to execute AI work.
 - Optional API keys for Gemini/DeepSeek if you want embeddings, audits, librarian, and API-model workers.
@@ -18,8 +19,11 @@ Run locally:
 ```powershell
 git clone https://github.com/Seriouscakedata/bridge.git bridge
 cd bridge
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+py .\bridgectl.py doctor
+py .\bridgectl.py start
 ```
+
+On macOS/Linux use `python3 ./bridgectl.py status` for portable inspection. The long-running legacy engine is still Windows-first until the next porting phases replace the PowerShell driver/server.
 
 Open:
 
@@ -64,6 +68,7 @@ If embeddings are unavailable, MOS still stores new memory records durably with 
 - [Transfer setup](docs/TRANSFER_SETUP.md): install, first run, auth, secrets, seed memory, autostart.
 - [Operator guide](docs/OPERATOR_GUIDE.md): how to use the bridge day to day.
 - [Project workflow](docs/PROJECT_WORKFLOW_GUIDE.md): how a new project should move from idea to acceptance.
+- [Cross-platform layer](docs/CROSS_PLATFORM_ARCHITECTURE.md): Python control layer, adapters, and porting boundary.
 - [Transfer manifest](TRANSFER_MANIFEST.md): what is included and what is intentionally excluded.
 - [Developer guide](DEVELOPER_GUIDE.md): internal architecture and development notes.
 
@@ -108,6 +113,7 @@ Important defaults:
 - `autonomy.autonomyDisabledChannels`: `["main"]`
 - `parallel.maxStreams`: `6`
 - `supervisor.maxConcurrentDrivers`: `6`
+- `autonomy.operatorMode`: `autopilot` (`copilot` pauses autonomous backlog claiming)
 - `server.allowLan`: `false`
 - `server.requireAuthForLan`: `true`
 - `notify.enabled`: `false`

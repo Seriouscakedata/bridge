@@ -1,6 +1,6 @@
 # Transfer Setup
 
-This guide is for installing a clean MOS Bridge copy on another Windows machine.
+This guide is for installing a clean MOS Bridge copy on another machine. The current engine is still Windows-first, but Python `bridgectl.py` provides portable status/control and the adapter boundary for future ports.
 
 ## 1. Clone
 
@@ -16,7 +16,8 @@ The repository is intentionally clean. It does not contain the previous operator
 Install and sign in to the tools you want MOS to use:
 
 - Git.
-- PowerShell 5.1.
+- Python 3.10+.
+- PowerShell 5.1 on Windows if the legacy engine should run.
 - Codex CLI, if Codex workers should run.
 - Claude CLI, if Claude planner/coder workers should run.
 - Node.js, if MOS will build or test Node/Next/Vite projects.
@@ -33,8 +34,18 @@ MOS auto-detects common Codex and Claude install paths. If detection fails, edit
 ## 3. First Run
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+py .\bridgectl.py doctor
+py .\bridgectl.py start
 ```
+
+On macOS/Linux use:
+
+```bash
+python3 ./bridgectl.py capabilities
+python3 ./bridgectl.py status
+```
+
+The current long-running engine still requires the Windows PowerShell adapter. Non-Windows support starts with status/config/mode inspection and will expand as core modules move out of PowerShell.
 
 Open:
 
@@ -122,6 +133,8 @@ If no key is configured, MOS still runs. New memory records are still written, b
 Syntax/self-test:
 
 ```powershell
+py .\bridgectl.py capabilities
+py .\bridgectl.py status
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\verify_syntax.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest
 ```
@@ -137,13 +150,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1
 Stop:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\stop.ps1
+py .\bridgectl.py stop
 ```
 
 Start:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+py .\bridgectl.py start
+```
+
+To pause autonomous backlog claiming while keeping direct chat responses:
+
+```powershell
+py .\bridgectl.py mode set copilot
+```
+
+To return to long-running autonomy:
+
+```powershell
+py .\bridgectl.py mode set autopilot
 ```
 
 Supervisor-controlled restart:

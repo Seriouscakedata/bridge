@@ -1131,6 +1131,9 @@ function Test-AutonomyReady {
   try { $a = Get-AutonomySettings } catch { return $false }
   if (-not $a) { return $false }
   if (-not [bool]$a.enabled) { return $false }
+  $operatorMode = 'autopilot'
+  try { if (-not [string]::IsNullOrWhiteSpace([string]$a.operatorMode)) { $operatorMode = ([string]$a.operatorMode).ToLowerInvariant() } } catch {}
+  if ($operatorMode -eq 'copilot') { return $false }
   # 2026-05-30: per-channel autonomy gate. Channels in autonomyDisabledChannels do
   # not auto-claim backlog work (travel is off by default so it doesn't compete with
   # main for the single shared Codex). Explicit user messages are unaffected.
@@ -1161,6 +1164,9 @@ function Get-AutonomyIdleReason {
   try { $a = Get-AutonomySettings } catch { return 'settings-error' }
   if (-not $a) { return 'no-settings' }
   if (-not [bool]$a.enabled) { return 'autonomy disabled (settings.enabled=false)' }
+  $operatorMode = 'autopilot'
+  try { if (-not [string]::IsNullOrWhiteSpace([string]$a.operatorMode)) { $operatorMode = ([string]$a.operatorMode).ToLowerInvariant() } } catch {}
+  if ($operatorMode -eq 'copilot') { return 'operatorMode=copilot (direct messages only; autonomous backlog claim is paused)' }
   $curCh = ''
   try { $curCh = [string](Get-PinnedChannel) } catch {}
   if ([string]::IsNullOrWhiteSpace($curCh)) { $curCh = 'main' }
