@@ -27,6 +27,20 @@ This file records concrete errors, weak spots, and recovery notes observed while
 
 **Status:** Partially fixed project-side. The project now has a materially better UI and stronger smoke checks, but bridge-level final acceptance still needs a universal visual/UX gate based on the detailed project plan, not only route/string checks.
 
+### ERR-2026-06-02-017 - Auth UI landed on dashboard chunk error after production rebuild
+
+**Context:** `private-community` after the visual UX fix. Manual user registration/login reached an "Application error" page instead of the working app screen.
+
+**Observed:** Browser auth flow showed API success (`/api/auth/register` 200), then client navigation to `/dashboard`; the browser attempted to load an old dashboard JS chunk and received `400 text/html`, causing `ChunkLoadError`. This was caused by two issues together: auth pages routed to an unnecessary `/dashboard` screen instead of the product's main `/feed`, and `next start` was still running while `.next` was rebuilt, leaving a stale in-memory manifest/chunk mismatch.
+
+**Impact:** A user could successfully register or log in but perceive the app as broken/nonexistent immediately after auth. Existing non-browser smoke tests did not catch client-side chunk loading.
+
+**Action taken:** Project-side fix: login/register now route to `/feed`; `AppShell` no longer shows dashboard/Home in the product nav; `/dashboard` is now a compatibility redirect to `/feed`; favicon SVG added to remove browser console 404 noise. Server was stopped and restarted after build so the production manifest matches `.next`.
+
+**Verification:** Real browser Playwright flow passed: register -> `/feed`, login -> `/feed`, `/dashboard` -> `/feed`; no client-side exception. `npm.cmd run build`, `npm.cmd run typecheck`, `smoke:pages`, `smoke:ux`, `smoke:auth`, `smoke:photo`, and `smoke:api` passed against `http://localhost:3218`.
+
+**Status:** Fixed project-side. Remaining bridge/process improvement: after any production build for a running Next app, final acceptance should restart the app before browser checks, and acceptance should include a browser navigation smoke that exercises client-side route chunks.
+
 ---
 
 ## 2026-06-01
