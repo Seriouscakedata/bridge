@@ -81,6 +81,21 @@ try {
   Assert-True (-not [bool]$r3.paused) 'created atoms should resume autopilot'
   Assert-True ([int]$r3.empty_coordinator_streak -eq 0) 'created atoms should reset empty streak'
 
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), '', (New-Object System.Text.UTF8Encoding($false)))
+  $coordinatorText = New-ProjectAutopilotCoordinatorTaskText -Slug $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -MaxTasks 4
+  Add-Idea -Text $coordinatorText -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'done' -Severity 'critical' -Project $script:TestChannel -Scope 'project' -SkipCurator | Out-Null
+  Add-Idea -Text $coordinatorText -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'done' -Severity 'critical' -Project $script:TestChannel -Scope 'project' -SkipCurator | Out-Null
+  Write-ProjectAutopilotState ([pscustomobject]@{
+    ts = (Get-Date).ToUniversalTime().AddMinutes(-10).ToString('o')
+    channel = $script:TestChannel
+    project_root = (Join-Path $script:TestBridgeRoot 'project')
+    queued_id = 'legacy-coord'
+    reason = 'idle-empty-backlog'
+  })
+  $legacyStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
+  Assert-True (-not [bool]$legacyStart.queued) 'legacy empty coordinator streak must not queue a coordinator'
+  Assert-True ([string]$legacyStart.reason -eq 'paused-empty-scope') ("expected legacy paused-empty-scope, got " + [string]$legacyStart.reason)
+
   Write-Output 'PROJECT AUTOPILOT STOP TEST OK'
 } finally {
   try { Remove-Item -LiteralPath $script:TestBridgeRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}

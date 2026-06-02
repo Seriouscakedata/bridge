@@ -2652,6 +2652,28 @@ function Start-ProjectAutopilotIfNeeded {
       }
     } catch {}
     try {
+      $hasStateStreakProp = ($last.PSObject.Properties.Name -contains 'empty_coordinator_streak')
+      if (-not $hasStateStreakProp) {
+        $inferredEmptyExisting = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
+        if ($inferredEmptyExisting -ge [int]$cfg.emptyCoordinatorLimit) {
+          $nowPauseExisting = (Get-Date).ToUniversalTime().ToString('o')
+          $last | Add-Member -NotePropertyName ts -NotePropertyValue $nowPauseExisting -Force
+          $last | Add-Member -NotePropertyName channel -NotePropertyValue $slug -Force
+          $last | Add-Member -NotePropertyName project_root -NotePropertyValue $root -Force
+          $last | Add-Member -NotePropertyName empty_coordinator_streak -NotePropertyValue $inferredEmptyExisting -Force
+          $last | Add-Member -NotePropertyName paused -NotePropertyValue $true -Force
+          $last | Add-Member -NotePropertyName paused_at -NotePropertyValue $nowPauseExisting -Force
+          $last | Add-Member -NotePropertyName pause_reason -NotePropertyValue ("legacy empty coordinator streak reached $inferredEmptyExisting/$([int]$cfg.emptyCoordinatorLimit) without PROJECT_BACKLOG") -Force
+          if (-not ($last.PSObject.Properties.Name -contains 'recent_outcomes')) { $last | Add-Member -NotePropertyName recent_outcomes -NotePropertyValue @() -Force }
+          Write-ProjectAutopilotState $last
+          try {
+            Add-Message -From system -Text ("⏸ Project Autopilot: найден старый пустой цикл coordinator-задач (" + $inferredEmptyExisting + "/" + [int]$cfg.emptyCoordinatorLimit + "). Автопилот канала " + $slug + " поставлен на паузу до расширения PROJECT_PLAN/scope.") -Kind event | Out-Null
+          } catch {}
+          return [pscustomobject]@{ queued=$false; reason='paused-empty-scope'; empty_coordinator_streak=$inferredEmptyExisting; pressure=$pressure }
+        }
+      }
+    } catch {}
+    try {
       $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
       $ageMin = ((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes
       if ($ageMin -lt [int]$cfg.cooldownMinutes) {
