@@ -5,8 +5,8 @@
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\private-community",
     "created":  "2026-06-01T17:43:23.9065833+03:00",
     "archived":  false,
-    "plan_approved":  true,
-    "plan_approved_at":  "2026-06-02T09:09:08.9462677Z",
-    "plan_approved_signature":  "c55d182f1b7e504dc74d72c27afbde380f4a28973636a5cfd99b8b9ed5db5cd9",
-    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\private-community\\.bridge\\project-contract.json"
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\private-community\\.bridge\\project-contract.json",
+    "plan_approved":  false,
+    "plan_approved_at":  "2026-06-02T09:20:09.6904809Z",
+    "plan_approved_signature":  ""
 }
