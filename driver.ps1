@@ -1606,6 +1606,41 @@ function Get-TaskRepoRoot {
   return $bridgeRoot
 }
 
+function Add-ProjectWaveMemory {
+  param(
+    [string]$Outcome,
+    [int]$Streams = 0,
+    [int]$Merged = 0,
+    [int]$Quarantined = 0,
+    [string[]]$BacklogIds = @(),
+    [string]$Reason = ''
+  )
+  try {
+    $slug = [string]$Channel
+    if ([string]::IsNullOrWhiteSpace($slug) -or $slug -eq 'main') { return $null }
+    if (-not (Get-Command Add-ProjectMemory -ErrorAction SilentlyContinue)) { return $null }
+    $kind = if ([string]$Outcome -eq 'complete') { 'project_worklog' } else { 'project_risk' }
+    $trust = 'observed'
+    $txt = if ([string]$Outcome -eq 'complete') {
+      "Parallel workpack wave completed: merged $Merged of $Streams streams for backlog ids " + ((@($BacklogIds) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 12) -join ', ')
+    } elseif ([string]$Outcome -eq 'partial') {
+      "Parallel workpack wave was partial: merged $Merged of $Streams streams; quarantined $Quarantined. Planner must repair or re-plan failed streams."
+    } else {
+      "Parallel workpack wave failed or produced no merged streams. Planner must diagnose before continuing."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $txt += " Reason: $Reason" }
+    $meta = [ordered]@{
+      outcome = [string]$Outcome
+      streams = [int]$Streams
+      merged = [int]$Merged
+      quarantined = [int]$Quarantined
+      backlog_ids = @($BacklogIds)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $meta.reason = $Reason }
+    return (Add-ProjectMemory -Text $txt -Kind $kind -Trust $trust -Tags @('workpack-wave','parallel') -Source 'scheduler' -Importance 0.6 -Channel $slug -Meta ([pscustomobject]$meta))
+  } catch { return $null }
+}
+
 function Get-ProjectFocusPromptBlock {
   $binding = Get-ActiveProjectBinding
   $slug = if ($binding -and $binding.slug) { [string]$binding.slug } else { [string]$Channel }
@@ -3847,6 +3882,14 @@ while ($true) {
                 workpack_batch_ids = @($batchIds)
                 workpack_batch_count = $safeArr.Count
                 preflight_checked = $true
+                workpack_frontier = [pscustomobject]@{
+                  eligible = [int]$wpBatch.eligible_count
+                  ready = [int]$wpBatch.ready_count
+                  dependency_wait = [int]$wpBatch.dependency_wait_count
+                  structural_wait = [int]$wpBatch.structural_wait_count
+                  conflict_skips = [int]$wpBatch.conflict_skip_count
+                  touch_skips = [int]$wpBatch.touch_skip_count
+                }
               }
               $claimedWorkpackBatch = $true
               try {
@@ -3857,6 +3900,12 @@ while ($true) {
                   count=$safeArr.Count
                   workpacks=@($safeArr | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
                   conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
+                  eligible=[int]$wpBatch.eligible_count
+                  ready=[int]$wpBatch.ready_count
+                  dependency_wait=[int]$wpBatch.dependency_wait_count
+                  structural_wait=[int]$wpBatch.structural_wait_count
+                  conflict_skips=[int]$wpBatch.conflict_skip_count
+                  touch_skips=[int]$wpBatch.touch_skip_count
                 })
               } catch {}
             }
@@ -4070,7 +4119,14 @@ while ($true) {
           }
         } catch {}
         if ($isWorkpackBatch) {
-          Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks. Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null
+          $frontierText = ''
+          try {
+            if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_frontier' -and $claimedIdea.workpack_frontier) {
+              $wf = $claimedIdea.workpack_frontier
+              $frontierText = " Фронт: selected=" + $batchIdsForState.Count + ", ready=" + [int]$wf.ready + "/" + [int]$wf.eligible + ", ждут deps=" + [int]$wf.dependency_wait + ", barrier=" + [int]$wf.structural_wait + ", conflicts=" + ([int]$wf.conflict_skips + [int]$wf.touch_skips) + "."
+            }
+          } catch {}
+          Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks." + $frontierText + " Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null
         } else {
           Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         }
@@ -4222,9 +4278,19 @@ while ($true) {
           # rather than re-dispatching the same broken streams over and over (the ERR-006 loop).
           Update-State { param($s) $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $true -Force } | Out-Null
           $detQ = 0; try { $detQ = [int]$detRes.quarantined } catch {}
+          $detTotal = 0; try { $detTotal = [int]$detRes.total } catch { $detTotal = @($detStreams).Count }
+          if ($detTotal -le 0) { $detTotal = @($detStreams).Count }
+          $detIdsForMemory = @()
+          try {
+            $stForWaveMemory = Read-State
+            if ($stForWaveMemory.PSObject.Properties.Name -contains 'workpack_batch_ids') {
+              $detIdsForMemory = @($stForWaveMemory.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            }
+          } catch { $detIdsForMemory = @() }
           if ($detRes -and $detRes.ok -and $detQ -eq 0) {
             # CLEAN: every stream merged, none quarantined -> safe to synthesize DONE for the gates.
             Add-Message -From system -Text ("✅ Parallel завершён: " + $detRes.merged + " потоков слито в проект (все потоки успешны)") -Kind event | Out-Null
+            try { Add-ProjectWaveMemory -Outcome 'complete' -Streams $detTotal -Merged ([int]$detRes.merged) -Quarantined 0 -BacklogIds $detIdsForMemory | Out-Null } catch {}
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
             $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно выполнено потоков: " + $detRes.merged); fallback = '' }
           } elseif ($detRes -and $detRes.ok -and $detQ -gt 0) {
@@ -4233,10 +4299,12 @@ while ($true) {
             # actions, but force a planner turn to finish/repair the quarantined streams (sequentially,
             # since ERR-002 will gate them) instead of closing the task as done.
             Add-Message -From system -Text ("⚠ Parallel: СМЕШАННЫЙ результат — слито " + $detRes.merged + " из " + $detRes.total + " потоков, " + $detQ + " в карантине (провалились). НЕ закрываю как DONE; передаю планировщику доделать/починить провалившиеся потоки.") -Kind event | Out-Null
+            try { Add-ProjectWaveMemory -Outcome 'partial' -Streams $detTotal -Merged ([int]$detRes.merged) -Quarantined $detQ -BacklogIds $detIdsForMemory -Reason 'some streams quarantined' | Out-Null } catch {}
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true; $s.force_planner = $true } | Out-Null
             # leave $turnResult null -> the planner runs this turn and drives the remaining work to DONE
           } else {
             Add-Message -From system -Text "⚠ Parallel dispatch не слил ни одного потока (все в карантине/провал) — передаю планировщику для разбора, без повторного слепого dispatch." -Kind event | Out-Null
+            try { Add-ProjectWaveMemory -Outcome 'failed' -Streams $detTotal -Merged 0 -Quarantined $detQ -BacklogIds $detIdsForMemory -Reason 'no streams merged' | Out-Null } catch {}
           }
         } catch { try { Add-Message -From system -Text ("⚠ Детерминированный dispatch: " + $_.Exception.Message + " — обычный planner-ход") -Kind event | Out-Null } catch {} }
       }
@@ -4610,7 +4678,16 @@ while ($true) {
         $pbResult = Add-ProjectBacklogFromMarker -Block $pbBlock -Channel ([string]$pbForMarkers.slug) -Source $speaker -SourceTaskId $sourceTaskId -MaxTasks $pbMax
         $projectBacklogCreated += [int]$pbResult.created
         if ([int]$pbResult.created -gt 0) {
-          Add-Message -From system -Text ("🧭 Project Autopilot: добавлено approved atom-задач: " + [int]$pbResult.created + $(if([int]$pbResult.skipped -gt 0){" (пропущено дублей: " + [int]$pbResult.skipped + ")"}else{""})) -Kind event | Out-Null
+          $pbDetails = ''
+          try {
+            $ch = @($pbResult.chapters | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 3)
+            $sl = @($pbResult.slugs | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 5)
+            $bits = New-Object 'System.Collections.Generic.List[string]'
+            if ($ch.Count -gt 0) { [void]$bits.Add('главы: ' + ($ch -join ', ')) }
+            if ($sl.Count -gt 0) { [void]$bits.Add('atoms: ' + ($sl -join ', ')) }
+            if ($bits.Count -gt 0) { $pbDetails = ' — ' + (($bits.ToArray()) -join '; ') }
+          } catch {}
+          Add-Message -From system -Text ("🧭 Project Autopilot: добавлено approved atom-задач: " + [int]$pbResult.created + $(if([int]$pbResult.skipped -gt 0){" (пропущено дублей: " + [int]$pbResult.skipped + ")"}else{""}) + $pbDetails) -Kind event | Out-Null
         } else {
           $errText = ''
           try { $errText = (@($pbResult.errors) -join '; ') } catch {}

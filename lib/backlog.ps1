@@ -1274,13 +1274,85 @@ function Get-BacklogTaskDepSignal {
   return 'neutral'
 }
 
+function Get-BacklogTaskSlug {
+  param($Item)
+  $slug = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'slug' -Default '')
+  if ([string]::IsNullOrWhiteSpace($slug)) {
+    $slug = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'title' -Default '')
+  }
+  if ([string]::IsNullOrWhiteSpace($slug)) {
+    $slug = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+  }
+  if ([string]::IsNullOrWhiteSpace($slug)) { return '' }
+  try {
+    if (Get-Command ConvertTo-ProjectAutopilotSlug -ErrorAction SilentlyContinue) {
+      return [string](ConvertTo-ProjectAutopilotSlug $slug)
+    }
+  } catch {}
+  $v = $slug.Trim().ToLowerInvariant()
+  $v = $v -replace '[^a-z0-9а-яё._-]+','-'
+  return $v.Trim([char[]]@('-','_','.'))
+}
+
+function Get-BacklogTaskDependencySlugs {
+  param($Item)
+  $deps = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    foreach ($d in @(Get-BacklogPackObjectValue -Obj $Item -Name 'depends_on' -Default @())) {
+      $raw = [string]$d
+      if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+      $slug = $raw
+      try {
+        if (Get-Command ConvertTo-ProjectAutopilotSlug -ErrorAction SilentlyContinue) {
+          $slug = [string](ConvertTo-ProjectAutopilotSlug $raw)
+        } else {
+          $slug = ($raw.Trim().ToLowerInvariant() -replace '[^a-z0-9а-яё._-]+','-').Trim([char[]]@('-','_','.'))
+        }
+      } catch {}
+      if (-not [string]::IsNullOrWhiteSpace($slug)) { [void]$deps.Add($slug) }
+    }
+  } catch {}
+  return @($deps.ToArray() | Sort-Object -Unique)
+}
+
+function Get-BacklogSlugStatusMap {
+  param([object[]]$Items)
+  $map = @{}
+  foreach ($item in @($Items)) {
+    $slug = Get-BacklogTaskSlug -Item $item
+    if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+    $map[$slug] = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).ToLowerInvariant()
+  }
+  return $map
+}
+
+function Test-BacklogTaskDependenciesReady {
+  param($Item, $StatusBySlug)
+  $deps = @(Get-BacklogTaskDependencySlugs -Item $Item)
+  if ($deps.Count -eq 0) {
+    return [pscustomobject]@{ ready=$true; deps=@(); unmet=@() }
+  }
+  $doneStatuses = @{ done=$true; 'auto-resolved'=$true }
+  $unmet = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($dep in @($deps)) {
+    $st = ''
+    try { if ($StatusBySlug.ContainsKey($dep)) { $st = [string]$StatusBySlug[$dep] } } catch {}
+    if ([string]::IsNullOrWhiteSpace($st) -or -not $doneStatuses.ContainsKey($st)) {
+      $label = if ([string]::IsNullOrWhiteSpace($st)) { $dep + '(missing)' } else { $dep + '(' + $st + ')' }
+      [void]$unmet.Add($label)
+    }
+  }
+  return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()) }
+}
+
 function Get-NextBacklogWorkpackBatch {
   param($Config = $null)
   if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
   if (-not [bool]$Config.enabled) { return $null }
 
+  $allItems = @(Get-Backlog)
   $eligible = @(
-    Get-Backlog |
+    $allItems |
     Where-Object { Test-BacklogWorkpackExecEligible -Item $_ -Config $Config } |
     Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
@@ -1288,22 +1360,36 @@ function Get-NextBacklogWorkpackBatch {
   )
   if ($eligible.Count -lt [int]$Config.minItems) { return $null }
 
-  # 2026-06-01 ERR-002: dependency-aware gating. If ANY eligible task is a structural barrier
-  # (foundation that must precede others, or explicitly dependent on another's artifact), DISABLE the
-  # parallel batch path — return $null so the driver claims tasks one-by-one in priority/backlog order
-  # (sequential waves). This prevents parallelizing scaffold->model->auth chains (distinct files, so the
-  # touch-set packer wrongly treated them as independent) into incompatible code. Parallel packing
-  # resumes automatically once the remaining eligible tasks are all neutral independent edits.
-  foreach ($bItem in $eligible) {
-    $bTxt = [string](Get-BacklogPackObjectValue -Obj $bItem -Name 'text' -Default '')
-    if ((Get-BacklogTaskDepSignal -Text $bTxt) -ne 'neutral') { return $null }
-  }
-
+  $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
   $selected = New-Object 'System.Collections.Generic.List[object]'
   $usedGroups = @{}
   $usedTouches = New-Object 'System.Collections.Generic.List[string]'
+  $readyCount = 0
+  $dependencyWait = 0
+  $structuralWait = 0
+  $conflictSkips = 0
+  $touchSkips = 0
   foreach ($item in $eligible) {
-    if ($selected.Count -ge [int]$Config.maxItems) { break }
+    $selectionFull = ($selected.Count -ge [int]$Config.maxItems)
+    $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
+    $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
+    $explicitDeps = @($depCheck.deps)
+    if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
+
+    # Dependency-aware frontier: one blocked/dependent item must not freeze the whole team.
+    # Explicit depends_on is authoritative. Heuristic "foundation" without explicit deps stays a
+    # serial barrier; explicit, already-satisfied deps can join the frontier if touch sets do not
+    # overlap. This keeps scaffold/schema steps safe while allowing later ready lanes to fan out.
+    $depSignal = Get-BacklogTaskDepSignal -Text $txt
+    if ($depSignal -eq 'foundation' -and $explicitDeps.Count -eq 0) {
+      $structuralWait++
+      if (-not $selectionFull) { break }
+      continue
+    }
+    if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) { $dependencyWait++; continue }
+
+    $readyCount++
+    if ($selectionFull) { continue }
     $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
     if ([string]::IsNullOrWhiteSpace($packId)) { continue }
     # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): do NOT dedupe by workpack_id. Truly
@@ -1315,10 +1401,10 @@ function Get-NextBacklogWorkpackBatch {
     # conflict_group + touch overlap below; workpack_id is reporting-only.
     $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
-    if ($usedGroups.ContainsKey($group)) { continue }
+    if ($usedGroups.ContainsKey($group)) { $conflictSkips++; continue }
 
     $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
-    if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { continue }
+    if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { $touchSkips++; continue }
 
     [void]$selected.Add($item)
     $usedGroups[$group] = $true
@@ -1335,6 +1421,12 @@ function Get-NextBacklogWorkpackBatch {
     workpacks = @($packs)
     conflict_groups = @($groups)
     count = $selected.Count
+    eligible_count = $eligible.Count
+    ready_count = $readyCount
+    dependency_wait_count = $dependencyWait
+    structural_wait_count = $structuralWait
+    conflict_skip_count = $conflictSkips
+    touch_skip_count = $touchSkips
   }
 }
 
@@ -1351,6 +1443,7 @@ function New-BacklogWorkpackBatchTaskText {
   [void]$sb.AppendLine('- Для независимых пунктов в первом ходе выдай STATUS: CONTINUE и отдельные [[PARALLEL:<id>]] блоки.')
   [void]$sb.AppendLine('- В каждом [[PARALLEL]] блоке обязательно укажи Files: с разрешёнными файлами/touch set.')
   [void]$sb.AppendLine('- После merge обычные verify/critic/smoke gates должны подтвердить общий результат.')
+  [void]$sb.AppendLine('- Каждый поток в конце должен оставить краткий итог и полезные PROJECT_* memory-маркеры, если появились новые решения/риски/проверки.')
   [void]$sb.AppendLine('')
   [void]$sb.AppendLine('Шаблон первого ответа для planner-а: скопируй эти блоки, если задачи всё ещё независимы.')
   [void]$sb.AppendLine('')
@@ -1363,14 +1456,30 @@ function New-BacklogWorkpackBatchTaskText {
     $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
     if ($touches.Count -eq 0) { $touches = @($group) }
     $files = ($touches | Select-Object -First 8) -join ', '
+    $deps = @(Get-BacklogTaskDependencySlugs -Item $item)
+    $chapter = [string](Get-BacklogPackObjectValue -Obj $item -Name 'chapter' -Default '')
+    $wave = [string](Get-BacklogPackObjectValue -Obj $item -Name 'wave' -Default '')
+    $parallelGroup = [string](Get-BacklogPackObjectValue -Obj $item -Name 'parallel_group' -Default '')
+    $checks = @()
+    try { $checks = @(Get-BacklogPackObjectValue -Obj $item -Name 'verification_checks' -Default @() | ForEach-Object { [string]$_ }) } catch { $checks = @() }
+    $acceptance = @()
+    try { $acceptance = @(Get-BacklogPackObjectValue -Obj $item -Name 'acceptance_checks' -Default @() | ForEach-Object { [string]$_ }) } catch { $acceptance = @() }
     $text = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '') -replace '\s+', ' ').Trim()
     [void]$sb.AppendLine(("ITEM {0}: backlog_id={1}" -f $idx, $id))
     [void]$sb.AppendLine(("workpack={0}; conflict_group={1}" -f $packId, $group))
+    if (-not [string]::IsNullOrWhiteSpace($chapter)) { [void]$sb.AppendLine(("Chapter: {0}" -f $chapter)) }
+    if (-not [string]::IsNullOrWhiteSpace($wave)) { [void]$sb.AppendLine(("Wave: {0}" -f $wave)) }
+    if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { [void]$sb.AppendLine(("Parallel group: {0}" -f $parallelGroup)) }
+    if ($deps.Count -gt 0) { [void]$sb.AppendLine(("Depends on: {0}" -f (($deps | Select-Object -First 8) -join ', '))) }
     [void]$sb.AppendLine(("Files: {0}" -f $files))
+    if ($acceptance.Count -gt 0) { [void]$sb.AppendLine(("Acceptance: {0}" -f (($acceptance | Select-Object -First 4) -join ' ; '))) }
+    if ($checks.Count -gt 0) { [void]$sb.AppendLine(("Checks: {0}" -f (($checks | Select-Object -First 4) -join ' ; '))) }
     [void]$sb.AppendLine(("Task: {0}" -f $text))
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine(("[[PARALLEL:wp{0}]]" -f $idx))
     [void]$sb.AppendLine(("Files: {0}" -f $files))
+    if ($checks.Count -gt 0) { [void]$sb.AppendLine(("Checks: {0}" -f (($checks | Select-Object -First 4) -join ' ; '))) }
+    if ($acceptance.Count -gt 0) { [void]$sb.AppendLine(("Acceptance: {0}" -f (($acceptance | Select-Object -First 4) -join ' ; '))) }
     # 2026-06-01 AUTONOMY: complexity now inferred per-task (was hardcoded 'moderate' for every
     # stream, which made the worker router blind to real task difficulty). Drives Select-WorkerForStream.
     $cx = 'moderate'
@@ -2287,9 +2396,20 @@ Mission: keep this project moving without the operator manually feeding backlog 
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
 - Read PROJECT_MAP.md, PROJECT_PLAN.md, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
+- Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
 - Determine the next approved/incomplete chapter or the next missing planning step.
 - Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
+- Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
+- Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
+- Use chapter, wave, parallel_group, files, depends_on, acceptance, and checks so the scheduler can run the team safely.
+- Before PROJECT_BACKLOG, emit durable project memory markers when useful:
+  [[PROJECT_DECISION: ...]]
+  [[PROJECT_RISK: ...]]
+  [[PROJECT_INVARIANT: ...]]
+  [[PROJECT_TEST: ...]]
+  [[PROJECT_OPEN_QUESTION: ...]]
+  Keep memory concise and durable; do not store transient progress noise.
 - If a product decision is truly blocking, do not invent it: emit [[PROJECT_OPEN_QUESTION: ...]] and finish without PROJECT_BACKLOG.
 - Never put real secrets, local DB files, uploads, .next, or node_modules in git.
 - For Next.js/TypeScript work, each atom should normally require npm run typecheck and npm run build unless the atom is docs-only.
@@ -2301,8 +2421,13 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "slug": "short-stable-atom-id",
     "title": "Human readable atom title",
     "task": "Full task text for the worker. Include project path, dependencies, acceptance checks, and commit requirement.",
+    "chapter": "approved chapter / project area",
+    "wave": "wave-1",
+    "parallel_group": "auth|gallery|chat|admin|docs|tests|...",
     "files": ["relative/path/or/directory"],
     "depends_on": ["slug-of-prerequisite-if-any"],
+    "acceptance": ["observable acceptance criterion"],
+    "checks": ["npm run typecheck", "npm run build"],
     "severity": "normal"
   }
 ]
@@ -2403,6 +2528,33 @@ function Get-ProjectAutopilotTaskArrayFromMarker {
   }
 }
 
+function Get-ProjectAutopilotTaskStringField {
+  param($Task, [string[]]$Names = @())
+  foreach ($name in @($Names)) {
+    try {
+      $v = Get-BacklogPackObjectValue -Obj $Task -Name $name -Default $null
+      if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) { return [string]$v }
+    } catch {}
+  }
+  return ''
+}
+
+function Get-ProjectAutopilotTaskStringArray {
+  param($Task, [string[]]$Names = @())
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @($Names)) {
+    $raw = $null
+    try { $raw = Get-BacklogPackObjectValue -Obj $Task -Name $name -Default $null } catch { $raw = $null }
+    if ($null -eq $raw) { continue }
+    foreach ($v in @($raw)) {
+      $s = ([string]$v).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$out.Add($s) }
+    }
+    if ($out.Count -gt 0) { break }
+  }
+  return @($out.ToArray() | Sort-Object -Unique)
+}
+
 function Set-ProjectAutopilotIdeaMetadata {
   param([string]$Id, $Task, [string]$SourceTaskId = '')
   if ([string]::IsNullOrWhiteSpace($Id) -or -not $Task) { return $false }
@@ -2418,11 +2570,21 @@ function Set-ProjectAutopilotIdeaMetadata {
       try { $files = @((Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
       $deps = @()
       try { $deps = @((Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()) | ForEach-Object { ConvertTo-ProjectAutopilotSlug ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $deps = @() }
+      $chapter = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('chapter','phase','area')
+      $wave = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('wave','milestone')
+      $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('parallel_group','lane','workstream')
+      $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('acceptance','acceptance_checks','criteria'))
+      $checks = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('checks','verify','verification'))
       $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
       $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
       $i | Add-Member -NotePropertyName autopilot_generated -NotePropertyValue $true -Force
       $i | Add-Member -NotePropertyName autopilot_source_task -NotePropertyValue ([string]$SourceTaskId) -Force
       if ($deps.Count -gt 0) { $i | Add-Member -NotePropertyName depends_on -NotePropertyValue @($deps) -Force }
+      if (-not [string]::IsNullOrWhiteSpace($chapter)) { $i | Add-Member -NotePropertyName chapter -NotePropertyValue $chapter -Force }
+      if (-not [string]::IsNullOrWhiteSpace($wave)) { $i | Add-Member -NotePropertyName wave -NotePropertyValue $wave -Force }
+      if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $i | Add-Member -NotePropertyName parallel_group -NotePropertyValue $parallelGroup -Force }
+      if ($acceptance.Count -gt 0) { $i | Add-Member -NotePropertyName acceptance_checks -NotePropertyValue @($acceptance) -Force }
+      if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName verification_checks -NotePropertyValue @($checks) -Force }
       if ($files.Count -gt 0) {
         $normFiles = @($files | ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
         if ($normFiles.Count -gt 0) {
@@ -2431,6 +2593,15 @@ function Set-ProjectAutopilotIdeaMetadata {
           $i | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ('serial:file:' + [string]$normFiles[0]) -Force
         }
       }
+      $meta = [ordered]@{}
+      if (-not [string]::IsNullOrWhiteSpace($chapter)) { $meta.chapter = $chapter }
+      if (-not [string]::IsNullOrWhiteSpace($wave)) { $meta.wave = $wave }
+      if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $meta.parallel_group = $parallelGroup }
+      if ($deps.Count -gt 0) { $meta.depends_on = @($deps) }
+      if ($files.Count -gt 0) { $meta.files = @($files) }
+      if ($acceptance.Count -gt 0) { $meta.acceptance = @($acceptance) }
+      if ($checks.Count -gt 0) { $meta.checks = @($checks) }
+      if ($meta.Count -gt 0) { $i | Add-Member -NotePropertyName autopilot_meta -NotePropertyValue ([pscustomobject]$meta) -Force }
       break
     }
     if ($found) { Save-Backlog $items }
@@ -2464,6 +2635,8 @@ function Add-ProjectBacklogFromMarker {
   }
 
   $created = New-Object 'System.Collections.Generic.List[string]'
+  $createdSlugs = New-Object 'System.Collections.Generic.List[string]'
+  $createdChapters = New-Object 'System.Collections.Generic.List[string]'
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $skipped = 0
   foreach ($t in $tasks) {
@@ -2478,18 +2651,34 @@ function Add-ProjectBacklogFromMarker {
     if ($severity -notin @('critical','warning','info','')) { $severity = '' }
     $files = @()
     try { $files = @((Get-BacklogPackObjectValue -Obj $t -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
+    $deps = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('depends_on','dependencies'))
+    $chapter = Get-ProjectAutopilotTaskStringField -Task $t -Names @('chapter','phase','area')
+    $wave = Get-ProjectAutopilotTaskStringField -Task $t -Names @('wave','milestone')
+    $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $t -Names @('parallel_group','lane','workstream')
+    $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('acceptance','acceptance_checks','criteria'))
+    $checks = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('checks','verify','verification'))
+    $detailLines = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($chapter)) { [void]$detailLines.Add("Chapter: $chapter") }
+    if (-not [string]::IsNullOrWhiteSpace($wave)) { [void]$detailLines.Add("Wave: $wave") }
+    if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { [void]$detailLines.Add("Parallel group: $parallelGroup") }
+    if ($deps.Count -gt 0) { [void]$detailLines.Add("Depends on: " + (($deps | Select-Object -First 12) -join ', ')) }
+    if ($acceptance.Count -gt 0) { [void]$detailLines.Add("Acceptance: " + (($acceptance | Select-Object -First 6) -join ' ; ')) }
+    if ($checks.Count -gt 0) { [void]$detailLines.Add("Checks: " + (($checks | Select-Object -First 6) -join ' ; ')) }
+    $detailLine = if ($detailLines.Count -gt 0) { "`n`n" + (($detailLines.ToArray()) -join "`n") } else { '' }
     $fileLine = if ($files.Count -gt 0) { "`n`nFiles: " + (($files | Select-Object -First 12) -join ', ') } else { '' }
-    $text = "[project-autopilot $slug] [[NORMAL]]`n`n$title`n`n$body$fileLine"
+    $text = "[project-autopilot $slug] [[NORMAL]]`n`n$title`n`n$body$detailLine$fileLine"
     $id = Add-Idea -Text $text -From 'project-autopilot' -Tags @('project-autopilot','auto-generated','atom') -Status 'approved' -Severity $severity -Project $Channel -Scope 'project' -SkipCurator
     if ([string]::IsNullOrWhiteSpace([string]$id)) { [void]$errors.Add("Add-Idea failed for '$slug'"); continue }
     try { Set-ProjectAutopilotIdeaMetadata -Id ([string]$id) -Task $t -SourceTaskId $SourceTaskId | Out-Null } catch {}
     $existingSlugs[$slug] = $true
     [void]$created.Add([string]$id)
+    [void]$createdSlugs.Add($slug)
+    if (-not [string]::IsNullOrWhiteSpace($chapter)) { [void]$createdChapters.Add($chapter) }
     try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-backlog-add'; channel=$Channel; item_id=[string]$id; slug=$slug; source=$Source }) } catch {}
   }
 
   try { Request-BacklogPackIfNeeded | Out-Null } catch {}
-  return [pscustomobject]@{ created=$created.Count; skipped=$skipped; errors=@($errors.ToArray()); ids=@($created.ToArray()) }
+  return [pscustomobject]@{ created=$created.Count; skipped=$skipped; errors=@($errors.ToArray()); ids=@($created.ToArray()); slugs=@($createdSlugs.ToArray()); chapters=@($createdChapters.ToArray() | Sort-Object -Unique) }
 }
 
 function Get-OperatorBatchProgress {

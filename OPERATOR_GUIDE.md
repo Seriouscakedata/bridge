@@ -134,6 +134,9 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 
 - **Packer** группирует независимые approved-задачи в **workpack-batch** (условие: ≥2 задачи с разными
   `conflict_group` и непересекающимися touch-set по целевому файлу).
+- **Ready-frontier scheduler** смотрит explicit `depends_on`: задачи с незакрытыми зависимостями ждут,
+  но больше не блокируют независимые ready-задачи. В чате при claim видно `selected`, `ready/eligible`,
+  сколько ждёт deps, сколько упёрлось в barrier/conflicts.
 - **Deterministic dispatch** спавнит по воркеру на поток в отдельных git-worktree.
 - **Воркеры** — пул из config.json (codex разных уровней, claude sonnet/opus, deepseek, gemini).
   Роутинг по сложности задачи (`Get-TaskComplexityHeuristic`): простая → дешёвый/быстрый, сложная →
@@ -141,6 +144,8 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 - **collect-then-commit** — после работы хост напрямую забирает изменённые файлы из всех worktree в
   репозиторий (минуя ненадёжный git воркеров). Доставка 100% независимо от поведения CLI.
 - В чате при старте команды виден **план потоков** («🔀 Запускаю команду из N потоков: • поток wp1 …»).
+- Итог parallel wave пишется в project memory: успешная волна как `project_worklog`, частичная/провальная
+  как `project_risk`. Память проекта остаётся в `channels/<slug>/memory/`, `main` не смешивается.
 
 Машина тянет до ~20 параллельных воркеров (проверено: CPU 6–16%, RAM 30 ГБ свободно).
 

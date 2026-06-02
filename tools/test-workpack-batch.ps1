@@ -88,6 +88,56 @@ try {
   Assert-True ($taskText -match '\[\[PARALLEL:wp2\]\]') 'expected parallel template wp2'
   Assert-True ($taskText -match 'STATUS:\s*CONTINUE') 'expected planner status hint'
 
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idBase = Add-Idea -Text 'base layout atom already completed' -From 'test' -Status 'done' -SkipCurator
+  $idReadyA = Add-Idea -Text 'update profile page display copy in app/profile/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idReadyB = Add-Idea -Text 'add gallery empty state copy in app/gallery/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idReadyC = Add-Idea -Text 'document launch checklist in RUNBOOK.md' -From 'test' -Status 'approved' -SkipCurator
+  $idWaiting = Add-Idea -Text 'wire admin dashboard after admin-api atom exists in app/admin/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idBase) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'base-layout' -Force
+    } elseif ([string]$item.id -eq [string]$idReadyA) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'profile-copy' -Force
+      $item | Add-Member -NotePropertyName depends_on -NotePropertyValue @('base-layout') -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-profile' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/profile/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/profile/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idReadyB) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'gallery-empty' -Force
+      $item | Add-Member -NotePropertyName depends_on -NotePropertyValue @('base-layout') -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-gallery' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/gallery/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/gallery/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idReadyC) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'runbook-checklist' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-runbook' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:RUNBOOK.md' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('RUNBOOK.md') -Force
+    } elseif ([string]$item.id -eq [string]$idWaiting) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'admin-dashboard' -Force
+      $item | Add-Member -NotePropertyName depends_on -NotePropertyValue @('admin-api') -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-admin' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/admin/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/admin/page.tsx') -Force
+    }
+  }
+  Save-Backlog $items
+
+  $frontierBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($frontierBatch -ne $null) 'expected dependency-aware ready frontier batch'
+  Assert-True ([int]$frontierBatch.count -eq 3) ("expected 3 ready frontier items, got {0}" -f [int]$frontierBatch.count)
+  Assert-True (@($frontierBatch.ids) -contains [string]$idReadyA) 'expected ready profile atom'
+  Assert-True (@($frontierBatch.ids) -contains [string]$idReadyB) 'expected ready gallery atom'
+  Assert-True (@($frontierBatch.ids) -contains [string]$idReadyC) 'expected ready docs atom'
+  Assert-True (-not (@($frontierBatch.ids) -contains [string]$idWaiting)) 'waiting dependency atom should not block or join frontier'
+  Assert-True ([int]$frontierBatch.dependency_wait_count -ge 1) 'expected dependency wait telemetry'
+
   $startSrvText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Start-Srv and Start-Drv use Start-Process with -NoNewWindow but redirect stdout/stderr to files. If the log file path is unavailable, supervisor can fail silently.'
   $reapText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Reap-Bloated kills tracked processes with private memory > 8GB. The threshold is hardcoded.'
   $auditText = '[deep-claude/Functional Bug] : The deep-audit phase of audit-self-diag is encountering Get-BacklogPath exceptions during drift analysis.'

@@ -111,10 +111,25 @@
    ```text
    [[PROJECT_BACKLOG]]
    [
-     {"slug":"...", "title":"...", "task":"...", "files":["..."], "depends_on":[], "severity":"normal"}
+     {
+       "slug":"...",
+       "title":"...",
+       "task":"...",
+       "chapter":"...",
+       "wave":"wave-1",
+       "parallel_group":"...",
+       "files":["..."],
+       "depends_on":[],
+       "acceptance":["..."],
+       "checks":["npm run typecheck","npm run build"],
+       "severity":"normal"
+     }
    ]
    [[/PROJECT_BACKLOG]]
    ```
+   Перед backlog coordinator должен сохранять долговечные решения/риски/инварианты/проверки в проектную
+   память через `[[PROJECT_DECISION: ...]]`, `[[PROJECT_RISK: ...]]`, `[[PROJECT_INVARIANT: ...]]`,
+   `[[PROJECT_TEST: ...]]`, `[[PROJECT_OPEN_QUESTION: ...]]`.
    Driver сам добавит их как `approved` project tasks, с project scope и metadata.
 5. **Ручной append — только fallback.** Если автопилот недоступен или надо восстановить очередь:
    поставить `state.paused=true` → подождать → дописать атомы в `backlog.jsonl` (UTF-8 БЕЗ BOM,
@@ -123,6 +138,9 @@
 6. **Исполнение:** мост сам берёт approved-атомы, параллелит независимые (packer → worktree-воркеры
    → collect-then-commit). Verify гоняет `tsc`/build; live HTTP/API checks для сайтов идут через
    `tools\web-smoke.ps1`, а не через ручной `Start-Process npm run dev`.
+   Scheduler использует ready-frontier: атомы с незакрытыми `depends_on` ждут, но не блокируют независимые
+   ready-атомы. В чат пишется выбранная волна и причины ожидания/конфликтов; итог волны сохраняется в
+   project memory.
 7. **Наблюдение:** не вмешивайся в реализацию; следи за чатом канала и git-коммитами; честно
    докладывай оператору результат ГЛАВЫ.
 

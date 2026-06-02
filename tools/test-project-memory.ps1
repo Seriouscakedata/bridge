@@ -26,6 +26,10 @@ function Get-BridgeConfig {
 }
 function Get-Secret { param([string]$Name) return $null }
 function Use-BridgeLock { param([scriptblock]$Action) & $Action }
+function Resolve-BridgeContainedPath {
+  param([Parameter(Mandatory=$true)][string]$Path, [string]$Purpose = 'test path')
+  return [System.IO.Path]::GetFullPath($Path)
+}
 function Get-EffectiveChannel { return 'bigproj' }
 function Get-CurrentMemoryChannel { return 'bigproj' }
 function Get-EffectiveScope {

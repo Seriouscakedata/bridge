@@ -189,6 +189,13 @@ JSON-массив атомов внутри:
 [[/PROJECT_BACKLOG]]
 ```
 
+С 2026-06-02 атомы Project Autopilot должны по возможности нести расширенную мету:
+`chapter`, `wave`, `parallel_group`, `files`, `depends_on`, `acceptance`, `checks`.
+Planner также может/должен перед `[[PROJECT_BACKLOG]]` сохранять долговечные проектные знания через
+`[[PROJECT_DECISION: ...]]`, `[[PROJECT_RISK: ...]]`, `[[PROJECT_INVARIANT: ...]]`,
+`[[PROJECT_TEST: ...]]`, `[[PROJECT_OPEN_QUESTION: ...]]`. Driver пишет это в per-channel
+project memory (`channels/<slug>/memory/memory.jsonl`) через существующий embedding-store.
+
 **Реализация:**
 - `lib/backlog.ps1`: `Get-ProjectAutopilotConfig`, `Get-ProjectAutopilotBinding`,
   `Get-ProjectAutopilotBacklogPressure`, `Test-ProjectAutopilotProjectClean`,
@@ -199,6 +206,18 @@ JSON-массив атомов внутри:
 
 **Операторский инвариант:** ручной append в `backlog.jsonl` теперь fallback. Штатно проект сам
 пополняет очередь атомами через `[[PROJECT_BACKLOG]]`, а затем обычная автономия исполняет approved tasks.
+
+### 4.3-ter Workpack ready-frontier scheduler
+`Get-NextBacklogWorkpackBatch` больше не отключает весь batch из-за одной зависимой задачи. Он строит
+готовый фронт approved workpack-атомов:
+- explicit `depends_on` обязан указывать на `done`/`auto-resolved` slug;
+- атомы с незакрытыми зависимостями остаются ждать и не блокируют независимые ready-атомы;
+- heuristic `foundation` без explicit deps остаётся serial barrier;
+- выбор batch всё ещё требует разные `workpack_conflict_group` и непересекающийся touch-set.
+
+Driver пишет в чат телеметрию фронта (`selected`, `ready/eligible`, `deps`, `barrier`, `conflicts`).
+Итог deterministic parallel wave сохраняется в project memory: success как `project_worklog`, partial/fail
+как `project_risk`.
 
 ### 4.4 Песочница кодера и auto-commit (это НЕ баг)
 Codex работает в **изолированной песочнице** (`workspace-write`): может писать файлы проекта, но **намеренно не имеет доступа к `.git`** (ACL на `.git/index.lock`). Поэтому:
