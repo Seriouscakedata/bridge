@@ -3864,6 +3864,20 @@ while ($true) {
               }
             } catch {}
           }
+          elseif ($paStart -and [string]$paStart.reason -eq 'plan-contract-not-ready') {
+            # Plan approval is not enough if the durable map/plan/UX contract is missing, shallow, or stale.
+            # Notify once; Set-ProjectPlanApproved clears this marker after a valid contract is approved.
+            try {
+              $contractMark = Join-Path (Join-Path (Join-Path $bridgeRoot 'channels') $Channel) '.plan-contract-gate-notified'
+              if (-not (Test-Path -LiteralPath $contractMark)) {
+                $issueText = ''
+                try { $issueText = ((@($paStart.issues) | Select-Object -First 4) -join '; ') } catch { $issueText = '' }
+                if ([string]::IsNullOrWhiteSpace($issueText)) { $issueText = 'project contract is not ready' }
+                Add-Message -From system -Text ("Project Autopilot paused: approved plan is not implementation-ready. Need deep PROJECT_MAP.md, PROJECT_PLAN.md, and .bridge/project-contract.json before atom generation. Issues: " + $issueText) -Kind event | Out-Null
+                Set-Content -LiteralPath $contractMark -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII
+              }
+            } catch {}
+          }
         } catch {}
       }
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {

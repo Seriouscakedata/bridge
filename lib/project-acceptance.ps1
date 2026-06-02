@@ -481,6 +481,158 @@ function New-ProjectAcceptanceStep {
   return [pscustomobject]@{ name=$Name; ok=[bool]$Ok; exit_code=[int]$ExitCode; details=[string]$Details }
 }
 
+function Get-ProjectAcceptanceFileText {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  try { return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) } catch { return '' }
+}
+
+function Get-ProjectAcceptanceSha256 {
+  param([string]$Text)
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+    return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()
+  } catch {
+    return ''
+  }
+}
+
+function Get-ProjectAcceptancePlanContractPath {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  return (Join-Path (Join-Path $ProjectRoot '.bridge') 'project-contract.json')
+}
+
+function Get-ProjectAcceptancePlanSignature {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in @('PROJECT_MAP.md','PROJECT_PLAN.md','.bridge\project-contract.json')) {
+    $path = Join-Path $ProjectRoot $rel
+    [void]$parts.Add($rel.Replace('\','/') + "`n" + (Get-ProjectAcceptanceFileText -Path $path))
+  }
+  return (Get-ProjectAcceptanceSha256 -Text (($parts.ToArray()) -join "`n---bridge-plan-part---`n"))
+}
+
+function Get-ProjectAcceptanceContractArray {
+  param($Obj, [string[]]$Names = @())
+  $v = Get-ProjectAcceptanceObjectValue -Obj $Obj -Names $Names -Default $null
+  if ($null -eq $v) { return @() }
+  try {
+    if ($v -is [string]) {
+      if ([string]::IsNullOrWhiteSpace([string]$v)) { return @() }
+      return @([string]$v)
+    }
+    return @($v | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) })
+  } catch {
+    return @()
+  }
+}
+
+function Get-ProjectAcceptanceContractCount {
+  param($Obj, [string[]]$Names = @())
+  $arr = @(Get-ProjectAcceptanceContractArray -Obj $Obj -Names $Names)
+  if ($arr.Count -gt 0) { return [int]$arr.Count }
+  $v = Get-ProjectAcceptanceObjectValue -Obj $Obj -Names $Names -Default $null
+  try {
+    if ($v -and $v.PSObject.Properties.Count -gt 0) { return [int]$v.PSObject.Properties.Count }
+  } catch {}
+  return 0
+}
+
+function Read-ProjectAcceptancePlanContract {
+  param([string]$ProjectRoot)
+  $path = Get-ProjectAcceptancePlanContractPath -ProjectRoot $ProjectRoot
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return [pscustomobject]@{ exists=$false; path=$path; contract=$null; error='' }
+  }
+  try {
+    return [pscustomobject]@{
+      exists = $true
+      path = $path
+      contract = ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+      error = ''
+    }
+  } catch {
+    return [pscustomobject]@{ exists=$true; path=$path; contract=$null; error=$_.Exception.Message }
+  }
+}
+
+function Get-ProjectAcceptancePlanContractSteps {
+  param([string]$ProjectRoot)
+  $steps = New-Object 'System.Collections.Generic.List[object]'
+  $mapPath = Join-Path $ProjectRoot 'PROJECT_MAP.md'
+  $planPath = Join-Path $ProjectRoot 'PROJECT_PLAN.md'
+  $mapText = Get-ProjectAcceptanceFileText -Path $mapPath
+  $planText = Get-ProjectAcceptanceFileText -Path $planPath
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_MAP.md-depth' -Ok ($mapText.Length -ge 1500) -Details ("chars=" + [string]$mapText.Length)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_PLAN.md-depth' -Ok ($planText.Length -ge 2000) -Details ("chars=" + [string]$planText.Length)))
+
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:present' -Ok ([bool]$info.exists -and $null -ne $info.contract) -Details ($(if ($info.contract) { [string]$info.path } elseif (-not [string]::IsNullOrWhiteSpace([string]$info.error)) { [string]$info.error } else { [string]$info.path }))))
+  if (-not $info.contract) { return @($steps.ToArray()) }
+
+  $goal = [string](Get-ProjectAcceptanceObjectValue -Obj $info.contract -Names @('project_goal','goal','mission','outcome') -Default '')
+  $reqCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('requirements','capabilities','features','functional_requirements'))
+  $surfaceCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('screens','routes','views','surfaces','pages','endpoints','modules'))
+  $journeyCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('user_journeys','journeys','flows','workflows','scenarios'))
+  $acceptanceCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('acceptance_scenarios','acceptance','done_criteria','checks','quality_gates'))
+  $interfaceCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('ux_contract','ux','interface_contract','experience_principles','interaction_model'))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:goal' -Ok ($goal.Trim().Length -ge 40) -Details ("chars=" + [string]$goal.Trim().Length)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:requirements' -Ok ($reqCount -ge 3) -Details ("count=" + [string]$reqCount)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:surfaces' -Ok ($surfaceCount -ge 2) -Details ("count=" + [string]$surfaceCount)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:journeys' -Ok ($journeyCount -ge 2) -Details ("count=" + [string]$journeyCount)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:acceptance' -Ok ($acceptanceCount -ge 3) -Details ("count=" + [string]$acceptanceCount)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:interface' -Ok ($interfaceCount -ge 1) -Details ("count=" + [string]$interfaceCount)))
+  return @($steps.ToArray())
+}
+
+function Get-ProjectAcceptancePlanContractWebSpecs {
+  param([string]$ProjectRoot)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  if (-not $info.contract) { return @() }
+  $items = @()
+  foreach ($names in @(
+    @('screens'),
+    @('routes'),
+    @('views'),
+    @('surfaces'),
+    @('pages'),
+    @('endpoints')
+  )) {
+    $items += @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names $names)
+  }
+  $specs = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($it in @($items)) {
+    $path = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('path','route','url','href') -Default '')
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    if (-not ($path.StartsWith('/') -or $path -match '^(?i)https?://')) { continue }
+    $name = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('id','name','title','label') -Default $path)
+    $expected = Get-ProjectAcceptanceObjectValue -Obj $it -Names @('expected_status','expectedStatus','status') -Default '200'
+    $tokens = @(Get-ProjectAcceptanceContractArray -Obj $it -Names @('must_contain','mustContain','contains','visible_text','visibleText','text_assertions'))
+    [void]$specs.Add([pscustomobject]@{
+      name = $name
+      path = $path
+      expected = @(ConvertTo-ProjectAcceptanceStatusSet -Values @($expected))
+      must_contain = @($tokens | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+    })
+  }
+  return @($specs.ToArray())
+}
+
+function Invoke-ProjectAcceptanceHttpText {
+  param([string]$Url)
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -DisableKeepAlive -Uri $Url -Method GET -TimeoutSec 10 -MaximumRedirection 0 -ErrorAction Stop
+    return [pscustomobject]@{ status=[int]$r.StatusCode; text=[string]$r.Content; error='' }
+  } catch {
+    $code = 0
+    try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch {}
+    return [pscustomobject]@{ status=$code; text=''; error=$_.Exception.Message }
+  }
+}
+
 function Invoke-ProjectAcceptance {
   param(
     [string]$Channel = '',
@@ -501,6 +653,11 @@ function Invoke-ProjectAcceptance {
   $cfg = Get-ProjectAcceptanceConfig -ProjectRoot $ProjectRoot
   $head = Get-ProjectAcceptanceGitHead -ProjectRoot $ProjectRoot
   $steps = New-Object 'System.Collections.Generic.List[object]'
+  $planSignature = Get-ProjectAcceptancePlanSignature -ProjectRoot $ProjectRoot
+  $planContractPath = Get-ProjectAcceptancePlanContractPath -ProjectRoot $ProjectRoot
+  foreach ($planStep in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $ProjectRoot)) {
+    [void]$steps.Add($planStep)
+  }
 
   foreach ($scriptName in @($cfg.requiredScripts)) {
     Write-ProjectAcceptanceTrace -Channel $ch -Text "script start $scriptName"
@@ -515,7 +672,8 @@ function Invoke-ProjectAcceptance {
     Write-ProjectAcceptanceTrace -Channel $ch -Text ("script done " + $scriptName + " ok=" + [string]$res.ok + " exit=" + [string]$res.exit_code)
   }
 
-  if ($cfg.checks.Count -gt 0) {
+  $contractWebSpecs = @(Get-ProjectAcceptancePlanContractWebSpecs -ProjectRoot $ProjectRoot)
+  if ($cfg.checks.Count -gt 0 -or $contractWebSpecs.Count -gt 0) {
     $webServer = $null
     try {
       Write-ProjectAcceptanceTrace -Channel $ch -Text "web server start"
@@ -531,6 +689,26 @@ function Invoke-ProjectAcceptance {
           $ok = @($check.expected) -contains $actual
           [void]$steps.Add((New-ProjectAcceptanceStep -Name ("web:" + [string]$check.spec) -Ok ([bool]$ok) -ExitCode $actual -Details ("actual=$actual url=$($check.url)")))
           Write-ProjectAcceptanceTrace -Channel $ch -Text ("web done " + [string]$spec + " actual=" + [string]$actual)
+        }
+        foreach ($spec in @($contractWebSpecs)) {
+          $url = Join-ProjectAcceptanceUrl -BaseUrl ([string]$webServer.baseUrl) -Path ([string]$spec.path)
+          Write-ProjectAcceptanceTrace -Channel $ch -Text ("contract web start " + [string]$spec.name + " " + [string]$spec.path)
+          $http = Invoke-ProjectAcceptanceHttpText -Url $url
+          $expectedStatuses = @($spec.expected)
+          if ($expectedStatuses.Count -eq 0) { $expectedStatuses = @(200) }
+          $statusOk = @($expectedStatuses) -contains [int]$http.status
+          $missing = New-Object 'System.Collections.Generic.List[string]'
+          foreach ($token in @($spec.must_contain)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$token) -and ([string]$http.text).IndexOf([string]$token, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+              [void]$missing.Add([string]$token)
+            }
+          }
+          $ok = ($statusOk -and $missing.Count -eq 0)
+          $details = "status=$($http.status) expected=" + ((@($expectedStatuses) | ForEach-Object { [string]$_ }) -join ',') + " url=$url"
+          if ($missing.Count -gt 0) { $details += " missing=" + (($missing.ToArray()) -join ' | ') }
+          if (-not [string]::IsNullOrWhiteSpace([string]$http.error)) { $details += " error=" + [string]$http.error }
+          [void]$steps.Add((New-ProjectAcceptanceStep -Name ("contract-web:" + [string]$spec.name) -Ok ([bool]$ok) -ExitCode ([int]$http.status) -Details $details))
+          Write-ProjectAcceptanceTrace -Channel $ch -Text ("contract web done " + [string]$spec.name + " ok=" + [string]$ok + " actual=" + [string]$http.status)
         }
       }
     } finally {
@@ -586,6 +764,8 @@ function Invoke-ProjectAcceptance {
     head = $head
     trigger = [string]$Trigger
     status = $status
+    plan_signature = $planSignature
+    plan_contract_path = $planContractPath
     steps = @($steps.ToArray())
   }
   Write-ProjectAcceptanceTrace -Channel $ch -Text "write json"
@@ -599,6 +779,8 @@ function Invoke-ProjectAcceptance {
   [void]$md.AppendLine("- head: $head")
   [void]$md.AppendLine("- trigger: $Trigger")
   [void]$md.AppendLine("- status: $status")
+  [void]$md.AppendLine("- plan_signature: $planSignature")
+  [void]$md.AppendLine("- plan_contract: $planContractPath")
   [void]$md.AppendLine("")
   [void]$md.AppendLine("## Steps")
   foreach ($s in @($steps.ToArray())) {

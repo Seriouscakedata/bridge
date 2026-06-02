@@ -2576,6 +2576,140 @@ function Test-ProjectAutopilotProjectClean {
   }
 }
 
+function Get-ProjectAutopilotPlanContractPath {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  return (Join-Path (Join-Path $ProjectRoot '.bridge') 'project-contract.json')
+}
+
+function Get-ProjectAutopilotFileText {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  try { return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) } catch { return '' }
+}
+
+function Get-ProjectAutopilotSha256 {
+  param([string]$Text)
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+    return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()
+  } catch {
+    return ''
+  }
+}
+
+function Get-ProjectAutopilotPlanSignature {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in @('PROJECT_MAP.md','PROJECT_PLAN.md','.bridge\project-contract.json')) {
+    $path = Join-Path $ProjectRoot $rel
+    [void]$parts.Add($rel.Replace('\','/') + "`n" + (Get-ProjectAutopilotFileText -Path $path))
+  }
+  return (Get-ProjectAutopilotSha256 -Text (($parts.ToArray()) -join "`n---bridge-plan-part---`n"))
+}
+
+function Get-ProjectAutopilotContractValue {
+  param($Obj, [string[]]$Names = @(), $Default = $null)
+  if (-not $Obj) { return $Default }
+  foreach ($name in @($Names)) {
+    try {
+      if ($Obj.PSObject.Properties.Name -contains $name) {
+        $v = $Obj.PSObject.Properties[$name].Value
+        if ($null -ne $v) { return $v }
+      }
+    } catch {}
+  }
+  return $Default
+}
+
+function Get-ProjectAutopilotContractCount {
+  param($Obj, [string[]]$Names = @())
+  $v = Get-ProjectAutopilotContractValue -Obj $Obj -Names $Names -Default $null
+  if ($null -eq $v) { return 0 }
+  try {
+    if ($v -is [string]) {
+      if ([string]::IsNullOrWhiteSpace([string]$v)) { return 0 }
+      return 1
+    }
+    if ($v -is [System.Collections.IDictionary]) { return [int]$v.Count }
+    $arr = @($v | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($arr.Count -gt 0) { return [int]$arr.Count }
+  } catch {}
+  try {
+    if ($v.PSObject.Properties.Count -gt 0) { return [int]$v.PSObject.Properties.Count }
+  } catch {}
+  return 0
+}
+
+function Test-ProjectPlanContractReady {
+  param([string]$ProjectRoot)
+  $issues = New-Object 'System.Collections.Generic.List[string]'
+  $mapPath = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { '' } else { Join-Path $ProjectRoot 'PROJECT_MAP.md' }
+  $planPath = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { '' } else { Join-Path $ProjectRoot 'PROJECT_PLAN.md' }
+  $contractPath = Get-ProjectAutopilotPlanContractPath -ProjectRoot $ProjectRoot
+  $mapText = Get-ProjectAutopilotFileText -Path $mapPath
+  $planText = Get-ProjectAutopilotFileText -Path $planPath
+  $contract = $null
+
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
+    [void]$issues.Add('project_root is missing')
+  }
+  if ($mapText.Length -lt 1500) {
+    [void]$issues.Add('PROJECT_MAP.md is missing or too shallow (<1500 chars)')
+  }
+  if ($planText.Length -lt 2000) {
+    [void]$issues.Add('PROJECT_PLAN.md is missing or too shallow (<2000 chars)')
+  }
+  if ([string]::IsNullOrWhiteSpace($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+    [void]$issues.Add('.bridge/project-contract.json is missing')
+  } else {
+    try {
+      $contract = [System.IO.File]::ReadAllText($contractPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    } catch {
+      [void]$issues.Add('.bridge/project-contract.json is not valid JSON')
+    }
+  }
+
+  $goalText = ''
+  $reqCount = 0
+  $surfaceCount = 0
+  $journeyCount = 0
+  $acceptanceCount = 0
+  $interfaceCount = 0
+  if ($contract) {
+    $goalText = [string](Get-ProjectAutopilotContractValue -Obj $contract -Names @('project_goal','goal','mission','outcome') -Default '')
+    $reqCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('requirements','capabilities','features','functional_requirements'))
+    $surfaceCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('screens','routes','views','surfaces','pages','endpoints','modules'))
+    $journeyCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('user_journeys','journeys','flows','workflows','scenarios'))
+    $acceptanceCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('acceptance_scenarios','acceptance','done_criteria','checks','quality_gates'))
+    $interfaceCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('ux_contract','ux','interface_contract','experience_principles','interaction_model'))
+    if ($goalText.Trim().Length -lt 40) { [void]$issues.Add('project contract goal is missing or too short') }
+    if ($reqCount -lt 3) { [void]$issues.Add('project contract needs at least 3 requirements/capabilities/features') }
+    if ($surfaceCount -lt 2) { [void]$issues.Add('project contract needs at least 2 screens/routes/interfaces/modules') }
+    if ($journeyCount -lt 2) { [void]$issues.Add('project contract needs at least 2 user journeys/workflows/scenarios') }
+    if ($acceptanceCount -lt 3) { [void]$issues.Add('project contract needs at least 3 acceptance scenarios/checks') }
+    if ($interfaceCount -lt 1) { [void]$issues.Add('project contract needs ux_contract or interface_contract') }
+  }
+
+  return [pscustomobject]@{
+    ready = ($issues.Count -eq 0)
+    issues = @($issues.ToArray())
+    signature = (Get-ProjectAutopilotPlanSignature -ProjectRoot $ProjectRoot)
+    map_path = $mapPath
+    plan_path = $planPath
+    contract_path = $contractPath
+    counts = [pscustomobject]@{
+      requirements = $reqCount
+      surfaces = $surfaceCount
+      journeys = $journeyCount
+      acceptance = $acceptanceCount
+      interface_contract = $interfaceCount
+    }
+  }
+}
+
 function New-ProjectAutopilotCoordinatorTaskText {
   param([string]$Slug, [string]$ProjectRoot, [int]$MaxTasks = 12)
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
@@ -2590,14 +2724,17 @@ Mission: keep this project moving without the operator manually feeding backlog 
 
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
-- Read PROJECT_MAP.md, PROJECT_PLAN.md, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
+- Read PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
 - Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
-- Determine the next approved/incomplete chapter or the next missing planning step.
+- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must describe goal, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
+- If the map, plan, or contract is shallow/missing/stale, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen PROJECT_MAP.md, PROJECT_PLAN.md, and .bridge/project-contract.json.
+- Determine the next approved/incomplete chapter from the contract and plan, not from a guessed feature list.
 - Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
 - Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
 - Use chapter, wave, parallel_group, files, depends_on, acceptance, and checks so the scheduler can run the team safely.
+- Every atom acceptance must trace back to a project-contract requirement, journey, surface, or acceptance scenario. Do not use generic "looks good" UX checks.
 - Before PROJECT_BACKLOG, emit durable project memory markers when useful:
   [[PROJECT_DECISION: ...]]
   [[PROJECT_RISK: ...]]
@@ -2641,12 +2778,21 @@ function Test-ProjectPlanApproved {
   # instead of it, and prevents it from scaling an un-vetted plan into a frankenstein (observed on
   # private-community: 246 files build-green but product-incoherent because the plan skipped Ф1–Ф4).
   # Reads channels/<ch>/channel.json -> plan_approved. Default $false = safe (no approval => no autopilot).
-  param([string]$Channel)
+  param([string]$Channel, [string]$ProjectRoot = '')
   try {
     $cj = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) 'channel.json'
     if (-not (Test-Path -LiteralPath $cj)) { return $false }
     $raw = [System.IO.File]::ReadAllText($cj, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-    if ($raw -and ($raw.PSObject.Properties.Name -contains 'plan_approved')) { return [bool]$raw.plan_approved }
+    if (-not $raw -or -not ($raw.PSObject.Properties.Name -contains 'plan_approved') -or -not [bool]$raw.plan_approved) { return $false }
+    $approvedSignature = ''
+    try {
+      if ($raw.PSObject.Properties.Name -contains 'plan_approved_signature') { $approvedSignature = [string]$raw.plan_approved_signature }
+    } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($approvedSignature) -and -not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
+      $currentSignature = Get-ProjectAutopilotPlanSignature -ProjectRoot $ProjectRoot
+      if ([string]::IsNullOrWhiteSpace($currentSignature) -or $currentSignature -ne $approvedSignature) { return $false }
+    }
+    return $true
   } catch {}
   return $false
 }
@@ -2658,11 +2804,35 @@ function Set-ProjectPlanApproved {
   $cj = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) 'channel.json'
   if (-not (Test-Path -LiteralPath $cj)) { throw "channel.json not found: $Channel" }
   $raw = [System.IO.File]::ReadAllText($cj, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $projectRoot = ''
+  try {
+    if ($raw -and ($raw.PSObject.Properties.Name -contains 'project_root')) { $projectRoot = [string]$raw.project_root }
+  } catch {}
+  try {
+    if ([string]::IsNullOrWhiteSpace($projectRoot) -and (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue)) {
+      $binding = Get-ChannelProjectBinding -Slug $Channel
+      if ($binding -and [bool]$binding.ok) { $projectRoot = [string]$binding.project_root }
+    }
+  } catch {}
+  $contractReady = $null
+  if ($Approved) {
+    $contractReady = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+    if (-not [bool]$contractReady.ready) {
+      throw ("project plan contract is not ready: " + ((@($contractReady.issues) | Select-Object -First 8) -join '; '))
+    }
+  }
   $raw | Add-Member -NotePropertyName plan_approved -NotePropertyValue $Approved -Force
   $raw | Add-Member -NotePropertyName plan_approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+  if ($Approved -and $contractReady) {
+    $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue ([string]$contractReady.signature) -Force
+    $raw | Add-Member -NotePropertyName plan_contract_path -NotePropertyValue ([string]$contractReady.contract_path) -Force
+  } elseif (-not $Approved) {
+    $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue '' -Force
+  }
   [System.IO.File]::WriteAllText($cj, (($raw | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   # clear the one-time gate-notified marker so a future re-gate (plan rewrite) notifies the operator again
   try { $gm = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.plan-gate-notified'; if (Test-Path -LiteralPath $gm) { Remove-Item -LiteralPath $gm -Force -ErrorAction SilentlyContinue } } catch {}
+  try { $cm = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.plan-contract-gate-notified'; if (Test-Path -LiteralPath $cm) { Remove-Item -LiteralPath $cm -Force -ErrorAction SilentlyContinue } } catch {}
   return $Approved
 }
 
@@ -2672,16 +2842,27 @@ function Start-ProjectAutopilotIfNeeded {
   if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ queued=$false; reason='disabled' } }
   $binding = Get-ProjectAutopilotBinding
   if (-not $binding) { return [pscustomobject]@{ queued=$false; reason='not-project-channel' } }
+  $slug = [string]$binding.slug
+  $root = [string]$binding.project_root
   # 2026-06-02 DISCUSS-FIRST GATE: autopilot only executes an operator-APPROVED PROJECT_PLAN (Ф4).
   # Until the operator runs Set-ProjectPlanApproved for this channel, the bridge stays in discuss/
   # planning and autopilot does NOT auto-queue coordinator/atoms. This is the fix for autopilot
   # bypassing Ф1–Ф4 and scaling an un-vetted plan into a frankenstein.
-  if (-not (Test-ProjectPlanApproved -Channel ([string]$binding.slug))) {
-    return [pscustomobject]@{ queued=$false; reason='plan-not-approved'; channel=[string]$binding.slug }
+  if (-not (Test-ProjectPlanApproved -Channel $slug -ProjectRoot $root)) {
+    return [pscustomobject]@{ queued=$false; reason='plan-not-approved'; channel=$slug }
+  }
+  $planContract = Test-ProjectPlanContractReady -ProjectRoot $root
+  if (-not [bool]$planContract.ready) {
+    return [pscustomobject]@{
+      queued = $false
+      reason = 'plan-contract-not-ready'
+      channel = $slug
+      project_root = $root
+      issues = @($planContract.issues)
+      contract_path = [string]$planContract.contract_path
+    }
   }
 
-  $slug = [string]$binding.slug
-  $root = [string]$binding.project_root
   $pressure = Get-ProjectAutopilotBacklogPressure
   if ([int]$pressure.runnable -gt 0) { return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure } }
   if ([int]$pressure.autopilot_open -gt 0) { return [pscustomobject]@{ queued=$false; reason='autopilot-already-open'; pressure=$pressure } }

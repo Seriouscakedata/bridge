@@ -51,14 +51,44 @@ function Add-Message {
 
 try {
   $channelDir = Get-ChannelDir -Slug $script:TestChannel
+  $projectRoot = Join-Path $script:TestBridgeRoot 'project'
   New-Item -ItemType Directory -Path $channelDir -Force | Out-Null
-  New-Item -ItemType Directory -Path (Join-Path $script:TestBridgeRoot 'project') -Force | Out-Null
+  New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $projectRoot '.bridge') -Force | Out-Null
   [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), '', (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $channelDir 'channel.json'), (@{
+    slug = $script:TestChannel
+    project_root = $projectRoot
+  } | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+
+  $mapText = ((1..80 | ForEach-Object { "Project map line $($_): routes, workflows, interfaces, storage, risks, and acceptance traceability are documented for the fixture." }) -join "`n")
+  $planText = ((1..100 | ForEach-Object { "Project plan line $($_): chapter, dependency, done criteria, verification, and UX contract traceability are documented for the fixture." }) -join "`n")
+  [System.IO.File]::WriteAllText((Join-Path $projectRoot 'PROJECT_MAP.md'), $mapText, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $projectRoot 'PROJECT_PLAN.md'), $planText, (New-Object System.Text.UTF8Encoding($false)))
+  $contract = [ordered]@{
+    project_goal = 'Build a test project with enough durable planning detail for autopilot contract approval and acceptance traceability.'
+    requirements = @('auth requirement','content requirement','admin requirement')
+    screens = @(
+      [ordered]@{ id='home'; path='/'; expected_status=200; must_contain=@('Home') },
+      [ordered]@{ id='settings'; path='/settings'; expected_status=200; must_contain=@('Settings') }
+    )
+    user_journeys = @(
+      [ordered]@{ id='register'; steps=@('open app','register','see dashboard') },
+      [ordered]@{ id='admin-review'; steps=@('open admin','review content','remove item') }
+    )
+    ux_contract = [ordered]@{ navigation='Every primary user role has a clear first action and persistent navigation.' }
+    acceptance_scenarios = @('build passes','auth journey passes','admin journey passes')
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $projectRoot '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\backlog.ps1')
 
   $cfg = Get-ProjectAutopilotConfig
   Assert-True ([int]$cfg.emptyCoordinatorLimit -eq 2) 'expected emptyCoordinatorLimit from autonomy settings'
+  $gateStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
+  Assert-True (-not [bool]$gateStart.queued) 'unapproved plan must not queue a coordinator'
+  Assert-True ([string]$gateStart.reason -eq 'plan-not-approved') ("expected plan-not-approved, got " + [string]$gateStart.reason)
+  Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null
   $prefixedCoordinatorText = "[autonomous backlog task] " + (New-ProjectAutopilotCoordinatorTaskText -Slug $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -MaxTasks 4)
   Assert-True (Test-ProjectAutopilotCoordinatorText -Text $prefixedCoordinatorText) 'coordinator detector should allow driver task prefixes'
 

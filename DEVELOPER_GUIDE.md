@@ -196,6 +196,49 @@ Planner также может/должен перед `[[PROJECT_BACKLOG]]` со
 `[[PROJECT_TEST: ...]]`, `[[PROJECT_OPEN_QUESTION: ...]]`. Driver пишет это в per-channel
 project memory (`channels/<slug>/memory/memory.jsonl`) через существующий embedding-store.
 
+**Project plan contract gate (2026-06-02):**
+Project Autopilot is not allowed to decompose a shallow plan. Before `Set-ProjectPlanApproved`
+can approve a project channel, the project must contain:
+
+- `PROJECT_MAP.md` with durable product/interface/workflow mapping;
+- `PROJECT_PLAN.md` with deep chapter/dependency/acceptance planning;
+- `.bridge/project-contract.json` as the machine-readable source of truth for product, UX/interface,
+  journeys/workflows, and final acceptance.
+
+`Set-ProjectPlanApproved` stores `plan_approved_signature`, a SHA-256 signature of
+`PROJECT_MAP.md + PROJECT_PLAN.md + .bridge/project-contract.json`. If any of those files change,
+`Test-ProjectPlanApproved` returns false and autopilot waits for re-approval instead of expanding
+stale scope.
+
+Minimal `.bridge/project-contract.json` shape:
+
+```json
+{
+  "project_goal": "Concrete outcome, not a slogan.",
+  "requirements": ["capability 1", "capability 2", "capability 3"],
+  "screens": [
+    {
+      "id": "dashboard",
+      "path": "/dashboard",
+      "expected_status": 200,
+      "must_contain": ["Dashboard"]
+    }
+  ],
+  "user_journeys": [
+    {"id": "main-flow", "steps": ["open", "act", "verify"]},
+    {"id": "admin-flow", "steps": ["open admin", "review", "act"]}
+  ],
+  "ux_contract": {
+    "navigation": "Primary actions and state feedback are visible for the intended roles."
+  },
+  "acceptance_scenarios": ["typecheck passes", "build passes", "critical journey passes"]
+}
+```
+
+Final project acceptance uses this contract too: it fails when the plan/contract is missing or
+too shallow, and it adds deterministic web checks from contract surfaces (`path`, `expected_status`,
+`must_contain`) in addition to project scripts/smokes from `.bridge/acceptance.json`.
+
 **Реализация:**
 - `lib/backlog.ps1`: `Get-ProjectAutopilotConfig`, `Get-ProjectAutopilotBinding`,
   `Get-ProjectAutopilotBacklogPressure`, `Test-ProjectAutopilotProjectClean`,
