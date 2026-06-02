@@ -11,6 +11,24 @@ This file records concrete errors, weak spots, and recovery notes observed while
 - Do not store secrets, tokens, passwords, or private user data.
 - Keep entries short enough to scan during monitoring.
 
+## 2026-06-02
+
+### ERR-2026-06-02-016 - Project acceptance passed a visually unacceptable MVP
+
+**Context:** `private-community` final acceptance reported PASS (`channels/private-community/acceptance/20260602-105342-PASS.md`), but manual operator review showed the app did not match the requested "Instagram-like private photo community website" quality bar. The public home was a single centered card, auth pages were plain forms, upload used a native file input, chat/profile/feed looked like generic CRUD screens.
+
+**Observed:** Existing `smoke:ux` mostly checked that routes rendered the app shell and contained static fragments such as `app-nav`, `Feed`, `Chat`, `Upload`, `Profile`. It did not assert that core screens had product-level UX structure, and it did not require visual inspection/screenshots before PASS.
+
+**Impact:** Bridge could claim a project is complete while the actual browser UI is visibly below the user's stated target. This is a trust problem, not just a cosmetic issue: the operator sees "PASS" but the delivered app is not acceptable.
+
+**Action taken:** Direct operator fix in `C:\Users\rafie\bridge-projects\private-community`: redesigned public home, auth pages, app shell, feed, upload, profile, chat, and admin styling; removed an operator-created 1x1 visual-audit test photo that polluted the feed; strengthened `scripts/smoke/ux-smoke.ts` with route-specific UX fragments (`home-hero`, `home-preview`, `auth-layout`, `feed-layout`, `feed-composer-card`, `upload-dropzone`, `chat-layout`, `profile-gallery`).
+
+**Verification:** `npm.cmd run build`, `npm.cmd run typecheck`, `smoke:pages`, `smoke:ux`, `smoke:auth`, `smoke:photo`, and `smoke:api` all passed against `http://localhost:3218`. Visual screenshots were taken under `%TEMP%\private-community-visual-fix-*` and clean rechecks under `%TEMP%\private-community-visual-fix-clean-1780403299531`.
+
+**Status:** Partially fixed project-side. The project now has a materially better UI and stronger smoke checks, but bridge-level final acceptance still needs a universal visual/UX gate based on the detailed project plan, not only route/string checks.
+
+---
+
 ## 2026-06-01
 
 ### ERR-2026-06-01-001 - Planner stalls with no output
