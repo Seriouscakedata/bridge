@@ -373,6 +373,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 | `state.json` повреждён | OneDrive sync во время шторма | server пересоздаёт; в идеале вынести runtime из OneDrive |
 | `deep[deep_failed agents=0]` | контракт/коллизия переменных в deep-audit | проверить `agents` vs `model_agents`, `$functionalAgent` коллизию |
 | `EPERM uv_spawn` | Defender блокирует вложенный скрытый powershell | не запускать диагностику так; использовать `-File` |
+| `server not ready` в project HTTP-smoke | агент руками поднял dev-сервер через inline `Start-Process` без логов/cleanup | использовать `tools\web-smoke.ps1`: start/dev detection, readiness, stdout/stderr log, cleanup |
 | «Recon … Running 911m» в фоне | зависла фоновая команда на UAC | Stop в UI / убить процесс (проверив, что не bridge) |
 
 Диагностика здоровья:
@@ -386,6 +387,15 @@ Get-Content "$env:USERPROFILE\.bridge-runtime\restarts.jsonl" | Select-Object -L
 # свежесть драйвера
 (Get-Item channels\main\state.json).LastWriteTime
 ```
+
+Project web/API smoke для любого сайта:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
+  -ProjectRoot C:\path\to\project `
+  -ReadyPath /login `
+  -Check "/api/health=200;/api/private=401,403"
+```
+Агенты должны вызывать это через `[[RUNJOB: ... | C:\Users\rafie\OneDrive\Documents\bridge]]`, а не собирать inline `Start-Process npm run dev`.
 
 ---
 

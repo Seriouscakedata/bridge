@@ -375,6 +375,7 @@ cd C:\Users\rafie\aipartners
 | `config.json` | порт сервера, пул воркеров (parallel.workers), maxStreams |
 | `lib\parallel.ps1` | параллель: dispatch, collect-then-commit, роутинг воркеров |
 | `lib\backlog.ps1` | бэклог: packer, свёртка, классификация задач, Project Autopilot |
+| `tools\web-smoke.ps1` | универсальный live HTTP/API smoke для проектных сайтов: старт, readiness, checks, лог, cleanup |
 | `driver.ps1` | рабочий цикл канала (planner/coder, dispatch, verify, commit) |
 | `supervisor.ps1` | надзор за процессами, circuit-breaker |
 
@@ -392,6 +393,7 @@ cd C:\Users\rafie\aipartners
 | Перезапустить мост | Stop/Start ScheduledTask `ClaudeCodexBridge` (§5) |
 | Применить правку .ps1 | `restart.flag` (§5) |
 | Поднять сайт проекта | §8 п.1 |
+| Проверить live HTTP/API проекта | `powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 -ProjectRoot <проект> -ReadyPath /login -Check "/api/health=200"` |
 | Разморозить застрявший канал | §9 (lease/paused) |
 | Сбросить ложный cooldown | §9 (restarts.jsonl) |
 | Проверить, собирается ли проект | §9 (tsc + next build) |

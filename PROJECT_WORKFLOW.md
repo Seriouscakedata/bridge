@@ -121,7 +121,8 @@
    `status:'approved'`, у каждого свой `workpack_conflict_group='file:<путь>'` и
    `workpack_touch_set`) → `state.paused=false`. Детали — `OPERATOR_GUIDE.md` §3.
 6. **Исполнение:** мост сам берёт approved-атомы, параллелит независимые (packer → worktree-воркеры
-   → collect-then-commit). Verify гоняет `tsc`/build.
+   → collect-then-commit). Verify гоняет `tsc`/build; live HTTP/API checks для сайтов идут через
+   `tools\web-smoke.ps1`, а не через ручной `Start-Process npm run dev`.
 7. **Наблюдение:** не вмешивайся в реализацию; следи за чатом канала и git-коммитами; честно
    докладывай оператору результат ГЛАВЫ.
 
@@ -135,6 +136,7 @@
 - [ ] В беклоге — атомы, а не главы?
 - [ ] Backlog пополняется Project Autopilot через `[[PROJECT_BACKLOG]]`, а не ручной подачей?
 - [ ] Verify гоняет project build/tsc (не только smoke)?
+- [ ] Для live HTTP/API сайта используется `tools\web-smoke.ps1` с readiness + конкретными status checks?
 - [ ] Приёмка против карты (сквозной сценарий), а не «build зелёный»?
 
 ---
@@ -147,6 +149,7 @@
 - ❌ Постоянно дописывать задачи руками, когда проект должен идти через Project Autopilot.
 - ❌ Грузить беклог без обсуждения и утверждённого плана.
 - ❌ Закрывать задачу по «зелёному build», не проверив сценарий продукта.
+- ❌ Писать ad-hoc PowerShell readiness loop с `Start-Process npm run dev` вместо `tools\web-smoke.ps1`.
 - ❌ Хвалиться результатом, не проверив реально (страницы есть ≠ продукт работает).
 
 ---

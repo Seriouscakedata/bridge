@@ -185,6 +185,8 @@ Readiness проекта считается по мягкому гейту:
 - `lib/scholar.ps1`: изучение статей и запись знаний.
 - `lib/foundry.ps1`: синтез новых проектов.
 - `lib/toolforge.ps1`: авто-инструменты, registry, smoke checks.
+- `tools/web-smoke.ps1`: универсальный project web/API smoke runner: старт сервера,
+  readiness, HTTP status checks, stdout/stderr log и cleanup.
 - `lib/features.ps1`: feature registry, feature state, activations, similarity.
 - `features/registry.json`: каталог фич и rollout metadata.
 
