@@ -1,0 +1,535 @@
+﻿# lib/features.ps1 -- feature registry helpers
+
+$ErrorActionPreference = 'Stop'
+
+function Get-BridgeRootFeat {
+    Split-Path -Parent $PSScriptRoot
+}
+
+if (-not (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'common.ps1')
+}
+if (-not (Get-Command Get-EffectiveScope -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'channels.ps1')
+}
+
+function Get-FeatureScope {
+    param([string]$Slug = $null)
+    return (Get-EffectiveScope -Slug $Slug)
+}
+
+function Test-SafeFeaturePath {
+    param(
+        [string]$Root,
+        [string]$RelPath
+    )
+    if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelPath)) { return $null }
+    if ([System.IO.Path]::IsPathRooted($RelPath)) { return $null }
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $rootWithSep = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $Root $RelPath))
+    if (-not $candidate.StartsWith($rootWithSep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    return $candidate
+}
+
+function Get-RegistryPath {
+    param([string]$Slug = $null)
+    [string]((Get-FeatureScope -Slug $Slug).features_registry)
+}
+
+function Get-FeatureStatePath {
+    # 2026-05-28 fix: was Get-StatePath — name collision with lib/common.ps1's
+    # Get-StatePath which resolves to channels/<slug>/state.json. Loading
+    # features.ps1 silently shadowed the channel-aware function, so Read-State
+    # in server began reading features/state.json instead of the real channel
+    # state. Result: API returned status=idle / heartbeat=null / task_turn=0
+    # while the actual driver was working — UI showed "Heartbeat устарел 494431ч"
+    # because 0/null heartbeat parsed as 1970-epoch, 56 years from now.
+    param([string]$Slug = $null)
+    [string]((Get-FeatureScope -Slug $Slug).features_state)
+}
+
+function Assert-FeatureRegistryWritable {
+    param([string]$Operation = 'feature write')
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) {
+        throw "${Operation}: no_registry for channel '$($scope.slug)' at $($scope.features_root)"
+    }
+    return $scope
+}
+
+function Get-FeatureRegistry {
+    # Returns raw registry array
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) { return @() }
+    $p = [string]$scope.features_registry
+    if (-not (Test-Path -LiteralPath $p)) { return @() }
+    $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (@($json).Count -eq 1 -and $json[0].PSObject -and $json[0].PSObject.Properties['value']) {
+        return @($json[0].value)
+    }
+    if ($json.PSObject -and $json.PSObject.Properties['value']) {
+        return @($json.value)
+    }
+    return @($json)
+}
+
+function ConvertTo-FeatureStateDictionary {
+    param($State)
+    $dict = @{}
+    $skip = @(
+        'Count', 'Length', 'LongLength', 'Rank', 'SyncRoot',
+        'IsReadOnly', 'IsFixedSize', 'IsSynchronized', 'Keys', 'Values'
+    )
+    if ($null -eq $State) { return $dict }
+    if ($State -is [System.Collections.IDictionary]) {
+        foreach ($key in $State.Keys) {
+            $name = [string]$key
+            if ($skip -notcontains $name) { $dict[$name] = $State[$key] }
+        }
+        return $dict
+    }
+    if ($State.PSObject) {
+        foreach ($prop in $State.PSObject.Properties) {
+            if ($skip -notcontains $prop.Name) { $dict[$prop.Name] = $prop.Value }
+        }
+    }
+    return $dict
+}
+
+function Get-FeatureDottedValue {
+    param(
+        $Object,
+        [string]$Path
+    )
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $current = $Object
+    foreach ($part in ($Path -split '\.')) {
+        if ($null -eq $current) { return $null }
+        if ($current -is [System.Collections.IDictionary]) {
+            if (-not $current.Contains($part)) { return $null }
+            $current = $current[$part]
+        } elseif ($current.PSObject -and $current.PSObject.Properties[$part]) {
+            $current = $current.PSObject.Properties[$part].Value
+        } else {
+            return $null
+        }
+    }
+    return $current
+}
+
+function Test-FeatureDottedKeyExists {
+    # 2026-05-28: feature activation companion. Tells you whether a dotted key
+    # is *present* in an object — regardless of whether its value is null, '',
+    # 0, false. A key that exists means the bridge writes that field, which
+    # is the right "feature is wired up" signal even when the current value
+    # happens to be zero (e.g. task_restart_count = 0 means cap feature is
+    # alive and tracking, not dormant).
+    param($Object, [string]$Path)
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $current = $Object
+    foreach ($part in ($Path -split '\.')) {
+        if ($null -eq $current) { return $false }
+        if ($current -is [System.Collections.IDictionary]) {
+            if (-not $current.Contains($part)) { return $false }
+            $current = $current[$part]
+        } elseif ($current.PSObject -and $current.PSObject.Properties[$part]) {
+            $current = $current.PSObject.Properties[$part].Value
+        } else {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-FeatureState {
+    $scope = Get-FeatureScope
+    if (-not [bool]$scope.features_exists) { return @{} }
+    $p = [string]$scope.features_state
+    if (-not (Test-Path -LiteralPath $p)) { return @{} }
+    $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($json)) { return @{} }
+    return $json | ConvertFrom-Json
+}
+
+function Save-FeatureState {
+    param($State)
+    $scope = Assert-FeatureRegistryWritable -Operation 'Save-FeatureState'
+    $p = [string]$scope.features_state
+    $dir = Split-Path $p
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $dict = ConvertTo-FeatureStateDictionary $State
+    $ordered = [ordered]@{}
+    foreach ($key in ($dict.Keys | Sort-Object)) { $ordered[$key] = $dict[$key] }
+    $json = ([pscustomobject]$ordered) | ConvertTo-Json -Depth 6 -Compress
+    [System.IO.File]::WriteAllText($p, $json, [System.Text.Encoding]::UTF8)
+}
+
+function Save-FeatureRegistry {
+    param($Registry)
+    $scope = Assert-FeatureRegistryWritable -Operation 'Save-FeatureRegistry'
+    $p = [string]$scope.features_registry
+    $dir = Split-Path $p
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $json = ConvertTo-Json -InputObject @($Registry) -Depth 8
+    [System.IO.File]::WriteAllText($p, $json, (New-Object System.Text.UTF8Encoding($true)))
+}
+
+function Get-Feature {
+    param([string]$Id)
+    $all = Get-FeatureRegistry
+    return $all | Where-Object { $_.id -eq $Id } | Select-Object -First 1
+}
+
+function Get-AllFeatures {
+    # Returns features merged with runtime state
+    $registry = Get-FeatureRegistry
+    $state = Get-FeatureState
+    $stateDict = ConvertTo-FeatureStateDictionary $state
+    $result = @()
+    foreach ($f in $registry) {
+        $entry = [ordered]@{}
+        $f.PSObject.Properties | ForEach-Object { $entry[$_.Name] = $_.Value }
+        $s = $stateDict[$f.id]
+        if ($s) {
+            $entry['last_activated_at'] = if ($s.PSObject -and $s.last_activated_at) { $s.last_activated_at } else { $null }
+            $entry['last_verified_at'] = if ($s.PSObject -and $s.last_verified_at) { $s.last_verified_at } else { $null }
+            $entry['last_health'] = if ($s.PSObject -and $s.last_health) { $s.last_health } else { $null }
+            $entry['last_signal_match'] = if ($s.PSObject -and $s.last_signal_match) { $s.last_signal_match } else { $null }
+        }
+        $result += [pscustomobject]$entry
+    }
+    return $result
+}
+
+function Update-FeatureActivations {
+    # Walk all features with activation_signal, check signals, update state.json
+    # 2026-05-28: enriched scanner. Previous version only matched 7/39 features
+    # because most activation_signal.path entries pointed to control/<feature>.log
+    # files that aren't actually written. New behaviour:
+    #   - log-pattern: try the declared path, then fall back to
+    #     channels/main/conversation.jsonl (rich activity record) using the
+    #     same regex. Many features only surface in chat messages.
+    #   - state-path: in addition to the declared key, accept any of a small
+    #     set of heuristic per-feature fallback keys that we know exist on the
+    #     active channel state.json (e.g. study-mode -> study_phase non-empty).
+    $scope = Get-FeatureScope
+    $root = if ([bool]$scope.is_bridge) { [string]$scope.bridge_root } else { [string]$scope.project_root }
+    $bridgeRoot = [string]$scope.bridge_root
+    $registry = Get-FeatureRegistry
+    if (@($registry).Count -eq 0) { return 0 }
+    $state = Get-FeatureState
+    $stateDict = ConvertTo-FeatureStateDictionary $state
+    $now = (Get-Date).ToString('o')
+    # Pre-load conversation tail once for shared use across log-pattern fallbacks.
+    $slug = [string]$scope.slug
+    $convPath = Join-Path $bridgeRoot (Join-Path 'channels' (Join-Path $slug 'conversation.jsonl'))
+    $convTail = @()
+    if (Test-Path -LiteralPath $convPath) {
+        # 500 messages = roughly the last week of activity on a busy channel,
+        # enough to catch periodic features (librarian, backlog-curator) that
+        # might not fire in any given 50-line window.
+        try { $convTail = Get-Content -LiteralPath $convPath -Tail 500 -Encoding UTF8 } catch {}
+    }
+    $channelStatePath = Join-Path $bridgeRoot (Join-Path 'channels' (Join-Path $slug 'state.json'))
+    $channelState = $null
+    if (Test-Path -LiteralPath $channelStatePath) {
+        try { $channelState = [System.IO.File]::ReadAllText($channelStatePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch {}
+    }
+    # Per-feature fallback hints (id -> list of state-path keys that, if present
+    # and non-empty/non-zero, count as a valid activation signal).
+    $stateFallbacks = @{
+        'fast-lane'          = @('fast_lane_reason','fast_lane_last_at')
+        'study-mode'         = @('study_phase','study_mode_last_at','study_subtype')
+        'critic'             = @('critic_retry_count','last_critic_at')
+        'replay-system'      = @('last_task_agent_duration_sec','last_replay_at')
+        'mission-card'       = @('session_mission')
+        'channel-switch'     = @('active_channel','active_agent')
+        'memory-recall'      = @('last_recall_at')
+        'message-cache'      = @('lastSeq','last_user_seq')
+        'worker-pool'        = @('parallel_streams','parallel_streams_active')
+        'parallel-chunks'    = @('chunk_progress','chunk_count','chunk_base_commit')
+        'task-restart-cap'   = @('task_restart_count')
+        'recurrence-detection' = @('recurrence_context','no_progress_count')
+        'state-snapshots'    = @('last_snapshot_at')
+        'runbook-diagnostics' = @('runbook_last_at')
+        'semantic-code-memory' = @('codemem.last_search_at')
+        'llm-router'         = @('llm.last_call_at','active_model')
+        'self-improvement-system' = @('autonomous_count','autonomy.enabled')
+        'health-endpoint'    = @('health.last_probe_at')
+        'project-scoping'    = @('channel.project_root','status')
+    }
+    foreach ($f in $registry) {
+        if (-not $f.activation_signal) { continue }
+        $sig = $f.activation_signal
+        $kind = [string]$sig.kind
+        $matched = $false
+        if ($kind -eq 'log-pattern') {
+            $logPath = Test-SafeFeaturePath -Root $root -RelPath ([string]$sig.path)
+            if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+                try {
+                    $tail = Get-Content -LiteralPath $logPath -Tail 50 -Encoding UTF8
+                    $rx = [string]$sig.regex
+                    foreach ($line in $tail) {
+                        if ($line -match $rx) { $matched = $true; break }
+                    }
+                } catch {}
+            }
+            # Fallback: same regex against conversation.jsonl tail.
+            if (-not $matched -and $convTail.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$sig.regex)) {
+                $rx = [string]$sig.regex
+                foreach ($line in $convTail) {
+                    if ($line -match $rx) { $matched = $true; break }
+                }
+            }
+        } elseif ($kind -eq 'state-path') {
+            if ($channelState) {
+                $key = [string]$sig.path
+                if (-not [string]::IsNullOrWhiteSpace($key)) {
+                    $val = Get-FeatureDottedValue -Object $channelState -Path $key
+                    if ($null -ne $val -and $val -ne '' -and $val -ne 0 -and $val -ne $false) { $matched = $true }
+                }
+            }
+            # Fallback: heuristic per-feature alternate keys. Accept ANY value
+            # (including 0 / false / '') — the key being present in state means
+            # the feature is wired into the driver, even if currently quiescent.
+            # Real dormancy = "key not in state at all".
+            if (-not $matched -and $channelState -and $stateFallbacks.ContainsKey($f.id)) {
+                foreach ($altKey in $stateFallbacks[$f.id]) {
+                    if (Test-FeatureDottedKeyExists -Object $channelState -Path $altKey) { $matched = $true; break }
+                }
+            }
+        }
+        if ($matched) {
+            if (-not $stateDict.ContainsKey($f.id)) { $stateDict[$f.id] = [pscustomobject]@{} }
+            $entry = $stateDict[$f.id]
+            if ($null -eq $entry -or -not $entry.PSObject) {
+                $stateDict[$f.id] = [pscustomobject]@{ last_signal_match = $now; last_activated_at = $now }
+            } else {
+                Add-Member -InputObject $entry -MemberType NoteProperty -Name 'last_signal_match' -Value $now -Force
+                Add-Member -InputObject $entry -MemberType NoteProperty -Name 'last_activated_at' -Value $now -Force
+            }
+        }
+    }
+
+    # === Honest dormancy: demote features gone silent past their expected
+    # cadence; re-promote any that signalled this pass. The scanner used to be
+    # promote-only (monotonic) so 'dormant' never meant anything. Rules:
+    #   - on-demand / rare / unknown cadence -> never demoted on time alone
+    #     (a long idle is legitimate for them).
+    #   - 'broken' / 'under_review' are manual states -> left untouched.
+    #   - demotion only runs when the bridge has been active channel-wide in the
+    #     last day (some feature fired recently). While paused, last_signal_match
+    #     freezes for everything, so we must NOT fake mass-dormancy on resume.
+    # last_signal_match in $stateDict is the authoritative "last time this feature
+    # actually fired" (carried across scans for non-matching features).
+    $staleDaysByFreq = @{
+        'every-turn' = 2; 'per-turn' = 2; 'each-turn' = 2; 'continuous' = 2; 'always' = 2;
+        'frequent' = 4; 'hourly' = 4;
+        'periodic' = 10; 'daily' = 10;
+        'weekly' = 21
+    }
+    $nowDt = Get-Date
+    # Channel-wide liveness: newest signal across ALL features.
+    $mostRecentSignal = $null
+    foreach ($k in @($stateDict.Keys)) {
+        $e = $stateDict[$k]
+        if ($e -and $e.PSObject -and $e.PSObject.Properties['last_signal_match'] -and $e.last_signal_match) {
+            try {
+                $t = [DateTime]$e.last_signal_match
+                if ($null -eq $mostRecentSignal -or $t -gt $mostRecentSignal) { $mostRecentSignal = $t }
+            } catch {}
+        }
+    }
+    $bridgeRecentlyActive = ($null -ne $mostRecentSignal) -and ((($nowDt - $mostRecentSignal).TotalDays) -le 1)
+
+    $regForStatus = @($registry)
+    $statusChanged = $false
+    $demoted  = New-Object System.Collections.Generic.List[string]
+    $promoted = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $regForStatus) {
+        $st = [string]$f.status
+        if ($st -ne 'active' -and $st -ne 'dormant') { continue }   # skip broken/under_review/unset
+        $freq = ''
+        try { $freq = ([string]$f.expected_frequency).Trim().ToLowerInvariant() } catch { $freq = '' }
+        if (-not $staleDaysByFreq.ContainsKey($freq)) { continue }   # on-demand/rare/unknown -> no time-based demotion
+        $threshold = [int]$staleDaysByFreq[$freq]
+        $entry = $stateDict[$f.id]
+        $lastMatchStr = ''
+        if ($entry -and $entry.PSObject -and $entry.PSObject.Properties['last_signal_match'] -and $entry.last_signal_match) { $lastMatchStr = [string]$entry.last_signal_match }
+        $ageDays = $null
+        if (-not [string]::IsNullOrWhiteSpace($lastMatchStr)) {
+            try { $ageDays = ($nowDt - [DateTime]$lastMatchStr).TotalDays } catch { $ageDays = $null }
+        }
+        $fresh = ($null -ne $ageDays -and $ageDays -le $threshold)
+        if ($fresh -and $st -eq 'dormant') {
+            Add-Member -InputObject $f -MemberType NoteProperty -Name 'status' -Value 'active' -Force
+            $statusChanged = $true; [void]$promoted.Add([string]$f.id)
+        }
+        elseif (-not $fresh -and $st -eq 'active') {
+            if (-not $bridgeRecentlyActive) { continue }   # whole bridge idle/paused -> don't fake dormancy
+            Add-Member -InputObject $f -MemberType NoteProperty -Name 'status' -Value 'dormant' -Force
+            $statusChanged = $true; [void]$demoted.Add([string]$f.id)
+        }
+    }
+    if ($statusChanged) {
+        try { Save-FeatureRegistry $regForStatus } catch {}
+        try {
+            $parts = @()
+            if ($demoted.Count  -gt 0) { $parts += ('dormant: '     + ($demoted  -join ', ')) }
+            if ($promoted.Count -gt 0) { $parts += ('reactivated: ' + ($promoted -join ', ')) }
+            if ($parts.Count -gt 0) { Add-Message -From system -Text ('feature status: ' + ($parts -join ' | ')) -Kind event | Out-Null }
+        } catch {}
+    }
+
+    Save-FeatureState $stateDict
+    return $stateDict.Count
+}
+
+function Add-Feature {
+    param(
+        [string]$Id,
+        [string]$Name,
+        [string]$Description,
+        [string[]]$OwnerFiles = @(),
+        [string]$OwnerFunction = $null,
+        [string]$Trigger = 'on-demand',
+        [string]$ExpectedFrequency = 'on-demand',
+        [hashtable]$ActivationSignal = $null,
+        [string[]]$Dependencies = @(),
+        [string]$Layer = 'L2',
+        [string]$Status = 'active'
+    )
+    Assert-FeatureRegistryWritable -Operation 'Add-Feature' | Out-Null
+    $registry = @(Get-FeatureRegistry)
+    if ($registry | Where-Object { $_.id -eq $Id }) {
+        throw "Feature '$Id' already exists"
+    }
+    $sig = if ($ActivationSignal) { [pscustomobject]$ActivationSignal } else { [pscustomobject]@{ kind = 'none' } }
+    $entry = [pscustomobject][ordered]@{
+        id                   = $Id
+        name                 = $Name
+        description          = $Description
+        owner_files          = $OwnerFiles
+        owner_function       = $OwnerFunction
+        trigger              = $Trigger
+        expected_frequency   = $ExpectedFrequency
+        activation_signal    = $sig
+        scenarios            = @()
+        dependencies         = $Dependencies
+        layer                = $Layer
+        status               = $Status
+        scenario_recommended = $false
+        created_at           = (Get-Date).ToString('yyyy-MM-dd')
+        last_activated_at    = $null
+        embedding            = $null
+    }
+    $registry += $entry
+    Save-FeatureRegistry $registry
+    return $entry
+}
+
+function Update-FeatureStatus {
+    param(
+        [string]$Id,
+        [ValidateSet('active','dormant','broken','under_review')]
+        [string]$Status
+    )
+    Assert-FeatureRegistryWritable -Operation 'Update-FeatureStatus' | Out-Null
+    $registry = @(Get-FeatureRegistry)
+    $found = $false
+    foreach ($f in $registry) {
+        if ($f.id -eq $Id) {
+            Add-Member -InputObject $f -MemberType NoteProperty -Name 'status' -Value $Status -Force
+            $found = $true; break
+        }
+    }
+    if (-not $found) { throw "Feature '$Id' not found" }
+    Save-FeatureRegistry $registry
+}
+
+
+# === Phase 2: semantic anti-duplication gate ===
+# Goal: when a new user task arrives with non-trivial length, compute its
+# embedding and compare against the feature registry. Surface top matches
+# (sim >= 0.85) to the planner via Build-PromptHistory so it can decide
+# "extend feature X" vs "create new Y" with eyes open. Document vectors stay in
+# the process-local Get-Embedding cache; registry.json must remain a compact
+# declarative registry, not a persistence layer for 1536-dim vectors.
+# Reuses Get-Embedding/Get-CosineSimilarity from lib/memory.ps1.
+
+function Get-FeatureEmbedding {
+    param(
+        [Parameter(Mandatory=$true)][string]$Id,
+        $Feature = $null
+    )
+    if (-not $Feature) { $Feature = Get-Feature -Id $Id }
+    if (-not $Feature) { return $null }
+    try {
+        if (($Feature.PSObject.Properties.Name -contains 'embedding') -and $Feature.embedding -and @($Feature.embedding).Count -gt 0) {
+            return @($Feature.embedding)
+        }
+    } catch {}
+    if (-not (Get-Command Get-Embedding -ErrorAction SilentlyContinue)) { return $null }
+    $text = ([string]$Feature.name) + ': ' + ([string]$Feature.description)
+    $vec = $null
+    try { $vec = Get-Embedding -Text $text -TaskType 'RETRIEVAL_DOCUMENT' } catch { $vec = $null }
+    if (-not $vec) { return $null }
+    return @($vec)
+}
+
+function Test-FeatureSimilarity {
+    param(
+        [string]$TaskText,
+        [int]$TopK = 3,
+        [double]$Threshold = 0.7
+    )
+    if ([string]::IsNullOrWhiteSpace($TaskText)) { return @() }
+    if ($TaskText.Trim().Length -lt 60) { return @() }
+    if (-not (Get-Command Get-Embedding -ErrorAction SilentlyContinue)) { return @() }
+    if (-not (Get-Command Get-CosineSimilarity -ErrorAction SilentlyContinue)) { return @() }
+    $qvec = $null
+    try { $qvec = Get-Embedding -Text $TaskText -TaskType 'RETRIEVAL_QUERY' } catch { $qvec = $null }
+    if (-not $qvec) { return @() }
+    $registry = @(Get-FeatureRegistry)
+    if ($registry.Count -eq 0) { return @() }
+    $scored = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($f in $registry) {
+        $vec = Get-FeatureEmbedding -Id ([string]$f.id) -Feature $f
+        if (-not $vec) { continue }
+        $sim = 0.0
+        try { $sim = [double](Get-CosineSimilarity -A $qvec -B $vec) } catch { $sim = 0.0 }
+        if ($sim -ge $Threshold) {
+            [void]$scored.Add([pscustomobject]@{ similarity = $sim; feature = $f })
+        }
+    }
+    return @($scored | Sort-Object @{Expression='similarity';Descending=$true} | Select-Object -First $TopK)
+}
+
+function Format-FeatureSimilarityForPrompt {
+    param($Matches)
+    if (-not $Matches) { return '' }
+    $arr = @($Matches)
+    if ($arr.Count -eq 0) { return '' }
+    $top = $arr[0]
+    if ([double]$top.similarity -lt 0.85) { return '' }
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$lines.Add('РљРЎ АНТИ-ДУБЛИРОВАНИЕ (эмбеддинги нашли похожие фичи):')
+    foreach ($m in $arr) {
+        $sim = [double]$m.similarity
+        $f = $m.feature
+        $desc = ([string]$f.description)
+        if ($desc.Length -gt 80) { $desc = $desc.Substring(0, 80) + '…' }
+        $files = ''
+        try { if ($f.owner_files) { $files = ' (' + ([string]::Join(', ', @($f.owner_files))) + ')' } } catch {}
+        [void]$lines.Add(("  • {0,-22} sim={1:N2}  {2}{3}" -f $f.id, $sim, $desc, $files))
+    }
+    [void]$lines.Add('')
+    [void]$lines.Add('ПРАВИЛО: оцени — задача является РАСШИРЕНИЕМ одной из перечисленных фич?')
+    [void]$lines.Add('Если да — план «доработать feature_id», НЕ «создать новое». Если новая —')
+    [void]$lines.Add('явно обоснуй чем отличается. Жалоба пользователя: «у нас 2 почти')
+    [void]$lines.Add('одинаковых функционала, доработать старую эффективнее».')
+    return ([string]::Join("`n", $lines.ToArray()))
+}

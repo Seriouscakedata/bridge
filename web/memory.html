@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Память моста</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#0f1115; --panel:#171a21; --panel-2:#1d222b; --border:#303744; --border-soft:#252b35;
+    --txt:#eef2f7; --muted:#9ca6b5; --soft:#c8d0dc; --user:#72b7ff; --codex:#68d391;
+    --claude:#b88cff; --model:#ffd166; --danger:#ff6b6b; --shadow:0 18px 50px rgba(0,0,0,.32);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+    background:radial-gradient(circle at 20% 0%, rgba(184,140,255,.08), transparent 24rem),
+               radial-gradient(circle at 95% 8%, rgba(104,211,145,.07), transparent 22rem), var(--bg);
+    color:var(--txt); display:flex; flex-direction:column; min-height:100%;
+  }
+  button,textarea,input{font:inherit}
+  button{background:var(--panel-2);color:var(--txt);border:1px solid var(--border);border-radius:8px;padding:7px 11px;cursor:pointer;font-size:13px;line-height:1;transition:background .15s,border-color .15s}
+  button:hover{background:#252b36;border-color:#465061}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:var(--user);border-color:var(--user);color:#06182d;font-weight:700}
+  button.primary:hover{background:#8ac4ff;border-color:#8ac4ff}
+  button.danger{background:#34191b;border-color:#7d3136;color:#ffd7da}
+  button.danger:hover{background:#4a2024;border-color:var(--danger)}
+  a{color:#92c7ff;text-decoration:none}
+  header{
+    position:sticky;top:0;z-index:5;padding:12px 18px;background:rgba(23,26,33,.94);
+    border-bottom:1px solid var(--border);backdrop-filter:blur(14px);
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:center;gap:10px}
+  .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(135deg, rgba(184,140,255,.26), rgba(104,211,145,.22));
+    border:1px solid rgba(255,255,255,.08);font-size:18px}
+  h1{font-size:16px;margin:0;font-weight:700}
+  .sub{font-size:12px;color:var(--muted);margin-top:2px}
+  .head-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .stats{
+    display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--border-soft);
+    background:rgba(15,18,24,.7);font-size:12px;color:var(--muted);align-items:center;
+  }
+  .kpi{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border-soft);border-radius:999px;background:#131922}
+  .kpi b{color:var(--txt);font-variant-numeric:tabular-nums}
+  .src-pill{padding:2px 7px;border-radius:999px;font-size:11px;border:1px solid var(--border-soft);color:var(--muted)}
+  .src-decision{color:#cdb6ff;border-color:rgba(184,140,255,.4);background:rgba(184,140,255,.08)}
+  .src-task{color:#9fe6bd;border-color:rgba(104,211,145,.4);background:rgba(104,211,145,.08)}
+  .src-manual{color:#bcd9ff;border-color:rgba(114,183,255,.4);background:rgba(114,183,255,.08)}
+  .tabs{display:flex;gap:6px;padding:10px 18px 0}
+  .tab{padding:7px 14px;border-radius:9px 9px 0 0;border:1px solid var(--border-soft);border-bottom:none;background:#141921;color:var(--muted)}
+  .tab.on{background:var(--panel);color:var(--txt);border-color:var(--border)}
+  .wrap{flex:1;padding:14px 18px 40px;max-width:1100px;width:100%;margin:0 auto}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  #filter{flex:1;min-width:180px;background:#0b0f15;border:1px solid var(--border);border-radius:9px;color:var(--txt);padding:9px 11px;outline:none}
+  #filter:focus{border-color:rgba(114,183,255,.7)}
+  .grid{display:flex;flex-direction:column;gap:11px}
+  .card{
+    border:1px solid var(--border);border-radius:12px;background:var(--panel);
+    padding:12px;display:flex;flex-direction:column;gap:9px;box-shadow:0 8px 22px rgba(0,0,0,.14);
+  }
+  .card.pinned{border-color:rgba(255,209,102,.5);box-shadow:0 0 0 1px rgba(255,209,102,.1),0 8px 22px rgba(0,0,0,.18)}
+  .card.readonly{border-color:rgba(140,150,165,.34);background:rgba(23,26,33,.72)}
+  .card .meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+  .card .tag{padding:1px 7px;border-radius:999px;background:#10151d;border:1px solid var(--border-soft);color:#9fb0c5}
+  .readonly-badge{padding:2px 7px;border-radius:999px;font-size:11px;border:1px solid rgba(140,150,165,.34);background:rgba(140,150,165,.12);color:#c4cbd6}
+  .card textarea{
+    width:100%;min-height:54px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;
+    color:var(--txt);padding:9px 11px;font-size:14px;line-height:1.5;resize:vertical;outline:none;
+  }
+  .card textarea:focus{border-color:rgba(114,183,255,.6)}
+  .card .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  /* 2026-05-27v5: advanced settings grid */
+  .adv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+  .adv-row{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 10px;background:rgba(20,23,29,.5);border:1px solid var(--border-soft);border-radius:8px}
+  .adv-row .lbl{font-size:12px;color:var(--soft);flex:1;min-width:0;display:flex;align-items:center;gap:6px}
+  .adv-row input[type=number]{width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:6px;color:var(--txt);padding:5px 8px;outline:none;font-size:13px}
+  .adv-row.adv-row-check{justify-content:flex-start}
+  .adv-row.adv-row-check input[type=checkbox]{width:16px;height:16px;accent-color:var(--codex);flex:none}
+  /* Info-icon (i) — hover shows native tooltip + light visual cue */
+  .info-i{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:14px;height:14px;
+    border:1px solid rgba(255,255,255,.22);border-radius:50%;
+    font-family:Georgia,serif;font-size:10px;font-style:italic;font-weight:700;
+    color:var(--muted);
+    cursor:help;flex:none;
+    line-height:1;
+    transition:color .15s,border-color .15s,background .15s;
+  }
+  .info-i:hover{color:var(--user);border-color:var(--user);background:rgba(114,183,255,.12)}
+  .imp{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+  .imp input[type=range]{width:120px;accent-color:var(--model)}
+  .imp b{color:var(--model);font-variant-numeric:tabular-nums;min-width:30px;text-align:right}
+  .card .spacer{flex:1}
+  .star{width:34px;height:32px;display:grid;place-items:center;padding:0;font-size:16px}
+  .star.on{color:var(--model);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.1)}
+  .empty{padding:40px 18px;text-align:center;color:var(--muted);border:1px dashed var(--border-soft);border-radius:14px;background:rgba(20,23,29,.4)}
+  .radar-title{font-size:16px;font-weight:750;line-height:1.35}
+  .radar-summary{font-size:14px;line-height:1.5;color:var(--soft)}
+  .radar-score{display:flex;gap:7px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+  .radar-score span{padding:2px 7px;border:1px solid var(--border-soft);border-radius:999px;background:#10151d}
+  .radar-link{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .md{font-size:14px;line-height:1.6;color:var(--txt)}
+  .md h1,.md h2,.md h3{color:#fff;margin:.8em 0 .35em;line-height:1.25}
+  .md h1{font-size:1.3em} .md h2{font-size:1.15em} .md h3{font-size:1.03em}
+  .md ul{margin:.4em 0;padding-left:1.3em} .md li{margin:.2em 0}
+  .md code{background:#0c1016;border:1px solid var(--border-soft);border-radius:5px;padding:1px 5px;color:#f4d78b;font-family:Consolas,monospace;font-size:.92em}
+  .md strong{color:#fff}
+  #toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;
+    background:#1d222b;border:1px solid var(--border);border-radius:10px;padding:10px 16px;
+    box-shadow:var(--shadow);font-size:13px;transition:opacity .2s,transform .2s;pointer-events:none;z-index:30;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.bad{border-color:var(--danger);color:#ffd7da}
+  #toast.ok{border-color:rgba(104,211,145,.5);color:#d9f8e4}
+  .addbox{border:1px solid var(--border);border-radius:12px;background:var(--panel-2);padding:12px;margin-bottom:14px;display:none;flex-direction:column;gap:9px}
+  .addbox.show{display:flex}
+  .addbox textarea{width:100%;min-height:60px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:9px 11px;font-size:14px;resize:vertical;outline:none}
+  .addbox input[type=text]{background:#0b0f15;border:1px solid var(--border-soft);border-radius:9px;color:var(--txt);padding:8px 10px;outline:none}
+  .hidden{display:none!important}
+  /* Feature Registry */
+  .feat-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; padding:0 4px; }
+  .feat-search-input { flex:1; min-width:160px; padding:6px 10px; border:1px solid var(--border,#333); border-radius:6px; background:var(--bg2,#1a1a1a); color:var(--text,#e0e0e0); font-size:13px; }
+  .feat-filters { display:flex; gap:4px; flex-wrap:wrap; }
+  .feat-filter { padding:4px 10px; border:1px solid var(--border,#333); border-radius:14px; background:transparent; color:var(--text,#e0e0e0); font-size:12px; cursor:pointer; transition:background .15s; }
+  .feat-filter.on { background:var(--accent,#6c8ebf); color:#fff; border-color:var(--accent,#6c8ebf); }
+  .feat-sort-select { padding:5px 8px; border:1px solid var(--border,#333); border-radius:6px; background:var(--bg2,#1a1a1a); color:var(--text,#e0e0e0); font-size:12px; }
+  .feat-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .feat-card { background:var(--bg2,#1a1a1a); border:1px solid var(--border,#333); border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .feat-card-header { display:flex; align-items:center; gap:8px; }
+  .feat-status-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .feat-status-dot.active { background:#4caf50; }
+  .feat-status-dot.dormant { background:#9e9e9e; }
+  .feat-status-dot.broken { background:#f44336; }
+  .feat-status-dot.under_review { background:#ff9800; }
+  .feat-card-name { font-weight:600; font-size:14px; flex:1; }
+  .feat-card-layer { font-size:11px; color:var(--muted,#888); background:var(--bg3,#2a2a2a); padding:2px 7px; border-radius:10px; }
+  .feat-card-desc { font-size:12px; color:var(--muted,#888); line-height:1.4; }
+  .feat-card-files { display:flex; gap:4px; flex-wrap:wrap; }
+  .feat-file-tag { font-size:10px; font-family:monospace; background:var(--bg3,#2a2a2a); padding:2px 6px; border-radius:4px; color:var(--muted,#888); }
+  .feat-card-meta { font-size:11px; color:var(--muted2,#666); }
+  .feat-card-actions { display:flex; gap:6px; margin-top:4px; }
+  .feat-btn-discuss { padding:4px 12px; font-size:12px; border:1px solid var(--border,#333); border-radius:6px; background:transparent; color:var(--text,#e0e0e0); cursor:pointer; transition:background .15s; }
+  .feat-btn-discuss:hover { background:var(--accent,#6c8ebf); color:#fff; border-color:var(--accent,#6c8ebf); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">🧠</div>
+    <div>
+      <h1>Долговременная память</h1>
+      <div class="sub"><a href="/">← к чату</a> · векторное хранилище моста</div>
+    </div>
+  </div>
+  <div class="head-actions">
+    <label id="bridgeReadonlyWrap" title="Show bridge memory as read-only rows" style="display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:6px 9px;background:#0b0f15">
+      <input type="checkbox" id="bridgeReadonlyToggle" checked style="accent-color:var(--user)"> bridge readonly
+    </label>
+    <button id="addToggle" type="button">＋ Добавить</button>
+    <select id="chanFilter" title="Канал" style="background:#0b0f15;border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:6px 9px;outline:none;font-size:13px"></select>
+    <button id="allChannelsBtn" type="button" title="Показать память всех каналов">все каналы</button>
+    <!-- 2026-05-27: «Пересобрать карту» (reindexBtn) hidden — rare action (librarian heavy). Kept in DOM (some keybinds may invoke). -->
+    <button id="reindexBtn" type="button" title="Запустить библиотекаря: ингест решений, дедуп, пересборка карты" hidden>↻ Пересобрать карту</button>
+    <button id="refreshBtn" type="button">⟳ Обновить</button>
+  </div>
+</header>
+
+<div class="stats" id="stats">загрузка…</div>
+
+<div class="tabs">
+  <div class="tab on" data-tab="records" id="tabRecords">Записи</div>
+  <div class="tab" data-tab="map" id="tabMap">Карта памяти</div>
+  <!-- 2026-05-27v2: Бэклог restored here -- single source of truth, wider grid view -->
+  <!-- with curator badges. chat-panel backlog (cramped column) hidden in index.html. -->
+  <div class="tab" data-tab="backlog" id="tabBacklog">Бэклог</div>
+  <!-- Radar still hidden (no live data); Settings restored 2026-05-27v5 with extended config controls -->
+  <div class="tab" data-tab="radar" id="tabRadar" hidden>Радар</div>
+  <div class="tab" data-tab="settings" id="tabSettings">Настройки</div>
+  <div class="tab" data-tab="features" id="tabFeatures">Фичи</div>
+</div>
+
+<div class="wrap">
+  <div id="recordsView">
+    <div class="addbox" id="addBox">
+      <textarea id="addText" placeholder="Текст новой памяти (короткий устойчивый факт)…"></textarea>
+      <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="addTags" placeholder="теги через запятую" style="flex:1;min-width:160px">
+        <span class="imp">важность <b id="addImpVal">0.60</b>
+          <input type="range" id="addImp" min="0" max="1" step="0.05" value="0.6"></span>
+        <button class="primary" id="addSave" type="button">Сохранить</button>
+        <button id="addCancel" type="button">Отмена</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="filter" placeholder="фильтр по тексту, источнику, тегам…">
+      <span id="shownCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+  <div id="mapView" class="hidden">
+    <div class="md" id="mapContent"></div>
+  </div>
+  <div id="backlogView" class="hidden">
+    <div class="toolbar">
+      <button id="addIdeaToggle" type="button">＋ Идея</button>
+      <button id="reflectBtn" type="button" title="Запустить саморефлексию: агент предложит улучшения на основе данных">🤔 Подумать сейчас</button>
+      <button id="refreshBl" type="button">⟳ Обновить</button>
+      <button id="blArchiveToggle" type="button" title="Показать архив (done/auto-resolved)">📦 Архив <span id="blArchiveCount" style="font-size:11px;color:var(--muted);margin-left:3px">0</span></button>
+      <span id="blCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="addbox" id="addIdeaBox">
+      <textarea id="ideaText" placeholder="Идея/улучшение для моста — что и зачем…"></textarea>
+      <div class="row" style="display:flex;gap:10px;align-items:center">
+        <button class="primary" id="ideaSave" type="button">Добавить (сразу одобрено)</button>
+        <button id="ideaCancel" type="button">Отмена</button>
+      </div>
+    </div>
+    <div class="grid" id="blGrid"></div>
+  </div>
+  <div id="radarView" class="hidden">
+    <div class="toolbar">
+      <button id="runRadarBtn" type="button">Обновить радар</button>
+      <button id="refreshRadarBtn" type="button">↻ Обновить</button>
+      <span id="radarCount" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="grid" id="radarGrid"></div>
+  </div>
+  <div id="settingsView" class="hidden">
+    <div class="card" style="gap:14px">
+      <div class="row" style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="setEnabled" style="width:18px;height:18px;accent-color:var(--codex)">
+        <label for="setEnabled"><b>Автономия включена</b> — мост сам берёт идеи из бэклога, когда свободен.</label>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="setAutoRun" style="width:18px;height:18px;accent-color:var(--codex)">
+        <label for="setAutoRun"><b>Без ручного одобрения</b> — идеи выполняются автоматически (откат на стабильную версию, если что).</label>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Тишина до автозапуска (минут):</label>
+        <input type="number" id="setIdle" min="0" step="1" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Частота саморефлексии (часов):</label>
+        <input type="number" id="setReflect" min="0.1" step="0.5" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="min-width:230px">Лимит автозадач в день (0 = без лимита):</label>
+        <input type="number" id="setCap" min="0" step="1" style="width:90px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:7px 9px;outline:none">
+      </div>
+      <div style="border-top:1px solid var(--border-soft);padding-top:12px">
+        <div style="margin-bottom:8px"><b>Область авто-улучшения</b> (касается только автономной работы, не твоих задач):</div>
+        <label style="display:block;margin:5px 0"><input type="radio" name="scope" value="bridge" style="accent-color:var(--user)"> Только сам мост</label>
+        <label style="display:block;margin:5px 0"><input type="radio" name="scope" value="projects" style="accent-color:var(--user)"> Мост + его проекты</label>
+        <div style="margin-top:10px">
+          <label style="font-size:12px;color:var(--muted)">Проекты, которые мост считает внешними:</label>
+          <select id="projList" style="width:100%;margin-top:5px;background:#0b0f15;border:1px solid var(--border-soft);border-radius:8px;color:var(--txt);padding:8px 9px;outline:none"><option>загрузка…</option></select>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Список git-проектов под рабочим корнем (для справки). «Мост + проекты» разрешит автономно улучшать и их.</div>
+        </div>
+      </div>
+      <div class="row" style="display:flex;gap:10px;align-items:center">
+        <button class="primary" id="setSave" type="button">Сохранить настройки</button>
+        <span id="setStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <!-- 2026-05-27v5: advanced settings (parallel, chunking, critic, auditor, canary, memory, librarian, fast-lane, reflect) -->
+    <div class="card" style="gap:14px;margin-top:14px">
+      <div style="font-weight:700;font-size:14px">Расширенные настройки моста</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Хранятся в settings.json (вне git, переживут rollback). Применяются на лету, без рестарта моста.</div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Параллель и чанки</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="parallel.maxStreams"><span>Макс одновременных потоков (параллель)</span><input type="number" min="1" max="12" step="1"></label>
+          <label class="adv-row" data-key="chunking.maxChunksPerTask"><span>Лимит чанков на задачу</span><input type="number" min="1" max="50" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Критик и верификация</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="criticMaxRetries"><span>Сколько раз критик может откатить DONE</span><input type="number" min="0" max="5" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Аудитор и Doctor</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="auditor.intervalMin"><span>Интервал аудитора (мин)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.cooldownMin"><span>Cooldown аудитора (мин)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.doctorRecidivismHours"><span>Окно рецидива Doctor (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="auditor.doctorRecidivismMax"><span>Макс рецидивов Doctor в окне</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Канарейка</b></div>
+        <div class="adv-grid">
+          <label class="adv-row adv-row-check" data-key="canary.enabled"><input type="checkbox"><span>Канарейка включена</span></label>
+          <label class="adv-row" data-key="canary.intervalHours"><span>Интервал запуска (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="canary.cooldownMinutes"><span>Cooldown (мин)</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Быстрый трек (fast-lane)</b></div>
+        <div class="adv-grid">
+          <label class="adv-row adv-row-check" data-key="fastLane.autoDetect"><input type="checkbox"><span>Авто-детект тривиальных задач</span></label>
+          <label class="adv-row" data-key="fastLane.minChars"><span>Мин длина задачи для fast-lane (символов)</span><input type="number" min="0" step="10"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Память</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="memory.recallTopK"><span>Сколько фактов вспоминать на запрос (top-K)</span><input type="number" min="1" max="30" step="1"></label>
+          <label class="adv-row" data-key="memory.recallMinScore"><span>Мин cosine для recall (0..1)</span><input type="number" min="0" max="1" step="0.01"></label>
+          <label class="adv-row" data-key="memory.dedupThreshold"><span>Cosine-порог дедупа (0..1)</span><input type="number" min="0" max="1" step="0.01"></label>
+          <label class="adv-row" data-key="memory.ageDaysPrune"><span>Удалять старше N дней (если не использовалось)</span><input type="number" min="1" step="1"></label>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border-soft);padding-top:10px">
+        <div style="margin-bottom:8px"><b>Библиотекарь и рефлексия</b></div>
+        <div class="adv-grid">
+          <label class="adv-row" data-key="librarian.deltaTriggerCount"><span>Сколько новых memory-записей запускает librarian</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="librarian.ceilingHours"><span>Макс интервал между запусками librarian (часов)</span><input type="number" min="1" step="1"></label>
+          <label class="adv-row" data-key="reflect.minTaskDurationSec"><span>Мин длительность задачи чтобы reflect её рассматривал (сек)</span><input type="number" min="0" step="10"></label>
+        </div>
+      </div>
+
+      <div class="row" style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="primary" id="advSave" type="button">Сохранить расширенные</button>
+        <button id="advReset" type="button" title="Перечитать с сервера">Перезагрузить</button>
+        <span id="advStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+  <div id="featuresView" class="hidden">
+    <div class="feat-toolbar">
+      <input type="text" id="featSearch" placeholder="Поиск фич..." class="feat-search-input">
+      <div class="feat-filters">
+        <button class="feat-filter on" data-status="all">Все</button>
+        <button class="feat-filter" data-status="active">Активные</button>
+        <button class="feat-filter" data-status="dormant">Спящие</button>
+        <button class="feat-filter" data-status="broken">Сломаны</button>
+        <button class="feat-filter" data-status="under_review">Ревью</button>
+      </div>
+      <select id="featSort" class="feat-sort-select">
+        <option value="name">По имени</option>
+        <option value="last_activated_at">По активации</option>
+        <option value="layer">По слою</option>
+        <option value="status">По статусу</option>
+      </select>
+    </div>
+    <div id="featGrid" class="feat-grid">
+      <div class="loading-text">Загрузка фич...</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let ITEMS = [];
+let MAP = '';
+let RADAR = null;
+let CURRENT_CHAN = null; // null = active default; '__all__' = admin view
+let CHANNELS = [];
+let SHOW_BRIDGE_READONLY = true;
+const $ = s => document.querySelector(s);
+const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function toast(msg, kind){
+  const t = $('#toast'); t.textContent = msg; t.className = 'show ' + (kind||'');
+  clearTimeout(t._t); t._t = setTimeout(()=>{ t.className = t.className.replace('show','').trim(); }, 2600);
+}
+function ago(iso){
+  if(!iso) return '';
+  const d = new Date(iso); if(isNaN(d)) return '';
+  const s = Math.floor((Date.now()-d.getTime())/1000);
+  if(s<60) return 'только что';
+  if(s<3600) return Math.floor(s/60)+' мин назад';
+  if(s<86400) return Math.floor(s/3600)+' ч назад';
+  return Math.floor(s/86400)+' дн назад';
+}
+function srcClass(src){
+  const k = (src||'').split(':')[0];
+  if(k==='decision') return 'src-decision';
+  if(k==='task') return 'src-task';
+  if(k==='manual') return 'src-manual';
+  return '';
+}
+
+async function api(path, opts){
+  // The bridge server briefly returns 503 (HttpListener down) while it recycles on a self-edit.
+  // A single fetch that lands in that ~1-2s window used to throw -> loadSettings() caught it and
+  // left every settings cell EMPTY until a manual refresh (operator hit this 2026-05-31). Retry
+  // transient failures so a load that races a server restart still fills in. GETs are safe to
+  // retry; POSTs (mutations) are sent once.
+  const method = (opts && opts.method ? String(opts.method) : 'GET').toUpperCase();
+  const maxTries = method === 'GET' ? 4 : 1;
+  let lastErr;
+  for(let i=0; i<maxTries; i++){
+    try{
+      const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
+      if(r.ok) return r.json();
+      if((r.status===503 || r.status===502 || r.status===504) && i < maxTries-1){
+        await new Promise(res=>setTimeout(res, 400*(i+1)));
+        continue;
+      }
+      throw new Error('HTTP '+r.status);
+    }catch(e){
+      lastErr = e;
+      if(i < maxTries-1){ await new Promise(res=>setTimeout(res, 400*(i+1))); continue; }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
+async function loadChannels(){
+  try{
+    const d = await api('/api/channels');
+    CHANNELS = d.items || [];
+    if(!CURRENT_CHAN && d.active){ CURRENT_CHAN = d.active; }
+    renderChanFilter();
+  }catch(e){
+    renderChanFilter();
+  }
+}
+function renderChanFilter(){
+  const sel = $('#chanFilter');
+  if(!sel) return;
+  const opts = [];
+  for(const c of CHANNELS){
+    const slug = c.slug || c.name || '';
+    if(!slug) continue;
+    const label = c.name && c.name !== slug ? (c.name+' ('+slug+')') : slug;
+    opts.push(`<option value="${esc(slug)}" ${slug===CURRENT_CHAN?'selected':''}>${esc(label)}</option>`);
+  }
+  opts.push(`<option value="__all__" ${CURRENT_CHAN==='__all__'?'selected':''}>все каналы</option>`);
+  sel.innerHTML = opts.join('');
+  renderBridgeReadonlyToggle();
+}
+function selectedChannelItem(){
+  const slug = CURRENT_CHAN || '';
+  return (CHANNELS || []).find(c => String(c.slug || c.name || '') === slug) || null;
+}
+function selectedChannelIsBridge(){
+  if(CURRENT_CHAN === '__all__') return true;
+  const c = selectedChannelItem();
+  if(c && c.scope && typeof c.scope.is_bridge === 'boolean') return !!c.scope.is_bridge;
+  return String(CURRENT_CHAN || 'main') === 'main';
+}
+function shouldIncludeBridgeReadonly(){
+  return !!SHOW_BRIDGE_READONLY && CURRENT_CHAN !== '__all__' && !selectedChannelIsBridge();
+}
+function renderBridgeReadonlyToggle(){
+  const wrap = $('#bridgeReadonlyWrap');
+  const toggle = $('#bridgeReadonlyToggle');
+  if(!wrap || !toggle) return;
+  const visible = CURRENT_CHAN !== '__all__' && !selectedChannelIsBridge();
+  wrap.style.display = visible ? 'inline-flex' : 'none';
+  toggle.checked = !!SHOW_BRIDGE_READONLY;
+}
+
+async function load(){
+  try{
+    let url = '/api/memory';
+    if(CURRENT_CHAN === '__all__'){ url += '?channel=__all__'; }
+    else if(CURRENT_CHAN){ url += '?channel=' + encodeURIComponent(CURRENT_CHAN); }
+    else { url += '?channel=__active__'; }
+    if(shouldIncludeBridgeReadonly()){
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + 'include_bridge=1';
+    }
+    const d = await api(url);
+    ITEMS = d.items || [];
+    MAP = d.map || '';
+    if(!CURRENT_CHAN && d.activeChannel){ CURRENT_CHAN = d.activeChannel; renderChanFilter(); }
+    renderStats(d.stats||{});
+    renderGrid();
+    renderMap();
+  }catch(e){ toast('Ошибка загрузки: '+e, 'bad'); }
+}
+
+function renderStats(s){
+  const bs = s.bySource || {};
+  const srcStr = Object.keys(bs).map(k => `${k}: ${bs[k]}`).join(' · ') || '—';
+  let last = s.lastLibrarian ? ago(s.lastLibrarian) : 'ещё не запускался';
+  $('#stats').innerHTML =
+    `<span class="kpi">записей <b>${s.count||0}</b></span>`+
+    `<span class="kpi">закреплено <b>${s.pinned||0}</b></span>`+
+    `<span class="kpi">библиотекарь <b>${esc(last)}</b></span>`+
+    `<span class="kpi">карта <b>${s.mapExists?'есть':'нет'}</b></span>`+
+    `<span style="margin-left:auto">по источникам: ${esc(srcStr)}</span>`;
+}
+
+function sortItems(a,b){
+  if((b.pinned?1:0)!==(a.pinned?1:0)) return (b.pinned?1:0)-(a.pinned?1:0);
+  if((b.importance||0)!==(a.importance||0)) return (b.importance||0)-(a.importance||0);
+  return (b.ts||'').localeCompare(a.ts||'');
+}
+
+function renderGrid(){
+  const f = ($('#filter').value||'').toLowerCase().trim();
+  const list = ITEMS.slice().sort(sortItems).filter(m=>{
+    if(!f) return true;
+    return (m.text||'').toLowerCase().includes(f) ||
+           (m.source||'').toLowerCase().includes(f) ||
+           (m.tags||[]).join(' ').toLowerCase().includes(f);
+  });
+  $('#shownCount').textContent = list.length===ITEMS.length ? `${ITEMS.length}` : `${list.length} из ${ITEMS.length}`;
+  const g = $('#grid');
+  if(list.length===0){ g.innerHTML = '<div class="empty">Память пуста. Записи появятся по мере работы моста, либо добавь вручную.</div>'; return; }
+  g.innerHTML = '';
+  for(const m of list){
+    const tags = (m.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
+    const imp = (m.importance!=null?m.importance:0).toFixed(2);
+    const channel = String(m.channel || 'main');
+    const isShared = !!m.shared;
+    const isReadonly = !!m.readonly || String(m.readonly_source || '') === 'bridge';
+    const channelChip = isShared
+      ? `<span class="tag" title="Общая память: доступна из всех каналов" style="background:rgba(155,200,255,.16);border-color:rgba(155,200,255,.42);color:#cfe5ff">🌐 общая</span>`
+      : `<span class="tag" title="Канал: ${esc(channel)}" style="background:rgba(255,222,160,.12);border-color:rgba(255,222,160,.32);color:#ffdda0">🧵 ${esc(channel)}</span>`;
+    const readonlyBadge = isReadonly ? '<span class="readonly-badge" title="Bridge memory is read-only from project channels">&#128274; bridge readonly</span>' : '';
+    const card = document.createElement('div');
+    card.className = 'card' + (m.pinned?' pinned':'') + (isReadonly?' readonly':'');
+    card.innerHTML =
+      `<div class="meta">`+
+        `<span class="src-pill ${srcClass(m.source)}">${esc(m.source||'?')}</span>`+
+        channelChip +
+        readonlyBadge +
+        tags +
+        `<span style="margin-left:auto">${esc(ago(m.ts))}</span>`+
+      `</div>`+
+      `<textarea ${isReadonly?'readonly':''}>${esc(m.text)}</textarea>`+
+      `<div class="row">`+
+        `<span class="imp">важность <b class="impVal">${imp}</b>`+
+          `<input type="range" min="0" max="1" step="0.05" value="${m.importance||0}"></span>`+
+        `<span class="spacer"></span>`+
+        `<button class="shareBtn${isShared?' on':''}" title="Сделать общей (видна из всех каналов)">🌐</button>`+
+        `<button class="star${m.pinned?' on':''}" title="Закрепить (не удаляется при дедупе)">★</button>`+
+        `<button class="saveBtn" disabled>Сохранить</button>`+
+        `<button class="danger delBtn">Удалить</button>`+
+      `</div>`;
+    if(isReadonly){
+      const row = card.querySelector('.row');
+      if(row) row.innerHTML = '<span class="imp">read-only bridge memory</span><span class="spacer"></span>';
+      g.appendChild(card);
+      continue;
+    }
+    const ta = card.querySelector('textarea');
+    const range = card.querySelector('input[type=range]');
+    const impVal = card.querySelector('.impVal');
+    const saveBtn = card.querySelector('.saveBtn');
+    const orig = {text:m.text, imp:String(m.importance||0)};
+    const dirty = ()=>{ saveBtn.disabled = (ta.value===orig.text && range.value===orig.imp); };
+    ta.addEventListener('input', dirty);
+    range.addEventListener('input', ()=>{ impVal.textContent = parseFloat(range.value).toFixed(2); dirty(); });
+    saveBtn.addEventListener('click', async ()=>{
+      saveBtn.disabled = true; saveBtn.textContent='…';
+      const body = {id:m.id, importance:parseFloat(range.value)};
+      if(ta.value!==orig.text) body.text = ta.value;
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify(body)});
+      saveBtn.textContent='Сохранить';
+      if(r.ok){ toast('Сохранено','ok'); load(); } else { toast('Не удалось сохранить (embedding?)','bad'); saveBtn.disabled=false; }
+    });
+    card.querySelector('.star').addEventListener('click', async ()=>{
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify({id:m.id, pinned:!m.pinned})});
+      if(r.ok){ toast(m.pinned?'Откреплено':'Закреплено','ok'); load(); } else toast('Ошибка','bad');
+    });
+    card.querySelector('.shareBtn').addEventListener('click', async ()=>{
+      const r = await api('/api/memory/update',{method:'POST',body:JSON.stringify({id:m.id, shared:!isShared})});
+      if(r.ok){ toast(isShared?'Снят флаг "общая"':'Помечена как общая','ok'); load(); } else toast('Ошибка','bad');
+    });
+    card.querySelector('.delBtn').addEventListener('click', async ()=>{
+      if(!confirm('Удалить эту запись памяти?')) return;
+      const r = await api('/api/memory/delete',{method:'POST',body:JSON.stringify({id:m.id})});
+      if(r.ok){ toast('Удалено','ok'); load(); } else toast('Ошибка','bad');
+    });
+    g.appendChild(card);
+  }
+}
+
+function renderMap(){
+  $('#mapContent').innerHTML = MAP ? mdToHtml(MAP) : '<div class="empty">Карта ещё не собрана. Нажми «Пересобрать карту».</div>';
+}
+
+// minimal, safe markdown -> html (escape first)
+function mdToHtml(src){
+  const lines = esc(src).split(/\r?\n/);
+  let html='', inList=false;
+  const inline = s => s
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>');
+  for(let line of lines){
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if(h){ if(inList){html+='</ul>';inList=false;} const n=h[1].length; html+=`<h${n}>${inline(h[2])}</h${n}>`; continue; }
+    if(li){ if(!inList){html+='<ul>';inList=true;} html+=`<li>${inline(li[1])}</li>`; continue; }
+    if(inList){html+='</ul>';inList=false;}
+    if(line.trim()==='') continue;
+    html+=`<p>${inline(line)}</p>`;
+  }
+  if(inList) html+='</ul>';
+  return html;
+}
+
+// tabs
+function switchTab(name){
+  const tabs={records:'#tabRecords',map:'#tabMap',backlog:'#tabBacklog',radar:'#tabRadar',settings:'#tabSettings',features:'#tabFeatures'};
+  const views={records:'#recordsView',map:'#mapView',backlog:'#backlogView',radar:'#radarView',settings:'#settingsView',features:'#featuresView'};
+  for(const k in tabs){ $(tabs[k]).classList.toggle('on', k===name); $(views[k]).classList.toggle('hidden', k!==name); }
+  if(name==='backlog') loadBacklog();
+  if(name==='radar') loadRadar();
+  if(name==='settings') loadSettings();
+  if(name==='features') loadFeatures();
+}
+$('#tabRecords').addEventListener('click',()=>switchTab('records'));
+$('#tabMap').addEventListener('click',()=>switchTab('map'));
+$('#tabBacklog').addEventListener('click',()=>switchTab('backlog'));
+$('#tabRadar').addEventListener('click',()=>switchTab('radar'));
+$('#tabSettings').addEventListener('click',()=>switchTab('settings'));
+$('#tabFeatures').addEventListener('click',()=>switchTab('features'));
+
+// 2026-05-27v2: deep-link support /memory#backlog -> auto-open backlog tab
+function applyHashTab(){
+  const h = String(window.location.hash || '').replace(/^#/, '');
+  if(h && ['records','map','backlog','radar','settings','features'].indexOf(h) >= 0) switchTab(h);
+}
+window.addEventListener('hashchange', applyHashTab);
+// initial: try hash, fall through to default records tab
+setTimeout(applyHashTab, 0);
+
+// ---- settings ----
+let projectsLoaded = false;
+// 2026-05-27v5: per-key info tooltips (plain Russian, explains what each setting controls)
+const ADV_INFO = {
+  'parallel.maxStreams': 'Максимум сколько воркеров (Claude / Codex / ...) могут работать одновременно в рамках одной задачи. Больше = быстрее на широких задачах, но больше расхода токенов и API.',
+  'chunking.maxChunksPerTask': 'Максимум на сколько этапов один воркер может разбить свою работу через CONTINUE-CHUNK:N/M. Защита от бесконечного дробления.',
+  'criticMaxRetries': 'Сколько раз критик может вернуть задачу на доработку (когда видит баг или нарушение правил), прежде чем закрыть «как есть» с пометкой для оператора.',
+  'auditor.intervalMin': 'Как часто аудитор автоматически проверяет здоровье моста (проверка таймеров, watchdog'+"'"+'ов, heartbeat).',
+  'auditor.cooldownMin': 'Минимальная пауза между двумя последовательными активациями Doctor mode — чтобы не зацикливаться.',
+  'auditor.doctorRecidivismHours': 'Окно в часах, в котором считаются повторные активации Doctor. Если их слишком много (см ниже) — мост поднимает флаг «нужно вмешательство».',
+  'auditor.doctorRecidivismMax': 'Сколько раз Doctor может активироваться в окне рецидива, прежде чем мост позовёт оператора.',
+  'canary.enabled': 'Включена ли канарейка — регулярная самодиагностика (parse всех .ps1 + smoke-проверка endpoint-ов + heartbeat). Полезно ловить деградации заранее.',
+  'canary.intervalHours': 'Как часто запускать canary-цикл (только если канарейка включена).',
+  'canary.cooldownMinutes': 'Минимальная пауза между запусками canary, защита от слишком частого срабатывания.',
+  'fastLane.autoDetect': 'Автодетект тривиальных задач (короткое сообщение без явных действий) — пропустить планировщика, сразу к Codex. Экономит turn-bill при простых вопросах.',
+  'fastLane.minChars': 'Задачи короче этого числа символов считаются тривиальными (если auto-detect включён).',
+  'memory.recallTopK': 'Сколько похожих фактов из памяти инжектится в каждый запрос к агенту. Больше = больше контекста, но дороже токены.',
+  'memory.recallMinScore': 'Минимальная косинусная похожесть (0..1) чтобы факт попал в recall. Низкое = больше шума, высокое = меньше попаданий.',
+  'memory.dedupThreshold': 'Если новый факт похож на старый с косинусом ≥ этого порога (0..1) — он считается дубликатом и не добавляется отдельно.',
+  'memory.ageDaysPrune': 'Удалять факты старше N дней, если ими давно не пользовались. Защита от засорения памяти.',
+  'librarian.deltaTriggerCount': 'Сколько новых memory-записей накопилось — librarian запускается на консолидацию (дедуп, обновление карты памяти).',
+  'librarian.ceilingHours': 'Максимальный интервал между запусками librarian (даже если новых записей мало).',
+  'reflect.minTaskDurationSec': 'Минимальная длительность задачи (в секундах), чтобы reflect-агент рассматривал её как материал для self-improvement идей.'
+};
+
+async function loadSettings(){
+  try{
+    const d = await api('/api/settings'); const s = d.settings||{};
+    $('#setEnabled').checked = !!s.enabled;
+    $('#setAutoRun').checked = !s.requireApproval;            // checkbox = "без одобрения"
+    $('#setIdle').value = s.idleQuietMinutes!=null ? s.idleQuietMinutes : 10;
+    $('#setReflect').value = s.reflectEveryHours!=null ? s.reflectEveryHours : 6;
+    $('#setCap').value = s.maxAutonomousTasksPerDay!=null ? s.maxAutonomousTasksPerDay : 0;
+    const sc = s.scope||'bridge';
+    document.querySelectorAll('input[name="scope"]').forEach(r=>{ r.checked = (r.value===sc); });
+    // 2026-05-27v5: populate advanced rows + inject info-icons on first load
+    const adv = d.advanced || {};
+    document.querySelectorAll('.adv-row').forEach(row=>{
+      const key = row.dataset.key; if(!key) return;
+      // wrap raw <span> label in <span class="lbl"> + append info-icon (idempotent)
+      const rawLabel = row.querySelector('span:not(.lbl):not(.info-i)');
+      if(rawLabel && !rawLabel.classList.contains('lbl')){
+        const txt = rawLabel.textContent;
+        rawLabel.classList.add('lbl');
+        rawLabel.textContent = '';
+        const txtSpan = document.createElement('span');
+        txtSpan.textContent = txt;
+        rawLabel.appendChild(txtSpan);
+        if(ADV_INFO[key]){
+          const icon = document.createElement('span');
+          icon.className = 'info-i';
+          icon.textContent = 'i';
+          icon.title = ADV_INFO[key];
+          icon.setAttribute('aria-label', ADV_INFO[key]);
+          rawLabel.appendChild(icon);
+        }
+      }
+      // populate value
+      const v = adv[key];
+      const input = row.querySelector('input');
+      if(!input || v == null) return;
+      if(input.type === 'checkbox') input.checked = (v === true || v === 'true' || v === 'True');
+      else input.value = String(v);
+    });
+  }catch(e){ toast('Ошибка загрузки настроек: '+e,'bad'); }
+  if(!projectsLoaded) loadProjects();
+}
+async function loadProjects(){
+  const sel = $('#projList');
+  try{
+    const d = await api('/api/projects'); const ps = d.projects||[];
+    if(ps.length===0){ sel.innerHTML = '<option>(git-проектов под рабочим корнем не найдено)</option>'; }
+    else { sel.innerHTML = ps.map(p=>`<option>${esc(p)}</option>`).join(''); }
+    projectsLoaded = true;
+  }catch(e){ sel.innerHTML = '<option>ошибка сканирования</option>'; }
+}
+$('#setSave').addEventListener('click', async ()=>{
+  const scopeEl = document.querySelector('input[name="scope"]:checked');
+  const body = {
+    enabled: $('#setEnabled').checked,
+    requireApproval: !$('#setAutoRun').checked,
+    idleQuietMinutes: parseFloat($('#setIdle').value)||0,
+    reflectEveryHours: parseFloat($('#setReflect').value)||6,
+    maxAutonomousTasksPerDay: parseInt($('#setCap').value)||0,
+    scope: scopeEl ? scopeEl.value : 'bridge'
+  };
+  const b=$('#setSave'); b.disabled=true; $('#setStatus').textContent='сохраняю…';
+  try{
+    const r = await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    $('#setStatus').textContent = r.ok ? 'сохранено ✓' : 'ошибка';
+    toast(r.ok?'Настройки сохранены':'Ошибка', r.ok?'ok':'bad');
+  }catch(e){ $('#setStatus').textContent='ошибка'; toast('Ошибка: '+e,'bad'); }
+  b.disabled=false;
+  setTimeout(()=>{ $('#setStatus').textContent=''; }, 4000);
+});
+
+// 2026-05-27v5: advanced settings save
+const advSaveBtn = document.getElementById('advSave');
+const advResetBtn = document.getElementById('advReset');
+if(advSaveBtn) advSaveBtn.addEventListener('click', async ()=>{
+  const adv = {};
+  document.querySelectorAll('.adv-row').forEach(row=>{
+    const key = row.dataset.key; if(!key) return;
+    const input = row.querySelector('input');
+    if(!input) return;
+    if(input.type === 'checkbox') adv[key] = input.checked;
+    else adv[key] = input.value;
+  });
+  const status = document.getElementById('advStatus');
+  advSaveBtn.disabled = true;
+  if(status) status.textContent = 'сохраняю…';
+  try{
+    const r = await api('/api/settings', { method:'POST', body: JSON.stringify({ advanced: adv }) });
+    if(status) status.textContent = r.ok ? 'сохранено ✓' : 'ошибка';
+    toast(r.ok ? 'Расширенные настройки сохранены' : 'Ошибка', r.ok ? 'ok' : 'bad');
+  } catch(e){
+    if(status) status.textContent = 'ошибка';
+    toast('Ошибка: ' + e, 'bad');
+  }
+  advSaveBtn.disabled = false;
+  setTimeout(()=>{ if(status) status.textContent=''; }, 4000);
+});
+if(advResetBtn) advResetBtn.addEventListener('click', loadSettings);
+
+// ---- backlog ----
+let BL = [];
+let BL_SHOW_ARCHIVED = false;
+let BL_ARCHIVED_COUNT = 0;
+const BL_STATUS = {
+  'new':           {label:'новая',         cls:'src-task',     dot:'gray'},
+  'approved':      {label:'одобрена',      cls:'src-manual',   dot:'green'},
+  'held':          {label:'на паузе',      cls:'',             dot:'yellow'},
+  'running':       {label:'выполняется',   cls:'src-decision', dot:'blue'},
+  'done':          {label:'готово',        cls:'src-task',     dot:'green-done'},
+  'rejected':      {label:'отклонена',     cls:'',             dot:'gray'},
+  'failed':        {label:'ошибка',        cls:'',             dot:'red'},
+  'auto-dropped':  {label:'авто-сброс',    cls:'',             dot:'gray-x'},
+  'auto-resolved': {label:'авто-решено',   cls:'src-task',     dot:'green-check'}
+};
+async function loadBacklog(){
+  try{
+    const url = BL_SHOW_ARCHIVED ? '/api/backlog?include=archived' : '/api/backlog';
+    const d = await api(url);
+    BL = d.items||[];
+    BL_ARCHIVED_COUNT = Number(d.archived_count||0);
+    const cntEl = document.getElementById('blArchiveCount');
+    if(cntEl) cntEl.textContent = String(BL_ARCHIVED_COUNT);
+    const tglEl = document.getElementById('blArchiveToggle');
+    if(tglEl) tglEl.style.borderColor = BL_SHOW_ARCHIVED ? 'rgba(255,183,114,.6)' : '';
+    renderBacklog();
+  }
+  catch(e){ toast('Ошибка загрузки бэклога: '+e,'bad'); }
+}
+function curatorDotHtml(it){
+  const s = String(it.status||'new');
+  const ac = it.auto_curator;
+  let color='#647082', sym='&#9679;'; // default grey dot
+  let title = '';
+  if(ac){
+    title = `Curator: ${ac.verdict||'?'} | confidence: ${ac.confidence??'?'} | model: ${ac.model||'?'} | ${ac.reason||''}`;
+  }
+  if(s==='approved' && ac && ac.verdict==='approve'){ color='#4caf50'; sym='&#9679;&#9733;'; if(!title) title='Auto-approved'; }
+  else if(s==='approved'){ color='#4caf50'; sym='&#9679;'; if(!title) title='Approved (manual)'; }
+  else if(s==='held'){ color='#ffc107'; sym='&#9679;'; if(!title) title='Held — needs review'; }
+  else if(s==='auto-dropped'){ color='#888'; sym='&#10006;'; if(!title) title='Auto-dropped'; }
+  else if(s==='auto-resolved'){ color='#4caf50'; sym='&#10004;'; if(!title) title='Auto-resolved'; }
+  else if(s==='done'){ color='#2e7d32'; sym='&#10004;'; if(!title) title='Done'; }
+  else if(s==='running'){ color='#72b7ff'; sym='&#9679;'; if(!title) title='Running'; }
+  else if(s==='failed' || s==='rejected'){ color='#f44336'; sym='&#10006;'; }
+  return `<span class="curator-dot" title="${esc(title)}" style="color:${color};font-size:14px;line-height:1;display:inline-block;width:18px;text-align:center">${sym}</span>`;
+}
+function similarBadgeHtml(it){
+  if(!it.similar_to || !it.similar_to.length) return '';
+  const ids = it.similar_to.map(x=>String(x).substring(0,8)).join(', ');
+  return `<span class="tag" title="Похожие идеи: ${esc(ids)}" style="background:rgba(255,209,102,.12);color:#ffd166;border:1px solid rgba(255,209,102,.3)">~${it.similar_to.length}</span>`;
+}
+function renderBacklog(){
+  const g = $('#blGrid');
+  const order = {running:0, approved:1, 'new':2, held:3, failed:4, rejected:5, 'auto-resolved':6, 'auto-dropped':7, done:8};
+  const list = BL.slice().sort((a,b)=>{
+    const oa=order[a.status]??9, ob=order[b.status]??9;
+    if(oa!==ob) return oa-ob;
+    return (b.ts||'').localeCompare(a.ts||'');
+  });
+  const totalText = `${BL.length} видно${BL_ARCHIVED_COUNT?` · ${BL_ARCHIVED_COUNT} в архиве`:''}`;
+  $('#blCount').textContent = totalText;
+  if(list.length===0){ g.innerHTML='<div class="empty">Бэклог пуст. Идеи появятся от агентов ([[IDEA]]), от саморефлексии, или добавь свою.</div>'; return; }
+  g.innerHTML='';
+  for(const it of list){
+    const s = BL_STATUS[it.status] || {label:it.status,cls:''};
+    const card = document.createElement('div');
+    card.className='card';
+    let actions='';
+    if(it.status==='new'){ actions=`<button class="approveBtn primary">Одобрить</button><button class="rejectBtn">Отклонить</button>`; }
+    else if(it.status==='approved'){ actions=`<button class="unapproveBtn">Снять одобрение</button>`; }
+    else if(it.status==='held'){ actions=`<button class="approveBtn primary">Одобрить</button><button class="rejectBtn">Отклонить</button>`; }
+    else if(it.status==='running'){ actions=`<span style="color:var(--model);font-size:12px">выполняется…</span>`; }
+    else if(it.status==='auto-dropped' || it.status==='auto-resolved'){
+      actions=`<button class="restoreBtn">↩ Restore</button>`;
+    }
+    else { actions=`<button class="reopenBtn">Вернуть в новые</button>`; }
+    const reasonRow = it.auto_curator && it.auto_curator.reason
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;padding:4px 6px;background:rgba(255,255,255,.03);border-radius:4px;border-left:2px solid rgba(255,255,255,.1)">${esc(String(it.auto_curator.reason))}</div>`
+      : '';
+    card.innerHTML =
+      `<div class="meta" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">`+
+        curatorDotHtml(it)+
+        `<span class="src-pill ${s.cls}">${esc(s.label)}</span>`+
+        similarBadgeHtml(it)+
+        `<span class="tag">от ${esc(it.from||'?')}</span>`+
+        (it.attempts>0?`<span class="tag">попыток: ${it.attempts}</span>`:'')+
+        `<span style="margin-left:auto">${esc(ago(it.ts))}</span>`+
+      `</div>`+
+      `<textarea>${esc(it.text)}</textarea>`+
+      reasonRow+
+      `<div class="row">${actions}<span class="spacer"></span><button class="saveBtn" disabled>Сохранить текст</button><button class="danger delBtn">Удалить</button></div>`;
+    const ta=card.querySelector('textarea'); const saveBtn=card.querySelector('.saveBtn'); const orig=it.text;
+    ta.addEventListener('input',()=>{ saveBtn.disabled = (ta.value===orig); });
+    const upd = async (body, okMsg)=>{ const r=await api('/api/backlog/update',{method:'POST',body:JSON.stringify(Object.assign({id:it.id},body))}); if(r.ok){toast(okMsg||'Готово','ok'); loadBacklog();} else toast('Ошибка','bad'); };
+    saveBtn.addEventListener('click',()=>upd({text:ta.value},'Текст сохранён'));
+    const b = sel=>card.querySelector(sel);
+    if(b('.approveBtn')) b('.approveBtn').addEventListener('click',()=>upd({status:'approved', clear_auto_curator:true},'Одобрено — выполнится на простое'));
+    if(b('.rejectBtn')) b('.rejectBtn').addEventListener('click',()=>upd({status:'rejected'},'Отклонено'));
+    if(b('.unapproveBtn')) b('.unapproveBtn').addEventListener('click',()=>upd({status:'new'},'Одобрение снято'));
+    if(b('.reopenBtn')) b('.reopenBtn').addEventListener('click',()=>upd({status:'new'},'Возвращено'));
+    if(b('.restoreBtn')) b('.restoreBtn').addEventListener('click',()=>upd({status:'approved', clear_auto_curator:true},'Восстановлено в approved'));
+    b('.delBtn').addEventListener('click', async ()=>{ if(!confirm('Удалить идею?'))return; const r=await api('/api/backlog/delete',{method:'POST',body:JSON.stringify({id:it.id})}); if(r.ok){toast('Удалено','ok'); loadBacklog();} else toast('Ошибка','bad'); });
+    g.appendChild(card);
+  }
+}
+$('#refreshBl').addEventListener('click', loadBacklog);
+$('#addIdeaToggle').addEventListener('click', ()=> $('#addIdeaBox').classList.toggle('show'));
+// 2026-05-27v2: archive toggle — load with include=archived to show done/auto-resolved items
+const blArchBtn = document.getElementById('blArchiveToggle');
+if(blArchBtn) blArchBtn.addEventListener('click', ()=>{ BL_SHOW_ARCHIVED = !BL_SHOW_ARCHIVED; loadBacklog(); });
+$('#ideaCancel').addEventListener('click', ()=>{ $('#addIdeaBox').classList.remove('show'); $('#ideaText').value=''; });
+$('#ideaSave').addEventListener('click', async ()=>{
+  const text=$('#ideaText').value.trim(); if(!text){ toast('Введите текст','bad'); return; }
+  const r=await api('/api/backlog/add',{method:'POST',body:JSON.stringify({text,status:'approved'})});
+  if(r.ok){ toast('Добавлено','ok'); $('#ideaText').value=''; $('#addIdeaBox').classList.remove('show'); loadBacklog(); } else toast('Ошибка','bad');
+});
+$('#reflectBtn').addEventListener('click', async ()=>{
+  const b=$('#reflectBtn'); b.disabled=true; b.textContent='думаю…';
+  const r=await api('/api/reflect',{method:'POST',body:'{}'});
+  if(r.ok){ toast('Саморефлексия запущена — идеи появятся через ~20-40 сек','ok'); setTimeout(loadBacklog, 30000); }
+  else toast('Ошибка запуска','bad');
+  setTimeout(()=>{ b.disabled=false; b.textContent='🤔 Подумать сейчас'; }, 30000);
+});
+
+// ---- radar ----
+async function loadRadar(){
+  try{
+    const d = await api('/api/radar');
+    RADAR = d || {items:[]};
+    renderRadar();
+  }catch(e){
+    toast('Ошибка загрузки радара: '+e, 'bad');
+  }
+}
+function renderRadar(){
+  const d = RADAR || {items:[]};
+  const items = d.items || [];
+  const when = d.generatedAt ? ago(d.generatedAt) : 'ещё не запускался';
+  $('#radarCount').textContent = `${items.length} пунктов · ${when}`;
+  const g = $('#radarGrid');
+  if(items.length===0){
+    g.innerHTML = '<div class="empty">План-доска радара пуста. Нажмите «Обновить радар», чтобы собрать дайджест по AI/ML-лентам Habr.</div>';
+    return;
+  }
+  g.innerHTML = '';
+  for(const it of items){
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML =
+      `<div class="meta">`+
+        `<span class="src-pill src-task">value ${esc(String(it.value||''))}</span>`+
+        `<span class="tag">confidence ${esc(String(it.confidence||''))}</span>`+
+        `<span class="tag">effort ${esc(String(it.effort||''))}</span>`+
+        `<span class="tag">score ${esc(String(it.score||''))}</span>`+
+      `</div>`+
+      `<div class="radar-title"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.title||'Без заголовка')}</a></div>`+
+      `<div class="radar-summary">${esc(it.summary||'')}</div>`+
+      `<div class="radar-link"><a href="${esc(it.link||'#')}" target="_blank" rel="noopener">${esc(it.link||'')}</a></div>`;
+    // Passive digest: radar is FYI only. No "add to backlog" CTA — the user is never asked
+    // to read/triage articles, and web content is never routed into actionable items.
+    g.appendChild(card);
+  }
+}
+$('#refreshRadarBtn').addEventListener('click', loadRadar);
+$('#runRadarBtn').addEventListener('click', async ()=>{
+  const b = $('#runRadarBtn'); b.disabled = true; b.textContent = 'запущено…';
+  try{
+    const r = await api('/api/radar/run',{method:'POST',body:'{}'});
+    if(r.ok){ toast('Радар запущен — дайджест обновится после прогона','ok'); setTimeout(loadRadar, 45000); }
+    else toast('Ошибка запуска: '+(r.error||''),'bad');
+  }catch(e){ toast('Ошибка запуска: '+e,'bad'); }
+  setTimeout(()=>{ b.disabled=false; b.textContent='Обновить радар'; }, 45000);
+});
+
+$('#filter').addEventListener('input', renderGrid);
+$('#refreshBtn').addEventListener('click', load);
+const bridgeReadonlyToggle = document.getElementById('bridgeReadonlyToggle');
+if(bridgeReadonlyToggle){
+  bridgeReadonlyToggle.addEventListener('change', e=>{
+    SHOW_BRIDGE_READONLY = !!e.target.checked;
+    load();
+  });
+}
+$('#chanFilter').addEventListener('change', e=>{
+  CURRENT_CHAN = e.target.value;
+  renderBridgeReadonlyToggle();
+  load();
+});
+$('#allChannelsBtn').addEventListener('click', ()=>{
+  CURRENT_CHAN = '__all__';
+  renderChanFilter();
+  load();
+});
+$('#reindexBtn').addEventListener('click', async ()=>{
+  const b=$('#reindexBtn'); b.disabled=true; b.textContent='запущено…';
+  const r = await api('/api/memory/reindex',{method:'POST',body:'{}'});
+  if(r.ok){ toast('Библиотекарь запущен — карта обновится через ~20 сек','ok'); setTimeout(()=>{load();}, 22000); }
+  else toast('Ошибка запуска','bad');
+  setTimeout(()=>{ b.disabled=false; b.textContent='↻ Пересобрать карту'; }, 22000);
+});
+
+// add box
+$('#addToggle').addEventListener('click', ()=> $('#addBox').classList.toggle('show'));
+$('#addCancel').addEventListener('click', ()=>{ $('#addBox').classList.remove('show'); $('#addText').value=''; $('#addTags').value=''; });
+$('#addImp').addEventListener('input', e=> $('#addImpVal').textContent = parseFloat(e.target.value).toFixed(2));
+$('#addSave').addEventListener('click', async ()=>{
+  const text = $('#addText').value.trim();
+  if(!text){ toast('Введите текст','bad'); return; }
+  const tags = $('#addTags').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const importance = parseFloat($('#addImp').value);
+  const b=$('#addSave'); b.disabled=true; b.textContent='…';
+  const r = await api('/api/memory/add',{method:'POST',body:JSON.stringify({text,tags,importance})});
+  b.disabled=false; b.textContent='Сохранить';
+  if(r.ok){ toast('Добавлено','ok'); $('#addText').value=''; $('#addTags').value=''; $('#addBox').classList.remove('show'); load(); }
+  else toast('Ошибка: '+(r.error||''),'bad');
+});
+
+(async ()=>{ await loadChannels(); await load(); })();
+
+// Feature Registry tab
+let featAllData = [];
+let featStatusFilter = 'all';
+let featSearchQuery = '';
+let featSortKey = 'name';
+
+async function loadFeatures() {
+  try {
+    const data = await api('/api/features');
+    featAllData = data.features || [];
+    renderFeatures();
+  } catch(e) {
+    document.getElementById('featGrid').innerHTML = '<div class="loading-text">Ошибка загрузки</div>';
+  }
+}
+
+function renderFeatures() {
+  let list = [...featAllData];
+  if (featStatusFilter !== 'all') list = list.filter(f => f.status === featStatusFilter);
+  if (featSearchQuery) {
+    const q = featSearchQuery.toLowerCase();
+    list = list.filter(f => f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q) || (f.description||'').toLowerCase().includes(q));
+  }
+  list.sort((a,b) => {
+    if (featSortKey === 'last_activated_at') {
+      const aa = a.last_activated_at||''; const bb = b.last_activated_at||'';
+      return bb.localeCompare(aa);
+    }
+    if (featSortKey === 'layer') return (a.layer||'').localeCompare(b.layer||'');
+    if (featSortKey === 'status') return (a.status||'').localeCompare(b.status||'');
+    return (a.name||'').localeCompare(b.name||'');
+  });
+  const grid = document.getElementById('featGrid');
+  if (!list.length) { grid.innerHTML = '<div class="loading-text">Нет фич</div>'; return; }
+  grid.innerHTML = list.map(f => {
+    const files = (f.owner_files||[]).map(p => `<span class="feat-file-tag">${esc(p)}</span>`).join('');
+    const activated = f.last_activated_at ? new Date(f.last_activated_at).toLocaleDateString('ru-RU') : '–';
+    return `<div class="feat-card">
+      <div class="feat-card-header">
+        <span class="feat-status-dot ${esc(f.status||'dormant')}" title="${esc(f.status||'')}"></span>
+        <span class="feat-card-name">${esc(f.name||'')}</span>
+        <span class="feat-card-layer">${esc(f.layer||'')}</span>
+      </div>
+      <div class="feat-card-desc">${esc(f.description||'')}</div>
+      ${files ? `<div class="feat-card-files">${files}</div>` : ''}
+      <div class="feat-card-meta">Активация: ${activated} · ${esc(f.expected_frequency||'')}</div>
+      <div class="feat-card-actions">
+        <button class="feat-btn-discuss" onclick="featDiscuss('${esc(f.id||'')}')">Обсудить</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function featDiscuss(id) {
+  try {
+    await api('/api/features/' + encodeURIComponent(id) + '/discuss', { method: 'POST', body: JSON.stringify({note:''}) });
+    alert('Идея добавлена в бэклог');
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+
+document.getElementById('featSearch').addEventListener('input', e => {
+  featSearchQuery = e.target.value;
+  renderFeatures();
+});
+
+document.querySelectorAll('.feat-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.feat-filter').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    featStatusFilter = btn.dataset.status;
+    renderFeatures();
+  });
+});
+
+document.getElementById('featSort').addEventListener('change', e => {
+  featSortKey = e.target.value;
+  renderFeatures();
+});
+</script>
+</body>
+</html>
