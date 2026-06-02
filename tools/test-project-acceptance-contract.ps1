@@ -16,8 +16,32 @@ try {
   $planText = ((1..100 | ForEach-Object { "Plan line $($_): chapter, dependency, implementation atom, checks, and final acceptance coverage." }) -join "`n")
   [System.IO.File]::WriteAllText((Join-Path $project 'PROJECT_MAP.md'), $mapText, (New-Object System.Text.UTF8Encoding($false)))
   [System.IO.File]::WriteAllText((Join-Path $project 'PROJECT_PLAN.md'), $planText, (New-Object System.Text.UTF8Encoding($false)))
+  $stageDefs = @(
+    @{ id='brief'; path='PROJECT_BRIEF.md'; title='Project brief'; deps=@() },
+    @{ id='product'; path='DISCUSS_PRODUCT.md'; title='Product discussion'; deps=@('brief') },
+    @{ id='ux'; path='DISCUSS_UX.md'; title='UX discussion'; deps=@('brief','product') },
+    @{ id='ui'; path='DISCUSS_UI.md'; title='UI discussion'; deps=@('brief','product','ux') },
+    @{ id='backend'; path='DISCUSS_BACKEND.md'; title='Backend discussion'; deps=@('brief','product','ux') },
+    @{ id='qa'; path='DISCUSS_QA.md'; title='QA discussion'; deps=@('brief','product','ux','ui','backend') },
+    @{ id='integration'; path='DISCUSS_INTEGRATION.md'; title='Integration discussion'; deps=@('brief','product','ux','ui','backend','qa') }
+  )
+  foreach ($sd in $stageDefs) {
+    $stageText = ((1..45 | ForEach-Object { "$($sd.title) line $($_): this fixture records durable decisions, previous-stage inputs, risks, open questions, and acceptance traceability for the staged planning flow." }) -join "`n")
+    [System.IO.File]::WriteAllText((Join-Path $project ([string]$sd.path)), $stageText, (New-Object System.Text.UTF8Encoding($false)))
+  }
   $contract = [ordered]@{
     project_goal = 'Deliver a durable test product with enough planning depth for deterministic acceptance and UX traceability.'
+    planning_flow = [ordered]@{
+      stages = @($stageDefs | ForEach-Object {
+        [ordered]@{
+          id = [string]$_.id
+          status = 'complete'
+          doc = [string]$_.path
+          depends_on = @($_.deps)
+          summary = ('Completed staged planning fixture for ' + [string]$_.id + ', using prior decisions and preserving traceability into the final contract.')
+        }
+      })
+    }
     requirements = @('first requirement','second requirement','third requirement')
     screens = @(
       [ordered]@{ id='dashboard'; path='/dashboard'; expected_status=200; must_contain=@('Dashboard','Account') },
@@ -35,7 +59,7 @@ try {
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\project-acceptance.ps1')
 
   $steps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
-  Assert-True ($steps.Count -ge 9) 'expected contract plan steps'
+  Assert-True ($steps.Count -ge 24) 'expected staged contract plan steps'
   $fails = @($steps | Where-Object { -not [bool]$_.ok })
   Assert-True ($fails.Count -eq 0) ('expected valid contract, failed: ' + (($fails | ForEach-Object { [string]$_.name }) -join ', '))
 

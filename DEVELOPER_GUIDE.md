@@ -200,13 +200,29 @@ project memory (`channels/<slug>/memory/memory.jsonl`) через существ
 Project Autopilot is not allowed to decompose a shallow plan. Before `Set-ProjectPlanApproved`
 can approve a project channel, the project must contain:
 
+- `PROJECT_BRIEF.md` with the project core: purpose, users, scope, constraints, non-goals;
+- `DISCUSS_PRODUCT.md` with product decisions and user/business constraints;
+- `DISCUSS_UX.md` with user journeys, navigation, empty/error states, and role flows;
+- `DISCUSS_UI.md` with screen structure, visual system, components, responsive expectations;
+- `DISCUSS_BACKEND.md` with data, API, auth, storage, permissions, scaling/ops constraints;
+- `DISCUSS_QA.md` with test strategy, acceptance scenarios, failure criteria, launch gates;
+- `DISCUSS_INTEGRATION.md` with cross-stage conflict resolution and final consistency review;
 - `PROJECT_MAP.md` with durable product/interface/workflow mapping;
 - `PROJECT_PLAN.md` with deep chapter/dependency/acceptance planning;
 - `.bridge/project-contract.json` as the machine-readable source of truth for product, UX/interface,
   journeys/workflows, and final acceptance.
 
+The required discussion order is:
+
+`brief -> product -> UX -> UI -> backend -> QA -> integration`.
+
+Every later stage must explicitly use the previous-stage decisions. For example, UX cannot invent
+new roles outside Product; Backend must implement the Product/UX flows; QA must test Product, UX,
+UI, Backend, and the integration review. The final integration discussion is the place where
+contradictions are resolved before implementation atoms are generated.
+
 `Set-ProjectPlanApproved` stores `plan_approved_signature`, a SHA-256 signature of
-`PROJECT_MAP.md + PROJECT_PLAN.md + .bridge/project-contract.json`. If any of those files change,
+all stage docs + `PROJECT_MAP.md + PROJECT_PLAN.md + .bridge/project-contract.json`. If any of those files change,
 `Test-ProjectPlanApproved` returns false and autopilot waits for re-approval instead of expanding
 stale scope.
 
@@ -215,6 +231,31 @@ Minimal `.bridge/project-contract.json` shape:
 ```json
 {
   "project_goal": "Concrete outcome, not a slogan.",
+  "planning_flow": {
+    "stages": [
+      {
+        "id": "brief",
+        "status": "complete",
+        "doc": "PROJECT_BRIEF.md",
+        "depends_on": [],
+        "summary": "Core project purpose, users, constraints, MVP, and non-goals are fixed."
+      },
+      {
+        "id": "product",
+        "status": "complete",
+        "doc": "DISCUSS_PRODUCT.md",
+        "depends_on": ["brief"],
+        "summary": "Product decisions use the brief and define roles, value, scope, and boundaries."
+      },
+      {
+        "id": "integration",
+        "status": "complete",
+        "doc": "DISCUSS_INTEGRATION.md",
+        "depends_on": ["brief", "product", "ux", "ui", "backend", "qa"],
+        "summary": "Cross-stage contradictions were resolved before implementation."
+      }
+    ]
+  },
   "requirements": ["capability 1", "capability 2", "capability 3"],
   "screens": [
     {

@@ -100,6 +100,15 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 > ```
 > Пока план не утверждён, driver один раз пишет в канал «⏸ Project Autopilot ждёт утверждения PROJECT_PLAN».
 
+> **Staged planning gate (2026-06-02):** approval now requires a staged plan, not one big
+> ad-hoc document. A project must have:
+> `PROJECT_BRIEF.md`, `DISCUSS_PRODUCT.md`, `DISCUSS_UX.md`, `DISCUSS_UI.md`,
+> `DISCUSS_BACKEND.md`, `DISCUSS_QA.md`, `DISCUSS_INTEGRATION.md`, `PROJECT_MAP.md`,
+> `PROJECT_PLAN.md`, and `.bridge/project-contract.json`.
+> The order is `brief -> product -> UX -> UI -> backend -> QA -> integration`; every later stage
+> must use earlier-stage decisions. `Set-ProjectPlanApproved` hashes all of these files, so changing
+> any stage re-gates autopilot until the plan is approved again.
+
 2. Когда проектный backlog пуст или почти пуст, project git clean **и план утверждён**, driver создаёт coordinator-задачу.
 3. Planner возвращает массив атомов внутри маркера:
    ```text
