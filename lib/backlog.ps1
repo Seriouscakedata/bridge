@@ -2634,12 +2634,51 @@ Finish with STATUS: DONE after emitting the marker, or STATUS: DONE without the 
 "@
 }
 
+function Test-ProjectPlanApproved {
+  # 2026-06-02: Discuss-First gate for Project Autopilot. Autopilot only EXPANDS a PROJECT_PLAN the
+  # operator has explicitly APPROVED (flow phase Ф4). Without approval the bridge stays in discuss/
+  # planning and does NOT auto-generate/execute atoms — this keeps autopilot UNDER Discuss-First, not
+  # instead of it, and prevents it from scaling an un-vetted plan into a frankenstein (observed on
+  # private-community: 246 files build-green but product-incoherent because the plan skipped Ф1–Ф4).
+  # Reads channels/<ch>/channel.json -> plan_approved. Default $false = safe (no approval => no autopilot).
+  param([string]$Channel)
+  try {
+    $cj = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) 'channel.json'
+    if (-not (Test-Path -LiteralPath $cj)) { return $false }
+    $raw = [System.IO.File]::ReadAllText($cj, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($raw -and ($raw.PSObject.Properties.Name -contains 'plan_approved')) { return [bool]$raw.plan_approved }
+  } catch {}
+  return $false
+}
+
+function Set-ProjectPlanApproved {
+  # Operator action at Discuss-First Ф4: mark a channel's PROJECT_PLAN approved so Project Autopilot may
+  # begin executing it. Also stamps the approved time. To re-gate (force re-approval), pass -Approved:$false.
+  param([string]$Channel, [bool]$Approved = $true)
+  $cj = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) 'channel.json'
+  if (-not (Test-Path -LiteralPath $cj)) { throw "channel.json not found: $Channel" }
+  $raw = [System.IO.File]::ReadAllText($cj, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $raw | Add-Member -NotePropertyName plan_approved -NotePropertyValue $Approved -Force
+  $raw | Add-Member -NotePropertyName plan_approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+  [System.IO.File]::WriteAllText($cj, (($raw | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  # clear the one-time gate-notified marker so a future re-gate (plan rewrite) notifies the operator again
+  try { $gm = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.plan-gate-notified'; if (Test-Path -LiteralPath $gm) { Remove-Item -LiteralPath $gm -Force -ErrorAction SilentlyContinue } } catch {}
+  return $Approved
+}
+
 function Start-ProjectAutopilotIfNeeded {
   param([string]$Reason = 'idle-empty-backlog')
   $cfg = Get-ProjectAutopilotConfig
   if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ queued=$false; reason='disabled' } }
   $binding = Get-ProjectAutopilotBinding
   if (-not $binding) { return [pscustomobject]@{ queued=$false; reason='not-project-channel' } }
+  # 2026-06-02 DISCUSS-FIRST GATE: autopilot only executes an operator-APPROVED PROJECT_PLAN (Ф4).
+  # Until the operator runs Set-ProjectPlanApproved for this channel, the bridge stays in discuss/
+  # planning and autopilot does NOT auto-queue coordinator/atoms. This is the fix for autopilot
+  # bypassing Ф1–Ф4 and scaling an un-vetted plan into a frankenstein.
+  if (-not (Test-ProjectPlanApproved -Channel ([string]$binding.slug))) {
+    return [pscustomobject]@{ queued=$false; reason='plan-not-approved'; channel=[string]$binding.slug }
+  }
 
   $slug = [string]$binding.slug
   $root = [string]$binding.project_root

@@ -21,6 +21,7 @@ param([string]$Channel = $null, [switch]$SelfTest)
 . (Join-Path $PSScriptRoot 'lib\postmortem.ps1')
 . (Join-Path $PSScriptRoot 'lib\features.ps1')
 . (Join-Path $PSScriptRoot 'lib\qa-agent.ps1')
+. (Join-Path $PSScriptRoot 'lib\project-acceptance.ps1')
 . (Join-Path $PSScriptRoot 'lib\checkpoint.ps1')
 $ErrorActionPreference = 'Continue'
 
@@ -3047,7 +3048,7 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
   }
   try {
@@ -3847,7 +3848,23 @@ while ($true) {
         # Project Autopilot: project-bound channels should not need the operator to keep
         # feeding atoms. When their runnable backlog is empty, enqueue a coordinator task
         # that reads the durable project plan and emits the next [[PROJECT_BACKLOG]] batch.
-        try { Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog' | Out-Null } catch {}
+        try {
+          $paStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
+          if ($paStart -and [string]$paStart.reason -eq 'paused-empty-scope') {
+            Start-ProjectAcceptanceIfDue -Channel $Channel -Trigger 'autopilot-empty-scope' | Out-Null
+          }
+          elseif ($paStart -and [string]$paStart.reason -eq 'plan-not-approved') {
+            # 2026-06-02 Discuss-First gate: notify ONCE (marker file) that autopilot is held until the
+            # operator approves the PROJECT_PLAN (Ф4). No spam: the marker is cleared by Set-ProjectPlanApproved.
+            try {
+              $gateMark = Join-Path (Join-Path (Join-Path $bridgeRoot 'channels') $Channel) '.plan-gate-notified'
+              if (-not (Test-Path -LiteralPath $gateMark)) {
+                Add-Message -From system -Text ("⏸ Project Autopilot ждёт утверждения PROJECT_PLAN (Discuss-First Ф4). Backlog пуст, но автогенерация атомов НЕ запускается без одобрения видения оператором. Когда план обсуждён и утверждён — выполни: Set-ProjectPlanApproved -Channel '" + $Channel + "'.") -Kind event | Out-Null
+                Set-Content -LiteralPath $gateMark -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII
+              }
+            } catch {}
+          }
+        } catch {}
       }
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         # Workpack execution layer: before claiming a single backlog item, try to claim a small
