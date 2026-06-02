@@ -1,0 +1,300 @@
+{
+    "ts":  "2026-06-02T13:13:36.2094810Z",
+    "channel":  "private-community",
+    "project_root":  "C:\\Users\\rafie\\bridge-projects\\private-community",
+    "head":  "6bd19e001a437257d276a4e85aabd4a5fb387986",
+    "trigger":  "manual-force",
+    "status":  "PASS",
+    "plan_signature":  "b1087d3fa78acdd0d144b3eb3a19d924ca1d3fba6a2a0dbf6136ce3d78866da3",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\private-community\\.bridge\\project-contract.json",
+    "steps":  [
+                  {
+                      "name":  "plan:PROJECT_MAP.md-depth",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=6425"
+                  },
+                  {
+                      "name":  "plan:PROJECT_PLAN.md-depth",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=7734"
+                  },
+                  {
+                      "name":  "plan-stage-doc:brief",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "PROJECT_BRIEF.md chars=3456 min=800"
+                  },
+                  {
+                      "name":  "plan-stage-doc:product",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_PRODUCT.md chars=3557 min=900"
+                  },
+                  {
+                      "name":  "plan-stage-doc:ux",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_UX.md chars=4617 min=900"
+                  },
+                  {
+                      "name":  "plan-stage-doc:ui",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_UI.md chars=4274 min=800"
+                  },
+                  {
+                      "name":  "plan-stage-doc:backend",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_BACKEND.md chars=3643 min=900"
+                  },
+                  {
+                      "name":  "plan-stage-doc:qa",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_QA.md chars=3434 min=800"
+                  },
+                  {
+                      "name":  "plan-stage-doc:integration",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "DISCUSS_INTEGRATION.md chars=3750 min=800"
+                  },
+                  {
+                      "name":  "plan-contract:present",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "C:\\Users\\rafie\\bridge-projects\\private-community\\.bridge\\project-contract.json"
+                  },
+                  {
+                      "name":  "plan-contract:goal",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=241"
+                  },
+                  {
+                      "name":  "plan-contract:requirements",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=11"
+                  },
+                  {
+                      "name":  "plan-contract:surfaces",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=13"
+                  },
+                  {
+                      "name":  "plan-contract:journeys",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=6"
+                  },
+                  {
+                      "name":  "plan-contract:acceptance",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=13"
+                  },
+                  {
+                      "name":  "plan-contract:interface",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=1"
+                  },
+                  {
+                      "name":  "plan-contract:planning-flow",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=7"
+                  },
+                  {
+                      "name":  "plan-contract-stage:brief",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=107"
+                  },
+                  {
+                      "name":  "plan-contract-stage:product",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=110"
+                  },
+                  {
+                      "name":  "plan-contract-stage:ux",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=103"
+                  },
+                  {
+                      "name":  "plan-contract-stage:ui",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=122"
+                  },
+                  {
+                      "name":  "plan-contract-stage:backend",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=126"
+                  },
+                  {
+                      "name":  "plan-contract-stage:qa",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=80"
+                  },
+                  {
+                      "name":  "plan-contract-stage:integration",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "status=complete summary_chars=98"
+                  },
+                  {
+                      "name":  "plan-contract:integration-validates-prior-stages",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "depends_on=brief,product,ux,ui,backend,qa"
+                  },
+                  {
+                      "name":  "script:typecheck",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 typecheck\n\u003e tsc --noEmit"
+                  },
+                  {
+                      "name":  "script:lint",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 lint\n\u003e next lint\n\n\n./app/feed/page.tsx\n180:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\n./app/me/page.tsx\n57:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\n./app/members/[id]/page.tsx\n63:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\ninfo  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/basic-features/eslint#disabling-rules"
+                  },
+                  {
+                      "name":  "script:build",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "e-community@0.1.0 build\n\u003e next build\n\n  ▲ Next.js 14.2.3\n  - Environments: .env\n\n   Creating an optimized production build ...\n ✓ Compiled successfully\n   Linting and checking validity of types ...\n\n./app/feed/page.tsx\n180:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\n./app/me/page.tsx\n57:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\n./app/members/[id]/page.tsx\n63:19  Warning: Using `\u003cimg\u003e` could result in slower LCP and higher bandwidth. Consider using `\u003cImage /\u003e` from `next/image` to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element\n\ninfo  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/basic-features/eslint#disabling-rules\n   Collecting page data ...\n   Generating static pages (0/22) ...\n   Generating static pages (5/22) \n   Generating static pages (10/22) \n   Generating static pages (16/22) \n ✓ Generating static pages (22/22)\n   Finalizing page optimization ...\n   Collecting build traces ...\n\nRoute (app)                              Size     First Load JS\n┌ ○ /                                    149 B          87.1 kB\n├ ○ /_not-found                          871 B          87.9 kB\n├ ƒ /admin                               462 B          94.3 kB\n├ ƒ /admin/actions                       464 B          94.3 kB\n├ ƒ /admin/content                       464 B          94.3 kB\n├ ƒ /admin/users                         1.14 kB        94.9 kB\n├ ƒ /api/admin/comments/[id]             0 B                0 B\n├ ƒ /api/admin/messages/[id]             0 B                0 B\n├ ƒ /api/admin/photos/[id]               0 B                0 B\n├ ƒ /api/admin/users                     0 B                0 B\n├ ƒ /api/admin/users/[id]                0 B                0 B\n├ ƒ /api/auth/login                      0 B                0 B\n├ ƒ /api/auth/logout                     0 B                0 B\n├ ƒ /api/auth/register                   0 B                0 B\n├ ƒ /api/chat/messages                   0 B                0 B\n├ ○ /api/health                          0 B                0 B\n├ ƒ /api/photos/[id]                     0 B                0 B\n├ ƒ /api/photos/[id]/comments            0 B                0 B\n├ ƒ /api/photos/[id]/image               0 B                0 B\n├ ƒ /api/photos/[id]/like                0 B                0 B\n├ ƒ /api/photos/[id]/thumbnail           0 B                0 B\n├ ƒ /api/photos/upload                   0 B                0 B\n├ ƒ /chat                                1.86 kB        95.7 kB\n├ ○ /dashboard                           149 B          87.1 kB\n├ ƒ /feed                                1.26 kB        95.1 kB\n├ ○ /login                               1.06 kB        94.9 kB\n├ ƒ /me                                  462 B          94.3 kB\n├ ƒ /members/[id]                        464 B          94.3 kB\n├ ƒ /photos/upload                       1.26 kB        95.1 kB\n├ ƒ /profile/[id]                        149 B          87.1 kB\n├ ○ /profile/me                          149 B          87.1 kB\n└ ○ /register                            1.07 kB        94.9 kB\n+ First Load JS shared by all            87 kB\n  ├ chunks/23-8ef6ceda0ba59f8b.js        31.5 kB\n  ├ chunks/fd9d1056-23bdddb1df3a91c8.js  53.6 kB\n  └ other shared chunks (total)          1.89 kB\n\n\nƒ Middleware                             27 kB\n\n○  (Static)   prerendered as static content\nƒ  (Dynamic)  server-rendered on demand"
+                  },
+                  {
+                      "name":  "server:web-start",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "ready http://127.0.0.1:51048 status=200"
+                  },
+                  {
+                      "name":  "contract-web:home",
+                      "ok":  true,
+                      "exit_code":  200,
+                      "details":  "status=200 expected=200 url=http://127.0.0.1:51048/"
+                  },
+                  {
+                      "name":  "contract-web:register",
+                      "ok":  true,
+                      "exit_code":  200,
+                      "details":  "status=200 expected=200 url=http://127.0.0.1:51048/register"
+                  },
+                  {
+                      "name":  "contract-web:login",
+                      "ok":  true,
+                      "exit_code":  200,
+                      "details":  "status=200 expected=200 url=http://127.0.0.1:51048/login"
+                  },
+                  {
+                      "name":  "contract-web:dashboard",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/dashboard"
+                  },
+                  {
+                      "name":  "contract-web:feed",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/feed"
+                  },
+                  {
+                      "name":  "contract-web:chat",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/chat"
+                  },
+                  {
+                      "name":  "contract-web:upload",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/photos/upload"
+                  },
+                  {
+                      "name":  "contract-web:profile-me",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/profile/me"
+                  },
+                  {
+                      "name":  "contract-web:admin-dashboard",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/admin"
+                  },
+                  {
+                      "name":  "contract-web:admin-users",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/admin/users"
+                  },
+                  {
+                      "name":  "contract-web:admin-content",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/admin/content"
+                  },
+                  {
+                      "name":  "contract-web:admin-actions",
+                      "ok":  true,
+                      "exit_code":  307,
+                      "details":  "status=307 expected=302,303,307,308,401,403 url=http://127.0.0.1:51048/admin/actions"
+                  },
+                  {
+                      "name":  "server:smoke-start",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "ready http://127.0.0.1:51063 status=200"
+                  },
+                  {
+                      "name":  "smoke:smoke:pages",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:pages\n\u003e tsx scripts/smoke/pages-smoke.ts\n\nPASS GET / - expected 200 got 200\nPASS GET /login - expected 200 got 200\nPASS GET /register - expected 200 got 200\nPASS GET /feed - expected 302|307 got 307\nPASS GET /chat - expected 302|307 got 307\nPASS GET /photos/upload - expected 302|307 got 307\nPASS GET /me - expected 302|307 got 307\nPASS GET /profile/me - expected 302|307 got 307\nPASS GET /profile/smoke-member - expected 302|307 got 307\nPASS GET /dashboard - expected 302|307 got 307\nPASS GET /admin - expected 302|307 got 307\nPASS GET /admin/users - expected 302|307 got 307\nPASS GET /admin/actions - expected 302|307 got 307\nPASS GET /admin/content - expected 302|307 got 307\nPASS 14/14 checks passed"
+                  },
+                  {
+                      "name":  "smoke:smoke:api",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:api\n\u003e tsx scripts/e2e-smoke.ts\n\nPASS GET /api/health - expected 200 got 200\nPASS POST /api/auth/login - expected 400|401 got 401\nPASS POST /api/photos/upload - expected 401 got 401\nPASS GET /api/chat/messages - expected 401 got 401\nPASS 4/4 checks passed"
+                  },
+                  {
+                      "name":  "smoke:smoke:auth",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:auth\n\u003e tsx scripts/smoke/auth-smoke.ts\n\nPASS POST /api/auth/register - expected 200 got 200\nPASS GET /api/chat/messages - expected 200 got 200\nPASS POST /api/auth/logout - expected 200 got 200\nPASS GET /api/chat/messages - expected 401 got 401\nPASS 4/4 checks passed\n[cleanup] test user cmpwnrosf0000o6k5w0h5rwkh deleted"
+                  },
+                  {
+                      "name":  "smoke:smoke:photo",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:photo\n\u003e tsx scripts/smoke/photo-smoke.ts\n\nPASS POST /api/auth/register - expected 200 got 200\nPASS POST /api/photos/upload - expected 201 got 201\nPASS upload response includes photo id/url\nPASS GET /api/photos/a92192ab-da4c-4771-b0e2-158adb726e34/thumbnail - expected 200 got 200\nPASS GET /api/photos/a92192ab-da4c-4771-b0e2-158adb726e34/image - expected 200 got 200\nPASS GET /api/photos/a92192ab-da4c-4771-b0e2-158adb726e34/thumbnail - expected 401 got 401\nPASS GET /api/photos/a92192ab-da4c-4771-b0e2-158adb726e34/image - expected 401 got 401\nPASS 7/7 checks passed\n[cleanup] test user cmpwnrpa30001o6k5o8mnee47 deleted\n[cleanup] test photo files removed"
+                  },
+                  {
+                      "name":  "smoke:smoke:ux",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:ux\n\u003e tsx scripts/smoke/ux-smoke.ts\n\nPASS GET / matches authenticated shell contract\nPASS GET /login matches authenticated shell contract\nPASS GET /register matches authenticated shell contract\nPASS /_next build chunks served (21 checked)\nPASS register creates session\nPASS registered user exists\nPASS GET /feed matches authenticated shell contract\nPASS GET /chat matches authenticated shell contract\nPASS GET /photos/upload matches authenticated shell contract\nPASS GET /me matches authenticated shell contract\nPASS GET /admin matches authenticated shell contract\nPASS GET /admin/users matches authenticated shell contract\nPASS GET /admin/actions matches authenticated shell contract\nPASS GET /admin/content matches authenticated shell contract\nPASS 14/14 checks passed\n[cleanup] test user cmpwnrpts0002o6k5wwee5bdi deleted"
+                  },
+                  {
+                      "name":  "smoke:smoke:browser",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "\u003e private-community@0.1.0 smoke:browser\n\u003e tsx scripts/smoke/browser-nav-smoke.ts\n\n[cleanup] test user cmpwnrrgm0003o6k56ef26m9m deleted\nPASS /register renders Join Private Community\nPASS registration redirects to feed\nPASS registered session sees feed\nPASS registration created database user\nPASS click /me lands on /me\nPASS /me renders Photos\nPASS profile card renders\nPASS click /photos/upload lands on /photos/upload\nPASS /photos/upload renders Upload photo\nPASS click /chat lands on /chat\nPASS /chat renders Community chat\nPASS click /feed lands on /feed\nPASS /feed renders Photo feed\nPASS feed member link lands on /members/[id]\nPASS member profile card renders\nPASS /profile/cmpwmjnez0004xp2nkb8hri1m renders Photos\nPASS legacy /profile/cmpwmjnez0004xp2nkb8hri1m redirects to /members/cmpwmjnez0004xp2nkb8hri1m\nPASS /profile/me renders Photos\nPASS legacy /profile/me redirects to /me\nPASS /dashboard renders Photo feed\nPASS legacy /dashboard redirects to /feed\nPASS logout redirects to login\nPASS /login renders Log in\nPASS login redirects to feed\nPASS logged-in session sees feed\nPASS no browser console/page errors\nPASS no protected route or chunk network failures\nPASS 27/27 checks passed"
+                  }
+              ]
+}
