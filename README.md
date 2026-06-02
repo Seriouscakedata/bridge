@@ -55,6 +55,14 @@ After adding `geminiApiKey`, you can import the clean seed memory into the vecto
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\import-seed-memory.ps1
 ```
 
+## Documentation
+
+- [Transfer setup](docs/TRANSFER_SETUP.md): install, first run, auth, secrets, seed memory, autostart.
+- [Operator guide](docs/OPERATOR_GUIDE.md): how to use the bridge day to day.
+- [Project workflow](docs/PROJECT_WORKFLOW_GUIDE.md): how a new project should move from idea to acceptance.
+- [Transfer manifest](TRANSFER_MANIFEST.md): what is included and what is intentionally excluded.
+- [Developer guide](DEVELOPER_GUIDE.md): internal architecture and development notes.
+
 ## What Is Included
 
 - Bridge engine scripts: `driver.ps1`, `server.ps1`, `supervisor.ps1`, `start.ps1`, `stop.ps1`.
