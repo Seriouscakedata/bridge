@@ -93,6 +93,11 @@ try {
     project_root = (Join-Path $script:TestBridgeRoot 'project')
     queued_id = 'legacy-coord'
     reason = 'idle-empty-backlog'
+    empty_coordinator_streak = 0
+    paused = $false
+    paused_at = ''
+    pause_reason = ''
+    recent_outcomes = @()
   })
   $legacyStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
   Assert-True (-not [bool]$legacyStart.queued) 'legacy empty coordinator streak must not queue a coordinator'

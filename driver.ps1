@@ -5035,31 +5035,6 @@ while ($true) {
     } catch {}
   }
 
-  # Project Autopilot stop-condition: a coordinator that finishes without creating
-  # PROJECT_BACKLOG means the project scope may be exhausted. Track consecutive
-  # empty coordinators and pause autopilot before it loops forever.
-  if ($plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
-    try {
-      $stPaOutcome = Read-State
-      $paTask = [string]$stPaOutcome.current_task
-      $paBacklogId = [string]$stPaOutcome.current_backlog_id
-      if (Get-Command Test-ProjectAutopilotCoordinatorText -ErrorAction SilentlyContinue) {
-        $paIsCoordinator = [bool](Test-ProjectAutopilotCoordinatorText -Text $paTask)
-      } else {
-        $paIsCoordinator = [bool]([regex]::IsMatch($paTask, '(?is)\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel'))
-      }
-      if ($paIsCoordinator -and (Get-Command Record-ProjectAutopilotCoordinatorOutcome -ErrorAction SilentlyContinue)) {
-        $paChannel = ''
-        $paRoot = ''
-        try { $paChannel = [string](Get-BacklogPackObjectValue -Obj $pbForMarkers -Name 'slug' -Default '') } catch {}
-        try { $paRoot = [string](Get-BacklogPackObjectValue -Obj $pbForMarkers -Name 'project_root' -Default '') } catch {}
-        Record-ProjectAutopilotCoordinatorOutcome -Channel $paChannel -ProjectRoot $paRoot -CoordinatorId $paBacklogId -Created ([int]$projectBacklogCreated) -Reason 'planner-status-done' | Out-Null
-      }
-    } catch {
-      try { Add-Message -From system -Text ("⚠ Project Autopilot outcome tracking failed: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-    }
-  }
-
   # [[PARALLEL: <repo> || подзадача1 ;; подзадача2 ;; ...]] -> планировщик запускает
   # независимые под-задачи ПАРАЛЛЕЛЬНО (каждая в своём worktree), затем мерж. Блокирует
   # ход на время выполнения (heartbeat обновляется), потом постит сводку.
@@ -6032,6 +6007,31 @@ $diff
       Add-Message -From system -Text "⚠ QA-агент: ошибка запуска ($($_.Exception.Message)), пропускаю." -Kind event | Out-Null
     }
   }
+
+  # Project Autopilot stop-condition: record the coordinator outcome only after
+  # STATUS/COVERED/verification gates have settled the final planner status.
+  if ($plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $stPaOutcome = Read-State
+      $paTask = [string]$stPaOutcome.current_task
+      $paBacklogId = [string]$stPaOutcome.current_backlog_id
+      if (Get-Command Test-ProjectAutopilotCoordinatorText -ErrorAction SilentlyContinue) {
+        $paIsCoordinator = [bool](Test-ProjectAutopilotCoordinatorText -Text $paTask)
+      } else {
+        $paIsCoordinator = [bool]([regex]::IsMatch($paTask, '(?is)\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel'))
+      }
+      if ($paIsCoordinator -and (Get-Command Record-ProjectAutopilotCoordinatorOutcome -ErrorAction SilentlyContinue)) {
+        $paChannel = ''
+        $paRoot = ''
+        try { $paChannel = [string](Get-BacklogPackObjectValue -Obj $pbForMarkers -Name 'slug' -Default '') } catch {}
+        try { $paRoot = [string](Get-BacklogPackObjectValue -Obj $pbForMarkers -Name 'project_root' -Default '') } catch {}
+        Record-ProjectAutopilotCoordinatorOutcome -Channel $paChannel -ProjectRoot $paRoot -CoordinatorId $paBacklogId -Created ([int]$projectBacklogCreated) -Reason 'final-planner-status-done' | Out-Null
+      }
+    } catch {
+      try { Add-Message -From system -Text ("⚠ Project Autopilot outcome tracking failed: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+  }
+
   if ($plannerStatus -eq 'CONTINUE') {
     try {
       $stCp = Read-State

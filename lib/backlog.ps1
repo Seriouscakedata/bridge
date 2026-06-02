@@ -2437,6 +2437,10 @@ function Record-ProjectAutopilotCoordinatorOutcome {
   $streak = 0
   if ($hasStateStreak) {
     $streak = Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0
+    try {
+      $inferredForState = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak -ExcludeCoordinatorId $CoordinatorId)
+      if ($inferredForState -gt $streak) { $streak = $inferredForState }
+    } catch {}
   } else {
     try { $streak = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak -ExcludeCoordinatorId $CoordinatorId) } catch { $streak = 0 }
   }
@@ -2657,9 +2661,9 @@ function Start-ProjectAutopilotIfNeeded {
       }
     } catch {}
     try {
-      $hasStateStreakProp = ($last.PSObject.Properties.Name -contains 'empty_coordinator_streak')
-      if (-not $hasStateStreakProp) {
-        $inferredEmptyExisting = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
+      $stateStreakExisting = Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0
+      $inferredEmptyExisting = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
+      if ($inferredEmptyExisting -gt $stateStreakExisting) {
         if ($inferredEmptyExisting -ge [int]$cfg.emptyCoordinatorLimit) {
           $nowPauseExisting = (Get-Date).ToUniversalTime().ToString('o')
           $last | Add-Member -NotePropertyName ts -NotePropertyValue $nowPauseExisting -Force
