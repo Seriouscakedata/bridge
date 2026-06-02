@@ -5,6 +5,9 @@
 > (bus factor = 100%). Для внутренней разработки моста см. `DEVELOPER_GUIDE.md`, для архитектуры —
 > `PROJECT_MAP.md` / `ARCHITECTURE_V2.md`, для мониторинга — `MONITORING_RUNBOOK.md`.
 >
+> **Начни с `BRIDGE_STATUS.md`** — единая точка входа: актуальная версия, что умеет мост сейчас,
+> как проверить ЖИВОЕ состояние (git/процессы/state), карта документов. Этот гайд — глубже про управление.
+>
 > Последнее обновление: 2026-06-02.
 
 ---
@@ -85,7 +88,19 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 Для проектных каналов основной путь теперь не ручное "кормление" задачами, а автопилот:
 
 1. Канал привязан к проекту через `channels\<канал>\channel.json`.
-2. Когда проектный backlog пуст или почти пуст, а project git clean, driver создаёт coordinator-задачу.
+
+> **⛔ ГЕЙТ Discuss-First (2026-06-02): autopilot НЕ запускается, пока оператор не утвердил план.**
+> Autopilot разворачивает PROJECT_PLAN в атомы — поэтому он включается ТОЛЬКО после утверждения видения
+> (Discuss-First Ф4). Без `plan_approved` мост остаётся в обсуждении/планировании и НЕ генерит атомы
+> (защита от масштабирования неутверждённого плана во «франкенштейн»). Утвердить:
+> ```powershell
+> $bridge = 'C:\Users\rafie\OneDrive\Documents\bridge'
+> . "$bridge\lib\common.ps1"; . "$bridge\lib\backlog.ps1"
+> Set-ProjectPlanApproved -Channel '<slug>'        # снять разрешение: -Approved:$false
+> ```
+> Пока план не утверждён, driver один раз пишет в канал «⏸ Project Autopilot ждёт утверждения PROJECT_PLAN».
+
+2. Когда проектный backlog пуст или почти пуст, project git clean **и план утверждён**, driver создаёт coordinator-задачу.
 3. Planner возвращает массив атомов внутри маркера:
    ```text
    [[PROJECT_BACKLOG]]
