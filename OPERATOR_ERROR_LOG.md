@@ -41,6 +41,20 @@ This file records concrete errors, weak spots, and recovery notes observed while
 
 **Status:** Fixed project-side. Remaining bridge/process improvement: after any production build for a running Next app, final acceptance should restart the app before browser checks, and acceptance should include a browser navigation smoke that exercises client-side route chunks.
 
+### ERR-2026-06-02-018 - Profile navigation chunk failure was missed by non-browser smoke
+
+**Context:** `private-community` after auth landing was fixed. Manual user flow logged in successfully, then clicking Profile produced a browser error / perceived 404.
+
+**Observed:** HTTP smoke and `smoke:ux` rendered `/profile/me` server-side, but did not click the app shell in a browser. Real browser navigation from `/feed` to Profile requested a stale/unserved profile route chunk (`/_next/static/chunks/app/profile/...`) and failed with `ChunkLoadError`. Direct asset inspection showed `/feed`, `/chat`, and `/photos/upload` chunks were served, while chunks under `/profile/*` were not, despite files existing on disk.
+
+**Impact:** The user could pass login but immediately hit a broken core navigation item. This is exactly the kind of failure final acceptance must catch.
+
+**Action taken:** Project-side fix: moved active profile routes from `/profile/me` and `/profile/[id]` to `/me` and `/members/[id]`; updated app navigation, feed owner links, upload fallback links, smoke checklist, and project map; added middleware compatibility redirects from `/profile/me` -> `/me` and `/profile/:id` -> `/members/:id`; strengthened `smoke:ux` to read `.next/app-build-manifest.json` and verify that expected `/_next/static` chunks are actually served.
+
+**Verification:** Clean build with server stopped, then restart. `npm.cmd run build`, `npm.cmd run typecheck`, `smoke:pages`, `smoke:ux` including 16 chunk checks, `smoke:auth`, `smoke:photo`, and `smoke:api` passed. Real browser flow passed: register -> `/feed`, Profile -> `/me`, Upload, Chat, feed owner -> `/members/:id`, legacy `/profile/me` -> `/me`, with no failed chunk responses or console errors.
+
+**Status:** Fixed project-side. Bridge/process still needs a first-class browser navigation acceptance step, not only HTTP checks and static fragment checks.
+
 ---
 
 ## 2026-06-01
