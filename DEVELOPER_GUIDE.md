@@ -51,11 +51,11 @@ Task Scheduler (autostart, elevated)
 - соблюдать rate-limit (не чаще 1 recycle / 60 c).
 
 ### 2.2 server.ps1 (≈81 KB)
-HTTP-сервер на `http://+:8787/`:
+HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-доступ (`http://+:8787/`) включается только через `server.allowLan=true`; без `auth.json`/token LAN-режим игнорируется:
 - отдаёт веб-UI (`web/index.html`);
 - REST API: `/api/status`, `/api/messages`, `/api/settings`, `/api/channels/*`, `/api/backlog`, `/api/brainstorm`, и т.д.;
 - принимает сообщения пользователя в чат, пишет их в `channels/<slug>/conversation.jsonl`;
-- **аутентификация по токену** — без токена `/api/status` отдаёт `401` (это «жив», а не «сломан»).
+- `/api/health` показывает `capabilities_total` / `capabilities_failed` / `capabilities_required_failed`, чтобы best-effort модули не ломались невидимо.
 
 ### 2.3 driver.ps1 (≈366 KB — МОНОЛИТ ⚠️)
 Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). Главный цикл (`loop`):
@@ -338,8 +338,10 @@ Codex работает в **изолированной песочнице** (`wo
 ### 4.6 Параллельные потоки (parallel)
 `lib/parallel.ps1` — раскладывает задачу на потоки, каждый в своём git-worktree (`wip/parallel/<hash>/<id>`), потом merge-стадия. Merge устойчив: при конфликте `git merge --abort` → retry `-X ours` → дерево никогда не остаётся unmerged.
 
+Collect-then-commit теперь проверяет declared touch-set потока (`files`). Если worker изменил файлы вне заявленной области, поток получает карантин: его worktree не копируется и не сливается в основной репозиторий, в чат пишется причина. Важно: failed/quarantined поток не должен проходить через host-commit recovery.
+
 ### 4.7 Память, doctor, foundry, radar
-- **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты.
+- **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты. Память durable-first: при отсутствии embedding-ключа/API запись всё равно сохраняется с `embedding_status=pending`, а не теряется.
 - **doctor** (`lib/doctor.ps1`) — самодиагностика и починка при сбоях задач.
 - **foundry/toolforge** — синтез новых инструментов (`[[NEED-TOOL]]`) и проектов на лету.
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
@@ -456,7 +458,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 ## 8. Конфигурация
 
 ### 8.1 config.json (в git — общий дефолт)
-Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
+Ключевое: `port`, `server.{allowLan,requireAuthForLan}`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
 
 ### 8.2 settings.json (runtime, НЕ в git)
 Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated).

@@ -377,7 +377,14 @@ function Add-Memory {
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-CurrentMemoryChannel }
   Assert-MemoryWriteAllowed -TargetSlug $Channel
   $vec = Get-Embedding -Text $Text -TaskType 'RETRIEVAL_DOCUMENT'
-  if (-not $vec) { return $null }
+  $indexed = $true
+  if (-not $vec) {
+    # Durable-first memory: lack of an embedding key/API outage must not make
+    # the bridge forget facts. Store the record without a vector and let a
+    # later reindex/librarian pass attach embeddings.
+    $vec = @()
+    $indexed = $false
+  }
   $dir = Get-MemoryDir -Slug $Channel
   if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $rec = [ordered]@{
@@ -393,6 +400,8 @@ function Add-Memory {
     kind       = [string]$Kind
     trust      = [string]$Trust
     status     = [string]$Status
+    indexed    = [bool]$indexed
+    embedding_status = ($(if ($indexed) { 'indexed' } else { 'pending' }))
     text       = [string]$Text
     vec        = @($vec)
   }
@@ -496,7 +505,11 @@ function Add-ProjectMemoryBatch {
   for ($i = 0; $i -lt $clean.Count; $i++) {
     $r = $clean[$i]
     $vec = $vecList[$i]
-    if (-not $vec) { continue }
+    $indexed = $true
+    if (-not $vec) {
+      $vec = @()
+      $indexed = $false
+    }
     $kind = 'project_fact'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.kind)) { $kind = [string]$r.kind } } catch {}
     $trust = 'observed'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.trust)) { $trust = [string]$r.trust } } catch {}
     $status = 'active'; try { if (-not [string]::IsNullOrWhiteSpace([string]$r.status)) { $status = [string]$r.status } } catch {}
@@ -519,6 +532,8 @@ function Add-ProjectMemoryBatch {
       kind           = [string]$kind
       trust          = [string]$trust
       status         = [string]$status
+      indexed        = [bool]$indexed
+      embedding_status = ($(if ($indexed) { 'indexed' } else { 'pending' }))
       text           = [string]$r.text
       vec            = @($vec)
     }
@@ -1094,6 +1109,9 @@ function Get-MemoriesView {
   $out = foreach ($m in $all) {
     $readonlySource = ''
     if ($m.PSObject.Properties['readonly_source']) { $readonlySource = [string]$m.readonly_source }
+    $hasVector = ($m.PSObject.Properties['vec'] -and @($m.vec).Count -gt 0)
+    $isIndexed = if ($m.PSObject.Properties['indexed']) { [bool]$m.indexed } else { [bool]$hasVector }
+    $embeddingStatus = if ($m.PSObject.Properties['embedding_status']) { [string]$m.embedding_status } elseif ($hasVector) { 'indexed' } else { 'pending' }
     [pscustomobject]@{
       id         = [string]$m.id
       ts         = [string]$m.ts
@@ -1103,6 +1121,8 @@ function Get-MemoriesView {
       pinned     = [bool]($m.PSObject.Properties['pinned'] -and $m.pinned)
       channel    = (Get-MemoryChannel $m)
       shared     = (Test-MemoryShared $m)
+      indexed    = [bool]$isIndexed
+      embedding_status = [string]$embeddingStatus
       text       = [string]$m.text
       readonly   = ($readonlySource -eq 'bridge')
       readonly_source = $readonlySource

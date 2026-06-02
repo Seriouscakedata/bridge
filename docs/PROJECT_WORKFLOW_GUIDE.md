@@ -92,6 +92,8 @@ Before parallel work, MOS should classify atoms by:
 
 Two tasks can run in parallel when they do not modify the same shared files and one does not depend on the other.
 
+Each atom/workpack must declare an expected touch-set (`files`). The parallel collector treats that as a contract: changes outside the declared touch-set are quarantined instead of being merged.
+
 ## 6. Workpack Grouping
 
 Workpacks are groups of compatible atoms.
@@ -176,4 +178,3 @@ The operator should explicitly approve:
 - final acceptance.
 
 The operator should not have to manually feed one task at a time. Once the plan/backlog are accepted, MOS should work through the backlog autonomously and report progress.
-

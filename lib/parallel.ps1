@@ -1300,6 +1300,30 @@ function Invoke-ParallelDispatch {
   $quarantined = New-Object System.Collections.Generic.List[string]
   $base0 = Get-ParallelTaskBaseCommit
   $gitC = Get-GitExe
+  function Normalize-ParallelRelPath {
+    param([string]$Path)
+    $p = ([string]$Path).Trim().Trim('"').Trim("'") -replace '\\','/'
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    $p = $p.TrimStart('/')
+    return $p
+  }
+  function Test-ParallelChangedPathAllowed {
+    param([string]$ChangedPath, [string[]]$AllowedPaths)
+    $rel = Normalize-ParallelRelPath -Path $ChangedPath
+    if ([string]::IsNullOrWhiteSpace($rel)) { return $false }
+    if ($rel -match '(^|/)\.\.($|/)' -or $rel -match '(^|/)\.git($|/)') { return $false }
+    foreach ($raw in @($AllowedPaths)) {
+      $allow = Normalize-ParallelRelPath -Path ([string]$raw)
+      if ([string]::IsNullOrWhiteSpace($allow)) { continue }
+      if ($allow -in @('*','any','all')) { return $true }
+      $allow = $allow.TrimEnd('/')
+      if ($rel.Equals($allow, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+      $leaf = [System.IO.Path]::GetFileName($allow)
+      $looksLikeFile = ($leaf -match '\.[A-Za-z0-9]{1,12}$')
+      if (-not $looksLikeFile -and $rel.StartsWith($allow + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+  }
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
     # 2026-06-01 ERR-004 fix: QUARANTINE failed streams — never collect a failed worker's worktree
@@ -1311,7 +1335,11 @@ function Invoke-ParallelDispatch {
     # (done / paused-for-restart); failed streams are skipped and reported for re-dispatch/verify.
     $wst = ''
     try { $wst = [string]$completed[$w.id].status } catch {}
-    if ($wst -eq 'failed') { $quarantined.Add([string]$w.id); continue }
+    if ($wst -eq 'failed') {
+      $quarantined.Add([string]$w.id)
+      try { $completed[$w.id] | Add-Member -NotePropertyName _quarantined -NotePropertyValue $true -Force } catch {}
+      continue
+    }
     try {
       $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
       if (-not (Test-Path -LiteralPath $wtPath)) { continue }
@@ -1321,6 +1349,18 @@ function Invoke-ParallelDispatch {
       }
       try { @(& $gitC -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
       if ($changed.Count -eq 0) { continue }
+      $allowed = @($w.files | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      if ($allowed.Count -gt 0) {
+        $outOfScope = @($changed | Where-Object { -not (Test-ParallelChangedPathAllowed -ChangedPath ([string]$_) -AllowedPaths $allowed) })
+        if ($outOfScope.Count -gt 0) {
+          $quarantined.Add([string]$w.id)
+          try { $completed[$w.id] | Add-Member -NotePropertyName _quarantined -NotePropertyValue $true -Force } catch {}
+          try {
+            Add-Message -From system -Text ("⚠️ Карантин: worker " + [string]$w.id + " изменил файлы вне declared touch-set. Разрешено=[" + ($allowed -join ', ') + "], лишнее=[" + (($outOfScope | Select-Object -First 8) -join ', ') + "]. Stream НЕ собран и НЕ слит в репо.") -Kind event | Out-Null
+          } catch {}
+          continue
+        }
+      }
       $copiedHere = 0
       foreach ($rel in $changed) {
         if ([string]::IsNullOrWhiteSpace($rel)) { continue }
@@ -1358,6 +1398,10 @@ function Invoke-ParallelDispatch {
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
     $res = $completed[$w.id]
+    if (($res.PSObject.Properties.Name -contains '_quarantined') -and $res._quarantined) {
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      continue
+    }
     # Already delivered by collect-then-commit above — just clean its worktree and skip branch merge.
     if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
       try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}

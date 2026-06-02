@@ -615,5 +615,9 @@
                                                           }
                                      }
                      },
-    "radarEveryHours":  168
+    "radarEveryHours":  168,
+    "server":  {
+                   "allowLan":  false,
+                   "requireAuthForLan":  true
+               }
 }

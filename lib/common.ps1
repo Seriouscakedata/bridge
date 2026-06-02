@@ -2356,52 +2356,89 @@ function Test-IsSafeOsFastLaneTask {
   return [bool]([regex]::IsMatch($t, '(?i)(скриншот|screenshot|снимок\s+экран|запуст\w*|launch\b|открой\w*|\bopen\b|покаж\w*|\bshow\b|найд\w*|\bfind\b|поищ\w*|список|\blist\b|статус\b|\bstatus\b|\blog\w*|логи?\b)'))
 }
 
+if ($null -eq $script:BridgeCapabilities) { $script:BridgeCapabilities = [ordered]@{} }
+
+function Set-BridgeCapability {
+  param(
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][bool]$Ok,
+    [string]$Error = '',
+    [bool]$Required = $false
+  )
+  $script:BridgeCapabilities[$Name] = [pscustomobject]@{
+    ok       = [bool]$Ok
+    required = [bool]$Required
+    path     = [string]$Path
+    error    = [string]$Error
+  }
+}
+
+function Get-BridgeCapabilities {
+  return $script:BridgeCapabilities
+}
+
+$LoadBridgeModule = {
+  param([string]$Name, [string]$File)
+  $modulePath = Join-Path $PSScriptRoot $File
+  try {
+    . $modulePath
+    Set-BridgeCapability -Name $Name -Path $modulePath -Ok $true
+  } catch {
+    Set-BridgeCapability -Name $Name -Path $modulePath -Ok $false -Error $_.Exception.Message
+    Write-Warning "$File failed to load: $($_.Exception.Message)"
+  }
+}
+
 # Replay capture is loaded before memory/LLM helpers so background chat calls can
 # write records when a task is active. Best-effort and non-fatal.
-try { . (Join-Path $PSScriptRoot 'replay.ps1') } catch { Write-Warning "replay.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'replay' 'replay.ps1'
 # Long-term vector memory (Gemini embeddings + Flash librarian). Best-effort: if this
 # layer fails to load or Gemini is unreachable, the engine keeps running unchanged.
-try { . (Join-Path $PSScriptRoot 'memory.ps1') } catch { Write-Warning "memory.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'memory' 'memory.ps1'
 # Per-project semantic code memory, stored separately from ordinary long-term memory.
-try { . (Join-Path $PSScriptRoot 'codemem.ps1') } catch { Write-Warning "codemem.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'codemem' 'codemem.ps1'
 # LLM router (DeepSeek/Gemini for cheap background thinking) -- load AFTER memory.ps1.
-try { . (Join-Path $PSScriptRoot 'llm.ps1') } catch { Write-Warning "llm.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'llm' 'llm.ps1'
 # Usage accounting (prepaid agent turns + paid API calls). Best-effort and non-fatal.
-try { . (Join-Path $PSScriptRoot 'usage.ps1') } catch { Write-Warning "usage.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'usage' 'usage.ps1'
 # Planner model router layered on top of Get-PlannerModel; learns from turns.jsonl outcomes.
-try { . (Join-Path $PSScriptRoot 'router.ps1') } catch { Write-Warning "router.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'router' 'router.ps1'
 # Channel layout helpers must load before backlog.ps1 because Get-BacklogPath
 # delegates to Get-ChannelBacklogPath when channels are available.
-try { . (Join-Path $PSScriptRoot 'channels.ps1') } catch { Write-Warning "channels.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'channels' 'channels.ps1'
 # Run channel migration once — moves legacy bridge-root files into channels/main/ if needed.
 # Idempotent; safe to call on every Initialize-Bridge.
-try { Initialize-Channels } catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
+try {
+  if (Get-Command Initialize-Channels -ErrorAction SilentlyContinue) { Initialize-Channels }
+  else { Write-Warning "Initialize-Channels skipped: channels module is unavailable" }
+} catch { Write-Warning "Initialize-Channels failed: $($_.Exception.Message)" }
 # Self-improvement backlog (ideas the agents raise themselves).
-try { . (Join-Path $PSScriptRoot 'backlog.ps1') } catch { Write-Warning "backlog.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'backlog' 'backlog.ps1'
 # User-tunable settings (gitignored overrides: idle-quiet, autonomy scope, etc.).
-try { . (Join-Path $PSScriptRoot 'settings.ps1') } catch { Write-Warning "settings.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'settings' 'settings.ps1'
 # Background job manager (long-running commands -- e.g. hour-long project runs).
-try { . (Join-Path $PSScriptRoot 'jobs.ps1') } catch { Write-Warning "jobs.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'jobs' 'jobs.ps1'
 # Worktree isolation primitives (foundation for parallel workers + sandbox).
-try { . (Join-Path $PSScriptRoot 'worktrees.ps1') } catch { Write-Warning "worktrees.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'worktrees' 'worktrees.ps1'
 # Tool Foundry (Фаза 1): registry + loader for tools the bridge synthesizes on the fly.
-try { . (Join-Path $PSScriptRoot 'toolforge.ps1') } catch { Write-Warning "toolforge.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'toolforge' 'toolforge.ps1'
 # Parallel worker orchestration (run sub-tasks concurrently in worktrees, merge back).
-try { . (Join-Path $PSScriptRoot 'parallel.ps1') } catch { Write-Warning "parallel.ps1 failed to load: $($_.Exception.Message)" }
-try { . (Join-Path $PSScriptRoot 'doctor.ps1') } catch { Write-Warning "doctor.ps1 failed to load: $($_.Exception.Message)" }
-try { . (Join-Path $PSScriptRoot 'architect.ps1') } catch { Write-Warning "architect.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'parallel' 'parallel.ps1'
+. $LoadBridgeModule 'doctor' 'doctor.ps1'
+. $LoadBridgeModule 'architect' 'architect.ps1'
 # Evidence-backed per-project memory layer (typed memory + context pack) on top
 # of memory.ps1/codemem.ps1/channels.ps1. Best-effort and non-fatal.
-try { . (Join-Path $PSScriptRoot 'project-context.ps1') } catch { Write-Warning "project-context.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'project-context' 'project-context.ps1'
 # Telegram push notifications (best-effort, non-fatal).
-try { . (Join-Path $PSScriptRoot 'notify.ps1') } catch { Write-Warning "notify.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'notify' 'notify.ps1'
 # Study-mode detection (single source of truth; bounded command-verb gate).
-try { . (Join-Path $PSScriptRoot 'study.ps1') } catch { Write-Warning "study.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'study' 'study.ps1'
 # LLM intent classifier — replaces hardcoded [[DEEP-THINK]] regex with semantic
 # task understanding (gemini-flash-lite, cheap). Must load AFTER llm.ps1.
-try { . (Join-Path $PSScriptRoot 'intent.ps1') } catch { Write-Warning "intent.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'intent' 'intent.ps1'
 # Radar (RSS digest collector) + Scholar (autonomous deep-reader: reads FULL article text + links,
 # verdicts idea/knowledge/skip against bridge gaps -- replaces radar's title-only judging). Scholar
 # depends on radar (candidates) + llm + backlog (all loaded above).
-try { . (Join-Path $PSScriptRoot 'radar.ps1') } catch { Write-Warning "radar.ps1 failed to load: $($_.Exception.Message)" }
-try { . (Join-Path $PSScriptRoot 'scholar.ps1') } catch { Write-Warning "scholar.ps1 failed to load: $($_.Exception.Message)" }
+. $LoadBridgeModule 'radar' 'radar.ps1'
+. $LoadBridgeModule 'scholar' 'scholar.ps1'

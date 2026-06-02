@@ -125,6 +125,8 @@ Parallel work is risky for:
 - App-wide styling or routing.
 - Large refactors without a strong plan.
 
+Each parallel stream should declare its expected touch-set. During collection MOS now refuses to merge a stream that changed files outside that declared area. The operator will see a quarantine message in chat; that stream needs re-dispatch or manual review instead of being silently merged.
+
 ## Memory
 
 MOS has bridge memory and project memory.
@@ -132,6 +134,8 @@ MOS has bridge memory and project memory.
 Bridge memory stores durable facts about MOS itself: architecture, rules, safety lessons, and operating procedures.
 
 Project memory stores durable facts about one project: decisions, risks, tests, invariants, open questions, and worklog.
+
+Memory is durable-first. If the embedding API key is missing or the provider is unavailable, MOS still stores the record with `embedding_status=pending`. It will not be as searchable semantically until embeddings are available, but the fact is not lost.
 
 Useful operator instruction:
 
@@ -208,4 +212,3 @@ Do not commit:
 - Uploads/screenshots.
 - Secrets/auth.
 - Local databases.
-

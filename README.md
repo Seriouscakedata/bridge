@@ -27,7 +27,7 @@ Open:
 http://localhost:8787/
 ```
 
-By default the local UI is open. To protect it with Basic auth, create:
+By default the UI listens on localhost only. To protect it with Basic auth, create:
 
 ```powershell
 $priv = Join-Path $env:USERPROFILE '.bridge-private'
@@ -36,6 +36,8 @@ New-Item -ItemType Directory -Path $priv -Force | Out-Null
   ConvertTo-Json |
   Set-Content -LiteralPath (Join-Path $priv 'auth.json') -Encoding UTF8
 ```
+
+LAN access is disabled by default. To expose MOS on the local network, first configure `auth.json`, then set `server.allowLan=true` in `config.json` or a local override. MOS refuses unauthenticated LAN exposure by default.
 
 Optional API secrets live outside the repo too:
 
@@ -54,6 +56,8 @@ After adding `geminiApiKey`, you can import the clean seed memory into the vecto
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\import-seed-memory.ps1
 ```
+
+If embeddings are unavailable, MOS still stores new memory records durably with `embedding_status=pending`; semantic recall is weaker until embeddings are later available.
 
 ## Documentation
 
@@ -104,6 +108,8 @@ Important defaults:
 - `autonomy.autonomyDisabledChannels`: `["main"]`
 - `parallel.maxStreams`: `6`
 - `supervisor.maxConcurrentDrivers`: `6`
+- `server.allowLan`: `false`
+- `server.requireAuthForLan`: `true`
 - `notify.enabled`: `false`
 
 Codex/Claude executable paths are auto-detected from the current Windows user profile. If auto-detection fails, set `codexExe` or `claudeGlob` in `config.json`.

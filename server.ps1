@@ -22,6 +22,7 @@ if (Test-Path $authPath) {
   $authUser = [string]$a.user; $authPass = [string]$a.password
   if ($null -ne $a.PSObject.Properties['token']) { $authToken = [string]$a.token }
 }
+$authConfigured = (-not [string]::IsNullOrWhiteSpace($authPass)) -or (-not [string]::IsNullOrWhiteSpace($authToken))
 
 $null = Initialize-Bridge   # ensure files exist
 $serverStartTime = Get-Date
@@ -33,16 +34,33 @@ $healthConversationErrorCount = 0
 $healthGitStamp = [datetime]::MinValue
 $healthGitHead = ''
 
-# Try to listen on ALL interfaces (LAN access). Needs a urlacl reservation
-# (see setup-lan.ps1). Fall back to localhost-only if that isn't set up yet.
+# Secure by default: listen on localhost unless LAN is explicitly enabled in
+# config.json/settings.json. LAN without auth is refused; otherwise a transferred
+# install could expose the control plane on a home network by accident.
 function New-BridgeListener($prefix) {
   $l = New-Object System.Net.HttpListener
   $l.Prefixes.Add($prefix)
   $l.Start()
   return $l
 }
+$allowLan = $false
+$requireAuthForLan = $true
+try {
+  if ($cfg.PSObject.Properties.Name -contains 'server' -and $cfg.server) {
+    if (($cfg.server.PSObject.Properties.Name -contains 'allowLan') -and $null -ne $cfg.server.allowLan) { $allowLan = [bool]$cfg.server.allowLan }
+    if (($cfg.server.PSObject.Properties.Name -contains 'requireAuthForLan') -and $null -ne $cfg.server.requireAuthForLan) { $requireAuthForLan = [bool]$cfg.server.requireAuthForLan }
+  }
+} catch {}
+$prefixes = @("http://localhost:$port/")
+if ($allowLan) {
+  if ($requireAuthForLan -and -not $authConfigured) {
+    Write-Warning "server.allowLan=true ignored: configure auth.json/token before exposing MOS on LAN."
+  } else {
+    $prefixes = @("http://+:$port/", "http://localhost:$port/")
+  }
+}
 $listener = $null
-foreach ($pfx in @("http://+:$port/", "http://localhost:$port/")) {
+foreach ($pfx in $prefixes) {
   try { $listener = New-BridgeListener $pfx; Write-Host "Bridge UI listening on $pfx"; break }
   catch { Write-Host "Cannot bind $pfx ($($_.Exception.Message))" }
 }
@@ -497,7 +515,24 @@ try {
           $healthConversationErrorCount = 0
           $errCount = 0
         }
-        $hOk = ($hbAge -lt 120) -and (-not $hPaused) -and ($errCount -lt 10)
+        $capTotal = 0
+        $capFailed = 0
+        $capRequiredFailed = 0
+        try {
+          if (Get-Command Get-BridgeCapabilities -ErrorAction SilentlyContinue) {
+            $caps = Get-BridgeCapabilities
+            foreach ($ck in @($caps.Keys)) {
+              $capTotal++
+              try {
+                if (-not [bool]$caps[$ck].ok) {
+                  $capFailed++
+                  if ([bool]$caps[$ck].required) { $capRequiredFailed++ }
+                }
+              } catch { $capFailed++; $capRequiredFailed++ }
+            }
+          }
+        } catch {}
+        $hOk = ($hbAge -lt 120) -and (-not $hPaused) -and ($errCount -lt 10) -and ($capRequiredFailed -eq 0)
         $hJson = '{"ok":' + ($hOk.ToString().ToLower()) + `
           ',"uptime_sec":' + $uptimeSec + `
           ',"heartbeat_age_sec":' + $hbAge + `
@@ -505,6 +540,9 @@ try {
           ',"status":' + (("" + $hStatus) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"lastSeq":' + $hLastSeq + `
           ',"memory_count":' + $memCount + `
+          ',"capabilities_total":' + $capTotal + `
+          ',"capabilities_failed":' + $capFailed + `
+          ',"capabilities_required_failed":' + $capRequiredFailed + `
           ',"recent_error_count_24h":' + $errCount + `
           ',"git_head":' + (("" + $gitHead) | ConvertTo-Json -Depth 10 -Compress) + `
           ',"parallel_streams_active":' + $psActive + '}'
@@ -515,6 +553,7 @@ try {
           $hJsonPub = '{"ok":' + ($hOk.ToString().ToLower()) + `
             ',"uptime_sec":' + $uptimeSec + `
             ',"heartbeat_age_sec":' + $hbAge + `
+            ',"capabilities_failed":' + $capFailed + `
             ',"recent_error_count_24h":' + $errCount + '}'
           Send-Text $ctx $hJsonPub 'application/json; charset=utf-8'
         }

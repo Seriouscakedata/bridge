@@ -42,6 +42,8 @@ Open:
 http://localhost:8787/
 ```
 
+MOS listens on localhost by default. Do not expose it on LAN until credentials are configured.
+
 First run creates ignored runtime files such as:
 
 - `channels/main/conversation.jsonl`
@@ -68,6 +70,19 @@ New-Item -ItemType Directory -Path $priv -Force | Out-Null
 ```
 
 Restart MOS after changing auth.
+
+LAN access is opt-in. To expose the UI to another device on the same network, keep auth enabled and set:
+
+```json
+{
+  "server": {
+    "allowLan": true,
+    "requireAuthForLan": true
+  }
+}
+```
+
+If `server.allowLan=true` but no password/token exists, MOS ignores LAN mode and stays local-only.
 
 ## 5. API Secrets
 
@@ -100,7 +115,7 @@ If `geminiApiKey` is configured, import the seed into the vector store:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\import-seed-memory.ps1
 ```
 
-If no key is configured, MOS still runs; vector recall just has no seeded embeddings yet.
+If no key is configured, MOS still runs. New memory records are still written, but they are marked `embedding_status=pending` and semantic recall is weaker until embeddings are available.
 
 ## 7. Basic Health Check
 
@@ -159,4 +174,3 @@ Do not publish or send:
 - `channels/*/backlog.jsonl`
 - `channels/*/state.json`
 - `projects/`, `worktrees/`, `files/`, `runtime/`, `control/`, `reports/`, `audit/`
-
