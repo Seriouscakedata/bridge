@@ -5,7 +5,7 @@
 > (bus factor = 100%). Для внутренней разработки моста см. `DEVELOPER_GUIDE.md`, для архитектуры —
 > `PROJECT_MAP.md` / `ARCHITECTURE_V2.md`, для мониторинга — `MONITORING_RUNBOOK.md`.
 >
-> Последнее обновление: 2026-06-01.
+> Последнее обновление: 2026-06-02.
 
 ---
 
@@ -33,6 +33,7 @@ Task Scheduler (ClaudeCodexBridge, elevated)
 | Каналы (состояние, бэклог, история) | `bridge\channels\<канал>\` |
 | Управляющие флаги/логи | `bridge\control\` |
 | Проект AI Partners | `C:\Users\rafie\aipartners` |
+| Проект Private Community | `C:\Users\rafie\bridge-projects\private-community` |
 
 ---
 
@@ -80,7 +81,35 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 Наш основной флоу (см. §7). Кратко: сначала **обсуждение** → карта+план → ревью → и только потом
 исполнение. Не «накидать беклог на скорую руку».
 
-### Способ C — добавить задачу в бэклог напрямую (для оператора/скриптом)
+### Способ C — Project Autopilot (штатно для проектов)
+Для проектных каналов основной путь теперь не ручное "кормление" задачами, а автопилот:
+
+1. Канал привязан к проекту через `channels\<канал>\channel.json`.
+2. Когда проектный backlog пуст или почти пуст, а project git clean, driver создаёт coordinator-задачу.
+3. Planner возвращает массив атомов внутри маркера:
+   ```text
+   [[PROJECT_BACKLOG]]
+   [
+     {"slug":"...", "title":"...", "task":"...", "files":["..."], "depends_on":[], "severity":"normal"}
+   ]
+   [[/PROJECT_BACKLOG]]
+   ```
+4. Driver сам добавляет эти атомы как `approved` project tasks и дальше исполняет их через обычные
+   verify/critic/QA gates.
+
+Настройки автопилота:
+| Параметр | Где | Текущее значение по умолчанию |
+|---|---|---|
+| `projectAutopilotEnabled` | `settings.json` / `lib/settings.ps1` | `true` |
+| `projectAutopilotCooldownMinutes` | `settings.json` / `lib/settings.ps1` | `5` |
+| `projectAutopilotMaxTasksPerBatch` | `settings.json` / `lib/settings.ps1` | `12` |
+
+Операторский смысл: если проект уже имеет `approved` задачи, мост выполняет их сам. Если очередь
+закончилась и проект чистый, мост сам попросит планировщика сгенерировать следующую пачку. Ручной
+append в `backlog.jsonl` теперь нужен только для аварийного восстановления или точной операторской
+инъекции.
+
+### Способ D — добавить задачу в бэклог напрямую (аварийно/скриптом)
 Бэклог — это `channels\<канал>\backlog.jsonl` (append-log, сворачивается по id).
 **ВАЖНО:** driver постоянно перезаписывает бэклог — прямой append во время его работы может затереться.
 Поэтому добавляй **под паузой**:
@@ -195,6 +224,11 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 Автозапуск при загрузке Windows уже настроен (`install-autostart.ps1`). Мост поднимается сам после
 перезагрузки и **возобновляет прерванную задачу** (видно сообщение «♻ Мост перезапущен — возобновляю…»).
 
+Практическое правило после правок кода моста: ставь `restart.flag` только когда нет активных jobs и
+нет живого агента. Если задача уже фактически завершена, но висит на ревью, можно поставить один
+мягкий `restart.flag`; после рестарта driver должен закрыть её как `COVERED` или продолжить проверку.
+Не делай серию рестартов подряд.
+
 ---
 
 ## 6. Каналы
@@ -202,6 +236,7 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 | Канал | Что это |
 |---|---|
 | `aipartners` | проект — платформа видео-рецептов (`C:\Users\rafie\aipartners`) |
+| `private-community` | проект — закрытое комьюнити с чатом и фотогалереей (`C:\Users\rafie\bridge-projects\private-community`) |
 | `main` | развитие самого моста (его инфраструктура) |
 | `_archive` | архив старых/тестовых каналов (напр. бывший `travel` — учебный прогон, к мосту не относится) |
 
@@ -263,8 +298,11 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
    Никогда не редактируй скрипты моста в редакторе, который сохраняет без BOM.
 4. **Circuit-breaker.** Если за 30 мин >5 «крашевых» рестартов — мост уходит в 15-мин cooldown
    (драйверы стоят). Чистые выходы (code 0) теперь НЕ считаются крахами. Сброс — см. §9.
-5. **Verify-gate.** Для проектных каналов он должен гонять `tsc`/`next build` (не только bridge-smoke).
-   Если задача «закрыта», но проект не собирается — это дыра verify (в процессе закрытия).
+5. **Verify-gate для проектов.** Driver теперь определяет repo root задачи (`Get-TaskRepoRoot`) и
+   проверяет project diff, а не bridge diff. Для проектных каналов QA должен гонять install/typecheck/build
+   проекта. Если агент пишет только план и пытается `STATUS: DONE`, guard должен отклонить закрытие.
+6. **Quality bypass guard.** Driver блокирует опасные обходы качества в project diff: `ignoreBuildErrors`,
+   `ignoreDuringBuilds`, `@ts-nocheck`, verify-команды с `|| true` / принудительным `exit 0`.
 
 ---
 
@@ -302,6 +340,11 @@ Get-Backlog теперь сворачивает по id (last-wins) и лечи�
 
 **Сайт `:3100` не открывается:** он просто не запущен — см. §8 п.1 (это не поломка проекта).
 
+**Project task закрылась, но gate сказал, что commit SHA "не существует":** проверь, в каком repo
+искался SHA. Старый driver проверял SHA в bridge repo вместо project repo. Фикс: `Get-TaskRepoRoot`
+в `driver.ps1`. Если live driver был запущен до фикса, поставь один `restart.flag` после завершения
+активных jobs; задача должна закрыться как `COVERED` после повторной проверки.
+
 **Осиротевшие worktree/ветки после прерванного batch:**
 ```powershell
 cd C:\Users\rafie\aipartners; git worktree prune
@@ -331,7 +374,7 @@ cd C:\Users\rafie\aipartners
 | `.bridge-runtime\restarts.jsonl` | окно рестартов для circuit-breaker |
 | `config.json` | порт сервера, пул воркеров (parallel.workers), maxStreams |
 | `lib\parallel.ps1` | параллель: dispatch, collect-then-commit, роутинг воркеров |
-| `lib\backlog.ps1` | бэклог: packer, свёртка, классификация задач |
+| `lib\backlog.ps1` | бэклог: packer, свёртка, классификация задач, Project Autopilot |
 | `driver.ps1` | рабочий цикл канала (planner/coder, dispatch, verify, commit) |
 | `supervisor.ps1` | надзор за процессами, circuit-breaker |
 
@@ -345,6 +388,7 @@ cd C:\Users\rafie\aipartners
 | Открыть пульт | http://127.0.0.1:8787 |
 | Поставить фичу/проект | Discuss-First (§7): дай цель, мост обсудит → план → ревью → исполнение |
 | Поставить мелкую задачу | написать в чат пульта |
+| Дать проекту работать без ручного кормления | Project Autopilot (§3): backlog atoms генерируются через `[[PROJECT_BACKLOG]]` |
 | Перезапустить мост | Stop/Start ScheduledTask `ClaudeCodexBridge` (§5) |
 | Применить правку .ps1 | `restart.flag` (§5) |
 | Поднять сайт проекта | §8 п.1 |

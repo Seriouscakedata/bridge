@@ -1,7 +1,7 @@
 # Claude+Codex Bridge — Developer Guide
 
 > Детальное описание архитектуры, механизмов, сложностей и правил разработки.
-> Последнее обновление: 2026-05-30. Документ держи в актуальном состоянии при крупных изменениях.
+> Последнее обновление: 2026-06-02. Документ держи в актуальном состоянии при крупных изменениях.
 
 ---
 
@@ -17,7 +17,7 @@ Task Scheduler (autostart, elevated)
         └── supervisor.ps1            # следит, перезапускает, circuit-breaker
               ├── server.ps1 (:8787)  # HTTP API + веб-UI + чат
               ├── driver.ps1 -Channel main     # главный цикл: planner↔coder
-              ├── driver.ps1 -Channel travel   # второй канал (свой проект)
+              ├── driver.ps1 -Channel aipartners / private-community / ... # по одному driver на активный канал
               └── watchdog.ps1         # авто-откат при поломке
 ```
 
@@ -58,7 +58,7 @@ HTTP-сервер на `http://+:8787/`:
 - **аутентификация по токену** — без токена `/api/status` отдаёт `401` (это «жив», а не «сломан»).
 
 ### 2.3 driver.ps1 (≈366 KB — МОНОЛИТ ⚠️)
-Сердце моста. Один процесс на канал (`-Channel main` / `-Channel travel`). Главный цикл (`loop`):
+Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). Главный цикл (`loop`):
 1. читает состояние канала (`state.json`) и новые сообщения;
 2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / …);
 3. выбирает модель планировщика (Sonnet/Opus — см. §4.2);
@@ -73,7 +73,10 @@ HTTP-сервер на `http://+:8787/`:
 Независимый сторож. Если мост «сломан движком» (API не отвечает, лог-сигнатура поломки) — делает **мягкий рестарт** (`restart.flag`), а в крайнем случае — git-rollback на последний стабильный коммит. Запускается скрыто (`-WindowStyle Hidden`). **Не убивать вручную** — это защита.
 
 ### 2.5 Каналы (channels)
-Мост многоканальный. `main` = сам мост (bridge-self). `travel` = отдельный проект. У каждого свой `channels/<slug>/`: `state.json`, `conversation.jsonl`, `turns.jsonl`, бэклог-привязка. **Один общий Codex** на все каналы → сериализация через mutex `runtime/codex.lock` (см. §7).
+Мост многоканальный. `main` = сам мост (bridge-self), остальные активные каналы обычно привязаны к
+внешним проектам (`aipartners`, `private-community`, ...). У каждого свой `channels/<slug>/`:
+`state.json`, `conversation.jsonl`, `turns.jsonl`, бэклог-привязка. **Один общий Codex** на все каналы
+→ сериализация через mutex `runtime/codex.lock` (см. §7).
 
 ---
 
@@ -154,9 +157,48 @@ bridge/
 - `settings.json: selfExecuteTier` — `off` / `shadow` (логирует, но не делает) / `green` (делает безопасные) / `yellow` (делает шире). **red-tier (security/необратимое) никогда не авто-исполняется.**
 - `idleQuietMinutes` — сколько тишины до взятия задачи;
 - `maxAutonomousTasksPerDay` — лимит (0 = безлимит);
-- `autonomyDisabledChannels` — каналы без автономии (по умолчанию `['travel']`, чтобы не конкурировать за Codex; UI: 🤖/🚫 в меню каналов).
+- `autonomyDisabledChannels` — каналы без автономии, если надо временно убрать конкуренцию за Codex; UI: 🤖/🚫 в меню каналов.
 
 Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1`, статусы `new/approved/green/yellow/done/rejected/auto-dropped`.
+
+### 4.3-bis Project Autopilot (project backlog generation)
+Для каналов, привязанных к внешнему проекту, добавлен отдельный слой автопилота, чтобы проект не
+требовал ручного "кормления" задачами.
+
+**Когда запускается:**
+- канал имеет project binding (`channels/<slug>/channel.json`);
+- канал не `main`;
+- project repo clean;
+- backlog pressure низкий: нет running-задачи и нет достаточного числа approved project tasks;
+- cooldown истёк.
+
+**Настройки по умолчанию** (`lib/settings.ps1`, могут перекрываться `settings.json`):
+- `projectAutopilotEnabled = true`;
+- `projectAutopilotCooldownMinutes = 5`;
+- `projectAutopilotMaxTasksPerBatch = 12`.
+
+**Контракт planner-а:**
+Driver добавляет в prompt инструкцию PROJECT AUTOPILOT. Coordinator/planner должен вернуть строго
+JSON-массив атомов внутри:
+
+```text
+[[PROJECT_BACKLOG]]
+[
+  {"slug":"...", "title":"...", "task":"...", "files":["..."], "depends_on":[], "severity":"normal"}
+]
+[[/PROJECT_BACKLOG]]
+```
+
+**Реализация:**
+- `lib/backlog.ps1`: `Get-ProjectAutopilotConfig`, `Get-ProjectAutopilotBinding`,
+  `Get-ProjectAutopilotBacklogPressure`, `Test-ProjectAutopilotProjectClean`,
+  `Start-ProjectAutopilotIfNeeded`, `Get-ProjectAutopilotTaskArrayFromMarker`,
+  `Add-ProjectBacklogFromMarker`.
+- `driver.ps1`: idle trigger перед claim (`Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'`);
+  парсинг `[[PROJECT_BACKLOG]]`; добавление approved project tasks; очистка маркера из видимого ответа.
+
+**Операторский инвариант:** ручной append в `backlog.jsonl` теперь fallback. Штатно проект сам
+пополняет очередь атомами через `[[PROJECT_BACKLOG]]`, а затем обычная автономия исполняет approved tasks.
 
 ### 4.4 Песочница кодера и auto-commit (это НЕ баг)
 Codex работает в **изолированной песочнице** (`workspace-write`): может писать файлы проекта, но **намеренно не имеет доступа к `.git`** (ACL на `.git/index.lock`). Поэтому:
@@ -164,6 +206,22 @@ Codex работает в **изолированной песочнице** (`wo
 - **Driver (доверенный, вне песочницы) докоммичивает правки за Codex** (`💾 Драйвер зафиксировал правки Codex … <sha>`).
 
 Это защита (Gate-A): кодер не трогает историю напрямую. Правки **не теряются**. Сообщение про «заблокированную песочницу» — штатное.
+
+### 4.4-bis Project repo gates и quality bypass guard
+Для project-каналов критично проверять не bridge repo, а repo активного проекта. Исправления:
+
+- `Get-TaskRepoRoot` в `driver.ps1` выбирает repo root текущей задачи: project binding для project tasks,
+  иначе bridge root. Это устранило ложный gate, где `git-sha` коммита проекта искался в bridge repo.
+- Base commit автономной project task теперь берётся из project repo, а не из bridge.
+- Verify diff fallback, critic gate, changed files, task history, symbol evidence и `DIFF_META` используют
+  repo root задачи.
+- `Test-QualityBypassesInDiff` ловит добавленные строки с обходом качества:
+  `ignoreBuildErrors`, `ignoreDuringBuilds`, `@ts-nocheck`, verify-команды с `|| true` или forced `exit 0`.
+- Автономная backlog task не может закрыться `STATUS: DONE`, если агент только написал план:
+  нужен реальный action/evidence, `COVERED:` для дубля или project backlog atoms.
+
+Инвариант для разработчика: при любой доработке project gates тестировать `driver.ps1 -Channel main -SelfTest`
+и `driver.ps1 -Channel <project-channel> -SelfTest`; detector quality bypass должен оставаться в SelfTest.
 
 ### 4.5 Аудит (статический + deep-audit)
 Ночью (окно `config.audit` 01:00–06:00, `floorHours=20`) или вручную:
@@ -244,7 +302,10 @@ schtasks /end /tn "ClaudeCodexBridge"; schtasks /run /tn "ClaudeCodexBridge"
 `schtasks /change` и подобные elevated-операции **в фоне зависают** на UAC-промпте (ответить некому). Не запускай их в `run_in_background`.
 
 ### 6.5 Codex mutex / cross-channel
-Один Codex на оба канала → `runtime/codex.lock`. Если оба канала автономны, они конкурируют → сообщения «Codex занят другим каналом», ожидание до 120 c, потом «продолжаю без mutex» (риск двух Codex). Поэтому `travel` по умолчанию без автономии (`autonomyDisabledChannels`). Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
+Один Codex на все каналы → `runtime/codex.lock`. Если несколько каналов автономны, они конкурируют →
+сообщения «Codex занят другим каналом», ожидание до 120 c, потом «продолжаю без mutex» (риск двух
+Codex). Для снижения конкуренции временно выключай автономию лишних проектных каналов через
+`autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер монолитов
 `driver.ps1` 366 KB, `web/index.html` 245 KB, `common.ps1` 97 KB. Правки — **точечные** (`Edit` по уникальному фрагменту). Полную перезапись делать только осознанно.
@@ -307,7 +368,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 |---|---|---|
 | API не отвечает, только supervisor+watchdog живы | circuit-breaker deadlock (старая версия) или storm | §5.4 ручное восстановление |
 | 6+ рестартов/30мин в `restarts.jsonl` | recycle-storm (много правок/ручных рестартов) | подождать; не плодить рестарты; проверить coalescer |
-| «Codex занят другим каналом» часто | оба канала автономны, конкуренция за Codex | выключить автономию travel (🚫 в UI) |
+| «Codex занят другим каналом» часто | несколько каналов автономны, конкуренция за Codex | временно выключить автономию лишних каналов (🚫 в UI / `autonomyDisabledChannels`) |
 | «git add/commit заблокирован ACL» | штатная песочница кодера | ничего — driver докоммитит сам (§4.4) |
 | `state.json` повреждён | OneDrive sync во время шторма | server пересоздаёт; в идеале вынести runtime из OneDrive |
 | `deep[deep_failed agents=0]` | контракт/коллизия переменных в deep-audit | проверить `agents` vs `model_agents`, `$functionalAgent` коллизию |

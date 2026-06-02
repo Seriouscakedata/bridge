@@ -1,6 +1,6 @@
 # Карта проекта: bridge
 
-_Обновлено: 2026-05-31. Опорный коммит перед составлением карты: `a0dfc47 feat(memory): add evidence-backed project context`._
+_Обновлено: 2026-06-02. Опорный коммит актуализации: `4633fa8 fix(driver): audit project diffs and block quality bypasses`._
 
 Это каноническая карта проекта для канала `main`. Её читают человек, агенты и `Project Context Pack`. Сгенерированные карты в `memory/` полезны, но библиотекарь может их перезаписать, поэтому устойчивый источник правды для структуры проекта - этот файл.
 
@@ -29,8 +29,8 @@ _Обновлено: 2026-05-31. Опорный коммит перед сост
 Task Scheduler: ClaudeCodexBridge
   supervisor.ps1
     server.ps1        - HTTP API и web UI на :8787
-    driver.ps1 main   - канал разработки самого моста
-    driver.ps1 travel - канал внешнего проекта
+    driver.ps1 main              - канал разработки самого моста
+    driver.ps1 <project-channel> - по одному driver на активный проектный канал
   watchdog.ps1        - независимый сторож здоровья, рестартов и rollback
 ```
 
@@ -47,7 +47,9 @@ Task Scheduler: ClaudeCodexBridge
 Канал - это вкладка и проектный контекст. У каждого канала свои state, conversation, backlog, files, memory scope и project root.
 
 - `main`: сам мост. `project_root` = `C:\Users\rafie\OneDrive\Documents\bridge`.
-- `travel`: внешний проект "Travel". `project_root` = `C:\Users\rafie\OneDrive\Documents\New project`.
+- `aipartners`: внешний проект AI Partners. `project_root` = `C:\Users\rafie\aipartners`.
+- `private-community`: внешний проект закрытого комьюнити. `project_root` = `C:\Users\rafie\bridge-projects\private-community`.
+- `travel`: бывший учебный внешний проект, сейчас архивный/не основной.
 - Новые вкладки должны повторять эту модель: один канал, один корень проекта, отдельная память, отдельный индекс кода, отдельный контекст.
 
 Ключевые функции скоупа в `lib/channels.ps1`:
@@ -108,7 +110,7 @@ Runtime и сгенерированные данные, обычно не ком
 
 ### Автономия и backlog
 
-- `lib/backlog.ps1`: очередь идей, risk tier, stale sweep, LLM-prioritizer, self-exec, safety reflex.
+- `lib/backlog.ps1`: очередь идей, risk tier, stale sweep, LLM-prioritizer, self-exec, safety reflex, Project Autopilot.
 - `docs/self-development.md`: политика `selfExecuteTier`.
 - `config.json -> autonomy`: idle timing, дневной лимит автономных задач, reflect cadence, stable promotion.
 - `settings.json -> selfExecuteTier`: runtime-диск. На момент карты наблюдалось значение `yellow`.
@@ -118,6 +120,16 @@ Risk tier:
 - `green`: маленькие обратимые изменения.
 - `yellow`: реальные изменения кода, разрешены только если диск позволяет.
 - `red`: безопасность, secrets, необратимые действия, watchdog/supervisor, billing, destructive actions. Автономно не исполняется никогда.
+
+Project Autopilot:
+
+- Для project-каналов `driver.ps1` запускает `Start-ProjectAutopilotIfNeeded`, когда очередь approved
+  project tasks исчерпана или почти исчерпана, project repo clean и cooldown истёк.
+- Planner возвращает атомы в `[[PROJECT_BACKLOG]] ... [[/PROJECT_BACKLOG]]`.
+- `Add-ProjectBacklogFromMarker` добавляет атомы как `approved` project tasks; оператор не должен
+  постоянно дописывать backlog руками.
+- Defaults: `projectAutopilotEnabled=true`, `projectAutopilotCooldownMinutes=5`,
+  `projectAutopilotMaxTasksPerBatch=12`.
 
 ### Память и понимание проекта
 
@@ -249,6 +261,21 @@ Fast-lane:
 4. Driver исполняет её через обычный защищённый путь.
 5. Metrics/post-mortem оценивают, помогла ли правка.
 
+Проектная автономия:
+
+1. Project channel idle или backlog pressure низкий.
+2. `Start-ProjectAutopilotIfNeeded` проверяет binding, clean project git, cooldown и лимит batch.
+3. Coordinator task просит planner вернуть `[[PROJECT_BACKLOG]]` JSON atoms.
+4. Driver парсит marker, создаёт approved project tasks и скрывает marker из видимого ответа.
+5. Обычная автономия берёт эти tasks одну за другой или через workpack-batch, если они независимы.
+
+Project quality gates:
+
+- `Get-TaskRepoRoot` выбирает bridge repo или project repo для base commit, diff, critic и SHA checks.
+- Plan-only `STATUS: DONE` для backlog tasks запрещён без реальных действий, `COVERED:` или новых project atoms.
+- `Test-QualityBypassesInDiff` блокирует добавленные обходы качества (`ignoreBuildErrors`, `@ts-nocheck`,
+  `|| true`, forced `exit 0` в verify).
+
 ## 8. Онбординг нового проекта
 
 Для каждой новой вкладки/проекта правильный поток:
@@ -341,6 +368,11 @@ Health check из runbook:
 - Индексация не только PowerShell, но и типовых проектных файлов.
 - Исправлен false-positive fast-lane для `[[FAST]]`.
 - Добавлен canonical `PROJECT_MAP.md`, который имеет приоритет над сгенерированным `memory/map.md`.
+- Добавлен Project Autopilot: project backlog atoms генерируются через `[[PROJECT_BACKLOG]]`, без ручного кормления.
+- Project tasks разрешены в project-каналах даже при глобальном bridge scope; `main` остаётся защищён.
+- Добавлен guard против plan-only DONE для автономных backlog tasks.
+- Project diff/critic/SHA checks переведены на repo активного проекта через `Get-TaskRepoRoot`.
+- Добавлен deterministic quality bypass detector для dangerous build/typecheck bypasses.
 
 Последние проверки этой карты:
 
