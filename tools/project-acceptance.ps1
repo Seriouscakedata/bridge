@@ -20,7 +20,7 @@ try {
     $result = Start-ProjectAcceptanceIfDue -Channel $Channel -Trigger 'manual' -Force:$Force
   }
 
-  $result | ConvertTo-Json -Depth 12
+  $result | ConvertTo-Json -Depth 10
   if ($result -and $result.ran -and -not $result.ok) { exit 1 }
   exit 0
 } catch {

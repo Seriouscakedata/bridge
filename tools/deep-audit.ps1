@@ -851,7 +851,7 @@ function Invoke-MultiAgentDeepAudit {
 
 function Write-DeepAuditOutput {
   param($Output, [string]$OutputFile)
-  $jsonOut = $Output | ConvertTo-Json -Depth 12 -Compress
+  $jsonOut = $Output | ConvertTo-Json -Depth 10 -Compress
   if (-not [string]::IsNullOrWhiteSpace($OutputFile)) {
     try {
       $u8NoBom = New-Object System.Text.UTF8Encoding($false)

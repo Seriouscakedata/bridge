@@ -828,7 +828,7 @@ function Invoke-ProjectAcceptance {
     steps = @($steps.ToArray())
   }
   Write-ProjectAcceptanceTrace -Channel $ch -Text "write json"
-  Write-ProjectAcceptanceText -Path $jsonPath -Text (($report | ConvertTo-Json -Depth 12) + "`n")
+  Write-ProjectAcceptanceText -Path $jsonPath -Text (($report | ConvertTo-Json -Depth 10) + "`n")
 
   $md = New-Object System.Text.StringBuilder
   [void]$md.AppendLine("# Project Acceptance")

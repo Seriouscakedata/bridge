@@ -73,7 +73,7 @@ Write-Host (Format-PlanForPrompt)
 
 Write-Host ''
 Write-Host '=== 10) Get-PlanForApi -> JSON ==='
-Write-Host ((Get-PlanForApi | ConvertTo-Json -Compress -Depth 12))
+Write-Host ((Get-PlanForApi | ConvertTo-Json -Compress -Depth 10))
 
 Remove-Item -LiteralPath $tmpDir -Recurse -Force
 Write-Host ''
