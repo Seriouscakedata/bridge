@@ -366,6 +366,20 @@ function ConvertTo-ProjectAcceptanceStatusSet {
   return @($out.ToArray())
 }
 
+function Test-ProjectAcceptanceDynamicPath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
+  return [bool]($Path -match '(^|/):[^/]+|[[\]]')
+}
+
+function Get-ProjectAcceptanceDefaultStatusesForAccess {
+  param([string]$Access)
+  $a = ([string]$Access).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($a) -or $a -in @('public','guest','anonymous','unauthenticated')) { return @(200) }
+  if ($a -in @('user','auth','authenticated','member','admin','private','protected')) { return @(302,303,307,308,401,403) }
+  return @(200)
+}
+
 function Parse-ProjectAcceptanceCheck {
   param([string]$Spec, [string]$BaseUrl)
   $s = ([string]$Spec).Trim()
@@ -664,16 +678,20 @@ function Get-ProjectAcceptancePlanContractWebSpecs {
   }
   $specs = New-Object 'System.Collections.Generic.List[object]'
   foreach ($it in @($items)) {
-    $path = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('path','route','url','href') -Default '')
+    $path = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('test_path','testPath','example_path','examplePath','sample_path','samplePath','path','route','url','href') -Default '')
     if ([string]::IsNullOrWhiteSpace($path)) { continue }
     if (-not ($path.StartsWith('/') -or $path -match '^(?i)https?://')) { continue }
+    if (Test-ProjectAcceptanceDynamicPath -Path $path) { continue }
     $name = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('id','name','title','label') -Default $path)
-    $expected = Get-ProjectAcceptanceObjectValue -Obj $it -Names @('expected_status','expectedStatus','status') -Default '200'
+    $access = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('access','auth','visibility','role') -Default '')
+    $explicitExpected = Get-ProjectAcceptanceObjectValue -Obj $it -Names @('expected_status','expectedStatus','http_status','httpStatus') -Default $null
+    $expected = if ($null -ne $explicitExpected) { @($explicitExpected) } else { @(Get-ProjectAcceptanceDefaultStatusesForAccess -Access $access) }
     $tokens = @(Get-ProjectAcceptanceContractArray -Obj $it -Names @('must_contain','mustContain','contains','visible_text','visibleText','text_assertions'))
     [void]$specs.Add([pscustomobject]@{
       name = $name
       path = $path
       expected = @(ConvertTo-ProjectAcceptanceStatusSet -Values @($expected))
+      access = $access
       must_contain = @($tokens | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
     })
   }
@@ -757,9 +775,12 @@ function Invoke-ProjectAcceptance {
           if ($expectedStatuses.Count -eq 0) { $expectedStatuses = @(200) }
           $statusOk = @($expectedStatuses) -contains [int]$http.status
           $missing = New-Object 'System.Collections.Generic.List[string]'
-          foreach ($token in @($spec.must_contain)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$token) -and ([string]$http.text).IndexOf([string]$token, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-              [void]$missing.Add([string]$token)
+          $canAssertBody = ([int]$http.status -eq 200)
+          if ($canAssertBody) {
+            foreach ($token in @($spec.must_contain)) {
+              if (-not [string]::IsNullOrWhiteSpace([string]$token) -and ([string]$http.text).IndexOf([string]$token, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                [void]$missing.Add([string]$token)
+              }
             }
           }
           $ok = ($statusOk -and $missing.Count -eq 0)

@@ -2808,6 +2808,11 @@ Work only in $ProjectRoot.
 
 Mission: keep this project moving without the operator manually feeding backlog items.
 
+Plan gate status:
+- This coordinator is queued only after the channel-level Discuss-First plan gate has approved the current PROJECT_PLAN signature.
+- Treat channels/$Slug/channel.json plan_approved=true and its approved signature as the source of truth for execution permission.
+- If PROJECT_PLAN.md, PROJECT_MAP.md, or .bridge/project-contract.json still contain pre-approval wording such as "not approved", "UNAPPROVED", or "planned, not approved", do not treat that wording as a blocker after this coordinator has been queued. Use those words as historical planning status unless the channel gate itself is not approved.
+
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
 - Read PROJECT_BRIEF.md, DISCUSS_PRODUCT.md, DISCUSS_UX.md, DISCUSS_UI.md, DISCUSS_BACKEND.md, DISCUSS_QA.md, DISCUSS_INTEGRATION.md, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
