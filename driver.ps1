@@ -5043,7 +5043,11 @@ while ($true) {
       $stPaOutcome = Read-State
       $paTask = [string]$stPaOutcome.current_task
       $paBacklogId = [string]$stPaOutcome.current_backlog_id
-      $paIsCoordinator = [bool]([regex]::IsMatch($paTask, '(?is)^\s*\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel'))
+      if (Get-Command Test-ProjectAutopilotCoordinatorText -ErrorAction SilentlyContinue) {
+        $paIsCoordinator = [bool](Test-ProjectAutopilotCoordinatorText -Text $paTask)
+      } else {
+        $paIsCoordinator = [bool]([regex]::IsMatch($paTask, '(?is)\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel'))
+      }
       if ($paIsCoordinator -and (Get-Command Record-ProjectAutopilotCoordinatorOutcome -ErrorAction SilentlyContinue)) {
         $paChannel = ''
         $paRoot = ''

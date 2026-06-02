@@ -2333,8 +2333,13 @@ function Test-ProjectAutopilotCoordinatorItem {
   param($Item)
   if (-not $Item) { return $false }
   $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
-  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-  return [bool]($text -match '(?is)^\s*\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel')
+  return (Test-ProjectAutopilotCoordinatorText -Text $text)
+}
+
+function Test-ProjectAutopilotCoordinatorText {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return [bool]($Text -match '(?is)\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel')
 }
 
 function Test-ProjectAutopilotCoordinatorHasChildren {
