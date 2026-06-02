@@ -6,7 +6,21 @@
     "created":  "2026-06-01T17:43:23.9065833+03:00",
     "archived":  false,
     "plan_approved":  true,
-    "plan_approved_at":  "2026-06-02T09:34:38.3621377Z",
-    "plan_approved_signature":  "6121b3e9ae87a826a846ae60f8a38ae8964c2be6052ca98cfe636171859b82fe",
+    "plan_approved_at":  "2026-06-02T10:33:31.0878290Z",
+    "plan_approved_signature":  "67ca44042a5c69b91c9c58045909cff0cf6dbcc286817b60b72cd9846432f95f",
+    "plan_approved_signature_version":  "staged-v1",
+    "plan_approved_files":  [
+                                "PROJECT_BRIEF.md",
+                                "DISCUSS_PRODUCT.md",
+                                "DISCUSS_UX.md",
+                                "DISCUSS_UI.md",
+                                "DISCUSS_BACKEND.md",
+                                "DISCUSS_QA.md",
+                                "DISCUSS_INTEGRATION.md",
+                                "PROJECT_MAP.md",
+                                "PROJECT_PLAN.md",
+                                ".bridge\\project-contract.json"
+                            ],
+    "plan_approved_git_head":  "b86129937de6b70ca95d5d665e36ea256564f0cc",
     "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\private-community\\.bridge\\project-contract.json"
 }

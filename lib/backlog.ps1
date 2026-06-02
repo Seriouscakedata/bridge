@@ -2633,6 +2633,46 @@ function Get-ProjectAutopilotPlanSignature {
   return (Get-ProjectAutopilotSha256 -Text (($parts.ToArray()) -join "`n---bridge-plan-part---`n"))
 }
 
+function Get-ProjectAutopilotGitHead {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return '' }
+  try {
+    $head = (& git -C $ProjectRoot rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) { return '' }
+    return ([string]$head).Trim()
+  } catch {
+    return ''
+  }
+}
+
+function Test-ProjectAutopilotPlanFilesUnchangedSinceGitHead {
+  param([string]$ProjectRoot, [string]$GitHead)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or [string]::IsNullOrWhiteSpace($GitHead)) {
+    return [pscustomobject]@{ ok=$false; unchanged=$false; reason='missing-input' }
+  }
+  if (-not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
+    return [pscustomobject]@{ ok=$false; unchanged=$false; reason='project-root-missing' }
+  }
+  try {
+    $verify = (& git -C $ProjectRoot rev-parse --verify ($GitHead + '^{commit}') 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$verify)) {
+      return [pscustomobject]@{ ok=$false; unchanged=$false; reason='approval-git-head-not-found' }
+    }
+    $files = @(Get-ProjectAutopilotPlanSignatureFiles | ForEach-Object { ([string]$_).Replace('\','/') })
+    if ($files.Count -eq 0) {
+      return [pscustomobject]@{ ok=$false; unchanged=$false; reason='no-plan-files' }
+    }
+    $args = @('-C', $ProjectRoot, 'diff', '--quiet', $GitHead, '--') + $files
+    & git @args 2>$null
+    $exit = [int]$LASTEXITCODE
+    if ($exit -eq 0) { return [pscustomobject]@{ ok=$true; unchanged=$true; reason='unchanged' } }
+    if ($exit -eq 1) { return [pscustomobject]@{ ok=$true; unchanged=$false; reason='plan-files-changed' } }
+    return [pscustomobject]@{ ok=$false; unchanged=$false; reason=('git-diff-exit-' + [string]$exit) }
+  } catch {
+    return [pscustomobject]@{ ok=$false; unchanged=$false; reason='git-diff-error' }
+  }
+}
+
 function Get-ProjectAutopilotContractValue {
   param($Obj, [string[]]$Names = @(), $Default = $null)
   if (-not $Obj) { return $Default }
@@ -2882,7 +2922,15 @@ function Test-ProjectPlanApproved {
     } catch {}
     if (-not [string]::IsNullOrWhiteSpace($approvedSignature) -and -not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
       $currentSignature = Get-ProjectAutopilotPlanSignature -ProjectRoot $ProjectRoot
-      if ([string]::IsNullOrWhiteSpace($currentSignature) -or $currentSignature -ne $approvedSignature) { return $false }
+      if ([string]::IsNullOrWhiteSpace($currentSignature)) { return $false }
+      if ($currentSignature -ne $approvedSignature) {
+        $approvedGitHead = ''
+        try {
+          if ($raw.PSObject.Properties.Name -contains 'plan_approved_git_head') { $approvedGitHead = [string]$raw.plan_approved_git_head }
+        } catch {}
+        $unchanged = Test-ProjectAutopilotPlanFilesUnchangedSinceGitHead -ProjectRoot $ProjectRoot -GitHead $approvedGitHead
+        if (-not ([bool]$unchanged.ok -and [bool]$unchanged.unchanged)) { return $false }
+      }
     }
     return $true
   } catch {}
@@ -2917,9 +2965,15 @@ function Set-ProjectPlanApproved {
   $raw | Add-Member -NotePropertyName plan_approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
   if ($Approved -and $contractReady) {
     $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue ([string]$contractReady.signature) -Force
+    $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue 'staged-v1' -Force
+    $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @(Get-ProjectAutopilotPlanSignatureFiles) -Force
+    $raw | Add-Member -NotePropertyName plan_approved_git_head -NotePropertyValue (Get-ProjectAutopilotGitHead -ProjectRoot $projectRoot) -Force
     $raw | Add-Member -NotePropertyName plan_contract_path -NotePropertyValue ([string]$contractReady.contract_path) -Force
   } elseif (-not $Approved) {
     $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue '' -Force
+    $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue '' -Force
+    $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @() -Force
+    $raw | Add-Member -NotePropertyName plan_approved_git_head -NotePropertyValue '' -Force
   }
   [System.IO.File]::WriteAllText($cj, (($raw | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   # clear the one-time gate-notified marker so a future re-gate (plan rewrite) notifies the operator again

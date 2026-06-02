@@ -105,6 +105,12 @@ try {
   }
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $projectRoot '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
+  & git -C $projectRoot init | Out-Null
+  & git -C $projectRoot config user.email 'bridge-test@example.invalid' | Out-Null
+  & git -C $projectRoot config user.name 'Bridge Test' | Out-Null
+  & git -C $projectRoot add . | Out-Null
+  & git -C $projectRoot commit -m 'fixture planning docs' | Out-Null
+
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\backlog.ps1')
 
   $cfg = Get-ProjectAutopilotConfig
@@ -113,6 +119,18 @@ try {
   Assert-True (-not [bool]$gateStart.queued) 'unapproved plan must not queue a coordinator'
   Assert-True ([string]$gateStart.reason -eq 'plan-not-approved') ("expected plan-not-approved, got " + [string]$gateStart.reason)
   Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null
+  Assert-True (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot) 'approved plan must pass exact signature gate'
+  $approvedStatePath = Join-Path $channelDir 'channel.json'
+  $approvedState = [System.IO.File]::ReadAllText($approvedStatePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$approvedState.plan_approved_git_head)) 'approval should record project git head'
+  $approvedState.plan_approved_signature = 'stale-signature-for-test'
+  [System.IO.File]::WriteAllText($approvedStatePath, (($approvedState | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  Assert-True (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot) 'stale signature should pass when approved planning files are unchanged at git head'
+  [System.IO.File]::AppendAllText((Join-Path $projectRoot 'PROJECT_PLAN.md'), "`nUnapproved planning drift for gate test.`n", (New-Object System.Text.UTF8Encoding($false)))
+  Assert-True (-not (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot)) 'planning file drift after approved git head must fail the gate'
+  [System.IO.File]::WriteAllText((Join-Path $projectRoot 'PROJECT_PLAN.md'), $planText, (New-Object System.Text.UTF8Encoding($false)))
+  Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null
+  Assert-True (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot) 'restored planning docs should pass after re-approval'
   $prefixedCoordinatorText = "[autonomous backlog task] " + (New-ProjectAutopilotCoordinatorTaskText -Slug $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -MaxTasks 4)
   Assert-True (Test-ProjectAutopilotCoordinatorText -Text $prefixedCoordinatorText) 'coordinator detector should allow driver task prefixes'
 
