@@ -2908,7 +2908,7 @@ Rules:
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
 - Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
-- Use chapter, wave, parallel_group, files, depends_on, acceptance, and checks so the scheduler can run the team safely.
+- Use chapter, wave, parallel_group, files, depends_on, acceptance, checks, risk/severity, and serial_reason so the scheduler can run the team safely.
 - Every atom acceptance must trace back to a project-contract requirement, journey, surface, or acceptance scenario. Do not use generic "looks good" UX checks.
 - Before PROJECT_BACKLOG, emit durable project memory markers when useful:
   [[PROJECT_DECISION: ...]]
@@ -2933,12 +2933,18 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "parallel_group": "auth|gallery|chat|admin|docs|tests|...",
     "files": ["relative/path/or/directory"],
     "depends_on": ["slug-of-prerequisite-if-any"],
-    "acceptance": ["observable acceptance criterion"],
+    "acceptance": ["observable acceptance criterion tied to the approved contract"],
     "checks": ["npm run typecheck", "npm run build"],
-    "severity": "normal"
+    "risk": "normal",
+    "severity": "normal",
+    "serial_reason": "",
+    "workpack_touch_set": ["relative/path/or/directory"],
+    "workpack_conflict_group": "file:relative/path/or/directory"
   }
 ]
 [[/PROJECT_BACKLOG]]
+
+depends_on may be []; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate.
 
 The driver will add those atoms to approved project backlog automatically. Do not use operator-delegate and do not edit backlog.jsonl manually.
 
