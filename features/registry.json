@@ -367,10 +367,10 @@
     {
         "id":  "mission-card",
         "owner_files":  [
-                            "driver.ps1",
-                            "state session_decisions"
+                            "driver/81-loop-idle-claim.ps1",
+                            "lib/common.ps1"
                         ],
-        "owner_function":  "(ledger block)",
+        "owner_function":  "Update-State (session_mission init on task-start)",
         "trigger":  "per-task",
         "expected_frequency":  "per-task",
         "activation_signal":  {
@@ -983,7 +983,7 @@
         "created_at":  "2026-05-28",
         "last_activated_at":  null,
         "embedding":  null,
-        "status":  "dormant"
+        "status":  "active"
     },
     {
         "id":  "self-improvement-system",
