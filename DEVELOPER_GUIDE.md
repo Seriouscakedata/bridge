@@ -57,8 +57,8 @@ HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-д�
 - принимает сообщения пользователя в чат, пишет их в `channels/<slug>/conversation.jsonl`;
 - `/api/health` показывает `capabilities_total` / `capabilities_failed` / `capabilities_required_failed`, чтобы best-effort модули не ломались невидимо.
 
-### 2.3 driver.ps1 (≈366 KB — МОНОЛИТ ⚠️)
-Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). Главный цикл (`loop`):
+### 2.3 driver.ps1 (entrypoint + runtime; функции вынесены в `driver/*.ps1`)
+Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` остаётся точкой входа, self-test/startup/runtime loop живут в нём, а функции агента/промпта/контекста/maintenance вынесены в `driver/*.ps1`:
 1. читает состояние канала (`state.json`) и новые сообщения;
 2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / …);
 3. выбирает модель планировщика (Sonnet/Opus — см. §4.2);
@@ -67,7 +67,7 @@ HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-д�
 6. в простое — берёт автономную задачу из бэклога (см. §4.3);
 7. обслуживает recycle-coalescer (§5), аудит-планировщик, doctor и пр.
 
-> ⚠️ **366 KB в одном файле** — главный долг по поддерживаемости. Изменения делай точечно (`Edit` по уникальному фрагменту), всегда проверяй `ParseFile` + `-SelfTest`.
+> ⚠️ Runtime loop всё ещё крупный, но основные функции уже декомпозированы. Новую функцию добавляй в подходящий `driver/*.ps1`, а не обратно в `driver.ps1`. После любой правки: `ParseFile` + `driver.ps1 -SelfTest`.
 
 ### 2.4 watchdog.ps1 (≈10 KB)
 Независимый сторож. Если мост «сломан движком» (API не отвечает, лог-сигнатура поломки) — делает **мягкий рестарт** (`restart.flag`), а в крайнем случае — git-rollback на последний стабильный коммит. Запускается скрыто (`-WindowStyle Hidden`). **Не убивать вручную** — это защита.
@@ -86,7 +86,8 @@ HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-д�
 bridge/
 ├── bridgectl.py           # portable Python control CLI
 ├── bridge_core/           # cross-platform config/status/platform adapters
-├── driver.ps1            # главный цикл (монолит)
+├── driver.ps1            # entrypoint + self-test/startup/runtime loop
+├── driver/               # функции драйвера, разнесённые по зонам ответственности
 ├── server.ps1            # HTTP API + UI
 ├── supervisor.ps1        # autostart-надзиратель + circuit-breaker
 ├── watchdog.ps1          # авто-откат
@@ -94,9 +95,11 @@ bridge/
 ├── *-elevated.ps1 / install-*.ps1 / start.ps1 / stop.ps1      # обвязка/установка
 ├── config.json           # ОСНОВНОЙ конфиг (в git!) — модели, лимиты, autonomy, audit
 ├── lib/  (31 модуль)     # вся логика-библиотека (dot-source из common.ps1)
-│   ├── common.ps1        # ядро: state, сообщения, LLM-вызовы, локи (97 KB)
+│   ├── common.ps1        # loader ядра: state/messages/locks/capabilities
+│   ├── common/           # common implementation split by responsibility (<520 lines/module)
 │   ├── parallel.ps1      # параллельные worktree-потоки (64 KB)
-│   ├── backlog.ps1       # очередь задач/идей (57 KB)
+│   ├── backlog.ps1       # loader очереди задач/идей
+│   ├── backlog/          # backlog implementation split by responsibility (<500 lines/module)
 │   ├── auditor.ps1       # планировщик аудита (42 KB)
 │   ├── memory.ps1        # семантическая память (embeddings) (42 KB)
 │   ├── architect.ps1     # брейншторм/deep-think (40 KB)
@@ -342,13 +345,42 @@ Codex работает в **изолированной песочнице** (`wo
 
 Collect-then-commit теперь проверяет declared touch-set потока (`files`). Если worker изменил файлы вне заявленной области, поток получает карантин: его worktree не копируется и не сливается в основной репозиторий, в чат пишется причина. Важно: failed/quarantined поток не должен проходить через host-commit recovery.
 
-### 4.7 Память, doctor, foundry, radar
+### 4.7 Backlog modules
+`lib/backlog.ps1` теперь только compatibility loader. Реальная логика разнесена по `lib/backlog/*.ps1`: core/logging, packer, workpack classification/exec, store, curator, claim, project-autopilot, self-exec safety. Новые правки backlog делай в соответствующем модуле, а не возвращай монолит.
+
+Важно для PowerShell 5.1: backlog-модули содержат кириллицу и должны оставаться UTF-8 with BOM. UTF-8 no-BOM ломает `Parser.ParseFile` на Windows PowerShell 5.1.
+
+### 4.8 Driver modules
+`driver.ps1` теперь загружает `driver/*.ps1`:
+- `00-task-session.ps1` — replay/current task, model tiering, CLI/help/quality detectors, fast-lane/chunking flags;
+- `10-maintenance.ps1` — curator decisions, attachments, librarian/audit/reflect/techradar/canary scheduling;
+- `20-context.ps1` — autonomy gate, task safety, recall, recurrence/project focus;
+- `30-prompt-agent-state.ps1` — prompt builder, agent PID/current-agent bookkeeping, direct-coder detection;
+- `40-agent-invoke.ps1` — Claude/Codex invocation, sandbox/reasoning config, summarizer/context folding;
+- `50-loop-utils.ps1` — speaker/status helpers, turn/evidence logging.
+
+Важно для PowerShell 5.1: driver-модули тоже содержат кириллицу и должны оставаться UTF-8 with BOM.
+
+### 4.9 Common modules
+`lib/common.ps1` теперь loader: сохраняет `$script:CommonLibRoot`, загружает `lib/common/*.ps1`, затем как раньше поднимает остальные `lib/*.ps1` через capability-loader.
+
+Модули:
+- `00-core-config.ps1` — bridge root/config/path containment, CLI resolution, atomic writes;
+- `10-process-cleanup.ps1` — zombie jobs, child-process registry, orphan sweeps, temp cleanup;
+- `20-state-locks.ps1` — channel paths, private/runtime paths, summary/state read-write, bridge mutex, probe metrics;
+- `30-task-context.ps1` — checkpoints, session ledger, snapshots, coder runtime context, cross-channel agent state;
+- `40-preflight-channels.ps1` — preflight blockers, test-channel cleanup/archive;
+- `50-messages-init.ps1` — messages, attachments, Initialize-Bridge, fast-lane safety, capability registry.
+
+Критично: `Get-BridgeRoot` должен использовать `$script:CommonLibRoot`, а не `$PSScriptRoot` подпапки `lib/common/`.
+
+### 4.10 Память, doctor, foundry, radar
 - **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты. Память durable-first: при отсутствии embedding-ключа/API запись всё равно сохраняется с `embedding_status=pending`, а не теряется.
 - **doctor** (`lib/doctor.ps1`) — самодиагностика и починка при сбоях задач.
 - **foundry/toolforge** — синтез новых инструментов (`[[NEED-TOOL]]`) и проектов на лету.
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
 
-### 4.8 Portable control layer
+### 4.11 Portable control layer
 `bridgectl.py` + `bridge_core/` — новый Python-слой для переносимости. Он читает config/settings/status без PowerShell, показывает capabilities/status/doctor, переключает `operatorMode`, умеет базово создавать каналы, писать сообщения и добавлять/обновлять backlog, а запуск legacy engine делегирует platform adapter. Цель: постепенно вынести core state/channel/backlog logic из Windows-only PowerShell, оставив PowerShell одним из адаптеров.
 
 ---
@@ -418,7 +450,14 @@ Codex). Для снижения конкуренции временно выкл
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер монолитов
-`driver.ps1` 366 KB, `web/index.html` 245 KB, `common.ps1` 97 KB. Правки — **точечные** (`Edit` по уникальному фрагменту). Полную перезапись делать только осознанно.
+`web/index.html` остаётся самым большим файлом, но web сейчас не главный архитектурный риск. Функциональные крупные зоны: `driver.ps1` runtime loop, `server.ps1`, `tools/audit.ps1`, `lib/parallel.ps1`, `lib/memory.ps1`.
+
+Уже декомпозировано:
+- `lib/backlog.ps1`: loader 26 строк + модули `lib/backlog/*.ps1` до ~470 строк;
+- `driver.ps1`: entrypoint/runtime loop + модули `driver/*.ps1` до ~700 строк;
+- `lib/common.ps1`: loader + модули `lib/common/*.ps1` до ~520 строк.
+
+Правки оставшихся больших файлов — **точечные** (`Edit` по уникальному фрагменту). Полную перезапись делать только осознанно.
 
 ---
 
@@ -518,12 +557,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
 - Градуированное доверие автономии (shadow→green→yellow), red-tier никогда не авто.
 
 **Риски / технический долг:**
-- **Монолиты** (`driver.ps1` 366 KB) — тяжело поддерживать, легко внести регрессию.
+- **Крупные runtime-файлы** (`driver.ps1` loop, `server.ps1`, `audit.ps1`, `parallel.ps1`) — тяжело поддерживать, легко внести регрессию.
 - **Высокая связность механизмов** (31 lib) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
 - **Хрупкая платформа**: PS 5.1 + Windows + OneDrive + Defender + UAC дают целый класс инфраструктурных сбоев.
 - **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), вынести runtime из OneDrive, декомпозировать монолит.
 
-**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (декомпозиция driver.ps1, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
+**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (дальнейшая декомпозиция runtime/server/audit/parallel, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
 
 ---
 
