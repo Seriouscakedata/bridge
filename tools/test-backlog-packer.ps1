@@ -44,6 +44,7 @@ try {
   [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug 'main'), '', (New-Object System.Text.UTF8Encoding($false)))
 
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\backlog.ps1')
+  . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\workpack-obligation.ps1')
 
   [void](Add-Idea -Text '[audit/ui] surface web/index.html status badge for watchdog fatal state' -From 'audit' -Tags @('audit') -Status 'new' -SkipCurator)
   [void](Add-Idea -Text '[audit/backlog] harden lib/backlog.ps1 curator held reason visibility' -From 'audit' -Tags @('audit') -Status 'new' -SkipCurator)
@@ -95,6 +96,10 @@ try {
     "task": "Create a synthetic bridge self backlog atom that proves PROJECT_BACKLOG markers work safely in the main channel.",
     "files": ["lib/review-verdict.ps1"],
     "depends_on": [],
+    "acceptance": ["Main PROJECT_BACKLOG marker creates an approved bridge-self atom."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "risk": "high",
+    "serial_reason": "",
     "severity": "info"
   }
 ]
@@ -109,6 +114,44 @@ try {
   Assert-True (@($mainItem[0].tags) -contains 'project-autopilot') 'main bridge-self item missing project-autopilot tag'
   Assert-True (@($mainItem[0].tags) -contains 'bridge-self') 'main bridge-self item missing bridge-self tag'
   Assert-True (@($mainItem[0].tags) -contains 'atom') 'main bridge-self item missing atom tag'
+  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'depends_on') 'main bridge-self item missing top-level depends_on'
+  $dependsType = if ($null -eq $mainItem[0].depends_on) { '<null>' } else { $mainItem[0].depends_on.GetType().FullName }
+  $dependsCount = if ($null -eq $mainItem[0].depends_on) { -1 } else { [int]$mainItem[0].depends_on.Count }
+  Assert-True (($null -ne $mainItem[0].depends_on) -and ($mainItem[0].depends_on -is [System.Collections.IEnumerable]) -and ($mainItem[0].depends_on -isnot [string]) -and ($dependsCount -eq 0)) ("main bridge-self item depends_on is not an empty array: type={0} count={1} value={2}" -f $dependsType, $dependsCount, ([string]$mainItem[0].depends_on))
+  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'files') 'main bridge-self item missing top-level files'
+  Assert-True (@($mainItem[0].files) -contains 'lib/review-verdict.ps1') 'main bridge-self item files were not normalized'
+  Assert-True (@($mainItem[0].acceptance) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing top-level acceptance'
+  Assert-True (@($mainItem[0].acceptance_checks) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing acceptance_checks alias'
+  Assert-True (@($mainItem[0].checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing top-level checks'
+  Assert-True (@($mainItem[0].verification_checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing verification_checks alias'
+  Assert-True ([string]$mainItem[0].risk -eq 'high') 'main bridge-self item risk was not normalized from marker risk'
+  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'serial_reason') 'main bridge-self item missing top-level serial_reason'
+  $metadataResult = Test-WorkpackAtomMetadata -Atom $mainItem[0]
+  Assert-True ([bool]$metadataResult.ok) ("main bridge-self item did not pass workpack metadata validation: {0}" -f ((@($metadataResult.blockers) + @($metadataResult.missing)) -join ', '))
+
+  $explicitMarker = @'
+[
+  {
+    "slug": "bridge-self-explicit-workpack-test",
+    "title": "Bridge self explicit workpack metadata test",
+    "task": "Create a synthetic bridge self atom proving explicit workpack touch metadata wins over files-derived fallback.",
+    "files": ["lib/backlog.ps1"],
+    "acceptance_checks": ["Explicit workpack touch metadata is preserved."],
+    "verification": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "workpack_touch_set": ["lib/workpack-obligation.ps1"],
+    "workpack_conflict_group": "custom:operatorless-metadata",
+    "severity": "warning"
+  }
+]
+'@
+  $explicitResult = Add-ProjectBacklogFromMarker -Block $explicitMarker -Channel 'main' -Source 'test' -SourceTaskId 'explicit-test'
+  Assert-True ([int]$explicitResult.created -eq 1) ("expected one explicit workpack metadata atom, got {0}" -f [int]$explicitResult.created)
+  $explicitItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-explicit-workpack-test' } | Select-Object -First 1)
+  Assert-True ($explicitItem.Count -eq 1) 'missing explicit workpack metadata item'
+  Assert-True (@($explicitItem[0].workpack_touch_set) -contains 'lib/workpack-obligation.ps1') 'explicit workpack_touch_set was not preserved'
+  Assert-True (-not (@($explicitItem[0].workpack_touch_set) -contains 'lib/backlog.ps1')) 'files-derived fallback overrode explicit workpack_touch_set'
+  Assert-True ([string]$explicitItem[0].workpack_conflict_group -eq 'custom:operatorless-metadata') 'explicit workpack_conflict_group was not preserved'
+  Assert-True ([string]$explicitItem[0].risk -eq 'high') 'explicit item severity warning did not normalize to high risk'
 
   $script:EffectiveChannel = 'external-project'
   $externalDir = Get-ChannelDir -Slug 'external-project'

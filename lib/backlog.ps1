@@ -3221,6 +3221,41 @@ function Get-ProjectAutopilotTaskStringArray {
   return @($out.ToArray() | Sort-Object -Unique)
 }
 
+function ConvertTo-ProjectAutopilotPathArray {
+  param($Values)
+  return @(@($Values) |
+    ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Sort-Object -Unique)
+}
+
+function ConvertTo-ProjectAutopilotSlugArray {
+  param($Values)
+  return @(@($Values) |
+    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+    ForEach-Object { ConvertTo-ProjectAutopilotSlug ([string]$_) } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Sort-Object -Unique)
+}
+
+function Get-ProjectAutopilotTaskRisk {
+  param($Task)
+  $risk = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('risk')
+  if ([string]::IsNullOrWhiteSpace($risk)) {
+    $risk = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('severity')
+  }
+  switch (([string]$risk).Trim().ToLowerInvariant()) {
+    'critical' { return 'critical' }
+    'high' { return 'high' }
+    'warning' { return 'high' }
+    'medium' { return 'normal' }
+    'normal' { return 'normal' }
+    'low' { return 'low' }
+    'info' { return 'low' }
+    default { return 'normal' }
+  }
+}
+
 function Set-ProjectAutopilotIdeaMetadata {
   param([string]$Id, $Task, [string]$SourceTaskId = '')
   if ([string]::IsNullOrWhiteSpace($Id) -or -not $Task) { return $false }
@@ -3232,41 +3267,52 @@ function Set-ProjectAutopilotIdeaMetadata {
       $found = $true
       $slug = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $Task -Name 'slug' -Default (Get-BacklogPackObjectValue -Obj $Task -Name 'title' -Default $Id)))
       $title = [string](Get-BacklogPackObjectValue -Obj $Task -Name 'title' -Default $slug)
-      $files = @()
-      try { $files = @((Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
-      $deps = @()
-      try { $deps = @((Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()) | ForEach-Object { ConvertTo-ProjectAutopilotSlug ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $deps = @() }
+      $body = [string](Get-BacklogPackObjectValue -Obj $Task -Name 'task' -Default '')
+      if ([string]::IsNullOrWhiteSpace($body)) { $body = $title }
+      $files = @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()))
+      $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()))
       $chapter = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('chapter','phase','area')
       $wave = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('wave','milestone')
       $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('parallel_group','lane','workstream')
       $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('acceptance','acceptance_checks','criteria'))
       $checks = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('checks','verify','verification'))
+      $risk = Get-ProjectAutopilotTaskRisk -Task $Task
+      $serialReason = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('serial_reason')
+      $explicitTouch = @(ConvertTo-ProjectAutopilotPathArray (Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('workpack_touch_set','touch_set')))
+      $explicitGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('workpack_conflict_group')
       $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
       $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
+      $i | Add-Member -NotePropertyName task -NotePropertyValue $body -Force
       $i | Add-Member -NotePropertyName autopilot_generated -NotePropertyValue $true -Force
       $i | Add-Member -NotePropertyName autopilot_source_task -NotePropertyValue ([string]$SourceTaskId) -Force
-      if ($deps.Count -gt 0) { $i | Add-Member -NotePropertyName depends_on -NotePropertyValue @($deps) -Force }
+      $i | Add-Member -NotePropertyName files -NotePropertyValue ([object[]]@($files)) -Force
+      $i | Add-Member -NotePropertyName depends_on -NotePropertyValue ([object[]]@($deps)) -Force
+      $i | Add-Member -NotePropertyName risk -NotePropertyValue $risk -Force
+      $i | Add-Member -NotePropertyName serial_reason -NotePropertyValue $serialReason -Force
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $i | Add-Member -NotePropertyName chapter -NotePropertyValue $chapter -Force }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $i | Add-Member -NotePropertyName wave -NotePropertyValue $wave -Force }
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $i | Add-Member -NotePropertyName parallel_group -NotePropertyValue $parallelGroup -Force }
       if ($acceptance.Count -gt 0) { $i | Add-Member -NotePropertyName acceptance_checks -NotePropertyValue @($acceptance) -Force }
       if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName verification_checks -NotePropertyValue @($checks) -Force }
-      if ($files.Count -gt 0) {
-        $normFiles = @($files | ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-        if ($normFiles.Count -gt 0) {
-          $i | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($normFiles) -Force
-          $i | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ('file:' + [string]$normFiles[0]) -Force
-          $i | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ('serial:file:' + [string]$normFiles[0]) -Force
-        }
+      if ($acceptance.Count -gt 0) { $i | Add-Member -NotePropertyName acceptance -NotePropertyValue @($acceptance) -Force }
+      if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName checks -NotePropertyValue @($checks) -Force }
+      $touchSet = if ($explicitTouch.Count -gt 0) { @($explicitTouch) } else { @($files) }
+      if ($touchSet.Count -gt 0) {
+        $group = if (-not [string]::IsNullOrWhiteSpace($explicitGroup)) { [string]$explicitGroup } else { 'file:' + [string]$touchSet[0] }
+        $i | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue ([object[]]@($touchSet)) -Force
+        $i | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue $group -Force
+        $i | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ('serial:' + $group) -Force
       }
       $meta = [ordered]@{}
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $meta.chapter = $chapter }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $meta.wave = $wave }
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $meta.parallel_group = $parallelGroup }
-      if ($deps.Count -gt 0) { $meta.depends_on = @($deps) }
+      $meta.depends_on = @($deps)
       if ($files.Count -gt 0) { $meta.files = @($files) }
       if ($acceptance.Count -gt 0) { $meta.acceptance = @($acceptance) }
       if ($checks.Count -gt 0) { $meta.checks = @($checks) }
+      $meta.risk = $risk
+      $meta.serial_reason = $serialReason
       if ($meta.Count -gt 0) { $i | Add-Member -NotePropertyName autopilot_meta -NotePropertyValue ([pscustomobject]$meta) -Force }
       break
     }
@@ -3314,9 +3360,8 @@ function Add-ProjectBacklogFromMarker {
     $severity = ([string](Get-BacklogPackObjectValue -Obj $t -Name 'severity' -Default '')).ToLowerInvariant()
     if ($severity -eq 'normal') { $severity = '' }
     if ($severity -notin @('critical','warning','info','')) { $severity = '' }
-    $files = @()
-    try { $files = @((Get-BacklogPackObjectValue -Obj $t -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $files = @() }
-    $deps = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('depends_on','dependencies'))
+    $files = @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $t -Name 'files' -Default @()))
+    $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-ProjectAutopilotTaskStringArray -Task $t -Names @('depends_on','dependencies')))
     $chapter = Get-ProjectAutopilotTaskStringField -Task $t -Names @('chapter','phase','area')
     $wave = Get-ProjectAutopilotTaskStringField -Task $t -Names @('wave','milestone')
     $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $t -Names @('parallel_group','lane','workstream')
