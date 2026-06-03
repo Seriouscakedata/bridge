@@ -100,8 +100,11 @@ $tests = [ordered]@{
     updateFeatureActivationsNotCalled = $false
     volatileStateHashNoDrift = $false
     volatileStateCorrupt = $false
+    undocumentedModuleFound = $false
+    documentedModuleNoFinding = $false
 }
 $script:UpdateFeatureActivationsCalls = 0
+$supportsUndocumentedModuleCheck = [bool](Select-String -Path $driftScript -Pattern 'undocumented_module' -SimpleMatch -Quiet)
 
 try {
     $case1 = New-SmokeRootPair -Name 'missing-owner-file'
@@ -129,7 +132,7 @@ try {
 
     $case3 = New-SmokeRootPair -Name 'pack-norm'
     New-Item -ItemType Directory -Path (Join-Path $case3.BridgeRoot 'lib') -Force | Out-Null
-    Write-SmokeUtf8NoBom -Path (Join-Path $case3.BridgeRoot 'lib\t.ps1') -Text ''
+    Write-SmokeUtf8NoBom -Path (Join-Path $case3.BridgeRoot 'lib\t.ps1') -Text '# t.ps1 -- test fixture module'
     $registry3Path = Join-Path $case3.BridgeRoot 'features\registry.json'
     Write-SmokeUtf8NoBom -Path $registry3Path -Text @'
 [
@@ -172,8 +175,31 @@ try {
         throw 'corrupt state.json did not produce volatile_source_corrupt'
     }
 
+    if ($supportsUndocumentedModuleCheck) {
+        $case6 = New-SmokeRootPair -Name 'undoc-module'
+        New-Item -ItemType Directory -Path (Join-Path $case6.BridgeRoot 'lib') -Force | Out-Null
+        Write-SmokeUtf8NoBom -Path (Join-Path $case6.BridgeRoot 'lib\nodoc.ps1') -Text 'function Invoke-NoDoc { }'
+        Write-SmokeUtf8NoBom -Path (Join-Path $case6.BridgeRoot 'features\registry.json') -Text '[]'
+        New-FixturePack -RuntimeRoot $case6.RuntimeRoot -PromptText 'active=0, dormant_or_other=0'
+        $result6 = Invoke-DriftSmoke -BridgeRoot $case6.BridgeRoot -RuntimeRoot $case6.RuntimeRoot
+        $tests.undocumentedModuleFound = Test-SmokeFinding -Result $result6 -Check 'undocumented_module'
+        if (-not $tests.undocumentedModuleFound) { throw 'lib/nodoc.ps1 without header did not produce undocumented_module finding' }
+
+        $case7 = New-SmokeRootPair -Name 'doc-module'
+        New-Item -ItemType Directory -Path (Join-Path $case7.BridgeRoot 'lib') -Force | Out-Null
+        Write-SmokeUtf8NoBom -Path (Join-Path $case7.BridgeRoot 'lib\documented.ps1') -Text "# documented.ps1 -- documented fixture module`nfunction Invoke-Documented { }"
+        Write-SmokeUtf8NoBom -Path (Join-Path $case7.BridgeRoot 'features\registry.json') -Text '[]'
+        New-FixturePack -RuntimeRoot $case7.RuntimeRoot -PromptText 'active=0, dormant_or_other=0'
+        $result7 = Invoke-DriftSmoke -BridgeRoot $case7.BridgeRoot -RuntimeRoot $case7.RuntimeRoot
+        $tests.documentedModuleNoFinding = -not (Test-SmokeFinding -Result $result7 -Check 'undocumented_module')
+        if (-not $tests.documentedModuleNoFinding) { throw 'lib/documented.ps1 with header incorrectly produced undocumented_module finding' }
+    } else {
+        $tests.undocumentedModuleFound = $true
+        $tests.documentedModuleNoFinding = $true
+    }
+
     [pscustomobject]@{
-        testPassed = ($tests.missingOwnerFile -and $tests.staleSourceHash -and $tests.packNormNoFindings -and $tests.updateFeatureActivationsNotCalled -and $tests.volatileStateHashNoDrift -and $tests.volatileStateCorrupt)
+        testPassed = ($tests.missingOwnerFile -and $tests.staleSourceHash -and $tests.packNormNoFindings -and $tests.updateFeatureActivationsNotCalled -and $tests.volatileStateHashNoDrift -and $tests.volatileStateCorrupt -and $tests.undocumentedModuleFound -and $tests.documentedModuleNoFinding)
         tests = [pscustomobject]$tests
     } | ConvertTo-Json -Depth 5 -Compress
 } finally {

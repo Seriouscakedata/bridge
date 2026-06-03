@@ -327,6 +327,27 @@ if ($promptBytes -gt 2560) {
     }
 }
 
+# Check: lib/*.ps1 without purpose header line
+$libDir = Join-Path $root 'lib'
+if (Test-Path -LiteralPath $libDir) {
+    foreach ($psFile in @(Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' -File)) {
+        $moduleName = $psFile.BaseName
+        $headerPattern = '^#\s*' + [regex]::Escape($moduleName) + '\.ps1\s+--\s+'
+        $firstLines = @(Get-Content -LiteralPath $psFile.FullName -TotalCount 5 -ErrorAction SilentlyContinue)
+        $hasHeader = $false
+        foreach ($line in $firstLines) {
+            if ([string]$line -match $headerPattern) { $hasHeader = $true; break }
+        }
+        if (-not $hasHeader) {
+            Add-SelfModelDriftFinding -Findings $findings -Fields @{
+                check = 'undocumented_module'
+                severity = 'info'
+                file = 'lib/' + $psFile.Name
+            }
+        }
+    }
+}
+
 $report = New-SelfModelDriftReport -Pack $pack -Findings $findings -AgeHours $ageHours
 if (-not $NoOutput) {
     Write-Host ($report | ConvertTo-Json -Depth 8)
