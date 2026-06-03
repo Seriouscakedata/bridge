@@ -17,6 +17,11 @@ MOS Bridge is still a Windows-first legacy engine, but it now has a portable Pyt
    py .\bridgectl.py mode show
    py .\bridgectl.py mode set copilot
    py .\bridgectl.py mode set autopilot
+   py .\bridgectl.py channel list
+   py .\bridgectl.py channel create demo --name Demo
+   py .\bridgectl.py message send "hello" --channel demo
+   py .\bridgectl.py backlog add "do the next thing" --channel demo
+   py .\bridgectl.py backlog list --channel demo
    ```
 
 3. Platform adapters
@@ -58,6 +63,7 @@ The default in `config.json` is:
 ## What This Solves Now
 
 - A non-Windows user can inspect status, capabilities, and operator mode with Python.
+- Channel creation, chat message append, and backlog append/update now have portable Python implementations.
 - The architecture has a clear future porting boundary: portable core first, platform adapters second, legacy scripts last.
 - Operators can switch between long autonomous work and supervised copilot behavior without editing PowerShell.
 
@@ -69,7 +75,7 @@ The default in `config.json` is:
 
 ## Next Porting Direction
 
-1. Move state/channel/backlog operations from `lib/common.ps1` and `lib/backlog.ps1` into portable Python modules.
+1. Expand the Python state/channel/backlog core until the PowerShell functions can become wrappers.
 2. Make `server.ps1` replaceable by a Python/Node HTTP API while keeping the existing web UI.
 3. Replace Windows process management with platform adapters.
 4. Keep PowerShell as the Windows adapter until the portable engine fully replaces it.

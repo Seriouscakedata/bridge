@@ -349,7 +349,7 @@ Collect-then-commit теперь проверяет declared touch-set пото�
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
 
 ### 4.8 Portable control layer
-`bridgectl.py` + `bridge_core/` — новый Python-слой для переносимости. Он читает config/settings/status без PowerShell, показывает capabilities/status/doctor, переключает `operatorMode`, а запуск legacy engine делегирует platform adapter. Цель: постепенно вынести core state/channel/backlog logic из Windows-only PowerShell, оставив PowerShell одним из адаптеров.
+`bridgectl.py` + `bridge_core/` — новый Python-слой для переносимости. Он читает config/settings/status без PowerShell, показывает capabilities/status/doctor, переключает `operatorMode`, умеет базово создавать каналы, писать сообщения и добавлять/обновлять backlog, а запуск legacy engine делегирует platform adapter. Цель: постепенно вынести core state/channel/backlog logic из Windows-only PowerShell, оставив PowerShell одним из адаптеров.
 
 ---
 

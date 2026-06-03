@@ -36,6 +36,16 @@ Status:
 py .\bridgectl.py status
 ```
 
+Portable channel/chat/backlog operations:
+
+```powershell
+py .\bridgectl.py channel list
+py .\bridgectl.py channel create demo --name Demo
+py .\bridgectl.py message send "Implement the next approved task" --channel demo
+py .\bridgectl.py backlog add "Add smoke tests" --channel demo --status new
+py .\bridgectl.py backlog list --channel demo
+```
+
 Self-test:
 
 ```powershell

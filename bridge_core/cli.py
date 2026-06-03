@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from .config import BridgePaths, get_operator_mode, load_config, set_operator_mode
+from .ops import (
+    add_backlog_item,
+    append_message,
+    create_channel,
+    list_backlog,
+    list_channels,
+    set_backlog_status,
+    tail_messages,
+)
 from .platforms import base_capabilities, detect_adapter
 from .state import collect_status
 
@@ -21,6 +30,12 @@ def _print(data: Any, as_json: bool) -> None:
                 print("%s: %s" % (key, json.dumps(value, ensure_ascii=False)))
             else:
                 print("%s: %s" % (key, value))
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                print(json.dumps(item, ensure_ascii=False))
+            else:
+                print(item)
     else:
         print(data)
 
@@ -104,6 +119,62 @@ def cmd_mode(args: argparse.Namespace) -> int:
     raise RuntimeError("unknown mode command")
 
 
+def cmd_channel(args: argparse.Namespace) -> int:
+    paths = _paths(args)
+    if args.channel_command == "list":
+        _print(list_channels(paths, include_archived=args.all), args.json)
+        return 0
+    if args.channel_command == "create":
+        record = create_channel(
+            paths,
+            args.slug,
+            name=args.name,
+            description=args.description or "",
+            project_root=args.project_root,
+        )
+        _print(record, args.json)
+        return 0
+    raise RuntimeError("unknown channel command")
+
+
+def cmd_message(args: argparse.Namespace) -> int:
+    paths = _paths(args)
+    if args.message_command == "send":
+        record = append_message(paths, args.channel, args.sender, args.text, kind=args.kind, model=args.model or "")
+        _print(record, args.json)
+        return 0
+    if args.message_command == "tail":
+        _print(tail_messages(paths, args.channel, limit=args.limit), args.json)
+        return 0
+    raise RuntimeError("unknown message command")
+
+
+def cmd_backlog(args: argparse.Namespace) -> int:
+    paths = _paths(args)
+    if args.backlog_command == "list":
+        _print(list_backlog(paths, args.channel, status=args.status), args.json)
+        return 0
+    if args.backlog_command == "add":
+        record = add_backlog_item(
+            paths,
+            args.channel,
+            args.text,
+            sender=args.sender,
+            status=args.status,
+            tags=args.tag or [],
+            project=args.project or "",
+            scope=args.scope,
+            severity=args.severity or "",
+        )
+        _print(record, args.json)
+        return 0
+    if args.backlog_command == "set":
+        record = set_backlog_status(paths, args.channel, args.id, args.status)
+        _print(record, args.json)
+        return 0
+    raise RuntimeError("unknown backlog command")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Portable MOS Bridge controller")
     parser.add_argument("--root", help="Bridge root. Defaults to auto-discovery from cwd.")
@@ -145,6 +216,64 @@ def build_parser() -> argparse.ArgumentParser:
     mode_set.add_argument("value", choices=["autopilot", "copilot"])
     mode_set.add_argument("--json", action="store_true")
     mode_set.set_defaults(func=cmd_mode)
+
+    channel = sub.add_parser("channel", help="Portable channel operations")
+    channel.add_argument("--json", action="store_true")
+    channel_sub = channel.add_subparsers(dest="channel_command", required=True)
+    channel_list = channel_sub.add_parser("list")
+    channel_list.add_argument("--all", action="store_true", help="Include archived channels")
+    channel_list.add_argument("--json", action="store_true")
+    channel_list.set_defaults(func=cmd_channel)
+    channel_create = channel_sub.add_parser("create")
+    channel_create.add_argument("slug")
+    channel_create.add_argument("--name")
+    channel_create.add_argument("--description")
+    channel_create.add_argument("--project-root")
+    channel_create.add_argument("--json", action="store_true")
+    channel_create.set_defaults(func=cmd_channel)
+
+    message = sub.add_parser("message", help="Portable chat message operations")
+    message.add_argument("--json", action="store_true")
+    message_sub = message.add_subparsers(dest="message_command", required=True)
+    message_send = message_sub.add_parser("send")
+    message_send.add_argument("text")
+    message_send.add_argument("--channel", default="main")
+    message_send.add_argument("--from", dest="sender", default="user", choices=["user", "system", "claude", "codex"])
+    message_send.add_argument("--kind", default="message")
+    message_send.add_argument("--model", default="")
+    message_send.add_argument("--json", action="store_true")
+    message_send.set_defaults(func=cmd_message)
+    message_tail = message_sub.add_parser("tail")
+    message_tail.add_argument("--channel", default="main")
+    message_tail.add_argument("--limit", type=int, default=20)
+    message_tail.add_argument("--json", action="store_true")
+    message_tail.set_defaults(func=cmd_message)
+
+    backlog = sub.add_parser("backlog", help="Portable backlog operations")
+    backlog.add_argument("--json", action="store_true")
+    backlog_sub = backlog.add_subparsers(dest="backlog_command", required=True)
+    backlog_list = backlog_sub.add_parser("list")
+    backlog_list.add_argument("--channel", default="main")
+    backlog_list.add_argument("--status")
+    backlog_list.add_argument("--json", action="store_true")
+    backlog_list.set_defaults(func=cmd_backlog)
+    backlog_add = backlog_sub.add_parser("add")
+    backlog_add.add_argument("text")
+    backlog_add.add_argument("--channel", default="main")
+    backlog_add.add_argument("--from", dest="sender", default="operator")
+    backlog_add.add_argument("--status", default="new", choices=["new", "approved", "held", "running", "done", "archived"])
+    backlog_add.add_argument("--tag", action="append")
+    backlog_add.add_argument("--project", default="")
+    backlog_add.add_argument("--scope", default="bridge", choices=["bridge", "project"])
+    backlog_add.add_argument("--severity", default="", choices=["", "critical", "warning", "info"])
+    backlog_add.add_argument("--json", action="store_true")
+    backlog_add.set_defaults(func=cmd_backlog)
+    backlog_set = backlog_sub.add_parser("set")
+    backlog_set.add_argument("id")
+    backlog_set.add_argument("status", choices=["new", "approved", "held", "running", "done", "archived"])
+    backlog_set.add_argument("--channel", default="main")
+    backlog_set.add_argument("--json", action="store_true")
+    backlog_set.set_defaults(func=cmd_backlog)
 
     return parser
 

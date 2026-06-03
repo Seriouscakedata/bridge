@@ -25,6 +25,14 @@ py .\bridgectl.py start
 
 On macOS/Linux use `python3 ./bridgectl.py status` for portable inspection. The long-running legacy engine is still Windows-first until the next porting phases replace the PowerShell driver/server.
 
+Portable control examples:
+
+```powershell
+py .\bridgectl.py channel list
+py .\bridgectl.py message send "Status please" --channel main
+py .\bridgectl.py backlog add "Review the project plan" --channel main --status new
+```
+
 Open:
 
 ```text
