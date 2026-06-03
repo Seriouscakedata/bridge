@@ -171,9 +171,24 @@ function Get-BacklogStatusSummary {
   } catch { return 'status unavailable' }
 }
 
-function Get-BacklogPath {
+function Resolve-BacklogPathValue {
   if (Get-Command Get-ChannelBacklogPath -ErrorAction SilentlyContinue) { return (Get-ChannelBacklogPath) }
   return (Join-Path (Get-BacklogFallbackBridgeRoot) 'backlog.jsonl')
+}
+
+function Ensure-BacklogPathFunction {
+  # 2026-06-04 registry_drift fix: some inline/dynamic callers were keeping
+  # Add-Idea / Invoke-BacklogCurator loaded while Get-BacklogPath had fallen out
+  # of scope. Re-register the helper into script scope on demand so backlog
+  # append/read/save paths stay callable even in a narrowed execution scope.
+  if (Get-Command Get-BacklogPath -ErrorAction SilentlyContinue) { return }
+  function script:Get-BacklogPath {
+    return (Resolve-BacklogPathValue)
+  }
+}
+
+function Get-BacklogPath {
+  return (Resolve-BacklogPathValue)
 }
 
 function Test-IdeaShouldKeep {
@@ -1510,6 +1525,7 @@ function Add-Idea {
     [switch]$SkipCurator
   )
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  Ensure-BacklogPathFunction
   $now = (Get-Date).ToUniversalTime().ToString('o')
 
   $keep = [pscustomobject]@{ action = 'ok'; matched_id = $null; similarity = 0.0; similar_to = @() }
@@ -1582,7 +1598,7 @@ function Add-Idea {
   # findings dropped silently with "Get-BacklogPath not recognized" every time
   # the helper was loaded via inline dot-source (audit.ps1, curator launcher).
   # Resolving up-front captures the path as a value and sidesteps the lookup.
-  $backlogPathForAppend = Get-BacklogPath
+  $backlogPathForAppend = Resolve-BacklogPathValue
   Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA) }.GetNewClosure()) | Out-Null
 
   $curatorStarted = $false
@@ -1609,7 +1625,8 @@ function Get-Backlog {
   # (observed: redesign-rest 16/18 delivered + closed, yet re-claimed every cycle; 23 duplicate ids in
   # the file). Fold by id with LAST-line-wins so each id collapses to its newest status. Save-Backlog
   # then rewrites the folded set, healing the duplicates on the next mutation.
-  $p = Get-BacklogPath
+  Ensure-BacklogPathFunction
+  $p = Resolve-BacklogPathValue
   if (-not (Test-Path $p)) { return @() }
   $byId = New-Object 'System.Collections.Specialized.OrderedDictionary'
   $noId = New-Object 'System.Collections.Generic.List[object]'
@@ -1634,10 +1651,11 @@ function Save-Backlog {
   # schema actual depth ≤ 3 (id/text/status/auto_curator{verdict/reason/...}),
   # so 6 is safe and gives margin.
   param($Items)
+  Ensure-BacklogPathFunction
   $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
   # 2026-05-28: resolve path before closure (see Add-Idea note about scope).
-  $backlogPathForSave = Get-BacklogPath
+  $backlogPathForSave = Resolve-BacklogPathValue
   Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
 }
 
@@ -1882,6 +1900,7 @@ function Remove-Idea {
 function Invoke-BacklogCurator {
   param([string]$ItemId)
   if ([string]::IsNullOrWhiteSpace($ItemId)) { return $null }
+  Ensure-BacklogPathFunction
   $now = (Get-Date).ToUniversalTime().ToString('o')
   try {
     $items = @(Get-Backlog)

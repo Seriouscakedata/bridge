@@ -23,11 +23,15 @@ function Get-EmbedCacheKey {
 
 # ---- paths ----
 function Resolve-MemoryContainedPath {
-  param([Parameter(Mandatory=$true)][string]$Path, [string]$Purpose = 'memory path')
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [string]$BasePath = $null,
+    [string]$Purpose = 'memory path'
+  )
   if (-not (Get-Command Resolve-BridgeContainedPath -ErrorAction SilentlyContinue)) {
     throw "Resolve-MemoryContainedPath: Resolve-BridgeContainedPath is not loaded"
   }
-  return (Resolve-BridgeContainedPath -Path $Path -Purpose $Purpose)
+  return (Resolve-BridgeContainedPath -Path $Path -BasePath $BasePath -Purpose $Purpose)
 }
 
 function Add-MemoryJsonlContent {

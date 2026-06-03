@@ -26,13 +26,19 @@ $existing = @(Get-AllMemories)
 $existingSources = @{}
 foreach ($m in $existing) { $s = [string]$m.source; if ($s) { $existingSources[$s] = $true } }
 
-$decDir = Get-DecisionsPath
+$decDir = Resolve-MemoryContainedPath -Path (Get-DecisionsPath) -Purpose 'decisions directory'
 $ingested = 0
-if (Test-Path $decDir) {
-  foreach ($f in (Get-ChildItem $decDir -Filter '*.md' -File)) {
+if (Test-Path -LiteralPath $decDir) {
+  foreach ($f in (Get-ChildItem -LiteralPath $decDir -Filter '*.md' -File)) {
+    try {
+      $decisionPath = Resolve-MemoryContainedPath -Path $f.FullName -BasePath $decDir -Purpose 'decision file'
+    } catch {
+      Write-LibLog "decision rejected (invalid path): $($f.FullName) :: $($_.Exception.Message)"
+      continue
+    }
     $src = 'decision:' + $f.BaseName
     if ($existingSources.ContainsKey($src)) { continue }
-    try { $raw = Get-Content $f.FullName -Raw -Encoding UTF8 } catch { continue }
+    try { $raw = Get-Content -LiteralPath $decisionPath -Raw -Encoding UTF8 } catch { continue }
     if ([string]::IsNullOrWhiteSpace($raw)) { continue }
     $txt = $raw.Trim()
     if ($txt.Length -gt 1500) { $txt = $txt.Substring(0, 1500) }
