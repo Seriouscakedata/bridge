@@ -30,6 +30,7 @@ plan.jsonl
 plan.archive.jsonl
 reflect.last
 metrics.jsonl
+metrics.jsonl.*
 radar.last
 usage.jsonl
 notify.log
