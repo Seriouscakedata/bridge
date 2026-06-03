@@ -106,10 +106,28 @@ function Remove-DecisionMarker {
   return ([regex]::Replace($Reply, '(?s)\s*\[\[DECISION:\s*\{.*?\}\s*\]\]\s*', "`n")).Trim()
 }
 
+function Write-DecisionShadowSignal {
+  # Observability for the shadow logger ITSELF. If Write-DecisionShadow cannot write its record
+  # (no bridge root, channel dir missing, append failed) it MUST NOT die silently — emit a tiny
+  # signal to the runtime root (off-OneDrive via Get-RuntimeRoot, survives restarts) so a dead
+  # shadow logger is visible instead of pretending to work. Behavior-neutral; last-resort try/catch
+  # only so a broken signal path can never break the (already best-effort) caller.
+  param([Parameter(Mandatory)][string]$Reason, [string]$Detail = '', [string]$Channel = '', [string]$Stage = '')
+  try {
+    $rt = Get-RuntimeRoot
+    if ([string]::IsNullOrWhiteSpace($rt)) { return }
+    $p = Join-Path $rt 'decision-shadow-errors.jsonl'
+    $rec = [ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); reason = $Reason; detail = $Detail; channel = $Channel; stage = $Stage }
+    $line = ($rec | ConvertTo-Json -Compress -Depth 4)
+    [System.IO.File]::AppendAllText($p, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
+
 function Write-DecisionShadow {
   # Append a shadow record: what the model PROPOSED vs what the legacy heuristic ACTUALLY decided,
   # plus whether the proposal passed the validator. For later "where did the model match/err" analysis.
   # Behavior-neutral: pure logging. Stored per-channel so promotion decisions are channel-aware.
+  # Failure to log is itself logged via Write-DecisionShadowSignal — never a silent no-op.
   param(
     [string]$Channel = '',
     [Parameter(Mandatory)][string]$Stage,        # capture point, e.g. 'planner-turn' (whole-turn proposal).
@@ -119,14 +137,17 @@ function Write-DecisionShadow {
     $LegacyDecision = $null,                      # whatever the old heuristic chose
     [string]$Note = ''
   )
+  $ch = $Channel
   try {
-    $ch = $Channel
     if ([string]::IsNullOrWhiteSpace($ch)) { try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $ch = [string](Get-EffectiveChannel) } } catch {} }
     if ([string]::IsNullOrWhiteSpace($ch)) { $ch = 'main' }
+    # No hardcoded OneDrive fallback: the runtime moved OFF OneDrive, so a guessed path would be wrong.
+    # If we cannot resolve the root, signal and bail rather than write to a stale location.
     $root = $null
-    try { $root = Get-BridgeRoot } catch { $root = 'C:\Users\rafie\OneDrive\Documents\bridge' }
+    try { $root = Get-BridgeRoot } catch { $root = $null }
+    if ([string]::IsNullOrWhiteSpace($root)) { Write-DecisionShadowSignal -Reason 'root-unavailable' -Channel $ch -Stage $Stage; return }
     $dir = Join-Path (Join-Path $root 'channels') $ch
-    if (-not (Test-Path -LiteralPath $dir)) { return }
+    if (-not (Test-Path -LiteralPath $dir)) { Write-DecisionShadowSignal -Reason 'channel-missing' -Detail $dir -Channel $ch -Stage $Stage; return }
     $path = Join-Path $dir 'decision-shadow.jsonl'
 
     $modelJson = ''
@@ -148,5 +169,8 @@ function Write-DecisionShadow {
     $line = ($rec | ConvertTo-Json -Compress -Depth 8)
     $u8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::AppendAllText($path, $line + "`n", $u8)
-  } catch {}
+  } catch {
+    # Never throw from a shadow logger, but never disappear either: record that the write failed.
+    Write-DecisionShadowSignal -Reason 'write-failed' -Detail $_.Exception.Message -Channel $ch -Stage $Stage
+  }
 }

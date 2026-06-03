@@ -35,6 +35,14 @@ Check 'Read-DecisionFromReply null when absent' ($null -eq (Read-DecisionFromRep
 Check 'Remove-DecisionMarker strips block'      ((Remove-DecisionMarker -Reply 'hi [[DECISION: {"a":1}]] bye') -notmatch 'DECISION')
 Check 'Remove-DecisionMarker keeps prose'       ((Remove-DecisionMarker -Reply 'keep this [[DECISION: {"a":1}]]') -match 'keep this')
 
+# observability of the shadow logger itself (Atom 2): the signal helper exists and the logger
+# never throws — even on a garbage channel it routes to Write-DecisionShadowSignal instead of dying.
+Check 'Write-DecisionShadowSignal exists' ([bool](Get-Command Write-DecisionShadowSignal -ErrorAction SilentlyContinue))
+Check 'Write-DecisionShadow exists'       ([bool](Get-Command Write-DecisionShadow -ErrorAction SilentlyContinue))
+$threw = $false
+try { Write-DecisionShadow -Channel '___nonexistent_channel___' -Stage 'unit-test' -ModelDecision $good -Note 'no-throw probe' } catch { $threw = $true }
+Check 'Write-DecisionShadow does not throw on missing channel' (-not $threw)
+
 # schema is exposed for prompts/docs
 Check 'schema has 9 fields' ((Get-DecisionContractSchema).Keys.Count -eq 9)
 
