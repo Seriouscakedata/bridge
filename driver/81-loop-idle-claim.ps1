@@ -183,6 +183,40 @@
         $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $intentRecord -Force
         Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
+      # 2026-06-03 slimming Atom 4b (SHADOW): Intent Decision Shadow at the REAL decision site.
+      # Record what Test-TaskIntent PROPOSED vs the mode the guard precedence ACTUALLY applied just
+      # above. Pure logging — routing already happened in the closure; nothing here changes it. The
+      # effective_mode/effective_reason cascade below MIRRORS the precedence at L162-170; keep in sync
+      # if that precedence changes. Guarded so it can never break claim.
+      try {
+        if (Get-Command Write-IntentShadow -ErrorAction SilentlyContinue) {
+          $effMode = 'normal'; $effReason = 'default-normal'
+          if ($fastLaneReason) { $effMode = 'fast'; $effReason = "fastlane:$fastLaneReason" }
+          elseif ($normalOverride) { $effMode = 'normal'; $effReason = 'normal-override' }
+          elseif ($deepThinkMark) { $effMode = 'discuss'; $effReason = 'deep-think-marker' }
+          elseif ($discussVerbMark -and -not $intentLowComplexity) { $effMode = 'discuss'; $effReason = 'discuss-verb' }
+          elseif ($intentForcedFastLane) { $effMode = 'fast'; $effReason = 'llm-intent-fast' }
+          elseif ($intentForcedDiscuss -and -not $intentLowComplexity) { $effMode = 'discuss'; $effReason = 'llm-intent-discuss' }
+          elseif ($intentForcedStudy) { $effMode = 'study'; $effReason = 'llm-intent-study' }
+          elseif ($studyDetect) { $effMode = 'study'; $effReason = 'legacy-study' }
+          elseif ($intentLowComplexity) { $effMode = 'fast'; $effReason = 'llm-simple' }
+          $guardOverrides = @{
+            marker_fast             = [bool]$fastMark
+            marker_normal           = [bool]$normalOverride
+            marker_deepthink        = [bool]$deepThinkMark
+            discuss_verb            = [bool]$discussVerbMark
+            low_confidence          = [bool]($taskIntent -and ([double]$taskIntent.confidence -lt 0.7))
+            unsafe_fastlane_blocked = [bool]($taskIntent -and ([string]$taskIntent.primary_mode -eq 'fast') -and (-not $fastLaneSafe))
+            study_detect            = [bool]$studyDetect
+            low_complexity          = [bool]$intentLowComplexity
+          }
+          $mPrimary = if ($taskIntent) { [string]$taskIntent.primary_mode } else { '' }
+          $mConf    = if ($taskIntent) { [double]$taskIntent.confidence } else { $null }
+          $mCplx    = if ($taskIntent) { [string]$taskIntent.complexity } else { '' }
+          $mTurns   = if ($taskIntent) { [int]$taskIntent.estimated_turns } else { $null }
+          Write-IntentShadow -Channel $Channel -ModelPrimaryMode $mPrimary -ModelConfidence $mConf -ModelComplexity $mCplx -ModelEstimatedTurns $mTurns -ModelConsulted ([bool]$taskIntent) -EffectiveMode $effMode -EffectiveReason $effReason -GuardOverrides $guardOverrides | Out-Null
+        }
+      } catch {}
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
       try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
