@@ -2960,7 +2960,10 @@ function Test-ProjectPlanContractReady {
   $planningStageCount = 0
   if ($contract) {
     try {
-      $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $contract -Context @{ RequireParallelPolicy = $true }
+      $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $contract -Context @{
+        RequireParallelPolicy = $true
+        RequireExplicitProjectSections = $true
+      }
       $deliveryContractOk = [bool]$deliveryResult.ok
       $deliveryContractScore = [int]$deliveryResult.score
       $deliveryContractMissing = @($deliveryResult.missing)
@@ -3067,7 +3070,8 @@ Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
 - Read PROJECT_BRIEF.md, DISCUSS_PRODUCT.md, DISCUSS_UX.md, DISCUSS_UI.md, DISCUSS_BACKEND.md, DISCUSS_QA.md, DISCUSS_INTEGRATION.md, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
 - Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
-- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must describe goal, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
+- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must describe explicit scope plus explicit non_goals, explicit users/roles/personas, data/backend ownership, checks, risk, parallel_policy, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
+- requirements/capabilities/features do NOT replace explicit scope plus non_goals. user_journeys/journeys/flows/workflows do NOT replace explicit users/roles/personas/actors.
 - Treat planning as staged: brief -> product -> UX -> UI -> backend -> QA -> integration. Every later stage must explicitly use decisions from earlier stages. The integration stage resolves cross-stage conflicts before implementation.
 - If the stage docs, map, plan, or contract are shallow/missing/stale, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen PROJECT_BRIEF.md, DISCUSS_*.md, PROJECT_MAP.md, PROJECT_PLAN.md, and .bridge/project-contract.json.
 - Determine the next approved/incomplete chapter from the contract and plan, not from a guessed feature list.

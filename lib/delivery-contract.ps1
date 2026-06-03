@@ -195,6 +195,70 @@ function Get-DeliveryContractSectionState {
   }
 }
 
+function Get-DeliveryContractExplicitSignalState {
+  param(
+    [Parameter(Mandatory)]$Contract,
+    [Parameter(Mandatory)][string[]]$Names
+  )
+  $foundAny = $false
+  $nonShallowAny = $false
+  $foundNames = New-Object 'System.Collections.Generic.List[string]'
+  $shallowNames = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in $Names) {
+    $slot = Find-DeliveryContractValue -Object $Contract -Names @($name)
+    if (-not $slot.found) { continue }
+    $foundAny = $true
+    Add-DeliveryContractListItem -List $foundNames -Value ([string]$slot.name)
+    $length = Get-DeliveryContractSignalLength -Value $slot.value
+    if ($length -ge $script:DeliveryContractShallowMinChars) {
+      $nonShallowAny = $true
+    } else {
+      Add-DeliveryContractListItem -List $shallowNames -Value ([string]$slot.name)
+    }
+  }
+  return [pscustomobject][ordered]@{
+    found       = [bool]$foundAny
+    non_shallow = [bool]$nonShallowAny
+    shallow     = [bool]($foundAny -and -not $nonShallowAny)
+    names       = @($foundNames.ToArray())
+    shallow_names = @($shallowNames.ToArray())
+  }
+}
+
+function Get-DeliveryContractExplicitProjectSectionState {
+  param(
+    [Parameter(Mandatory)]$Contract,
+    [Parameter(Mandatory)][ValidateSet('scope/non_goals','users/roles')][string]$Section
+  )
+
+  if ($Section -eq 'scope/non_goals') {
+    $scope = Get-DeliveryContractExplicitSignalState -Contract $Contract -Names @('scope','Scope')
+    $nonGoals = Get-DeliveryContractExplicitSignalState -Contract $Contract -Names @('non_goals','NonGoals','nonGoals','non-goals')
+    $missingSignals = New-Object 'System.Collections.Generic.List[string]'
+    $shallowSignals = New-Object 'System.Collections.Generic.List[string]'
+    if (-not $scope.found) { Add-DeliveryContractListItem -List $missingSignals -Value 'scope' }
+    elseif (-not $scope.non_shallow) { Add-DeliveryContractListItem -List $shallowSignals -Value 'scope' }
+    if (-not $nonGoals.found) { Add-DeliveryContractListItem -List $missingSignals -Value 'non_goals' }
+    elseif (-not $nonGoals.non_shallow) { Add-DeliveryContractListItem -List $shallowSignals -Value 'non_goals' }
+    return [pscustomobject][ordered]@{
+      section = $Section
+      found = [bool]($scope.found -and $nonGoals.found)
+      non_shallow = [bool]($scope.non_shallow -and $nonGoals.non_shallow)
+      missing_signals = @($missingSignals.ToArray())
+      shallow_signals = @($shallowSignals.ToArray())
+    }
+  }
+
+  $users = Get-DeliveryContractExplicitSignalState -Contract $Contract -Names @('users','Users','roles','Roles','personas','Personas','actors','Actors')
+  return [pscustomobject][ordered]@{
+    section = $Section
+    found = [bool]$users.found
+    non_shallow = [bool]$users.non_shallow
+    missing_signals = $(if ($users.found) { @() } else { @('users/roles/personas/actors') })
+    shallow_signals = $(if ($users.found -and -not $users.non_shallow) { @('users/roles/personas/actors') } else { @() })
+  }
+}
+
 function Test-DeliveryContractEmpty {
   param($Contract)
   if ($null -eq $Contract) { return $true }
@@ -298,6 +362,7 @@ function Test-DeliveryContract {
     Test-DeliveryContractTruthy (Get-DeliveryContractValue -Object $Context -Names @('IsBridgeSelf','isBridgeSelf','bridge_self','BridgeSelf'))
   ) -or $states['critical_paths'].found -or $states['canary'].found
   $requireParallelPolicy = Test-DeliveryContractTruthy (Get-DeliveryContractValue -Object $Context -Names @('RequireParallelPolicy','require_parallel_policy','RequireParallel','requireParallel'))
+  $requireExplicitProjectSections = Test-DeliveryContractTruthy (Get-DeliveryContractValue -Object $Context -Names @('RequireExplicitProjectSections','require_explicit_project_sections','RequireExplicitSections','requireExplicitSections'))
 
   $bridgeSelfRouteOmission = ($bridgeSelfSignal -and -not $states['surfaces/routes/screens'].found)
   if ($bridgeSelfRouteOmission) {
@@ -334,6 +399,32 @@ function Test-DeliveryContract {
         Add-DeliveryContractListItem -List $blockers -Value 'parallel_policy'
       }
       if ($bridgeSelfRouteOmission -and $section -eq 'checks') { $bridgeSelfStrictFailure = $true }
+    }
+  }
+
+  if ($requireExplicitProjectSections) {
+    $explicitScope = Get-DeliveryContractExplicitProjectSectionState -Contract $Contract -Section 'scope/non_goals'
+    if (-not $explicitScope.found) {
+      Add-DeliveryContractListItem -List $missing -Value 'scope/non_goals'
+      Add-DeliveryContractListItem -List $blockers -Value 'scope/non_goals'
+      Add-DeliveryContractListItem -List $warnings -Value ('explicit_missing:scope/non_goals requires explicit scope and non_goals; requirements/capabilities/features do not count')
+      $score -= Get-DeliveryContractPenalty -Section 'scope/non_goals' -Kind 'missing'
+    } elseif (-not $explicitScope.non_shallow) {
+      Add-DeliveryContractListItem -List $blockers -Value 'scope/non_goals'
+      Add-DeliveryContractListItem -List $warnings -Value ('explicit_shallow:scope/non_goals requires non-shallow scope and non_goals')
+      $score -= Get-DeliveryContractPenalty -Section 'scope/non_goals' -Kind 'shallow'
+    }
+
+    $explicitUsers = Get-DeliveryContractExplicitProjectSectionState -Contract $Contract -Section 'users/roles'
+    if (-not $explicitUsers.found) {
+      Add-DeliveryContractListItem -List $missing -Value 'users/roles'
+      Add-DeliveryContractListItem -List $blockers -Value 'users/roles'
+      Add-DeliveryContractListItem -List $warnings -Value ('explicit_missing:users/roles requires explicit users, roles, personas, or actors; user_journeys/journeys/flows/workflows do not count')
+      $score -= Get-DeliveryContractPenalty -Section 'users/roles' -Kind 'missing'
+    } elseif (-not $explicitUsers.non_shallow) {
+      Add-DeliveryContractListItem -List $blockers -Value 'users/roles'
+      Add-DeliveryContractListItem -List $warnings -Value ('explicit_shallow:users/roles requires non-shallow users, roles, personas, or actors')
+      $score -= Get-DeliveryContractPenalty -Section 'users/roles' -Kind 'shallow'
     }
   }
 

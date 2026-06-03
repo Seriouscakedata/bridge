@@ -100,6 +100,12 @@ try {
         }
       })
     }
+    scope = 'The fixture covers authenticated user dashboards, administrative moderation, backlog readiness, and acceptance traceability for the project autopilot gate.'
+    non_goals = 'The fixture does not implement product features, bypass operator approval, or infer missing scope boundaries from requirements alone.'
+    personas = @(
+      'Authenticated product users who manage dashboard content and expect clear acceptance coverage.',
+      'Administrative reviewers who moderate content and need traceable project risk boundaries.'
+    )
     requirements = @('auth requirement','content requirement','admin requirement')
     screens = @(
       [ordered]@{ id='home'; path='/'; expected_status=200; must_contain=@('Home') },
@@ -171,6 +177,19 @@ try {
   Assert-True (-not [bool]$strictStart.queued) 'strict missing parallel_policy must not queue coordinator'
   Assert-True ([string]$strictStart.reason -eq 'plan-contract-not-ready') ("expected plan-contract-not-ready, got " + [string]$strictStart.reason)
   Assert-True (@($strictStart.delivery_contract_blockers) -contains 'parallel_policy') 'autopilot result must expose delivery contract blockers'
+
+  $legacyAliasOnlyContract = Copy-OrderedMap -Map $contract
+  $legacyAliasOnlyContract.Remove('scope')
+  $legacyAliasOnlyContract.Remove('non_goals')
+  $legacyAliasOnlyContract.Remove('personas')
+  [System.IO.File]::WriteAllText($contractPath, (($legacyAliasOnlyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $legacyAliasOnlyGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$legacyAliasOnlyGate.ready) 'requirements and user_journeys must not satisfy explicit project sections in strict autopilot mode'
+  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'scope/non_goals') 'strict project gate must block on missing explicit scope/non_goals'
+  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'users/roles') 'strict project gate must block on missing explicit users/roles'
+  $legacyAliasOnlyThrow = $false
+  try { Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null } catch { $legacyAliasOnlyThrow = $true }
+  Assert-True $legacyAliasOnlyThrow 'approval must throw when only requirements and user_journeys replace explicit semantic sections'
 
   [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   & git -C $projectRoot add . | Out-Null

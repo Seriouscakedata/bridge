@@ -131,6 +131,43 @@ Check 'strict shallow parallel policy not ok' (-not [bool]$strictShallowParallel
 Check 'strict shallow parallel policy blocker present' (@($strictShallowParallel.blockers) -contains 'parallel_policy') $strictShallowParallel
 Check 'strict shallow parallel policy warning present' ((@($strictShallowParallel.warnings) | Where-Object { $_ -match 'parallel_policy' }).Count -gt 0) $strictShallowParallel
 
+$legacyAliasContract = [ordered]@{
+  goal                 = 'Ship a legacy-compatible project contract that still carries enough implementation detail.'
+  requirements         = @(
+    'Authenticated users can manage their own dashboard content with deterministic acceptance coverage.',
+    'Administrators can review moderation queues and take traceable action on unsafe records.',
+    'Operators can see project health and backlog readiness before implementation atoms are queued.'
+  )
+  screens              = @(
+    [ordered]@{ id='dashboard'; path='/dashboard'; expected_status=200 },
+    [ordered]@{ id='admin'; path='/admin'; expected_status=@(302,307) }
+  )
+  user_journeys        = @(
+    [ordered]@{ id='user-dashboard'; steps=@('register','login','manage dashboard content') },
+    [ordered]@{ id='admin-review'; steps=@('login as admin','review moderation queue','record decision') }
+  )
+  backend              = 'Persisted users, dashboard content, moderation records, and audit events are covered by the contract.'
+  acceptance_scenarios = @('typecheck passes','dashboard journey passes','admin review journey passes')
+  checks               = @(
+    'Run parser validation for touched scripts.',
+    'Run focused delivery-contract tests.',
+    'Run smoke.ps1 before accepting bridge-self changes.'
+  )
+  risk                 = 'Legacy aliases can hide missing project boundaries and user role definitions if strict mode is not enabled.'
+  parallel_policy      = 'Independent implementation atoms must declare disjoint touch sets and serial dependencies.'
+}
+$legacyAliasDefault = Test-DeliveryContract -Contract $legacyAliasContract
+Check-ResultShape 'legacy aliases default' $legacyAliasDefault
+Check 'legacy aliases default remains ok' ([bool]$legacyAliasDefault.ok) $legacyAliasDefault
+$legacyAliasExplicit = Test-DeliveryContract -Contract $legacyAliasContract -Context @{ require_explicit_project_sections = $true }
+Check-ResultShape 'legacy aliases explicit strict' $legacyAliasExplicit
+Check 'legacy aliases explicit strict not ok' (-not [bool]$legacyAliasExplicit.ok) $legacyAliasExplicit
+Check 'legacy aliases explicit strict scope blocker' (@($legacyAliasExplicit.blockers) -contains 'scope/non_goals') $legacyAliasExplicit
+Check 'legacy aliases explicit strict users blocker' (@($legacyAliasExplicit.blockers) -contains 'users/roles') $legacyAliasExplicit
+Check 'legacy aliases explicit strict scope missing' (@($legacyAliasExplicit.missing) -contains 'scope/non_goals') $legacyAliasExplicit
+Check 'legacy aliases explicit strict users missing' (@($legacyAliasExplicit.missing) -contains 'users/roles') $legacyAliasExplicit
+Check 'legacy aliases explicit strict explains replacement rule' ((@($legacyAliasExplicit.warnings) | Where-Object { $_ -match 'do not count|do NOT replace|do not replace' }).Count -ge 1) $legacyAliasExplicit
+
 $extraContract = New-DeepContract
 $extraContract['extra_field'] = 'ignored metadata should not break the contract validator result.'
 $extra = Test-DeliveryContract -Contract $extraContract

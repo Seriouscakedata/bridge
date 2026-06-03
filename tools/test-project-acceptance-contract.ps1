@@ -42,6 +42,12 @@ try {
         }
       })
     }
+    scope = 'The acceptance fixture covers dashboard routes, admin moderation routes, persisted account data, UX traceability, and final verification checks.'
+    non_goals = 'The acceptance fixture does not implement feature code, approve project plans automatically, or infer user roles from journey names.'
+    users = @(
+      'Authenticated product users who need dashboard feedback, navigation, and account state coverage.',
+      'Administrative reviewers who need moderation workflows, route status checks, and durable audit evidence.'
+    )
     requirements = @('first requirement','second requirement','third requirement')
     screens = @(
       [ordered]@{ id='dashboard'; path='/dashboard'; expected_status=200; must_contain=@('Dashboard','Account') },
