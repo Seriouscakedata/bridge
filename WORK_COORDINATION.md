@@ -14,7 +14,7 @@ _Протокол: claim = строка в таблице со статусом 
 
 | Агент | Задача | Файлы (НЕ трогать чужому) | Статус | Обновлено |
 |---|---|---|---|---|
-| **Claude** | Инфра-надёжность: Task RestartOnFailure + supervisor/watchdog self-heal + защита `.git` от OneDrive (после инцидента 2026-06-03: supervisor+watchdog были мертвы 6–11ч, мост без надзора; до этого OneDrive занулил `.git/refs/heads/master`) | `supervisor.ps1`, `watchdog.ps1`, `install-autostart.ps1`, `install-watchdog.ps1`, Task `ClaudeCodexBridge`, `.git/**`, `.gitignore` (git-секция) | **IN PROGRESS** | 2026-06-03 12:30 |
+| **Claude** | Инфра-надёжность: внешний якорь `ensure-bridge.ps1` (git-ref-heal + supervisor/watchdog self-heal) + `install-ensure-bridge.ps1` (Task каждые 5 мин). **СДЕЛАНО+коммит `9bfabc8`**, git-heal проверен (backup SHA пишется, здоровый ref не тронут). ⏳ Ждёт: оператор запускает `install-ensure-bridge.ps1` как **admin** (Register-ScheduledTask требует elevation). Фаза 2 (опц.): `.alive`-heartbeat в supervisor/watchdog для проверки без CommandLine. | `ensure-bridge.ps1`, `install-ensure-bridge.ps1`, Task `ClaudeCodexBridge-Ensure` | **DONE (ждёт admin-регистрации)** | 2026-06-03 12:40 |
 | **Codex** | Рефакторинг/модуляризация `driver.ps1` (6235 строк → тонкий оркестратор + `lib/*.ps1`) | `driver.ps1`, новые `lib/*.ps1` модули | (Codex проставит) | — |
 
 ## Что это значит на практике
