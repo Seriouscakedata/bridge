@@ -101,6 +101,127 @@ function Format-SelfModelFeatureList {
     return ($parts -join '; ')
 }
 
+function ConvertTo-SelfModelRepoPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $p = $Path.Trim() -replace '\\', '/'
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    return $p.ToLowerInvariant()
+}
+
+function Get-SelfModelOwnerFileSet {
+    param([object[]]$Features)
+
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($feature in $Features) {
+        foreach ($owner in @($feature.owner_files)) {
+            $path = ConvertTo-SelfModelRepoPath -Path ([string]$owner)
+            if (-not [string]::IsNullOrWhiteSpace($path)) {
+                [void]$set.Add($path)
+            }
+        }
+    }
+    return $set
+}
+
+function Get-SelfModelFunctionNames {
+    param(
+        [string]$Path,
+        [int]$Limit = 5
+    )
+
+    $tokens = $null
+    $errors = $null
+    try {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+        if ($null -eq $ast -or ($null -ne $errors -and $errors.Count -gt 0)) { return @() }
+        return @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+                }, $true) |
+                ForEach-Object { [string]$_.Name } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -First $Limit)
+    } catch {
+        return @()
+    }
+}
+
+function Get-SelfModelModulePurpose {
+    param(
+        [string]$Path,
+        [string]$FileName
+    )
+
+    try {
+        $line = [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF8) | Select-Object -First 1
+        if ($line -match ('^\s*#\s*(?:.+[\\/])?' + [regex]::Escape($FileName) + '\s+--\s*(.+?)\s*$')) {
+            return $matches[1].Trim()
+        }
+    } catch {
+        return '(no header)'
+    }
+    return '(no header)'
+}
+
+function Get-SelfModelUnregisteredModules {
+    param(
+        [string]$BridgeRoot,
+        [object[]]$Features,
+        [int]$Limit = 4
+    )
+
+    $ownerFiles = Get-SelfModelOwnerFileSet -Features $Features
+    $libRoot = Join-Path $BridgeRoot 'lib'
+    if (-not (Test-Path -LiteralPath $libRoot)) { return @() }
+
+    $preferredRank = @{
+        'delivery-mode' = 0
+        'self-model' = 1
+        'decision-contract' = 2
+    }
+    $modules = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $libRoot -Filter '*.ps1' -File | Sort-Object Name)) {
+        $relative = ConvertTo-SelfModelRepoPath -Path ('lib/' + $file.Name)
+        if ($ownerFiles.Contains($relative)) { continue }
+        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $rank = 1000
+        if ($preferredRank.ContainsKey($moduleName)) { $rank = [int]$preferredRank[$moduleName] }
+        $modules += [pscustomobject]@{
+            Name = $moduleName
+            Purpose = Get-SelfModelModulePurpose -Path $file.FullName -FileName $file.Name
+            Functions = @(Get-SelfModelFunctionNames -Path $file.FullName -Limit 3)
+            Rank = $rank
+        }
+    }
+
+    return @($modules |
+        Sort-Object @{ Expression = { $_.Rank } }, @{ Expression = { $_.Name } } |
+        Select-Object -First $Limit)
+}
+
+function Format-SelfModelModuleList {
+    param(
+        [object[]]$Modules,
+        [int]$TotalCount
+    )
+
+    if ($TotalCount -eq 0) { return @('- none detected') }
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($module in $Modules) {
+        $fnText = ''
+        if ($module.Functions.Count -gt 0) {
+            $fnText = ' (fns: ' + (@($module.Functions) -join ', ') + ')'
+        }
+        [void]$lines.Add(('- ' + $module.Name + ': ' + $module.Purpose + $fnText))
+    }
+    $more = $TotalCount - $Modules.Count
+    if ($more -gt 0) {
+        [void]$lines.Add(('- (+' + $more + ' more)'))
+    }
+    return @($lines.ToArray())
+}
+
 function Get-SelfModelPack {
     [CmdletBinding()]
     param(
@@ -135,7 +256,7 @@ function Get-SelfModelPack {
         'auditor',
         'doctor'
     )
-    $activeTop = Select-SelfModelTopFeatures -Features $active -PreferredIds $preferred -Limit 8
+    $activeTop = Select-SelfModelTopFeatures -Features $active -PreferredIds $preferred -Limit 6
     $dormantTop = Select-SelfModelTopFeatures -Features $dormant -PreferredIds @() -Limit 5
 
     $registryNote = 'registry ok'
@@ -149,20 +270,23 @@ function Get-SelfModelPack {
 
     $activeSummary = Format-SelfModelFeatureList -Features $activeTop -EmptyText 'none detected'
     $dormantSummary = Format-SelfModelFeatureList -Features $dormantTop -EmptyText 'none in registry'
+    $allUnregisteredModules = @(Get-SelfModelUnregisteredModules -BridgeRoot $BridgeRoot -Features $features -Limit 1000)
+    $moduleTop = @($allUnregisteredModules | Select-Object -First 3)
+    $moduleLines = Format-SelfModelModuleList -Modules $moduleTop -TotalCount $allUnregisteredModules.Count
 
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    [void]$lines.Add('=== BRIDGE SELF-MODEL PACK v1/base ===')
+    [void]$lines.Add('=== BRIDGE SELF-MODEL PACK v2.1/base ===')
     [void]$lines.Add('ARCH:')
-    [void]$lines.Add('- scheduler/Task Scheduler starts supervisor; supervisor keeps server and channel drivers alive.')
-    [void]$lines.Add('- server.ps1 exposes local UI/API; driver.ps1 runs task turns and calls planner/coder/critic.')
-    [void]$lines.Add('- channel = project binding; channels/main is bridge-self work, external channels are user projects.')
-    [void]$lines.Add('- watchdog/ensure scripts are recovery rails; they verify smoke and can roll back after bad commits.')
+    [void]$lines.Add('- scheduler starts supervisor; supervisor keeps server and channel drivers alive.')
+    [void]$lines.Add('- server.ps1 exposes UI/API; driver.ps1 runs turns via planner/coder/critic.')
+    [void]$lines.Add('- channel = project binding; main is bridge-self work, external channels are user projects.')
+    [void]$lines.Add('- watchdog/ensure are recovery rails: smoke verify and rollback after bad commits.')
     [void]$lines.Add('- features registry describes capabilities; state is runtime evidence and may be stale/corrupt.')
-    [void]$lines.Add('- self-model v1 is read-only text generated from registry/state plus fixed safety/arch facts.')
+    [void]$lines.Add('- self-model is read-only text from registry/state/code scan plus safety/arch facts.')
     [void]$lines.Add('')
     [void]$lines.Add('CRITICAL:')
     [void]$lines.Add('- Core path: scheduler -> supervisor -> server + drivers -> watchdog; keep prompt path fast and non-mutating.')
-    [void]$lines.Add('- Critical modules: driver loop/prompt, lib/common/channels/memory/project-context/features, server API, supervisor/watchdog.')
+    [void]$lines.Add('- Critical modules: driver loop/prompt, common/channels/memory/context/features, server API.')
     [void]$lines.Add('- main channel is bridge development; changes to bridge PS1 require BOM, ParseFile, smoke, and commit before DONE.')
     [void]$lines.Add('')
     [void]$lines.Add('FEATURES active:')
@@ -173,8 +297,13 @@ function Get-SelfModelPack {
     [void]$lines.Add(('- top: ' + $dormantSummary))
     [void]$lines.Add('- Treat dormant/broken entries as risk signals, not authority; verify against code/tests before changing behavior.')
     [void]$lines.Add('')
+    [void]$lines.Add('MODULES (scanned, not in registry):')
+    foreach ($moduleLine in $moduleLines) {
+        [void]$lines.Add($moduleLine)
+    }
+    [void]$lines.Add('')
     [void]$lines.Add('SAFETY:')
-    [void]$lines.Add('- Do not autonomously edit control plane: supervisor.ps1, watchdog.ps1, circuit-breaker, restart-limit, script-integrity, or core driver loop.')
+    [void]$lines.Add('- Do not edit control plane: supervisor/watchdog, circuit-breaker, restart-limit, script-integrity, driver core loop.')
     [void]$lines.Add('- Never expose secrets; preserve memory recall; do not create a parallel memory store for self-model.')
     [void]$lines.Add('- PowerShell engine files must be UTF-8 BOM and pass Parser.ParseFile before use.')
     [void]$lines.Add('- Create control/restart.flag only after a verified PS1 diff; never for HTML/docs-only changes.')
@@ -182,7 +311,7 @@ function Get-SelfModelPack {
     [void]$lines.Add('')
     [void]$lines.Add('TESTS:')
     [void]$lines.Add('- Minimum gates: Parser.ParseFile for touched PS1, tools/self_model_smoke.ps1, then smoke.ps1.')
-    [void]$lines.Add('- Self-model smoke checks size cap, required sections, compact feature summary, and no source writes.')
+    [void]$lines.Add('- Self-model smoke checks size cap, sections, compact summary, and no source writes.')
 
     return (($lines.ToArray()) -join "`r`n")
 }

@@ -73,10 +73,25 @@ if ($byteCount -lt 1536 -or $byteCount -gt 2560) {
     throw "pack size out of base range: $byteCount bytes"
 }
 
-foreach ($section in @('ARCH:', 'CRITICAL:', 'FEATURES active:', 'FEATURES dormant:', 'SAFETY:', 'TESTS:')) {
+foreach ($section in @('ARCH:', 'CRITICAL:', 'FEATURES active:', 'FEATURES dormant:', 'MODULES (scanned, not in registry):', 'SAFETY:', 'TESTS:')) {
     if ($pack -notmatch ("(?m)^" + [regex]::Escape($section))) {
         throw "missing required section $section"
     }
+}
+$packLines = @($pack -split "`r?`n")
+$deliveryModuleLine = @($packLines | Where-Object { $_ -match '^- delivery-mode:' } | Select-Object -First 1)
+if ($deliveryModuleLine.Count -eq 0) {
+    throw 'missing unregistered module delivery-mode'
+}
+if ($deliveryModuleLine[0] -notmatch 'task delivery mode classifier') {
+    throw 'delivery-mode purpose missing from module scan'
+}
+if ($deliveryModuleLine[0] -notmatch '\(fns:\s*[^)]*Get-DeliveryModeSchema') {
+    throw 'delivery-mode functions missing Get-DeliveryModeSchema'
+}
+$selfModelModuleLine = @($packLines | Where-Object { $_ -match '^- self-model:' } | Select-Object -First 1)
+if ($selfModelModuleLine.Count -eq 0) {
+    throw 'missing unregistered module self-model'
 }
 if ($pack -match 'owner_files') {
     throw 'pack contains owner_files label; looks like registry dump'
@@ -111,5 +126,8 @@ if ($ownerFiles.Count -gt 0 -and $ownerHits -ge [Math]::Min(10, $ownerFiles.Coun
     stateUnchanged = $true
     runtimeCacheUnchanged = $true
     memoryMapUnchanged = $true
+    modulesSection = $true
+    deliveryModeScanned = $true
+    selfModelScanned = $true
     ownerFileHits = $ownerHits
 } | ConvertTo-Json -Compress
