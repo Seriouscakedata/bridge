@@ -332,7 +332,7 @@ $libDir = Join-Path $root 'lib'
 if (Test-Path -LiteralPath $libDir) {
     foreach ($psFile in @(Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' -File)) {
         $moduleName = $psFile.BaseName
-        $headerPattern = '^#\s*' + [regex]::Escape($moduleName) + '\.ps1\s+--\s+'
+        $headerPattern = '^#\s*(lib/)?' + [regex]::Escape($moduleName) + '\.ps1\s+--\s+'
         $firstLines = @(Get-Content -LiteralPath $psFile.FullName -TotalCount 5 -ErrorAction SilentlyContinue)
         $hasHeader = $false
         foreach ($line in $firstLines) {
