@@ -129,6 +129,70 @@ try {
   $metadataResult = Test-WorkpackAtomMetadata -Atom $mainItem[0]
   Assert-True ([bool]$metadataResult.ok) ("main bridge-self item did not pass workpack metadata validation: {0}" -f ((@($metadataResult.blockers) + @($metadataResult.missing)) -join ', '))
 
+  $missingAcceptanceChecksMarker = @'
+[
+  {
+    "slug": "bridge-self-incomplete-no-acceptance-checks",
+    "title": "Bridge self incomplete metadata rejection test",
+    "task": "Create a synthetic incomplete bridge self atom that must be rejected before it reaches approved backlog.",
+    "files": ["lib/backlog.ps1"],
+    "risk": "normal"
+  }
+]
+'@
+  $missingAcceptanceChecksResult = Add-ProjectBacklogFromMarker -Block $missingAcceptanceChecksMarker -Channel 'main' -Source 'test' -SourceTaskId 'invalid-no-acceptance-checks'
+  Assert-True ([int]$missingAcceptanceChecksResult.created -eq 0) ("expected zero incomplete atoms without acceptance/checks, got {0}" -f [int]$missingAcceptanceChecksResult.created)
+  $missingAcceptanceChecksErrors = (@($missingAcceptanceChecksResult.errors) -join "`n")
+  Assert-True ($missingAcceptanceChecksErrors -match "incomplete PROJECT_BACKLOG atom 'bridge-self-incomplete-no-acceptance-checks'") 'missing incomplete atom error for acceptance/checks case'
+  Assert-True ($missingAcceptanceChecksErrors -match 'missing .*acceptance') 'missing acceptance was not reported'
+  Assert-True ($missingAcceptanceChecksErrors -match 'missing .*checks') 'missing checks was not reported'
+  $missingAcceptanceChecksItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-incomplete-no-acceptance-checks' })
+  Assert-True ($missingAcceptanceChecksItem.Count -eq 0) 'incomplete atom without acceptance/checks reached backlog'
+
+  $missingFilesMarker = @'
+[
+  {
+    "slug": "bridge-self-incomplete-no-files",
+    "title": "Bridge self incomplete files rejection test",
+    "task": "Create a synthetic incomplete bridge self atom without files that must be rejected before approved backlog.",
+    "acceptance": ["Incomplete atoms without files are rejected."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "risk": "normal"
+  }
+]
+'@
+  $missingFilesResult = Add-ProjectBacklogFromMarker -Block $missingFilesMarker -Channel 'main' -Source 'test' -SourceTaskId 'invalid-no-files'
+  Assert-True ([int]$missingFilesResult.created -eq 0) ("expected zero incomplete atoms without files, got {0}" -f [int]$missingFilesResult.created)
+  $missingFilesErrors = (@($missingFilesResult.errors) -join "`n")
+  Assert-True ($missingFilesErrors -match "incomplete PROJECT_BACKLOG atom 'bridge-self-incomplete-no-files'") 'missing incomplete atom error for files case'
+  Assert-True ($missingFilesErrors -match 'missing .*files') 'missing files was not reported'
+  $missingFilesItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-incomplete-no-files' })
+  Assert-True ($missingFilesItem.Count -eq 0) 'incomplete atom without files reached backlog'
+
+  $missingDependsMarker = @'
+[
+  {
+    "slug": "bridge-self-no-depends-default-test",
+    "title": "Bridge self no depends default test",
+    "task": "Create a synthetic bridge self atom without depends_on to prove ingestion keeps the Atom 2 empty array default.",
+    "files": ["lib/backlog.ps1"],
+    "acceptance_checks": ["Missing depends_on defaults to an empty top-level array."],
+    "verification": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "risk": "normal",
+    "serial_reason": ""
+  }
+]
+'@
+  $missingDependsResult = Add-ProjectBacklogFromMarker -Block $missingDependsMarker -Channel 'main' -Source 'test' -SourceTaskId 'missing-depends'
+  Assert-True ([int]$missingDependsResult.created -eq 1) ("expected one atom without depends_on, got {0}" -f [int]$missingDependsResult.created)
+  $missingDependsItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-no-depends-default-test' } | Select-Object -First 1)
+  Assert-True ($missingDependsItem.Count -eq 1) 'missing depends_on default item was not created'
+  Assert-True ($missingDependsItem[0].PSObject.Properties.Name -contains 'depends_on') 'item without depends_on did not get top-level depends_on'
+  $missingDependsCount = if ($null -eq $missingDependsItem[0].depends_on) { -1 } else { [int]$missingDependsItem[0].depends_on.Count }
+  Assert-True (($null -ne $missingDependsItem[0].depends_on) -and ($missingDependsItem[0].depends_on -is [System.Collections.IEnumerable]) -and ($missingDependsItem[0].depends_on -isnot [string]) -and ($missingDependsCount -eq 0)) ("item without depends_on did not get an empty array: count={0}" -f $missingDependsCount)
+  $missingDependsMetadata = Test-WorkpackAtomMetadata -Atom $missingDependsItem[0]
+  Assert-True ([bool]$missingDependsMetadata.ok) ("item without depends_on did not pass workpack metadata validation: {0}" -f ((@($missingDependsMetadata.blockers) + @($missingDependsMetadata.missing)) -join ', '))
+
   $explicitMarker = @'
 [
   {
@@ -165,6 +229,8 @@ try {
     "task": "Create a synthetic external project backlog atom that proves legacy project channel behavior still uses project scope.",
     "files": ["src/app/page.tsx"],
     "depends_on": [],
+    "acceptance": ["External PROJECT_BACKLOG marker still creates a project-scoped atom."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
     "severity": "info"
   }
 ]

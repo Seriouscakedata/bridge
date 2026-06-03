@@ -3256,6 +3256,31 @@ function Get-ProjectAutopilotTaskRisk {
   }
 }
 
+function Test-ProjectAutopilotTaskMetadata {
+  param($Task)
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  $slug = ConvertTo-ProjectAutopilotSlug (Get-ProjectAutopilotTaskStringField -Task $Task -Names @('slug'))
+  $title = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('title')
+  $body = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('task')
+  $files = @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()))
+  $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('acceptance','acceptance_checks','criteria'))
+  $checks = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('checks','verify','verification'))
+  $risk = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('risk','severity')
+
+  if ([string]::IsNullOrWhiteSpace($slug)) { [void]$missing.Add('slug') }
+  if ([string]::IsNullOrWhiteSpace($title)) { [void]$missing.Add('title') }
+  if ([string]::IsNullOrWhiteSpace($body)) { [void]$missing.Add('task') }
+  if ($files.Count -eq 0) { [void]$missing.Add('files') }
+  if ($acceptance.Count -eq 0) { [void]$missing.Add('acceptance') }
+  if ($checks.Count -eq 0) { [void]$missing.Add('checks') }
+  if ([string]::IsNullOrWhiteSpace($risk)) { [void]$missing.Add('risk') }
+
+  return [pscustomobject]@{
+    ok      = ($missing.Count -eq 0)
+    missing = @($missing.ToArray())
+  }
+}
+
 function Set-ProjectAutopilotIdeaMetadata {
   param([string]$Id, $Task, [string]$SourceTaskId = '')
   if ([string]::IsNullOrWhiteSpace($Id) -or -not $Task) { return $false }
@@ -3352,6 +3377,13 @@ function Add-ProjectBacklogFromMarker {
   $skipped = 0
   foreach ($t in $tasks) {
     $slug = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $t -Name 'slug' -Default (Get-BacklogPackObjectValue -Obj $t -Name 'title' -Default '')))
+    $metadataCheck = Test-ProjectAutopilotTaskMetadata -Task $t
+    if (-not [bool]$metadataCheck.ok) {
+      $label = if ([string]::IsNullOrWhiteSpace($slug)) { '(missing-slug)' } else { $slug }
+      [void]$errors.Add(("incomplete PROJECT_BACKLOG atom '{0}': missing {1}" -f $label, ((@($metadataCheck.missing) | Sort-Object -Unique) -join ', ')))
+      $skipped++
+      continue
+    }
     if ($existingSlugs.ContainsKey($slug)) { $skipped++; continue }
     $title = [string](Get-BacklogPackObjectValue -Obj $t -Name 'title' -Default $slug)
     $body = [string](Get-BacklogPackObjectValue -Obj $t -Name 'task' -Default '')
