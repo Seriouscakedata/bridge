@@ -174,3 +174,80 @@ function Write-DecisionShadow {
     Write-DecisionShadowSignal -Reason 'write-failed' -Detail $_.Exception.Message -Channel $ch -Stage $Stage
   }
 }
+
+function ConvertTo-IntentCanon {
+  # Shared canon (single source of truth; the analyzer uses this too). The model intent vocab
+  # (DecisionContract: code|plan|audit|fix|discuss|study|chat|fast) and the legacy primary_mode vocab
+  # (normal|discuss|study|fast|chat) only partly overlap. Map BOTH onto a coarse canon so "agreement"
+  # reflects real alignment, not a vocabulary gap: legacy 'normal' and the model's execution intents
+  # (code/plan/audit/fix) all mean "do work"; discuss/study/fast/chat are 1:1 in both vocabs.
+  param([string]$Mode)
+  if ([string]::IsNullOrWhiteSpace($Mode)) { return '' }
+  switch (([string]$Mode).Trim().ToLowerInvariant()) {
+    'normal' { 'work' }
+    'code'   { 'work' }
+    'plan'   { 'work' }
+    'audit'  { 'work' }
+    'fix'    { 'work' }
+    default  { ([string]$Mode).Trim().ToLowerInvariant() }
+  }
+}
+
+function Write-IntentShadow {
+  # Intent Decision Shadow (slimming Atom 4 / option B). Logs the model's intent PROPOSAL vs the mode
+  # the deterministic guard ACTUALLY applied, AT THE REAL DECISION SITE (driver/81 idle-claim) — not
+  # by asking the model for a [[DECISION]] block. NARROW scope: intent/mode only — NOT the full
+  # DecisionContract (no files/dependencies/parallel_groups/acceptance), so this is "Intent Decision
+  # Shadow", not "DecisionContract advisory". stage='intent-claim'. Pure SHADOW: routing already
+  # happened; this only records the comparison. Reuses the per-channel decision-shadow.jsonl and the
+  # same failure-signal path (Write-DecisionShadowSignal) so it can never die silently.
+  param(
+    [string]$Channel = '',
+    [string]$ModelPrimaryMode = '',          # Test-TaskIntent.primary_mode ('' if the guard short-circuited before the model ran)
+    $ModelConfidence = $null,
+    [string]$ModelComplexity = '',
+    $ModelEstimatedTurns = $null,
+    [bool]$ModelConsulted = $false,          # did Test-TaskIntent actually run this claim? (markers suppress it upstream)
+    [Parameter(Mandatory)][string]$EffectiveMode,   # the mode the guard applied (normal|discuss|study, + fastlane noted in reason)
+    [string]$EffectiveReason = '',           # which precedence branch won (mirror of driver/81)
+    $GuardOverrides = $null,                 # hashtable: which guards fired (marker/confidence/safety/discuss-verb/study/low-complexity)
+    [string]$Note = ''
+  )
+  $ch = $Channel
+  try {
+    if ([string]::IsNullOrWhiteSpace($ch)) { try { if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) { $ch = [string](Get-EffectiveChannel) } } catch {} }
+    if ([string]::IsNullOrWhiteSpace($ch)) { $ch = 'main' }
+    $root = $null
+    try { $root = Get-BridgeRoot } catch { $root = $null }
+    if ([string]::IsNullOrWhiteSpace($root)) { Write-DecisionShadowSignal -Reason 'root-unavailable' -Channel $ch -Stage 'intent-claim'; return }
+    $dir = Join-Path (Join-Path $root 'channels') $ch
+    if (-not (Test-Path -LiteralPath $dir)) { Write-DecisionShadowSignal -Reason 'channel-missing' -Detail $dir -Channel $ch -Stage 'intent-claim'; return }
+    $path = Join-Path $dir 'decision-shadow.jsonl'
+
+    $canonModel = ConvertTo-IntentCanon -Mode $ModelPrimaryMode
+    $canonEff   = ConvertTo-IntentCanon -Mode $EffectiveMode
+    $agree = if ([string]::IsNullOrWhiteSpace($canonModel) -or [string]::IsNullOrWhiteSpace($canonEff)) { $null } else { ($canonModel -eq $canonEff) }
+
+    $rec = [ordered]@{
+      ts                    = (Get-Date).ToUniversalTime().ToString('o')
+      channel               = $ch
+      stage                 = 'intent-claim'
+      model_primary_mode    = $ModelPrimaryMode
+      model_confidence      = $ModelConfidence
+      model_complexity      = $ModelComplexity
+      model_estimated_turns = $ModelEstimatedTurns
+      model_consulted       = $ModelConsulted
+      effective_mode        = $EffectiveMode
+      effective_reason      = $EffectiveReason
+      guard_overrides       = $GuardOverrides
+      canon_model           = $canonModel
+      canon_effective       = $canonEff
+      intent_agreement      = $agree
+      note                  = $Note
+    }
+    $line = ($rec | ConvertTo-Json -Compress -Depth 6)
+    [System.IO.File]::AppendAllText($path, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  } catch {
+    Write-DecisionShadowSignal -Reason 'write-failed' -Detail $_.Exception.Message -Channel $ch -Stage 'intent-claim'
+  }
+}

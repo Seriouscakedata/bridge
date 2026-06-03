@@ -43,6 +43,17 @@ $threw = $false
 try { Write-DecisionShadow -Channel '___nonexistent_channel___' -Stage 'unit-test' -ModelDecision $good -Note 'no-throw probe' } catch { $threw = $true }
 Check 'Write-DecisionShadow does not throw on missing channel' (-not $threw)
 
+# Intent Decision Shadow (Atom 4a): shared canon + the intent-claim writer.
+Check 'canon normal->work'   ((ConvertTo-IntentCanon -Mode 'normal') -eq 'work')
+Check 'canon code->work'     ((ConvertTo-IntentCanon -Mode 'code') -eq 'work')
+Check 'canon discuss->discuss' ((ConvertTo-IntentCanon -Mode 'discuss') -eq 'discuss')
+Check 'canon study->study'   ((ConvertTo-IntentCanon -Mode 'study') -eq 'study')
+Check 'canon empty->empty'   ((ConvertTo-IntentCanon -Mode '') -eq '')
+Check 'Write-IntentShadow exists' ([bool](Get-Command Write-IntentShadow -ErrorAction SilentlyContinue))
+$threwI = $false
+try { Write-IntentShadow -Channel '___nonexistent_channel___' -ModelPrimaryMode 'code' -ModelConfidence 0.8 -EffectiveMode 'normal' -EffectiveReason 'default-normal' -Note 'no-throw probe' } catch { $threwI = $true }
+Check 'Write-IntentShadow does not throw on missing channel' (-not $threwI)
+
 # schema is exposed for prompts/docs
 Check 'schema has 9 fields' ((Get-DecisionContractSchema).Keys.Count -eq 9)
 
