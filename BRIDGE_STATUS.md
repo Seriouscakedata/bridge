@@ -158,3 +158,55 @@ Set-ProjectPlanApproved -Channel '<slug>'        # снять разрешени
 - **OneDrive:** код моста на OneDrive (git), рантайм/состояние — вне (`.bridge-runtime`), иначе lock-гонки.
 - **Доки устаревают** — раздел §3 показывает, как смотреть живое состояние.
 - **Не делать работу ЗА мост:** оператор чинит инфраструктуру моста, не дописывает код проекта руками.
+
+---
+
+## 8. Bridge Self-Model
+
+**Что это.** Derived runtime artifact — компактная самомодель моста (~1.5–2.5 KB). Генерируется
+*из реальности* и инжектируется в промпт канала `main` при каждом ходе, чтобы агент всегда видел
+актуальное состояние самого себя.
+
+### Source-of-truth mapping (источники → self-model)
+
+| Источник | Что берётся |
+|---|---|
+| `features/registry.json` | список фич, owner_file, статус |
+| `features/state.json` | активность / activation_date |
+| `docs/`, `BRIDGE_STATUS.md` | человекочитаемый контекст |
+| `lib/`, `driver/`, `tools/` | архитектурные факты |
+| git (HEAD, recent log) | версия, последние изменения |
+
+> **⚠ Cache — derived, руками НЕ поддерживать.** Настоящий source of truth — файлы выше.
+> Cache (`.bridge-runtime/self-model/main.*`) создаётся автоматически и может быть пересоздан
+> в любой момент без потери данных.
+
+### Четыре части пайплайна
+
+```
+Generator           lib/self-model.ps1
+  ↓ (read-only, собирает пакет из источников)
+Refresh             tools/refresh-self-model.ps1
+  ↓ (кешируется → .bridge-runtime/self-model/main.pack.json + main.prompt.txt)
+Inject              driver/30-prompt-agent-state.ps1  (Build-Prompt)
+  ↓ (читает ТОЛЬКО cache, main-only, fail-open)
+Drift Audit         tools/self-model-drift.ps1
+    (read-only, ловит рассинхрон: stale hash, owner_file_missing, size cap)
+```
+
+### Как обновляется
+
+- **Авто** — hook в `driver/86-loop-completion.ps1` запускает refresh после каждой успешно
+  завершённой задачи (fail-open: сбой refresh не ломает completion).
+- **Вручную** — `tools/refresh-self-model.ps1` (идемпотентен: no-op, если источники не менялись).
+
+### Чем НЕ является
+
+- Не новая память (не заменяет `memory/`, не пишет туда).
+- Не замена guard/safety-механизмов.
+- Не ручной документ — редактировать cache вручную бессмысленно (перезатрётся при следующем refresh).
+
+### Известные drift-находки (текущие, для разбора)
+
+- `features/state.json` — нечитаем (JSON parse error); drift-audit сигнализирует `stale_state`.
+- Фича `mission-card` — `owner_file_missing` (owner_file указывает на несуществующий файл в registry).
