@@ -21,6 +21,15 @@ driver.ps1 (по одному на канал) + watchdog.ps1**. Каждый **
 (`channels/<slug>/`: state.json, backlog.jsonl, conversation.jsonl). `main` — канал развития
 самого моста. Рантайм/состояние держатся вне OneDrive (`C:\Users\rafie\.bridge-runtime`).
 
+> **⚠️ ВАЖНО (2026-06-03): `.git` вынесен с OneDrive.** Реальный git-каталог теперь
+> `C:\Users\rafie\.bridge-runtime\bridge-git`; `bridge\.git` — это **gitlink-файл** (`gitdir: …`),
+> не папка. Причина: OneDrive занулял `.git/refs/heads/master` и держал locks, вешавшие watchdog
+> (3 аварии за сутки). Обычные git-команды работают прозрачно. Прямой доступ к `.git/refs` или
+> `.git/HEAD` в коде ДОЛЖЕН резолвить gitlink (см. `ensure-bridge.ps1`/`server.ps1`).
+>
+> **Самовосстановление:** `ensure-bridge.ps1` (Task `ClaudeCodexBridge-Ensure`, каждые 5 мин,
+> регистрируется супервизором) лечит мёртвый/зависший supervisor+watchdog и занулённый git-ref.
+
 ---
 
 ## 2. Текущая версия / веха
