@@ -58,7 +58,7 @@ HTTP-сервер на `http://+:8787/`:
 - **аутентификация по токену** — без токена `/api/status` отдаёт `401` (это «жив», а не «сломан»).
 
 ### 2.3 driver.ps1 + driver/*.ps1 (entrypoint + модули)
-Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` оставлен как entrypoint: загружает библиотеки, dot-source'ит `driver/*.ps1`, выполняет self-test/startup и держит главный цикл (`loop`):
+Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` оставлен как тонкий entrypoint: загружает библиотеки, dot-source'ит `driver/*.ps1`, выполняет self-test и вызывает startup/main loop из модулей:
 1. читает состояние канала (`state.json`) и новые сообщения;
 2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / …);
 3. выбирает модель планировщика (Sonnet/Opus — см. §4.2);
@@ -67,7 +67,7 @@ HTTP-сервер на `http://+:8787/`:
 6. в простое — берёт автономную задачу из бэклога (см. §4.3);
 7. обслуживает recycle-coalescer (§5), аудит-планировщик, doctor и пр.
 
-> Поддерживаемость улучшена: функции вынесены в `driver/*.ps1`, но startup и главный runtime loop пока остаются в `driver.ps1`. Правки поведения вноси в профильный модуль, затем обязательно проверяй `ParseFile` + `-SelfTest`.
+> Поддерживаемость улучшена: функции, startup и главный runtime loop вынесены в `driver/*.ps1`. `driver.ps1` не должен снова разрастаться; правки поведения вноси в профильный модуль, затем обязательно проверяй `ParseFile` + `-SelfTest`.
 
 ### 2.4 watchdog.ps1 (≈10 KB)
 Независимый сторож. Если мост «сломан движком» (API не отвечает, лог-сигнатура поломки) — делает **мягкий рестарт** (`restart.flag`), а в крайнем случае — git-rollback на последний стабильный коммит. Запускается скрыто (`-WindowStyle Hidden`). **Не убивать вручную** — это защита.
@@ -84,14 +84,24 @@ HTTP-сервер на `http://+:8787/`:
 
 ```
 bridge/
-├── driver.ps1            # entrypoint: self-test/startup/runtime loop
+├── driver.ps1            # thin entrypoint: config, module load, self-test, startup+loop calls
 ├── driver/               # функции driver.ps1, разнесённые по зонам ответственности
 │   ├── 00-task-session.ps1        # replay/current task, tiering, CLI/help/quality/fast-lane helpers
 │   ├── 10-maintenance.ps1         # curator, attachments, librarian/audit/reflect/techradar/canary
 │   ├── 20-context.ps1             # autonomy gate, task safety, recall, recurrence/project focus
 │   ├── 30-prompt-agent-state.ps1  # prompt builder, current-agent/PID bookkeeping, direct-coder detection
 │   ├── 40-agent-invoke.ps1        # Claude/Codex invocation, sandbox/reasoning, summarizer/context folding
-│   └── 50-loop-utils.ps1          # speaker/status helpers, turn/evidence logging
+│   ├── 50-loop-utils.ps1          # speaker/status helpers, turn/evidence logging
+│   ├── 60-startup.ps1             # startup recovery, tmp/worktree/job cleanup, Doctor restart guard
+│   ├── 80-loop-preflight.ps1      # state recovery, recycle coalescer, stop/pause/doctor/job handling
+│   ├── 81-loop-idle-claim.ps1     # user/autonomy/backlog claim path
+│   ├── 82-loop-turn-setup.ps1     # task mode/speaker/model/prompt setup
+│   ├── 83-loop-agent-turn.ps1     # planner/coder invocation and preflight/timeout handling
+│   ├── 84-loop-reply-markers.ps1  # FILE/SAVE/EVIDENCE/PLAN/RUNJOB/PROJECT markers
+│   ├── 85-loop-mode-transitions.ps1 # discuss/study/research transition handling
+│   ├── 86-loop-completion.ps1     # planner status, verify/commit, completion gates
+│   ├── 87-loop-final-guard.ps1    # max-turn guard and idle sleep
+│   └── 90-main-loop.ps1           # loop skeleton; dot-sources phase scriptblocks
 ├── server.ps1            # HTTP API + UI
 ├── supervisor.ps1        # autostart-надзиратель + circuit-breaker
 ├── watchdog.ps1          # авто-откат
@@ -418,7 +428,7 @@ Codex). Для снижения конкуренции временно выкл
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер крупных файлов
-`driver.ps1` больше не является одиночным 366 KB монолитом: функции вынесены в `driver/*.ps1`, а сам entrypoint держит загрузку, self-test, startup и runtime loop. Крупными остаются `web/index.html` 245 KB, `common.ps1` 97 KB и несколько driver-модулей. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
+`driver.ps1` больше не является одиночным 366 KB монолитом: entrypoint около 150 строк, функции/startup/runtime loop вынесены в `driver/*.ps1`, а main loop дополнительно разложен на фазовые scriptblock-модули. Крупными остаются `web/index.html` 245 KB, `lib/backlog.ps1`, `common.ps1` 97 KB, `server.ps1` и отдельные driver-модули до ~1k строк. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
 
 ---
 
