@@ -4,10 +4,23 @@
   $activeProjectRoot = if ($projectBinding -and [bool]$projectBinding.ok) { [string]$projectBinding.project_root } else { $bridgeRoot }
   if ([string]::IsNullOrWhiteSpace($activeProjectRoot)) { $activeProjectRoot = $bridgeRoot }
   $activeProjectBlock = Get-ProjectFocusPromptBlock
+  $channelSlug = if ($projectBinding -and $projectBinding.slug) { [string]$projectBinding.slug } else { [string]$Channel }
+  $channelIsMain = ($channelSlug -eq 'main')
+  $selfModelPromptBlock = ''
+  if ($channelIsMain) {
+    try {
+      $selfModelPromptPath = Join-Path (Join-Path (Get-RuntimeRoot) 'self-model') 'main.prompt.txt'
+      $selfModelPromptText = Get-Content -LiteralPath $selfModelPromptPath -Raw -Encoding UTF8 -ErrorAction Stop
+      if (-not [string]::IsNullOrWhiteSpace($selfModelPromptText)) {
+        $selfModelPromptBlock = ([string]$selfModelPromptText).TrimEnd()
+      }
+    } catch {
+      $selfModelPromptBlock = ''
+    }
+  }
   # Tool Foundry (Ф1): advertise already-built tools so agents REUSE instead of re-requesting.
   $autoToolsLine = ''
   try { $atb = Get-AutoToolsPromptBlock; if (-not [string]::IsNullOrWhiteSpace($atb)) { $autoToolsLine = "`n" + $atb } } catch { $autoToolsLine = '' }
-  $channelIsMain = ($projectBinding -and ([string]$projectBinding.slug -eq 'main'))
   $bridgeScopeRules = if ($channelIsMain) {
 @'
 - САМОУЛУЧШЕНИЕ РАЗРЕШЕНО: тебе МОЖНО улучшать сам мост (файлы в `C:\Users\rafie\OneDrive\Documents\bridge\`: `web\index.html`, `server.ps1`, `driver.ps1`, `lib\common.ps1` и т.п.). СТРОГИЕ ПРАВИЛА БЕЗОПАСНОСТИ (нарушение убьёт мост):
@@ -53,6 +66,7 @@
 Рабочий корень: $activeProjectRoot
 
 $activeProjectBlock
+$selfModelPromptBlock
 
 FAST-LANE: Planner пропущен. Выполни пользовательскую задачу напрямую как Codex.
 
@@ -128,6 +142,7 @@ STUDY-ХОД -- выполняй текущую фазу изучения. Мо�
 Рабочий корень: $activeProjectRoot
 
 $activeProjectBlock
+$selfModelPromptBlock
 
 ТЕКУЩАЯ ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:
 $Task
