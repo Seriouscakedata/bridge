@@ -102,12 +102,28 @@ if (-not (Test-ProcAlive 'supervisor.ps1')) {
     ELog "supervisor not alive but within restart cooldown (10m) -> waiting"
   }
 } else {
-  # supervisor is alive and owns watchdog-ensure; belt-and-suspenders check anyway
-  if (-not (Test-ProcAlive 'watchdog.ps1')) {
-    ELog "watchdog NOT alive -> spawning detached"
+  # supervisor alive -> belt-and-suspenders watchdog check. Watchdog liveness = process alive AND smoke
+  # FRESH. A HUNG watchdog (process alive but loop stuck, no smoke for >12 min — observed 2026-06-03,
+  # likely a git/OneDrive lock stall) is KILLED and respawned, because "process exists" != "working".
+  $wdProcs = @()
+  try { $wdProcs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*-File*watchdog.ps1*' -and $_.CommandLine -notlike '*-Command*' }) } catch {}
+  $wdLog = Join-Path $root 'control\watchdog.log'
+  $wdStaleMin = 9999
+  if (Test-Path -LiteralPath $wdLog) { try { $wdStaleMin = ((Get-Date) - (Get-Item -LiteralPath $wdLog).LastWriteTime).TotalMinutes } catch {} }
+  $needRespawn = $false
+  if ($wdProcs.Count -eq 0) {
+    ELog "watchdog DEAD -> respawn"; $needRespawn = $true
+  } elseif ($wdStaleMin -gt 12) {
+    ELog ("watchdog HUNG (smoke stale " + [int]$wdStaleMin + "m, proc alive) -> kill+respawn")
+    foreach ($wp in $wdProcs) { try { Stop-Process -Id ([int]$wp.ProcessId) -Force -ErrorAction SilentlyContinue } catch {} }
+    Start-Sleep -Seconds 2
+    $needRespawn = $true
+  }
+  if ($needRespawn) {
     $wd = Join-Path $root 'watchdog.ps1'
     if (Test-Path $wd) {
-      try { Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$wd -WindowStyle Hidden; ELog "watchdog spawned" }
+      try { Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$wd -WindowStyle Hidden; ELog "watchdog (re)spawned" }
       catch { ELog ("watchdog spawn FAILED: " + $_.Exception.Message) }
     }
   }
