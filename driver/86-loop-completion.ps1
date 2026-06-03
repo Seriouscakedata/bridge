@@ -1,4 +1,71 @@
-﻿$script:DriverLoopCompletionBlock = {
+﻿function Invoke-PostTaskSelfModelRefresh {
+  [CmdletBinding()]
+  param(
+    [string]$Channel,
+    [string]$BridgeRoot
+  )
+
+  $result = [ordered]@{
+    attempted = $false
+    ok        = $false
+    skipped   = $false
+    error     = ''
+  }
+
+  function Write-PostTaskSelfModelRefreshFailure {
+    param([string]$Message)
+
+    try {
+      if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
+        Add-Message -From system -Text ("⚠ Self-model refresh skipped/failed: " + $Message) -Kind event | Out-Null
+      }
+    } catch {}
+    try {
+      $logRoot = $BridgeRoot
+      if ([string]::IsNullOrWhiteSpace($logRoot)) { $logRoot = (Get-Location).Path }
+      Add-Content -LiteralPath (Join-Path $logRoot 'self-model-refresh.log') -Value ((Get-Date).ToString('s') + '  post-task-refresh: ' + $Message) -Encoding UTF8
+    } catch {}
+  }
+
+  try {
+    $effectiveChannel = [string]$Channel
+    if ([string]::IsNullOrWhiteSpace($effectiveChannel)) {
+      try {
+        if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+          $effectiveChannel = [string](Get-EffectiveChannel)
+        }
+      } catch {}
+    }
+    if ($effectiveChannel -ne 'main') {
+      $result.skipped = $true
+      $result.error = 'channel is not main'
+      return [pscustomobject]$result
+    }
+
+    $root = [string]$BridgeRoot
+    if ([string]::IsNullOrWhiteSpace($root)) {
+      try { $root = Split-Path -Parent $PSScriptRoot } catch { $root = (Get-Location).Path }
+    }
+    $refreshTool = Join-Path $root 'tools\refresh-self-model.ps1'
+    if (-not (Test-Path -LiteralPath $refreshTool)) {
+      $result.skipped = $true
+      $result.error = 'refresh tool missing'
+      Write-PostTaskSelfModelRefreshFailure -Message $result.error
+      return [pscustomobject]$result
+    }
+
+    $result.attempted = $true
+    & $refreshTool -BridgeRoot $root -NoOutput | Out-Null
+    $result.ok = $true
+    return [pscustomobject]$result
+  } catch {
+    $result.error = $_.Exception.Message
+    Write-PostTaskSelfModelRefreshFailure -Message $result.error
+    return [pscustomobject]$result
+  }
+}
+
+$script:DriverLoopCompletionBlock = {
   $plannerStatus = 'CONTINUE'
   $fastLaneDone = $false
   if ($speaker -eq 'codex') {
@@ -968,6 +1035,7 @@ $diff
         }
       }
     } catch {}
+    try { Invoke-PostTaskSelfModelRefresh -Channel $Channel -BridgeRoot $bridgeRoot | Out-Null } catch {}
     # 🩺 If Doctor just finished a repair, restore the held task instead of going idle.
     if ([bool](Read-State).doctor_active) {
       try { Complete-Doctor } catch { try { Add-Message -From system -Text ("🩺 Complete-Doctor: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
