@@ -50,7 +50,7 @@ Task Scheduler (autostart, elevated)
 - применять **circuit-breaker** (защита от рестарт-штормов, см. §5);
 - соблюдать rate-limit (не чаще 1 recycle / 60 c).
 
-### 2.2 server.ps1 (≈81 KB)
+### 2.2 server.ps1 (entrypoint + request routing; helpers in `server/*.ps1`)
 HTTP-сервер по умолчанию на `http://localhost:8787/`. LAN-доступ (`http://+:8787/`) включается только через `server.allowLan=true`; без `auth.json`/token LAN-режим игнорируется:
 - отдаёт веб-UI (`web/index.html`);
 - REST API: `/api/status`, `/api/messages`, `/api/settings`, `/api/channels/*`, `/api/backlog`, `/api/brainstorm`, и т.д.;
@@ -88,7 +88,8 @@ bridge/
 ├── bridge_core/           # cross-platform config/status/platform adapters
 ├── driver.ps1            # entrypoint + self-test/startup/runtime loop
 ├── driver/               # функции драйвера, разнесённые по зонам ответственности
-├── server.ps1            # HTTP API + UI
+├── server.ps1            # HTTP API routing loop
+├── server/               # HTTP helpers/auth/runbook/file serving
 ├── supervisor.ps1        # autostart-надзиратель + circuit-breaker
 ├── watchdog.ps1          # авто-откат
 ├── reflect.ps1 / librarian.ps1 / techradar.ps1 / canary.ps1   # фоновые задачи
@@ -97,11 +98,13 @@ bridge/
 ├── lib/  (31 модуль)     # вся логика-библиотека (dot-source из common.ps1)
 │   ├── common.ps1        # loader ядра: state/messages/locks/capabilities
 │   ├── common/           # common implementation split by responsibility (<520 lines/module)
-│   ├── parallel.ps1      # параллельные worktree-потоки (64 KB)
+│   ├── parallel.ps1      # loader + главный parallel dispatch
+│   ├── parallel/         # router/CLI/lifecycle/state fallback modules
 │   ├── backlog.ps1       # loader очереди задач/идей
 │   ├── backlog/          # backlog implementation split by responsibility (<500 lines/module)
 │   ├── auditor.ps1       # планировщик аудита (42 KB)
-│   ├── memory.ps1        # семантическая память (embeddings) (42 KB)
+│   ├── memory.ps1        # loader семантической памяти (embeddings)
+│   ├── memory/           # memory paths/Gemini/store/search/gate/management modules
 │   ├── architect.ps1     # брейншторм/deep-think (40 KB)
 │   ├── foundry.ps1       # синтез новых проектов (36 KB)
 │   ├── circuit-breaker.ps1  # защита от штормов (26 KB)
@@ -110,7 +113,8 @@ bridge/
 │   │   settings.ps1 / replay.ps1 / worktrees.ps1 / radar.ps1 / usage.ps1 /
 │   │   llm.ps1 / notify.ps1 / canary.ps1 ...
 ├── tools/  (37 скриптов) # аудит и утилиты
-│   ├── audit.ps1         # статический аудит-пайплайн (66 KB)
+│   ├── audit.ps1         # audit orchestrator Invoke-BridgeAudit
+│   ├── audit_modules/    # audit context/ledger/reports/backlog modules
 │   ├── deep-audit.ps1    # многоагентный deep-audit оркестратор (52 KB)
 │   ├── deep-audit-agent.ps1  # один агент-срез аудита
 │   ├── audit-signals.ps1 / audit-functional.ps1 / audit-security.ps1 ...
@@ -340,10 +344,15 @@ Codex работает в **изолированной песочнице** (`wo
 
 > Тонкость PowerShell: переменные регистронезависимы. `$functionalAgent` и param `$FunctionalAgent` — одна переменная. Эта коллизия валила deep-audit (см. §7).
 
+`tools/audit.ps1` теперь orchestrator: в нём остаётся `Invoke-BridgeAudit`, а служебная логика вынесена в `tools/audit_modules/*.ps1`:
+context/path helpers, lock/io, findings-ledger, usefulness/reports, backlog filing, wait-idle. Критично: `Get-AuditBridgeRoot` использует `$script:AuditToolsRoot`, потому что модули лежат глубже `tools/`.
+
 ### 4.6 Параллельные потоки (parallel)
 `lib/parallel.ps1` — раскладывает задачу на потоки, каждый в своём git-worktree (`wip/parallel/<hash>/<id>`), потом merge-стадия. Merge устойчив: при конфликте `git merge --abort` → retry `-X ours` → дерево никогда не остаётся unmerged.
 
 Collect-then-commit теперь проверяет declared touch-set потока (`files`). Если worker изменил файлы вне заявленной области, поток получает карантин: его worktree не копируется и не сливается в основной репозиторий, в чат пишется причина. Важно: failed/quarantined поток не должен проходить через host-commit recovery.
+
+`lib/parallel.ps1` теперь loader + `Invoke-ParallelDispatch`; остальное лежит в `lib/parallel/*.ps1`: legacy workers, worker router, CLI handlers, plan parser/root helpers, worker lifecycle, state/trivial fallback. Правки роутинга/воркеров делай в модулях, dispatch-loop трогай только при изменении orchestration.
 
 ### 4.7 Backlog modules
 `lib/backlog.ps1` теперь только compatibility loader. Реальная логика разнесена по `lib/backlog/*.ps1`: core/logging, packer, workpack classification/exec, store, curator, claim, project-autopilot, self-exec safety. Новые правки backlog делай в соответствующем модуле, а не возвращай монолит.
@@ -375,7 +384,7 @@ Collect-then-commit теперь проверяет declared touch-set пото�
 Критично: `Get-BridgeRoot` должен использовать `$script:CommonLibRoot`, а не `$PSScriptRoot` подпапки `lib/common/`.
 
 ### 4.10 Память, doctor, foundry, radar
-- **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты. Память durable-first: при отсутствии embedding-ключа/API запись всё равно сохраняется с `embedding_status=pending`, а не теряется.
+- **memory** (`lib/memory.ps1`) — loader векторной памяти (embeddings, `gemini-embedding-001`), семантический recall в промпты. Память durable-first: при отсутствии embedding-ключа/API запись всё равно сохраняется с `embedding_status=pending`, а не теряется. Реальная логика в `lib/memory/*.ps1`: paths/config, Gemini API, store/add, search/recall/skills, task gate, consolidation, UI management.
 - **doctor** (`lib/doctor.ps1`) — самодиагностика и починка при сбоях задач.
 - **foundry/toolforge** — синтез новых инструментов (`[[NEED-TOOL]]`) и проектов на лету.
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
@@ -450,12 +459,16 @@ Codex). Для снижения конкуренции временно выкл
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер монолитов
-`web/index.html` остаётся самым большим файлом, но web сейчас не главный архитектурный риск. Функциональные крупные зоны: `driver.ps1` runtime loop, `server.ps1`, `tools/audit.ps1`, `lib/parallel.ps1`, `lib/memory.ps1`.
+`web/index.html` остаётся самым большим файлом, но web сейчас не главный архитектурный риск. Функциональные крупные зоны, которые ещё стоит дробить дальше: `driver.ps1` runtime loop, `server.ps1` routing loop, `tools/deep-audit.ps1`, `lib/auditor.ps1`, `lib/project-acceptance.ps1`, `supervisor.ps1`.
 
 Уже декомпозировано:
 - `lib/backlog.ps1`: loader 26 строк + модули `lib/backlog/*.ps1` до ~470 строк;
 - `driver.ps1`: entrypoint/runtime loop + модули `driver/*.ps1` до ~700 строк;
 - `lib/common.ps1`: loader + модули `lib/common/*.ps1` до ~520 строк.
+- `server.ps1`: routing loop + helper-модули `server/*.ps1`;
+- `tools/audit.ps1`: orchestrator + модули `tools/audit_modules/*.ps1`;
+- `lib/parallel.ps1`: dispatch loop + модули `lib/parallel/*.ps1`;
+- `lib/memory.ps1`: loader + модули `lib/memory/*.ps1`.
 
 Правки оставшихся больших файлов — **точечные** (`Edit` по уникальному фрагменту). Полную перезапись делать только осознанно.
 
@@ -557,12 +570,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
 - Градуированное доверие автономии (shadow→green→yellow), red-tier никогда не авто.
 
 **Риски / технический долг:**
-- **Крупные runtime-файлы** (`driver.ps1` loop, `server.ps1`, `audit.ps1`, `parallel.ps1`) — тяжело поддерживать, легко внести регрессию.
+- **Крупные runtime-файлы** (`driver.ps1` loop, `server.ps1` routing loop, `deep-audit.ps1`, `auditor.ps1`, `project-acceptance.ps1`, `supervisor.ps1`) — тяжело поддерживать, легко внести регрессию.
 - **Высокая связность механизмов** (31 lib) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
 - **Хрупкая платформа**: PS 5.1 + Windows + OneDrive + Defender + UAC дают целый класс инфраструктурных сбоев.
 - **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), вынести runtime из OneDrive, декомпозировать монолит.
 
-**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (дальнейшая декомпозиция runtime/server/audit/parallel, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
+**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (дальнейшая декомпозиция runtime/server/deep-audit/supervisor, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
 
 ---
 
