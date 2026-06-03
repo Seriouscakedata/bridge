@@ -40,8 +40,28 @@ $rows = @(
   (Row 'study'   'study'),                                     # D: bare-string legacy (old format) -> MATCH
   (Row 'code'    @{ primary_mode='code'; mode='code' })        # E: Codex's literal example primary_mode=code -> work==work MATCH
 )
+
+# Intent Decision Shadow rows (Atom 4c) in the shape Write-IntentShadow emits. Covers Codex's TZ cases:
+# normal->work, code/work, discuss, low-confidence fallback, unsafe-fastlane blocked, marker override.
+function IntentRow($modelMode, $conf, $effMode, $effReason, $consulted, $overrides) {
+  $rec = [ordered]@{
+    ts='t'; channel=$ch; stage='intent-claim'
+    model_primary_mode=$modelMode; model_confidence=$conf; model_complexity='simple'; model_estimated_turns=2
+    model_consulted=$consulted; effective_mode=$effMode; effective_reason=$effReason
+    guard_overrides=$overrides; note=''
+  }
+  return ($rec | ConvertTo-Json -Compress -Depth 8)
+}
+$intentRows = @(
+  (IntentRow 'code'    0.82 'normal' 'llm-simple'         $true  @{ low_complexity=$true }),          # IC1: code vs normal -> work==work MATCH
+  (IntentRow 'discuss' 0.90 'discuss' 'llm-intent-discuss' $true @{}),                                 # IC2: discuss==discuss MATCH
+  (IntentRow 'discuss' 0.50 'normal' 'default-normal'    $true  @{ low_confidence=$true }),           # IC3: low-conf fallback -> discuss vs work MISMATCH
+  (IntentRow 'fast'    0.88 'normal' 'default-normal'    $true  @{ unsafe_fastlane_blocked=$true }),  # IC4: unsafe fastlane blocked -> fast vs work MISMATCH
+  (IntentRow ''        $null 'normal' 'normal-override'  $false @{ marker_normal=$true })             # IC5: marker suppressed model -> uncomparable, not consulted
+)
+
 $u8 = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($path, (($rows -join "`n") + "`n"), $u8)
+[System.IO.File]::WriteAllText($path, ((($rows + $intentRows) -join "`n") + "`n"), $u8)
 
 try {
   $json = & $analyzer -Channel $ch -AsJson
@@ -57,6 +77,25 @@ try {
   Check 'divergence is discuss vs work'     ($div.Count -eq 1 -and $div[0].pair -match 'model=discuss\(discuss\)' -and $div[0].pair -match 'legacy=normal\(work\)')
   # regression guard: serialized-object legacy must NOT be swallowed whole as the intent
   Check 'serialized legacy not taken whole' ($div[0].pair -notmatch 'primary_mode')
+
+  # --- Intent Decision Shadow (Atom 4c): metrics SEPARATE from the full-contract ones above ---
+  Check 'planner-turn total still 5 (intent-claim not mixed in)' ($r.total_records -eq 5)
+  $ic = $r.intent_claim
+  Check 'intent_claim.total = 5'              ($ic.total -eq 5)
+  Check 'intent_claim.match = 2 (IC1,IC2)'    ($ic.match -eq 2)
+  Check 'intent_claim.mismatch = 2 (IC3,IC4)' ($ic.mismatch -eq 2)
+  Check 'intent_claim.uncomparable = 1 (IC5)' ($ic.uncomparable -eq 1)
+  Check 'intent_claim.model_consulted = 4'    ($ic.model_consulted -eq 4)
+  Check 'intent_claim agreement = 50%'        ([math]::Abs([double]$ic.agreement_pct - 50.0) -lt 0.01)
+  $ovKeys = @($ic.guard_overrides | ForEach-Object { $_.guard })
+  Check 'guard low_confidence counted'        ($ovKeys -contains 'low_confidence')
+  Check 'guard unsafe_fastlane_blocked counted' ($ovKeys -contains 'unsafe_fastlane_blocked')
+  Check 'guard marker_normal counted'         ($ovKeys -contains 'marker_normal')
+  Check 'guard low_complexity counted'        ($ovKeys -contains 'low_complexity')
+  $defNormal = @($ic.effective_reasons | Where-Object { $_.reason -eq 'default-normal' })
+  Check 'effective_reason default-normal x2'  ($defNormal.Count -eq 1 -and $defNormal[0].count -eq 2)
+  $icDiv = @($ic.top_divergences)
+  Check 'intent divergence fast vs work present' (@($icDiv | Where-Object { $_.pair -match 'model=fast\(fast\)' -and $_.pair -match 'eff=normal\(work\)' }).Count -ge 1)
 }
 finally {
   Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
