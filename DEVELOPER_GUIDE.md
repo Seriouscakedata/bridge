@@ -57,8 +57,8 @@ HTTP-сервер на `http://+:8787/`:
 - принимает сообщения пользователя в чат, пишет их в `channels/<slug>/conversation.jsonl`;
 - **аутентификация по токену** — без токена `/api/status` отдаёт `401` (это «жив», а не «сломан»).
 
-### 2.3 driver.ps1 (≈366 KB — МОНОЛИТ ⚠️)
-Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). Главный цикл (`loop`):
+### 2.3 driver.ps1 + driver/*.ps1 (entrypoint + модули)
+Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` оставлен как entrypoint: загружает библиотеки, dot-source'ит `driver/*.ps1`, выполняет self-test/startup и держит главный цикл (`loop`):
 1. читает состояние канала (`state.json`) и новые сообщения;
 2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / …);
 3. выбирает модель планировщика (Sonnet/Opus — см. §4.2);
@@ -67,7 +67,7 @@ HTTP-сервер на `http://+:8787/`:
 6. в простое — берёт автономную задачу из бэклога (см. §4.3);
 7. обслуживает recycle-coalescer (§5), аудит-планировщик, doctor и пр.
 
-> ⚠️ **366 KB в одном файле** — главный долг по поддерживаемости. Изменения делай точечно (`Edit` по уникальному фрагменту), всегда проверяй `ParseFile` + `-SelfTest`.
+> Поддерживаемость улучшена: функции вынесены в `driver/*.ps1`, но startup и главный runtime loop пока остаются в `driver.ps1`. Правки поведения вноси в профильный модуль, затем обязательно проверяй `ParseFile` + `-SelfTest`.
 
 ### 2.4 watchdog.ps1 (≈10 KB)
 Независимый сторож. Если мост «сломан движком» (API не отвечает, лог-сигнатура поломки) — делает **мягкий рестарт** (`restart.flag`), а в крайнем случае — git-rollback на последний стабильный коммит. Запускается скрыто (`-WindowStyle Hidden`). **Не убивать вручную** — это защита.
@@ -84,7 +84,14 @@ HTTP-сервер на `http://+:8787/`:
 
 ```
 bridge/
-├── driver.ps1            # главный цикл (монолит)
+├── driver.ps1            # entrypoint: self-test/startup/runtime loop
+├── driver/               # функции driver.ps1, разнесённые по зонам ответственности
+│   ├── 00-task-session.ps1        # replay/current task, tiering, CLI/help/quality/fast-lane helpers
+│   ├── 10-maintenance.ps1         # curator, attachments, librarian/audit/reflect/techradar/canary
+│   ├── 20-context.ps1             # autonomy gate, task safety, recall, recurrence/project focus
+│   ├── 30-prompt-agent-state.ps1  # prompt builder, current-agent/PID bookkeeping, direct-coder detection
+│   ├── 40-agent-invoke.ps1        # Claude/Codex invocation, sandbox/reasoning, summarizer/context folding
+│   └── 50-loop-utils.ps1          # speaker/status helpers, turn/evidence logging
 ├── server.ps1            # HTTP API + UI
 ├── supervisor.ps1        # autostart-надзиратель + circuit-breaker
 ├── watchdog.ps1          # авто-откат
@@ -410,8 +417,8 @@ schtasks /end /tn "ClaudeCodexBridge"; schtasks /run /tn "ClaudeCodexBridge"
 Codex). Для снижения конкуренции временно выключай автономию лишних проектных каналов через
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
-### 6.6 Размер монолитов
-`driver.ps1` 366 KB, `web/index.html` 245 KB, `common.ps1` 97 KB. Правки — **точечные** (`Edit` по уникальному фрагменту). Полную перезапись делать только осознанно.
+### 6.6 Размер крупных файлов
+`driver.ps1` больше не является одиночным 366 KB монолитом: функции вынесены в `driver/*.ps1`, а сам entrypoint держит загрузку, self-test, startup и runtime loop. Крупными остаются `web/index.html` 245 KB, `common.ps1` 97 KB и несколько driver-модулей. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
 
 ---
 
@@ -511,12 +518,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
 - Градуированное доверие автономии (shadow→green→yellow), red-tier никогда не авто.
 
 **Риски / технический долг:**
-- **Монолиты** (`driver.ps1` 366 KB) — тяжело поддерживать, легко внести регрессию.
+- **Крупные файлы/модули** (`web/index.html`, `common.ps1`, отдельные `driver/*.ps1`) — всё ещё требуют точечных правок и обязательного self-test, но главный риск старого `driver.ps1`-монолита снижен.
 - **Высокая связность механизмов** (31 lib) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
 - **Хрупкая платформа**: PS 5.1 + Windows + OneDrive + Defender + UAC дают целый класс инфраструктурных сбоев.
-- **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), вынести runtime из OneDrive, декомпозировать монолит.
+- **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), держать runtime вне OneDrive, продолжать дробить крупные зоны без изменения поведения.
 
-**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (декомпозиция driver.ps1, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
+**Вердикт:** впечатляющая, амбициозная и работающая система. Для дальнейшего развития приоритет — **надёжность и поддерживаемость** (дальнейшая декомпозиция крупных файлов, runtime вне OneDrive, больше self-test покрытия), а не новые механизмы.
 
 ---
 

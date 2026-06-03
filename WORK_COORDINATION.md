@@ -15,7 +15,7 @@ _Протокол: claim = строка в таблице со статусом 
 | Агент | Задача | Файлы (НЕ трогать чужому) | Статус | Обновлено |
 |---|---|---|---|---|
 | **Claude** | Инфра-надёжность ЗАКРЫТА: **(1) `.git` вынесен с OneDrive** → `.bridge-runtime\bridge-git` (gitlink) — устраняет корень всех 3 аварий (зануление ref + git-lock-hang). bundle-бэкап в runtime. **(2)** `ensure-bridge.ps1` лечит мёртвый/**зависший** supervisor+watchdog + занулённый ref (детект по smoke-mtime). **(3)** supervisor сам регистрирует Task `ClaudeCodexBridge-Ensure` (admin не нужен). Коммиты `68aaacc`,`f08e978`,`edd02f2`. Прямые читатели `.git` (ensure-bridge, server) резолвят gitlink. | `ensure-bridge.ps1`, `install-ensure-bridge.ps1`, `supervisor.ps1`, `server.ps1`, `.git` (gitlink) | **DONE** | 2026-06-03 13:32 |
-| **Codex** | Рефакторинг/модуляризация `driver.ps1` (6235 строк → тонкий оркестратор + `lib/*.ps1`) | `driver.ps1`, новые `lib/*.ps1` модули | (Codex проставит) | — |
+| **Codex** | Рефакторинг/модуляризация `driver.ps1`: функции вынесены в `driver/*.ps1`, self-test/startup/runtime loop оставлены в `driver.ps1` | `driver.ps1`, `driver/*.ps1` | **DONE** | 2026-06-03 13:50 |
 
 ## Что это значит на практике
 
