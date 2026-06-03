@@ -1,4 +1,5 @@
-﻿function New-BridgeScriptIntegrityResult {
+﻿# script-integrity.ps1 -- Verifies bridge script hashes against the script integrity manifest.
+function New-BridgeScriptIntegrityResult {
   param(
     [bool]$Ok,
     [string]$Reason,

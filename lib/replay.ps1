@@ -1,4 +1,5 @@
-﻿# Replay capture for agent turns. JSONL files are intentionally UTF-8 without BOM.
+﻿# replay.ps1 -- Records replay task metadata and turn transcripts with basic secret redaction.
+# Replay capture for agent turns. JSONL files are intentionally UTF-8 without BOM.
 
 function Write-ReplayInternalError {
   param([string]$Message)

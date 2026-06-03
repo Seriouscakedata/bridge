@@ -1,4 +1,5 @@
-﻿function Get-RouterConfig {
+﻿# router.ps1 -- Selects planner models using bridge config and recent model outcome statistics.
+function Get-RouterConfig {
   $defaults = @{
     minSuccess  = 0.5
     minSamples  = 5

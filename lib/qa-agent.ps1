@@ -1,4 +1,5 @@
-﻿function Get-QAAgentBridgeRoot {
+﻿# qa-agent.ps1 -- Runs bridge QA checks and records PASS/FAIL verdicts for tasks and channels.
+function Get-QAAgentBridgeRoot {
   try {
     return (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
   } catch {

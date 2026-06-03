@@ -1,4 +1,5 @@
-﻿function Get-NotifyLogPath { Join-Path (Get-BridgeRoot) 'notify.log' }
+﻿# notify.ps1 -- Logs bridge notifications and dispatches throttled push events from configured channels.
+function Get-NotifyLogPath { Join-Path (Get-BridgeRoot) 'notify.log' }
 function Get-NotifyLastPath { Join-Path (Get-BridgeRoot) 'notify.last' }
 
 function Write-NotifyLog {

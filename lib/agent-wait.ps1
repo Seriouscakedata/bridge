@@ -1,4 +1,5 @@
-﻿# Shared agent process wait helper.
+﻿# agent-wait.ps1 -- Waits for agent processes while tracking output progress and timeout reasons.
+# Shared agent process wait helper.
 
 function Wait-AgentProcess {
   # Wait for an agent process up to $TimeoutMs, refreshing the heartbeat every ~5s so a

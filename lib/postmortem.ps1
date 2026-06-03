@@ -1,4 +1,5 @@
-﻿# Auto post-mortem for repair commits. This file intentionally keeps the older
+﻿# postmortem.ps1 -- Collects post-mortem diagnostics and git context for repair commit analysis.
+# Auto post-mortem for repair commits. This file intentionally keeps the older
 # timeout/safety Invoke-PostMortem call shape compatible with lib/metrics.ps1.
 
 function Write-PostMortemWarning {

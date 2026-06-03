@@ -1,4 +1,5 @@
-﻿function Get-TaskCheckpointBridgeRoot {
+﻿# checkpoint.ps1 -- Reads, writes, and clears per-task checkpoint records under the bridge channel.
+function Get-TaskCheckpointBridgeRoot {
   try {
     return (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
   } catch {

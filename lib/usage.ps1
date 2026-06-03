@@ -1,4 +1,5 @@
-﻿function Get-UsagePath { Join-Path (Get-BridgeRoot) 'usage.jsonl' }
+﻿# usage.ps1 -- Records token usage and estimates model costs from bridge usage configuration.
+function Get-UsagePath { Join-Path (Get-BridgeRoot) 'usage.jsonl' }
 
 function Get-UsageConfig {
   # Prices are approximate and intended for burn-rate trends, not billing.

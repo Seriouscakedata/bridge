@@ -1,4 +1,5 @@
-﻿$script:PlanStatuses = @('pending','in_progress','done','blocked','skipped')
+﻿# plan.ps1 -- Manages plan records, step scheduling, progress summaries, and archival for bridge tasks.
+$script:PlanStatuses = @('pending','in_progress','done','blocked','skipped')
 
 function Get-PlanPath {
   if (Get-Command Get-ChannelPlanPath -ErrorAction SilentlyContinue) { return (Get-ChannelPlanPath) }
