@@ -3,6 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $script:TestBridgeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-backlog-packer-test-' + [guid]::NewGuid().ToString('N'))
+$script:EffectiveChannel = 'main'
 
 function Assert-True {
   param([bool]$Condition, [string]$Message)
@@ -10,7 +11,7 @@ function Assert-True {
 }
 
 function Get-BridgeRoot { return $script:TestBridgeRoot }
-function Get-EffectiveChannel { return 'main' }
+function Get-EffectiveChannel { return $script:EffectiveChannel }
 function Get-ChannelDir {
   param([string]$Slug = $null)
   if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = 'main' }
@@ -71,7 +72,71 @@ try {
   $pressure = Get-BacklogPackPressure
   Assert-True ([int]$pressure.open_unpacked -eq 0) ("expected no unpacked open items, got {0}" -f [int]$pressure.open_unpacked)
 
-  Write-Host ('OK backlog packer: packed {0} items into {1} workpacks' -f [int]$run.packed_items, [int]$run.workpack_count)
+  $forbiddenClass = Get-BacklogWorkpackClassification ([pscustomobject]@{
+    text = "files: lib/review-verdict.ps1 for delivery gate checks. НЕ трогать lib/backlog.ps1 lib/parallel.ps1 driver/84-loop-reply-markers.ps1 driver/*"
+  })
+  Assert-True (@($forbiddenClass.touch_set) -contains 'lib/review-verdict.ps1') 'expected explicit target file in touch_set'
+  Assert-True (-not (@($forbiddenClass.touch_set) -contains 'lib/backlog.ps1')) 'forbidden lib/backlog.ps1 leaked into touch_set'
+  Assert-True (-not (@($forbiddenClass.touch_set) -contains 'lib/parallel.ps1')) 'forbidden lib/parallel.ps1 leaked into touch_set'
+  Assert-True (-not (@($forbiddenClass.touch_set) -contains 'driver/84-loop-reply-markers.ps1')) 'forbidden driver file leaked into touch_set'
+
+  $explicitClass = Get-BacklogWorkpackClassification ([pscustomobject]@{
+    text = "files: lib/backlog.ps1`nImplement the marker handling change in the explicit file above.`nНЕ трогать driver/84-loop-reply-markers.ps1 driver/*"
+  })
+  Assert-True (@($explicitClass.touch_set) -contains 'lib/backlog.ps1') 'explicit files target did not win'
+  Assert-True (-not (@($explicitClass.touch_set) -contains 'driver/84-loop-reply-markers.ps1')) 'forbidden driver file leaked into explicit target touch_set'
+
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug 'main'), '', (New-Object System.Text.UTF8Encoding($false)))
+  $mainMarker = @'
+[
+  {
+    "slug": "bridge-self-project-backlog-test",
+    "title": "Bridge self project backlog marker test",
+    "task": "Create a synthetic bridge self backlog atom that proves PROJECT_BACKLOG markers work safely in the main channel.",
+    "files": ["lib/review-verdict.ps1"],
+    "depends_on": [],
+    "severity": "info"
+  }
+]
+'@
+  $mainResult = Add-ProjectBacklogFromMarker -Block $mainMarker -Channel 'main' -Source 'test' -SourceTaskId 'main-test'
+  Assert-True ([int]$mainResult.created -eq 1) ("expected one main bridge-self atom, got {0}" -f [int]$mainResult.created)
+  Assert-True (-not (@($mainResult.errors) -contains 'project backlog marker ignored outside project channel')) 'main channel marker was ignored'
+  $mainItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-project-backlog-test' } | Select-Object -First 1)
+  Assert-True ($mainItem.Count -eq 1) 'missing main bridge-self item'
+  Assert-True ([string]$mainItem[0].status -eq 'approved') 'main bridge-self item is not approved'
+  Assert-True ([string]$mainItem[0].scope -eq 'bridge') 'main bridge-self item scope is not bridge'
+  Assert-True (@($mainItem[0].tags) -contains 'project-autopilot') 'main bridge-self item missing project-autopilot tag'
+  Assert-True (@($mainItem[0].tags) -contains 'bridge-self') 'main bridge-self item missing bridge-self tag'
+  Assert-True (@($mainItem[0].tags) -contains 'atom') 'main bridge-self item missing atom tag'
+
+  $script:EffectiveChannel = 'external-project'
+  $externalDir = Get-ChannelDir -Slug 'external-project'
+  New-Item -ItemType Directory -Path $externalDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug 'external-project'), '', (New-Object System.Text.UTF8Encoding($false)))
+  $externalMarker = @'
+[
+  {
+    "slug": "external-project-backlog-test",
+    "title": "External project backlog marker test",
+    "task": "Create a synthetic external project backlog atom that proves legacy project channel behavior still uses project scope.",
+    "files": ["src/app/page.tsx"],
+    "depends_on": [],
+    "severity": "info"
+  }
+]
+'@
+  $externalResult = Add-ProjectBacklogFromMarker -Block $externalMarker -Channel 'external-project' -Source 'test' -SourceTaskId 'external-test'
+  Assert-True ([int]$externalResult.created -eq 1) ("expected one external project atom, got {0}" -f [int]$externalResult.created)
+  $externalItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'external-project-backlog-test' } | Select-Object -First 1)
+  Assert-True ($externalItem.Count -eq 1) 'missing external project item'
+  Assert-True ([string]$externalItem[0].status -eq 'approved') 'external project item is not approved'
+  Assert-True ([string]$externalItem[0].scope -eq 'project') 'external project item scope changed'
+  Assert-True ([string]$externalItem[0].project -eq 'external-project') 'external project item project slug changed'
+  Assert-True (-not (@($externalItem[0].tags) -contains 'bridge-self')) 'external project item got bridge-self tag'
+  $script:EffectiveChannel = 'main'
+
+  Write-Host ('OK backlog packer: packed {0} items into {1} workpacks; marker and forbidden touch-set tests passed' -f [int]$run.packed_items, [int]$run.workpack_count)
 } finally {
   try {
     $resolved = [System.IO.Path]::GetFullPath($script:TestBridgeRoot)

@@ -878,7 +878,7 @@ function Get-BacklogTaskTargetFile {
   param([string]$Text)
   $t = [string]$Text
   if ([string]::IsNullOrWhiteSpace($t)) { return '' }
-  $rx = '(?im)(?:перепиши|создай|реализуй|оформлени[ея]|приведи)[^\n]{0,90}?((?:src|app|content|public|prisma|config|styles|components|pages|api|lib)[\\/][\w./\-\[\]]+\.\w{1,5})'
+  $rx = '(?im)(?:перепиши|создай|реализуй|оформлени[ея]|приведи|измени|изменить|исправь|исправить|обнови|обновить|добавь|добавить|доработай|доработать|change|modify|update|edit|fix)[^\n]{0,90}?((?:src|app|content|public|prisma|config|styles|components|pages|api|lib|driver)[\\/][\w./\-\[\]]+\.\w{1,5})'
   $m = [regex]::Match($t, $rx)
   if ($m.Success) { return ($m.Groups[1].Value -replace '\\', '/') }
   return ''
@@ -886,6 +886,7 @@ function Get-BacklogTaskTargetFile {
 
 function Get-BacklogWorkpackConflictGroup {
   param([string]$Text, [string[]]$Files = @())
+  $Text = Get-BacklogTextOutsideForbiddenContexts -Text $Text
   # 2026-05-31 (Foundation #4 scale): for a PROJECT channel, group by the TARGET file FIRST — BEFORE
   # the bridge-module patterns below, which falsely match project text ("UI", "DESIGN.md", "frontend")
   # and collapsed redesign tasks into one 'ui'/'docs' group => serial. Different target files =>
@@ -930,17 +931,18 @@ function New-BacklogWorkpackId {
 function Get-BacklogWorkpackClassification {
   param($Item)
   $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  $signalText = Get-BacklogTextOutsideForbiddenContexts -Text $text
   $fileList = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($f in @(Get-BacklogMentionedFiles -Text $text | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
-  foreach ($f in @(Get-BacklogInferredFiles -Text $text)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+  foreach ($f in @(Get-BacklogMentionedFiles -Text $signalText | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+  foreach ($f in @(Get-BacklogInferredFiles -Text $signalText)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
   $files = @($fileList.ToArray())
-  $module = Get-BacklogWorkpackModule -Text $text -Files $files
+  $module = Get-BacklogWorkpackModule -Text $signalText -Files $files
   $touch = @()
   $key = ''
   if ($files.Count -gt 0) {
     # 2026-05-31 (Foundation #4): prefer the task's TARGET file (after the action verb) over an
     # эталон/reference path, so independent tasks land in distinct workpacks and run in parallel.
-    $primary = Get-BacklogTaskTargetFile -Text $text
+    $primary = Get-BacklogTaskTargetFile -Text $signalText
     if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
     $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
     # 2026-06-01 (Foundation #4 scale): for a PROJECT channel, key by the FULL file path so that N
@@ -966,7 +968,7 @@ function Get-BacklogWorkpackClassification {
     $touch = @($module)
   }
   if ([string]::IsNullOrWhiteSpace($key)) { $key = 'module:general' }
-  $conflict = Get-BacklogWorkpackConflictGroup -Text $text -Files $files
+  $conflict = Get-BacklogWorkpackConflictGroup -Text $signalText -Files $files
   return [pscustomobject]@{
     key            = $key.ToLowerInvariant()
     touch_set      = @($touch)
@@ -1203,9 +1205,10 @@ function Get-BacklogWorkpackItemTouches {
   # EVERY task overlapped on herosection.ts and the packer treated 6 independent file edits as mutually
   # conflicting -> serial execution. The target file is the only path written, so overlap then reflects
   # REAL conflicts. Falls back to the stored touch_set / mentioned files when no clear target exists.
+  $touchText = Get-BacklogTextOutsideForbiddenContexts -Text ([string]$Item.text)
   try {
     if (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue) {
-      $tgt = [string](Get-BacklogTaskTargetFile -Text ([string]$Item.text))
+      $tgt = [string](Get-BacklogTaskTargetFile -Text $touchText)
       if (-not [string]::IsNullOrWhiteSpace($tgt)) {
         $tv = $tgt.Trim().ToLowerInvariant() -replace '\\','/'
         if (-not [string]::IsNullOrWhiteSpace($tv)) { return @($tv) }
@@ -1220,7 +1223,7 @@ function Get-BacklogWorkpackItemTouches {
   } catch {}
   if ($touches.Count -eq 0) {
     try {
-      foreach ($f in @(Get-BacklogMentionedFiles -Text ([string]$Item.text))) {
+      foreach ($f in @(Get-BacklogMentionedFiles -Text $touchText)) {
         $v = ([string]$f).Trim().ToLowerInvariant() -replace '\\','/'
         if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$touches.Add($v) }
       }
@@ -2028,6 +2031,27 @@ function Get-BacklogMentionedFiles {
     }
   }
   return @($set.Keys)
+}
+
+function Get-BacklogForbiddenMentionPattern {
+  return "(?i)(?:не\s+трогать|не\s+трогай|do\s+not\s+touch|don't\s+touch|forbidden|запрещено)"
+}
+
+function Get-BacklogTextOutsideForbiddenContexts {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  $rx = Get-BacklogForbiddenMentionPattern
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($line in [regex]::Split([string]$Text, "\r?\n")) {
+    $m = [regex]::Match([string]$line, $rx)
+    if ($m.Success) {
+      $safe = ([string]$line).Substring(0, $m.Index)
+      if (-not [string]::IsNullOrWhiteSpace($safe)) { [void]$out.Add($safe) }
+      continue
+    }
+    [void]$out.Add([string]$line)
+  }
+  return (($out.ToArray()) -join "`n")
 }
 
 function Test-IdeaStillRelevant {
@@ -3260,9 +3284,8 @@ function Add-ProjectBacklogFromMarker {
     [int]$MaxTasks = 12
   )
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-ProjectAutopilotSlug }
-  if ([string]::IsNullOrWhiteSpace($Channel) -or $Channel -eq 'main') {
-    return [pscustomobject]@{ created=0; skipped=0; errors=@('project backlog marker ignored outside project channel'); ids=@() }
-  }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $isBridgeSelfBacklog = (([string]$Channel).Trim().ToLowerInvariant() -eq 'main')
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $tasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block | Select-Object -First $max)
   if ($tasks.Count -eq 0) { return [pscustomobject]@{ created=0; skipped=0; errors=@('no valid JSON tasks found'); ids=@() } }
@@ -3309,7 +3332,15 @@ function Add-ProjectBacklogFromMarker {
     $detailLine = if ($detailLines.Count -gt 0) { "`n`n" + (($detailLines.ToArray()) -join "`n") } else { '' }
     $fileLine = if ($files.Count -gt 0) { "`n`nFiles: " + (($files | Select-Object -First 12) -join ', ') } else { '' }
     $text = "[project-autopilot $slug] [[NORMAL]]`n`n$title`n`n$body$detailLine$fileLine"
-    $id = Add-Idea -Text $text -From 'project-autopilot' -Tags @('project-autopilot','auto-generated','atom') -Status 'approved' -Severity $severity -Project $Channel -Scope 'project' -SkipCurator
+    $ideaTags = @('project-autopilot','auto-generated','atom')
+    $ideaProject = [string]$Channel
+    $ideaScope = 'project'
+    if ($isBridgeSelfBacklog) {
+      $ideaTags = @('project-autopilot','auto-generated','atom','bridge-self')
+      $ideaProject = 'main'
+      $ideaScope = 'bridge'
+    }
+    $id = Add-Idea -Text $text -From 'project-autopilot' -Tags $ideaTags -Status 'approved' -Severity $severity -Project $ideaProject -Scope $ideaScope -SkipCurator
     if ([string]::IsNullOrWhiteSpace([string]$id)) { [void]$errors.Add("Add-Idea failed for '$slug'"); continue }
     try { Set-ProjectAutopilotIdeaMetadata -Id ([string]$id) -Task $t -SourceTaskId $SourceTaskId | Out-Null } catch {}
     $existingSlugs[$slug] = $true
