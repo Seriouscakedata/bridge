@@ -72,3 +72,16 @@ resilience-триада · crash-safe персистентность · крос
 
 ## Прогресс
 - 2026-06-03: план зафиксирован после аудита. Старт rank 1.
+- 2026-06-03: `lib/scholar.ps1` удалён (rank 1, первый атом, -448 LOC; architect.ps1 orphan-блок убран).
+- 2026-06-03: **разворот после коррекции Codex** — не «GIVE TO MODEL = удалить», а «Модель ПРЕДЛАГАЕТ → детерминированный Guard ПРОВЕРЯЕТ и ПРИМЕНЯЕТ». Условия Codex: shadow-first; маленькая схема; валидаторы отдельно; НЕ удалять старые эвристики до evidence; НЕ трогать verify/safety; ревью после каждого атома. Перед удалением rank 3 (intent/routing) идём через shadow-слой DecisionContract.
+
+### DecisionContract shadow-слой (подготовка к rank 3) — атомы
+- **Atom 1** `d819ad4` ✅ **принят Codex** — `lib/decision-contract.ps1` (схема 9 полей + строгий валидатор + shadow-логгер + Read/Remove helpers); capture в driver/84 (модель предлагает → лог vs legacy); hint в driver/30; `[[DECISION]]` вырезается из видимого ответа. Тесты 18/18.
+- **Atom 2** `fbf7c4e` (на ревью) — observability логгера: убран hardcoded OneDrive-фоллбэк; `Write-DecisionShadowSignal` → `.bridge-runtime/decision-shadow-errors.jsonl` для root-unavailable|channel-missing|write-failed; пустой `catch{}` заменён сигналом. Тесты 21/21.
+- **Atom 3** `5bdaa63` (на ревью) — `tools/analyze-decision-shadow.ps1`, READ-ONLY: emit-rate, valid%, intent-agreement model-vs-legacy, топ-расхождения, топ-ошибки валидатора, logger-failures. Проверен на синтетике.
+
+**Открытый вопрос (НЕ решать гаданием):** shadow-лог пуст. Причина — НЕ «модели игнорят hint», а отсутствие planner-turn'ов после включения Atom 1 (main idle: driver.out.log 10:00, conversation 15:24, Atom1 17:27). Эмитят ли модели `[[DECISION]]` — проверить на первом РЕАЛЬНОМ turn'е через analyzer, мост искусственно не провоцировать.
+
+**Atom 4 (развилка, требует факта + ревью Codex, не вслепую):**
+- если модели эмитят → копить evidence → advisory (модель предлагает intent → Guard принимает/fallback на legacy);
+- если НЕ эмитят → усилить hint. ВНИМАНИЕ: усиление меняет генерацию (модель пишет JSON каждый ход) — это зона ревью Codex, не одиночное решение оператора.
