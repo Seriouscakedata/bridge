@@ -166,11 +166,39 @@ if ($null -eq $pack) {
     return $report
 }
 
+$_volatileSources = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+[void]$_volatileSources.Add('features/state.json')
+
 if ($pack.PSObject.Properties['source_hashes'] -and $null -ne $pack.source_hashes) {
     foreach ($prop in @($pack.source_hashes.PSObject.Properties)) {
         $key = [string]$prop.Name
         $stored = [string]$prop.Value
         $sourcePath = Join-Path $root (Get-SelfModelDriftRelativePath -Path $key)
+        $keyNorm = $key -replace '\\', '/'
+        if ($_volatileSources.Contains($keyNorm)) {
+            if (-not (Test-Path -LiteralPath $sourcePath)) {
+                Add-SelfModelDriftFinding -Findings $findings -Fields @{
+                    check = 'volatile_source_missing'
+                    severity = 'medium'
+                    file = $key
+                }
+                continue
+            }
+            try {
+                $raw = [System.IO.File]::ReadAllText($sourcePath, [System.Text.Encoding]::UTF8)
+                if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                    $raw | ConvertFrom-Json | Out-Null
+                }
+            } catch {
+                Add-SelfModelDriftFinding -Findings $findings -Fields @{
+                    check = 'volatile_source_corrupt'
+                    severity = 'medium'
+                    file = $key
+                    detail = $_.Exception.Message
+                }
+            }
+            continue
+        }
         if (-not (Test-Path -LiteralPath $sourcePath)) {
             Add-SelfModelDriftFinding -Findings $findings -Fields @{
                 check = 'source_missing'

@@ -98,6 +98,8 @@ $tests = [ordered]@{
     staleSourceHash = $false
     packNormNoFindings = $false
     updateFeatureActivationsNotCalled = $false
+    volatileStateHashNoDrift = $false
+    volatileStateCorrupt = $false
 }
 $script:UpdateFeatureActivationsCalls = 0
 
@@ -150,8 +152,28 @@ try {
         throw 'Update-FeatureActivations was called'
     }
 
+    $case4 = New-SmokeRootPair -Name 'volatile-state-no-drift'
+    Write-SmokeUtf8NoBom -Path (Join-Path $case4.BridgeRoot 'features\registry.json') -Text '[]'
+    Write-SmokeUtf8NoBom -Path (Join-Path $case4.BridgeRoot 'features\state.json') -Text '{"activated":true}'
+    New-FixturePack -RuntimeRoot $case4.RuntimeRoot -SourceHashes @{ 'features/state.json' = ('deadbeef' * 8) } -PromptText 'active=0, dormant_or_other=0'
+    $result4 = Invoke-DriftSmoke -BridgeRoot $case4.BridgeRoot -RuntimeRoot $case4.RuntimeRoot
+    $tests.volatileStateHashNoDrift = -not (Test-SmokeFinding -Result $result4 -Check 'source_hash_drift')
+    if (-not $tests.volatileStateHashNoDrift) {
+        throw 'volatile state.json hash mismatch incorrectly produced source_hash_drift'
+    }
+
+    $case5 = New-SmokeRootPair -Name 'volatile-state-corrupt'
+    Write-SmokeUtf8NoBom -Path (Join-Path $case5.BridgeRoot 'features\registry.json') -Text '[]'
+    Write-SmokeUtf8NoBom -Path (Join-Path $case5.BridgeRoot 'features\state.json') -Text '{ not valid json {{{'
+    New-FixturePack -RuntimeRoot $case5.RuntimeRoot -SourceHashes @{ 'features/state.json' = ('deadbeef' * 8) } -PromptText 'active=0, dormant_or_other=0'
+    $result5 = Invoke-DriftSmoke -BridgeRoot $case5.BridgeRoot -RuntimeRoot $case5.RuntimeRoot
+    $tests.volatileStateCorrupt = Test-SmokeFinding -Result $result5 -Check 'volatile_source_corrupt'
+    if (-not $tests.volatileStateCorrupt) {
+        throw 'corrupt state.json did not produce volatile_source_corrupt'
+    }
+
     [pscustomobject]@{
-        testPassed = ($tests.missingOwnerFile -and $tests.staleSourceHash -and $tests.packNormNoFindings -and $tests.updateFeatureActivationsNotCalled)
+        testPassed = ($tests.missingOwnerFile -and $tests.staleSourceHash -and $tests.packNormNoFindings -and $tests.updateFeatureActivationsNotCalled -and $tests.volatileStateHashNoDrift -and $tests.volatileStateCorrupt)
         tests = [pscustomobject]$tests
     } | ConvertTo-Json -Depth 5 -Compress
 } finally {
