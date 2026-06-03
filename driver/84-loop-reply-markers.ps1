@@ -468,6 +468,9 @@
   $visibleReply = [regex]::Replace($visibleReply, $dispatchDagPattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepDonePattern, '')
   $visibleReply = [regex]::Replace($visibleReply, $stepPattern, '')
+  # 2026-06-03 slimming Atom 1 fix (Codex review): strip the shadow [[DECISION:{...}]] block so the
+  # technical JSON never reaches visible chat/memory.
+  $visibleReply = [regex]::Replace($visibleReply, '(?s)\[\[DECISION:\s*\{.*?\}\s*\]\]', '')
   if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder' -or $fastLaneActiveForTurn) {
     $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '')
   }

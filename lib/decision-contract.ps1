@@ -46,25 +46,31 @@ function Test-DecisionContract {
     $risk = [string]$obj.risk
     if ([string]::IsNullOrWhiteSpace($risk)) { $errs.Add('risk missing') }
     elseif ($script:DecisionRiskEnum -notcontains $risk.ToLowerInvariant()) { $errs.Add("risk '$risk' not in enum") }
-    # arrays
+    # arrays of STRINGS: files, dependencies, acceptance ([] allowed; reject string / non-string elements)
     foreach ($arr in @('files','dependencies','acceptance')) {
       $v = $obj.$arr
-      if ($null -eq $v) { $errs.Add("$arr missing (use [] if none)") }
-      elseif (-not ($v -is [System.Array] -or $v -is [System.Collections.IEnumerable] -and -not ($v -is [string]))) {
-        if ($v -is [string]) { $errs.Add("$arr must be an array, got string") }
+      if ($null -eq $v) { $errs.Add("$arr missing (use [] if none)"); continue }
+      if ($v -is [string]) { $errs.Add("$arr must be an array, got string"); continue }
+      if (-not ($v -is [System.Collections.IEnumerable])) { $errs.Add("$arr must be an array"); continue }
+      foreach ($el in $v) { if ($el -isnot [string]) { $errs.Add("$arr must contain only strings"); break } }
+    }
+    # parallel_groups: ARRAY OF ARRAYS (each group an array of strings); empty [] allowed
+    $pg = $obj.parallel_groups
+    if ($null -eq $pg) { $errs.Add('parallel_groups missing (use [] if none)') }
+    elseif ($pg -is [string] -or -not ($pg -is [System.Collections.IEnumerable])) { $errs.Add('parallel_groups must be an array of arrays') }
+    else {
+      foreach ($grp in $pg) {
+        if ($grp -is [string] -or -not ($grp -is [System.Collections.IEnumerable])) { $errs.Add('parallel_groups must be an array of arrays (each group is an array)'); break }
+        foreach ($gel in $grp) { if ($gel -isnot [string]) { $errs.Add('parallel_groups inner arrays must contain only strings'); break } }
       }
     }
-    # parallel_groups: array of arrays (tolerate empty)
-    if ($null -eq $obj.parallel_groups) { $errs.Add('parallel_groups missing (use [] if none)') }
-    # needs_operator: bool
+    # needs_operator: STRICT JSON boolean — reject "false"/"true" strings (they parse loosely otherwise)
     if ($null -eq $obj.needs_operator) { $errs.Add('needs_operator missing') }
-    elseif ($obj.needs_operator -isnot [bool]) {
-      $b = $false; if (-not [bool]::TryParse([string]$obj.needs_operator, [ref]$b)) { $errs.Add('needs_operator not boolean') }
-    }
-    # confidence: number 0..1
-    $confOk = $false
-    try { $c = [double]$obj.confidence; $confOk = ($c -ge 0 -and $c -le 1) } catch {}
-    if (-not $confOk) { $errs.Add('confidence not a number in 0..1') }
+    elseif ($obj.needs_operator -isnot [bool]) { $errs.Add('needs_operator must be a JSON boolean true/false (not a string)') }
+    # confidence: must be an actual JSON number in 0..1 (reject string "0.8")
+    if ($null -eq $obj.confidence) { $errs.Add('confidence missing') }
+    elseif (-not ($obj.confidence -is [double] -or $obj.confidence -is [int] -or $obj.confidence -is [long] -or $obj.confidence -is [decimal])) { $errs.Add('confidence must be a JSON number (not a string)') }
+    elseif ([double]$obj.confidence -lt 0 -or [double]$obj.confidence -gt 1) { $errs.Add('confidence out of range 0..1') }
     # rationale_short: non-empty string
     if ([string]::IsNullOrWhiteSpace([string]$obj.rationale_short)) { $errs.Add('rationale_short missing') }
   }
@@ -92,13 +98,23 @@ function Read-DecisionFromReply {
   return $null
 }
 
+function Remove-DecisionMarker {
+  # Strip the [[DECISION:{...}]] block from a reply so the technical JSON never reaches the visible
+  # chat / memory. Mirror of how other service markers are removed from $visibleReply.
+  param([string]$Reply)
+  if ([string]::IsNullOrWhiteSpace($Reply)) { return $Reply }
+  return ([regex]::Replace($Reply, '(?s)\s*\[\[DECISION:\s*\{.*?\}\s*\]\]\s*', "`n")).Trim()
+}
+
 function Write-DecisionShadow {
   # Append a shadow record: what the model PROPOSED vs what the legacy heuristic ACTUALLY decided,
   # plus whether the proposal passed the validator. For later "where did the model match/err" analysis.
   # Behavior-neutral: pure logging. Stored per-channel so promotion decisions are channel-aware.
   param(
     [string]$Channel = '',
-    [Parameter(Mandatory)][string]$Stage,        # 'intent' | 'routing' | 'workpack'
+    [Parameter(Mandatory)][string]$Stage,        # capture point, e.g. 'planner-turn' (whole-turn proposal).
+                                                  # Per-point 'intent'/'routing'/'workpack' captures land in Atom 2/3
+                                                  # when the contract is wired into those exact decision sites.
     $ModelDecision = $null,                       # object or JSON string (the proposal)
     $LegacyDecision = $null,                      # whatever the old heuristic chose
     [string]$Note = ''

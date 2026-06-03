@@ -22,6 +22,19 @@ $e = [ref]$null; Check 'missing needs_operator rejected'(-not (Test-DecisionCont
 $e = [ref]$null; Check 'missing rationale rejected'     (-not (Test-DecisionContract -Json (J @{ intent='code'; risk='low'; files=@(); dependencies=@(); parallel_groups=@(); acceptance=@(); needs_operator=$false; confidence=0.5 }) -Errors $e))
 $e = [ref]$null; Check 'invalid JSON rejected'          (-not (Test-DecisionContract -Json '{ not json ' -Errors $e))
 
+# strict-type negatives (Codex review: validator was too loose)
+$e = [ref]$null; Check 'parallel_groups as array-of-strings rejected' (-not (Test-DecisionContract -Json '{"intent":"code","risk":"low","files":[],"dependencies":[],"parallel_groups":["a","b"],"acceptance":[],"needs_operator":false,"confidence":0.5,"rationale_short":"x"}' -Errors $e))
+$e = [ref]$null; Check 'valid array-of-arrays parallel_groups accepted' (Test-DecisionContract -Json '{"intent":"code","risk":"low","files":["a"],"dependencies":[],"parallel_groups":[["a"],["b"]],"acceptance":["t"],"needs_operator":false,"confidence":0.5,"rationale_short":"x"}' -Errors $e)
+$e = [ref]$null; Check 'needs_operator string "false" rejected' (-not (Test-DecisionContract -Json '{"intent":"code","risk":"low","files":[],"dependencies":[],"parallel_groups":[],"acceptance":[],"needs_operator":"false","confidence":0.5,"rationale_short":"x"}' -Errors $e))
+$e = [ref]$null; Check 'confidence string "0.8" rejected' (-not (Test-DecisionContract -Json '{"intent":"code","risk":"low","files":[],"dependencies":[],"parallel_groups":[],"acceptance":[],"needs_operator":false,"confidence":"0.8","rationale_short":"x"}' -Errors $e))
+$e = [ref]$null; Check 'files with non-string element rejected' (-not (Test-DecisionContract -Json '{"intent":"code","risk":"low","files":[1,2],"dependencies":[],"parallel_groups":[],"acceptance":[],"needs_operator":false,"confidence":0.5,"rationale_short":"x"}' -Errors $e))
+
+# helper tests (Read/Remove)
+Check 'Read-DecisionFromReply extracts block'  ((Read-DecisionFromReply -Reply 'text [[DECISION: {"intent":"code"}]] tail') -match 'intent')
+Check 'Read-DecisionFromReply null when absent' ($null -eq (Read-DecisionFromReply -Reply 'no marker here'))
+Check 'Remove-DecisionMarker strips block'      ((Remove-DecisionMarker -Reply 'hi [[DECISION: {"a":1}]] bye') -notmatch 'DECISION')
+Check 'Remove-DecisionMarker keeps prose'       ((Remove-DecisionMarker -Reply 'keep this [[DECISION: {"a":1}]]') -match 'keep this')
+
 # schema is exposed for prompts/docs
 Check 'schema has 9 fields' ((Get-DecisionContractSchema).Keys.Count -eq 9)
 
