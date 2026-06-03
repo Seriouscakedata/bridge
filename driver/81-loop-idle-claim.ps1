@@ -329,6 +329,7 @@
       $claimedIdea = $null
       $claimedIdeaSelection = $null
       $claimedWorkpackBatch = $false
+      $workpackFrontierReport = $null
       $auditBusyForAutonomy = $false
       try { $auditBusyForAutonomy = Test-AuditMaintenanceBusy } catch {}
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
@@ -374,6 +375,8 @@
         # remain the authority.
         try {
           $wpBatch = Get-NextBacklogWorkpackBatch
+          if ($wpBatch -and ($wpBatch.PSObject.Properties.Name -contains 'frontier_report')) { $workpackFrontierReport = $wpBatch.frontier_report }
+          if (-not $workpackFrontierReport -and (Get-Command Get-BacklogWorkpackFrontierReport -ErrorAction SilentlyContinue)) { $workpackFrontierReport = Get-BacklogWorkpackFrontierReport }
           if ($wpBatch -and [int]$wpBatch.count -ge 2) {
             $wpCfg = Get-BacklogWorkpackExecConfig
             $safeItems = New-Object 'System.Collections.Generic.List[object]'
@@ -407,6 +410,11 @@
                   structural_wait = [int]$wpBatch.structural_wait_count
                   conflict_skips = [int]$wpBatch.conflict_skip_count
                   touch_skips = [int]$wpBatch.touch_skip_count
+                  reason = if ($workpackFrontierReport) { [string]$workpackFrontierReport.reason } else { 'batch-available' }
+                  approved = if ($workpackFrontierReport) { [int]$workpackFrontierReport.approved_count } else { 0 }
+                  with_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.with_workpack_count } else { 0 }
+                  without_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.without_workpack_count } else { 0 }
+                  protected = if ($workpackFrontierReport) { [int]$workpackFrontierReport.protected_count } else { 0 }
                 }
               }
               $claimedWorkpackBatch = $true
@@ -420,12 +428,72 @@
                   conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
                   eligible=[int]$wpBatch.eligible_count
                   ready=[int]$wpBatch.ready_count
+                  reason=if ($workpackFrontierReport) { [string]$workpackFrontierReport.reason } else { 'batch-available' }
+                  approved=if ($workpackFrontierReport) { [int]$workpackFrontierReport.approved_count } else { 0 }
+                  with_workpack=if ($workpackFrontierReport) { [int]$workpackFrontierReport.with_workpack_count } else { 0 }
+                  without_workpack=if ($workpackFrontierReport) { [int]$workpackFrontierReport.without_workpack_count } else { 0 }
+                  protected=if ($workpackFrontierReport) { [int]$workpackFrontierReport.protected_count } else { 0 }
                   dependency_wait=[int]$wpBatch.dependency_wait_count
                   structural_wait=[int]$wpBatch.structural_wait_count
                   conflict_skips=[int]$wpBatch.conflict_skip_count
                   touch_skips=[int]$wpBatch.touch_skip_count
                 })
               } catch {}
+            }
+          }
+        } catch {}
+      }
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
+        try {
+          if (-not $workpackFrontierReport -and (Get-Command Get-BacklogWorkpackFrontierReport -ErrorAction SilentlyContinue)) {
+            $workpackFrontierReport = Get-BacklogWorkpackFrontierReport
+          }
+          if ($workpackFrontierReport) {
+            $frontierVisible = ([int]$workpackFrontierReport.approved_count -ge [Math]::Max(10, ([int]$workpackFrontierReport.min_items * 4))) -or ([int]$workpackFrontierReport.with_workpack_count -gt 0) -or ([int]$workpackFrontierReport.eligible_count -gt 0)
+            if ($frontierVisible) {
+              $frontierSig = ([string]::Join(':', @(
+                [string]$workpackFrontierReport.reason,
+                [string][int]$workpackFrontierReport.selected_count,
+                [string][int]$workpackFrontierReport.eligible_count,
+                [string][int]$workpackFrontierReport.protected_count,
+                [string][int]$workpackFrontierReport.with_workpack_count,
+                [string][int]$workpackFrontierReport.without_workpack_count
+              )))
+              $frontierNow = [DateTime]::UtcNow
+              $frontierDue = $false
+              if ([string]$script:LastWorkpackFrontierReportSignature -ne $frontierSig) {
+                $frontierDue = $true
+              } elseif ($null -eq $script:LastWorkpackFrontierReportAt) {
+                $frontierDue = $true
+              } elseif (($frontierNow - [DateTime]$script:LastWorkpackFrontierReportAt).TotalMinutes -ge 15) {
+                $frontierDue = $true
+              }
+              if ($frontierDue) {
+                $script:LastWorkpackFrontierReportSignature = $frontierSig
+                $script:LastWorkpackFrontierReportAt = $frontierNow
+                Write-BacklogJsonLine ([ordered]@{
+                  ts=$frontierNow.ToString('o')
+                  action='workpack-frontier-report'
+                  reason=[string]$workpackFrontierReport.reason
+                  batch_available=[bool]$workpackFrontierReport.batch_available
+                  parallel_required=[bool]$workpackFrontierReport.parallel_required
+                  approved=[int]$workpackFrontierReport.approved_count
+                  with_workpack=[int]$workpackFrontierReport.with_workpack_count
+                  without_workpack=[int]$workpackFrontierReport.without_workpack_count
+                  eligible=[int]$workpackFrontierReport.eligible_count
+                  protected=[int]$workpackFrontierReport.protected_count
+                  ready=[int]$workpackFrontierReport.ready_count
+                  selected=[int]$workpackFrontierReport.selected_count
+                  min_items=[int]$workpackFrontierReport.min_items
+                  dependency_wait=[int]$workpackFrontierReport.dependency_wait_count
+                  structural_wait=[int]$workpackFrontierReport.structural_wait_count
+                  conflict_skips=[int]$workpackFrontierReport.conflict_skip_count
+                  touch_skips=[int]$workpackFrontierReport.touch_skip_count
+                  selected_ids=@($workpackFrontierReport.selected_ids)
+                  selected_groups=@($workpackFrontierReport.selected_groups)
+                })
+                Add-Message -From system -Text ("🧭 Workpack frontier: batch не claim-ится; reason=" + [string]$workpackFrontierReport.reason + ", approved=" + [int]$workpackFrontierReport.approved_count + ", with_workpack=" + [int]$workpackFrontierReport.with_workpack_count + ", eligible=" + [int]$workpackFrontierReport.eligible_count + ", selected=" + [int]$workpackFrontierReport.selected_count + "/" + [int]$workpackFrontierReport.min_items + ".") -Kind event | Out-Null
+              }
             }
           }
         } catch {}
@@ -441,6 +509,47 @@
             $claimedIdea = Get-ObjectValue $claimedIdeaSelection @('idea','item')
           } elseif ($claimedIdeaSelection -and (($claimedIdeaSelection.PSObject.Properties.Name -contains 'id') -or ($claimedIdeaSelection.PSObject.Properties.Name -contains 'text'))) {
             $claimedIdea = $claimedIdeaSelection
+          }
+        } catch {}
+      }
+      if ($claimedIdea -and (-not $claimedWorkpackBatch) -and $workpackFrontierReport -and [bool]$workpackFrontierReport.parallel_required) {
+        try {
+          $serialReason = [string](Get-BacklogPackObjectValue -Obj $claimedIdea -Name 'serial_reason' -Default '')
+          $validSerialReason = $false
+          if (-not [string]::IsNullOrWhiteSpace($serialReason)) {
+            if (Get-Command Test-WorkpackValidSerialReason -ErrorAction SilentlyContinue) {
+              $validSerialReason = [bool](Test-WorkpackValidSerialReason -SerialReason $serialReason -AllowEmpty:$false)
+            } else {
+              $validSerialReason = $true
+            }
+          }
+          if (-not $validSerialReason) {
+            $warnSig = ([string]$claimedIdea.id + ':' + [string]$workpackFrontierReport.reason + ':' + ([string]::Join(',', @($workpackFrontierReport.selected_ids))))
+            $warnNow = [DateTime]::UtcNow
+            $warnDue = $false
+            if ([string]$script:LastParallelObligationWarningSignature -ne $warnSig) {
+              $warnDue = $true
+            } elseif ($null -eq $script:LastParallelObligationWarningAt) {
+              $warnDue = $true
+            } elseif (($warnNow - [DateTime]$script:LastParallelObligationWarningAt).TotalMinutes -ge 15) {
+              $warnDue = $true
+            }
+            if ($warnDue) {
+              $script:LastParallelObligationWarningSignature = $warnSig
+              $script:LastParallelObligationWarningAt = $warnNow
+              Write-BacklogJsonLine ([ordered]@{
+                ts=$warnNow.ToString('o')
+                action='parallel-obligation-warning'
+                item_id=[string]$claimedIdea.id
+                reason=[string]$workpackFrontierReport.reason
+                selected=[int]$workpackFrontierReport.selected_count
+                min_items=[int]$workpackFrontierReport.min_items
+                selected_ids=@($workpackFrontierReport.selected_ids)
+                selected_groups=@($workpackFrontierReport.selected_groups)
+                serial_reason=$serialReason
+              })
+              Add-Message -From system -Text ("⚠ Parallel obligation warning: frontier требует parallel (selected=" + [int]$workpackFrontierReport.selected_count + "/" + [int]$workpackFrontierReport.min_items + "), но выбран single-task без valid serial_reason. Не блокирую выполнение; пишу диагностику.") -Kind event | Out-Null
+            }
           }
         } catch {}
       }
@@ -642,6 +751,7 @@
             if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_frontier' -and $claimedIdea.workpack_frontier) {
               $wf = $claimedIdea.workpack_frontier
               $frontierText = " Фронт: selected=" + $batchIdsForState.Count + ", ready=" + [int]$wf.ready + "/" + [int]$wf.eligible + ", ждут deps=" + [int]$wf.dependency_wait + ", barrier=" + [int]$wf.structural_wait + ", conflicts=" + ([int]$wf.conflict_skips + [int]$wf.touch_skips) + "."
+              if (-not [string]::IsNullOrWhiteSpace([string]$wf.reason)) { $frontierText += " reason=" + [string]$wf.reason + "." }
             }
           } catch {}
           Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks." + $frontierText + " Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null

@@ -1363,12 +1363,30 @@ function Test-BacklogTaskDependenciesReady {
   return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()) }
 }
 
-function Get-NextBacklogWorkpackBatch {
+function Resolve-BacklogWorkpackFrontier {
   param($Config = $null)
   if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
-  if (-not [bool]$Config.enabled) { return $null }
 
   $allItems = @(Get-Backlog)
+  $approved = @(
+    $allItems |
+    Where-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'status' -Default '') -eq 'approved' }
+  )
+  $withWorkpack = @(
+    $approved |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $_ -Name 'workpack_id' -Default '')) }
+  )
+  $withoutWorkpack = @(
+    $approved |
+    Where-Object { [string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $_ -Name 'workpack_id' -Default '')) }
+  )
+  $protected = @(
+    $withWorkpack |
+    Where-Object {
+      $cg = ([string](Get-BacklogPackObjectValue -Obj $_ -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+      ($cg -in @('core','safety'))
+    }
+  )
   $eligible = @(
     $allItems |
     Where-Object { Test-BacklogWorkpackExecEligible -Item $_ -Config $Config } |
@@ -1376,7 +1394,6 @@ function Get-NextBacklogWorkpackBatch {
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}}
   )
-  if ($eligible.Count -lt [int]$Config.minItems) { return $null }
 
   $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
   $selected = New-Object 'System.Collections.Generic.List[object]'
@@ -1387,53 +1404,104 @@ function Get-NextBacklogWorkpackBatch {
   $structuralWait = 0
   $conflictSkips = 0
   $touchSkips = 0
-  foreach ($item in $eligible) {
-    $selectionFull = ($selected.Count -ge [int]$Config.maxItems)
-    $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
-    $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
-    $explicitDeps = @($depCheck.deps)
-    if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
+  if ([bool]$Config.enabled -and $eligible.Count -ge [int]$Config.minItems) {
+    foreach ($item in $eligible) {
+      $selectionFull = ($selected.Count -ge [int]$Config.maxItems)
+      $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
+      $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
+      $explicitDeps = @($depCheck.deps)
+      if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
 
-    # Dependency-aware frontier: one blocked/dependent item must not freeze the whole team.
-    # Explicit depends_on is authoritative. Heuristic "foundation" without explicit deps stays a
-    # serial barrier; explicit, already-satisfied deps can join the frontier if touch sets do not
-    # overlap. This keeps scaffold/schema steps safe while allowing later ready lanes to fan out.
-    $depSignal = Get-BacklogTaskDepSignal -Text $txt
-    if ($depSignal -eq 'foundation' -and $explicitDeps.Count -eq 0) {
-      $structuralWait++
-      if (-not $selectionFull) { break }
-      continue
+      # Dependency-aware frontier: one blocked/dependent item must not freeze the whole team.
+      # Explicit depends_on is authoritative. Heuristic "foundation" without explicit deps stays a
+      # serial barrier; explicit, already-satisfied deps can join the frontier if touch sets do not
+      # overlap. This keeps scaffold/schema steps safe while allowing later ready lanes to fan out.
+      $depSignal = Get-BacklogTaskDepSignal -Text $txt
+      if ($depSignal -eq 'foundation' -and $explicitDeps.Count -eq 0) {
+        $structuralWait++
+        if (-not $selectionFull) { break }
+        continue
+      }
+      if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) { $dependencyWait++; continue }
+
+      $readyCount++
+      if ($selectionFull) { continue }
+      $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
+      if ([string]::IsNullOrWhiteSpace($packId)) { continue }
+      # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): do NOT dedupe by workpack_id. Truly
+      # independent tasks (distinct conflict_group + non-overlapping touch-set) frequently share a STALE
+      # workpack_id from an earlier packing pass — e.g. 5 redesign tasks for 5 different files all carried
+      # one 'erosection-ts' pack id from when they were collapsed under a common эталон. Blocking by
+      # workpack_id then capped real parallelism at 1-per-pack (6 independent file edits -> only 2
+      # streams), so the bridge ran near-serial instead of as a team. Independence is fully decided by
+      # conflict_group + touch overlap below; workpack_id is reporting-only.
+      $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
+      if ($usedGroups.ContainsKey($group)) { $conflictSkips++; continue }
+
+      $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+      if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { $touchSkips++; continue }
+
+      [void]$selected.Add($item)
+      $usedGroups[$group] = $true
+      foreach ($t in $touches) { [void]$usedTouches.Add($t) }
     }
-    if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) { $dependencyWait++; continue }
-
-    $readyCount++
-    if ($selectionFull) { continue }
-    $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
-    if ([string]::IsNullOrWhiteSpace($packId)) { continue }
-    # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): do NOT dedupe by workpack_id. Truly
-    # independent tasks (distinct conflict_group + non-overlapping touch-set) frequently share a STALE
-    # workpack_id from an earlier packing pass — e.g. 5 redesign tasks for 5 different files all carried
-    # one 'erosection-ts' pack id from when they were collapsed under a common эталон. Blocking by
-    # workpack_id then capped real parallelism at 1-per-pack (6 independent file edits -> only 2
-    # streams), so the bridge ran near-serial instead of as a team. Independence is fully decided by
-    # conflict_group + touch overlap below; workpack_id is reporting-only.
-    $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
-    if ($usedGroups.ContainsKey($group)) { $conflictSkips++; continue }
-
-    $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
-    if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { $touchSkips++; continue }
-
-    [void]$selected.Add($item)
-    $usedGroups[$group] = $true
-    foreach ($t in $touches) { [void]$usedTouches.Add($t) }
   }
 
-  if ($selected.Count -lt [int]$Config.minItems) { return $null }
   $ids = @($selected.ToArray() | ForEach-Object { [string]$_.id })
   $packs = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
-  $groups = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
-  return [pscustomobject]@{
+  $groups = @($usedGroups.Keys | Sort-Object -Unique)
+  $batchAvailable = ($selected.Count -ge [int]$Config.minItems)
+  $reason = 'unknown'
+  if (-not [bool]$Config.enabled) {
+    $reason = 'disabled'
+  } elseif ($approved.Count -lt [int]$Config.minItems) {
+    $reason = 'not-enough-approved'
+  } elseif ($withWorkpack.Count -lt [int]$Config.minItems) {
+    $reason = 'not-enough-workpack'
+  } elseif ($eligible.Count -lt [int]$Config.minItems) {
+    if (($protected.Count -ge [int]$Config.minItems) -and (-not [bool]$Config.includeProtected)) {
+      $reason = 'protected-dominant'
+    } else {
+      $reason = 'not-enough-eligible'
+    }
+  } elseif ($batchAvailable) {
+    $reason = 'batch-available'
+  } elseif ($readyCount -lt [int]$Config.minItems) {
+    if ($dependencyWait -gt 0) { $reason = 'dependency-wait' }
+    elseif ($structuralWait -gt 0) { $reason = 'structural-barrier' }
+    else { $reason = 'not-enough-eligible' }
+  } elseif (($conflictSkips + $touchSkips) -gt 0) {
+    $reason = 'conflicts-or-touch-overlap'
+  } elseif ($dependencyWait -gt 0) {
+    $reason = 'dependency-wait'
+  } elseif ($structuralWait -gt 0) {
+    $reason = 'structural-barrier'
+  }
+
+  $report = [pscustomobject][ordered]@{
+    enabled               = [bool]$Config.enabled
+    approved_count        = [int]$approved.Count
+    with_workpack_count   = [int]$withWorkpack.Count
+    without_workpack_count = [int]$withoutWorkpack.Count
+    eligible_count        = [int]$eligible.Count
+    protected_count       = [int]$protected.Count
+    ready_count           = [int]$readyCount
+    selected_count        = [int]$selected.Count
+    min_items             = [int]$Config.minItems
+    max_items             = [int]$Config.maxItems
+    dependency_wait_count = [int]$dependencyWait
+    structural_wait_count = [int]$structuralWait
+    conflict_skip_count   = [int]$conflictSkips
+    touch_skip_count      = [int]$touchSkips
+    batch_available       = [bool]$batchAvailable
+    parallel_required     = [bool]$batchAvailable
+    reason                = [string]$reason
+    selected_ids          = @($ids)
+    selected_groups       = @($groups)
+  }
+
+  return [pscustomobject][ordered]@{
     items = @($selected.ToArray())
     ids = @($ids)
     workpacks = @($packs)
@@ -1445,6 +1513,33 @@ function Get-NextBacklogWorkpackBatch {
     structural_wait_count = $structuralWait
     conflict_skip_count = $conflictSkips
     touch_skip_count = $touchSkips
+    report = $report
+  }
+}
+
+function Get-BacklogWorkpackFrontierReport {
+  param($Config = $null)
+  $frontier = Resolve-BacklogWorkpackFrontier -Config $Config
+  return $frontier.report
+}
+
+function Get-NextBacklogWorkpackBatch {
+  param($Config = $null)
+  $frontier = Resolve-BacklogWorkpackFrontier -Config $Config
+  if (-not $frontier -or -not $frontier.report -or -not [bool]$frontier.report.batch_available) { return $null }
+  return [pscustomobject]@{
+    items = @($frontier.items)
+    ids = @($frontier.ids)
+    workpacks = @($frontier.workpacks)
+    conflict_groups = @($frontier.conflict_groups)
+    count = [int]$frontier.count
+    eligible_count = [int]$frontier.eligible_count
+    ready_count = [int]$frontier.ready_count
+    dependency_wait_count = [int]$frontier.dependency_wait_count
+    structural_wait_count = [int]$frontier.structural_wait_count
+    conflict_skip_count = [int]$frontier.conflict_skip_count
+    touch_skip_count = [int]$frontier.touch_skip_count
+    frontier_report = $frontier.report
   }
 }
 

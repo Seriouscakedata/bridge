@@ -9,6 +9,34 @@ function Assert-True {
   if (-not $Condition) { throw $Message }
 }
 
+function Assert-FrontierReportShape {
+  param($Report, [string]$Name)
+  $required = @(
+    'enabled',
+    'approved_count',
+    'with_workpack_count',
+    'without_workpack_count',
+    'eligible_count',
+    'protected_count',
+    'ready_count',
+    'selected_count',
+    'min_items',
+    'max_items',
+    'dependency_wait_count',
+    'structural_wait_count',
+    'conflict_skip_count',
+    'touch_skip_count',
+    'batch_available',
+    'parallel_required',
+    'reason',
+    'selected_ids',
+    'selected_groups'
+  )
+  foreach ($field in $required) {
+    Assert-True ($Report.PSObject.Properties.Name -contains $field) ("{0} missing frontier field {1}" -f $Name, $field)
+  }
+}
+
 function Get-BridgeRoot { return $script:TestBridgeRoot }
 function Get-EffectiveChannel { return 'main' }
 function Get-ChannelDir {
@@ -83,10 +111,87 @@ try {
   Assert-True (-not (@($batch.ids) -contains [string]$idAudit2)) 'same conflict group should be skipped'
   Assert-True (-not (@($batch.ids) -contains [string]$idSafety)) 'protected safety group should be skipped by default'
 
+  $report = Get-BacklogWorkpackFrontierReport
+  Assert-FrontierReportShape -Report $report -Name 'independent'
+  Assert-True ([bool]$report.batch_available) 'expected frontier report batch_available=true'
+  Assert-True ([int]$report.selected_count -ge 2) 'expected frontier report selected_count>=2'
+  Assert-True ([string]$report.reason -eq 'batch-available') ("expected batch-available frontier reason, got {0}" -f [string]$report.reason)
+  Assert-True (@($report.selected_ids) -contains [string]$idAudit) 'expected frontier report audit id'
+  Assert-True (@($report.selected_groups) -contains 'audit') 'expected frontier report audit group'
+  Assert-True ($batch.PSObject.Properties.Name -contains 'frontier_report') 'expected batch to expose frontier_report'
+
   $taskText = New-BacklogWorkpackBatchTaskText -Items @($batch.items)
   Assert-True ($taskText -match '\[\[PARALLEL:wp1\]\]') 'expected parallel template wp1'
   Assert-True ($taskText -match '\[\[PARALLEL:wp2\]\]') 'expected parallel template wp2'
   Assert-True ($taskText -match 'STATUS:\s*CONTINUE') 'expected planner status hint'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idProtectedA = Add-Idea -Text 'change watchdog restart gate in watchdog.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idProtectedB = Add-Idea -Text 'change supervisor safety loop in supervisor.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idProtectedA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-protected-a' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'safety' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('watchdog.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idProtectedB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-protected-b' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'core' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('supervisor.ps1') -Force
+    }
+  }
+  Save-Backlog $items
+  $protectedReport = Get-BacklogWorkpackFrontierReport
+  $protectedBatch = Get-NextBacklogWorkpackBatch
+  Assert-FrontierReportShape -Report $protectedReport -Name 'protected-only'
+  Assert-True ($null -eq $protectedBatch) 'expected protected-only batch to be null'
+  Assert-True (-not [bool]$protectedReport.batch_available) 'expected protected-only report batch_available=false'
+  Assert-True ([int]$protectedReport.protected_count -gt 0) 'expected protected-only report protected_count>0'
+  Assert-True (@('protected-dominant','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected protected-only reason, got {0}" -f [string]$protectedReport.reason)
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idNoPackA = Add-Idea -Text 'update docs one without workpack metadata in docs/a.md' -From 'test' -Status 'approved' -SkipCurator
+  $idNoPackB = Add-Idea -Text 'update docs two without workpack metadata in docs/b.md' -From 'test' -Status 'approved' -SkipCurator
+  $noPackReport = Get-BacklogWorkpackFrontierReport
+  $noPackBatch = Get-NextBacklogWorkpackBatch
+  Assert-FrontierReportShape -Report $noPackReport -Name 'no-workpack'
+  Assert-True ($null -eq $noPackBatch) 'expected no-workpack batch to be null'
+  Assert-True (-not [bool]$noPackReport.batch_available) 'expected no-workpack report batch_available=false'
+  Assert-True ([int]$noPackReport.without_workpack_count -ge 2) 'expected no-workpack report without_workpack_count>=2'
+  Assert-True (@('not-enough-workpack','not-enough-eligible') -contains [string]$noPackReport.reason) ("expected no-workpack reason, got {0}" -f [string]$noPackReport.reason)
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$idNoPackA)) 'expected no-workpack fixture id A'
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$idNoPackB)) 'expected no-workpack fixture id B'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idFoundation = Add-Idea -Text 'scaffold database schema foundation in prisma/schema.prisma' -From 'test' -Status 'approved' -SkipCurator
+  $idAfterBarrier = Add-Idea -Text 'update independent docs after barrier in RUNBOOK.md' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idFoundation) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-foundation' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:prisma/schema.prisma' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('prisma/schema.prisma') -Force
+    } elseif ([string]$item.id -eq [string]$idAfterBarrier) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-after-barrier' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:RUNBOOK.md' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('RUNBOOK.md') -Force
+    }
+  }
+  Save-Backlog $items
+  $structuralReport = Get-BacklogWorkpackFrontierReport
+  Assert-FrontierReportShape -Report $structuralReport -Name 'structural'
+  Assert-True (-not [bool]$structuralReport.batch_available) 'expected structural barrier report batch_available=false'
+  Assert-True ([int]$structuralReport.structural_wait_count -ge 1) 'expected structural barrier count'
+  Assert-True ([string]$structuralReport.reason -eq 'structural-barrier') ("expected structural-barrier reason, got {0}" -f [string]$structuralReport.reason)
 
   $items = @(Get-Backlog)
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
@@ -131,12 +236,14 @@ try {
 
   $frontierBatch = Get-NextBacklogWorkpackBatch
   Assert-True ($frontierBatch -ne $null) 'expected dependency-aware ready frontier batch'
+  Assert-FrontierReportShape -Report $frontierBatch.frontier_report -Name 'dependency-ready'
   Assert-True ([int]$frontierBatch.count -eq 3) ("expected 3 ready frontier items, got {0}" -f [int]$frontierBatch.count)
   Assert-True (@($frontierBatch.ids) -contains [string]$idReadyA) 'expected ready profile atom'
   Assert-True (@($frontierBatch.ids) -contains [string]$idReadyB) 'expected ready gallery atom'
   Assert-True (@($frontierBatch.ids) -contains [string]$idReadyC) 'expected ready docs atom'
   Assert-True (-not (@($frontierBatch.ids) -contains [string]$idWaiting)) 'waiting dependency atom should not block or join frontier'
   Assert-True ([int]$frontierBatch.dependency_wait_count -ge 1) 'expected dependency wait telemetry'
+  Assert-True ([string]$frontierBatch.frontier_report.reason -eq 'batch-available') ("expected dependency-ready reason, got {0}" -f [string]$frontierBatch.frontier_report.reason)
 
   $startSrvText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Start-Srv and Start-Drv use Start-Process with -NoNewWindow but redirect stdout/stderr to files. If the log file path is unavailable, supervisor can fail silently.'
   $reapText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Reap-Bloated kills tracked processes with private memory > 8GB. The threshold is hardcoded.'
