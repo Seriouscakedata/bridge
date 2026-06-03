@@ -127,11 +127,11 @@ function Add-DeliveryContractListItem {
 function Get-DeliveryContractSectionNames {
   param([Parameter(Mandatory)][string]$Section)
   switch ($Section) {
-    'goal' { return @('goal','Goal') }
-    'scope/non_goals' { return @('scope','Scope','non_goals','NonGoals','nonGoals','non-goals') }
-    'users/roles' { return @('users','Users','roles','Roles') }
+    'goal' { return @('goal','Goal','project_goal','projectGoal','mission','Mission','outcome','Outcome') }
+    'scope/non_goals' { return @('scope','Scope','non_goals','NonGoals','nonGoals','non-goals','requirements','Requirements','capabilities','Capabilities','features','Features','functional_requirements','functionalRequirements') }
+    'users/roles' { return @('users','Users','roles','Roles','personas','Personas','actors','Actors','user_journeys','userJourneys','journeys','Journeys','flows','Flows','workflows','Workflows') }
     'surfaces/routes/screens' { return @('surfaces','Surfaces','routes','Routes','screens','Screens') }
-    'data/backend' { return @('data','Data','backend','Backend') }
+    'data/backend' { return @('data','Data','backend','Backend','storage','Storage','api','API','apis','APIs','endpoints','Endpoints','modules','Modules') }
     'acceptance_scenarios' { return @('acceptance_scenarios','AcceptanceScenarios','acceptanceScenarios','acceptance-scenarios') }
     'checks' { return @('checks','Checks') }
     'risk' { return @('risk','Risk','risks','Risks') }
@@ -297,6 +297,7 @@ function Test-DeliveryContract {
   $bridgeSelfSignal = (
     Test-DeliveryContractTruthy (Get-DeliveryContractValue -Object $Context -Names @('IsBridgeSelf','isBridgeSelf','bridge_self','BridgeSelf'))
   ) -or $states['critical_paths'].found -or $states['canary'].found
+  $requireParallelPolicy = Test-DeliveryContractTruthy (Get-DeliveryContractValue -Object $Context -Names @('RequireParallelPolicy','require_parallel_policy','RequireParallel','requireParallel'))
 
   $bridgeSelfRouteOmission = ($bridgeSelfSignal -and -not $states['surfaces/routes/screens'].found)
   if ($bridgeSelfRouteOmission) {
@@ -317,6 +318,9 @@ function Test-DeliveryContract {
         Add-DeliveryContractListItem -List $blockers -Value 'acceptance_scenarios'
       } elseif ($section -eq 'parallel_policy') {
         Add-DeliveryContractListItem -List $warnings -Value 'soft_missing:parallel_policy'
+        if ($requireParallelPolicy) {
+          Add-DeliveryContractListItem -List $blockers -Value 'parallel_policy'
+        }
       } else {
         $fatalMissing = $true
       }
@@ -326,6 +330,9 @@ function Test-DeliveryContract {
     if ($state.shallow) {
       Add-DeliveryContractListItem -List $warnings -Value ('shallow:' + $section)
       $score -= Get-DeliveryContractPenalty -Section $section -Kind 'shallow'
+      if ($requireParallelPolicy -and $section -eq 'parallel_policy') {
+        Add-DeliveryContractListItem -List $blockers -Value 'parallel_policy'
+      }
       if ($bridgeSelfRouteOmission -and $section -eq 'checks') { $bridgeSelfStrictFailure = $true }
     }
   }

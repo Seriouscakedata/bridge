@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -9,6 +9,15 @@ $script:Messages = New-Object 'System.Collections.Generic.List[string]'
 function Assert-True {
   param([bool]$Condition, [string]$Message)
   if (-not $Condition) { throw $Message }
+}
+
+function Copy-OrderedMap {
+  param([Parameter(Mandatory)]$Map)
+  $copy = [ordered]@{}
+  foreach ($entry in $Map.GetEnumerator()) {
+    $copy[[string]$entry.Key] = $entry.Value
+  }
+  return $copy
 }
 
 function Get-BridgeRoot { return $script:TestBridgeRoot }
@@ -101,7 +110,15 @@ try {
       [ordered]@{ id='admin-review'; steps=@('open admin','review content','remove item') }
     )
     ux_contract = [ordered]@{ navigation='Every primary user role has a clear first action and persistent navigation.' }
+    backend = 'The fixture backend contract covers persisted auth state, content moderation records, admin review APIs, and audit-safe storage boundaries.'
     acceptance_scenarios = @('build passes','auth journey passes','admin journey passes')
+    checks = @(
+      'Run parser validation for touched scripts before approval.',
+      'Run focused project autopilot and acceptance contract harnesses.',
+      'Run smoke.ps1 before committing bridge-self contract gate changes.'
+    )
+    risk = 'A shallow contract can queue implementation atoms without checks, risk handling, or parallel ownership policy.'
+    parallel_policy = 'Coordinator atoms must declare independent touch sets and serial_reason when work cannot run in parallel.'
   }
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $projectRoot '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
@@ -118,11 +135,53 @@ try {
   $gateStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
   Assert-True (-not [bool]$gateStart.queued) 'unapproved plan must not queue a coordinator'
   Assert-True ([string]$gateStart.reason -eq 'plan-not-approved') ("expected plan-not-approved, got " + [string]$gateStart.reason)
+
+  $contractPath = Join-Path (Join-Path $projectRoot '.bridge') 'project-contract.json'
+  $missingChecksContract = Copy-OrderedMap -Map $contract
+  $missingChecksContract.Remove('checks')
+  [System.IO.File]::WriteAllText($contractPath, (($missingChecksContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $missingChecksGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$missingChecksGate.ready) 'missing checks must make project plan contract not ready'
+  Assert-True ((@($missingChecksGate.issues) | Where-Object { $_ -match 'checks' }).Count -gt 0) ('missing checks must be reported by project plan contract gate; issues=' + ((@($missingChecksGate.issues) -join ' | ')))
+  $missingChecksThrow = $false
+  try { Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null } catch { $missingChecksThrow = $true }
+  Assert-True $missingChecksThrow 'approval must throw when checks are missing from delivery contract'
+
+  $missingRiskContract = Copy-OrderedMap -Map $contract
+  $missingRiskContract.Remove('risk')
+  [System.IO.File]::WriteAllText($contractPath, (($missingRiskContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $missingRiskGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$missingRiskGate.ready) 'missing risk must make project plan contract not ready'
+  Assert-True ((@($missingRiskGate.issues) | Where-Object { $_ -match 'risk' }).Count -gt 0) ('missing risk must be reported by project plan contract gate; issues=' + ((@($missingRiskGate.issues) -join ' | ')))
+  $missingRiskThrow = $false
+  try { Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null } catch { $missingRiskThrow = $true }
+  Assert-True $missingRiskThrow 'approval must throw when risk is missing from delivery contract'
+
+  $missingParallelContract = Copy-OrderedMap -Map $contract
+  $missingParallelContract.Remove('parallel_policy')
+  [System.IO.File]::WriteAllText($contractPath, (($missingParallelContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $missingParallelGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$missingParallelGate.ready) 'missing parallel_policy must make strict project plan contract not ready'
+  Assert-True (@($missingParallelGate.delivery_contract_blockers) -contains 'parallel_policy') 'strict project gate must block on missing parallel_policy'
+  $stateForStrictStart = [System.IO.File]::ReadAllText((Join-Path $channelDir 'channel.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $stateForStrictStart | Add-Member -NotePropertyName plan_approved -NotePropertyValue $true -Force
+  $stateForStrictStart | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue ([string](Get-ProjectAutopilotPlanSignature -ProjectRoot $projectRoot)) -Force
+  [System.IO.File]::WriteAllText((Join-Path $channelDir 'channel.json'), (($stateForStrictStart | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $strictStart = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
+  Assert-True (-not [bool]$strictStart.queued) 'strict missing parallel_policy must not queue coordinator'
+  Assert-True ([string]$strictStart.reason -eq 'plan-contract-not-ready') ("expected plan-contract-not-ready, got " + [string]$strictStart.reason)
+  Assert-True (@($strictStart.delivery_contract_blockers) -contains 'parallel_policy') 'autopilot result must expose delivery contract blockers'
+
+  [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  & git -C $projectRoot add . | Out-Null
+  & git -C $projectRoot commit --allow-empty -m 'restore valid planning contract' | Out-Null
   Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null
   Assert-True (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot) 'approved plan must pass exact signature gate'
   $approvedStatePath = Join-Path $channelDir 'channel.json'
   $approvedState = [System.IO.File]::ReadAllText($approvedStatePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-True (-not [string]::IsNullOrWhiteSpace([string]$approvedState.plan_approved_git_head)) 'approval should record project git head'
+  Assert-True ([int]$approvedState.plan_contract_score -ge 80) 'approval should record delivery contract score'
+  Assert-True (@($approvedState.plan_contract_required_sections).Count -gt 0) 'approval should record delivery contract required sections'
   $approvedState.plan_approved_signature = 'stale-signature-for-test'
   [System.IO.File]::WriteAllText($approvedStatePath, (($approvedState | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   Assert-True (Test-ProjectPlanApproved -Channel $script:TestChannel -ProjectRoot $projectRoot) 'stale signature should pass when approved planning files are unchanged at git head'

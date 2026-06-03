@@ -2870,6 +2870,41 @@ function Get-ProjectAutopilotPlanningStageById {
   return $map
 }
 
+function Invoke-ProjectAutopilotDeliveryContractValidation {
+  param($Contract, $Context = $null)
+  if (Get-Command Test-DeliveryContract -ErrorAction SilentlyContinue) {
+    return (Test-DeliveryContract -Contract $Contract -Context $Context)
+  }
+
+  $candidates = @()
+  try {
+    $root = Get-BacklogFallbackBridgeRoot
+    if (-not [string]::IsNullOrWhiteSpace($root)) { $candidates += (Join-Path $root 'lib\delivery-contract.ps1') }
+  } catch {}
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $candidates += (Join-Path $PSScriptRoot 'delivery-contract.ps1') }
+  } catch {}
+  try {
+    $cwd = (Get-Location).Path
+    if (-not [string]::IsNullOrWhiteSpace($cwd)) { $candidates += (Join-Path $cwd 'lib\delivery-contract.ps1') }
+  } catch {}
+
+  foreach ($candidate in @($candidates | Select-Object -Unique)) {
+    if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+    try {
+      . $candidate
+      if (Get-Command Test-DeliveryContract -ErrorAction SilentlyContinue) {
+        return (Test-DeliveryContract -Contract $Contract -Context $Context)
+      }
+    } catch {
+      throw
+    }
+  }
+
+  throw 'delivery-contract validator unavailable'
+}
+
 function Test-ProjectPlanContractReady {
   param([string]$ProjectRoot)
   $issues = New-Object 'System.Collections.Generic.List[string]'
@@ -2879,6 +2914,12 @@ function Test-ProjectPlanContractReady {
   $mapText = Get-ProjectAutopilotFileText -Path $mapPath
   $planText = Get-ProjectAutopilotFileText -Path $planPath
   $contract = $null
+  $deliveryContractOk = $false
+  $deliveryContractScore = $null
+  $deliveryContractMissing = @()
+  $deliveryContractWarnings = @()
+  $deliveryContractBlockers = @()
+  $deliveryContractRequiredSections = @()
 
   if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
     [void]$issues.Add('project_root is missing')
@@ -2918,6 +2959,31 @@ function Test-ProjectPlanContractReady {
   $interfaceCount = 0
   $planningStageCount = 0
   if ($contract) {
+    try {
+      $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $contract -Context @{ RequireParallelPolicy = $true }
+      $deliveryContractOk = [bool]$deliveryResult.ok
+      $deliveryContractScore = [int]$deliveryResult.score
+      $deliveryContractMissing = @($deliveryResult.missing)
+      $deliveryContractWarnings = @($deliveryResult.warnings)
+      $deliveryContractBlockers = @($deliveryResult.blockers)
+      $deliveryContractRequiredSections = @($deliveryResult.required_sections)
+      if (-not $deliveryContractOk) {
+        [void]$issues.Add('delivery-contract score=' + [string]$deliveryContractScore)
+        if ($deliveryContractMissing.Count -gt 0) { [void]$issues.Add('delivery-contract missing: ' + ($deliveryContractMissing -join ', ')) }
+        if ($deliveryContractBlockers.Count -gt 0) { [void]$issues.Add('delivery-contract blockers: ' + ($deliveryContractBlockers -join ', ')) }
+        if ($deliveryContractWarnings.Count -gt 0) { [void]$issues.Add('delivery-contract warnings: ' + ($deliveryContractWarnings -join ', ')) }
+      }
+    } catch {
+      $deliveryContractOk = $false
+      $msg = [string]$_.Exception.Message
+      if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unavailable' }
+      if ($msg -eq 'delivery-contract validator unavailable') {
+        [void]$issues.Add('delivery-contract validator unavailable')
+      } else {
+        [void]$issues.Add('delivery-contract validator error: ' + $msg)
+      }
+    }
+
     $goalText = [string](Get-ProjectAutopilotContractValue -Obj $contract -Names @('project_goal','goal','mission','outcome') -Default '')
     $reqCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('requirements','capabilities','features','functional_requirements'))
     $surfaceCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('screens','routes','views','surfaces','pages','endpoints','modules'))
@@ -2962,6 +3028,12 @@ function Test-ProjectPlanContractReady {
     map_path = $mapPath
     plan_path = $planPath
     contract_path = $contractPath
+    delivery_contract_ok = $deliveryContractOk
+    delivery_contract_score = $deliveryContractScore
+    delivery_contract_missing = @($deliveryContractMissing)
+    delivery_contract_warnings = @($deliveryContractWarnings)
+    delivery_contract_blockers = @($deliveryContractBlockers)
+    delivery_contract_required_sections = @($deliveryContractRequiredSections)
     counts = [pscustomobject]@{
       requirements = $reqCount
       surfaces = $surfaceCount
@@ -3113,6 +3185,8 @@ function Set-ProjectPlanApproved {
     $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @(Get-ProjectAutopilotPlanSignatureFiles) -Force
     $raw | Add-Member -NotePropertyName plan_approved_git_head -NotePropertyValue (Get-ProjectAutopilotGitHead -ProjectRoot $projectRoot) -Force
     $raw | Add-Member -NotePropertyName plan_contract_path -NotePropertyValue ([string]$contractReady.contract_path) -Force
+    $raw | Add-Member -NotePropertyName plan_contract_score -NotePropertyValue $contractReady.delivery_contract_score -Force
+    $raw | Add-Member -NotePropertyName plan_contract_required_sections -NotePropertyValue @($contractReady.delivery_contract_required_sections) -Force
   } elseif (-not $Approved) {
     $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue '' -Force
     $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue '' -Force
@@ -3150,6 +3224,12 @@ function Start-ProjectAutopilotIfNeeded {
       project_root = $root
       issues = @($planContract.issues)
       contract_path = [string]$planContract.contract_path
+      delivery_contract_ok = $planContract.delivery_contract_ok
+      delivery_contract_score = $planContract.delivery_contract_score
+      delivery_contract_missing = @($planContract.delivery_contract_missing)
+      delivery_contract_warnings = @($planContract.delivery_contract_warnings)
+      delivery_contract_blockers = @($planContract.delivery_contract_blockers)
+      delivery_contract_required_sections = @($planContract.delivery_contract_required_sections)
     }
   }
 

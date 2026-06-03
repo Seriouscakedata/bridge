@@ -117,6 +117,19 @@ Check-ResultShape 'missing parallel policy' $missingParallel
 Check 'missing parallel policy still ok' ([bool]$missingParallel.ok) $missingParallel
 Check 'missing parallel policy listed as missing' (@($missingParallel.missing) -contains 'parallel_policy') $missingParallel
 Check 'missing parallel policy warning present' ((@($missingParallel.warnings) | Where-Object { $_ -match 'parallel_policy' }).Count -gt 0) $missingParallel
+$strictMissingParallel = Test-DeliveryContract -Contract $missingParallelContract -Context @{ RequireParallelPolicy = $true }
+Check-ResultShape 'strict missing parallel policy' $strictMissingParallel
+Check 'strict missing parallel policy not ok' (-not [bool]$strictMissingParallel.ok) $strictMissingParallel
+Check 'strict missing parallel policy blocker present' (@($strictMissingParallel.blockers) -contains 'parallel_policy') $strictMissingParallel
+Check 'strict missing parallel policy listed as missing' (@($strictMissingParallel.missing) -contains 'parallel_policy') $strictMissingParallel
+
+$shallowParallelContract = New-DeepContract
+$shallowParallelContract['parallel_policy'] = 'solo'
+$strictShallowParallel = Test-DeliveryContract -Contract $shallowParallelContract -Context @{ require_parallel_policy = $true }
+Check-ResultShape 'strict shallow parallel policy' $strictShallowParallel
+Check 'strict shallow parallel policy not ok' (-not [bool]$strictShallowParallel.ok) $strictShallowParallel
+Check 'strict shallow parallel policy blocker present' (@($strictShallowParallel.blockers) -contains 'parallel_policy') $strictShallowParallel
+Check 'strict shallow parallel policy warning present' ((@($strictShallowParallel.warnings) | Where-Object { $_ -match 'parallel_policy' }).Count -gt 0) $strictShallowParallel
 
 $extraContract = New-DeepContract
 $extraContract['extra_field'] = 'ignored metadata should not break the contract validator result.'

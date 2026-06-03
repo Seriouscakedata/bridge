@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -52,7 +52,15 @@ try {
       [ordered]@{ id='admin-flow'; steps=@('login as admin','review','delete') }
     )
     ux_contract = [ordered]@{ navigation='Primary user journeys must expose clear navigation and feedback.' }
+    backend = 'The acceptance fixture covers account state, admin moderation data, route status expectations, and durable storage checks.'
     acceptance_scenarios = @('typecheck passes','build passes','critical user journey passes')
+    checks = @(
+      'Run typecheck before accepting implementation atoms.',
+      'Run build before accepting route and workflow changes.',
+      'Run smoke coverage for critical user and admin journeys.'
+    )
+    risk = 'Acceptance drift can let implementation pass build while missing route, UX, or workflow coverage.'
+    parallel_policy = 'Independent route and admin work may run in parallel only with disjoint files and explicit dependencies.'
   }
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
