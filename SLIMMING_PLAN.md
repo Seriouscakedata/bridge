@@ -82,8 +82,11 @@ resilience-триада · crash-safe персистентность · крос
 
 **КРИТИЧНО для Atom 4 (vocab gap):** model-intent-словарь ≠ legacy-mode-словарь. Любой advisory-слой ОБЯЗАН маппить их (как `ConvertTo-CanonMode`), иначе «согласие/расхождение» бессмысленно. legacy `primary_mode` НЕ различает code/plan/audit/fix — только `normal`. Это сужает что shadow может доказать про эти под-режимы.
 
-**Открытый вопрос (НЕ решать гаданием):** shadow-лог пуст. Причина — НЕ «модели игнорят hint», а отсутствие planner-turn'ов после включения Atom 1 (main idle: driver.out.log 10:00, conversation 15:24, Atom1 17:27). Эмитят ли модели `[[DECISION]]` — проверить на первом РЕАЛЬНОМ turn'е через analyzer, мост искусственно не провоцировать.
+**Факт получен (live-проба, не гадание):** опциональный `[[DECISION]]` hint модели ИГНОРЯТ даже когда он доставлен. Доказано чистым planner discuss-turn'ом в main (hint в промпте через ветку L393, обе модели ответили, 0 маркеров, shadow пуст). Плюс находки: (1) fast-lane codex ветка `Build-Prompt` (L37-51) hint НЕ несёт — ок, fast-lane пропускает planner; (2) shadow концептуально нужен на planner-уровне, а не на reply исполнителя. Вывод → НЕ усиливать hint (вариант A) и НЕ плодить вызовы (C), а **ветка B**.
 
-**Atom 4 (развилка, требует факта + ревью Codex, не вслепую):**
-- если модели эмитят → копить evidence → advisory (модель предлагает intent → Guard принимает/fallback на legacy);
-- если НЕ эмитят → усилить hint. ВНИМАНИЕ: усиление меняет генерацию (модель пишет JSON каждый ход) — это зона ревью Codex, не одиночное решение оператора.
+### Atom 4 = Intent Decision Shadow (вариант B, ТЗ Codex) — capture в точке решения, БЕЗ новых LLM-вызовов, БЕЗ усиления hint
+- **4a** `499e777` (на ревью) — `lib/decision-contract.ps1`: `ConvertTo-IntentCanon` (общий канон, единый источник) + `Write-IntentShadow` (запись `stage='intent-claim'`: model intent vs effective + guard_overrides + canon + agreement; без full-contract валидации). Тесты 28/28.
+- **4b** `5259b5c` (на ревью) — `driver/81-loop-idle-claim.ps1`: после precedence-closure собирает model proposal (`Test-TaskIntent`) vs `effective_mode`/`effective_reason` (зеркало L162-170) + `guard_overrides` → `Write-IntentShadow`. Pure shadow, try/catch — не ломает claim. SelfTest OK.
+- **4c** `a85a7d1` (на ревью) — analyzer: ветка `stage='intent-claim'` отдельно от planner-turn (Codex п.4); метрики agreement/override/reasons/divergences; канон консолидирован на lib. Тесты 20/20 (Codex п.5: normal→work, code/work, discuss, low-conf fallback, unsafe-fastlane blocked, marker override).
+- **ОГРАНИЧЕНИЕ (Codex):** покрывает только intent/mode, НЕ полный files/deps/parallel_groups/acceptance. Это «Intent Decision Shadow», НЕ «полный DecisionContract advisory».
+- **Дальше:** restart моста подхватит 4b → intent-claim записи копятся на реальных claim'ах → `analyze-decision-shadow.ps1` покажет evidence (agreement model-vs-guard). Promote/удаление legacy intent — ТОЛЬКО после evidence.
