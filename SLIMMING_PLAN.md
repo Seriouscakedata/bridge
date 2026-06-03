@@ -15,7 +15,26 @@
 ## KEEP (несущая платформа, ~15-20k, НЕ трогать кроме portability)
 resilience-триада · crash-safe персистентность · кросс-сессионная память (embeddings+код-индекс) · мульти-агент dispatch (worktree/merge) · safety-гейты · real build/smoke verify · cadence-планировщик · sandbox/секреты · replay/telemetry.
 
-## Очередь исполнения
+## REVISED APPROACH (Claude+Codex consensus 2026-06-03) — НЕ «резать код», а Model-proposes / Guard-validates
+
+«GIVE TO MODEL = удалить» — ОШИБОЧНАЯ рамка. Правильно: **модель ПРЕДЛАГАЕТ (строгий JSON) → детерминированный мост ПРОВЕРЯЕТ и ПРИМЕНЯЕТ.**
+- **Никогда не отдаём модели:** safety, verify/build/smoke, git/merge, rollback, лимиты, необратимые операции, state/locks, approval/risk-границы. Это детерминированные validators (KEEP+усилить).
+- **Два слоя:** Model Decision Layer (JSON-решение) → Deterministic Guard Layer (валидация+применение). JSON модели НЕ разрешает сам себя.
+- **Shadow-first:** новое решение пишется в лог/память, старый путь решает как раньше; сравниваем совпадения/ошибки на реальных прогонах; промоутим из shadow только после подтверждения.
+- **Старые эвристики НЕ удалять** — fallback на 1-2 версии, режем после сравнений.
+- **`confidence` + `needs_operator`** в JSON = решение пункта №2 (ко-пилот/uncertainty): модель помечает неуверенность → мост зовёт оператора.
+
+### DecisionContract (минимальная схема): `intent, risk, files, dependencies, parallel_groups, acceptance, needs_operator, confidence, rationale_short`
+
+### Пересмотренный порядок (Codex):
+1. **Atom 1: DecisionContract shadow** — схема + validator + shadow-логгер + интеграция в точках intent/routing/workpack (логировать, НЕ менять поведение) + тесты (parse, self-test, validator).
+2. Перевести intent/routing/complexity/workpack-proposal на модельный JSON (всё ещё shadow).
+3. Deterministic validators отдельным слоем (path-in-repo, no-safety-change-without-operator, git clean/dirty, risk-tier, file-overlap, parallel-limit, acceptance).
+4. Старые эвристики → fallback.
+5. Удалить fallback после реальных сравнений (тесты + прогоны подтвердили).
+- НЕ трогать verify/safety/rollback/locks/state на этом этапе. Platform/Linux (rank 5-6) — позже.
+
+## Очередь исполнения (исходная, переосмыслена выше)
 
 ### Rank 1 — удалить LLM-микро-оракулы (high impact, medium effort) ⏳
 Модель делает это в одном проходе. Удалить обёртки, перенести в end-of-task structured block + persistence-tool.

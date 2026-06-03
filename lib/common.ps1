@@ -2406,3 +2406,6 @@ try { . (Join-Path $PSScriptRoot 'intent.ps1') } catch { Write-Warning "intent.p
 try { . (Join-Path $PSScriptRoot 'radar.ps1') } catch { Write-Warning "radar.ps1 failed to load: $($_.Exception.Message)" }
 # 2026-06-03 slimming rank1: scholar.ps1 (autonomous deep-reader oracle) removed — a modern model
 # does article-study / gap-analysis inline when a task needs it; the background scholar agent was scaffolding.
+# 2026-06-03 slimming Atom 1: Model Decision Layer (SHADOW). Contract + deterministic validator + shadow
+# logger. Behavior-neutral until promoted; legacy heuristics still decide. See SLIMMING_PLAN.md.
+try { . (Join-Path $PSScriptRoot 'decision-contract.ps1') } catch { Write-Warning "decision-contract.ps1 failed to load: $($_.Exception.Message)" }
