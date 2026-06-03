@@ -624,7 +624,6 @@
         try { Update-FeatureActivations | Out-Null } catch {}
         try { Start-ReflectIfDue } catch {}
         try { Start-TechRadarIfDue } catch {}
-        try { Start-ScholarIfDue } catch {}
         try { Start-CanaryIfDue } catch {}
         # 🧹 Anti-junk hygiene: archive unclaimed 'new' ideas older than ideaStaleDays. Throttled to
         # once per 24h via control/stale-sweep.last so it's near-free on the idle path.

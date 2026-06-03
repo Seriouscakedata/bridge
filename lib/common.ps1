@@ -2404,4 +2404,5 @@ try { . (Join-Path $PSScriptRoot 'intent.ps1') } catch { Write-Warning "intent.p
 # verdicts idea/knowledge/skip against bridge gaps -- replaces radar's title-only judging). Scholar
 # depends on radar (candidates) + llm + backlog (all loaded above).
 try { . (Join-Path $PSScriptRoot 'radar.ps1') } catch { Write-Warning "radar.ps1 failed to load: $($_.Exception.Message)" }
-try { . (Join-Path $PSScriptRoot 'scholar.ps1') } catch { Write-Warning "scholar.ps1 failed to load: $($_.Exception.Message)" }
+# 2026-06-03 slimming rank1: scholar.ps1 (autonomous deep-reader oracle) removed — a modern model
+# does article-study / gap-analysis inline when a task needs it; the background scholar agent was scaffolding.
