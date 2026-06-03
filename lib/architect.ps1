@@ -413,14 +413,7 @@ function Get-ArchitectContext {
     }
   } catch {}
 
-  # 11) external knowledge accumulated by Scholar -- border-line findings from articles the bridge
-  #     read but didn't act on. Operator's ask: "просматривать статьи, чтобы вдохновиться при брейншторме".
-  try {
-    if (Get-Command Format-ScholarKnowledgeForPrompt -ErrorAction SilentlyContinue) {
-      $sk = Format-ScholarKnowledgeForPrompt -Last 8
-      if (-not [string]::IsNullOrWhiteSpace($sk)) { [void]$sb.AppendLine($sk); [void]$sb.AppendLine('') }
-    }
-  } catch {}
+  # (scholar knowledge block removed 2026-06-03 slimming rank1 — scholar.ps1 oracle deleted)
 
   return $sb.ToString()
 }
