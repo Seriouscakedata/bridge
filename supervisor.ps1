@@ -667,6 +667,22 @@ function Register-StartupFailure {
 }
 Add-Message -From system -Text "Супервизор запущен (elevated). Сервер + по одному драйверу на каждый канал (параллельно). Перезапуск без UAC по флагу; авто-подъём при падении." -Kind event | Out-Null
 
+# 2026-06-03: ensure the EXTERNAL reliability anchor task exists. It heals a DEAD or HUNG
+# supervisor/watchdog and a OneDrive-zeroed git ref every 5 min -- the failure modes the AtLogon
+# task can't (orphaned children keep it "Running", so RestartCount never fires). The supervisor is
+# elevated, so it can register the task with no manual admin step. Idempotent: registers only if missing.
+try {
+  $ensureTaskExists = $null
+  try { $ensureTaskExists = Get-ScheduledTask -TaskName 'ClaudeCodexBridge-Ensure' -ErrorAction SilentlyContinue } catch {}
+  if (-not $ensureTaskExists) {
+    $installEnsure = Join-Path $root 'install-ensure-bridge.ps1'
+    if (Test-Path $installEnsure) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File $installEnsure 2>&1 | Out-Null
+      Log "registered ClaudeCodexBridge-Ensure reliability anchor (was missing)"
+    }
+  }
+} catch { Log ("ensure-anchor registration error: " + $_.Exception.Message) }
+
 while ($true) {
   try {
     $reapFired = $false
