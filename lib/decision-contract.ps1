@@ -72,6 +72,26 @@ function Test-DecisionContract {
   return ($errs.Count -eq 0)
 }
 
+function Get-DecisionShadowPromptHint {
+  # Optional planner-prompt addendum: invites the model to emit a DecisionContract block. SHADOW —
+  # explicitly tells the model it does NOT affect execution, so behavior is unchanged while we collect
+  # model-vs-legacy comparisons. Kept tiny; removed once we promote out of shadow.
+  return @'
+
+[SHADOW — НЕ влияет на исполнение, только наблюдение] В самом конце ответа можешь добавить одну строку:
+[[DECISION: {"intent":"code|plan|discuss|audit|study|fix|fast|chat","risk":"low|medium|high|critical","files":[],"dependencies":[],"parallel_groups":[],"acceptance":[],"needs_operator":false,"confidence":0.0,"rationale_short":""}]]
+'@
+}
+
+function Read-DecisionFromReply {
+  # Extract a [[DECISION: {json}]] block from a model reply, if present. Returns the JSON string or $null.
+  param([string]$Reply)
+  if ([string]::IsNullOrWhiteSpace($Reply)) { return $null }
+  $m = [regex]::Match($Reply, '(?s)\[\[DECISION:\s*(\{.*?\})\s*\]\]')
+  if ($m.Success) { return $m.Groups[1].Value.Trim() }
+  return $null
+}
+
 function Write-DecisionShadow {
   # Append a shadow record: what the model PROPOSED vs what the legacy heuristic ACTUALLY decided,
   # plus whether the proposal passed the validator. For later "where did the model match/err" analysis.

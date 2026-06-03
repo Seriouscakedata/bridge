@@ -1,5 +1,18 @@
 ﻿$script:DriverLoopReplyMarkersBlock = {
   $fastLaneActiveForTurn = ($speaker -eq 'codex' -and $mode -eq 'normal' -and [bool](Read-State).skip_planner)
+  # 2026-06-03 slimming Atom 1 (SHADOW): capture optional [[DECISION:{json}]] from the model reply and
+  # log it against the legacy intent for later model-vs-heuristic comparison. Pure logging — nothing
+  # here changes execution; legacy intent/routing still drive the turn. Promote out of shadow only
+  # after real-run evidence (SLIMMING_PLAN.md).
+  try {
+    if (Get-Command Read-DecisionFromReply -ErrorAction SilentlyContinue) {
+      $shadowDecision = Read-DecisionFromReply -Reply $reply
+      if ($shadowDecision) {
+        $legacyIntent = $null; try { $legacyIntent = (Read-State).task_intent } catch {}
+        Write-DecisionShadow -Stage 'planner-turn' -ModelDecision $shadowDecision -LegacyDecision $legacyIntent -Note ("speaker=" + [string]$speaker + " mode=" + [string]$mode) | Out-Null
+      }
+    }
+  } catch {}
   $attachmentMetas = @()
   $failedAttachmentPaths = @()
   $fileMarkerPaths = @()

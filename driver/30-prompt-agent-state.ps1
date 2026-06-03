@@ -385,7 +385,12 @@ $safetyGateRule
 $restartReminder
 "@
   }
-  return ($shared + $suffix)
+  # 2026-06-03 slimming Atom 1 (SHADOW): append the optional DecisionContract hint so the model MAY emit
+  # a [[DECISION:{json}]] block for observation. Behavior-neutral — captured + logged by driver/84, never
+  # executed. Guarded so removing decision-contract.ps1 can't break prompt assembly.
+  $decisionHint = ''
+  try { if (Get-Command Get-DecisionShadowPromptHint -ErrorAction SilentlyContinue) { $decisionHint = Get-DecisionShadowPromptHint } } catch {}
+  return ($shared + $suffix + $decisionHint)
 }
 
 function Set-AgentPid([int]$ProcId) { Update-State ({ param($s) $s.agent_pid = $ProcId }.GetNewClosure()) | Out-Null }
