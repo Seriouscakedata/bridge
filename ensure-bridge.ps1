@@ -30,10 +30,24 @@ function Write-RefFile([string]$path, [string]$sha) {
   # a loose ref file is exactly 40 hex + LF (41 bytes)
   [System.IO.File]::WriteAllText($path, ($sha + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 }
+function Resolve-GitDir([string]$repoRoot) {
+  # 2026-06-03: .git was moved OFF OneDrive (separate-git-dir); $repoRoot\.git is now a GITLINK FILE
+  # ("gitdir: <path>"), not a directory. Resolve the real git dir so direct ref-file access still works
+  # even when git commands fail (a zeroed ref). Falls back to the directory form for safety.
+  $g = Join-Path $repoRoot '.git'
+  try {
+    if (Test-Path -LiteralPath $g -PathType Leaf) {
+      $c = [string](Get-Content -LiteralPath $g -Raw -ErrorAction SilentlyContinue)
+      if ($c -match 'gitdir:\s*(.+)') { return ($matches[1].Trim() -replace '/', '\') }
+    }
+  } catch {}
+  return $g
+}
 
 # ---------- (1) git ref heal ----------
 try {
-  $masterRef = Join-Path $root '.git\refs\heads\master'
+  $gitDir    = Resolve-GitDir $root
+  $masterRef = Join-Path $gitDir 'refs\heads\master'
   $backup    = Join-Path $runtime 'master-ref.bak'
   $cur = ''
   if (Test-Path -LiteralPath $masterRef) {
@@ -46,7 +60,7 @@ try {
     ELog ("master ref BROKEN (value='" + $cur + "') -> attempting heal")
     $candidates = @()
     if (Test-Path -LiteralPath $backup) { $candidates += ([string](Get-Content -LiteralPath $backup -Raw -ErrorAction SilentlyContinue)).Trim() }
-    $stableRef = Join-Path $root '.git\refs\heads\stable'
+    $stableRef = Join-Path $gitDir 'refs\heads\stable'
     if (Test-Path -LiteralPath $stableRef) { $candidates += ([string](Get-Content -LiteralPath $stableRef -Raw -ErrorAction SilentlyContinue)).Trim() }
     try { $om = & $gitExe -C $root rev-parse refs/remotes/origin/master 2>$null; if ($om) { $candidates += ([string]$om).Trim() } } catch {}
     $healed = $false

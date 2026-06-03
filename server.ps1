@@ -403,14 +403,17 @@ try {
         }
         $gitHead = $healthGitHead
         try {
-          $headFile = Join-Path $root '.git\HEAD'
+          # 2026-06-03: .git moved off OneDrive (separate-git-dir) -> $root\.git may be a gitlink FILE.
+          $gitDirSrv = Join-Path $root '.git'
+          try { if (Test-Path -LiteralPath $gitDirSrv -PathType Leaf) { $gc = [string](Get-Content -LiteralPath $gitDirSrv -Raw -ErrorAction SilentlyContinue); if ($gc -match 'gitdir:\s*(.+)') { $gitDirSrv = ($matches[1].Trim() -replace '/', '\') } } } catch {}
+          $headFile = Join-Path $gitDirSrv 'HEAD'
           $gitStamp = if (Test-Path -LiteralPath $headFile) { (Get-Item -LiteralPath $headFile).LastWriteTimeUtc } else { [datetime]::MinValue }
           $refFile = $null
           if ($gitStamp -ne [datetime]::MinValue) {
             $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
             if ($headLine -like 'ref: *') {
               $refName = $headLine.Substring(5).Trim() -replace '/', '\'
-              $refFile = Join-Path (Join-Path $root '.git') $refName
+              $refFile = Join-Path $gitDirSrv $refName
               if (Test-Path -LiteralPath $refFile) { $gitStamp = (Get-Item -LiteralPath $refFile).LastWriteTimeUtc }
             }
           }
