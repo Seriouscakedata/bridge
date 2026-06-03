@@ -3,9 +3,17 @@
 #
 # The shadow layer (slimming Atom 1/2) logs, per channel, what the model PROPOSED vs what the legacy
 # heuristic ACTUALLY decided. Before we can promote the model decision out of shadow (and start deleting
-# legacy heuristics), we need EVIDENCE: how often is the proposal even emitted, is it valid, and does its
+# legacy heuristics), we need EVIDENCE: how many proposals were emitted, are they valid, and does their
 # intent agree with the legacy intent? This tool turns the raw JSONL into that summary. It NEVER writes,
 # never touches the running bridge, never changes behavior — pure analysis so promotion is data-driven.
+#
+# NOTE on counts: `records` is a COUNT, not an emit-rate — the denominator (how many planner-turns ran)
+# is not tracked in this log, so we deliberately do not claim a rate.
+# NOTE on intent agreement: the model intent vocab (DecisionContract: code|plan|audit|fix|discuss|study|
+# chat|fast) and the legacy task_intent.primary_mode vocab (normal|discuss|study|fast|chat) only partly
+# overlap. We map BOTH onto a shared coarse canon (see ConvertTo-CanonMode) so "agreement" reflects real
+# alignment, not a vocabulary gap. Legacy is stored as a JSON-serialized object, so we extract the mode
+# from primary_mode/mode/intent (see Get-LegacyMode), not the whole string.
 #
 # Usage:
 #   tools/analyze-decision-shadow.ps1                 # all channels, human-readable
@@ -19,6 +27,38 @@ param(
 $ErrorActionPreference = 'Stop'
 $bridgeRoot = Split-Path -Parent $PSScriptRoot
 $channelsDir = Join-Path $bridgeRoot 'channels'
+
+function Get-LegacyMode($legacy) {
+  # The legacy decision in the shadow log is task_intent, an OBJECT that Write-DecisionShadow serialized
+  # to a JSON string (fields: primary_mode/mode/...). Older or hand-written rows may be a bare intent
+  # string. Extract the mode from primary_mode -> mode -> intent; fall back to the bare string.
+  if ($null -eq $legacy) { return '' }
+  $obj = $null
+  if ($legacy -is [string]) {
+    $s = ([string]$legacy).Trim()
+    if ($s.StartsWith('{')) { try { $obj = $s | ConvertFrom-Json } catch { $obj = $null } }
+    if ($null -eq $obj) { return $s }   # bare intent string (legacy/plain)
+  } else { $obj = $legacy }
+  foreach ($f in @('primary_mode','mode','intent')) {
+    if ($obj.PSObject.Properties[$f] -and -not [string]::IsNullOrWhiteSpace([string]$obj.$f)) { return [string]$obj.$f }
+  }
+  return ''
+}
+
+function ConvertTo-CanonMode([string]$m) {
+  # Map the model intent vocab AND the legacy primary_mode vocab onto a shared coarse canon so agreement
+  # reflects real alignment rather than a vocabulary gap. Legacy 'normal' and the model's execution
+  # intents (code/plan/audit/fix) all mean "do work"; discuss/study/fast/chat are 1:1 in both vocabs.
+  if ([string]::IsNullOrWhiteSpace($m)) { return '' }
+  switch (([string]$m).Trim().ToLowerInvariant()) {
+    'normal' { 'work' }
+    'code'   { 'work' }
+    'plan'   { 'work' }
+    'audit'  { 'work' }
+    'fix'    { 'work' }
+    default  { ([string]$m).Trim().ToLowerInvariant() }
+  }
+}
 
 # Collect target shadow logs (one channel or all).
 $logs = @()
@@ -58,22 +98,24 @@ foreach ($log in $logs) {
       }
     }
 
-    # intent agreement: parse model_decision JSON, compare its intent to the legacy intent string.
+    # intent agreement: extract the model intent + the legacy mode (from its serialized object), then
+    # canonicalize BOTH vocabs before comparing so a vocabulary gap (e.g. model=code vs legacy=normal)
+    # isn't miscounted as a real divergence.
     $mIntent = ''
     if (-not [string]::IsNullOrWhiteSpace([string]$rec.model_decision)) {
       try { $mo = ([string]$rec.model_decision | ConvertFrom-Json); if ($mo) { $mIntent = [string]$mo.intent } } catch {}
     }
-    $lIntent = ''
-    if ($rec.legacy -is [string]) { $lIntent = [string]$rec.legacy }
-    elseif ($null -ne $rec.legacy -and $rec.legacy.PSObject.Properties['intent']) { $lIntent = [string]$rec.legacy.intent }
+    $lIntent = Get-LegacyMode $rec.legacy
+    $mCanon = ConvertTo-CanonMode $mIntent
+    $lCanon = ConvertTo-CanonMode $lIntent
 
-    if ([string]::IsNullOrWhiteSpace($mIntent) -or [string]::IsNullOrWhiteSpace($lIntent)) {
+    if ([string]::IsNullOrWhiteSpace($mCanon) -or [string]::IsNullOrWhiteSpace($lCanon)) {
       $intentUncomparable++
-    } elseif ($mIntent.ToLowerInvariant() -eq $lIntent.ToLowerInvariant()) {
+    } elseif ($mCanon -eq $lCanon) {
       $intentMatch++
     } else {
       $intentMismatch++
-      $dk = "model=$($mIntent.ToLowerInvariant()) legacy=$($lIntent.ToLowerInvariant())"
+      $dk = "model=$($mIntent.ToLowerInvariant())($mCanon) legacy=$($lIntent.ToLowerInvariant())($lCanon)"
       if ($divergences.ContainsKey($dk)) { $divergences[$dk]++ } else { $divergences[$dk] = 1 }
     }
   }
