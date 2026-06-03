@@ -122,6 +122,23 @@ function Get-BridgeConfig {
       }
     }
   } catch {}
+  $envOverlay = @{
+    codexExe = 'BRIDGE_CODEX_EXE'
+    claudeGlob = 'BRIDGE_CLAUDE_GLOB'
+    workRoot = 'BRIDGE_WORK_ROOT'
+  }
+  foreach ($k in $envOverlay.Keys) {
+    $envName = [string]$envOverlay[$k]
+    $envValue = [System.Environment]::GetEnvironmentVariable($envName)
+    if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+      $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $envValue -Force
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$cfg.workRoot)) {
+    $fallbackWorkRoot = [System.Environment]::GetEnvironmentVariable('USERPROFILE')
+    if ([string]::IsNullOrWhiteSpace($fallbackWorkRoot)) { $fallbackWorkRoot = Get-BridgeRoot }
+    $cfg | Add-Member -NotePropertyName 'workRoot' -NotePropertyValue $fallbackWorkRoot -Force
+  }
   return $cfg
 }
 
@@ -174,6 +191,7 @@ function Resolve-CodexExe {
   # context, including a bare Task Scheduler process. The AppData\Local\OpenAI path is
   # MSIX-virtualized and only visible inside the package context.
   $cands = @(
+    $env:BRIDGE_CODEX_EXE,
     "$env:LOCALAPPDATA\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\OpenAI\Codex\bin\codex.exe",
     $cfg.codexExe,
     "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
@@ -185,6 +203,7 @@ function Resolve-CodexExe {
 function Resolve-ClaudeExe {
   param($cfg)
   $globs = @(
+    $env:BRIDGE_CLAUDE_GLOB,
     "$env:LOCALAPPDATA\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\*\claude.exe",
     $cfg.claudeGlob,
     "$env:APPDATA\Claude\claude-code\*\claude.exe"

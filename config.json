@@ -1,7 +1,7 @@
 {
   "port": 8787,
-  "codexExe": "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
-  "claudeGlob": "C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe",
+  "codexExe": "",
+  "claudeGlob": "",
   "loopDelaySeconds": 2,
   "maxTurns": 150,
   "criticMaxRetries": 3,
@@ -11,7 +11,7 @@
     "agent": "codex",
     "sandboxMode": "workspace-write"
   },
-  "workRoot": "C:/Users/rafie",
+  "workRoot": "",
   "idlePollSeconds": 1,
   "idleMaxPollSeconds": 5,
   "idleFastTicks": 8,
@@ -147,7 +147,6 @@
     "llmModel": "gemini-2.5-flash-lite",
     "quarantineFailures": 2,
     "quarantineHours": 12,
-    "worktreePath": "C:\\Users\\rafie\\OneDrive\\Documents\\bridge-canary-worktree",
     "branchName": "canary/heartbeat"
   },
   "autonomy": {
