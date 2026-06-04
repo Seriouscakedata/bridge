@@ -50,6 +50,14 @@ function Get-AutonomyIdleReason {
     if (($st.PSObject.Properties.Name -contains 'autonomous_day') -and ([string]$st.autonomous_day -eq $today)) { $cnt = [int]$st.autonomous_count }
     if ($cnt -ge $cap) { return ("daily cap reached (" + $cnt + "/" + $cap + ")") }
   }
+  try {
+    if (Get-Command Get-ApprovedBacklogClaimabilityReport -ErrorAction SilentlyContinue) {
+      $claimability = Get-ApprovedBacklogClaimabilityReport
+      if ($claimability -and [int]$claimability.approved_count -gt 0 -and [int]$claimability.runnable_count -eq 0) {
+        return ("approved backlog blocked: approved={0}, runnable=0, control-plane={1}, project-scope={2}, other={3}" -f [int]$claimability.approved_count, [int]$claimability.control_plane_blocked, [int]$claimability.project_scope_blocked, [int]$claimability.other_blocked)
+      }
+    }
+  } catch {}
   return 'ready (will claim next runnable/approved idea)'
 }
 

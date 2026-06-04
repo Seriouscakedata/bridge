@@ -575,6 +575,63 @@ function Test-ProjectScopedApprovedBacklogAllowed {
   return $false
 }
 
+function Get-ApprovedBacklogClaimabilityReport {
+  param([object[]]$Items = $null)
+
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+  $approved = @($Items | Where-Object { [string]$_.status -eq 'approved' })
+  $runnable = New-Object 'System.Collections.Generic.List[object]'
+  $controlPlane = New-Object 'System.Collections.Generic.List[object]'
+  $projectScope = New-Object 'System.Collections.Generic.List[object]'
+  $other = New-Object 'System.Collections.Generic.List[object]'
+  $projectAllowed = $false
+  try { $projectAllowed = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectAllowed = $false }
+
+  foreach ($item in @($approved)) {
+    $id = ''
+    try { $id = [string]$item.id } catch {}
+    $sample = [pscustomobject]@{
+      id = $id
+      text = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
+      scope = [string](Get-BacklogPackObjectValue -Obj $item -Name 'scope' -Default '')
+      workpack_status = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_status' -Default '')
+      workpack_conflict_group = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default '')
+    }
+    $isOperator = $false
+    try { $isOperator = (@($item.tags) -contains 'operator') } catch { $isOperator = $false }
+    $touchesControl = $false
+    try { $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $item) } catch { $touchesControl = $false }
+    if ((-not $isOperator) -and $touchesControl) {
+      [void]$controlPlane.Add($sample)
+      continue
+    }
+    $scope = [string](Get-BacklogPackObjectValue -Obj $item -Name 'scope' -Default '')
+    if ((-not $projectAllowed) -and $scope -eq 'project') {
+      [void]$projectScope.Add($sample)
+      continue
+    }
+    if ([string]::IsNullOrWhiteSpace($id)) {
+      [void]$other.Add($sample)
+      continue
+    }
+    [void]$runnable.Add($sample)
+  }
+
+  $blocked = [int]$controlPlane.Count + [int]$projectScope.Count + [int]$other.Count
+  return [pscustomobject][ordered]@{
+    approved_count = [int]$approved.Count
+    runnable_count = [int]$runnable.Count
+    blocked_count = [int]$blocked
+    control_plane_blocked = [int]$controlPlane.Count
+    project_scope_blocked = [int]$projectScope.Count
+    other_blocked = [int]$other.Count
+    project_scope_allowed = [bool]$projectAllowed
+    runnable_ids = @($runnable.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+    control_plane_ids = @($controlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+    project_scope_ids = @($projectScope.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+  }
+}
+
 function Get-NextApprovedIdea {
   # Next approved item, checking whether recent commits already resolved stale work.
   # 2026-05-28: sort key chain is severity rank (critical=0 / warning=1 / info=2 / none=3)

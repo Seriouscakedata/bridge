@@ -596,6 +596,45 @@
           }
         } catch {}
       }
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
+        try {
+          if (Get-Command Get-ApprovedBacklogClaimabilityReport -ErrorAction SilentlyContinue) {
+            $claimability = Get-ApprovedBacklogClaimabilityReport
+            if ($claimability -and [int]$claimability.approved_count -gt 0 -and [int]$claimability.runnable_count -eq 0) {
+              $ids = @()
+              try { $ids += @($claimability.control_plane_ids | ForEach-Object { [string]$_ }) } catch {}
+              try { $ids += @($claimability.project_scope_ids | ForEach-Object { [string]$_ }) } catch {}
+              $sig = ([string]$Channel + ':' + [int]$claimability.approved_count + ':' + [int]$claimability.control_plane_blocked + ':' + [int]$claimability.project_scope_blocked + ':' + ([string]::Join(',', @($ids | Select-Object -First 8))))
+              $nowClaimability = [DateTime]::UtcNow
+              $dueClaimability = $false
+              if ([string]$script:LastBacklogClaimabilitySignature -ne $sig) {
+                $dueClaimability = $true
+              } elseif ($null -eq $script:LastBacklogClaimabilityAt) {
+                $dueClaimability = $true
+              } elseif (($nowClaimability - [DateTime]$script:LastBacklogClaimabilityAt).TotalMinutes -ge 15) {
+                $dueClaimability = $true
+              }
+              if ($dueClaimability) {
+                $script:LastBacklogClaimabilitySignature = $sig
+                $script:LastBacklogClaimabilityAt = $nowClaimability
+                Write-BacklogJsonLine ([ordered]@{
+                  ts = $nowClaimability.ToString('o')
+                  action = 'approved-claimability-blocked'
+                  channel = [string]$Channel
+                  approved = [int]$claimability.approved_count
+                  runnable = [int]$claimability.runnable_count
+                  control_plane = [int]$claimability.control_plane_blocked
+                  project_scope = [int]$claimability.project_scope_blocked
+                  other = [int]$claimability.other_blocked
+                  control_plane_ids = @($claimability.control_plane_ids)
+                  project_scope_ids = @($claimability.project_scope_ids)
+                })
+                Add-Message -From system -Text ("🧭 Backlog claimability: approved=" + [int]$claimability.approved_count + ", runnable=0; control-plane blocked=" + [int]$claimability.control_plane_blocked + ", project-scope blocked=" + [int]$claimability.project_scope_blocked + ". Обычная автономия не исполняет эти задачи без operator tag / bridge-self canary gate.") -Kind event | Out-Null
+              }
+            }
+          }
+        } catch {}
+      }
       if ($claimedIdea -and (-not $claimedWorkpackBatch) -and $workpackFrontierReport -and [bool]$workpackFrontierReport.parallel_required) {
         try {
           $serialReason = [string](Get-BacklogPackObjectValue -Obj $claimedIdea -Name 'serial_reason' -Default '')

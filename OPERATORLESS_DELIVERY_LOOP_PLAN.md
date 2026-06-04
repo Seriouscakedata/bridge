@@ -759,6 +759,11 @@ This is Mode 0 / shadow-only telemetry for the claim path:
   executed in that shape;
 - no execution decision is changed yet. Promotion to enforcement must use accumulated evidence.
 
+2026-06-04 follow-up: added claimability telemetry for the opposite case: approved backlog exists,
+but no item is runnable. `Get-ApprovedBacklogClaimabilityReport` separates runnable items from
+control-plane/project-scope blocks, `Get-AutonomyIdleReason` reports the blocked state, and the
+idle loop writes a throttled chat/backlog event instead of silently idling.
+
 ## 7. Acceptance for the whole project
 
 Operatorless Delivery Loop считается готовым, когда:
