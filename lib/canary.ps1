@@ -434,11 +434,19 @@ function Get-CanarySmokePs1Files {
   $tracked = @()
   $untracked = @()
   try {
-    $tracked = @(& git -C $RepoRoot ls-files -- '*.ps1' 2>$null)
-    $trackedCode = $LASTEXITCODE
-    $untracked = @(& git -C $RepoRoot ls-files --others --exclude-standard -- '*.ps1' 2>$null)
-    $untrackedCode = $LASTEXITCODE
-    $useGit = (($trackedCode -eq 0) -and ($untrackedCode -eq 0))
+    $topLevelRaw = & git -C $RepoRoot rev-parse --show-toplevel 2>$null
+    $topLevelCode = $LASTEXITCODE
+    if ($topLevelCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$topLevelRaw)) {
+      $topFull = [System.IO.Path]::GetFullPath(([string]$topLevelRaw).Trim()).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+      if ($topFull.Equals($repoTrim, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $tracked = @(& git -C $RepoRoot ls-files -- '*.ps1' 2>$null)
+        $trackedCode = $LASTEXITCODE
+        $untracked = @(& git -C $RepoRoot ls-files --others --exclude-standard -- '*.ps1' 2>$null)
+        $untrackedCode = $LASTEXITCODE
+        $useGit = (($trackedCode -eq 0) -and ($untrackedCode -eq 0))
+      }
+    }
   } catch {
     $useGit = $false
   }
