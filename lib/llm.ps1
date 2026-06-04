@@ -67,19 +67,17 @@ function Invoke-DeepSeekChat {
   $json  = $body | ConvertTo-Json -Depth 8
   $bridgeRoot = Split-Path -Parent $PSScriptRoot
   $requestTimeoutSec = Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec $TimeoutSec
+  $retryHelperPath = Join-Path $PSScriptRoot 'retry-helper.ps1'
+  $jobInitialization = New-InvokeWithTimeoutInitializationScript -HelperPath $retryHelperPath
   try {
     $txt = Invoke-WithTimeout -Name ('llm-deepseek-' + $Purpose) -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
       $bridgeRoot,
       $json,
       $requestTimeoutSec
-    ) -ScriptBlock {
+    ) -InitializationScript $jobInitialization -ScriptBlock {
       param([string]$BridgeRoot, [string]$BodyJson, [int]$RequestTimeoutSec)
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-      $secretPath = Join-Path $BridgeRoot 'secrets.json'
-      if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { throw 'deepseekApiKey missing' }
-      $secrets = Get-Content -LiteralPath $secretPath -Raw -Encoding UTF8 | ConvertFrom-Json
-      $apiKey = ''
-      if ($secrets -and ($secrets.PSObject.Properties.Name -contains 'deepseekApiKey')) { $apiKey = [string]$secrets.deepseekApiKey }
+      $apiKey = Get-InvokeWithTimeoutSecretValue -BridgeRoot $BridgeRoot -Name 'deepseekApiKey'
       if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'deepseekApiKey missing' }
       $headers = @{ Authorization = ("Bearer " + $apiKey) }
       $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)

@@ -378,6 +378,8 @@ function Invoke-GeminiApi {
   $json  = $BodyObj | ConvertTo-Json -Depth 8
   $bridgeRoot = Split-Path -Parent $PSScriptRoot
   $requestTimeoutSec = Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec $TimeoutSec
+  $retryHelperPath = Join-Path $PSScriptRoot 'retry-helper.ps1'
+  $jobInitialization = New-InvokeWithTimeoutInitializationScript -HelperPath $retryHelperPath
   try {
     # 2026-05-28: switched from Invoke-RestMethod to Invoke-WebRequest +
     # RawContentStream + UTF-8 decode. PS 5.1's Invoke-RestMethod has a long-
@@ -395,15 +397,10 @@ function Invoke-GeminiApi {
       $Endpoint,
       $json,
       $requestTimeoutSec
-    ) -ScriptBlock {
+    ) -InitializationScript $jobInitialization -ScriptBlock {
       param([string]$BridgeRoot, [string]$ModelName, [string]$EndpointName, [string]$BodyJson, [int]$RequestTimeoutSec)
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-      $secretPath = Join-Path $BridgeRoot 'secrets.json'
-      if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { throw 'geminiApiKey missing' }
-      $secrets = Get-Content -LiteralPath $secretPath -Raw -Encoding UTF8 | ConvertFrom-Json
-      $apiKey = ''
-      if ($secrets -and ($secrets.PSObject.Properties.Name -contains 'geminiApiKey')) { $apiKey = [string]$secrets.geminiApiKey }
-      if ([string]::IsNullOrWhiteSpace($apiKey) -and $secrets -and ($secrets.PSObject.Properties.Name -contains 'GEMINI_API_KEY')) { $apiKey = [string]$secrets.GEMINI_API_KEY }
+      $apiKey = Get-InvokeWithTimeoutSecretValue -BridgeRoot $BridgeRoot -Name 'geminiApiKey' -Aliases @('GEMINI_API_KEY')
       if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'geminiApiKey missing' }
       if ($EndpointName -notin @('embedContent','batchEmbedContents','generateContent')) { throw "Unsupported Gemini endpoint: $EndpointName" }
       $escapedModel = [System.Uri]::EscapeDataString($ModelName)
