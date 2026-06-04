@@ -350,6 +350,13 @@ Codex работает в **изолированной песочнице** (`wo
 3. **usefulness-score** (`audit/usefulness.jsonl`) — насколько полезен аудит (action_rate + resolved_signal_delta + incident_capture).
 4. **deep-audit** (`tools/deep-audit.ps1`): многоагентный — N срезов параллельно (security/functional/reliability/architecture/dependency-model), каждый со своей моделью из `config.audit.deepAgents`, результаты сливаются.
 
+Backlog intake gate: audit/deep-audit findings больше не пишутся напрямую в `approved`.
+Даже при `Add-Idea -SkipCurator` проходит deterministic gate в `lib/backlog.ps1`:
+root-cause дубли логируются как `intake-dedup`, очевидные false-positive security уходят в
+`auto-dropped`, findings без читаемого code evidence уходят в `held`, а валидные findings получают
+`intake_gate` metadata. `SkipCurator` означает только "не запускать дешёвый LLM-curator"; он не
+обходит deterministic intake. Static critical filing в `tools/audit.ps1` также идёт через `Add-Idea`.
+
 > Тонкость PowerShell: переменные регистронезависимы. `$functionalAgent` и param `$FunctionalAgent` — одна переменная. Эта коллизия валила deep-audit (см. §7).
 
 ### 4.6 Параллельные потоки (parallel)

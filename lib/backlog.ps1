@@ -912,6 +912,222 @@ function Invoke-BacklogDuplicateCompactor {
   return $result
 }
 
+function Get-BacklogIntakeGateFileEvidence {
+  param($Item)
+  $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  $root = Get-BacklogFallbackBridgeRoot
+  $candidates = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($f in @(Get-BacklogMentionedFiles -Text $text)) {
+    Add-BacklogWorkpackFileCandidate -List $candidates -Path $f
+  }
+  try {
+    $class = Get-BacklogWorkpackClassification -Item $Item
+    foreach ($f in @($class.touch_set)) { Add-BacklogWorkpackFileCandidate -List $candidates -Path ([string]$f) }
+  } catch {}
+
+  $existing = New-Object 'System.Collections.Generic.List[string]'
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in @($candidates.ToArray())) {
+    $r = ([string]$rel).Trim()
+    if ([string]::IsNullOrWhiteSpace($r)) { continue }
+    if ($r -notmatch '\.[a-z0-9]{1,8}$') { continue }
+    try {
+      $full = Join-Path $root ($r -replace '/', '\')
+      if (Test-Path -LiteralPath $full -PathType Leaf) { [void]$existing.Add($r) }
+      else { [void]$missing.Add($r) }
+    } catch { [void]$missing.Add($r) }
+  }
+
+  return [pscustomobject]@{
+    existing = @($existing.ToArray() | Select-Object -Unique)
+    missing = @($missing.ToArray() | Select-Object -Unique)
+  }
+}
+
+function Get-BacklogIntakeReferencedLines {
+  param($Item, [string[]]$ExistingFiles = @())
+  $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  $root = Get-BacklogFallbackBridgeRoot
+  $refs = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($m in [regex]::Matches($text, '(?i)(?<file>(?:[\w.-]+[\\/])*[\w.-]+\.(?:ps1|psm1|js|jsx|ts|tsx|json|html|css|md|yml|yaml|env)):(?<line>\d{1,6})')) {
+    $rel = ([string]$m.Groups['file'].Value).Replace('\','/').ToLowerInvariant()
+    $lineNo = 0
+    try { $lineNo = [int]$m.Groups['line'].Value } catch { $lineNo = 0 }
+    if ($lineNo -le 0) { continue }
+    try {
+      $full = Join-Path $root ($rel -replace '/', '\')
+      if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+      $idx = 0
+      foreach ($line in [System.IO.File]::ReadLines($full, [System.Text.Encoding]::UTF8)) {
+        $idx++
+        if ($idx -eq $lineNo) {
+          [void]$refs.Add([pscustomobject]@{ file=$rel; line=$lineNo; text=[string]$line })
+          break
+        }
+        if ($idx -gt $lineNo) { break }
+      }
+    } catch {}
+  }
+
+  if ($refs.Count -eq 0) {
+    foreach ($rel in @($ExistingFiles | Select-Object -First 3)) {
+      try {
+        $full = Join-Path $root (([string]$rel) -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        $info = Get-Item -LiteralPath $full -ErrorAction Stop
+        if ($info.Length -gt 262144) { continue }
+        $raw = [System.IO.File]::ReadAllText($full, [System.Text.Encoding]::UTF8)
+        [void]$refs.Add([pscustomobject]@{ file=[string]$rel; line=0; text=$raw })
+      } catch {}
+    }
+  }
+  return @($refs.ToArray())
+}
+
+function Test-BacklogIntakeCommentOnlyLine {
+  param([string]$Line)
+  $s = ([string]$Line).Trim()
+  if ([string]::IsNullOrWhiteSpace($s)) { return $true }
+  if ($s -match '^(#|//|/\*|\*|<!--)') { return $true }
+  return $false
+}
+
+function Test-BacklogIntakeSecurityEvidence {
+  param($Item, [string[]]$ExistingFiles = @())
+  $text = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')).ToLowerInvariant()
+  $isSecurity = $false
+  try {
+    $tags = @(Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @() | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    foreach ($tag in $tags) { if ($tag -match 'security|auth|secret|credential|injection|unsafe') { $isSecurity = $true; break } }
+  } catch {}
+  if ($text -match 'security|command[_ -]?injection|unsafe[_ -]?dynamic|invoke-expression|\biex\b|hardcoded[_ -]?(secret|credential|password)|auth[_ -]?bypass|path[_ -]?traversal') {
+    $isSecurity = $true
+  }
+  if (-not $isSecurity) { return [pscustomobject]@{ applies=$false; ok=$true; verdict='allow'; reason='not-security'; detail='' } }
+
+  $refs = @(Get-BacklogIntakeReferencedLines -Item $Item -ExistingFiles $ExistingFiles)
+  $joined = ((@($refs | ForEach-Object { [string]$_.text }) -join "`n"))
+  $hasReadableEvidence = (-not [string]::IsNullOrWhiteSpace($joined))
+  $hasCommentOnlyReferencedLine = $false
+  if ($refs.Count -gt 0) {
+    $realLineRefs = @($refs | Where-Object { [int]$_.line -gt 0 })
+    if ($realLineRefs.Count -gt 0) {
+      $hasCommentOnlyReferencedLine = $true
+      foreach ($r in $realLineRefs) {
+        if (-not (Test-BacklogIntakeCommentOnlyLine -Line ([string]$r.text))) { $hasCommentOnlyReferencedLine = $false; break }
+      }
+    }
+  }
+
+  if ($text -match 'hardcoded[_ -]?(secret|credential|password)|password|secret|token|api[_ -]?key|credential') {
+    if ($hasCommentOnlyReferencedLine) {
+      return [pscustomobject]@{ applies=$true; ok=$false; verdict='drop'; reason='security false-positive: referenced line is comment-only'; detail='comment-only-secret' }
+    }
+    $secretRx = '(?i)(password|passwd|secret|token|api[_-]?key|apikey|credential)[A-Za-z0-9_.'']*\s*[:=]\s*["''][^"'']{6,}["'']'
+    if ($joined -match $secretRx) {
+      return [pscustomobject]@{ applies=$true; ok=$true; verdict='allow'; reason='secret-like assignment exists in referenced code'; detail='secret-assignment' }
+    }
+    return [pscustomobject]@{ applies=$true; ok=$false; verdict='held'; reason='security finding lacks concrete secret assignment evidence'; detail='weak-secret-evidence' }
+  }
+
+  if ($text -match 'unsafe[_ -]?dynamic|invoke-expression|\biex\b|command[_ -]?injection') {
+    if ($hasCommentOnlyReferencedLine) {
+      return [pscustomobject]@{ applies=$true; ok=$false; verdict='drop'; reason='security false-positive: referenced line is comment-only'; detail='comment-only-dynamic' }
+    }
+    if (-not $hasReadableEvidence) {
+      return [pscustomobject]@{ applies=$true; ok=$false; verdict='held'; reason='security finding has no readable dynamic-execution evidence'; detail='no-dynamic-lines' }
+    }
+    if ($joined -match '(?i)\bInvoke-Expression\b|(^|[;&|({\s])iex(\s|$)|\[scriptblock\]::Create') {
+      return [pscustomobject]@{ applies=$true; ok=$true; verdict='allow'; reason='dynamic execution primitive exists in referenced code'; detail='dynamic-exec' }
+    }
+    return [pscustomobject]@{ applies=$true; ok=$false; verdict='drop'; reason='security false-positive: no dynamic execution primitive in referenced code'; detail='no-dynamic-exec' }
+  }
+
+  if ($refs.Count -eq 0) {
+    return [pscustomobject]@{ applies=$true; ok=$false; verdict='held'; reason='security finding has no readable code evidence'; detail='no-security-lines' }
+  }
+  return [pscustomobject]@{ applies=$true; ok=$false; verdict='held'; reason='security finding needs stronger verifier evidence before approved'; detail='generic-security-held' }
+}
+
+function Invoke-BacklogIntakeGate {
+  param($Record)
+  $allow = [pscustomobject]@{ gated=$false; action='allow'; status=[string](Get-BacklogPackObjectValue -Obj $Record -Name 'status' -Default ''); reason='not gated'; matched_id=''; evidence=$null }
+  try {
+    if (-not $Record) { return $allow }
+    $status = ([string](Get-BacklogPackObjectValue -Obj $Record -Name 'status' -Default '')).ToLowerInvariant()
+    if ($status -ne 'approved') { return $allow }
+    if (-not (Test-BacklogPackItemAuditSource -Item $Record)) { return $allow }
+
+    $scope = ([string](Get-BacklogPackObjectValue -Obj $Record -Name 'scope' -Default '')).ToLowerInvariant()
+    if ($scope -eq 'project') { return $allow }
+
+    $dupKeyObj = $null
+    try { $dupKeyObj = Get-BacklogDuplicateCompactorKey -Item $Record } catch { $dupKeyObj = $null }
+    if ($dupKeyObj) {
+      $key = [string]$dupKeyObj.key
+      foreach ($item in @(Get-Backlog)) {
+        $st = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).ToLowerInvariant()
+        if ($st -notin @('new','approved','held','running')) { continue }
+        if (-not (Test-BacklogPackItemAuditSource -Item $item)) { continue }
+        $itemKeyObj = $null
+        try { $itemKeyObj = Get-BacklogDuplicateCompactorKey -Item $item } catch { $itemKeyObj = $null }
+        if (-not $itemKeyObj) { continue }
+        if ([string]$itemKeyObj.key -eq $key) {
+          $mid = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+          if (-not [string]::IsNullOrWhiteSpace($mid)) {
+            return [pscustomobject]@{
+              gated = $true
+              action = 'dedup'
+              status = 'deduped'
+              reason = 'intake duplicate: same root-cause finding is already open'
+              matched_id = $mid
+              evidence = [pscustomobject]@{ duplicate_key=$key; root=[string]$dupKeyObj.root; finding_type=[string]$dupKeyObj.finding_type }
+            }
+          }
+        }
+      }
+    }
+
+    $files = Get-BacklogIntakeGateFileEvidence -Item $Record
+    $existing = @($files.existing)
+    $missing = @($files.missing)
+    $sec = Test-BacklogIntakeSecurityEvidence -Item $Record -ExistingFiles $existing
+    if ($sec -and [bool]$sec.applies) {
+      $action = if ([string]$sec.verdict -eq 'drop') { 'drop' } elseif ([string]$sec.verdict -eq 'held') { 'hold' } else { 'allow' }
+      return [pscustomobject]@{
+        gated = $true
+        action = $action
+        status = if ($action -eq 'drop') { 'auto-dropped' } elseif ($action -eq 'hold') { 'held' } else { 'approved' }
+        reason = [string]$sec.reason
+        matched_id = ''
+        evidence = [pscustomobject]@{ existing_files=$existing; missing_files=$missing; security_detail=[string]$sec.detail }
+      }
+    }
+
+    if ($existing.Count -gt 0) {
+      return [pscustomobject]@{
+        gated=$true
+        action='allow'
+        status='approved'
+        reason='code target exists'
+        matched_id=''
+        evidence=[pscustomobject]@{ existing_files=$existing; missing_files=$missing }
+      }
+    }
+
+    return [pscustomobject]@{
+      gated=$true
+      action='hold'
+      status='held'
+      reason='audit finding lacks readable code target evidence'
+      matched_id=''
+      evidence=[pscustomobject]@{ existing_files=$existing; missing_files=$missing }
+    }
+  } catch {
+    return [pscustomobject]@{ gated=$true; action='hold'; status='held'; reason=('intake gate failed closed: ' + [string]$_.Exception.Message); matched_id=''; evidence=$null }
+  }
+}
+
 function Get-BacklogPackLastRun {
   $p = Get-BacklogPackLatestPath
   if (-not (Test-Path -LiteralPath $p)) { return $null }
@@ -2236,6 +2452,55 @@ function Add-Idea {
   if (-not $SkipCurator -and $keep -and [string]$keep.action -eq 'similar') {
     $rec.similar_to = @($keep.similar_to)
   }
+
+  $intakeGate = $null
+  try { $intakeGate = Invoke-BacklogIntakeGate -Record ([pscustomobject]$rec) } catch { $intakeGate = $null }
+  $intakeGateApplies = $false
+  try { $intakeGateApplies = [bool](Get-BacklogPackObjectValue -Obj $intakeGate -Name 'gated' -Default $false) } catch { $intakeGateApplies = $false }
+  if ($intakeGateApplies -and [string]$intakeGate.action -eq 'dedup' -and -not [string]::IsNullOrWhiteSpace([string]$intakeGate.matched_id)) {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'intake-dedup'
+      new_text = [string]$Text
+      matched_id = [string]$intakeGate.matched_id
+      reason = [string]$intakeGate.reason
+      evidence = $intakeGate.evidence
+    })
+    Write-LastAddIdeaMarker ([ordered]@{
+      ts = $now
+      deduped = $true
+      intake_gate = $true
+      id = [string]$intakeGate.matched_id
+      matched_id = [string]$intakeGate.matched_id
+      reason = [string]$intakeGate.reason
+    })
+    return [string]$intakeGate.matched_id
+  }
+  if ($intakeGateApplies -and [string]$intakeGate.action -in @('allow','hold','drop')) {
+    $finalStatus = [string]$intakeGate.status
+    if (-not [string]::IsNullOrWhiteSpace($finalStatus)) { $rec['status'] = $finalStatus }
+    $rec['intake_gate'] = [ordered]@{
+      action = [string]$intakeGate.action
+      requested_status = [string]$Status
+      final_status = [string]$rec['status']
+      reason = [string]$intakeGate.reason
+      model = 'deterministic-intake-v1'
+      ts = $now
+      evidence = $intakeGate.evidence
+    }
+    if ([string]$intakeGate.action -eq 'hold') {
+      $rec['held_reason'] = [string]$intakeGate.reason
+    } elseif ([string]$intakeGate.action -eq 'drop') {
+      $rec['auto_curator'] = [ordered]@{
+        verdict = 'drop'
+        confidence = 1.0
+        reason = [string]$intakeGate.reason
+        model = 'deterministic-intake-v1'
+        ts = $now
+        judged_at_sha = (Get-BacklogCurrentSha)
+      }
+    }
+  }
   # 2026-05-27: critic-flagged fix. Same BOM issue as in Write-BacklogJsonLine
   # plus a real risk: $rec is a hashtable here (fresh, not from ConvertFrom-Json
   # so no ETS-graph), but consumers re-read via Get-Backlog → PSCustomObject;
@@ -2253,7 +2518,8 @@ function Add-Idea {
   Invoke-BacklogLocked ({ [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA) }.GetNewClosure()) | Out-Null
 
   $curatorStarted = $false
-  if (-not $SkipCurator) {
+  $intakeStopsCurator = ($intakeGateApplies -and [string]$intakeGate.action -in @('hold','drop'))
+  if ((-not $SkipCurator) -and (-not $intakeStopsCurator)) {
     $curatorStarted = Start-BacklogCuratorJob -ItemId ([string]$rec.id)
   }
   Write-LastAddIdeaMarker ([ordered]@{

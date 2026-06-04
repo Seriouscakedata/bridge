@@ -825,13 +825,9 @@ function Add-AuditCriticalsToBacklog {
     try { if (-not [string]::IsNullOrWhiteSpace([string]$AuditContext.backlog_channel)) { $backlogChannel = [string]$AuditContext.backlog_channel } } catch {}
   }
   $isProjectAudit = ($auditKind -eq 'project')
-  $backlogPath = Get-AuditBacklogPath -BridgePath $BridgePath -Channel $backlogChannel
-  $backlogDir = Split-Path -Parent $backlogPath
-  if (-not (Test-Path -LiteralPath $backlogDir)) {
-    try { New-Item -ItemType Directory -Path $backlogDir -Force | Out-Null } catch {}
-  }
   $existingTexts = @{}
   try {
+    $backlogPath = Get-AuditBacklogPath -BridgePath $BridgePath -Channel $backlogChannel
     if (Test-Path -LiteralPath $backlogPath) {
       foreach ($line in @([System.IO.File]::ReadAllLines($backlogPath, (New-Object System.Text.UTF8Encoding($false))))) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -843,51 +839,51 @@ function Add-AuditCriticalsToBacklog {
       }
     }
   } catch {
-    Write-AuditLog -BridgePath $BridgePath -Message "failed to read backlog for audit dedupe: $($_.Exception.Message)"
+    Write-AuditLog -BridgePath $BridgePath -Message "failed to read backlog for audit exact dedupe: $($_.Exception.Message)"
   }
-  try {
-    $addedInLock = Invoke-AuditBridgeLocked {
-      $localAdded = 0
-      foreach ($f in $crit) {
-        try {
-          $prefix = if ($isProjectAudit) { "audit/$backlogChannel/$($f.source)" } else { "audit/$($f.source)" }
-          $text = "[$prefix] $($f.title)"
-          if ($f.area)   { $text += " ($($f.area))" }
-          if ($f.detail) {
-            $det = ($f.detail -replace '\s+', ' ').Trim()
-            if ($det.Length -gt 240) { $det = $det.Substring(0, 240) + '...' }
-            $text += " — $det"
-          }
-          if ($existingTexts.ContainsKey($text)) { continue }
-          # Bridge self-audit criticals auto-approve because the bridge may fix itself autonomously.
-          # Project audits are written as held review items: the operator decides before the bridge
-          # touches an external codebase.
-          $rec = [ordered]@{
-            id       = [guid]::NewGuid().ToString('N')
-            ts       = (Get-Date).ToUniversalTime().ToString('o')
-            from     = 'audit'
-            status   = if ($isProjectAudit) { 'held' } else { 'approved' }
-            tags     = if ($isProjectAudit) { @('audit', 'project-audit', $backlogChannel, [string]$f.source, 'critical') } else { @('audit', [string]$f.source, 'critical') }
-            attempts = 0
-            score    = 0.0
-            project  = $backlogChannel
-            scope    = $auditKind
-            severity = 'critical'
-            text     = $text
-          }
-          $line = ($rec | ConvertTo-Json -Compress -Depth 6)
-          [System.IO.File]::AppendAllText($backlogPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $helperErrors = New-Object 'System.Collections.Generic.List[string]'
+  $addIdeaAvailable = Initialize-AuditBacklogHelpers -Root $BridgePath -ResolvedChannel $backlogChannel -Errors ([ref]$helperErrors)
+  if (-not $addIdeaAvailable) {
+    Write-AuditLog -BridgePath $BridgePath -Message ("audit critical filing skipped: Add-Idea unavailable; errors=" + ((@($helperErrors.ToArray())) -join '; '))
+    return 0
+  }
+  $runner = {
+    $localAdded = 0
+    foreach ($f in $crit) {
+      try {
+        $prefix = if ($isProjectAudit) { "audit/$backlogChannel/$($f.source)" } else { "audit/$($f.source)" }
+        $text = "[$prefix] $($f.title)"
+        if ($f.area)   { $text += " ($($f.area))" }
+        if ($f.detail) {
+          $det = ($f.detail -replace '\s+', ' ').Trim()
+          if ($det.Length -gt 240) { $det = $det.Substring(0, 240) + '...' }
+          $text += " — $det"
+        }
+        if ($existingTexts.ContainsKey($text)) { continue }
+        # Static criticals now go through the same intake gate as deep-audit findings.
+        # SkipCurator only skips the cheap LLM curator; deterministic intake still runs
+        # inside Add-Idea and can dedup/hold/drop before anything reaches approved.
+        $status = if ($isProjectAudit) { 'held' } else { 'approved' }
+        $tags = if ($isProjectAudit) { @('audit', 'project-audit', $backlogChannel, [string]$f.source, 'critical') } else { @('audit', [string]$f.source, 'critical') }
+        $bid = Add-Idea -Text $text -From 'audit' -Tags $tags -Status $status -Severity 'critical' -Project $backlogChannel -Scope $auditKind -SkipCurator
+        if ($bid) {
           $existingTexts[$text] = $true
           $localAdded++
-        } catch {
-          Write-AuditLog -BridgePath $BridgePath -Message "audit backlog append failed: $($_.Exception.Message)"
         }
+      } catch {
+        Write-AuditLog -BridgePath $BridgePath -Message "audit backlog Add-Idea filing failed: $($_.Exception.Message)"
       }
-      return $localAdded
     }
-    try { $added = [int]$addedInLock } catch { $added = 0 }
+    return $localAdded
+  }.GetNewClosure()
+  try {
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      $added = [int](Invoke-WithChannelEnv -Slug $backlogChannel -Action $runner)
+    } else {
+      $added = [int](& $runner)
+    }
   } catch {
-    Write-AuditLog -BridgePath $BridgePath -Message "failed to acquire backlog lock for audit findings: $($_.Exception.Message)"
+    Write-AuditLog -BridgePath $BridgePath -Message "audit critical Add-Idea filing failed: $($_.Exception.Message)"
   }
   return $added
 }

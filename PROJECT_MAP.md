@@ -110,7 +110,7 @@ Runtime и сгенерированные данные, обычно не ком
 
 ### Автономия и backlog
 
-- `lib/backlog.ps1`: очередь идей, risk tier, stale sweep, LLM-prioritizer, self-exec, safety reflex, Project Autopilot.
+- `lib/backlog.ps1`: очередь идей, deterministic intake gate для audit/deep-audit findings, root-cause dedup, risk tier, stale sweep, LLM-prioritizer, self-exec, safety reflex, Project Autopilot.
 - `docs/self-development.md`: политика `selfExecuteTier`.
 - `config.json -> autonomy`: idle timing, дневной лимит автономных задач, reflect cadence, stable promotion.
 - `settings.json -> selfExecuteTier`: runtime-диск. На момент карты наблюдалось значение `yellow`.
@@ -171,7 +171,7 @@ Readiness проекта считается по мягкому гейту:
 ### Аудит, обучение, рефлексия
 
 - `lib/auditor.ps1`: периодический аудитор задач и здоровья, triggers, verdict memory, suppression/escalation.
-- `tools/audit.ps1`: статический audit pipeline.
+- `tools/audit.ps1`: статический audit pipeline; critical findings подаются в backlog через `Add-Idea`, а не прямым append.
 - `tools/deep-audit.ps1`, `tools/deep-audit-agent.ps1`: multi-agent audit по доменам.
 - `lib/findings-ledger.ps1`: lifecycle находок, dedup, visible findings.
 - `lib/metrics.ps1`: turns/latency/doctor metrics, hypotheses, verdict actuation, failures.

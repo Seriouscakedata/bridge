@@ -45,6 +45,32 @@ function Get-TestItemById {
   return @(Get-Backlog | Where-Object { [string]$_.id -eq $Id } | Select-Object -First 1)[0]
 }
 
+function New-TestBacklogItem {
+  param(
+    [string]$Id,
+    [string]$Text,
+    [string]$From,
+    [string[]]$Tags,
+    [string]$Status,
+    [string]$Severity,
+    [string]$RootKey
+  )
+  return [pscustomobject][ordered]@{
+    id = $Id
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    from = $From
+    status = $Status
+    tags = @($Tags)
+    attempts = 0
+    score = 0.0
+    project = ''
+    scope = 'bridge'
+    severity = $Severity
+    text = $Text
+    workpack_root_cause_key = $RootKey
+  }
+}
+
 try {
   $mainDir = Get-ChannelDir -Slug 'main'
   New-Item -ItemType Directory -Path $mainDir -Force | Out-Null
@@ -53,21 +79,26 @@ try {
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\backlog.ps1')
 
   $rootKey = 'file:lib/circuit-breaker.ps1'
-  $idKeep = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Restart attribution is ambiguous in restarts.jsonl.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'critical' -SkipCurator
-  $idDupA = Add-Idea -Text '[deep-agent/runtime-incident-model/claude-opus] orphan_restart -- Same restart attribution finding in different words.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'new' -Severity 'warning' -SkipCurator
-  $idDupB = Add-Idea -Text '[audit/safety] orphan-restart (lib/circuit-breaker.ps1:42) - Same root cause reported by another audit pass.' -From 'audit' -Tags @('audit') -Status 'approved' -Severity 'info' -SkipCurator
-  $idOtherKind = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] restart-loop -- Different typed finding in the same file must survive.' -From 'audit-deep-agent' -Tags @('audit') -Status 'approved' -Severity 'critical' -SkipCurator
-  $idManual = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Manual/operator task with audit-looking text must survive without audit source.' -From 'operator' -Tags @('manual') -Status 'approved' -Severity 'critical' -SkipCurator
-  $idRunning = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Running item is not modified by the compactor.' -From 'audit-deep-agent' -Tags @('audit') -Status 'running' -Severity 'critical' -SkipCurator
-  $idUntyped = Add-Idea -Text '[audit/ui] surface web/index.html status badge for duplicate backlog telemetry.' -From 'audit' -Tags @('audit') -Status 'approved' -Severity 'info' -SkipCurator
+  # The intake gate now prevents new approved audit duplicates from being appended
+  # through Add-Idea. This test intentionally creates a dirty historical backlog
+  # directly so the post-facto compactor remains covered.
+  $idKeep = [guid]::NewGuid().ToString('N')
+  $idDupA = [guid]::NewGuid().ToString('N')
+  $idDupB = [guid]::NewGuid().ToString('N')
+  $idOtherKind = [guid]::NewGuid().ToString('N')
+  $idManual = [guid]::NewGuid().ToString('N')
+  $idRunning = [guid]::NewGuid().ToString('N')
+  $idUntyped = [guid]::NewGuid().ToString('N')
 
-  $items = @(Get-Backlog)
-  foreach ($item in $items) {
-    if ([string]$item.id -in @($idKeep,$idDupA,$idDupB,$idOtherKind,$idManual,$idRunning,$idUntyped)) {
-      $item | Add-Member -NotePropertyName workpack_root_cause_key -NotePropertyValue $rootKey -Force
-    }
-  }
-  Save-Backlog $items
+  Save-Backlog @(
+    (New-TestBacklogItem -Id $idKeep -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Restart attribution is ambiguous in restarts.jsonl.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'critical' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idDupA -Text '[deep-agent/runtime-incident-model/claude-opus] orphan_restart -- Same restart attribution finding in different words.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'new' -Severity 'warning' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idDupB -Text '[audit/safety] orphan-restart (lib/circuit-breaker.ps1:42) - Same root cause reported by another audit pass.' -From 'audit' -Tags @('audit') -Status 'approved' -Severity 'info' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idOtherKind -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] restart-loop -- Different typed finding in the same file must survive.' -From 'audit-deep-agent' -Tags @('audit') -Status 'approved' -Severity 'critical' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idManual -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Manual/operator task with audit-looking text must survive without audit source.' -From 'operator' -Tags @('manual') -Status 'approved' -Severity 'critical' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idRunning -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Running item is not modified by the compactor.' -From 'audit-deep-agent' -Tags @('audit') -Status 'running' -Severity 'critical' -RootKey $rootKey),
+    (New-TestBacklogItem -Id $idUntyped -Text '[audit/ui] surface web/index.html status badge for duplicate backlog telemetry.' -From 'audit' -Tags @('audit') -Status 'approved' -Severity 'info' -RootKey $rootKey)
+  )
 
   Assert-True ((Get-BacklogDuplicateFindingType -Item (Get-TestItemById -Id $idKeep)) -eq 'orphan-restart') 'expected orphan-restart finding type'
   Assert-True ((Get-BacklogDuplicateFindingType -Item (Get-TestItemById -Id $idDupA)) -eq 'orphan-restart') 'expected underscore finding type to canonicalize'

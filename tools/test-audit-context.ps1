@@ -31,6 +31,44 @@ try {
   New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'channels\travel\backlog.jsonl'), '', $Utf8NoBom)
 
+  $script:AuditTestBridgeRoot = $bridgeRoot
+  $script:AuditTestPinnedChannel = 'main'
+  function Get-BridgeRoot { return $script:AuditTestBridgeRoot }
+  function Get-EffectiveChannel { return $script:AuditTestPinnedChannel }
+  function Set-PinnedChannel {
+    param([string]$Slug)
+    if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = 'main' }
+    $script:AuditTestPinnedChannel = $Slug
+  }
+  function Get-ChannelDir {
+    param([string]$Slug = $null)
+    if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = Get-EffectiveChannel }
+    return (Join-Path (Join-Path $script:AuditTestBridgeRoot 'channels') $Slug)
+  }
+  function Get-ChannelBacklogPath {
+    param([string]$Slug = $null)
+    return (Join-Path (Get-ChannelDir -Slug $Slug) 'backlog.jsonl')
+  }
+  function Use-BridgeLock {
+    param([scriptblock]$Body)
+    & $Body
+  }
+  function Get-AutonomySettings {
+    return [pscustomobject]@{
+      backlogPackEnabled            = $false
+      backlogPackBurstCount         = 5
+      backlogPackWindowMinutes      = 60
+      backlogPackUnpackedOpenCount  = 8
+      backlogPackAuditBurstCount    = 3
+      backlogPackAuditWindowMinutes = 30
+      backlogPackCooldownMinutes    = 30
+      backlogPackMinItems           = 2
+      backlogPackDedupeEnabled      = $true
+      backlogPackDedupeMinGroupSize = 2
+    }
+  }
+  . (Join-Path $repoRoot 'lib\backlog.ps1')
+
   $mainCtx = New-AuditContext -BridgePath $bridgeRoot -Channel 'main' -ProjectRoot $bridgeRoot
   Assert-AuditTest 'main-kind-bridge' ([string]$mainCtx.kind -eq 'bridge')
   Assert-AuditTest 'main-report-root' (([string]$mainCtx.report_root) -eq (Join-Path $bridgeRoot 'audit'))
@@ -59,6 +97,10 @@ try {
   Assert-AuditTest 'project-critical-held' ([string]$item.status -eq 'held')
   Assert-AuditTest 'project-critical-project' ([string]$item.project -eq 'travel')
   Assert-AuditTest 'project-critical-scope' ([string]$item.scope -eq 'project')
+  $addedAgain = Add-AuditCriticalsToBacklog -BridgePath $bridgeRoot -Findings @($finding) -AuditContext $projectCtx
+  Assert-AuditTest 'project-critical-exact-dedup' ([int]$addedAgain -eq 0)
+  $projectCriticalLines = @([System.IO.File]::ReadAllLines($backlogPath, $Utf8NoBom) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  Assert-AuditTest 'project-critical-exact-dedup-count' ($projectCriticalLines.Count -eq 1) ("count={0}" -f $projectCriticalLines.Count)
 
   $report = [pscustomobject]@{
     generated_at = (Get-Date).ToUniversalTime().ToString('o')
