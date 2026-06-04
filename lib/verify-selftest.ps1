@@ -1,4 +1,4 @@
-function Get-VerifySelftestRoot {
+﻿function Get-VerifySelftestRoot {
   if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) {
     return Get-BridgeRoot
   }

@@ -79,6 +79,7 @@
     "fallback": "gemini-2.5-flash"
   },
   "usage": {
+    "dailyCapUsd": 0,
     "prices": {
       "deepseek-v4-flash": {
         "in": 0.07,

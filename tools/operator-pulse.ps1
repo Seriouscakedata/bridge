@@ -12,6 +12,94 @@ $nowU = $now.ToUniversalTime()
 function JFile($p) { try { [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { $null } }
 function AgeS($iso) { try { [math]::Round(($nowU - ([datetimeoffset]::Parse([string]$iso)).UtcDateTime).TotalSeconds, 0) } catch { '?' } }
 function Trunc($s, $n) { $s = [string]$s; if ($s.Length -gt $n) { $s.Substring(0, $n) + '...' } else { $s } }
+function GetJsonProp($obj, [string]$name) {
+  if ($null -eq $obj) { return $null }
+  try {
+    if ($obj -is [hashtable] -and $obj.ContainsKey($name)) { return $obj[$name] }
+    if ($obj.PSObject.Properties.Name -contains $name) { return $obj.PSObject.Properties[$name].Value }
+  } catch {}
+  return $null
+}
+function GetNum($v) { try { return [double]$v } catch { return 0.0 } }
+function GetUsageDailyCapUsd($cfg) {
+  $usage = GetJsonProp $cfg 'usage'
+  $cap = GetJsonProp $usage 'dailyCapUsd'
+  if ($null -eq $cap) { return 0.0 }
+  $n = GetNum $cap
+  if ($n -lt 0) { return 0.0 }
+  return $n
+}
+function GetUsagePriceCost($cfg, [string]$model, $promptTokens, $completionTokens) {
+  if ([string]::IsNullOrWhiteSpace($model)) { return 0.0 }
+  $usage = GetJsonProp $cfg 'usage'
+  $prices = GetJsonProp $usage 'prices'
+  $price = GetJsonProp $prices $model
+  $inRate = GetNum (GetJsonProp $price 'in')
+  $outRate = GetNum (GetJsonProp $price 'out')
+  return (($inRate * (GetNum $promptTokens)) + ($outRate * (GetNum $completionTokens))) / 1000000.0
+}
+function GetUsageRecordChannel($rec) {
+  $ch = GetJsonProp $rec 'channel'
+  if ([string]::IsNullOrWhiteSpace([string]$ch)) { $ch = GetJsonProp $rec 'channel_slug' }
+  return [string]$ch
+}
+function GetChannelCostSnapshot([string]$chName, $cfg) {
+  $usagePath = Join-Path $root 'usage.jsonl'
+  $cutoff = $nowU.AddHours(-24)
+  $calls = 0; $prompt = 0; $completion = 0; $cost = 0.0
+  $channelTagged = 0
+  if (Test-Path $usagePath) {
+    foreach ($ln in [System.IO.File]::ReadLines($usagePath, [System.Text.Encoding]::UTF8)) {
+      if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+      try {
+        $rec = $ln | ConvertFrom-Json
+        $ts = ([datetimeoffset]::Parse([string]$rec.ts)).UtcDateTime
+        if ($ts -lt $cutoff) { continue }
+        $recChannel = GetUsageRecordChannel $rec
+        if (-not [string]::IsNullOrWhiteSpace($recChannel)) {
+          $channelTagged++
+          if ($recChannel -ne $chName) { continue }
+        }
+        $pt = GetNum $rec.prompt_tokens
+        $ct = GetNum $rec.completion_tokens
+        $c = if ($null -ne $rec.cost_usd) { GetNum $rec.cost_usd } else { GetUsagePriceCost $cfg ([string]$rec.model) $pt $ct }
+        $calls++
+        $prompt += $pt
+        $completion += $ct
+        $cost += $c
+      } catch {}
+    }
+  }
+  $cap = GetUsageDailyCapUsd $cfg
+  return [pscustomobject]@{
+    channel           = [string]$chName
+    window_hours      = 24
+    generated_at      = $nowU.ToString('o')
+    calls             = [int]$calls
+    prompt_tokens     = [int]$prompt
+    completion_tokens = [int]$completion
+    cost_usd          = [Math]::Round($cost, 6)
+    daily_cap_usd     = [Math]::Round($cap, 6)
+    cap_exceeded      = [bool]($cap -gt 0 -and $cost -gt $cap)
+    source            = 'usage.jsonl'
+    scope             = $(if ($channelTagged -gt 0) { 'channel-tagged-plus-legacy-global' } else { 'legacy-global' })
+  }
+}
+function SaveChannelCostSnapshot($snapshot) {
+  try {
+    $dir = Join-Path $root ("channels\" + [string]$snapshot.channel)
+    if (-not (Test-Path $dir)) { return $false }
+    $path = Join-Path $dir 'cost.json'
+    $tmp = $path + '.tmp'
+    $json = ($snapshot | ConvertTo-Json -Depth 5) + "`n"
+    [System.IO.File]::WriteAllText($tmp, $json, [System.Text.Encoding]::UTF8)
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+    return $true
+  } catch {
+    try { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
+    return $false
+  }
+}
 # 2026-05-31 (Foundation #4): file-based "why is this channel idle" — no engine dependency.
 function WhyIdle($chName) {
   $cfg = JFile (Join-Path $root 'config.json'); $set = JFile (Join-Path $root 'settings.json')
@@ -62,8 +150,15 @@ if (Test-Path $rj) { foreach ($ln in [System.IO.File]::ReadAllLines($rj, [System
 $cbMode = if ($rCount -ge $maxR) { "COOLDOWN (TRIPPED)" } else { "allow" }
 $wdPaused = Test-Path (Join-Path $env:USERPROFILE '.bridge-private\watchdog.pause')
 
-$head = (([string](& $git -C $root rev-parse --short HEAD 2>$null)).Trim())
-$dirty = @(& $git -C $root status --porcelain 2>$null | Where-Object { $_ -match '\S' }).Count
+$head = '?'
+try {
+  $headRaw = [string](& $git -C $root rev-parse --short HEAD 2>$null)
+  if (-not [string]::IsNullOrWhiteSpace($headRaw)) { $head = $headRaw.Trim() }
+} catch {}
+$dirty = 0
+try {
+  $dirty = @(& $git -C $root status --porcelain 2>$null | Where-Object { $_ -match '\S' }).Count
+} catch {}
 
 Write-Host "HEALTH:" -ForegroundColor Yellow
 $apiColor = if ($apiCode -eq '200') { 'Green' } else { 'Red' }
@@ -77,6 +172,8 @@ Write-Host "CHANNELS:" -ForegroundColor Yellow
 foreach ($ch in $channels) {
   $st = JFile (Join-Path $root "channels\$ch\state.json")
   if (-not $st) { Write-Host ("  " + $ch + ": (no state)"); continue }
+  $costSnap = GetChannelCostSnapshot $ch $cfg
+  [void](SaveChannelCostSnapshot $costSnap)
   $hb = AgeS $st.heartbeat
   $hbFlag = if ($hb -is [int] -and $hb -gt 300) { " STALE!" } else { "" }
   $line = "  " + $ch + ": " + [string]$st.status + " hb=" + $hb + "s" + $hbFlag
@@ -90,6 +187,10 @@ foreach ($ch in $channels) {
     $wi = WhyIdle $ch
     if ($wi -and $wi -ne 'ready') { Write-Host ("      why-idle: " + $wi) -ForegroundColor DarkYellow }
   }
+  $costLine = "      cost 24h: $" + ("{0:N4}" -f [double]$costSnap.cost_usd)
+  if ([double]$costSnap.daily_cap_usd -gt 0) { $costLine += " / cap $" + ("{0:N4}" -f [double]$costSnap.daily_cap_usd) }
+  Write-Host $costLine -ForegroundColor $(if ([bool]$costSnap.cap_exceeded) { 'Red' } else { 'DarkGray' })
+  if ([bool]$costSnap.cap_exceeded) { [void]$waiting.Add("[" + $ch + "] usage.dailyCapUsd exceeded: cost 24h $" + ("{0:N4}" -f [double]$costSnap.cost_usd) + " > cap $" + ("{0:N4}" -f [double]$costSnap.daily_cap_usd)) }
   if (-not [string]::IsNullOrWhiteSpace([string]$st.held_task)) { [void]$waiting.Add("[" + $ch + "] held_task: " + (Trunc $st.held_task 80)) }
 }
 
