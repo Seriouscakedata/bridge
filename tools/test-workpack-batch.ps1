@@ -197,6 +197,34 @@ try {
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
   Save-Backlog $items
 
+  $idAuditModelA = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] attribution-gap -- Restart has no task_id and no task turn within 10 minutes. Add task attribution to restart events.' -From 'test' -Status 'approved' -SkipCurator
+  $idAuditModelB = Add-Idea -Text "[deep-agent/functional-model/gemini-2.5-flash] Data Structure / Registry Drift -- The 'features\state.json' file contains stale feature activation data." -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idAuditModelA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-audit-model-a' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'state' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('state') -Force
+    } elseif ([string]$item.id -eq [string]$idAuditModelB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-audit-model-b' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'audit' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('features/state.js') -Force
+    }
+  }
+  Save-Backlog $items
+  Assert-True ([string](Get-BacklogTaskDepSignal -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] attribution-gap -- Restart has no task_id and no task turn within 10 minutes.') -eq 'neutral') 'source tag runtime-incident-model must not become foundation'
+  Assert-True ([string](Get-BacklogTaskDepSignal -Text "[deep-agent/functional-model/gemini-2.5-flash] Data Structure / Registry Drift -- The 'features\state.json' file contains stale feature activation data.") -eq 'neutral') 'source tag functional-model must not become foundation'
+  Assert-True ([string](Get-BacklogTaskDepSignal -Text 'create User model and database schema in prisma/schema.prisma') -eq 'foundation') 'explicit model/schema creation should remain foundation'
+  $auditModelBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($auditModelBatch -ne $null) 'audit source model tags should not freeze workpack frontier'
+  Assert-FrontierReportShape -Report $auditModelBatch.frontier_report -Name 'audit-model'
+  Assert-True ([string]$auditModelBatch.frontier_report.reason -eq 'batch-available') ("expected audit-model batch-available, got {0}" -f [string]$auditModelBatch.frontier_report.reason)
+  Assert-True ([int]$auditModelBatch.frontier_report.structural_wait_count -eq 0) 'audit source model tags should not count as structural barriers'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
   $idBase = Add-Idea -Text 'base layout atom already completed' -From 'test' -Status 'done' -SkipCurator
   $idReadyA = Add-Idea -Text 'update profile page display copy in app/profile/page.tsx' -From 'test' -Status 'approved' -SkipCurator
   $idReadyB = Add-Idea -Text 'add gallery empty state copy in app/gallery/page.tsx' -From 'test' -Status 'approved' -SkipCurator

@@ -1273,14 +1273,22 @@ function Get-BacklogTaskDepSignal {
   # (scaffold -> Prisma/User model -> admin seed -> auth) that the touch-set packer wrongly saw as
   # independent because their files differ — which generated incompatible code (ERR-005).
   param([string]$Text)
-  $t = ([string]$Text)
+  $t = Get-BacklogWorkpackSignalText -Text ([string]$Text)
+  try { $t = Get-BacklogTextOutsideForbiddenContexts -Text $t } catch {}
   if ([string]::IsNullOrWhiteSpace($t)) { return 'neutral' }
   $t = $t.ToLowerInvariant()
+  # Audit producers often prefix findings with tags such as
+  # [deep-agent/runtime-incident-model/...]. Treating that source tag, or a bare "model/schema"
+  # word in a finding, as a project-foundation dependency freezes the whole frontier. Keep the
+  # barrier for explicit setup/schema work, but require a real foundation signal.
   $foundation = @(
     'scaffold','boilerplate','каркас проект','инициализ','init project','project setup','настрой проект',
-    'prisma','\bschema\b','schema\.prisma','миграци','migration','db schema','database','схему базы','схему бд',
-    '\bmodel\b','data model','модель данных','модель данны','\bentity\b','\borm\b','create table','create\s+\w+\s+table','таблиц',
-    'package\.json','next\.config','tsconfig','определи модель','define\s+\w+\s+model','create\s+\w+\s+model','set up\s+.{0,20}(project|schema|database)'
+    'prisma','schema\.prisma','миграци','migration','db schema','database','схему базы','схему бд',
+    '\borm\b','create table','create\s+\w+\s+table','таблиц',
+    'package\.json','next\.config','tsconfig','определи модель','define\s+\w+\s+model','create\s+\w+\s+model','add\s+\w+\s+model',
+    '(?:define|create|design|add|set up)\s+.{0,25}(?:data model|entity|entities|schema)',
+    '(?:создай|создать|добавь|добавить|определи|спроектируй)\s+.{0,25}(?:модель|сущност|схем)',
+    'set up\s+.{0,20}(project|schema|database)'
   )
   $dependent = @(
     'после того как','после создани','на основе созданн','поверх созданн','использует модель','использует схему','на базе модел','на базе схем',
