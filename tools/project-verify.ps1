@@ -24,6 +24,8 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   foreach ($d in $nd) { if ($d -and (Test-Path (Join-Path $d 'node.exe'))) { $env:Path = [string]$d + ';' + $env:Path; break } }
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host 'node not found on PATH' -ForegroundColor Red; exit 2 }
+$npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+$script:NpmExe = if ($npmCmd -and $npmCmd.Source) { [string]$npmCmd.Source } else { 'npm.cmd' }
 
 Set-Location $proj
 Write-Host ("=== PROJECT VERIFY: " + $Channel + "  (" + $proj + ") ===") -ForegroundColor Yellow
@@ -43,17 +45,81 @@ if (Test-Path $envFile) {
 }
 
 function Has($name) { return ($scripts -and ($scripts.PSObject.Properties.Name -contains $name)) }
+
+function ConvertTo-ProjectVerifyProcessArgument {
+  param([AllowNull()][string]$Value)
+  if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+  if ($Value -notmatch '[\s"]') { return $Value }
+  $escaped = ([string]$Value) -replace '(\\*)"', '$1$1\"'
+  $escaped = $escaped -replace '(\\+)$', '$1$1'
+  return '"' + $escaped + '"'
+}
+
+function Invoke-ProjectVerifyProcess {
+  param(
+    [Parameter(Mandatory=$true)][string]$FilePath,
+    [string[]]$Arguments = @(),
+    [string]$WorkingDirectory = $proj,
+    [int]$TimeoutSec = 900
+  )
+  # CB review 2026-06-01: keep native stderr out of the PowerShell pipeline.
+  # Under Windows PowerShell 5.1, merged native stderr/stdout can become NativeCommandError.
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = (@($Arguments) | ForEach-Object { ConvertTo-ProjectVerifyProcessArgument ([string]$_) }) -join ' '
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  try {
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  } catch {}
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $stdout = $proc.StandardOutput.ReadToEndAsync()
+  $stderr = $proc.StandardError.ReadToEndAsync()
+  $timedOut = $false
+  if (-not $proc.WaitForExit([Math]::Max(1, $TimeoutSec) * 1000)) {
+    $timedOut = $true
+    try { $proc.Kill() } catch {}
+    try { $proc.WaitForExit(3000) | Out-Null } catch {}
+  }
+  try { $stdout.Wait(3000) | Out-Null } catch {}
+  try { $stderr.Wait(3000) | Out-Null } catch {}
+  return [pscustomobject]@{
+    ExitCode = if ($timedOut) { 124 } else { [int]$proc.ExitCode }
+    TimedOut = [bool]$timedOut
+    Output = @(
+      if ($stdout.IsCompleted -and -not [string]::IsNullOrEmpty($stdout.Result)) { $stdout.Result }
+      if ($stderr.IsCompleted -and -not [string]::IsNullOrEmpty($stderr.Result)) { $stderr.Result }
+      if ($timedOut) { "TIMEOUT after $TimeoutSec seconds" }
+    )
+  }
+}
+
 function Step($label, $scriptName) {
   if (-not (Has $scriptName)) { Write-Host ("  - " + $label + ": (no '" + $scriptName + "' script, skip)") -ForegroundColor DarkGray; return }
   Write-Host ("  > " + $label + " ...") -ForegroundColor Cyan
-  $out = & npm run $scriptName 2>&1 | Out-String
-  if ($LASTEXITCODE -eq 0) { Write-Host ("    PASS " + $label) -ForegroundColor Green }
-  else { Write-Host ("    FAIL " + $label) -ForegroundColor Red; ($out -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 10 | ForEach-Object { Write-Host ("      " + $_) }); $script:fail++ }
+  $result = Invoke-ProjectVerifyProcess -FilePath $script:NpmExe -Arguments @('run', $scriptName) -WorkingDirectory $proj -TimeoutSec 900
+  if ($result.ExitCode -eq 0 -and -not $result.TimedOut) { Write-Host ("    PASS " + $label) -ForegroundColor Green }
+  else {
+    Write-Host ("    FAIL " + $label) -ForegroundColor Red
+    $outText = @($result.Output) -join "`n"
+    ($outText -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 10 | ForEach-Object { Write-Host ("      " + $_) })
+    $script:fail++
+  }
 }
 
 if (-not (Test-Path (Join-Path $proj 'node_modules'))) {
   Write-Host '  > npm install (first run) ...' -ForegroundColor Cyan
-  & npm install --no-audit --no-fund 2>&1 | Out-Null
+  $install = Invoke-ProjectVerifyProcess -FilePath $script:NpmExe -Arguments @('install', '--no-audit', '--no-fund') -WorkingDirectory $proj -TimeoutSec 900
+  if ($install.ExitCode -ne 0 -or $install.TimedOut) {
+    Write-Host '    FAIL npm install' -ForegroundColor Red
+    $installText = @($install.Output) -join "`n"
+    ($installText -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 10 | ForEach-Object { Write-Host ("      " + $_) })
+    exit 1
+  }
 }
 
 Step 'typecheck' 'typecheck'

@@ -72,6 +72,63 @@ function ConvertTo-ReplaySafeText {
   }
 }
 
+function Read-ReplayTaskMetaJsonFile {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  return ($raw | ConvertFrom-Json)
+}
+
+function Get-ReplayTaskMetaJournalPath {
+  param([string]$Dir)
+  if ([string]::IsNullOrWhiteSpace($Dir)) { return $null }
+  return (Join-Path $Dir '_meta.json.wal')
+}
+
+function Test-ReplayTaskMetaJournalShouldRestore {
+  param(
+    [string]$JournalPath,
+    [string]$MetaPath
+  )
+  if ([string]::IsNullOrWhiteSpace($JournalPath) -or -not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($MetaPath) -or -not (Test-Path -LiteralPath $MetaPath -PathType Leaf)) { return $true }
+  try {
+    $journalTime = [System.IO.File]::GetLastWriteTimeUtc($JournalPath)
+    $metaTime = [System.IO.File]::GetLastWriteTimeUtc($MetaPath)
+    return ($journalTime -gt $metaTime)
+  } catch {
+    return $true
+  }
+}
+
+function Restore-ReplayTaskMetaFromJournal {
+  param(
+    [string]$JournalPath,
+    [string]$MetaPath
+  )
+  if (-not (Test-ReplayTaskMetaJournalShouldRestore -JournalPath $JournalPath -MetaPath $MetaPath)) { return $false }
+  try {
+    $journalMeta = Read-ReplayTaskMetaJsonFile -Path $JournalPath
+    if ($null -eq $journalMeta) { return $false }
+    $dir = Split-Path -Parent $MetaPath
+    $tmpPath = Join-Path $dir ('.' + [System.IO.Path]::GetFileName($MetaPath) + '.' + [System.Guid]::NewGuid().ToString('N') + '.recover.tmp')
+    try {
+      $json = $journalMeta | ConvertTo-Json -Depth 6
+      Write-ReplayUtf8FileDurable -Path $tmpPath -Content ($json + "`n")
+      Move-ReplayFileAtomic -SourcePath $tmpPath -DestinationPath $MetaPath
+    } finally {
+      if (Test-Path -LiteralPath $tmpPath) {
+        Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+      }
+    }
+    return $true
+  } catch {
+    Write-ReplayInternalError ("Restore-ReplayTaskMetaFromJournal: " + $_.Exception.Message)
+    return $false
+  }
+}
+
 function Get-ReplayTaskMeta {
   param([string]$TaskId)
   if ([string]::IsNullOrWhiteSpace($TaskId)) { return $null }
@@ -79,10 +136,11 @@ function Get-ReplayTaskMeta {
     $dir = Get-ReplayTaskDir -TaskId $TaskId
     if ([string]::IsNullOrWhiteSpace($dir)) { return $null }
     $path = Join-Path $dir '_meta.json'
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
-    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-    return ($raw | ConvertFrom-Json)
+    $journalPath = Get-ReplayTaskMetaJournalPath -Dir $dir
+    if (Test-ReplayTaskMetaJournalShouldRestore -JournalPath $journalPath -MetaPath $path) {
+      [void](Restore-ReplayTaskMetaFromJournal -JournalPath $journalPath -MetaPath $path)
+    }
+    return (Read-ReplayTaskMetaJsonFile -Path $path)
   } catch {
     Write-ReplayInternalError ("Get-ReplayTaskMeta: " + $_.Exception.Message)
     return $null
@@ -134,12 +192,14 @@ function Move-ReplayFileAtomic {
 function Write-ReplayUtf8FileDurable {
   param(
     [Parameter(Mandatory=$true)][string]$Path,
-    [Parameter(Mandatory=$true)][string]$Content
+    [Parameter(Mandatory=$true)][string]$Content,
+    [switch]$Overwrite
   )
   $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Content)
   $stream = $null
   try {
-    $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $mode = if ($Overwrite) { [System.IO.FileMode]::Create } else { [System.IO.FileMode]::CreateNew }
+    $stream = New-Object System.IO.FileStream($Path, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush($true)
   } finally {
@@ -181,8 +241,10 @@ function Save-ReplayTaskMeta {
     $merged['task_id'] = $TaskId
     $json = $merged | ConvertTo-Json -Depth 6
     $path = Join-Path $dir '_meta.json'
+    $journalPath = Get-ReplayTaskMetaJournalPath -Dir $dir
     $tmpPath = Join-Path $dir ('.' + [System.IO.Path]::GetFileName($path) + '.' + [System.Guid]::NewGuid().ToString('N') + '.tmp')
     try {
+      Write-ReplayUtf8FileDurable -Path $journalPath -Content ($json + "`n") -Overwrite
       Write-ReplayUtf8FileDurable -Path $tmpPath -Content ($json + "`n")
       Move-ReplayFileAtomic -SourcePath $tmpPath -DestinationPath $path
     } finally {

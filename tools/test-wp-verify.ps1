@@ -132,6 +132,56 @@ Test-Check 'operator-batch summary marker resets when Add-Message fails before p
   }
 }
 
+Test-Check 'Get-BacklogGitOutput handles native git errors under Stop' {
+  $oldPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Stop'
+    $out = Get-BacklogGitOutput -GitArgs @('definitely-not-a-git-subcommand')
+    return [string]::IsNullOrEmpty([string]$out)
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+}
+
+Test-Check 'operator-batch duplicate scan detects raw malformed JSON lines' {
+  $sandbox = Join-Path $env:TEMP ('operator-batch-raw-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+  $script:testConversationPath = Join-Path $sandbox 'conversation.jsonl'
+  function script:Get-ConversationPath { return $script:testConversationPath }
+  function script:Get-BacklogControlDir { return $sandbox }
+  try {
+    [System.IO.File]::WriteAllText($script:testConversationPath, '{broken operator-batch raw: 1 done, 0 failed, 0 blocked', (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText((Join-Path $sandbox 'operator-batch-reports.jsonl'), '{broken batch:raw', (New-Object System.Text.UTF8Encoding($false)))
+    $seen = Test-OperatorBatchSummaryAlreadyPosted -Summary 'operator-batch raw: 1 done, 0 failed, 0 blocked' -BatchId 'raw' -BatchTag 'batch:raw' -Tail 10
+    $logged = Test-OperatorBatchReportLogged -BatchTag 'batch:raw' -BatchId 'raw'
+    return ($seen -and $logged)
+  } finally {
+    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+. (Join-Path $b 'lib\replay.ps1')
+
+Test-Check 'replay task meta restores from WAL when meta is missing' {
+  $sandbox = Join-Path $env:TEMP ('replay-wal-test-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+  $script:testBridgeRoot = $sandbox
+  function script:Get-BridgeRoot { return $script:testBridgeRoot }
+  $taskId = 'codex-wal-test'
+  try {
+    Save-ReplayTaskMeta -TaskId $taskId -Meta @{ status='done'; turn_count=7; channel='unit' }
+    $dir = Join-Path (Join-Path $sandbox 'replay') $taskId
+    $metaPath = Join-Path $dir '_meta.json'
+    $walPath = Join-Path $dir '_meta.json.wal'
+    if (-not (Test-Path -LiteralPath $walPath -PathType Leaf)) { return $false }
+    Remove-Item -LiteralPath $metaPath -Force
+    $meta = Get-ReplayTaskMeta -TaskId $taskId
+    return ($null -ne $meta -and [string]$meta.status -eq 'done' -and [int]$meta.turn_count -eq 7 -and (Test-Path -LiteralPath $metaPath -PathType Leaf))
+  } finally {
+    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Write-Host ""
 Write-Host "Result: $pass passed, $fail failed"
 exit $fail

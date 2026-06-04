@@ -182,14 +182,68 @@ function ConvertFrom-BacklogStrictJson {
   try { return ($mt.Value | ConvertFrom-Json) } catch { return $null }
 }
 
+function ConvertTo-BacklogProcessArgument {
+  param([AllowNull()][string]$Value)
+  if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+  if ($Value -notmatch '[\s"]') { return $Value }
+  $escaped = ([string]$Value) -replace '(\\*)"', '$1$1\"'
+  $escaped = $escaped -replace '(\\+)$', '$1$1'
+  return '"' + $escaped + '"'
+}
+
+function Invoke-BacklogProcess {
+  param(
+    [Parameter(Mandatory=$true)][string]$FilePath,
+    [string[]]$Arguments = @(),
+    [string]$WorkingDirectory = (Get-BacklogFallbackBridgeRoot),
+    [int]$TimeoutSec = 30
+  )
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = (@($Arguments) | ForEach-Object { ConvertTo-BacklogProcessArgument ([string]$_) }) -join ' '
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  try {
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  } catch {}
+
+  $timeout = [Math]::Max(1, [int]$TimeoutSec)
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $stdout = $proc.StandardOutput.ReadToEndAsync()
+  $stderr = $proc.StandardError.ReadToEndAsync()
+  $timedOut = $false
+  if (-not $proc.WaitForExit($timeout * 1000)) {
+    $timedOut = $true
+    try { $proc.Kill() } catch {}
+    try { $proc.WaitForExit(3000) | Out-Null } catch {}
+  }
+  try { $stdout.Wait(3000) | Out-Null } catch {}
+  try { $stderr.Wait(3000) | Out-Null } catch {}
+  return [pscustomobject]@{
+    ExitCode = if ($timedOut) { 124 } else { [int]$proc.ExitCode }
+    TimedOut = [bool]$timedOut
+    Output = @(
+      if ($stdout.IsCompleted -and -not [string]::IsNullOrEmpty($stdout.Result)) { $stdout.Result }
+      if ($stderr.IsCompleted -and -not [string]::IsNullOrEmpty($stderr.Result)) { $stderr.Result }
+    )
+  }
+}
+
 function Get-BacklogGitOutput {
   param([string[]]$GitArgs)
   try {
     if ($null -eq $GitArgs -or $GitArgs.Count -eq 0) { return '' }
     $root = Get-BacklogFallbackBridgeRoot
-    $out = & git -C $root @GitArgs 2>$null
-    if ($null -eq $out) { return '' }
-    return (($out | Out-String).Trim())
+    $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } else { 'git' }
+    $args = @('-c', "safe.directory=$root", '-C', $root) + @($GitArgs)
+    $result = Invoke-BacklogProcess -FilePath $git -Arguments $args -WorkingDirectory $root -TimeoutSec 30
+    if ($result.TimedOut -or $result.ExitCode -ne 0) { return '' }
+    if ($null -eq $result.Output) { return '' }
+    return (($result.Output | Out-String).Trim())
   } catch { return '' }
 }
 
@@ -2999,7 +3053,9 @@ function Test-ProjectAutopilotProjectClean {
   try {
     $git = 'git'
     try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $git = Get-GitExe } } catch { $git = 'git' }
-    $dirty = @(& $git -C $ProjectRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $result = Invoke-BacklogProcess -FilePath $git -Arguments @('-c', "safe.directory=$ProjectRoot", '-C', $ProjectRoot, 'status', '--porcelain') -WorkingDirectory $ProjectRoot -TimeoutSec 30
+    if ($result.TimedOut -or $result.ExitCode -ne 0) { return $false }
+    $dirty = @($result.Output | ForEach-Object { [string]$_ -split "\r?\n" } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     return ($dirty.Count -eq 0)
   } catch {
     return $false
@@ -3067,9 +3123,10 @@ function Get-ProjectAutopilotGitHead {
   param([string]$ProjectRoot)
   if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return '' }
   try {
-    $head = (& git -C $ProjectRoot rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -ne 0) { return '' }
-    return ([string]$head).Trim()
+    $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } else { 'git' }
+    $result = Invoke-BacklogProcess -FilePath $git -Arguments @('-c', "safe.directory=$ProjectRoot", '-C', $ProjectRoot, 'rev-parse', 'HEAD') -WorkingDirectory $ProjectRoot -TimeoutSec 30
+    if ($result.TimedOut -or $result.ExitCode -ne 0) { return '' }
+    return (($result.Output | Out-String).Trim())
   } catch {
     return ''
   }
@@ -3084,17 +3141,20 @@ function Test-ProjectAutopilotPlanFilesUnchangedSinceGitHead {
     return [pscustomobject]@{ ok=$false; unchanged=$false; reason='project-root-missing' }
   }
   try {
-    $verify = (& git -C $ProjectRoot rev-parse --verify ($GitHead + '^{commit}') 2>$null)
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$verify)) {
+    $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } else { 'git' }
+    $verifyResult = Invoke-BacklogProcess -FilePath $git -Arguments @('-c', "safe.directory=$ProjectRoot", '-C', $ProjectRoot, 'rev-parse', '--verify', ($GitHead + '^{commit}')) -WorkingDirectory $ProjectRoot -TimeoutSec 30
+    $verify = (($verifyResult.Output | Out-String).Trim())
+    if ($verifyResult.TimedOut -or $verifyResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$verify)) {
       return [pscustomobject]@{ ok=$false; unchanged=$false; reason='approval-git-head-not-found' }
     }
     $files = @(Get-ProjectAutopilotPlanSignatureFiles | ForEach-Object { ([string]$_).Replace('\','/') })
     if ($files.Count -eq 0) {
       return [pscustomobject]@{ ok=$false; unchanged=$false; reason='no-plan-files' }
     }
-    $args = @('-C', $ProjectRoot, 'diff', '--quiet', $GitHead, '--') + $files
-    & git @args 2>$null
-    $exit = [int]$LASTEXITCODE
+    $args = @('-c', "safe.directory=$ProjectRoot", '-C', $ProjectRoot, 'diff', '--quiet', $GitHead, '--') + $files
+    $diffResult = Invoke-BacklogProcess -FilePath $git -Arguments $args -WorkingDirectory $ProjectRoot -TimeoutSec 30
+    $exit = [int]$diffResult.ExitCode
+    if ($diffResult.TimedOut) { return [pscustomobject]@{ ok=$false; unchanged=$false; reason='git-diff-timeout' } }
     if ($exit -eq 0) { return [pscustomobject]@{ ok=$true; unchanged=$true; reason='unchanged' } }
     if ($exit -eq 1) { return [pscustomobject]@{ ok=$true; unchanged=$false; reason='plan-files-changed' } }
     return [pscustomobject]@{ ok=$false; unchanged=$false; reason=('git-diff-exit-' + [string]$exit) }
@@ -4040,13 +4100,19 @@ function Test-OperatorBatchReportLogged {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
 
   try {
+    $lineNo = 0
     foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop)) {
-      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      $lineNo++
+      $rawLine = [string]$line
+      if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+      if ($rawLine.ToLowerInvariant().Contains($key)) { return $true }
       try {
-        $rec = $line | ConvertFrom-Json
+        $rec = $rawLine | ConvertFrom-Json
         $recKey = Get-OperatorBatchReportKey -BatchTag ([string]$rec.batch_tag) -BatchId ([string]$rec.batch_id)
         if ($recKey -eq $key) { return $true }
-      } catch {}
+      } catch {
+        Write-OperatorBatchJsonWarningOnce -Source 'operator-batch ledger' -LineNumber $lineNo -Message $_.Exception.Message
+      }
     }
   } catch {
     Write-OperatorBatchReportError -Message ("operator-batch ledger read failed: " + $_.Exception.Message)
@@ -4073,6 +4139,19 @@ function Add-OperatorBatchReportLedger {
   }
   $line = ($record | ConvertTo-Json -Compress -Depth 4)
   [System.IO.File]::AppendAllText($path, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Write-OperatorBatchJsonWarningOnce {
+  param(
+    [Parameter(Mandatory=$true)][string]$Source,
+    [int]$LineNumber,
+    [string]$Message
+  )
+  if ($null -eq $script:OperatorBatchJsonWarnings) { $script:OperatorBatchJsonWarnings = @{} }
+  $key = ([string]$Source + ':' + [string]$LineNumber + ':' + [string]$Message)
+  if ($script:OperatorBatchJsonWarnings.ContainsKey($key)) { return }
+  $script:OperatorBatchJsonWarnings[$key] = $true
+  Write-OperatorBatchReportError -Message ("{0} invalid JSON at line {1}: {2}" -f $Source, $LineNumber, $Message)
 }
 
 function Reset-OperatorBatchReportMarker {
@@ -4109,10 +4188,15 @@ function Test-OperatorBatchSummaryAlreadyPosted {
     if ($Tail -gt 0) { $contentArgs['Tail'] = [Math]::Max(1, $Tail) }
     $batchPrefix = ''
     if (-not [string]::IsNullOrWhiteSpace($BatchId)) { $batchPrefix = 'operator-batch ' + [string]$BatchId + ':' }
+    $lineNo = 0
     foreach ($line in @(Get-Content @contentArgs)) {
-      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      $lineNo++
+      $rawLine = [string]$line
+      if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+      if (-not [string]::IsNullOrWhiteSpace($Summary) -and $rawLine.Contains($Summary)) { return $true }
+      if (-not [string]::IsNullOrWhiteSpace($batchPrefix) -and $rawLine.Contains($batchPrefix)) { return $true }
       try {
-        $rec = $line | ConvertFrom-Json
+        $rec = $rawLine | ConvertFrom-Json
         $from = [string]$rec.from
         if ($from -ne 'system') { continue }
         $messages = New-Object 'System.Collections.Generic.List[string]'
@@ -4126,7 +4210,9 @@ function Test-OperatorBatchSummaryAlreadyPosted {
           if (-not [string]::IsNullOrWhiteSpace($Summary) -and $msg -eq $Summary) { return $true }
           if (-not [string]::IsNullOrWhiteSpace($batchPrefix) -and $msg.StartsWith($batchPrefix, [System.StringComparison]::Ordinal)) { return $true }
         }
-      } catch {}
+      } catch {
+        Write-OperatorBatchJsonWarningOnce -Source 'conversation scan tail' -LineNumber $lineNo -Message $_.Exception.Message
+      }
     }
   } catch {
     Write-OperatorBatchReportError -Message ("conversation scan failed for operator-batch " + [string]$BatchId + ": " + $_.Exception.Message)
