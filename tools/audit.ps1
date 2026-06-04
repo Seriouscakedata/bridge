@@ -1013,6 +1013,8 @@ function Invoke-DeepAuditProcess {
     $deepCodexResult = $null
     $deepClaudeResult = $null
     $deepModelAgentResults = @()
+    $deepRequiredSlices = @()
+    $deepCoverageGap = @()
     $deepStatus = 'skipped'
     $deepRuntimeSec = 0.0
     $deepWatchdogFired = $false
@@ -1114,6 +1116,12 @@ function Invoke-DeepAuditProcess {
             } elseif ($deepParsed.PSObject.Properties.Name -contains 'model_agents') {
               $deepModelAgentResults = @($deepParsed.model_agents)
             }
+            if ($deepParsed.PSObject.Properties.Name -contains 'required_slices') {
+              $deepRequiredSlices = @($deepParsed.required_slices)
+            }
+            if ($deepParsed.PSObject.Properties.Name -contains 'coverage_gap') {
+              $deepCoverageGap = @($deepParsed.coverage_gap)
+            }
             if (-not $deepWatchdogFired -and $deepExitCode -eq 0) { $deepStatus = 'ok' }
           } catch {
             $deepStatus = 'deep_failed'
@@ -1141,6 +1149,8 @@ function Invoke-DeepAuditProcess {
     deepStatus             = $deepStatus
     deepRuntimeSec         = $deepRuntimeSec
     deepWatchdogFired      = $deepWatchdogFired
+    deepRequiredSlices     = @($deepRequiredSlices)
+    deepCoverageGap        = @($deepCoverageGap)
   }
 }
 
@@ -1163,7 +1173,11 @@ function Initialize-AuditBacklogHelpers {
       $getBacklogPathLoaded = [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
       if (-not $addIdeaLoaded -or -not $getBacklogPathLoaded) {
         $commonLib = Join-Path $root 'lib\common.ps1'
-        if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+        if (Test-Path -LiteralPath $commonLib -PathType Leaf) {
+          $escapedCommonLib = $commonLib.Replace("'", "''")
+          $helperModule = New-Module -ScriptBlock ([scriptblock]::Create(". '$escapedCommonLib'"))
+          Import-Module $helperModule -Global -Force -ErrorAction Stop
+        }
       }
       $initializeChannelsLoaded = Get-Command Initialize-Channels -ErrorAction SilentlyContinue
       if ($initializeChannelsLoaded) {
@@ -1612,6 +1626,7 @@ function Invoke-BridgeAuditDeepPhase {
   $deepR = Invoke-DeepAuditProcess -Root $Root -DeepScript $deepScript -AuditCtx $AuditCtx -ReportDir $ReportDir -FunctionalAgent $FunctionalAgent -ResolvedChannel $ResolvedChannel -DeepAuditTimeoutSec $DeepAuditTimeoutSec -Errors $Errors
   $deepCodexResult = $deepR.deepCodexResult; $deepClaudeResult = $deepR.deepClaudeResult; $deepModelAgentResults = @($deepR.deepModelAgentResults)
   $deepStatus = [string]$deepR.deepStatus; $deepRuntimeSec = [double]$deepR.deepRuntimeSec; $deepWatchdogFired = [bool]$deepR.deepWatchdogFired
+  $deepRequiredSlices = @($deepR.deepRequiredSlices); $deepCoverageGap = @($deepR.deepCoverageGap)
   $addIdeaAvailable = Initialize-AuditBacklogHelpers -Root $Root -ResolvedChannel $ResolvedChannel -Errors $Errors
   $filingR = Add-DeepAuditFindingsToBacklog -Root $Root -AuditCtx $AuditCtx -DeepCodexResult $deepCodexResult -DeepClaudeResult $deepClaudeResult -DeepModelAgentResults @($deepModelAgentResults) -AddIdeaAvailable $addIdeaAvailable -Errors $Errors
   $deepFiled = [int]$filingR.deepFiled; $deepCodexCount = [int]$filingR.deepCodexCount; $deepClaudeCount = [int]$filingR.deepClaudeCount; $deepModelAgentCount = [int]$filingR.deepModelAgentCount
@@ -1623,10 +1638,78 @@ function Invoke-BridgeAuditDeepPhase {
     deepStatus            = $deepStatus
     deepRuntimeSec        = $deepRuntimeSec
     deepWatchdogFired     = $deepWatchdogFired
+    deepRequiredSlices    = @($deepRequiredSlices)
+    deepCoverageGap       = @($deepCoverageGap)
     deepFiled             = $deepFiled
     deepCodexCount        = $deepCodexCount
     deepClaudeCount       = $deepClaudeCount
     deepModelAgentCount   = $deepModelAgentCount
+  }
+}
+
+function Get-BridgeAuditDeepTruth {
+  param([object]$DeepResult)
+  $agents = @()
+  try { $agents = @($DeepResult.deepModelAgentResults) } catch {}
+  $requiredSlices = @()
+  try {
+    foreach ($slice in @($DeepResult.deepRequiredSlices)) {
+      $s = [string]$slice
+      if (-not [string]::IsNullOrWhiteSpace($s)) { $requiredSlices += $s }
+    }
+  } catch {}
+  $coverageGap = @()
+  try {
+    foreach ($slice in @($DeepResult.deepCoverageGap)) {
+      $s = [string]$slice
+      if (-not [string]::IsNullOrWhiteSpace($s)) { $coverageGap += $s }
+    }
+  } catch {}
+
+  $successCount = 0
+  $errorCount = 0
+  foreach ($agent in @($agents)) {
+    if (-not $agent) { continue }
+    $status = ([string]$agent.status).ToLowerInvariant()
+    if ($status -eq 'ok' -or $status -eq 'prompt_ready') { $successCount++ }
+    if ($status -eq 'error') { $errorCount++ }
+  }
+
+  $requiredFailures = @()
+  $emptyReplyRoles = @()
+  foreach ($role in @($requiredSlices)) {
+    $matching = @($agents | Where-Object { [string]$_.role -eq $role })
+    $hasSuccess = $false
+    foreach ($agent in @($matching)) {
+      $status = ([string]$agent.status).ToLowerInvariant()
+      if ($status -eq 'ok' -or $status -eq 'prompt_ready') { $hasSuccess = $true }
+      if ($status -eq 'error' -and ((@($agent.errors) -join ' ') -match 'empty_llm_reply')) {
+        $emptyReplyRoles += $role
+      }
+    }
+    if (-not $hasSuccess -or ($coverageGap -contains $role)) { $requiredFailures += $role }
+  }
+
+  $reasons = @()
+  if ($requiredSlices.Count -gt 0 -and $requiredFailures.Count -ge $requiredSlices.Count) {
+    $reasons += ('deep-audit required slices failed: ' + (($requiredFailures | Select-Object -Unique) -join ', '))
+  }
+  if ($emptyReplyRoles.Count -gt 0) {
+    $reasons += ('deep-audit required slice empty_llm_reply: role=' + (($emptyReplyRoles | Select-Object -Unique) -join ', '))
+  }
+
+  $effectiveDeepStatus = [string]$DeepResult.deepStatus
+  if ($effectiveDeepStatus -eq 'deep_failed' -or $reasons.Count -gt 0) {
+    $effectiveDeepStatus = 'deep_failed'
+  }
+  $finalStatus = if ($effectiveDeepStatus -eq 'deep_failed') { 'partial' } else { 'ok' }
+  return [pscustomobject]@{
+    finalStatus = $finalStatus
+    deepStatus = $effectiveDeepStatus
+    reasons = @($reasons)
+    deepAgentSuccessCount = $successCount
+    deepAgentErrorCount = $errorCount
+    deepAgentRequiredFailures = @($requiredFailures | Select-Object -Unique).Count
   }
 }
 
@@ -1642,30 +1725,38 @@ function Complete-BridgeAuditReport {
     [int]$DeepAuditTimeoutSec,
     [ref]$Errors
   )
-  $finalStatus = if ($DeepResult.deepStatus -eq 'deep_failed') { 'partial' } else { 'ok' }
+  $truth = Get-BridgeAuditDeepTruth -DeepResult $DeepResult
+  foreach ($reason in @($truth.reasons)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$reason) -and -not (@($Errors.Value.ToArray()) -contains [string]$reason)) {
+      [void]$Errors.Value.Add([string]$reason)
+    }
+  }
+  $finalStatus = [string]$truth.finalStatus
+  $effectiveDeepStatus = [string]$truth.deepStatus
   try {
     $Report | Add-Member -NotePropertyName status -NotePropertyValue $finalStatus -Force
     $Report | Add-Member -NotePropertyName errors -NotePropertyValue @($Errors.Value.ToArray()) -Force
     $Report | Add-Member -NotePropertyName deep_results -NotePropertyValue ([ordered]@{ codex_security = $DeepResult.deepCodexResult; claude_functional = $DeepResult.deepClaudeResult; model_agents = @($DeepResult.deepModelAgentResults) }) -Force
-    if ($Report.metadata) { $Report.metadata['deep_status'] = $DeepResult.deepStatus; $Report.metadata['deep_runtime_sec'] = $DeepResult.deepRuntimeSec; $Report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec; $Report.metadata['deep_watchdog_fired'] = $DeepResult.deepWatchdogFired; $Report.metadata['deep_model_agent_count'] = $DeepResult.deepModelAgentCount }
+    if ($Report.metadata) { $Report.metadata['deep_status'] = $effectiveDeepStatus; $Report.metadata['deep_runtime_sec'] = $DeepResult.deepRuntimeSec; $Report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec; $Report.metadata['deep_watchdog_fired'] = $DeepResult.deepWatchdogFired; $Report.metadata['deep_model_agent_count'] = $DeepResult.deepModelAgentCount; $Report.metadata['deep_agent_success_count'] = [int]$truth.deepAgentSuccessCount; $Report.metadata['deep_agent_error_count'] = [int]$truth.deepAgentErrorCount; $Report.metadata['deep_agent_required_failures'] = [int]$truth.deepAgentRequiredFailures }
     if ($Paths -and $Paths.json) { Write-AuditAtomicFile -Path $Paths.json -Content ($Report | ConvertTo-Json -Depth 8) }
     Write-AuditIndexEntry -BridgePath $Root -AuditContext $AuditCtx -Paths $Paths -Report $Report
   } catch { [void]$Errors.Value.Add('audit report deep-status update failed: ' + $_.Exception.Message) }
 
-  Write-AuditLog -BridgePath $Root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f $Report.runtime_sec, $StaticResult.secCounts.critical, $StaticResult.secCounts.warning, $StaticResult.secCounts.info, $StaticResult.fncCounts.critical, $StaticResult.fncCounts.warning, $StaticResult.fncCounts.info, $DeepResult.deepCodexCount, $DeepResult.deepClaudeCount, $Filed, $DeepResult.deepFiled, $finalStatus, $DeepResult.deepStatus, $DeepResult.deepModelAgentCount)
+  Write-AuditLog -BridgePath $Root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f $Report.runtime_sec, $StaticResult.secCounts.critical, $StaticResult.secCounts.warning, $StaticResult.secCounts.info, $StaticResult.fncCounts.critical, $StaticResult.fncCounts.warning, $StaticResult.fncCounts.info, $DeepResult.deepCodexCount, $DeepResult.deepClaudeCount, $Filed, $DeepResult.deepFiled, $finalStatus, $effectiveDeepStatus, $DeepResult.deepModelAgentCount)
   try {
     if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
       $auditIcon = if ($finalStatus -eq 'ok') { '✅' } else { '⚠️' }
       $totalFindings = [int]$StaticResult.secCounts.critical + [int]$StaticResult.secCounts.warning + [int]$StaticResult.secCounts.info + [int]$StaticResult.fncCounts.critical + [int]$StaticResult.fncCounts.warning + [int]$StaticResult.fncCounts.info
-      $deepLabel = if ($DeepResult.deepStatus -eq 'ok') { "deep ok · агентов:$($DeepResult.deepModelAgentCount)" } else { "deep:$($DeepResult.deepStatus)" }
+      $deepLabel = if ($effectiveDeepStatus -eq 'ok') { "deep ok · агентов:$($DeepResult.deepModelAgentCount)" } else { "deep:$effectiveDeepStatus" }
       [void](Add-Message -From system -Text "$auditIcon Аудит завершён за $($Report.runtime_sec)s · $deepLabel · находок:$totalFindings · в backlog:+$($Filed + $DeepResult.deepFiled)" -Kind event)
     }
   } catch {}
 
   return [pscustomobject]@{
-    status = $finalStatus; deep_status = $DeepResult.deepStatus; audit_kind = [string]$AuditCtx.kind; channel = [string]$AuditCtx.channel; target_root = [string]$AuditCtx.target_root
+    status = $finalStatus; deep_status = $effectiveDeepStatus; audit_kind = [string]$AuditCtx.kind; channel = [string]$AuditCtx.channel; target_root = [string]$AuditCtx.target_root
     report_json = $Paths.json; report_md = $Paths.md; security_counts = $StaticResult.secCounts; functional_counts = $StaticResult.fncCounts
     deep_codex_count = $DeepResult.deepCodexCount; deep_claude_count = $DeepResult.deepClaudeCount; deep_model_agent_count = $DeepResult.deepModelAgentCount; deep_runtime_sec = $DeepResult.deepRuntimeSec
+    deep_agent_success_count = [int]$truth.deepAgentSuccessCount; deep_agent_error_count = [int]$truth.deepAgentErrorCount; deep_agent_required_failures = [int]$truth.deepAgentRequiredFailures
     backlog_added = $Filed + $DeepResult.deepFiled; runtime_sec = $Report.runtime_sec; errors = @($Errors.Value.ToArray())
   }
 }
