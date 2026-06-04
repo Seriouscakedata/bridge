@@ -5,6 +5,8 @@
 
 $script:BacklogCuratorModel = 'gemini-2.5-flash-lite'
 
+#region Backlog runtime and persistence helpers
+
 function Get-BacklogFallbackBridgeRoot {
   if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) { return (Get-BridgeRoot) }
   return (Split-Path -Parent $PSScriptRoot)
@@ -225,6 +227,10 @@ function Ensure-BacklogPathFunction {
 function Get-BacklogPath {
   return (Resolve-BacklogPathValue)
 }
+
+#endregion Backlog runtime and persistence helpers
+
+#region Idea deduplication, learning, and queue hygiene
 
 function Test-IdeaShouldKeep {
   param([string]$Text)
@@ -482,6 +488,10 @@ function Invoke-BacklogStaleSweep {
   }
   return $n
 }
+
+#endregion Idea deduplication, learning, and queue hygiene
+
+#region Backlog workpack packing and batching
 
 function Get-BacklogPackObjectValue {
   param($Obj, [string]$Name, $Default = $null)
@@ -1880,6 +1890,10 @@ function New-BacklogProtectedSerialBatchTaskText {
   return $sb.ToString().Trim()
 }
 
+#endregion Backlog workpack packing and batching
+
+#region Public backlog CRUD, curator, and picker API
+
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
   param(
@@ -2670,6 +2684,10 @@ function Add-OperatorBatch {
   try { Add-Message -From system -Text ("🎛 Оператор делегировал batch " + $batchId + ": " + $ids.Count + " задач (приоритет operator, исполняются первыми).") -Kind event | Out-Null } catch {}
   return [pscustomobject]@{ batchId = $batchId; count = $ids.Count; ids = $ids }
 }
+
+#endregion Public backlog CRUD, curator, and picker API
+
+#region Project Autopilot planning and expansion
 
 function Get-ProjectAutopilotConfig {
   $cfg = [ordered]@{
@@ -3917,6 +3935,10 @@ function Add-ProjectBacklogFromMarker {
   return [pscustomobject]@{ created=$created.Count; skipped=$skipped; errors=@($errors.ToArray()); ids=@($created.ToArray()); slugs=@($createdSlugs.ToArray()); chapters=@($createdChapters.ToArray() | Sort-Object -Unique) }
 }
 
+#endregion Project Autopilot planning and expansion
+
+#region Self-execution safety and final lookup helpers
+
 function Get-OperatorBatchProgress {
   # Progress of operator-delegated batches for the pulse: per batch id, how many done/total.
   $items = @(Get-Backlog | Where-Object { @($_.tags) -contains 'operator' })
@@ -4098,3 +4120,5 @@ function Get-IdeaById {
   foreach ($i in @(Get-Backlog)) { if ([string]$i.id -eq $Id) { return $i } }
   return $null
 }
+
+#endregion Self-execution safety and final lookup helpers

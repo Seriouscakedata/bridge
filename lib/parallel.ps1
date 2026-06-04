@@ -605,7 +605,6 @@ function Get-ParallelTaskBaseCommit {
   if ([string]::IsNullOrWhiteSpace($base)) {
     try { $base = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
   }
-  if ($null -eq $base) { return '' }
   return ([string]$base).Trim()
 }
 
@@ -768,6 +767,26 @@ function Test-ParallelCollectedPathAllowed {
     if ($rel.StartsWith($dn + '/')) { return $true }
   }
   return $false
+}
+
+function Test-ParallelCollectedPathAllowedSelfCheck {
+  $cases = @(
+    @{ name='exact';     rel='lib/parallel.ps1';                 declared=@('lib/parallel.ps1'); expect=$true  }
+    @{ name='child';     rel='lib/subdir/file.ps1';             declared=@('lib');              expect=$true  }
+    @{ name='outside';   rel='scripts/build.ps1';               declared=@('lib');              expect=$false }
+    @{ name='dotgit';    rel='.git/config';                     declared=@('.git', 'lib');      expect=$false }
+    @{ name='traversal'; rel='../outside.ps1';                  declared=@('lib');              expect=$false }
+    @{ name='blank';     rel='';                                declared=@('lib');              expect=$false }
+  )
+
+  foreach ($case in $cases) {
+    $actual = Test-ParallelCollectedPathAllowed -RelativePath $case.rel -DeclaredFiles $case.declared
+    if ([bool]$actual -ne [bool]$case.expect) {
+      throw ("parallel collection guard self-check failed for case '" + $case.name + "' (rel=" + $case.rel + ", expected=" + $case.expect + ", actual=" + $actual + ")")
+    }
+  }
+
+  return $true
 }
 
 function Spawn-Worker {
@@ -1202,6 +1221,63 @@ function Write-ParallelDispatchTeamPlan {
   } catch {}
 }
 
+function Resolve-ParallelDispatchWorkerSpec {
+  param(
+    [object]$Stream,
+    [string[]]$AlreadyUsedIds
+  )
+
+  $spec = $null
+  try { $spec = Select-WorkerForStream -Stream $Stream -AlreadyUsedIds @($AlreadyUsedIds) } catch {
+    try { Add-Message -From system -Text ("⚠ parallel: router error for stream " + $Stream.id + ": " + $_.Exception.Message + " -- using fallback") -Kind event | Out-Null } catch {}
+  }
+
+  if (-not $spec) {
+    $pool = @(Get-ParallelWorkerPool)
+    if ($pool.Count -gt 0) { $spec = $pool[0] }
+  }
+
+  return $spec
+}
+
+function Write-ParallelDispatchSpawnMessage {
+  param(
+    [object]$Stream,
+    [object]$WorkerSpec
+  )
+
+  try {
+    $complexity = Get-StreamComplexity $Stream
+    $domain = Get-StreamDomain $Stream
+    Add-Message -From system -Text ("🔀 Spawned worker: stream=" + $Stream.id + " worker=" + $WorkerSpec.id + " (" + $WorkerSpec.cli + "/" + $WorkerSpec.model + ($(if($WorkerSpec.reasoning){'/' + $WorkerSpec.reasoning}else{''})) + ") complexity=" + $complexity + " domain=" + $domain + " files=[" + (($Stream.files) -join ',') + "]") -Kind event
+  } catch {}
+}
+
+function Start-ParallelDispatchWorker {
+  param(
+    [object]$Stream,
+    [string]$TaskHash,
+    [string[]]$AlreadyUsedIds
+  )
+
+  $spec = Resolve-ParallelDispatchWorkerSpec -Stream $Stream -AlreadyUsedIds $AlreadyUsedIds
+  if (-not $spec) {
+    try { Add-Message -From system -Text ("❌ parallel: no worker pool available for stream " + $Stream.id) -Kind event } catch {}
+    return @{ ok=$false; worker=$null; workerSpec=$null; reason='no worker pool' }
+  }
+
+  $branch = "wip/parallel/$TaskHash/$($Stream.id)"
+  try {
+    $worktree = Get-WorkerWorktree -StreamId $Stream.id -TaskHash $TaskHash
+    $worker = Spawn-Worker -StreamId $Stream.id -Body $Stream.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
+    Write-ParallelDispatchSpawnMessage -Stream $Stream -WorkerSpec $spec
+    return @{ ok=$true; worker=$worker; workerSpec=$spec; reason='' }
+  } catch {
+    try { Add-Message -From system -Text ("❌ Parallel spawn failed for stream " + $Stream.id + ": " + $_.Exception.Message) -Kind event } catch {}
+    return @{ ok=$false; worker=$null; workerSpec=$spec; reason=("spawn failed: " + $_.Exception.Message) }
+  }
+}
+
 function Start-ParallelDispatchWorkers {
   param(
     [object[]]$Streams,
@@ -1214,41 +1290,140 @@ function Start-ParallelDispatchWorkers {
   Write-ParallelDispatchTeamPlan -Streams @($Streams)
 
   foreach ($s in @($Streams)) {
-    $spec = $null
-    try { $spec = Select-WorkerForStream -Stream $s -AlreadyUsedIds @($usedIds.ToArray()) } catch {
-      try { Add-Message -From system -Text ("⚠ parallel: router error for stream " + $s.id + ": " + $_.Exception.Message + " -- using fallback") -Kind event | Out-Null } catch {}
-    }
-    if (-not $spec) {
-      # Total fallback: first item from pool (or built-in default)
-      $pool = @(Get-ParallelWorkerPool)
-      if ($pool.Count -gt 0) { $spec = $pool[0] }
-    }
-    if (-not $spec) {
-      try { Add-Message -From system -Text ("❌ parallel: no worker pool available for stream " + $s.id) -Kind event } catch {}
+    $started = Start-ParallelDispatchWorker -Stream $s -TaskHash $TaskHash -AlreadyUsedIds @($usedIds.ToArray())
+    if (-not $started.ok) {
       Stop-ParallelDispatchWorkers -Workers @($workers.ToArray()) -TaskHash $TaskHash
-      return @{ ok=$false; workers=@($workers.ToArray()); reason='no worker pool' }
+      return @{ ok=$false; workers=@($workers.ToArray()); reason=$started.reason }
     }
 
-    $branch = "wip/parallel/$TaskHash/$($s.id)"
-    try {
-      $worktree = Get-WorkerWorktree -StreamId $s.id -TaskHash $TaskHash
-      $w = Spawn-Worker -StreamId $s.id -Body $s.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
-      [void]$workers.Add($w)
-      [void]$usedIds.Add([string]$spec.id)
-      try {
-        $complexity = Get-StreamComplexity $s
-        $domain = Get-StreamDomain $s
-        Add-Message -From system -Text ("🔀 Spawned worker: stream=" + $s.id + " worker=" + $spec.id + " (" + $spec.cli + "/" + $spec.model + ($(if($spec.reasoning){'/' + $spec.reasoning}else{''})) + ") complexity=" + $complexity + " domain=" + $domain + " files=[" + (($s.files) -join ',') + "]") -Kind event
-      } catch {}
-    } catch {
-      try { Add-Message -From system -Text ("❌ Parallel spawn failed for stream " + $s.id + ": " + $_.Exception.Message) -Kind event } catch {}
-      Stop-ParallelDispatchWorkers -Workers @($workers.ToArray()) -TaskHash $TaskHash
-      return @{ ok=$false; workers=@($workers.ToArray()); reason="spawn failed: $($_.Exception.Message)" }
-    }
+    [void]$workers.Add($started.worker)
+    [void]$usedIds.Add([string]$started.workerSpec.id)
   }
 
   try { Save-ParallelStreams -State (Read-State) -Streams $workers } catch {}
   return @{ ok=$true; workers=@($workers.ToArray()); reason='' }
+}
+
+function Stop-ParallelDispatchTimedOutWorkers {
+  param(
+    [object[]]$Workers,
+    [hashtable]$Completed,
+    [int]$TimeoutMin
+  )
+
+  foreach ($w in @($Workers)) {
+    if ($Completed.ContainsKey($w.id)) { continue }
+    try {
+      if ($w.process -and -not $w.process.HasExited) {
+        Start-Process taskkill -ArgumentList '/PID',([string]$w.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      }
+    } catch {}
+  }
+  try { Add-Message -From system -Text ("⏱ Parallel timeout (" + $TimeoutMin + " min) -- killing in-flight workers") -Kind event } catch {}
+}
+
+function Update-ParallelDispatchHeartbeat {
+  # H1 FIX (2026-05-31 load audit): refresh the channel heartbeat each poll. A parallel run can
+  # last up to $TimeoutMin (25m); without this the heartbeat goes stale past the watchdog's 300s
+  # window -> watchdog sees "driver dead" -> git reset --hard stable WHILE workers are mid-merge,
+  # destroying in-flight work (the exact false-rollback class, re-introduced by parallel mode).
+  # Sibling poll loops (Invoke-ParallelWorkers/CodexParallel) already tick via $OnTick; this one
+  # didn't. Inline refresh keeps the watchdog calm; the parallel $deadline still bounds a true hang.
+  try { Update-State { param($s) $s.heartbeat = (Get-Date).ToString('o') } | Out-Null } catch {}
+}
+
+function Get-ParallelDispatchBranchHead {
+  param([object]$Worker)
+
+  try {
+    return ((& git -C (Get-ParallelRepoRoot) rev-parse $Worker.branch 2>$null) | Select-Object -First 1).Trim()
+  } catch {}
+  return ''
+}
+
+function Complete-ParallelDispatchWorkerResult {
+  param(
+    [hashtable]$Completed,
+    [object]$Worker,
+    [object]$Result,
+    [switch]$SkipMessage
+  )
+
+  $Completed[$Worker.id] = $Result
+  if ($SkipMessage) { return }
+  $chunkSummary = if ([int]$Worker.chunksDone -gt 0) { (" via " + [int]$Worker.chunksDone + " chunks") } else { '' }
+  try { Add-Message -From system -Text ("🔀 Worker " + $Worker.id + " (" + $Worker.coder + ") finished: status=" + $Result.status + ", commits=" + $Result.commits.Count + $chunkSummary) -Kind event } catch {}
+}
+
+function Resolve-ParallelDispatchChunkProgress {
+  param(
+    [hashtable]$Completed,
+    [object]$Worker,
+    [object]$Result
+  )
+
+  $chunkN = [int]$Result.chunkN
+  $chunkM = [int]$Result.chunkM
+  $branchHead = Get-ParallelDispatchBranchHead -Worker $Worker
+  $advanced = (-not [string]::IsNullOrWhiteSpace($branchHead)) -and ($branchHead -ne [string]$Worker.chunkLastSha)
+  if (-not $advanced) {
+    Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -SkipMessage -Result ([pscustomobject]@{
+      status = 'failed'
+      reply  = $Result.reply
+      commits = $Result.commits
+      chunkN = $chunkN
+      chunkM = $chunkM
+      error  = 'chunk emitted but branch did not advance'
+    })
+    try { Add-Message -From system -Text ("❌ Worker " + $Worker.id + " emitted CONTINUE-CHUNK:" + $chunkN + "/" + $chunkM + " but branch " + $Worker.branch + " did not advance (no commit). Killing.") -Kind event } catch {}
+    return
+  }
+
+  if ($chunkN -ge 10) {
+    Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -SkipMessage -Result ([pscustomobject]@{
+      status = 'done'
+      reply  = $Result.reply
+      commits = $Result.commits
+      chunkN = $chunkN
+      chunkM = $chunkM
+      error  = 'chunk limit reached (10)'
+    })
+    try { Add-Message -From system -Text ("⚠ Worker " + $Worker.id + " reached chunk limit (10/" + $chunkM + ") -- closing as done.") -Kind event } catch {}
+    return
+  }
+
+  $shortLast = if ($branchHead.Length -gt 7) { $branchHead.Substring(0,7) } else { $branchHead }
+  try {
+    $null = Respawn-WorkerForChunk -Worker $Worker -NextChunk ($chunkN + 1) -TotalChunks $chunkM -LastCommitSha $branchHead
+    try { Add-Message -From system -Text ("🔂 Worker " + $Worker.id + " chunk " + $chunkN + "/" + $chunkM + " committed " + $shortLast + " -- respawned on chunk " + ($chunkN + 1) + "/" + $chunkM) -Kind event } catch {}
+  } catch {
+    Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -SkipMessage -Result ([pscustomobject]@{
+      status = 'failed'
+      reply  = $Result.reply
+      commits = $Result.commits
+      chunkN = $chunkN
+      chunkM = $chunkM
+      error  = ("respawn failed: " + $_.Exception.Message)
+    })
+    try { Add-Message -From system -Text ("❌ Worker " + $Worker.id + " respawn failed at chunk " + ($chunkN + 1) + "/" + $chunkM + ": " + $_.Exception.Message) -Kind event } catch {}
+  }
+}
+
+function Wait-ParallelDispatchPollWorker {
+  param(
+    [hashtable]$Completed,
+    [object]$Worker
+  )
+
+  if ($Completed.ContainsKey($Worker.id)) { return }
+  $res = Get-WorkerResult $Worker
+  if ($res.status -eq 'running') { return }
+  if ($res.status -eq 'chunk-progress') {
+    Resolve-ParallelDispatchChunkProgress -Completed $Completed -Worker $Worker -Result $res
+    return
+  }
+
+  Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -Result $res
 }
 
 function Wait-ParallelDispatchResults {
@@ -1264,114 +1439,29 @@ function Wait-ParallelDispatchResults {
   $completed = @{}
   while ($completed.Count -lt $workers.Count) {
     if ((Get-Date) -ge $deadline) {
-      # Timeout: kill remaining, report partial
-      foreach ($w in $workers) {
-        if ($completed.ContainsKey($w.id)) { continue }
-        try { if ($w.process -and -not $w.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
-      }
-      try { Add-Message -From system -Text ("⏱ Parallel timeout (" + $TimeoutMin + " min) -- killing in-flight workers") -Kind event | Out-Null } catch {}
+      Stop-ParallelDispatchTimedOutWorkers -Workers $workers -Completed $completed -TimeoutMin $TimeoutMin
       break
     }
     Start-Sleep -Seconds $PollSec
-    # H1 FIX (2026-05-31 load audit): refresh the channel heartbeat each poll. A parallel run can
-    # last up to $TimeoutMin (25m); without this the heartbeat goes stale past the watchdog's 300s
-    # window -> watchdog sees "driver dead" -> git reset --hard stable WHILE workers are mid-merge,
-    # destroying in-flight work (the exact false-rollback class, re-introduced by parallel mode).
-    # Sibling poll loops (Invoke-ParallelWorkers/CodexParallel) already tick via $OnTick; this one
-    # didn't. Inline refresh keeps the watchdog calm; the parallel $deadline still bounds a true hang.
-    try { Update-State { param($s) $s.heartbeat = (Get-Date).ToString('o') } | Out-Null } catch {}
+    Update-ParallelDispatchHeartbeat
     foreach ($w in $workers) {
-      if ($completed.ContainsKey($w.id)) { continue }
-      $res = Get-WorkerResult $w
-      if ($res.status -eq 'running') { continue }
-
-      # 2026-05-27: chunk-progress handling. Worker emitted CONTINUE-CHUNK:N/M.
-      # Verify the worker's branch actually advanced (commit landed), then
-      # respawn the same worker on the next chunk in the same worktree.
-      # If branch didn't advance or chunk limit hit -- close the worker.
-      if ($res.status -eq 'chunk-progress') {
-        $chunkN = [int]$res.chunkN
-        $chunkM = [int]$res.chunkM
-        $branchHead = ''
-        try { $branchHead = ((& git -C (Get-ParallelRepoRoot) rev-parse $w.branch 2>$null) | Select-Object -First 1).Trim() } catch {}
-        $advanced = (-not [string]::IsNullOrWhiteSpace($branchHead)) -and ($branchHead -ne [string]$w.chunkLastSha)
-        if (-not $advanced) {
-          # No commit since last chunk — worker lied / forgot to commit. Mark failed.
-          $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk emitted but branch did not advance' }
-          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " emitted CONTINUE-CHUNK:" + $chunkN + "/" + $chunkM + " but branch " + $w.branch + " did not advance (no commit). Killing.") -Kind event | Out-Null } catch {}
-          continue
-        }
-        if ($chunkN -ge 10) {
-          # Chunk limit reached — close as done with what we have
-          $completed[$w.id] = [pscustomobject]@{ status='done'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk limit reached (10)' }
-          try { Add-Message -From system -Text ("⚠ Worker " + $w.id + " reached chunk limit (10/" + $chunkM + ") -- closing as done.") -Kind event | Out-Null } catch {}
-          continue
-        }
-        # Respawn for next chunk
-        $shortLast = if ($branchHead.Length -gt 7) { $branchHead.Substring(0,7) } else { $branchHead }
-        try {
-          $null = Respawn-WorkerForChunk -Worker $w -NextChunk ($chunkN + 1) -TotalChunks $chunkM -LastCommitSha $branchHead
-          try { Add-Message -From system -Text ("🔂 Worker " + $w.id + " chunk " + $chunkN + "/" + $chunkM + " committed " + $shortLast + " -- respawned on chunk " + ($chunkN + 1) + "/" + $chunkM) -Kind event | Out-Null } catch {}
-        } catch {
-          $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error=("respawn failed: " + $_.Exception.Message) }
-          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " respawn failed at chunk " + ($chunkN + 1) + "/" + $chunkM + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-        }
-        continue
-      }
-
-      # Terminal status (done / paused-for-restart / failed)
-      $completed[$w.id] = $res
-      $chunkSummary = if ([int]$w.chunksDone -gt 0) { (" via " + [int]$w.chunksDone + " chunks") } else { '' }
-      try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count + $chunkSummary) -Kind event | Out-Null } catch {}
+      Wait-ParallelDispatchPollWorker -Completed $completed -Worker $w
     }
   }
 
   return $completed
 }
 
-function ConvertTo-ParallelDispatchCompletedMap {
-  param($Completed)
-
-  if ($null -eq $Completed) { return @{} }
-  if ($Completed -is [hashtable]) { return $Completed }
-  if ($Completed -is [System.Collections.IDictionary]) {
-    $map = @{}
-    foreach ($key in $Completed.Keys) { $map[$key] = $Completed[$key] }
-    return $map
-  }
-
-  $items = @($Completed)
-  for ($i = $items.Count - 1; $i -ge 0; $i--) {
-    $item = $items[$i]
-    if ($item -is [hashtable]) { return $item }
-    if ($item -is [System.Collections.IDictionary]) {
-      $map = @{}
-      foreach ($key in $item.Keys) { $map[$key] = $item[$key] }
-      return $map
-    }
-  }
-
-  $entryMap = @{}
-  foreach ($item in $items) {
-    if ($item -is [System.Collections.DictionaryEntry]) {
-      $entryMap[$item.Key] = $item.Value
-    }
-  }
-  if ($entryMap.Count -gt 0) { return $entryMap }
-  return @{}
-}
-
 function New-ParallelDispatchAggregationContext {
   param(
     [object[]]$Workers,
-    [object]$Completed,
+    [hashtable]$Completed,
     [string]$TaskHash
   )
 
-  $completedMap = ConvertTo-ParallelDispatchCompletedMap -Completed $Completed
   return @{
     workers = @($Workers)
-    completed = $completedMap
+    completed = $Completed
     taskHash = $TaskHash
     merged = 0
     bridgeRoot = Get-ParallelRepoRoot
@@ -1519,6 +1609,18 @@ function Invoke-ParallelDispatchCollectPhase {
   }
 }
 
+function Quarantine-ParallelDispatchCollectedWorkers {
+  param([hashtable]$Context)
+
+  foreach ($cw in $Context.workers) {
+    if (-not $Context.completed.ContainsKey($cw.id)) { continue }
+    $cres = $Context.completed[$cw.id]
+    if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$cw.id)
+    }
+  }
+}
+
 function Commit-ParallelDispatchCollectedOutputs {
   param([hashtable]$Context)
 
@@ -1536,22 +1638,10 @@ function Commit-ParallelDispatchCollectedOutputs {
       return
     }
 
-    foreach ($cw in $Context.workers) {
-      if (-not $Context.completed.ContainsKey($cw.id)) { continue }
-      $cres = $Context.completed[$cw.id]
-      if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
-        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$cw.id)
-      }
-    }
+    Quarantine-ParallelDispatchCollectedWorkers -Context $Context
     try { Add-Message -From system -Text ("❌ Collect-commit failed; collected streams quarantined") -Kind event | Out-Null } catch {}
   } catch {
-    foreach ($cw in $Context.workers) {
-      if (-not $Context.completed.ContainsKey($cw.id)) { continue }
-      $cres = $Context.completed[$cw.id]
-      if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
-        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$cw.id)
-      }
-    }
+    Quarantine-ParallelDispatchCollectedWorkers -Context $Context
     try { Add-Message -From system -Text ("❌ Collect-commit exception: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
   }
 }
@@ -1692,7 +1782,7 @@ function Complete-ParallelDispatchResult {
 function Complete-ParallelDispatchOutputs {
   param(
     [object[]]$Workers,
-    [object]$Completed,
+    [hashtable]$Completed,
     [string]$TaskHash
   )
 
