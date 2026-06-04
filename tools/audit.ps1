@@ -892,32 +892,12 @@ function Add-AuditCriticalsToBacklog {
   return $added
 }
 
-function Invoke-BridgeAudit {
-  # 2026-05-28:
-  #   -Channel          pick the channel the user is on; resolved to project_root via
-  #                     Get-EffectiveProjectRoot. If empty, falls back to the pinned
-  #                     (or 'main' / bridge) channel. The deep-audit phase scopes
-  #                     codex.exe and claude.exe to that project_root.
-  #   -ProjectRoot      override the auto-resolved project_root (escape hatch).
-  #   -FunctionalAgent  functional-pass selector forwarded to deep-audit:
-  #                     'gemini-only' (DEFAULT, 2026-05-28 A/B winner)
-  #                     'auto'        — legacy claude.exe-primary path.
+function Resolve-AuditProjectScope {
   param(
-    [string]$BridgePath = $null,
-    [string]$Channel = $null,
-    [string]$ProjectRoot = $null,
-    [int]$DeepAuditTimeoutSec = 420,
-    [ValidateSet('auto','gemini-only')]
-    [string]$FunctionalAgent = 'gemini-only'
+    [string]$Root,
+    [string]$Channel,
+    [string]$ProjectRoot
   )
-  if ($DeepAuditTimeoutSec -lt 1) { $DeepAuditTimeoutSec = 1 }
-  $root = Get-AuditBridgeRoot -Hint $BridgePath
-  try {
-    $commonLib = Join-Path $root 'lib\common.ps1'
-    if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
-  } catch {}
-  $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-
   # Resolve target project root: explicit -ProjectRoot > Get-EffectiveScope($Channel).project_root > $root.
   $resolvedProject = $root
   $projectResolved = $false
@@ -963,25 +943,21 @@ function Invoke-BridgeAudit {
   if ([string]::IsNullOrWhiteSpace($resolvedChannel)) { $resolvedChannel = 'main' }
   $resolvedChannel = Normalize-AuditChannelSlug -Channel $resolvedChannel
   if ($resolvedChannel -ne 'main' -and -not $projectResolved) { $resolvedProject = '' }
-  $auditCtx = New-AuditContext -BridgePath $root -Channel $resolvedChannel -ProjectRoot $resolvedProject
-  $reportDir = [string]$auditCtx.report_root
-  try { if (-not (Test-Path -LiteralPath $reportDir)) { New-Item -ItemType Directory -Path $reportDir -Force | Out-Null } } catch {}
-
-  # 1. lock
-  $existing = Test-AuditLock -BridgePath $root
-  if ($existing) {
-    Write-AuditLog -BridgePath $root -Message "audit already running under PID $existing; abort"
-    return @{ status = 'locked'; pid = $existing }
+  return [pscustomobject]@{
+    resolvedProject  = $resolvedProject
+    resolvedChannel  = $resolvedChannel
+    projectResolved  = $projectResolved
   }
-  New-AuditLock -BridgePath $root
-  $scopeLabel = "kind=$($auditCtx.kind) channel=$($auditCtx.channel) target=$($auditCtx.target_root)"
-  Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID, scope=$scopeLabel)"
-  # 2026-05-30: surface audit lifecycle in the chat so the user can SEE it run/finish
-  # (previously the audit only wrote audit.log -> invisible in the UI).
-  try { if (Get-Command Add-Message -ErrorAction SilentlyContinue) { [void](Add-Message -From system -Text '🔍 Аудит запущен (статика + deep multi-agent)…' -Kind event) } } catch {}
+}
+
+function Invoke-AuditSignalCollection {
+  param(
+    [string]$Root,
+    [string]$ScriptRoot
+  )
   # Collect telemetry signals before LLM agents (incident/speed/cost slices).
   try {
-    $sigScript = Join-Path $PSScriptRoot 'audit-signals.ps1'
+    $sigScript = Join-Path $ScriptRoot 'audit-signals.ps1'
     if (Test-Path -LiteralPath $sigScript -PathType Leaf) {
       $sigPowerShell = Join-Path $PSHOME 'powershell.exe'
       if (-not (Test-Path -LiteralPath $sigPowerShell -PathType Leaf)) { throw "powershell.exe not found under PSHOME: $PSHOME" }
@@ -1020,113 +996,19 @@ function Invoke-BridgeAudit {
       }
     }
   } catch { Write-AuditLog -BridgePath $root -Message "signal-collector error: $_" }
+}
 
-  $errors = New-Object 'System.Collections.Generic.List[string]'
-  $allFindings = New-Object 'System.Collections.Generic.List[object]'
-  $secFindings = @()
-  $fncFindings = @()
-  try {
-    # 5. security audit
-    $sec = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-security.ps1' -EntryFunction 'Invoke-SecurityAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
-    if ($sec.error) { [void]$errors.Add("security: $($sec.error)") }
-    foreach ($f in @($sec.findings)) {
-      $norm = Format-AuditFindings -Source 'security' -Raw $f
-      $secFindings += ,$norm
-      [void]$allFindings.Add($norm)
-    }
-
-    # 6. functional audit
-    $fnc = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-functional.ps1' -EntryFunction 'Invoke-FunctionalAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
-    if ($fnc.error) { [void]$errors.Add("functional: $($fnc.error)") }
-    foreach ($f in @($fnc.findings)) {
-      $norm = Format-AuditFindings -Source 'functional' -Raw $f
-      $fncFindings += ,$norm
-      [void]$allFindings.Add($norm)
-    }
-
-    $mergedFindings = Merge-AuditFindings -Findings $allFindings.ToArray()
-    # findings-ledger suppresses known open findings while keeping critical/regressed visible.
-    $ledgerSuppressedCount = 0
-    $ledgerPrevOpenCount = 0
-    $ledgerResult = $null
-    try {
-      $ledgerPath = Get-FindingsLedgerPath -BridgePath $root -AuditDir $reportDir
-      $ledger = Read-FindingsLedger -LedgerPath $ledgerPath
-      # snapshot open-signal count BEFORE update (Update mutates $ledger in place)
-      try { $ledgerPrevOpenCount = @($ledger.Values | Where-Object { (Normalize-AuditLedgerToken -Value ([string]$_.state) -Fallback 'open') -in @('open','new','regressed') }).Count } catch {}
-      $ledgerResult = Update-FindingsLedger -CurrentFindings $mergedFindings -Ledger $ledger -Now (Get-Date).ToUniversalTime()
-      Write-FindingsLedger -LedgerPath $ledgerPath -Ledger $ledgerResult.ledger
-      $mergedFindings = @($ledgerResult.reportFindings)
-      $ledgerSuppressedCount = [int]$ledgerResult.suppressedCount
-      if ($ledgerSuppressedCount -gt 0) {
-        Write-AuditLog -BridgePath $root -Message "findings-ledger: suppressed $ledgerSuppressedCount known open findings"
-      }
-    } catch {
-      $msg = "findings-ledger failed: $($_.Exception.Message)"
-      [void]$errors.Add($msg)
-      Write-AuditLog -BridgePath $root -Message $msg
-    }
-    $secCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'security' })
-    $fncCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'functional' })
-    $generatedAtLocal = (Get-Date).ToString('o')
-    $generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-    $runtimeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 2)
-
-    $report = [pscustomobject]@{
-      generated_at      = $generatedAtUtc
-      bridge_root       = $root
-      runtime_sec       = $runtimeSeconds
-      metadata          = [ordered]@{
-        bridge_path          = $root
-        channel              = $resolvedChannel
-        audit_kind           = [string]$auditCtx.kind
-        project_root         = $resolvedProject
-        target_root          = [string]$auditCtx.target_root
-        report_root          = [string]$auditCtx.report_root
-        backlog_channel      = [string]$auditCtx.backlog_channel
-        profile              = [string]$auditCtx.profile
-        generated_at         = $generatedAtLocal
-        gen_timestamp        = $generatedAtUtc
-        runtime_seconds      = $runtimeSeconds
-        security_runtime_sec = $sec.runtime_sec
-        functional_runtime_sec = $fnc.runtime_sec
-        findings_ledger_suppressed_count = $ledgerSuppressedCount
-      }
-      security_counts   = $secCounts
-      functional_counts = $fncCounts
-      security_runtime_sec   = $sec.runtime_sec
-      functional_runtime_sec = $fnc.runtime_sec
-      audit_kind       = [string]$auditCtx.kind
-      channel          = [string]$auditCtx.channel
-      target_root      = [string]$auditCtx.target_root
-      report_root      = [string]$auditCtx.report_root
-      audit_context    = $auditCtx
-      findings          = @($mergedFindings)
-      errors            = @($errors.ToArray())
-    }
-
-    # 7-8. write reports
-    $paths = Write-AuditReports -BridgePath $root -Report $report -AuditContext $auditCtx
-
-    # 9. update audit.last
-    try {
-      $marker = Get-AuditLastMarker -BridgePath $root -AuditDir $reportDir
-      [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-    } catch {}
-
-    # 10. file critical findings into backlog
-    $filed = 0
-    if ($secCounts.critical -gt 0 -or $fncCounts.critical -gt 0) {
-      $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings -AuditContext $auditCtx
-    }
-
-    # 10b. usefulness score (idea 11): record how useful this audit was
-    try {
-      $newLedgerForScore = $null
-      if ($ledgerResult) { $newLedgerForScore = $ledgerResult.ledger }
-      Write-AuditUsefulnessScore -BridgePath $root -ReportFindings $mergedFindings -FiledToBacklog $filed -SuppressedKnown $ledgerSuppressedCount -PrevOpenCount $ledgerPrevOpenCount -NewLedger $newLedgerForScore -Now (Get-Date) -AuditDir $reportDir | Out-Null
-    } catch {}
-
+function Invoke-DeepAuditProcess {
+  param(
+    [string]$Root,
+    [string]$DeepScript,
+    [object]$AuditCtx,
+    [string]$ReportDir,
+    [string]$FunctionalAgent,
+    [string]$ResolvedChannel,
+    [int]$DeepAuditTimeoutSec,
+    [ref]$Errors
+  )
     # 11. DEEP-AUDIT phase (Codex security + multi-agent model fan-out)
     # 2026-05-28: implements backlog item 90747e410b. Runs after the static+
     # deepseek pipeline because (a) static is fast and always-on as safety net,
@@ -1139,7 +1021,6 @@ function Invoke-BridgeAudit {
     $deepRuntimeSec = 0.0
     $deepWatchdogFired = $false
     try {
-      $deepScript = Join-Path $root 'tools\deep-audit.ps1'
       if (Test-Path -LiteralPath $deepScript -PathType Leaf) {
         Write-AuditLog -BridgePath $root -Message "deep-audit start (Codex+multi-agent phase, watchdog=${DeepAuditTimeoutSec}s)"
         $deepSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1191,7 +1072,7 @@ function Invoke-BridgeAudit {
             $deepStatus = 'deep_failed'
             try { $deepProc.Kill() } catch {}
             try { $deepProc.WaitForExit(5000) | Out-Null } catch {}
-            [void]$errors.Add("deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; process killed")
+            [void]$Errors.Value.Add("deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; process killed")
             Write-AuditLog -BridgePath $root -Message "deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; pid=$($deepProc.Id) killed"
           } else {
             try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
@@ -1216,7 +1097,7 @@ function Invoke-BridgeAudit {
         if (-not $deepWatchdogFired -and $deepExitCode -ne 0) {
           $deepStatus = 'deep_failed'
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
-          [void]$errors.Add(("deep-audit exited with code {0}: {1}" -f $deepExitCode, $stderrTail))
+          [void]$Errors.Value.Add(("deep-audit exited with code {0}: {1}" -f $deepExitCode, $stderrTail))
         }
         # Extract last JSON line from stdout
         $deepJson = $null
@@ -1242,29 +1123,38 @@ function Invoke-BridgeAudit {
             $deepStatus = 'deep_failed'
             $jsonSnippet = $deepJson
             if ($jsonSnippet.Length -gt 500) { $jsonSnippet = $jsonSnippet.Substring(0,500) + '...' }
-            [void]$errors.Add('deep-audit JSON parse failed: ' + $_.Exception.Message + '; json_snippet=' + $jsonSnippet)
+            [void]$Errors.Value.Add('deep-audit JSON parse failed: ' + $_.Exception.Message + '; json_snippet=' + $jsonSnippet)
           }
         } elseif (-not $deepWatchdogFired) {
           $deepStatus = 'deep_failed'
           $stdoutTail = (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
-          [void]$errors.Add('deep-audit: no JSON in stdout; stdout_tail=' + $stdoutTail + '; stderr_tail=' + $stderrTail)
+          [void]$Errors.Value.Add('deep-audit: no JSON in stdout; stdout_tail=' + $stdoutTail + '; stderr_tail=' + $stderrTail)
         }
       } else {
         $deepStatus = 'skipped'
       }
     } catch {
       $deepStatus = 'deep_failed'
-      [void]$errors.Add('deep-audit invocation failed: ' + $_.Exception.Message)
+      [void]$Errors.Value.Add('deep-audit invocation failed: ' + $_.Exception.Message)
     }
+  return [pscustomobject]@{
+    deepCodexResult        = $deepCodexResult
+    deepClaudeResult       = $deepClaudeResult
+    deepModelAgentResults  = @($deepModelAgentResults)
+    deepStatus             = $deepStatus
+    deepRuntimeSec         = $deepRuntimeSec
+    deepWatchdogFired      = $deepWatchdogFired
+  }
+}
 
-    # Merge deep findings into report + backlog
-    $deepFiled = 0
-    $deepCodexCount = 0
-    $deepClaudeCount = 0
-    $deepModelAgentCount = 0
-    $addIdeaAvailable = $false
-    $deepBacklogHelperWarned = $false
+function Initialize-AuditBacklogHelpers {
+  param(
+    [string]$Root,
+    [string]$ResolvedChannel,
+    [ref]$Errors
+  )
+  $addIdeaAvailable = $false
     try {
       # 2026-05-28: dot-source common.ps1 (not just backlog.ps1). Same bug class as
       # Start-BacklogCuratorJob hit earlier — Add-Idea internally references
@@ -1302,8 +1192,26 @@ function Invoke-BridgeAudit {
       }
       $addIdeaAvailable = [bool](Get-Command Add-Idea -ErrorAction SilentlyContinue) -and [bool](Get-Command Get-BacklogPath -ErrorAction SilentlyContinue)
     } catch {
-      [void]$errors.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
+      [void]$Errors.Value.Add('deep-audit backlog helper load failed: ' + $_.Exception.Message)
     }
+  return [bool]$addIdeaAvailable
+}
+
+function Add-DeepAuditFindingsToBacklog {
+  param(
+    [string]$Root,
+    [object]$AuditCtx,
+    [object]$DeepCodexResult,
+    [object]$DeepClaudeResult,
+    [object[]]$DeepModelAgentResults,
+    [bool]$AddIdeaAvailable,
+    [ref]$Errors
+  )
+  $deepFiled = 0
+  $deepCodexCount = 0
+  $deepClaudeCount = 0
+  $deepModelAgentCount = 0
+  $deepBacklogHelperWarned = $false
     # Bridge deep-audit findings are pre-validated and go in approved. Project
     # deep-audit findings go in held so an external codebase is never changed
     # just because a tab-level audit found something.
@@ -1345,12 +1253,12 @@ function Invoke-BridgeAudit {
               & $writeDiag 'codex' $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
             }
           } elseif (-not $deepBacklogHelperWarned) {
-            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            [void]$Errors.Value.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
             $deepBacklogHelperWarned = $true
           }
         } catch {
           $msg = $_.Exception.Message
-          [void]$errors.Add('deep-audit codex backlog filing failed: ' + $msg)
+          [void]$Errors.Value.Add('deep-audit codex backlog filing failed: ' + $msg)
           & $writeDiag 'codex' $sev 'exception' $msg
         }
       }
@@ -1378,12 +1286,12 @@ function Invoke-BridgeAudit {
               & $writeDiag 'claude' $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
             }
           } elseif (-not $deepBacklogHelperWarned) {
-            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            [void]$Errors.Value.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
             $deepBacklogHelperWarned = $true
           }
         } catch {
           $msg = $_.Exception.Message
-          [void]$errors.Add('deep-audit claude backlog filing failed: ' + $msg)
+          [void]$Errors.Value.Add('deep-audit claude backlog filing failed: ' + $msg)
           & $writeDiag 'claude' $sev 'exception' $msg
         }
       }
@@ -1418,17 +1326,40 @@ function Invoke-BridgeAudit {
               & $writeDiag $agentRole $sev 'add-idea-returned-null' "text-len=$($bText.Length)"
             }
           } elseif (-not $deepBacklogHelperWarned) {
-            [void]$errors.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
+            [void]$Errors.Value.Add('deep-audit backlog filing skipped: Add-Idea unavailable')
             $deepBacklogHelperWarned = $true
           }
         } catch {
           $msg = $_.Exception.Message
-          [void]$errors.Add('deep-audit model-agent backlog filing failed: ' + $msg)
+          [void]$Errors.Value.Add('deep-audit model-agent backlog filing failed: ' + $msg)
           & $writeDiag $agentRole $sev 'exception' $msg
         }
       }
     }
+  return [pscustomobject]@{
+    deepFiled             = $deepFiled
+    deepCodexCount        = $deepCodexCount
+    deepClaudeCount       = $deepClaudeCount
+    deepModelAgentCount   = $deepModelAgentCount
+  }
+}
 
+function Add-DeepAuditSectionsToMarkdown {
+  param(
+    [object]$Paths,
+    [string]$DeepStatus,
+    [double]$DeepRuntimeSec,
+    [int]$DeepAuditTimeoutSec,
+    [bool]$DeepWatchdogFired,
+    [object[]]$DeepModelAgentResults,
+    [object]$DeepCodexResult,
+    [object]$DeepClaudeResult,
+    [int]$DeepCodexCount,
+    [int]$DeepClaudeCount,
+    [ref]$Errors
+  )
+  $deepModelAgentCount = 0
+  foreach ($agent in @($DeepModelAgentResults)) { if (-not $agent) { continue }; $deepModelAgentCount += @($agent.findings).Count }
     # Append deep-audit sections to the MD report (in-place edit)
     if ($paths -and $paths.md -and (Test-Path -LiteralPath $paths.md)) {
       try {
@@ -1519,66 +1450,133 @@ function Invoke-BridgeAudit {
         }
         [System.IO.File]::WriteAllText($paths.md, $mdExisting + $deepBlock.ToString(), (New-Object System.Text.UTF8Encoding($false)))
       } catch {
-        [void]$errors.Add('deep-audit md merge failed: ' + $_.Exception.Message)
+        [void]$Errors.Value.Add('deep-audit md merge failed: ' + $_.Exception.Message)
       }
     }
+}
+
+function Invoke-BridgeAudit {
+  param(
+    [string]$BridgePath = $null,
+    [string]$Channel = $null,
+    [string]$ProjectRoot = $null,
+    [int]$DeepAuditTimeoutSec = 420,
+    [ValidateSet('auto','gemini-only')]
+    [string]$FunctionalAgent = 'gemini-only'
+  )
+  if ($DeepAuditTimeoutSec -lt 1) { $DeepAuditTimeoutSec = 1 }
+  $root = Get-AuditBridgeRoot -Hint $BridgePath
+  try {
+    $commonLib = Join-Path $root 'lib\common.ps1'
+    if (Test-Path -LiteralPath $commonLib -PathType Leaf) { . $commonLib }
+  } catch {}
+  $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+  $scope = Resolve-AuditProjectScope -Root $root -Channel $Channel -ProjectRoot $ProjectRoot
+  $resolvedProject = [string]$scope.resolvedProject
+  $resolvedChannel = [string]$scope.resolvedChannel
+  $auditCtx = New-AuditContext -BridgePath $root -Channel $resolvedChannel -ProjectRoot $resolvedProject
+  $reportDir = [string]$auditCtx.report_root
+  try { if (-not (Test-Path -LiteralPath $reportDir)) { New-Item -ItemType Directory -Path $reportDir -Force | Out-Null } } catch {}
+
+  $existing = Test-AuditLock -BridgePath $root
+  if ($existing) {
+    Write-AuditLog -BridgePath $root -Message "audit already running under PID $existing; abort"
+    return @{ status = 'locked'; pid = $existing }
+  }
+  New-AuditLock -BridgePath $root
+  $scopeLabel = "kind=$($auditCtx.kind) channel=$($auditCtx.channel) target=$($auditCtx.target_root)"
+  Write-AuditLog -BridgePath $root -Message "audit start (root=$root, pid=$PID, scope=$scopeLabel)"
+  try { if (Get-Command Add-Message -ErrorAction SilentlyContinue) { [void](Add-Message -From system -Text '🔍 Аудит запущен (статика + deep multi-agent)…' -Kind event) } } catch {}
+  Invoke-AuditSignalCollection -Root $root -ScriptRoot $PSScriptRoot
+
+  $errors = New-Object 'System.Collections.Generic.List[string]'
+  $allFindings = New-Object 'System.Collections.Generic.List[object]'
+  $secFindings = @(); $fncFindings = @()
+  try {
+    $sec = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-security.ps1' -EntryFunction 'Invoke-SecurityAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
+    if ($sec.error) { [void]$errors.Add("security: $($sec.error)") }
+    foreach ($f in @($sec.findings)) { $norm = Format-AuditFindings -Source 'security' -Raw $f; $secFindings += ,$norm; [void]$allFindings.Add($norm) }
+
+    $fnc = Invoke-AuditSubcomponent -BridgePath $root -ScriptName 'audit-functional.ps1' -EntryFunction 'Invoke-FunctionalAudit' -TargetRoot ([string]$auditCtx.target_root) -AuditKind ([string]$auditCtx.kind)
+    if ($fnc.error) { [void]$errors.Add("functional: $($fnc.error)") }
+    foreach ($f in @($fnc.findings)) { $norm = Format-AuditFindings -Source 'functional' -Raw $f; $fncFindings += ,$norm; [void]$allFindings.Add($norm) }
+
+    $mergedFindings = Merge-AuditFindings -Findings $allFindings.ToArray()
+    $ledgerSuppressedCount = 0; $ledgerPrevOpenCount = 0; $ledgerResult = $null
+    try {
+      $ledgerPath = Get-FindingsLedgerPath -BridgePath $root -AuditDir $reportDir
+      $ledger = Read-FindingsLedger -LedgerPath $ledgerPath
+      try { $ledgerPrevOpenCount = @($ledger.Values | Where-Object { (Normalize-AuditLedgerToken -Value ([string]$_.state) -Fallback 'open') -in @('open','new','regressed') }).Count } catch {}
+      $ledgerResult = Update-FindingsLedger -CurrentFindings $mergedFindings -Ledger $ledger -Now (Get-Date).ToUniversalTime()
+      Write-FindingsLedger -LedgerPath $ledgerPath -Ledger $ledgerResult.ledger
+      $mergedFindings = @($ledgerResult.reportFindings); $ledgerSuppressedCount = [int]$ledgerResult.suppressedCount
+      if ($ledgerSuppressedCount -gt 0) { Write-AuditLog -BridgePath $root -Message "findings-ledger: suppressed $ledgerSuppressedCount known open findings" }
+    } catch {
+      $msg = "findings-ledger failed: $($_.Exception.Message)"
+      [void]$errors.Add($msg); Write-AuditLog -BridgePath $root -Message $msg
+    }
+
+    $secCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'security' })
+    $fncCounts = Get-AuditSeverityCounts -Findings @($mergedFindings | Where-Object { $_.source -eq 'functional' })
+    $generatedAtLocal = (Get-Date).ToString('o'); $generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+    $runtimeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 2)
+    $report = [pscustomobject]@{
+      generated_at = $generatedAtUtc; bridge_root = $root; runtime_sec = $runtimeSeconds
+      metadata = [ordered]@{
+        bridge_path = $root; channel = $resolvedChannel; audit_kind = [string]$auditCtx.kind; project_root = $resolvedProject
+        target_root = [string]$auditCtx.target_root; report_root = [string]$auditCtx.report_root; backlog_channel = [string]$auditCtx.backlog_channel; profile = [string]$auditCtx.profile
+        generated_at = $generatedAtLocal; gen_timestamp = $generatedAtUtc; runtime_seconds = $runtimeSeconds
+        security_runtime_sec = $sec.runtime_sec; functional_runtime_sec = $fnc.runtime_sec; findings_ledger_suppressed_count = $ledgerSuppressedCount
+      }
+      security_counts = $secCounts; functional_counts = $fncCounts; security_runtime_sec = $sec.runtime_sec; functional_runtime_sec = $fnc.runtime_sec
+      audit_kind = [string]$auditCtx.kind; channel = [string]$auditCtx.channel; target_root = [string]$auditCtx.target_root; report_root = [string]$auditCtx.report_root
+      audit_context = $auditCtx; findings = @($mergedFindings); errors = @($errors.ToArray())
+    }
+
+    $paths = Write-AuditReports -BridgePath $root -Report $report -AuditContext $auditCtx
+    try { $marker = Get-AuditLastMarker -BridgePath $root -AuditDir $reportDir; [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+    $filed = 0
+    if ($secCounts.critical -gt 0 -or $fncCounts.critical -gt 0) { $filed = Add-AuditCriticalsToBacklog -BridgePath $root -Findings $mergedFindings -AuditContext $auditCtx }
+    try {
+      $newLedgerForScore = $null
+      if ($ledgerResult) { $newLedgerForScore = $ledgerResult.ledger }
+      Write-AuditUsefulnessScore -BridgePath $root -ReportFindings $mergedFindings -FiledToBacklog $filed -SuppressedKnown $ledgerSuppressedCount -PrevOpenCount $ledgerPrevOpenCount -NewLedger $newLedgerForScore -Now (Get-Date) -AuditDir $reportDir | Out-Null
+    } catch {}
+
+    $deepScript = Join-Path $root 'tools\deep-audit.ps1'
+    $deepR = Invoke-DeepAuditProcess -Root $root -DeepScript $deepScript -AuditCtx $auditCtx -ReportDir $reportDir -FunctionalAgent $FunctionalAgent -ResolvedChannel $resolvedChannel -DeepAuditTimeoutSec $DeepAuditTimeoutSec -Errors ([ref]$errors)
+    $deepCodexResult = $deepR.deepCodexResult; $deepClaudeResult = $deepR.deepClaudeResult; $deepModelAgentResults = @($deepR.deepModelAgentResults)
+    $deepStatus = [string]$deepR.deepStatus; $deepRuntimeSec = [double]$deepR.deepRuntimeSec; $deepWatchdogFired = [bool]$deepR.deepWatchdogFired
+    $addIdeaAvailable = Initialize-AuditBacklogHelpers -Root $root -ResolvedChannel $resolvedChannel -Errors ([ref]$errors)
+    $filingR = Add-DeepAuditFindingsToBacklog -Root $root -AuditCtx $auditCtx -DeepCodexResult $deepCodexResult -DeepClaudeResult $deepClaudeResult -DeepModelAgentResults @($deepModelAgentResults) -AddIdeaAvailable $addIdeaAvailable -Errors ([ref]$errors)
+    $deepFiled = [int]$filingR.deepFiled; $deepCodexCount = [int]$filingR.deepCodexCount; $deepClaudeCount = [int]$filingR.deepClaudeCount; $deepModelAgentCount = [int]$filingR.deepModelAgentCount
+    Add-DeepAuditSectionsToMarkdown -Paths $paths -DeepStatus $deepStatus -DeepRuntimeSec $deepRuntimeSec -DeepAuditTimeoutSec $DeepAuditTimeoutSec -DeepWatchdogFired $deepWatchdogFired -DeepModelAgentResults @($deepModelAgentResults) -DeepCodexResult $deepCodexResult -DeepClaudeResult $deepClaudeResult -DeepCodexCount $deepCodexCount -DeepClaudeCount $deepClaudeCount -Errors ([ref]$errors)
 
     $finalStatus = if ($deepStatus -eq 'deep_failed') { 'partial' } else { 'ok' }
     try {
       $report | Add-Member -NotePropertyName status -NotePropertyValue $finalStatus -Force
       $report | Add-Member -NotePropertyName errors -NotePropertyValue @($errors.ToArray()) -Force
-      $report | Add-Member -NotePropertyName deep_results -NotePropertyValue ([ordered]@{
-        codex_security    = $deepCodexResult
-        claude_functional = $deepClaudeResult
-        model_agents      = @($deepModelAgentResults)
-      }) -Force
-      if ($report.metadata) {
-        $report.metadata['deep_status'] = $deepStatus
-        $report.metadata['deep_runtime_sec'] = $deepRuntimeSec
-        $report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec
-        $report.metadata['deep_watchdog_fired'] = $deepWatchdogFired
-        $report.metadata['deep_model_agent_count'] = $deepModelAgentCount
-      }
-      if ($paths -and $paths.json) {
-        Write-AuditAtomicFile -Path $paths.json -Content ($report | ConvertTo-Json -Depth 8)
-      }
+      $report | Add-Member -NotePropertyName deep_results -NotePropertyValue ([ordered]@{ codex_security = $deepCodexResult; claude_functional = $deepClaudeResult; model_agents = @($deepModelAgentResults) }) -Force
+      if ($report.metadata) { $report.metadata['deep_status'] = $deepStatus; $report.metadata['deep_runtime_sec'] = $deepRuntimeSec; $report.metadata['deep_watchdog_timeout_sec'] = $DeepAuditTimeoutSec; $report.metadata['deep_watchdog_fired'] = $deepWatchdogFired; $report.metadata['deep_model_agent_count'] = $deepModelAgentCount }
+      if ($paths -and $paths.json) { Write-AuditAtomicFile -Path $paths.json -Content ($report | ConvertTo-Json -Depth 8) }
       Write-AuditIndexEntry -BridgePath $root -AuditContext $auditCtx -Paths $paths -Report $report
-    } catch {
-      [void]$errors.Add('audit report deep-status update failed: ' + $_.Exception.Message)
-    }
+    } catch { [void]$errors.Add('audit report deep-status update failed: ' + $_.Exception.Message) }
 
-    Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f `
-      $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, `
-      $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus, $deepModelAgentCount)
-
-    # 2026-05-30: post a completion summary into the chat (visible audit finish)
+    Write-AuditLog -BridgePath $root -Message ("audit {11} in {0}s — sec[{1}c/{2}w/{3}i] fnc[{4}c/{5}w/{6}i] deep[{12} codex={7} claude={8} agents={13}] backlog+={9}+{10}" -f $report.runtime_sec, $secCounts.critical, $secCounts.warning, $secCounts.info, $fncCounts.critical, $fncCounts.warning, $fncCounts.info, $deepCodexCount, $deepClaudeCount, $filed, $deepFiled, $finalStatus, $deepStatus, $deepModelAgentCount)
     try {
       if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
         $auditIcon = if ($finalStatus -eq 'ok') { '✅' } else { '⚠️' }
         $totalFindings = [int]$secCounts.critical + [int]$secCounts.warning + [int]$secCounts.info + [int]$fncCounts.critical + [int]$fncCounts.warning + [int]$fncCounts.info
         $deepLabel = if ($deepStatus -eq 'ok') { "deep ok · агентов:$deepModelAgentCount" } else { "deep:$deepStatus" }
-        $doneMsg = "$auditIcon Аудит завершён за $($report.runtime_sec)s · $deepLabel · находок:$totalFindings · в backlog:+$($filed + $deepFiled)"
-        [void](Add-Message -From system -Text $doneMsg -Kind event)
+        [void](Add-Message -From system -Text "$auditIcon Аудит завершён за $($report.runtime_sec)s · $deepLabel · находок:$totalFindings · в backlog:+$($filed + $deepFiled)" -Kind event)
       }
     } catch {}
 
     return [pscustomobject]@{
-      status            = $finalStatus
-      deep_status       = $deepStatus
-      audit_kind        = [string]$auditCtx.kind
-      channel           = [string]$auditCtx.channel
-      target_root       = [string]$auditCtx.target_root
-      report_json       = $paths.json
-      report_md         = $paths.md
-      security_counts   = $secCounts
-      functional_counts = $fncCounts
-      deep_codex_count  = $deepCodexCount
-      deep_claude_count = $deepClaudeCount
-      deep_model_agent_count = $deepModelAgentCount
-      deep_runtime_sec  = $deepRuntimeSec
-      backlog_added     = $filed + $deepFiled
-      runtime_sec       = $report.runtime_sec
-      errors            = @($errors.ToArray())
+      status = $finalStatus; deep_status = $deepStatus; audit_kind = [string]$auditCtx.kind; channel = [string]$auditCtx.channel; target_root = [string]$auditCtx.target_root
+      report_json = $paths.json; report_md = $paths.md; security_counts = $secCounts; functional_counts = $fncCounts
+      deep_codex_count = $deepCodexCount; deep_claude_count = $deepClaudeCount; deep_model_agent_count = $deepModelAgentCount; deep_runtime_sec = $deepRuntimeSec
+      backlog_added = $filed + $deepFiled; runtime_sec = $report.runtime_sec; errors = @($errors.ToArray())
     }
   } finally {
     Remove-AuditLock -BridgePath $root
