@@ -1,4 +1,4 @@
-﻿# Prompt builder strategies for driver prompts. Dot-sourced by driver.ps1.
+﻿# prompt-builder.ps1 -- prompt assembly strategies for driver turns and self-model injection
 
 function Get-PromptSelfModelBlock {
   param([bool]$ChannelIsMain)

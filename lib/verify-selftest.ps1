@@ -1,4 +1,5 @@
-﻿function Get-VerifySelftestRoot {
+﻿# verify-selftest.ps1 -- bridge self-test helpers for deterministic verification gates
+function Get-VerifySelftestRoot {
   $root = ''
   if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) {
     try { $root = [string](Get-BridgeRoot) } catch { $root = '' }
