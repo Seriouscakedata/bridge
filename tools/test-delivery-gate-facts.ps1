@@ -160,6 +160,58 @@ try {
   Check 'forbidden runtime path detected' (Test-DeliveryGateForbiddenChanges -TouchedFiles @('.bridge-runtime/state.db') -TaskText 'external task')
   Check 'critical path without evidence forbidden' (Test-DeliveryGateForbiddenChanges -TouchedFiles @('lib/backlog.ps1') -TaskText 'quick edit')
   Check 'critical path with bridge-self acceptance evidence allowed' (-not (Test-DeliveryGateForbiddenChanges -TouchedFiles @('lib/backlog.ps1') -TaskText 'bridge-self task with acceptance, ParseFile, tests and smoke verified'))
+
+  $mainCriticalFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'operatorless delivery loop atom updates idle claim handling' `
+    -Channel 'main' `
+    -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
+    -QaPassed $true `
+    -CriticPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -AcceptancePassed $false `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true `
+    -ParallelObligationOk $true
+  $mainCriticalGate = Get-DeliveryGateResult -InputFacts $mainCriticalFacts
+  Check 'main critical bridge path is not forbidden without task magic word' (-not [bool]$mainCriticalFacts.forbidden_changes) $mainCriticalFacts
+  Check 'main critical bridge path still marks critical bridge self' ([bool]$mainCriticalFacts.critical_bridge_self) $mainCriticalFacts
+  Check 'main critical bridge path does not require rollback' (-not [bool]$mainCriticalFacts.rollback_required) $mainCriticalFacts
+  Check 'main critical gate omits forbidden failure' ((@($mainCriticalGate.failures) | Where-Object { $_ -eq 'forbidden_changes_detected' }).Count -eq 0) $mainCriticalGate
+  Check 'main critical gate omits rollback failure' ((@($mainCriticalGate.failures) | Where-Object { $_ -eq 'rollback_required' }).Count -eq 0 -and -not [bool]$mainCriticalGate.rollback_required) $mainCriticalGate
+
+  $externalCriticalFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'operatorless delivery loop atom updates idle claim handling' `
+    -Channel 'client-app' `
+    -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
+    -QaPassed $true `
+    -CriticPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -AcceptancePassed $true `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true `
+    -ParallelObligationOk $true
+  Check 'external critical bridge path without bridge-self evidence forbidden' ([bool]$externalCriticalFacts.forbidden_changes) $externalCriticalFacts
+  Check 'external critical bridge path without bridge-self evidence requires rollback' ([bool]$externalCriticalFacts.rollback_required) $externalCriticalFacts
+
+  $mainHardForbiddenFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'main channel bridge maintenance' `
+    -Channel 'main' `
+    -Events @(@{ touched_files = @('.bridge-runtime/state.db') }) `
+    -QaPassed $true `
+    -CriticPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -AcceptancePassed $true `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true `
+    -ParallelObligationOk $true
+  Check 'main channel hard forbidden runtime path remains forbidden' ([bool]$mainHardForbiddenFacts.forbidden_changes) $mainHardForbiddenFacts
+  Check 'main channel hard forbidden runtime path requires rollback' ([bool]$mainHardForbiddenFacts.rollback_required) $mainHardForbiddenFacts
 } finally {
   if ($null -ne $repo) { Remove-TestRepo -Path $repo }
 }

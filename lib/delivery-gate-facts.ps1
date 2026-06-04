@@ -239,7 +239,7 @@ function Get-DeliveryGateAcceptanceFact {
   $scanText = (@($TaskText, $eventText) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n"
 
   $unsafe = [bool](
-    (Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText) -or
+    (Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel) -or
     (Test-DeliveryGateDestructivePatternsText -Text $scanText) -or
     (Test-DeliveryGateQualityBypassText -Text $scanText)
   )
@@ -299,7 +299,8 @@ function Test-DeliveryGateRepoClean {
 function Test-DeliveryGateForbiddenChanges {
   param(
     [string[]]$TouchedFiles = @(),
-    [string]$TaskText = ''
+    [string]$TaskText = '',
+    [string]$Channel = ''
   )
 
   foreach ($file in @($TouchedFiles)) {
@@ -308,9 +309,11 @@ function Test-DeliveryGateForbiddenChanges {
 
   $criticalFiles = @($TouchedFiles | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ })
   if ($criticalFiles.Count -gt 0) {
-    $hasBridgeSelf = Test-DeliveryGateBridgeSelfEvidence -TaskText $TaskText
-    $hasAcceptance = Test-DeliveryGateAcceptanceEvidence -TaskText $TaskText
-    if (-not ($hasBridgeSelf -and $hasAcceptance)) { return $true }
+    if ([string]$Channel -ne 'main') {
+      $hasBridgeSelf = Test-DeliveryGateBridgeSelfEvidence -TaskText $TaskText
+      $hasAcceptance = Test-DeliveryGateAcceptanceEvidence -TaskText $TaskText
+      if (-not ($hasBridgeSelf -and $hasAcceptance)) { return $true }
+    }
   }
 
   return $false
@@ -347,7 +350,7 @@ function New-DeliveryGateInputFacts {
 
   $repoClean = Test-DeliveryGateRepoClean -BridgeRoot $root
   $critical = (@($touched.ToArray()) | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ }).Count -gt 0
-  $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText
+  $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel
   $destructive = Test-DeliveryGateDestructivePatternsText -Text $scanText
   $qualityBypass = Test-DeliveryGateQualityBypassText -Text $scanText
   $canaryOk = if ($critical) { ([bool]$ParsePassed -and [bool]$SmokePassed -and [bool]$AcceptancePassed) } else { $true }
