@@ -24,6 +24,7 @@ param([string]$Channel = $null, [switch]$SelfTest)
 . (Join-Path $PSScriptRoot 'lib\project-acceptance.ps1')
 . (Join-Path $PSScriptRoot 'lib\delivery-gate-shadow.ps1')
 . (Join-Path $PSScriptRoot 'lib\checkpoint.ps1')
+. (Join-Path $PSScriptRoot 'lib\prompt-builder.ps1')
 $ErrorActionPreference = 'Continue'
 
 # Tool Foundry (Фаза 1): load every GREEN (status=active) self-built tool from
