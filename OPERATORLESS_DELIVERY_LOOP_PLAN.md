@@ -687,6 +687,8 @@ Serial допустим только если есть причина:
 
 Status note: Atom 11 adds deterministic user journey scenario extraction into project acceptance; browser/web-smoke execution remains a future atom.
 
+Status note: Atom 12 auto-discovers and auto-runs project-provided browser/e2e smoke scripts by default (smoke:browser, smoke:e2e, etc.) when acceptance.json does not explicitly set smokeScripts; smoke:launch acts as orchestrator and suppresses duplicates; enforcing/generating browser smoke scripts in projects remains a future atom.
+
 Параллельность:
 
 - route/status checks, auth scenario checks, admin scenario checks can develop parallel;

@@ -128,6 +128,36 @@ try {
     Assert-True ([string]$js.source -eq 'journey') 'expected journey source marker'
   }
 
+  $pkgA = ('{"scripts":{"smoke:browser":"cmd","smoke:ux":"cmd","smoke:api":"cmd"}}' | ConvertFrom-Json)
+  $smokeA = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkgA)
+  Assert-True ($smokeA.Count -eq 3) ('expected 3 auto smoke scripts, got ' + [string]$smokeA.Count)
+  Assert-True ($smokeA[0] -eq 'smoke:browser') 'expected smoke:browser first (candidate order)'
+  Assert-True ($smokeA[1] -eq 'smoke:ux') 'expected smoke:ux before smoke:api (candidate order)'
+  Assert-True ($smokeA[2] -eq 'smoke:api') 'expected smoke:api third'
+
+  $pkgB = ('{"scripts":{"smoke:launch":"cmd","smoke:browser":"cmd"}}' | ConvertFrom-Json)
+  $smokeB = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkgB)
+  Assert-True ($smokeB.Count -eq 1 -and $smokeB[0] -eq 'smoke:launch') 'expected only smoke:launch when orchestrator present'
+
+  $pkgC = ('{"scripts":{"build":"next build"}}' | ConvertFrom-Json)
+  $smokeC = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkgC)
+  Assert-True ($smokeC.Count -eq 0) 'expected empty default when no smoke candidates'
+
+  $pkgJson = '{"scripts":{"smoke:browser":"cmd","smoke:ux":"cmd"}}'
+  [System.IO.File]::WriteAllText((Join-Path $project 'package.json'), $pkgJson, (New-Object System.Text.UTF8Encoding($false)))
+  $explicitAcc = '{"smokeScripts":["custom:smoke"]}'
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'acceptance.json'), $explicitAcc, (New-Object System.Text.UTF8Encoding($false)))
+  $cfgExplicit = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  Assert-True ($cfgExplicit.smokeScripts.Count -eq 1 -and [string]$cfgExplicit.smokeScripts[0] -eq 'custom:smoke') 'expected explicit smokeScripts preserved, no auto-add'
+  Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'acceptance.json') -Force
+
+  $cfgAuto = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  Assert-True ($cfgAuto.smokeScripts.Count -eq 2 -and [string]$cfgAuto.smokeScripts[0] -eq 'smoke:browser' -and [string]$cfgAuto.smokeScripts[1] -eq 'smoke:ux') 'expected auto-discovered smoke scripts in config'
+  Remove-Item -LiteralPath (Join-Path $project 'package.json') -Force
+
+  $cfgEmpty = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  Assert-True ($cfgEmpty.smokeScripts.Count -eq 0) 'expected empty smokeScripts when no package.json'
+
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'project-contract.json') -Force
   $missingSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
   $present = @($missingSteps | Where-Object { [string]$_.name -eq 'plan-contract:present' } | Select-Object -First 1)

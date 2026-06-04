@@ -222,6 +222,23 @@ function Test-ProjectAcceptancePackageScript {
   try { return ($PackageJson -and $PackageJson.scripts -and ($PackageJson.scripts.PSObject.Properties.Name -contains $Name)) } catch { return $false }
 }
 
+function Get-ProjectAcceptanceDefaultSmokeScripts {
+  param($PackageJson)
+  if (Test-ProjectAcceptancePackageScript -PackageJson $PackageJson -Name 'smoke:launch') {
+    return @('smoke:launch')
+  }
+
+  $candidates = @('smoke:browser','smoke:e2e','test:e2e','e2e','smoke:auth','smoke:ux','smoke:pages','smoke:api')
+  $result = @()
+  foreach ($candidate in $candidates) {
+    if ($result.Count -ge 8) { break }
+    if (($result -notcontains $candidate) -and (Test-ProjectAcceptancePackageScript -PackageJson $PackageJson -Name $candidate)) {
+      $result += $candidate
+    }
+  }
+  return $result
+}
+
 function Get-ProjectAcceptanceConfig {
   param([string]$ProjectRoot)
   $cfgPath = Join-Path (Join-Path $ProjectRoot '.bridge') 'acceptance.json'
@@ -233,8 +250,7 @@ function Get-ProjectAcceptanceConfig {
   foreach ($name in @('typecheck','lint','build')) {
     if (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $name) { $defaultScripts += $name }
   }
-  $defaultSmoke = @()
-  if (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name 'smoke:launch') { $defaultSmoke += 'smoke:launch' }
+  $defaultSmoke = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkg)
   $defaultChecks = @('/=200')
   if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'app\api\health\route.ts')) { $defaultChecks += '/api/health=200' }
   if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'app\login\page.tsx')) { $defaultChecks += '/login=200' }
