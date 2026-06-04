@@ -745,6 +745,20 @@ Status note: Atom 14 fixed active-task transcript contamination: user messages p
 
 ---
 
+### Implemented status: task management shadow
+
+2026-06-04: added `lib/task-management.ps1` and `channels/<channel>/task-management-shadow.jsonl`.
+This is Mode 0 / shadow-only telemetry for the claim path:
+
+- every autonomous claim can produce a compact snapshot: `single`, `workpack_parallel`,
+  `protected_serial`, or `blocked`;
+- the snapshot records delivery mode, parallel policy, selected batch ids, frontier facts,
+  warnings, blockers, and touched files;
+- driver state stores `task_management_snapshot` for the current task;
+- chat gets a short `Task management:` line so the operator can see why the task is being
+  executed in that shape;
+- no execution decision is changed yet. Promotion to enforcement must use accumulated evidence.
+
 ## 7. Acceptance for the whole project
 
 Operatorless Delivery Loop считается готовым, когда:

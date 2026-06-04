@@ -797,6 +797,49 @@
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
         $taskRepoRootForBacklog = Get-TaskRepoRoot
         $baseCommit = try { (& git -C $taskRepoRootForBacklog rev-parse HEAD 2>$null).Trim() } catch { '' }
+        $taskManagementSnapshot = $null
+        try {
+          $tmTouched = New-Object 'System.Collections.Generic.List[string]'
+          foreach ($propName in @('workpack_touch_set','files','touch_set')) {
+            if ($claimedIdea.PSObject.Properties.Name -contains $propName) {
+              foreach ($file in @($claimedIdea.$propName)) {
+                $fs = ([string]$file).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($fs) -and -not $tmTouched.Contains($fs)) { [void]$tmTouched.Add($fs) }
+              }
+            }
+          }
+          $tmFrontier = $null
+          if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_frontier' -and $claimedIdea.workpack_frontier) {
+            $tmFrontier = $claimedIdea.workpack_frontier
+          } elseif ($workpackFrontierReport) {
+            $tmFrontier = $workpackFrontierReport
+          }
+          if ($isWorkpackBatch -and $tmFrontier) {
+            try {
+              if ($null -eq $tmFrontier.PSObject.Properties['selected']) { $tmFrontier | Add-Member -NotePropertyName selected -NotePropertyValue $batchIdsForState.Count -Force }
+              if ($null -eq $tmFrontier.PSObject.Properties['selected_ids']) { $tmFrontier | Add-Member -NotePropertyName selected_ids -NotePropertyValue @($batchIdsForState) -Force }
+            } catch {}
+          }
+          $tmChannelType = 'project'
+          if ([string]$Channel -eq 'main') { $tmChannelType = 'bridge' }
+          $tmKind = 'backlog'
+          if ($isWorkpackBatch) { $tmKind = 'workpack_batch' }
+          elseif ([string]$claimedIdea.from -match 'audit') { $tmKind = 'audit_backlog' }
+          $tmChannelFacts = [pscustomobject]@{
+            Channel = [string]$Channel
+            ChannelType = $tmChannelType
+            IsExternalProject = ([string]$Channel -ne 'main')
+          }
+          $tmContext = [ordered]@{
+            Kind = $tmKind
+            IsBacklog = $true
+            IsWorkpackBatch = $isWorkpackBatch
+            WorkpackBatchMode = [string]$workpackBatchMode
+            BatchCount = [int]$batchIdsForState.Count
+          }
+          $taskManagementSnapshot = New-TaskManagementSnapshot -TaskId $bid -TaskText $btext -Channel $Channel -TouchedFiles @($tmTouched.ToArray()) -BatchIds @($batchIdsForState) -WorkpackBatchMode $workpackBatchMode -WorkpackFrontier $tmFrontier -ChannelFacts $tmChannelFacts -Context $tmContext
+          Write-TaskManagementShadowRecord -BridgeRoot $bridgeRoot -Channel $Channel -TaskId $bid -Snapshot $taskManagementSnapshot -Note 'idle-claim' | Out-Null
+        } catch {}
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           Start-ReplayForStateTask -State $s -TaskText $btext -ChannelName $Channel
@@ -809,6 +852,7 @@
           $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $isWorkpackBatch -Force
           $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force  # ERR-006: fresh batch, not yet dispatched
           $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue $workpackBatchMode -Force
+          $s | Add-Member -NotePropertyName task_management_snapshot -NotePropertyValue $taskManagementSnapshot -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -852,6 +896,12 @@
         } else {
           Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         }
+        try {
+          $tmSummary = Format-TaskManagementSummary -Snapshot $taskManagementSnapshot
+          if (-not [string]::IsNullOrWhiteSpace($tmSummary)) {
+            Add-Message -From system -Text ("🧭 " + $tmSummary) -Kind event | Out-Null
+          }
+        } catch {}
         if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: backlog" -Kind event | Out-Null }
         $state = Read-State
       } else {
