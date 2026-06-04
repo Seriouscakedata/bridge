@@ -18,6 +18,11 @@ if (-not (Get-Command Test-ParallelCollectedPathAllowed -ErrorAction SilentlyCon
   exit 1
 }
 
+if (-not (Get-Command Invoke-ParallelOutsideFilesCheckout -ErrorAction SilentlyContinue)) {
+  Write-Host "FAIL: production helper Invoke-ParallelOutsideFilesCheckout is not visible after dot-source"
+  exit 1
+}
+
 $pass = 0
 $fail = 0
 
@@ -128,6 +133,52 @@ Assert ($llmWorkerSource -match 'function Test-WorkerRelAllowed') "LLM worker ha
 Assert ($llmWorkerSource -match 'denied FILE path') "LLM worker fails stream on denied FILE paths"
 Assert ($llmWorkerSource -notmatch 'allowedFiles\.Count -gt 0 -and -not') "LLM worker does not silently skip denied paths"
 Assert ($llmWorkerSource -notmatch '2>\$null') "LLM worker does not hide native git stderr with PowerShell redirection"
+
+# 25-28. Outside touch-set cleanup runs checkout before quarantine and never checks out declared files.
+$script:checkoutEvents = New-Object 'System.Collections.Generic.List[string]'
+$cleanup = Invoke-ParallelOutsideFilesCheckout -RepoRoot $root -OutsideFiles @('lib/outside.ps1', 'lib/allowed.ps1', '../bad.ps1', '.git/config') -DeclaredFiles @('lib/allowed.ps1') -GitExe 'git' -GitRunner {
+  param([string]$GitExe, [string]$RepoRoot, [object]$GitArgs)
+  $argv = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($a in @($GitArgs)) {
+    if ($a -is [System.Array]) {
+      foreach ($nested in @($a)) { [void]$argv.Add([string]$nested) }
+    } else {
+      [void]$argv.Add([string]$a)
+    }
+  }
+  [void]$script:checkoutEvents.Add((@($argv) -join ' '))
+  return [pscustomobject]@{ ExitCode = 0; Output = @() }
+}
+[void]$script:checkoutEvents.Add('quarantine stream')
+Assert ([bool]$cleanup.ok) "outside cleanup helper returns ok for fake git"
+Assert (($script:checkoutEvents -join "`n") -match 'checkout -- lib/outside\.ps1') "outside cleanup invokes git checkout for denied path"
+Assert (($script:checkoutEvents -join "`n") -notmatch 'lib/allowed\.ps1') "outside cleanup excludes declared path from checkout"
+$checkoutIndex = [array]::IndexOf(@($script:checkoutEvents), 'checkout -- lib/outside.ps1')
+$quarantineIndex = [array]::IndexOf(@($script:checkoutEvents), 'quarantine stream')
+Assert ($checkoutIndex -ge 0 -and $quarantineIndex -gt $checkoutIndex) "outside checkout happens before quarantine"
+
+# 29-30. Real temp repo: staged tracked outside path is reset+checked out; declared path is untouched.
+$gitExe = Get-GitExe
+$tmpParent = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-parallel-guard-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpParent -Force | Out-Null
+try {
+  & $gitExe -C $tmpParent init | Out-Null
+  & $gitExe -C $tmpParent config user.email 'bridge-test@example.invalid' | Out-Null
+  & $gitExe -C $tmpParent config user.name 'Bridge Test' | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $tmpParent 'allowed.txt'), "base-allowed`n", [System.Text.Encoding]::UTF8)
+  [System.IO.File]::WriteAllText((Join-Path $tmpParent 'outside.txt'), "base-outside`n", [System.Text.Encoding]::UTF8)
+  & $gitExe -C $tmpParent add allowed.txt outside.txt | Out-Null
+  & $gitExe -C $tmpParent commit -m 'base' | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $tmpParent 'allowed.txt'), "changed-allowed`n", [System.Text.Encoding]::UTF8)
+  [System.IO.File]::WriteAllText((Join-Path $tmpParent 'outside.txt'), "changed-outside`n", [System.Text.Encoding]::UTF8)
+  & $gitExe -C $tmpParent add allowed.txt outside.txt | Out-Null
+  $realCleanup = Invoke-ParallelOutsideFilesCheckout -RepoRoot $tmpParent -OutsideFiles @('outside.txt', 'allowed.txt') -DeclaredFiles @('allowed.txt') -GitExe $gitExe
+  $statusAfter = @(& $gitExe -C $tmpParent status --porcelain)
+  Assert ([bool]$realCleanup.ok) "real cleanup succeeds in temp repo"
+  Assert (($statusAfter -contains 'M  allowed.txt') -and -not (($statusAfter -join "`n") -match 'outside\.txt')) "real cleanup clears staged outside path and leaves declared path staged"
+} finally {
+  if (Test-Path -LiteralPath $tmpParent) { Remove-Item -LiteralPath $tmpParent -Recurse -Force }
+}
 
 Write-Host "`nRESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }

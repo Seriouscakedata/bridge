@@ -791,6 +791,83 @@ function Test-ParallelCollectedPathAllowedSelfCheck {
   return $true
 }
 
+function Invoke-ParallelOutsideFilesCheckout {
+  param(
+    [string]$RepoRoot,
+    [string[]]$OutsideFiles,
+    [string[]]$DeclaredFiles = @(),
+    [string]$GitExe = '',
+    [scriptblock]$GitRunner = $null
+  )
+
+  $result = [pscustomobject]@{
+    ok = $true
+    paths = @()
+    exitCodes = @()
+    output = @()
+    message = ''
+  }
+
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) {
+    $result.ok = $false
+    $result.message = 'repo root is missing'
+    return $result
+  }
+
+  $safePaths = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($p in @($OutsideFiles)) {
+    $rel = _NormalizeRelPath $p
+    if ($null -eq $rel) { continue }
+    if ($rel -eq '.git' -or $rel.StartsWith('.git/')) { continue }
+    if (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $DeclaredFiles) { continue }
+    if (-not $safePaths.Contains($rel)) { [void]$safePaths.Add($rel) }
+  }
+
+  if ($safePaths.Count -eq 0) {
+    $result.paths = @()
+    $result.message = 'no safe outside paths to checkout'
+    return $result
+  }
+
+  if ([string]::IsNullOrWhiteSpace($GitExe)) { $GitExe = Get-GitExe }
+  $result.paths = @($safePaths)
+
+  $commands = New-Object 'System.Collections.Generic.List[object]'
+  [void]$commands.Add([string[]](@('reset', '-q', '--') + @($safePaths)))
+  [void]$commands.Add([string[]](@('checkout', '--') + @($safePaths)))
+
+  foreach ($cmdArgs in $commands) {
+    $gitArgs = [string[]]@($cmdArgs)
+    $exitCode = 0
+    $output = @()
+    if ($null -ne $GitRunner) {
+      $runResult = & $GitRunner $GitExe $RepoRoot (,$gitArgs)
+      if ($null -ne $runResult -and ($runResult.PSObject.Properties.Name -contains 'ExitCode')) {
+        $exitCode = [int]$runResult.ExitCode
+        try { $output = @($runResult.Output) } catch { $output = @() }
+      } else {
+        $exitCode = $LASTEXITCODE
+        $output = @($runResult)
+      }
+    } else {
+      $output = @(& $GitExe -C $RepoRoot @gitArgs 2>&1)
+      $exitCode = $LASTEXITCODE
+    }
+
+    $result.exitCodes += $exitCode
+    if ($output.Count -gt 0) {
+      $result.output += @($output | ForEach-Object { [string]$_ })
+    }
+    if ($exitCode -ne 0) { $result.ok = $false }
+  }
+
+  if (-not $result.ok -and [string]::IsNullOrWhiteSpace($result.message)) {
+    $result.message = 'git cleanup failed for outside path(s)'
+  }
+
+  return $result
+}
+
 function Spawn-Worker {
   # Refactored 2026-05-27: now takes a $WorkerSpec object (one entry from
   # Get-ParallelWorkerPool) and dispatches via $Script:ParallelCliRegistry.
@@ -1591,6 +1668,14 @@ function Collect-ParallelDispatchWorkerOutput {
     }
 
     if ($deniedPaths.Count -gt 0) {
+      $checkoutResult = Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($deniedPaths) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe
+      if (-not [bool]$checkoutResult.ok) {
+        $tail = ''
+        try { $tail = (@($checkoutResult.output) | Select-Object -Last 3) -join ' | ' } catch {}
+        $tailText = ''
+        if (-not [string]::IsNullOrWhiteSpace($tail)) { $tailText = " (" + $tail + ")" }
+        try { Add-Message -From system -Text ("⚠️ Outside touch-set cleanup failed before quarantine for stream " + $Worker.id + ": " + $checkoutResult.message + $tailText) -Kind event | Out-Null } catch {}
+      }
       Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
       try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": stream quarantined because outside touch-set path(s) were changed: " + ($deniedPaths -join ', ')) -Kind event | Out-Null } catch {}
       return
