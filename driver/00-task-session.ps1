@@ -226,6 +226,16 @@ function Test-CliFlagsInDiff {
   return @($issues.ToArray())
 }
 
+function Test-QualityBypassDiffLineIsCommentOnly {
+  param([string]$Line)
+  if ($null -eq $Line) { return $false }
+
+  $trimmed = $Line.TrimStart()
+  if ($trimmed.Length -eq 0) { return $false }
+
+  return ($trimmed -match '^(#|//|/\*|\*|<!--|<#)')
+}
+
 function Test-QualityBypassesInDiff {
   # Deterministic project-quality guard: reject added lines that disable build,
   # type, or lint gates instead of fixing the code. This is intentionally narrow:
@@ -250,6 +260,7 @@ function Test-QualityBypassesInDiff {
   foreach ($rawLine in @($Diff -split "`r?`n")) {
     if ($rawLine.Length -lt 2 -or $rawLine[0] -ne '+' -or $rawLine[1] -eq '+') { continue }
     $line = $rawLine.Substring(1)
+    if (Test-QualityBypassDiffLineIsCommentOnly -Line $line) { continue }
     foreach ($pat in $patterns) {
       if ($line -match $pat.pattern) {
         $key = [string]$pat.key

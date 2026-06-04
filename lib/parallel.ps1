@@ -605,7 +605,9 @@ function Get-ParallelTaskBaseCommit {
   if ([string]::IsNullOrWhiteSpace($base)) {
     try { $base = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
   }
-  return ([string]$base).Trim()
+  $baseText = [string]$base
+  if ($null -eq $baseText) { return '' }
+  return $baseText.Trim()
 }
 
 function Get-WorkerWorktree {
@@ -1452,16 +1454,51 @@ function Wait-ParallelDispatchResults {
   return $completed
 }
 
+function ConvertTo-ParallelDispatchCompletedMap {
+  param([object]$Completed)
+
+  $map = @{}
+  if ($null -eq $Completed) { return $map }
+
+  if ($Completed -is [hashtable]) {
+    foreach ($key in $Completed.Keys) { $map[[string]$key] = $Completed[$key] }
+    return $map
+  }
+
+  if ($Completed -is [System.Collections.IDictionary]) {
+    foreach ($key in $Completed.Keys) { $map[[string]$key] = $Completed[$key] }
+    return $map
+  }
+
+  if ($Completed -is [array]) {
+    foreach ($item in @($Completed)) {
+      $itemMap = ConvertTo-ParallelDispatchCompletedMap -Completed $item
+      foreach ($key in $itemMap.Keys) { $map[[string]$key] = $itemMap[$key] }
+    }
+    return $map
+  }
+
+  if ($Completed -is [pscustomobject]) {
+    foreach ($prop in $Completed.PSObject.Properties) {
+      $map[[string]$prop.Name] = $prop.Value
+    }
+  }
+
+  return $map
+}
+
 function New-ParallelDispatchAggregationContext {
   param(
     [object[]]$Workers,
-    [hashtable]$Completed,
+    [object]$Completed,
     [string]$TaskHash
   )
 
+  $completedMap = ConvertTo-ParallelDispatchCompletedMap -Completed $Completed
+
   return @{
     workers = @($Workers)
-    completed = $Completed
+    completed = $completedMap
     taskHash = $TaskHash
     merged = 0
     bridgeRoot = Get-ParallelRepoRoot
@@ -1782,7 +1819,7 @@ function Complete-ParallelDispatchResult {
 function Complete-ParallelDispatchOutputs {
   param(
     [object[]]$Workers,
-    [hashtable]$Completed,
+    [object]$Completed,
     [string]$TaskHash
   )
 
