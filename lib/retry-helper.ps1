@@ -12,6 +12,12 @@ function Get-InvokeWithTimeoutBackoffSec {
   return [Math]::Max(0, [int]([Math]::Pow(2, $Attempt + 1) - 1))
 }
 
+function Get-InvokeWithTimeoutRequestTimeoutSec {
+  param([int]$TimeoutSec)
+  if ($TimeoutSec -le 2) { return 1 }
+  return [Math]::Max(1, [int]($TimeoutSec - 2))
+}
+
 function New-InvokeWithTimeoutResult {
   param(
     [string]$Status,
@@ -30,6 +36,37 @@ function New-InvokeWithTimeoutResult {
   if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) { $out.Error = $ErrorMessage }
   if ($BackoffSecondsUsed -and $BackoffSecondsUsed.Count -gt 0) { $out.BackoffSeconds = @($BackoffSecondsUsed) }
   return [pscustomobject]$out
+}
+
+function Test-InvokeWithTimeoutTimeoutLikeError {
+  param([string]$Message)
+  if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+  return ($Message -match '(?i)\b(timed?\s*out|timeout|operation has timed out|wait-?job)\b')
+}
+
+function Stop-InvokeWithTimeoutJob {
+  param(
+    $Job,
+    [int]$DrainTimeoutSec = 2
+  )
+  if (-not $Job) { return }
+  try {
+    if ([string]$Job.State -eq 'Running') {
+      Stop-Job -Job $Job -ErrorAction SilentlyContinue
+    }
+  } catch {
+    $script:InvokeWithTimeoutLastCleanupError = $_.Exception.Message
+  }
+  try {
+    Wait-Job -Job $Job -Timeout $DrainTimeoutSec -ErrorAction SilentlyContinue | Out-Null
+  } catch {
+    $script:InvokeWithTimeoutLastCleanupError = $_.Exception.Message
+  }
+  try {
+    Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+  } catch {
+    $script:InvokeWithTimeoutLastCleanupError = $_.Exception.Message
+  }
 }
 
 function Test-InvokeWithTimeoutResult {
@@ -68,12 +105,13 @@ function Invoke-WithTimeout {
   while ($attempt -lt $MaxAttempts) {
     $attempt++
     $job = $null
-    $jobName = ('{0}-{1}-{2}' -f $Name, $PID, $attempt)
+    $jobName = ('{0}-{1}-{2}-{3}' -f $Name, $PID, $attempt, ([Guid]::NewGuid().ToString('N')))
     try {
       $jobArgs = @{
         ScriptBlock  = $ScriptBlock
         ArgumentList = @($ArgumentList)
         Name         = $jobName
+        ErrorAction  = 'Stop'
       }
       if ($InitializationScript) { $jobArgs.InitializationScript = $InitializationScript }
       $job = Start-Job @jobArgs
@@ -81,28 +119,38 @@ function Invoke-WithTimeout {
       $done = Wait-Job -Job $job -Timeout $TimeoutSec
       if (-not $done) {
         $lastError = ('Timed out after {0} seconds' -f $TimeoutSec)
-        try { Stop-Job -Job $job -ErrorAction SilentlyContinue } catch {}
-        try { Wait-Job -Job $job -Timeout 5 -ErrorAction SilentlyContinue | Out-Null } catch {}
+        Stop-InvokeWithTimeoutJob -Job $job
+        $job = $null
         if ($attempt -lt $MaxAttempts) {
           $delay = Get-InvokeWithTimeoutBackoffSec -Attempt $attempt -BackoffSeconds $BackoffSeconds
           $usedBackoff += $delay
           if ($delay -gt 0) { Start-Sleep -Seconds $delay }
+          continue
         }
-        continue
+        return (New-InvokeWithTimeoutResult -Status 'Timeout' -Attempts $attempt -TimeoutSec $TimeoutSec -Name $Name -ErrorMessage $lastError -BackoffSecondsUsed @($usedBackoff))
       }
-      return (Receive-Job -Job $job -ErrorAction Stop)
+      $result = Receive-Job -Job $job -ErrorAction Stop
+      Stop-InvokeWithTimeoutJob -Job $job
+      $job = $null
+      return $result
     } catch {
       $lastError = $_.Exception.Message
+      $status = 'Error'
+      if (Test-InvokeWithTimeoutTimeoutLikeError -Message $lastError) { $status = 'Timeout' }
+      if ($job) {
+        Stop-InvokeWithTimeoutJob -Job $job
+        $job = $null
+      }
       if ($attempt -lt $MaxAttempts) {
         $delay = Get-InvokeWithTimeoutBackoffSec -Attempt $attempt -BackoffSeconds $BackoffSeconds
         $usedBackoff += $delay
         if ($delay -gt 0) { Start-Sleep -Seconds $delay }
         continue
       }
-      return (New-InvokeWithTimeoutResult -Status 'Error' -Attempts $attempt -TimeoutSec $TimeoutSec -Name $Name -ErrorMessage $lastError -BackoffSecondsUsed @($usedBackoff))
+      return (New-InvokeWithTimeoutResult -Status $status -Attempts $attempt -TimeoutSec $TimeoutSec -Name $Name -ErrorMessage $lastError -BackoffSecondsUsed @($usedBackoff))
     } finally {
       if ($job) {
-        try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {}
+        Stop-InvokeWithTimeoutJob -Job $job
       }
     }
   }

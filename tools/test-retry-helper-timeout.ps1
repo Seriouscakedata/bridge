@@ -47,6 +47,8 @@ Assert 'Default backoff attempt 1 is 3 seconds' ((Get-InvokeWithTimeoutBackoffSe
 Assert 'Default backoff attempt 2 is 7 seconds' ((Get-InvokeWithTimeoutBackoffSec -Attempt 2) -eq 7)
 Assert 'Default backoff attempt 3 is 15 seconds' ((Get-InvokeWithTimeoutBackoffSec -Attempt 3) -eq 15)
 Assert 'Default backoff attempt 4 is 31 seconds' ((Get-InvokeWithTimeoutBackoffSec -Attempt 4) -eq 31)
+Assert 'Request timeout stays below hard timeout' ((Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec 10) -eq 8)
+Assert 'Request timeout has one second floor' ((Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec 1) -eq 1)
 
 $timeoutName = 'retry-helper-timeout-test'
 $errorName = 'retry-helper-error-test'
@@ -105,9 +107,12 @@ if (Test-Path -LiteralPath $counterPath) { Remove-Item -LiteralPath $counterPath
 $llmText = [System.IO.File]::ReadAllText($llm, [System.Text.Encoding]::UTF8)
 $memoryText = [System.IO.File]::ReadAllText($memory, [System.Text.Encoding]::UTF8)
 Assert 'DeepSeek job uses request timeout parameter' ($llmText -match '-TimeoutSec\s+\$RequestTimeoutSec')
-Assert 'DeepSeek job builds headers inside job' ($llmText -match '\$headers\s*=\s*@\{\s*Authorization\s*=\s*\$AuthorizationHeader\s*\}')
+Assert 'DeepSeek job builds headers inside job from API key' ($llmText -match '\$headers\s*=\s*@\{\s*Authorization\s*=\s*\("Bearer "\s*\+\s*\$apiKey\)\s*\}')
+Assert 'DeepSeek does not pass bearer header into job' ($llmText -notmatch '\$authHeader|AuthorizationHeader')
 Assert 'Gemini job uses request timeout parameter' ($memoryText -match '-TimeoutSec\s+\$RequestTimeoutSec')
-Assert 'Gemini API has no bare Invoke-WebRequest fallback' ($memoryText -notmatch 'Invoke-WebRequest[\s\S]*-Body\s+\$bytes')
+Assert 'Gemini job builds URL inside job from secret' ($memoryText -match 'geminiApiKey[\s\S]*\$requestUrl\s*=')
+Assert 'Gemini API key is not passed in URL argument' ($memoryText -notmatch 'Invoke-GeminiApi\s+-Url')
+Assert 'Gemini API keeps legacy Url parameter' ($memoryText -match 'param\(\[string\]\$Url\s*=')
 
 $after = @(Get-Job -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -like "$timeoutName*" -or [string]$_.Name -like "$errorName*" -or [string]$_.Name -like "$retryName*" }).Count
 Assert 'No matching jobs remain after test' ($after -eq 0)

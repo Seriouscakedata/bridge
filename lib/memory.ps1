@@ -364,9 +364,20 @@ function Get-MemoryConfig {
 
 # ---- Gemini REST ----
 function Invoke-GeminiApi {
-  param([string]$Url, $BodyObj, [int]$TimeoutSec = 60)
+  param([string]$Url = '', [string]$Model = '', [string]$Endpoint = '', $BodyObj, [int]$TimeoutSec = 60)
+  if (([string]::IsNullOrWhiteSpace($Model) -or [string]::IsNullOrWhiteSpace($Endpoint)) -and
+      -not [string]::IsNullOrWhiteSpace($Url)) {
+    if ($Url -match '/models/([^:/?]+):([^?]+)') {
+      $Model = [System.Uri]::UnescapeDataString($Matches[1])
+      $Endpoint = [System.Uri]::UnescapeDataString($Matches[2])
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($Model)) { throw 'Gemini model is required' }
+  if ([string]::IsNullOrWhiteSpace($Endpoint)) { throw 'Gemini endpoint is required' }
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $json  = $BodyObj | ConvertTo-Json -Depth 8
+  $bridgeRoot = Split-Path -Parent $PSScriptRoot
+  $requestTimeoutSec = Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec $TimeoutSec
   try {
     # 2026-05-28: switched from Invoke-RestMethod to Invoke-WebRequest +
     # RawContentStream + UTF-8 decode. PS 5.1's Invoke-RestMethod has a long-
@@ -378,15 +389,28 @@ function Invoke-GeminiApi {
     if (-not (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue)) {
       throw 'Invoke-WithTimeout is not loaded; refusing unbounded Gemini request'
     }
-    $txt = Invoke-WithTimeout -Name 'llm-gemini-api' -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
-      $Url,
+    $txt = Invoke-WithTimeout -Name ('llm-gemini-' + $Endpoint) -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
+      $bridgeRoot,
+      $Model,
+      $Endpoint,
       $json,
-      $TimeoutSec
+      $requestTimeoutSec
     ) -ScriptBlock {
-      param([string]$RequestUrl, [string]$BodyJson, [int]$RequestTimeoutSec)
+      param([string]$BridgeRoot, [string]$ModelName, [string]$EndpointName, [string]$BodyJson, [int]$RequestTimeoutSec)
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $secretPath = Join-Path $BridgeRoot 'secrets.json'
+      if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { throw 'geminiApiKey missing' }
+      $secrets = Get-Content -LiteralPath $secretPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $apiKey = ''
+      if ($secrets -and ($secrets.PSObject.Properties.Name -contains 'geminiApiKey')) { $apiKey = [string]$secrets.geminiApiKey }
+      if ([string]::IsNullOrWhiteSpace($apiKey) -and $secrets -and ($secrets.PSObject.Properties.Name -contains 'GEMINI_API_KEY')) { $apiKey = [string]$secrets.GEMINI_API_KEY }
+      if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'geminiApiKey missing' }
+      if ($EndpointName -notin @('embedContent','batchEmbedContents','generateContent')) { throw "Unsupported Gemini endpoint: $EndpointName" }
+      $escapedModel = [System.Uri]::EscapeDataString($ModelName)
+      $escapedKey = [System.Uri]::EscapeDataString($apiKey)
+      $requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${escapedModel}:${EndpointName}?key=${escapedKey}"
       $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
-      $resp = Invoke-WebRequest -Method Post -Uri $RequestUrl -ContentType 'application/json; charset=utf-8' -Body $bodyBytes -TimeoutSec $RequestTimeoutSec -UseBasicParsing
+      $resp = Invoke-WebRequest -Method Post -Uri $requestUrl -ContentType 'application/json; charset=utf-8' -Body $bodyBytes -TimeoutSec $RequestTimeoutSec -UseBasicParsing
       [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     }
     if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') { throw "Gemini API timeout after $($txt.Attempts) attempts of $TimeoutSec seconds" }
@@ -426,7 +450,6 @@ function Get-Embedding {
     return ,$script:EmbedCache[$ck]
   }
   $estTokens = [int][Math]::Ceiling([Math]::Max(1, $t.Length) / 4.0)
-  $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):embedContent?key=$key"
   $body = @{
     model    = "models/$model"
     content  = @{ parts = @(@{ text = $t }) }
@@ -434,7 +457,7 @@ function Get-Embedding {
   }
   if ($mc.embedDim) { $body.outputDimensionality = [int]$mc.embedDim }
   try {
-    $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec 60
+    $r = Invoke-GeminiApi -Model $model -Endpoint 'embedContent' -BodyObj $body -TimeoutSec 60
     if (-not $r.embedding.values) { return $null }
     try {
       $null = Add-UsageRecord -Kind paid -Provider 'gemini' -Model $model -Purpose 'embed' -PromptTokens $estTokens -CompletionTokens 0 -Status 'ok'
@@ -476,15 +499,8 @@ function Get-EmbeddingBatch {
     foreach ($txt in $cleanTexts) { Write-Output -NoEnumerate (Get-Embedding -Text $txt -TaskType $TaskType) }
     return
   }
-  $key = Get-Secret 'geminiApiKey'
-  if (-not $key) { $key = Get-Secret 'GEMINI_API_KEY' }
-  if (-not $key) {
-    foreach ($txt in $cleanTexts) { Write-Output -NoEnumerate (Get-Embedding -Text $txt -TaskType $TaskType) }
-    return
-  }
   $mc = Get-MemoryConfig
   $model = [string]$mc.embedModel
-  $url = "https://generativelanguage.googleapis.com/v1beta/models/$($model):batchEmbedContents?key=$key"
   $reqs = @($cleanTexts | ForEach-Object {
     $r = @{
       model    = "models/$model"
@@ -496,7 +512,7 @@ function Get-EmbeddingBatch {
   })
   $body = @{ requests = $reqs }
   try {
-    $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec 30
+    $r = Invoke-GeminiApi -Model $model -Endpoint 'batchEmbedContents' -BodyObj $body -TimeoutSec 30
     $embs = @($r.embeddings)
     if ($embs.Count -ne $cleanTexts.Count) { throw "batch embedding count mismatch: got $($embs.Count), expected $($cleanTexts.Count)" }
     $estTokens = 0
@@ -521,13 +537,12 @@ function Invoke-GeminiChat {
   $key = Get-Secret 'geminiApiKey'
   if (-not $key) { return $null }
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $url = "https://generativelanguage.googleapis.com/v1beta/models/$($Model):generateContent?key=$key"
   $body = @{
     contents         = @(@{ parts = @(@{ text = $Prompt }) })
     generationConfig = @{ temperature = $Temperature }
   }
   try {
-    $r = Invoke-GeminiApi -Url $url -BodyObj $body -TimeoutSec $TimeoutSec
+    $r = Invoke-GeminiApi -Model $Model -Endpoint 'generateContent' -BodyObj $body -TimeoutSec $TimeoutSec
     $pt = 0; $ct = 0; $costUsd = $null
     try {
       if ($r.usageMetadata) {

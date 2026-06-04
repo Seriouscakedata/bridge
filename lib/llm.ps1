@@ -7,6 +7,11 @@
 # cheapest capable paid model (deepseek-v4-flash, non-thinking) to spare prepaid limits.
 # Provider is inferred from the model name: deepseek* -> DeepSeek, gemini* -> Gemini.
 
+if (-not (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue)) {
+  $retryHelperPath = Join-Path $PSScriptRoot 'retry-helper.ps1'
+  if (Test-Path -LiteralPath $retryHelperPath -PathType Leaf) { . $retryHelperPath }
+}
+
 function Get-LLMConfig {
   $defaults = @{
     gate      = 'deepseek-v4-flash'
@@ -60,19 +65,25 @@ function Invoke-DeepSeekChat {
   }
   if (-not $Thinking) { $body.thinking = @{ type = 'disabled' } }
   $json  = $body | ConvertTo-Json -Depth 8
-  $authHeader = "Bearer $key"
+  $bridgeRoot = Split-Path -Parent $PSScriptRoot
+  $requestTimeoutSec = Get-InvokeWithTimeoutRequestTimeoutSec -TimeoutSec $TimeoutSec
   try {
     $txt = Invoke-WithTimeout -Name ('llm-deepseek-' + $Purpose) -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
-      'https://api.deepseek.com/chat/completions',
-      $authHeader,
+      $bridgeRoot,
       $json,
-      $TimeoutSec
+      $requestTimeoutSec
     ) -ScriptBlock {
-      param([string]$Uri, [string]$AuthorizationHeader, [string]$BodyJson, [int]$RequestTimeoutSec)
+      param([string]$BridgeRoot, [string]$BodyJson, [int]$RequestTimeoutSec)
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-      $headers = @{ Authorization = $AuthorizationHeader }
+      $secretPath = Join-Path $BridgeRoot 'secrets.json'
+      if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { throw 'deepseekApiKey missing' }
+      $secrets = Get-Content -LiteralPath $secretPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $apiKey = ''
+      if ($secrets -and ($secrets.PSObject.Properties.Name -contains 'deepseekApiKey')) { $apiKey = [string]$secrets.deepseekApiKey }
+      if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'deepseekApiKey missing' }
+      $headers = @{ Authorization = ("Bearer " + $apiKey) }
       $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
-      $resp = Invoke-WebRequest -Uri $Uri -Method Post -Headers $headers `
+      $resp = Invoke-WebRequest -Uri 'https://api.deepseek.com/chat/completions' -Method Post -Headers $headers `
         -ContentType 'application/json' -Body $bodyBytes -TimeoutSec $RequestTimeoutSec -UseBasicParsing
       [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     }
