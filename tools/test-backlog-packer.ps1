@@ -97,10 +97,17 @@ try {
     "files": ["lib/review-verdict.ps1"],
     "depends_on": [],
     "acceptance": ["Main PROJECT_BACKLOG marker creates an approved bridge-self atom."],
-    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
     "risk": "high",
     "serial_reason": "",
-    "severity": "info"
+    "severity": "info",
+    "bridge_self_admission": {
+      "admitted": true,
+      "mode": "bridge_self_canary",
+      "canary_required": true,
+      "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
+      "rollback_plan": "Use stable ref + watchdog rollback if health/smoke/canary fails."
+    }
   }
 ]
 '@
@@ -124,6 +131,9 @@ try {
   Assert-True (@($mainItem[0].acceptance_checks) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing acceptance_checks alias'
   Assert-True (@($mainItem[0].checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing top-level checks'
   Assert-True (@($mainItem[0].verification_checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing verification_checks alias'
+  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'bridge_self_admission') 'main bridge-self item missing bridge_self_admission'
+  $mainAdmission = Test-IdeaBridgeSelfAdmitted -Idea $mainItem[0]
+  Assert-True ([bool]$mainAdmission.ok) ("main bridge-self admission did not validate: {0}" -f (@($mainAdmission.missing) -join ', '))
   Assert-True ([string]$mainItem[0].risk -eq 'high') 'main bridge-self item risk was not normalized from marker risk'
   Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'serial_reason') 'main bridge-self item missing top-level serial_reason'
   $metadataResult = Test-WorkpackAtomMetadata -Atom $mainItem[0]

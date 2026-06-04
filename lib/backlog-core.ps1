@@ -575,6 +575,169 @@ function Test-ProjectScopedApprovedBacklogAllowed {
   return $false
 }
 
+function ConvertTo-BacklogClaimStringArray {
+  param($Value)
+  $items = New-Object 'System.Collections.Generic.List[string]'
+  if ($null -eq $Value) { return [string[]]@() }
+  if ($Value -is [string]) {
+    $s = $Value.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$items.Add($s) }
+    return [string[]]@($items.ToArray())
+  }
+  if ($Value -is [System.Collections.IEnumerable]) {
+    foreach ($item in $Value) {
+      if ($null -eq $item) { continue }
+      $s = ([string]$item).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($s) -and -not $items.Contains($s)) { [void]$items.Add($s) }
+    }
+  }
+  return [string[]]@($items.ToArray())
+}
+
+function Test-BacklogClaimTruthy {
+  param($Value)
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [bool]) { return [bool]$Value }
+  $s = ([string]$Value).Trim().ToLowerInvariant()
+  return (@('1','true','yes','y','on','admitted','approved','ok') -contains $s)
+}
+
+function Test-BacklogClaimTextMatch {
+  param([string[]]$Values, [string]$Pattern)
+  foreach ($value in @($Values)) {
+    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    if ($value -match $Pattern) { return $true }
+  }
+  return $false
+}
+
+function Get-IdeaBridgeSelfAdmission {
+  param($Idea)
+  if (-not $Idea) { return $null }
+  $admission = Get-BacklogPackObjectValue -Obj $Idea -Name 'bridge_self_admission' -Default $null
+  if ($admission) { return $admission }
+  try {
+    $meta = Get-BacklogPackObjectValue -Obj $Idea -Name 'autopilot_meta' -Default $null
+    if ($meta) {
+      $admission = Get-BacklogPackObjectValue -Obj $meta -Name 'bridge_self_admission' -Default $null
+      if ($admission) { return $admission }
+    }
+  } catch {}
+  return $null
+}
+
+function Test-IdeaBridgeSelfAdmitted {
+  # Alternative to the manual 'operator' tag for bridge-self control-plane tasks.
+  # This does NOT lower the safety bar: an admitted task must be bridge-scoped,
+  # non-external, and carry explicit self-test/smoke/canary/rollback evidence.
+  param($Idea)
+
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  $reason = ''
+  if (-not $Idea) { return [pscustomobject]@{ ok=$false; reason='missing idea'; missing=@('idea') } }
+  try {
+    if (Test-IdeaExternal $Idea) {
+      return [pscustomobject]@{ ok=$false; reason='external source cannot self-admit bridge control-plane work'; missing=@('non_external_source') }
+    }
+  } catch {}
+  $scope = [string](Get-BacklogPackObjectValue -Obj $Idea -Name 'scope' -Default 'bridge')
+  if (-not [string]::IsNullOrWhiteSpace($scope) -and $scope -ne 'bridge') {
+    return [pscustomobject]@{ ok=$false; reason='not bridge scope'; missing=@('scope_bridge') }
+  }
+
+  $admission = Get-IdeaBridgeSelfAdmission -Idea $Idea
+  if (-not $admission) {
+    return [pscustomobject]@{ ok=$false; reason='missing bridge_self_admission'; missing=@('bridge_self_admission') }
+  }
+
+  $admitted = Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $admission -Name 'admitted' -Default $false)
+  if (-not $admitted) {
+    $status = [string](Get-BacklogPackObjectValue -Obj $admission -Name 'status' -Default '')
+    $admitted = Test-BacklogClaimTruthy $status
+  }
+  if (-not $admitted) { [void]$missing.Add('admitted=true') }
+
+  $mode = ([string](Get-BacklogPackObjectValue -Obj $admission -Name 'mode' -Default '')).Trim().ToLowerInvariant()
+  if ($mode -notin @('canary','bridge_self_canary','bridge-self-canary','operatorless_canary')) {
+    [void]$missing.Add('mode=bridge_self_canary')
+  }
+
+  $canaryRequired = Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $admission -Name 'canary_required' -Default $false)
+  if (-not $canaryRequired) { [void]$missing.Add('canary_required=true') }
+
+  $checks = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($source in @(
+      (Get-BacklogPackObjectValue -Obj $admission -Name 'checks' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'checks' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'verification_checks' -Default @())
+    )) {
+    foreach ($check in @(ConvertTo-BacklogClaimStringArray $source)) {
+      if (-not $checks.Contains($check)) { [void]$checks.Add($check) }
+    }
+  }
+  $checksArr = @($checks.ToArray())
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)driver\.ps1.*-SelfTest|self[- ]?test')) { [void]$missing.Add('driver_selftest_check') }
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)smoke\.ps1|smoke')) { [void]$missing.Add('smoke_check') }
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)canary|Invoke-CanaryCycle')) { [void]$missing.Add('canary_check') }
+
+  $rollback = [string](Get-BacklogPackObjectValue -Obj $admission -Name 'rollback_plan' -Default '')
+  if ([string]::IsNullOrWhiteSpace($rollback)) { $rollback = [string](Get-BacklogPackObjectValue -Obj $admission -Name 'rollback' -Default '') }
+  if ([string]::IsNullOrWhiteSpace($rollback)) { [void]$missing.Add('rollback_plan') }
+
+  $files = @()
+  $files += @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Idea -Name 'files' -Default @()))
+  $files += @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Idea -Name 'workpack_touch_set' -Default @()))
+  $files = @($files | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+  if ($files.Count -eq 0) { [void]$missing.Add('files') }
+
+  if ($missing.Count -gt 0) {
+    $reason = 'bridge_self_admission incomplete: ' + ((@($missing.ToArray()) | Sort-Object -Unique) -join ', ')
+    return [pscustomobject]@{ ok=$false; reason=$reason; missing=@($missing.ToArray()) }
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    reason = 'bridge_self_admission accepted'
+    missing = @()
+    checks = @($checksArr)
+    rollback_plan = $rollback
+  }
+}
+
+function Test-BacklogApprovedItemClaimable {
+  param(
+    $Item,
+    [bool]$ProjectScopeAllowed = $false
+  )
+  if (-not $Item) { return [pscustomobject]@{ claimable=$false; reason='missing-item'; admission=$null } }
+  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') {
+    return [pscustomobject]@{ claimable=$false; reason='not-approved'; admission=$null }
+  }
+  $id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+  if ([string]::IsNullOrWhiteSpace($id)) { return [pscustomobject]@{ claimable=$false; reason='missing-id'; admission=$null } }
+
+  $scope = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'scope' -Default '')
+  if ((-not $ProjectScopeAllowed) -and $scope -eq 'project') {
+    return [pscustomobject]@{ claimable=$false; reason='project-scope-blocked'; admission=$null }
+  }
+
+  $isOperator = $false
+  try { $isOperator = (@($Item.tags) -contains 'operator') } catch { $isOperator = $false }
+  $touchesControl = $false
+  try { $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item) } catch { $touchesControl = $false }
+  if ($touchesControl -and -not $isOperator) {
+    $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
+    if ($admission -and [bool]$admission.ok) {
+      return [pscustomobject]@{ claimable=$true; reason='bridge-self-admission'; admission=$admission }
+    }
+    return [pscustomobject]@{ claimable=$false; reason='control-plane-blocked'; admission=$admission }
+  }
+
+  $claimReason = 'regular'
+  if ($isOperator) { $claimReason = 'operator' }
+  return [pscustomobject]@{ claimable=$true; reason=$claimReason; admission=$null }
+}
+
 function Get-ApprovedBacklogClaimabilityReport {
   param([object[]]$Items = $null)
 
@@ -582,6 +745,7 @@ function Get-ApprovedBacklogClaimabilityReport {
   $approved = @($Items | Where-Object { [string]$_.status -eq 'approved' })
   $runnable = New-Object 'System.Collections.Generic.List[object]'
   $controlPlane = New-Object 'System.Collections.Generic.List[object]'
+  $admittedControlPlane = New-Object 'System.Collections.Generic.List[object]'
   $projectScope = New-Object 'System.Collections.Generic.List[object]'
   $other = New-Object 'System.Collections.Generic.List[object]'
   $projectAllowed = $false
@@ -597,24 +761,17 @@ function Get-ApprovedBacklogClaimabilityReport {
       workpack_status = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_status' -Default '')
       workpack_conflict_group = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default '')
     }
-    $isOperator = $false
-    try { $isOperator = (@($item.tags) -contains 'operator') } catch { $isOperator = $false }
-    $touchesControl = $false
-    try { $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $item) } catch { $touchesControl = $false }
-    if ((-not $isOperator) -and $touchesControl) {
-      [void]$controlPlane.Add($sample)
+    $claim = Test-BacklogApprovedItemClaimable -Item $item -ProjectScopeAllowed $projectAllowed
+    if ($claim -and [bool]$claim.claimable) {
+      if ([string]$claim.reason -eq 'bridge-self-admission') { [void]$admittedControlPlane.Add($sample) }
+      [void]$runnable.Add($sample)
       continue
     }
-    $scope = [string](Get-BacklogPackObjectValue -Obj $item -Name 'scope' -Default '')
-    if ((-not $projectAllowed) -and $scope -eq 'project') {
-      [void]$projectScope.Add($sample)
-      continue
+    switch ([string]$claim.reason) {
+      'control-plane-blocked' { [void]$controlPlane.Add($sample); continue }
+      'project-scope-blocked' { [void]$projectScope.Add($sample); continue }
+      default { [void]$other.Add($sample); continue }
     }
-    if ([string]::IsNullOrWhiteSpace($id)) {
-      [void]$other.Add($sample)
-      continue
-    }
-    [void]$runnable.Add($sample)
   }
 
   $blocked = [int]$controlPlane.Count + [int]$projectScope.Count + [int]$other.Count
@@ -623,11 +780,13 @@ function Get-ApprovedBacklogClaimabilityReport {
     runnable_count = [int]$runnable.Count
     blocked_count = [int]$blocked
     control_plane_blocked = [int]$controlPlane.Count
+    admitted_control_plane = [int]$admittedControlPlane.Count
     project_scope_blocked = [int]$projectScope.Count
     other_blocked = [int]$other.Count
     project_scope_allowed = [bool]$projectAllowed
     runnable_ids = @($runnable.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     control_plane_ids = @($controlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+    admitted_control_plane_ids = @($admittedControlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     project_scope_ids = @($projectScope.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
   }
 }
@@ -639,19 +798,14 @@ function Get-NextApprovedIdea {
   # warnings before info, info before plain ideas.
   $skipped = New-Object 'System.Collections.Generic.List[string]'
   while ($true) {
-    # SYSTEMIC GUARD 2026-05-31: even an APPROVED control-plane task does not auto-run unless the
-    # operator delegated it (tag 'operator'). Auto-approved deep-audit self-edits deadlocked the bridge.
-    $items = @(Get-Backlog | Where-Object { ([string]$_.status -eq 'approved') -and ((@($_.tags) -contains 'operator') -or -not (Test-IdeaTouchesControlPlane -Idea $_)) } |
+    # SYSTEMIC GUARD 2026-05-31/06-04: even an APPROVED control-plane task does not auto-run unless
+    # the operator delegated it (tag 'operator') OR it has deterministic bridge_self_admission.
+    $projectScopeAllowedForClaim = $false
+    try { $projectScopeAllowedForClaim = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectScopeAllowedForClaim = $false }
+    $items = @(Get-Backlog | Where-Object { [bool](Test-BacklogApprovedItemClaimable -Item $_ -ProjectScopeAllowed $projectScopeAllowedForClaim).claimable } |
       Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
-    try {
-      if (-not (Test-ProjectScopedApprovedBacklogAllowed)) {
-        $items = @($items | Where-Object {
-          -not ($_.PSObject.Properties.Name -contains 'scope') -or ([string]$_.scope -ne 'project')
-        })
-      }
-    } catch {}
     if ($items.Count -eq 0) { return $null }
 
     $candidate = $items[0]
@@ -723,13 +877,14 @@ function Get-NextRunnableIdea {
   # 2026-05-28: sort key chain is (1) status approved-before-new, (2) severity rank
   # critical=0 / warning=1 / info=2 / none=3, (3) score desc, (4) ts asc.
   # Audit criticals always outrank warnings, warnings outrank info, info outranks plain ideas.
+  $projectScopeAllowedForRunnable = $false
+  try { $projectScopeAllowedForRunnable = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectScopeAllowedForRunnable = $false }
   $items = @(Get-Backlog | Where-Object {
       $st = [string]$_.status
       # SYSTEMIC GUARD 2026-05-31: never AUTO-claim a task that edits the bridge's own control plane
       # (supervisor/watchdog/circuit-breaker/...). Those repeatedly deadlocked the bridge. Only the
-      # OPERATOR (tag 'operator') may delegate control-plane work; auto-generated ones are skipped.
-      if ((Test-IdeaTouchesControlPlane -Idea $_) -and -not (@($_.tags) -contains 'operator')) { $false }
-      elseif ($st -eq 'approved') { $true }
+      # OPERATOR (tag 'operator') or a deterministic bridge_self_admission may delegate control-plane work.
+      if ($st -eq 'approved') { [bool](Test-BacklogApprovedItemClaimable -Item $_ -ProjectScopeAllowed $projectScopeAllowedForRunnable).claimable }
       elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
       else { $false }
     } |

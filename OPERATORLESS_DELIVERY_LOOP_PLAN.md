@@ -764,6 +764,13 @@ but no item is runnable. `Get-ApprovedBacklogClaimabilityReport` separates runna
 control-plane/project-scope blocks, `Get-AutonomyIdleReason` reports the blocked state, and the
 idle loop writes a throttled chat/backlog event instead of silently idling.
 
+2026-06-04 follow-up 2: added deterministic bridge-self admission. A control-plane approved task is
+runnable without the manual `operator` tag only when `bridge_self_admission` validates: bridge scope,
+non-external source, `admitted=true`, `mode=bridge_self_canary`, `canary_required=true`, concrete
+driver self-test + smoke + canary checks, non-empty rollback plan, and file/touch-set evidence.
+Project Autopilot now preserves this object from `[[PROJECT_BACKLOG]]`; prompt instructions tell
+main/bridge-self coordinators to include it for control-plane atoms.
+
 ## 7. Acceptance for the whole project
 
 Operatorless Delivery Loop считается готовым, когда:

@@ -716,6 +716,7 @@ Rules:
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
 - Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
 - Use chapter, wave, parallel_group, files, depends_on, acceptance, checks, risk/severity, and serial_reason so the scheduler can run the team safely.
+- For main/bridge-self atoms touching control-plane files (`driver.ps1`, `supervisor.ps1`, `watchdog.ps1`, `server.ps1`, `lib/circuit-breaker.ps1`, `lib/backlog*.ps1`, `lib/parallel.ps1`), include `bridge_self_admission` with `admitted:true`, `mode:"bridge_self_canary"`, `canary_required:true`, checks including driver self-test, smoke, canary, and a non-empty rollback_plan. Without this, the deterministic claim gate will keep the atom blocked.
 - Every atom acceptance must trace back to a project-contract requirement, journey, surface, or acceptance scenario. Do not use generic "looks good" UX checks.
 - Before PROJECT_BACKLOG, emit durable project memory markers when useful:
   [[PROJECT_DECISION: ...]]
@@ -745,13 +746,20 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "risk": "normal",
     "severity": "normal",
     "serial_reason": "",
+    "bridge_self_admission": {
+      "admitted": true,
+      "mode": "bridge_self_canary",
+      "canary_required": true,
+      "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle"],
+      "rollback_plan": "If smoke/canary/live health fails, rely on stable ref + watchdog rollback and stop further bridge-self claims."
+    },
     "workpack_touch_set": ["relative/path/or/directory"],
     "workpack_conflict_group": "file:relative/path/or/directory"
   }
 ]
 [[/PROJECT_BACKLOG]]
 
-depends_on may be []; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate.
+depends_on may be []; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. `bridge_self_admission` is required only for main/bridge-self control-plane atoms and ignored for ordinary external project atoms. Incomplete atoms are rejected by the deterministic ingest gate.
 
 The driver will add those atoms to approved project backlog automatically. Do not use operator-delegate and do not edit backlog.jsonl manually.
 
@@ -1133,6 +1141,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       $serialReason = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('serial_reason')
       $explicitTouch = @(ConvertTo-ProjectAutopilotPathArray (Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('workpack_touch_set','touch_set')))
       $explicitGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('workpack_conflict_group')
+      $bridgeSelfAdmission = Get-BacklogPackObjectValue -Obj $Task -Name 'bridge_self_admission' -Default $null
       $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
       $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
       $i | Add-Member -NotePropertyName task -NotePropertyValue $body -Force
@@ -1149,6 +1158,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName verification_checks -NotePropertyValue @($checks) -Force }
       if ($acceptance.Count -gt 0) { $i | Add-Member -NotePropertyName acceptance -NotePropertyValue @($acceptance) -Force }
       if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName checks -NotePropertyValue @($checks) -Force }
+      if ($bridgeSelfAdmission) { $i | Add-Member -NotePropertyName bridge_self_admission -NotePropertyValue $bridgeSelfAdmission -Force }
       $touchSet = if ($explicitTouch.Count -gt 0) { @($explicitTouch) } else { @($files) }
       if ($touchSet.Count -gt 0) {
         $group = if (-not [string]::IsNullOrWhiteSpace($explicitGroup)) { [string]$explicitGroup } else { 'file:' + [string]$touchSet[0] }
@@ -1166,6 +1176,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       if ($checks.Count -gt 0) { $meta.checks = @($checks) }
       $meta.risk = $risk
       $meta.serial_reason = $serialReason
+      if ($bridgeSelfAdmission) { $meta.bridge_self_admission = $bridgeSelfAdmission }
       if ($meta.Count -gt 0) { $i | Add-Member -NotePropertyName autopilot_meta -NotePropertyValue ([pscustomobject]$meta) -Force }
       break
     }
