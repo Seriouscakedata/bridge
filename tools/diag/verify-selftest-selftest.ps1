@@ -87,6 +87,25 @@ $timeoutResult = Invoke-VerifySelftestDiagnostic -Root $sandbox -DiagnosticPath 
 Assert 'V5 timeout recorded' ((-not $timeoutResult.Ok) -and $timeoutResult.TimedOut -and $timeoutResult.ExitCode -eq 124)
 Assert 'V5 timeout output explains failure' (@($timeoutResult.Output) -join "`n" -match 'TIMEOUT after 1s')
 
+Write-Host "`n[V6] Get-VerifySelftestRoot calls and validates Get-BridgeRoot"
+if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) {
+  Assert 'V6 skipped when external Get-BridgeRoot is already defined' $true
+} else {
+  try {
+    $script:verifySelftestRootProbe = $root
+    function global:Get-BridgeRoot { return $script:verifySelftestRootProbe }
+    $resolvedRoot = Get-VerifySelftestRoot
+    Assert 'V6 valid bridge root resolved' ($resolvedRoot -eq ([System.IO.Path]::GetFullPath($root).TrimEnd('\','/')))
+    $script:verifySelftestRootProbe = Join-Path $sandbox 'missing-root'
+    $rootRejected = $false
+    try { Get-VerifySelftestRoot | Out-Null } catch { $rootRejected = ($_.Exception.Message -match 'Bridge root') }
+    Assert 'V6 invalid bridge root rejected' $rootRejected
+  } finally {
+    Remove-Item -Path Function:\Get-BridgeRoot -ErrorAction SilentlyContinue
+    Remove-Variable -Name verifySelftestRootProbe -Scope script -ErrorAction SilentlyContinue
+  }
+}
+
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fails -eq 0) { Write-Host 'VERIFY-SELFTEST: PASS' }

@@ -1,8 +1,20 @@
 ﻿function Get-VerifySelftestRoot {
+  $root = ''
   if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) {
-    return Get-BridgeRoot
+    try { $root = [string](Get-BridgeRoot) } catch { $root = '' }
   }
-  return (Split-Path -Parent $PSScriptRoot)
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = Split-Path -Parent $PSScriptRoot }
+  if ([string]::IsNullOrWhiteSpace($root)) { throw 'Bridge root is required for verify-selftest' }
+
+  $rootFull = [System.IO.Path]::GetFullPath($root).TrimEnd('\','/')
+  if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) {
+    throw "Bridge root does not exist: $rootFull"
+  }
+  $selfPath = Join-Path $rootFull 'lib\verify-selftest.ps1'
+  if (-not (Test-Path -LiteralPath $selfPath -PathType Leaf)) {
+    throw "Bridge root is invalid for verify-selftest: $rootFull"
+  }
+  return $rootFull
 }
 
 function Resolve-VerifySelftestRelativePath {

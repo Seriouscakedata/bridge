@@ -23,19 +23,81 @@ if ([string]::IsNullOrWhiteSpace($prompt)) { Set-Content $MsgFile 'STATUS: FAILE
 
 # Give the model the CURRENT content of any declared files (lines that look like "Files: a, b").
 $fileBlocks = ''
-$allowedFiles = @{}
+$allowedEntries = @{}
 function Normalize-WorkerRel([string]$Rel) {
   $r = ([string]$Rel).Trim().Trim('"').Trim("'")
-  $r = ($r -replace '\\', '/').TrimStart('/')
-  if ([string]::IsNullOrWhiteSpace($r) -or $r -match '(^|/)\.\.(/|$)') { return '' }
-  return $r
+  if ([string]::IsNullOrWhiteSpace($r)) { return '' }
+  if ([System.IO.Path]::IsPathRooted($r)) { return '' }
+  $r = ($r -replace '\\', '/')
+  if ($r.StartsWith('/') -or $r -match '^[A-Za-z]:') { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($segment in ($r -split '/+')) {
+    if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.') { continue }
+    if ($segment -eq '..' -or $segment -match ':') { return '' }
+    [void]$parts.Add($segment)
+  }
+  if ($parts.Count -eq 0) { return '' }
+  $normalized = $parts -join '/'
+  if ($normalized -eq '.git' -or $normalized.StartsWith('.git/')) { return '' }
+  return $normalized
+}
+function Test-WorkerRelAllowed([string]$Rel, [hashtable]$Allowed) {
+  $relNorm = Normalize-WorkerRel $Rel
+  if ([string]::IsNullOrWhiteSpace($relNorm)) { return $false }
+  if ($relNorm -eq 'control/restart.flag') { return $false }
+  if (-not $Allowed -or $Allowed.Count -eq 0) { return $false }
+  foreach ($key in @($Allowed.Keys)) {
+    $allowedRel = [string]$key
+    $isDir = [bool]$Allowed[$key]
+    if ($relNorm -eq $allowedRel) { return $true }
+    if ($isDir -and $relNorm.StartsWith($allowedRel.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+function ConvertTo-WorkerProcessArgument([AllowNull()][string]$Value) {
+  if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+  if ($Value -notmatch '[\s"]') { return $Value }
+  $escaped = ([string]$Value) -replace '(\\*)"', '$1$1\"'
+  $escaped = $escaped -replace '(\\+)$', '$1$1'
+  return '"' + $escaped + '"'
+}
+function Invoke-WorkerProcess([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory, [int]$TimeoutSec = 120) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = (@($Arguments) | ForEach-Object { ConvertTo-WorkerProcessArgument ([string]$_) }) -join ' '
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  try { $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8; $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8 } catch {}
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $stdout = $proc.StandardOutput.ReadToEndAsync()
+  $stderr = $proc.StandardError.ReadToEndAsync()
+  $timedOut = $false
+  if (-not $proc.WaitForExit([Math]::Max(1, $TimeoutSec) * 1000)) {
+    $timedOut = $true
+    try { $proc.Kill() } catch {}
+    try { $proc.WaitForExit(3000) | Out-Null } catch {}
+  }
+  try { $stdout.Wait(3000) | Out-Null } catch {}
+  try { $stderr.Wait(3000) | Out-Null } catch {}
+  return [pscustomobject]@{
+    ExitCode = if ($timedOut) { 124 } else { [int]$proc.ExitCode }
+    TimedOut = $timedOut
+    Output   = @(
+      if ($stdout.IsCompleted -and -not [string]::IsNullOrEmpty($stdout.Result)) { $stdout.Result }
+      if ($stderr.IsCompleted -and -not [string]::IsNullOrEmpty($stderr.Result)) { $stderr.Result }
+    )
+  }
 }
 $declRx = [regex]'(?im)files?\s*:\s*([^\r\n]+)'
 foreach ($mm in $declRx.Matches($prompt)) {
   foreach ($f in ($mm.Groups[1].Value -split '[,;\s]+')) {
     $rel = Normalize-WorkerRel $f
-    if ($rel -notmatch '\.\w{1,5}$') { continue }
-    $allowedFiles[$rel.ToLowerInvariant()] = $true
+    if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+    $isDir = (([string]$f).Trim().EndsWith('/') -or ([string]$f).Trim().EndsWith('\') -or $rel -notmatch '/?[^/]+\.[^/]+$')
+    $allowedEntries[$rel.ToLowerInvariant()] = [bool]$isDir
     $full = Join-Path $Worktree ($rel -replace '/', '\')
     if (Test-Path -LiteralPath $full) {
       $cur = ''
@@ -44,6 +106,7 @@ foreach ($mm in $declRx.Matches($prompt)) {
     }
   }
 }
+if ($allowedEntries.Count -eq 0) { Set-Content $MsgFile 'STATUS: FAILED (no allowed Files touch-set declared)' -Encoding UTF8; exit 1 }
 
 $ask = $prompt + "`n`n=== CURRENT FILE CONTENTS ===`n" + $fileBlocks + @"
 
@@ -62,29 +125,43 @@ if ([string]::IsNullOrWhiteSpace($reply)) { Set-Content $MsgFile 'STATUS: FAILED
 $rx = [regex]'(?s)<<<FILE:\s*(.+?)>>>\r?\n(.*?)\r?\n<<<END>>>'
 $written = 0
 $writtenPaths = @()
+$pendingWrites = New-Object 'System.Collections.Generic.List[object]'
+$deniedPaths = New-Object 'System.Collections.Generic.List[string]'
 foreach ($m in $rx.Matches($reply)) {
-  $rel = Normalize-WorkerRel $m.Groups[1].Value
-  if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+  $rawRel = [string]$m.Groups[1].Value
+  $rel = Normalize-WorkerRel $rawRel
+  if ([string]::IsNullOrWhiteSpace($rel)) { [void]$deniedPaths.Add($rawRel); continue }
   $relKey = $rel.ToLowerInvariant()
-  if ($relKey -eq 'control/restart.flag') { continue }
-  if ($allowedFiles.Count -gt 0 -and -not $allowedFiles.ContainsKey($relKey)) { continue }
+  if (-not (Test-WorkerRelAllowed -Rel $relKey -Allowed $allowedEntries)) { [void]$deniedPaths.Add($rel); continue }
   $content = $m.Groups[2].Value
   $content = $content -replace '^```[\w-]*\r?\n', '' -replace '\r?\n```\s*$', ''
-  $path = Join-Path $Worktree ($rel -replace '/', '\')
+  [void]$pendingWrites.Add([pscustomobject]@{ Rel = $rel; Content = $content })
+}
+if ($deniedPaths.Count -gt 0) {
+  Set-Content $MsgFile ("STATUS: FAILED (denied FILE path(s): " + ((@($deniedPaths.ToArray()) | Select-Object -First 12) -join ', ') + ")") -Encoding UTF8
+  exit 1
+}
+foreach ($item in @($pendingWrites.ToArray())) {
+  $rel = [string]$item.Rel
+  $path = [System.IO.Path]::GetFullPath((Join-Path $Worktree ($rel -replace '/', '\')))
+  $worktreeFull = [System.IO.Path]::GetFullPath($Worktree).TrimEnd('\','/')
+  $worktreePrefix = $worktreeFull + [System.IO.Path]::DirectorySeparatorChar
+  if (-not ($path.Equals($worktreeFull, [System.StringComparison]::OrdinalIgnoreCase) -or $path.StartsWith($worktreePrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+    Set-Content $MsgFile ("STATUS: FAILED (resolved path escapes worktree: " + $rel + ")") -Encoding UTF8
+    exit 1
+  }
   $dir = Split-Path $path -Parent
   if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  try { [System.IO.File]::WriteAllText($path, $content, $u8); $written++; $writtenPaths += $path } catch {}
+  try { [System.IO.File]::WriteAllText($path, [string]$item.Content, $u8); $written++; $writtenPaths += $path } catch {}
 }
 if ($written -eq 0) { Set-Content $MsgFile 'STATUS: FAILED (no FILE blocks returned)' -Encoding UTF8; exit 1 }
 
 $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } else { 'git' }
-# 2026-06-01 ERR-003 fix: `-c core.autocrlf=false -c core.safecrlf=false` suppresses the
-# "LF will be replaced by CRLF" stderr warning that PS 5.1 turns into a NativeCommandError, which
-# falsely marked workers as failed even though files were written. Status is decided by the commit
-# result below (real $LASTEXITCODE), NOT by stderr noise.
-& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree add -- $writtenPaths 2>$null | Out-Null
-& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree commit -m ("parallel-llm (" + $Model + "): " + $written + " file(s)") 2>$null | Out-Null
-$committed = ($LASTEXITCODE -eq 0)
+$gitAddArgs = @('-c','core.autocrlf=false','-c','core.safecrlf=false','-C',$Worktree,'add','--') + @($writtenPaths)
+$gitAdd = Invoke-WorkerProcess -FilePath $git -Arguments $gitAddArgs -WorkingDirectory $Worktree -TimeoutSec 120
+$gitCommitArgs = @('-c','core.autocrlf=false','-c','core.safecrlf=false','-C',$Worktree,'commit','-m',("parallel-llm (" + $Model + "): " + $written + " file(s)"))
+$gitCommit = Invoke-WorkerProcess -FilePath $git -Arguments $gitCommitArgs -WorkingDirectory $Worktree -TimeoutSec 120
+$committed = ($gitAdd.ExitCode -eq 0 -and $gitCommit.ExitCode -eq 0 -and -not $gitAdd.TimedOut -and -not $gitCommit.TimedOut)
 
 # Report wrote-count + a parseable STATUS regardless of CRLF/stderr noise.
 $tail = "STATUS: DONE"

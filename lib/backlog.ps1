@@ -4021,24 +4021,116 @@ function Write-OperatorBatchReportError {
   } catch {}
 }
 
+function Get-OperatorBatchReportLedgerPath {
+  return (Join-Path (Get-BacklogControlDir) 'operator-batch-reports.jsonl')
+}
+
+function Get-OperatorBatchReportKey {
+  param([string]$BatchTag, [string]$BatchId)
+  if (-not [string]::IsNullOrWhiteSpace($BatchTag)) { return ([string]$BatchTag).ToLowerInvariant() }
+  if (-not [string]::IsNullOrWhiteSpace($BatchId)) { return ('batch:' + [string]$BatchId).ToLowerInvariant() }
+  return ''
+}
+
+function Test-OperatorBatchReportLogged {
+  param([string]$BatchTag, [string]$BatchId)
+  $key = Get-OperatorBatchReportKey -BatchTag $BatchTag -BatchId $BatchId
+  if ([string]::IsNullOrWhiteSpace($key)) { return $false }
+  $path = Get-OperatorBatchReportLedgerPath
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+
+  try {
+    foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop)) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      try {
+        $rec = $line | ConvertFrom-Json
+        $recKey = Get-OperatorBatchReportKey -BatchTag ([string]$rec.batch_tag) -BatchId ([string]$rec.batch_id)
+        if ($recKey -eq $key) { return $true }
+      } catch {}
+    }
+  } catch {
+    Write-OperatorBatchReportError -Message ("operator-batch ledger read failed: " + $_.Exception.Message)
+  }
+  return $false
+}
+
+function Add-OperatorBatchReportLedger {
+  param([Parameter(Mandatory=$true)]$Report, [bool]$Posted)
+  $batchTag = [string]$Report.batch_tag
+  $batchId = [string]$Report.batch_id
+  if (Test-OperatorBatchReportLogged -BatchTag $batchTag -BatchId $batchId) { return }
+
+  $path = Get-OperatorBatchReportLedgerPath
+  $dir = Split-Path -Parent $path
+  if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $record = [ordered]@{
+    ts        = (Get-Date).ToUniversalTime().ToString('o')
+    batch_tag = $batchTag
+    batch_id  = $batchId
+    report_ts = [string]$Report.report_ts
+    posted    = [bool]$Posted
+    summary   = [string]$Report.summary
+  }
+  $line = ($record | ConvertTo-Json -Compress -Depth 4)
+  [System.IO.File]::AppendAllText($path, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Reset-OperatorBatchReportMarker {
+  param(
+    [Parameter(Mandatory=$true)][string]$BatchTag,
+    [Parameter(Mandatory=$true)][string]$ReportTs,
+    [string]$Reason = ''
+  )
+  Invoke-BacklogLocked ({
+    $items = @(Get-Backlog)
+    $dirty = $false
+    foreach ($item in @($items)) {
+      if (-not ((@($item.tags) -contains 'operator') -and (@($item.tags) -contains $BatchTag))) { continue }
+      $reportedAt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'operator_batch_reported_at' -Default '')
+      if ($reportedAt -ne $ReportTs) { continue }
+      Set-BacklogObjectProperty -Item $item -Name operator_batch_reported -Value $false
+      Set-BacklogObjectProperty -Item $item -Name operator_batch_report_error -Value $Reason
+      $dirty = $true
+    }
+    if ($dirty) { Save-Backlog $items }
+  }.GetNewClosure()) | Out-Null
+}
+
 function Test-OperatorBatchSummaryAlreadyPosted {
-  param([string]$Summary, [int]$Tail = 200)
-  if ([string]::IsNullOrWhiteSpace($Summary)) { return $false }
+  param([string]$Summary, [string]$BatchId = '', [string]$BatchTag = '', [int]$Tail = 5000)
+  if (Test-OperatorBatchReportLogged -BatchTag $BatchTag -BatchId $BatchId) { return $true }
+  if ([string]::IsNullOrWhiteSpace($Summary) -and [string]::IsNullOrWhiteSpace($BatchId)) { return $false }
   if (-not (Get-Command Get-ConversationPath -ErrorAction SilentlyContinue)) { return $false }
   $path = ''
   try { $path = [string](Get-ConversationPath) } catch { $path = '' }
   if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) { return $false }
   try {
-    foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8 -Tail ([Math]::Max(1, $Tail)) -ErrorAction SilentlyContinue)) {
+    $contentArgs = @{ LiteralPath = $path; Encoding = 'UTF8'; ErrorAction = 'Stop' }
+    if ($Tail -gt 0) { $contentArgs['Tail'] = [Math]::Max(1, $Tail) }
+    $batchPrefix = ''
+    if (-not [string]::IsNullOrWhiteSpace($BatchId)) { $batchPrefix = 'operator-batch ' + [string]$BatchId + ':' }
+    foreach ($line in @(Get-Content @contentArgs)) {
       if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
       try {
         $rec = $line | ConvertFrom-Json
-        $msg = [string]$rec.text
         $from = [string]$rec.from
-        if ($from -eq 'system' -and $msg -eq $Summary) { return $true }
+        if ($from -ne 'system') { continue }
+        $messages = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($prop in @('text','message','content')) {
+          if ($rec.PSObject.Properties.Name -contains $prop) {
+            $value = [string]$rec.PSObject.Properties[$prop].Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) { [void]$messages.Add($value) }
+          }
+        }
+        foreach ($msg in @($messages.ToArray())) {
+          if (-not [string]::IsNullOrWhiteSpace($Summary) -and $msg -eq $Summary) { return $true }
+          if (-not [string]::IsNullOrWhiteSpace($batchPrefix) -and $msg.StartsWith($batchPrefix, [System.StringComparison]::Ordinal)) { return $true }
+        }
       } catch {}
     }
-  } catch {}
+  } catch {
+    Write-OperatorBatchReportError -Message ("conversation scan failed for operator-batch " + [string]$BatchId + ": " + $_.Exception.Message)
+  }
   return $false
 }
 
@@ -4065,7 +4157,7 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
   # Driver idle hook calls Start-ProjectAutopilotIfNeeded even on non-project channels. Use that
   # existing hook to post ONE terminal summary per operator batch, then persist a marker on the
   # batch's backlog items so the report never repeats.
-  return (Invoke-BacklogLocked ({
+  $reports = @(Invoke-BacklogLocked ({
     $items = @(Get-Backlog)
     if ($items.Count -eq 0) { return @() }
 
@@ -4074,7 +4166,6 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
 
     $terminal = @{ done = $true; 'auto-resolved' = $true; failed = $true; held = $true; rejected = $true; 'auto-dropped' = $true }
     $reports = New-Object 'System.Collections.Generic.List[object]'
-    $published = New-Object 'System.Collections.Generic.List[object]'
     $dirty = $false
 
     foreach ($batchTag in @($progress.Keys | Sort-Object)) {
@@ -4116,7 +4207,7 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
       }
 
       $reportTs = (Get-Date).ToUniversalTime().ToString('o')
-      $alreadyPosted = Test-OperatorBatchSummaryAlreadyPosted -Summary $summary
+      $alreadyPosted = Test-OperatorBatchSummaryAlreadyPosted -Summary $summary -BatchId $batchId -BatchTag ([string]$batchTag)
       foreach ($batchItem in $batchItems) {
         Set-BacklogObjectProperty -Item $batchItem -Name operator_batch_reported -Value $true
         Set-BacklogObjectProperty -Item $batchItem -Name operator_batch_reported_at -Value $reportTs
@@ -4136,19 +4227,27 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
       }
     }
 
-    foreach ($report in @($reports.ToArray())) {
-      if ([bool]$report.post_message) {
-        try {
-          Add-Message -From system -Text ([string]$report.summary) -Kind event | Out-Null
-        } catch {
-          Write-OperatorBatchReportError -Message ("Add-Message failed for operator-batch {0}: {1}" -f [string]$report.batch_id, $_.Exception.Message)
-          continue
-        }
-      }
-      [void]$published.Add([pscustomobject]@{ batch_id = [string]$report.batch_id; summary = [string]$report.summary; posted = [bool]$report.post_message })
-    }
-    return @($published.ToArray())
+    return @($reports.ToArray())
   }.GetNewClosure()))
+
+  $published = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($report in @($reports)) {
+    $postedOrObserved = -not [bool]$report.post_message
+    if ([bool]$report.post_message) {
+      try {
+        Add-Message -From system -Text ([string]$report.summary) -Kind event | Out-Null
+        $postedOrObserved = $true
+      } catch {
+        $reason = ("Add-Message failed for operator-batch {0}: {1}" -f [string]$report.batch_id, $_.Exception.Message)
+        Write-OperatorBatchReportError -Message $reason
+        Reset-OperatorBatchReportMarker -BatchTag ([string]$report.batch_tag) -ReportTs ([string]$report.report_ts) -Reason $reason
+        continue
+      }
+    }
+    try { Add-OperatorBatchReportLedger -Report $report -Posted $postedOrObserved } catch { Write-OperatorBatchReportError -Message ("operator-batch ledger append failed: " + $_.Exception.Message) }
+    [void]$published.Add([pscustomobject]@{ batch_id = [string]$report.batch_id; summary = [string]$report.summary; posted = [bool]$report.post_message })
+  }
+  return @($published.ToArray())
 }
 
 function Get-NextSelfExecIdea {

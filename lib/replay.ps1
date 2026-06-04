@@ -94,9 +94,21 @@ function Move-ReplayFileAtomic {
     [string]$SourcePath,
     [string]$DestinationPath
   )
-  if ([string]::IsNullOrWhiteSpace($SourcePath) -or [string]::IsNullOrWhiteSpace($DestinationPath)) { return }
+  if ([string]::IsNullOrWhiteSpace($SourcePath)) { throw 'Replay atomic move source path is required' }
+  if ([string]::IsNullOrWhiteSpace($DestinationPath)) { throw 'Replay atomic move destination path is required' }
   $sourceFull = [System.IO.Path]::GetFullPath($SourcePath)
   $destinationFull = [System.IO.Path]::GetFullPath($DestinationPath)
+  if ($sourceFull.Equals($destinationFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Replay atomic move source and destination are the same: '$sourceFull'"
+  }
+  if (-not (Test-Path -LiteralPath $sourceFull -PathType Leaf)) {
+    throw "Replay atomic move source is missing: '$sourceFull'"
+  }
+  $destinationDir = Split-Path -Parent $destinationFull
+  if ([string]::IsNullOrWhiteSpace($destinationDir)) { throw "Replay atomic move destination directory is invalid: '$destinationFull'" }
+  if (-not (Test-Path -LiteralPath $destinationDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+  }
   $sourceRoot = [System.IO.Path]::GetPathRoot($sourceFull)
   $destinationRoot = [System.IO.Path]::GetPathRoot($destinationFull)
   if (-not [string]::Equals($sourceRoot, $destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -113,6 +125,25 @@ function Move-ReplayFileAtomic {
     }
   } else {
     [System.IO.File]::Move($sourceFull, $destinationFull)
+  }
+  if (-not (Test-Path -LiteralPath $destinationFull -PathType Leaf)) {
+    throw "Replay atomic move did not create destination: '$destinationFull'"
+  }
+}
+
+function Write-ReplayUtf8FileDurable {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][string]$Content
+  )
+  $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Content)
+  $stream = $null
+  try {
+    $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    if ($stream) { $stream.Dispose() }
   }
 }
 
@@ -149,11 +180,10 @@ function Save-ReplayTaskMeta {
     }
     $merged['task_id'] = $TaskId
     $json = $merged | ConvertTo-Json -Depth 6
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $path = Join-Path $dir '_meta.json'
     $tmpPath = Join-Path $dir ('.' + [System.IO.Path]::GetFileName($path) + '.' + [System.Guid]::NewGuid().ToString('N') + '.tmp')
     try {
-      [System.IO.File]::WriteAllText($tmpPath, $json + "`n", $utf8NoBom)
+      Write-ReplayUtf8FileDurable -Path $tmpPath -Content ($json + "`n")
       Move-ReplayFileAtomic -SourcePath $tmpPath -DestinationPath $path
     } finally {
       if (Test-Path -LiteralPath $tmpPath) {

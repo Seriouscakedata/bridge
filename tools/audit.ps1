@@ -1493,9 +1493,13 @@ function Start-BridgeAuditInvocation {
   }
   New-AuditLock -BridgePath $Root
   $scopeLabel = "kind=$($AuditCtx.kind) channel=$($AuditCtx.channel) target=$($AuditCtx.target_root)"
-  Write-AuditLog -BridgePath $Root -Message "audit start (root=$Root, pid=$PID, scope=$scopeLabel)"
+  try { Write-AuditLog -BridgePath $Root -Message "audit start (root=$Root, pid=$PID, scope=$scopeLabel)" } catch {}
   try { if (Get-Command Add-Message -ErrorAction SilentlyContinue) { [void](Add-Message -From system -Text '🔍 Аудит запущен (статика + deep multi-agent)…' -Kind event) } } catch {}
-  Invoke-AuditSignalCollection -Root $Root -ScriptRoot $PSScriptRoot | Out-Null
+  try {
+    Invoke-AuditSignalCollection -Root $Root -ScriptRoot $PSScriptRoot | Out-Null
+  } catch {
+    try { Write-AuditLog -BridgePath $Root -Message ("audit signal collection failed: " + $_.Exception.Message) } catch {}
+  }
   return $null
 }
 
@@ -1684,18 +1688,21 @@ function Invoke-BridgeAudit {
   $run = Initialize-BridgeAuditInvocation -BridgePath $BridgePath -Channel $Channel -ProjectRoot $ProjectRoot
   $root = [string]$run.root
   $auditCtx = $run.auditCtx
-  $locked = Start-BridgeAuditInvocation -Root $root -AuditCtx $auditCtx
-  if ($locked) { return $locked }
+  $lockAcquired = $false
 
-  $errors = New-Object 'System.Collections.Generic.List[string]'
   try {
+    $locked = Start-BridgeAuditInvocation -Root $root -AuditCtx $auditCtx
+    if ($locked) { return $locked }
+    $lockAcquired = $true
+
+    $errors = New-Object 'System.Collections.Generic.List[string]'
     $static = Invoke-BridgeAuditStaticAnalysis -Root $root -AuditCtx $auditCtx -ReportDir ([string]$run.reportDir) -Errors ([ref]$errors)
     $report = New-BridgeAuditReport -Root $root -ResolvedChannel ([string]$run.resolvedChannel) -ResolvedProject ([string]$run.resolvedProject) -AuditCtx $auditCtx -StaticResult $static -Stopwatch $stopwatch -Errors ([ref]$errors)
     $published = Publish-BridgeAuditStaticReport -Root $root -AuditCtx $auditCtx -Report $report -StaticResult $static -ReportDir ([string]$run.reportDir)
     $deep = Invoke-BridgeAuditDeepPhase -Root $root -AuditCtx $auditCtx -ReportDir ([string]$run.reportDir) -FunctionalAgent $FunctionalAgent -ResolvedChannel ([string]$run.resolvedChannel) -DeepAuditTimeoutSec $DeepAuditTimeoutSec -Paths $published.paths -Errors ([ref]$errors)
     return (Complete-BridgeAuditReport -Root $root -AuditCtx $auditCtx -Report $report -Paths $published.paths -StaticResult $static -Filed ([int]$published.filed) -DeepResult $deep -DeepAuditTimeoutSec $DeepAuditTimeoutSec -Errors ([ref]$errors))
   } finally {
-    Remove-AuditLock -BridgePath $root
+    if ($lockAcquired) { Remove-AuditLock -BridgePath $root }
   }
 }
 

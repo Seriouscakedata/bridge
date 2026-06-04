@@ -61,6 +61,7 @@ Test-Check 'operator-batch summary marker survives read-write and prevents repos
   $script:testConversationPath = Join-Path $sandbox 'conversation.jsonl'
   $script:msgs = New-Object 'System.Collections.Generic.List[object]'
   function script:Get-ChannelBacklogPath { return $script:testBacklogPath }
+  function script:Get-BacklogControlDir { return $sandbox }
   function script:Get-ConversationPath { return $script:testConversationPath }
   function script:Add-Message {
     param($From, $Text, $Kind)
@@ -84,6 +85,8 @@ Test-Check 'operator-batch summary marker survives read-write and prevents repos
     Write-TestBacklogItems -Items $baseItems
     $repair = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
     $second = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
+    $ledgerPath = Get-OperatorBatchReportLedgerPath
+    $ledgerCount = if (Test-Path -LiteralPath $ledgerPath) { @(Get-Content -LiteralPath $ledgerPath -Encoding UTF8).Count } else { 0 }
     $saved = @(Get-Backlog | Where-Object { @($_.tags) -contains 'batch:unit' })
     $marked = @($saved | Where-Object {
       [bool](Get-BacklogPackObjectValue -Obj $_ -Name 'operator_batch_reported' -Default $false)
@@ -94,10 +97,36 @@ Test-Check 'operator-batch summary marker survives read-write and prevents repos
       $repair.Count -eq 1 -and
       $second.Count -eq 0 -and
       $script:msgs.Count -eq 1 -and
+      $ledgerCount -eq 1 -and
       $marked -eq 2 -and
       $summary -match 'operator-batch unit: 1 done, 1 failed, 0 blocked' -and
       $summary -match 'Failed title'
     )
+  } finally {
+    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Check 'operator-batch summary marker resets when Add-Message fails before post' {
+  $sandbox = Join-Path $env:TEMP ('operator-batch-fail-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+  $script:testBacklogPath = Join-Path $sandbox 'backlog.jsonl'
+  $script:testConversationPath = Join-Path $sandbox 'conversation.jsonl'
+  function script:Get-ChannelBacklogPath { return $script:testBacklogPath }
+  function script:Get-BacklogControlDir { return $sandbox }
+  function script:Get-ConversationPath { return $script:testConversationPath }
+  function script:Add-Message { throw 'unit add-message failure' }
+  try {
+    $items = @(
+      [pscustomobject][ordered]@{ id = 'unit-c'; title = 'Done title'; text = 'done text'; status = 'done'; tags = @('operator','batch:fail') }
+    )
+    $lines = @($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+    [System.IO.File]::WriteAllText($script:testBacklogPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    $published = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
+    $saved = @(Get-Backlog | Where-Object { @($_.tags) -contains 'batch:fail' })
+    $reported = [bool](Get-BacklogPackObjectValue -Obj $saved[0] -Name 'operator_batch_reported' -Default $false)
+    $errorText = [string](Get-BacklogPackObjectValue -Obj $saved[0] -Name 'operator_batch_report_error' -Default '')
+    return ($published.Count -eq 0 -and -not $reported -and $errorText -match 'Add-Message failed')
   } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
   }

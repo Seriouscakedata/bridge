@@ -122,5 +122,12 @@ $failedCtx = @{
 $failedResult = Complete-ParallelDispatchResult -Context $failedCtx
 Assert ((-not [bool]$failedResult.ok) -and $failedResult.reason -eq 'all_failed') "all quarantined streams produce all_failed"
 
+# 21-24. LLM worker mirrors strict path semantics instead of silently skipping denied FILE blocks.
+$llmWorkerSource = Get-Content -LiteralPath (Join-Path $root 'tools\parallel-llm-worker.ps1') -Raw -Encoding UTF8
+Assert ($llmWorkerSource -match 'function Test-WorkerRelAllowed') "LLM worker has explicit allowed-path helper"
+Assert ($llmWorkerSource -match 'denied FILE path') "LLM worker fails stream on denied FILE paths"
+Assert ($llmWorkerSource -notmatch 'allowedFiles\.Count -gt 0 -and -not') "LLM worker does not silently skip denied paths"
+Assert ($llmWorkerSource -notmatch '2>\$null') "LLM worker does not hide native git stderr with PowerShell redirection"
+
 Write-Host "`nRESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }
