@@ -36,6 +36,88 @@ function Get-AgentRelativePath {
   return $Path
 }
 
+function Test-AgentExcludedPath {
+  param([string]$Root, [string]$FullPath)
+  # Deterministic exclusions: generated/runtime/vendor dirs that are not source.
+  $excludedSegments = @(
+    '.git', 'node_modules', 'worktrees',
+    'tmp', 'runtime',
+    [System.IO.Path]::Combine('control', 'curator-launchers'),
+    [System.IO.Path]::Combine('audit', 'tmp'),
+    'memory', 'channels'
+  )
+  $rel = ''
+  try {
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $pathFull = [System.IO.Path]::GetFullPath($FullPath)
+    if ($pathFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $rel = $pathFull.Substring($rootFull.Length).TrimStart('\','/')
+    } else {
+      $rel = $FullPath
+    }
+  } catch { $rel = $FullPath }
+  foreach ($seg in $excludedSegments) {
+    $segNorm = $seg.Replace('/', '\')
+    if ($rel -eq $segNorm) { return $true }
+    if ($rel.StartsWith($segNorm + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($rel.StartsWith($segNorm + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Get-AgentRiskRankedFiles {
+  param([string]$Root, [int]$MaxFiles = 30)
+  # Priority 1: high-risk core source files (server/driver/supervisor/watchdog/lib/tools/config)
+  $priority1Globs = @('server.ps1','driver.ps1','supervisor.ps1','watchdog.ps1')
+  $priority1 = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($g in $priority1Globs) {
+    $p = Join-Path $Root $g
+    if ((Test-Path -LiteralPath $p -PathType Leaf) -and -not (Test-AgentExcludedPath -Root $Root -FullPath $p)) {
+      [void]$priority1.Add($p)
+    }
+  }
+  foreach ($libF in @(Get-ChildItem -LiteralPath (Join-Path $Root 'lib') -Filter *.ps1 -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    if (-not (Test-AgentExcludedPath -Root $Root -FullPath $libF.FullName)) { [void]$priority1.Add($libF.FullName) }
+  }
+  foreach ($toolF in @(Get-ChildItem -LiteralPath (Join-Path $Root 'tools') -Filter *.ps1 -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    if (-not (Test-AgentExcludedPath -Root $Root -FullPath $toolF.FullName)) { [void]$priority1.Add($toolF.FullName) }
+  }
+  $cfgPath = Join-Path $Root 'config.json'
+  if (Test-Path -LiteralPath $cfgPath -PathType Leaf) { [void]$priority1.Add($cfgPath) }
+
+  # Priority 2: recently git-changed files (last 20 commits, unique, not already included)
+  $priority2 = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    $gitFiles = @(& git -C $Root log --name-only --pretty=format: -20 2>$null | Where-Object { $_ -match '\.(ps1|json|html|js)$' } | Select-Object -Unique -First 20)
+    foreach ($gf in $gitFiles) {
+      $full = Join-Path $Root $gf
+      if ((Test-Path -LiteralPath $full -PathType Leaf) -and
+          -not (Test-AgentExcludedPath -Root $Root -FullPath $full) -and
+          -not ($priority1 -contains $full)) {
+        [void]$priority2.Add($full)
+      }
+    }
+  } catch {}
+
+  # Priority 3: remaining source files (capped)
+  $priority3 = New-Object 'System.Collections.Generic.List[string]'
+  $allSrc = @(Get-ChildItem -LiteralPath $Root -Recurse -Include *.ps1,*.json,*.html,*.js -File -ErrorAction SilentlyContinue | Sort-Object FullName)
+  foreach ($f in $allSrc) {
+    if (-not (Test-AgentExcludedPath -Root $Root -FullPath $f.FullName) -and
+        -not ($priority1 -contains $f.FullName) -and
+        -not ($priority2 -contains $f.FullName)) {
+      [void]$priority3.Add($f.FullName)
+    }
+  }
+
+  $result = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($f in $priority1) { if ($result.Count -lt $MaxFiles) { [void]$result.Add($f) } }
+  foreach ($f in $priority2) { if ($result.Count -lt $MaxFiles) { [void]$result.Add($f) } }
+  foreach ($f in $priority3) { if ($result.Count -lt $MaxFiles) { [void]$result.Add($f) } }
+
+  return $result.ToArray()
+}
+
 function Get-AgentFileContentCapped {
   param([string]$Path, [int]$Cap = 20000)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -87,6 +169,7 @@ function Get-AgentPs1Inventory {
   try {
     $files = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter *.ps1 -File -ErrorAction SilentlyContinue)
     foreach ($f in $files) {
+      if (Test-AgentExcludedPath -Root $Root -FullPath $f.FullName) { continue }
       $lineCount = 0
       try { $lineCount = @([System.IO.File]::ReadAllLines($f.FullName)).Count } catch {}
       $items += [pscustomobject]@{
@@ -104,6 +187,7 @@ function Get-AgentFunctionInventory {
   try {
     $files = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter *.ps1 -File -ErrorAction SilentlyContinue)
     foreach ($f in $files) {
+      if (Test-AgentExcludedPath -Root $Root -FullPath $f.FullName) { continue }
       $tokens = $null
       $errors = $null
       $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
@@ -372,11 +456,11 @@ function Get-AgentPromptContext {
   $sections = New-Object System.Collections.Generic.List[object]
 
   if ($Role -eq 'security-model') {
-    $files = @(Get-ChildItem -LiteralPath $ProjRoot -Recurse -Include *.ps1,*.json,*.html,*.js -File -ErrorAction SilentlyContinue | Select-Object -First 30)
-    foreach ($f in $files) {
-      $rel = Get-AgentRelativePath -Root $ProjRoot -Path $f.FullName
+    $rankedFiles = @(Get-AgentRiskRankedFiles -Root $ProjRoot -MaxFiles 30)
+    foreach ($fullPath in $rankedFiles) {
+      $rel = Get-AgentRelativePath -Root $ProjRoot -Path $fullPath
       $coverage.Add($rel)
-      [void]$sections.Add((New-AgentPromptSection -Header "=== $rel ===" -Content (Get-AgentFileContentCapped -Path $f.FullName -Cap 5000)))
+      [void]$sections.Add((New-AgentPromptSection -Header "=== $rel ===" -Content (Get-AgentFileContentCapped -Path $fullPath -Cap 5000)))
     }
   } elseif ($Role -eq 'functional-model') {
     foreach ($section in @(Get-AgentPromptFileSections -Root $BridgeRoot -RelativePaths @('features\registry.json','features\state.json','audit\audit.log','turns.jsonl') -Cap 20000 -Coverage $coverage)) {
@@ -490,10 +574,19 @@ function New-AgentPrompt {
 
   $templateLines = @(Get-AgentPromptTemplate -Role $Role)
   $context = Get-AgentPromptContext -Role $Role -BridgeRoot $BridgeRoot -ProjRoot $ProjRoot
+  $promptText = Format-AgentPrompt -TemplateLines $templateLines -Sections $context.sections
+  $promptChars = $promptText.Length
+  $promptTruncated = $false
+  $contextPolicy = 'default'
+  if ($Role -eq 'security-model') { $contextPolicy = 'risk_ranked' }
+  elseif ($Role -in @('architecture-model','dependency-model')) { $contextPolicy = 'source_only_excluded' }
 
   return [pscustomobject]@{
-    prompt = (Format-AgentPrompt -TemplateLines $templateLines -Sections $context.sections)
+    prompt = $promptText
     coverage = @($context.coverage | Select-Object -Unique)
+    prompt_chars = $promptChars
+    prompt_truncated = $promptTruncated
+    context_policy = $contextPolicy
   }
 }
 
@@ -521,7 +614,7 @@ if ($NoLLM -or -not $RunLLM) {
       $reply = Invoke-LLM -Purpose ('audit-' + $Role) -Model $Model -Prompt $promptContext.prompt -TimeoutSec $TimeoutSec -Temperature 0.2
       if ([string]::IsNullOrWhiteSpace($reply)) {
         $status = 'error'
-        $errors.Add('empty_llm_reply')
+        $errors.Add("empty_llm_reply (prompt_chars=$($promptContext.prompt_chars))")
       } else {
         $parsed = Extract-AgentJson -Text $reply
         if ($parsed -is [Array]) { $findings = @($parsed) }
@@ -549,6 +642,8 @@ $result = [pscustomobject]@{
   errors = @($errors)
   coverage = @($promptContext.coverage)
   confidence = [double](Get-AgentConfidence -RoleName $Role)
+  prompt_chars = [int]$promptContext.prompt_chars
+  context_policy = [string]$promptContext.context_policy
 }
 
 $json = $result | ConvertTo-Json -Depth 10 -Compress
