@@ -12,6 +12,7 @@ $scriptRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 }
 $bridgeRoot = Split-Path -Parent $scriptRoot
 $driver30Path = Join-Path $bridgeRoot 'driver\30-prompt-agent-state.ps1'
+$promptBuilderPath = Join-Path $bridgeRoot 'lib\prompt-builder.ps1'
 
 function Write-SmokeUtf8NoBom {
     param(
@@ -113,6 +114,7 @@ ARCH fixture
         throw 'Invoke-RefreshSelfModel must not be called from Build-Prompt'
     }
 
+    . $promptBuilderPath
     . $driver30Path
 
     Set-SmokeChannel -Slug 'main'
