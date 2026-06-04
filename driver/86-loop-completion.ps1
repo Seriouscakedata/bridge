@@ -1036,6 +1036,53 @@ $diff
       }
     } catch {}
     try { Invoke-PostTaskSelfModelRefresh -Channel $Channel -BridgeRoot $bridgeRoot | Out-Null } catch {}
+    # Delivery gate shadow: evidence-only report, never blocks DONE or release.
+    if ($modeBeforeIncrement -eq 'normal') {
+      try {
+        $stDg = Read-State
+        $dgTaskId = [string]$stDg.current_task_id
+        if ([string]::IsNullOrWhiteSpace($dgTaskId)) { $dgTaskId = [string]$stDg.current_backlog_id }
+        if ([string]::IsNullOrWhiteSpace($dgTaskId)) { $dgTaskId = 'task-' + [string]$stDg.task_start_seq }
+        $dgBase = [string]$stDg.task_base_commit
+        $dgHead = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
+        $dgEvents = @(@{ text = [string]$visibleReply })
+        $dgFacts = New-DeliveryGateInputFacts `
+          -BridgeRoot $bridgeRoot `
+          -Channel $Channel `
+          -TaskText $task `
+          -BaseCommit $dgBase `
+          -HeadCommit $dgHead `
+          -Events $dgEvents `
+          -QaPassed $true `
+          -CriticPassed $true `
+          -ParsePassed $true `
+          -SmokePassed $true `
+          -AcceptancePassed $false `
+          -MemoryUpdated $true `
+          -SelfModelRefreshed $true `
+          -ParallelObligationOk $true
+        $dgResult = Get-DeliveryGateResult -InputFacts $dgFacts
+        $dgWrite = Write-DeliveryGateShadowRecord `
+          -BridgeRoot $bridgeRoot `
+          -Channel $Channel `
+          -TaskId $dgTaskId `
+          -TaskText $task `
+          -BaseCommit $dgBase `
+          -HeadCommit $dgHead `
+          -Facts $dgFacts `
+          -Result $dgResult `
+          -Note 'shadow-only; no DONE/release blocking'
+        $dgReason = [string]$dgResult.reason
+        if ($dgReason.Length -gt 160) { $dgReason = $dgReason.Substring(0,160) + '...' }
+        Add-Message -From system -Text ("🧪 Delivery gate shadow: ok=$($dgResult.ok) risk=$($dgResult.risk) release=$($dgResult.release_allowed) reason=$dgReason") -Kind event | Out-Null
+        if (-not [bool]$dgWrite.ok) {
+          Add-Message -From system -Text ("⚠ Delivery gate shadow write failed: " + [string]$dgWrite.error) -Kind event | Out-Null
+        }
+      } catch {
+        try { Add-Message -From system -Text ("⚠ Delivery gate shadow failed open: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+      }
+    }
+    # Delivery gate shadow end.
     # 🩺 If Doctor just finished a repair, restore the held task instead of going idle.
     if ([bool](Read-State).doctor_active) {
       try { Complete-Doctor } catch { try { Add-Message -From system -Text ("🩺 Complete-Doctor: " + $_.Exception.Message) -Kind event | Out-Null } catch {} }
