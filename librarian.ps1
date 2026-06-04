@@ -30,8 +30,12 @@ $decDir = Resolve-MemoryContainedPath -Path (Get-DecisionsPath) -Purpose 'decisi
 $ingested = 0
 if (Test-Path -LiteralPath $decDir) {
   foreach ($f in (Get-ChildItem -LiteralPath $decDir -Filter '*.md' -File)) {
+    if (($f.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      Write-LibLog "decision rejected (reparse point): $($f.FullName)"
+      continue
+    }
     try {
-      $decisionPath = Resolve-MemoryContainedPath -Path $f.FullName -BasePath $decDir -Purpose 'decision file'
+      $decisionPath = Resolve-MemoryContainedPath -Path (Join-Path $decDir $f.Name) -BasePath $decDir -Purpose 'decision file'
     } catch {
       Write-LibLog "decision rejected (invalid path): $($f.FullName) :: $($_.Exception.Message)"
       continue

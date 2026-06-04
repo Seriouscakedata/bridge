@@ -31,6 +31,42 @@ function Get-BacklogControlDir {
   Join-Path (Get-BacklogFallbackBridgeRoot) 'control'
 }
 
+function Get-BacklogCuratorLauncherDir {
+  # Curator launchers are ephemeral runtime artifacts; prefer the runtime root so
+  # they do not accumulate under control/ in the source tree.
+  $candidates = New-Object 'System.Collections.Generic.List[string]'
+
+  if (Get-Command Get-RuntimeRoot -ErrorAction SilentlyContinue) {
+    try {
+      $runtimeRoot = [string](Get-RuntimeRoot)
+      if (-not [string]::IsNullOrWhiteSpace($runtimeRoot)) {
+        [void]$candidates.Add((Join-Path $runtimeRoot 'curator-launchers'))
+      }
+    } catch {}
+  }
+
+  $userProfile = [string]$env:USERPROFILE
+  if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+    $userRuntime = Join-Path (Join-Path $userProfile '.bridge-runtime') 'curator-launchers'
+    if (-not $candidates.Contains($userRuntime)) { [void]$candidates.Add($userRuntime) }
+  }
+
+  $repoRuntime = Join-Path (Join-Path (Get-BacklogFallbackBridgeRoot) 'runtime') 'curator-launchers'
+  if (-not $candidates.Contains($repoRuntime)) { [void]$candidates.Add($repoRuntime) }
+
+  $legacyControl = Join-Path (Get-BacklogControlDir) 'curator-launchers'
+  if (-not $candidates.Contains($legacyControl)) { [void]$candidates.Add($legacyControl) }
+
+  foreach ($dir in $candidates) {
+    try {
+      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+      return $dir
+    } catch {}
+  }
+
+  throw 'Unable to prepare backlog curator launcher directory.'
+}
+
 function Write-BacklogJsonLine {
   # 2026-05-27: critic-flagged fix. Add-Content -Encoding UTF8 on PS 5.1 writes
   # UTF-8 WITH BOM on first call (when file is created), breaking strict JSONL
@@ -76,8 +112,7 @@ function Start-BacklogCuratorJob {
     # channel before invoking so Get-EffectiveChannel resolves correctly.
     $commonLib = Join-Path $PSScriptRoot 'common.ps1'
     $log = Join-Path (Get-BacklogControlDir) 'curator.log'
-    $launcherDir = Join-Path (Get-BacklogControlDir) 'curator-launchers'
-    if (-not (Test-Path -LiteralPath $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null }
+    $launcherDir = Get-BacklogCuratorLauncherDir
     $stamp = (Get-Date -Format 'yyyyMMddHHmmss') + '_' + ([guid]::NewGuid().ToString('N').Substring(0,6))
     $launcher = Join-Path $launcherDir ("curator_" + $stamp + ".ps1")
     # Capture the channel slug at launch time so the launcher pins to it

@@ -11,6 +11,43 @@ function ConvertTo-BridgeJobPsLiteral {
 }
 
 function Get-BridgeJobNativeSource {
+  $source = Get-BridgeJobNativeSourceCandidate
+  Assert-BridgeJobNativeSourceValid $source
+  return (ConvertTo-BridgeJobNativeSourceDefinition $source)
+}
+
+function Get-BridgeJobNativeSourceCandidate {
+  return (Get-BridgeJobNativeSourceEmbedded)
+}
+
+function Assert-BridgeJobNativeSourceValid {
+  param([string]$Source)
+  if ([string]::IsNullOrWhiteSpace($Source)) {
+    throw 'Bridge job native source is empty'
+  }
+
+  $requiredFragments = @(
+    'public static class BridgeJobNative',
+    'public static bool TerminateNamedJob',
+    'public static int RunCommandInJob',
+    'AssignProcessToJobObject',
+    'WaitForSingleObject(pi.hProcess, timeoutMs)',
+    'TryJoinThread(stdoutThread',
+    'TryJoinThread(stderrThread'
+  )
+  foreach ($fragment in $requiredFragments) {
+    if ($Source.IndexOf($fragment, [StringComparison]::Ordinal) -lt 0) {
+      throw "Bridge job native source is missing required fragment: $fragment"
+    }
+  }
+}
+
+function ConvertTo-BridgeJobNativeSourceDefinition {
+  param([string]$Source)
+  return [string]$Source
+}
+
+function Get-BridgeJobNativeSourceEmbedded {
 @'
 using System;
 using System.IO;

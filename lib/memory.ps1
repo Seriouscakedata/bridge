@@ -22,16 +22,39 @@ function Get-EmbedCacheKey {
 }
 
 # ---- paths ----
+function Test-MemoryPathHasParentTraversal {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  foreach ($part in ([string]$Path -split '[\\/]+')) {
+    if ($part -eq '..') { return $true }
+  }
+  return $false
+}
+
 function Resolve-MemoryContainedPath {
   param(
     [Parameter(Mandatory=$true)][string]$Path,
     [string]$BasePath = $null,
     [string]$Purpose = 'memory path'
   )
+  if (Test-MemoryPathHasParentTraversal -Path $Path) {
+    throw "Resolve-MemoryContainedPath: $Purpose contains parent traversal: $Path"
+  }
   if (-not (Get-Command Resolve-BridgeContainedPath -ErrorAction SilentlyContinue)) {
     throw "Resolve-MemoryContainedPath: Resolve-BridgeContainedPath is not loaded"
   }
-  return (Resolve-BridgeContainedPath -Path $Path -BasePath $BasePath -Purpose $Purpose)
+  $resolved = Resolve-BridgeContainedPath -Path $Path -BasePath $BasePath -Purpose $Purpose
+  if (-not [string]::IsNullOrWhiteSpace($BasePath)) {
+    $baseResolved = Resolve-BridgeContainedPath -Path $BasePath -Purpose "$Purpose base"
+    $baseFull = [System.IO.Path]::GetFullPath($baseResolved).TrimEnd('\','/')
+    $targetFull = [System.IO.Path]::GetFullPath($resolved).TrimEnd('\','/')
+    if ($targetFull.Equals($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+    $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $targetFull.StartsWith($basePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Resolve-MemoryContainedPath: $Purpose escapes intended base: $targetFull (base: $baseFull)"
+    }
+    return $targetFull
+  }
+  return $resolved
 }
 
 function Add-MemoryJsonlContent {
@@ -71,9 +94,21 @@ function Get-MemoryStorePath {
   param([string]$Slug = $null)
   Resolve-MemoryContainedPath -Path ([string]((Get-MemoryScope -Slug $Slug).memory_store)) -Purpose 'memory store'
 }
-function Get-MemoryMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
-function Get-MemoryMapPathForChannel { param([string]$Slug) Join-Path (Get-MemoryDir -Slug $Slug) 'map.md' }
-function Get-MemorySharedMapPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'map.shared.md' }
+function Get-MemoryMapPath {
+  param([string]$Slug = $null)
+  $dir = Get-MemoryDir -Slug $Slug
+  Resolve-MemoryContainedPath -Path (Join-Path $dir 'map.md') -BasePath $dir -Purpose 'memory map'
+}
+function Get-MemoryMapPathForChannel {
+  param([string]$Slug)
+  $dir = Get-MemoryDir -Slug $Slug
+  Resolve-MemoryContainedPath -Path (Join-Path $dir 'map.md') -BasePath $dir -Purpose 'channel memory map'
+}
+function Get-MemorySharedMapPath {
+  param([string]$Slug = $null)
+  $dir = Get-MemoryDir -Slug $Slug
+  Resolve-MemoryContainedPath -Path (Join-Path $dir 'map.shared.md') -BasePath $dir -Purpose 'shared memory map'
+}
 function Get-MemoryMapPathsForChannel {
   param([string]$Slug)
   return [pscustomobject]@{
@@ -82,7 +117,11 @@ function Get-MemoryMapPathsForChannel {
   }
 }
 function Get-MemoryLogPath { param([string]$Slug = $null) Resolve-MemoryContainedPath -Path (Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.log') -Purpose 'librarian log' }
-function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.last' }
+function Get-MemoryMarkerPath {
+  param([string]$Slug = $null)
+  $dir = Get-MemoryDir -Slug $Slug
+  Resolve-MemoryContainedPath -Path (Join-Path $dir 'librarian.last') -BasePath $dir -Purpose 'librarian marker'
+}
 
 # ---- secrets / config ----
 $script:SecretsAclCheckStamp = $null

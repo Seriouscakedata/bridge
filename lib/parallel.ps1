@@ -1152,28 +1152,8 @@ function Invoke-TrivialFallbackWorker {
   return $fbRes
 }
 
-function Invoke-ParallelDispatch {
-  # End-to-end orchestration for a parallel split detected in planner reply.
-  # FIX 2026-05-27 (manual implementation, replaces Codex's chunk-2 that state-wiped).
-  # Spawns workers in worktrees, polls until all done or timeout, fast-forward merges
-  # their wip-branches into main, cleans up. Returns @{ok=$bool; merged=$count; reason=...}.
-  param(
-    [object[]]$Streams,
-    [int]$TimeoutMin = 25,
-    [int]$PollSec = 10
-  )
-  if (-not $Streams -or $Streams.Count -lt 2) {
-    return @{ ok=$false; merged=0; reason='need >= 2 streams' }
-  }
-
-  # Use task_base_commit as starting point. Each worker gets its own worktree off this.
-  $base = Get-ParallelTaskBaseCommit
-  if ([string]::IsNullOrWhiteSpace($base)) {
-    return @{ ok=$false; merged=0; reason='no task_base_commit' }
-  }
-
-  # Stable task hash from current_task text so worktree paths are reproducible across
-  # restarts (resume-safe).
+function Get-ParallelDispatchTaskHash {
+  # Stable task hash from current_task text so worktree paths are reproducible across restarts.
   $taskHash = 'task'
   try {
     $st = Read-State
@@ -1183,18 +1163,26 @@ function Invoke-ParallelDispatch {
     $hash = $sha.ComputeHash($bytes)
     $taskHash = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0,12)
   } catch {}
+  return $taskHash
+}
 
-  # 2026-05-27 refactor: route each stream through Select-WorkerForStream
-  # (strength-floor + domain affinity + no double-booking). Falls back to
-  # built-in default pool if config.parallel.workers is missing.
-  $workers = New-Object 'System.Collections.Generic.List[object]'
-  $usedIds = New-Object 'System.Collections.Generic.List[string]'
+function Stop-ParallelDispatchWorkers {
+  param(
+    [object[]]$Workers,
+    [string]$TaskHash
+  )
+  foreach ($w0 in @($Workers)) {
+    try {
+      if ($w0.process -and -not $w0.process.HasExited) {
+        Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      }
+    } catch {}
+    try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $TaskHash } catch {}
+  }
+}
 
-  # 2026-06-01 VISIBILITY: announce the TEAM PLAN in chat BEFORE spawning, so the operator sees WHAT
-  # each parallel stream actually does. The deterministic/batch dispatch had hidden this — the planner
-  # discussion was skipped for speed, leaving only aggregate "N streams" + per-worker system lines, so
-  # the operator could no longer see the task content. This restores the pre-parallel transparency
-  # ("какая задача, кто делает") without giving up the parallel speed-up.
+function Write-ParallelDispatchTeamPlan {
+  param([object[]]$Streams)
   try {
     $planLines = New-Object 'System.Collections.Generic.List[string]'
     [void]$planLines.Add("🔀 Запускаю команду из " + @($Streams).Count + " параллельных потоков:")
@@ -1211,6 +1199,18 @@ function Invoke-ParallelDispatch {
     }
     Add-Message -From system -Text ($planLines -join "`n") -Kind event | Out-Null
   } catch {}
+}
+
+function Start-ParallelDispatchWorkers {
+  param(
+    [object[]]$Streams,
+    [string]$TaskHash
+  )
+
+  $workers = New-Object 'System.Collections.Generic.List[object]'
+  $usedIds = New-Object 'System.Collections.Generic.List[string]'
+
+  Write-ParallelDispatchTeamPlan -Streams @($Streams)
 
   foreach ($s in @($Streams)) {
     $spec = $null
@@ -1224,16 +1224,13 @@ function Invoke-ParallelDispatch {
     }
     if (-not $spec) {
       try { Add-Message -From system -Text ("❌ parallel: no worker pool available for stream " + $s.id) -Kind event } catch {}
-      foreach ($w0 in $workers) {
-        try { if ($w0.process -and -not $w0.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
-        try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $taskHash } catch {}
-      }
-      return @{ ok=$false; merged=0; reason='no worker pool' }
+      Stop-ParallelDispatchWorkers -Workers @($workers.ToArray()) -TaskHash $TaskHash
+      return @{ ok=$false; workers=@($workers.ToArray()); reason='no worker pool' }
     }
 
-    $branch = "wip/parallel/$taskHash/$($s.id)"
+    $branch = "wip/parallel/$TaskHash/$($s.id)"
     try {
-      $worktree = Get-WorkerWorktree -StreamId $s.id -TaskHash $taskHash
+      $worktree = Get-WorkerWorktree -StreamId $s.id -TaskHash $TaskHash
       $w = Spawn-Worker -StreamId $s.id -Body $s.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
       [void]$workers.Add($w)
       [void]$usedIds.Add([string]$spec.id)
@@ -1244,18 +1241,24 @@ function Invoke-ParallelDispatch {
       } catch {}
     } catch {
       try { Add-Message -From system -Text ("❌ Parallel spawn failed for stream " + $s.id + ": " + $_.Exception.Message) -Kind event } catch {}
-      foreach ($w0 in $workers) {
-        try { if ($w0.process -and -not $w0.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w0.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
-        try { Cleanup-WorkerWorktree -StreamId $w0.id -TaskHash $taskHash } catch {}
-      }
-      return @{ ok=$false; merged=0; reason="spawn failed: $($_.Exception.Message)" }
+      Stop-ParallelDispatchWorkers -Workers @($workers.ToArray()) -TaskHash $TaskHash
+      return @{ ok=$false; workers=@($workers.ToArray()); reason="spawn failed: $($_.Exception.Message)" }
     }
   }
 
-  # Persist to state (channel-aware via current Read-State)
   try { Save-ParallelStreams -State (Read-State) -Streams $workers } catch {}
+  return @{ ok=$true; workers=@($workers.ToArray()); reason='' }
+}
 
-  # Poll until all done or timeout
+function Wait-ParallelDispatchResults {
+  param(
+    [object[]]$Workers,
+    [string]$TaskHash,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10
+  )
+
+  $workers = @($Workers)
   $deadline = (Get-Date).AddMinutes($TimeoutMin)
   $completed = @{}
   while ($completed.Count -lt $workers.Count) {
@@ -1322,6 +1325,19 @@ function Invoke-ParallelDispatch {
     }
   }
 
+  return $completed
+}
+
+function Complete-ParallelDispatchOutputs {
+  param(
+    [object[]]$Workers,
+    [hashtable]$Completed,
+    [string]$TaskHash
+  )
+
+  $workers = @($Workers)
+  $completed = $Completed
+
   # Merge phase: fast-forward each wip-branch into HEAD on the channel's repo (project_root for
   # project channels, bridge for main). 2026-05-31 Foundation #4 scale.
   $merged = 0
@@ -1378,7 +1394,7 @@ function Invoke-ParallelDispatch {
     }
 
     try {
-      $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
+      $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash
       if (-not (Test-Path -LiteralPath $wtPath)) {
         & $addQuarantine ([string]$w.id)
         continue
@@ -1491,14 +1507,14 @@ function Invoke-ParallelDispatch {
 
   foreach ($w in $workers) {
     if ($quarantined.Contains([string]$w.id)) {
-      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
       continue
     }
     if (-not $completed.ContainsKey($w.id)) { continue }
     $res = $completed[$w.id]
     # Already delivered by collect-then-commit above — just clean its worktree and skip branch merge.
     if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
-      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
       continue
     }
     # 2026-06-01: HOST-COMMIT RECOVERY. A worker (especially codex in the Windows sandbox, but also
@@ -1519,7 +1535,7 @@ function Invoke-ParallelDispatch {
     if (@($res.commits).Count -eq 0) {
       try {
         $origStatus = [string]$res.status
-        $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
+        $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash
         $gitX = Get-GitExe
         $dirtyWt = @(& $gitX -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if (@($dirtyWt).Count -gt 0) {
@@ -1537,7 +1553,7 @@ function Invoke-ParallelDispatch {
     if ($res.status -ne 'done' -or $res.commits.Count -eq 0) {
       $fbRes = $null
       if (([string]$w.cli -eq 'claude') -and (@($w.files).Count -eq 1)) {
-        try { $fbRes = Invoke-TrivialFallbackWorker -Worker $w -TaskHash $taskHash } catch {
+        try { $fbRes = Invoke-TrivialFallbackWorker -Worker $w -TaskHash $TaskHash } catch {
           try { Add-Message -From system -Text ("⚠ trivial-fallback exception for stream " + $w.id + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
         }
       }
@@ -1546,7 +1562,7 @@ function Invoke-ParallelDispatch {
         $completed[$w.id] = $fbRes
       } else {
         & $addQuarantine ([string]$w.id)
-        try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+        try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
         continue
       }
     }
@@ -1587,7 +1603,7 @@ function Invoke-ParallelDispatch {
       & $addQuarantine ([string]$w.id)
       Add-Message -From system -Text ("❌ Merge exception for stream " + $w.id + " (дерево очищено): " + $_.Exception.Message) -Kind event | Out-Null
     }
-    try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+    try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
   }
 
   # 2026-06-01 ERR-004: surface quarantined (failed) streams so the operator/driver knows their work
@@ -1623,4 +1639,39 @@ function Invoke-ParallelDispatch {
     clean       = $cleanComplete
     reason      = $(if ($cleanComplete) { 'all_delivered' } elseif ($anyDelivered) { 'partial' } else { 'all_failed' })
   }
+}
+
+function Invoke-ParallelDispatch {
+  # End-to-end orchestration for a parallel split detected in planner reply.
+  # FIX 2026-05-27 (manual implementation, replaces Codex's chunk-2 that state-wiped).
+  # Spawns workers in worktrees, polls until all done or timeout, fast-forward merges
+  # their wip-branches into main, cleans up. Returns @{ok=$bool; merged=$count; reason=...}.
+  param(
+    [object[]]$Streams,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10
+  )
+  if (-not $Streams -or $Streams.Count -lt 2) {
+    return @{ ok=$false; merged=0; reason='need >= 2 streams' }
+  }
+
+  # Use task_base_commit as starting point. Each worker gets its own worktree off this.
+  $base = Get-ParallelTaskBaseCommit
+  if ([string]::IsNullOrWhiteSpace($base)) {
+    return @{ ok=$false; merged=0; reason='no task_base_commit' }
+  }
+
+  $taskHash = Get-ParallelDispatchTaskHash
+
+  # 2026-05-27 refactor: route each stream through Select-WorkerForStream
+  # (strength-floor + domain affinity + no double-booking). Falls back to
+  # built-in default pool if config.parallel.workers is missing.
+  $startup = Start-ParallelDispatchWorkers -Streams @($Streams) -TaskHash $taskHash
+  if (-not $startup.ok) {
+    return @{ ok=$false; merged=0; reason=$startup.reason }
+  }
+
+  $workers = @($startup.workers)
+  $completed = Wait-ParallelDispatchResults -Workers $workers -TaskHash $taskHash -TimeoutMin $TimeoutMin -PollSec $PollSec
+  return Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash
 }
