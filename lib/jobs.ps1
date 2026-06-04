@@ -183,6 +183,8 @@ public static class BridgeJobNative {
     FileStream logStream = null;
     Thread stdoutThread = null;
     Thread stderrThread = null;
+    SafeFileHandle stdoutSafeHandle = null;
+    SafeFileHandle stderrSafeHandle = null;
 
     try {
       hJob = CreateJobObject(IntPtr.Zero, jobName);
@@ -228,10 +230,14 @@ public static class BridgeJobNative {
 
       logStream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
       object logLock = new object();
-      IntPtr stdoutHandle = stdoutRead; stdoutRead = IntPtr.Zero;
-      IntPtr stderrHandle = stderrRead; stderrRead = IntPtr.Zero;
-      stdoutThread = new Thread(delegate() { CopyPipeToLog(stdoutHandle, logStream, logLock); });
-      stderrThread = new Thread(delegate() { CopyPipeToLog(stderrHandle, logStream, logLock); });
+      stdoutSafeHandle = new SafeFileHandle(stdoutRead, true);
+      stdoutRead = IntPtr.Zero;
+      stderrSafeHandle = new SafeFileHandle(stderrRead, true);
+      stderrRead = IntPtr.Zero;
+      SafeFileHandle stdoutThreadHandle = stdoutSafeHandle;
+      SafeFileHandle stderrThreadHandle = stderrSafeHandle;
+      stdoutThread = new Thread(delegate() { CopyPipeToLog(stdoutThreadHandle, logStream, logLock); });
+      stderrThread = new Thread(delegate() { CopyPipeToLog(stderrThreadHandle, logStream, logLock); });
       stdoutThread.IsBackground = true;
       stderrThread.IsBackground = true;
       stdoutThread.Start();
@@ -244,12 +250,12 @@ public static class BridgeJobNative {
       UInt32 waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
       if (waitResult == WAIT_TIMEOUT) {
         TerminateJobObject(hJob, 1);
-        stdoutThread.Join(5000);
-        stderrThread.Join(5000);
+        TryJoinThread(stdoutThread, 5000);
+        TryJoinThread(stderrThread, 5000);
         throw new InvalidOperationException("RunCommandInJob timed out after " + timeoutMs + " ms");
       }
-      stdoutThread.Join();
-      stderrThread.Join();
+      TryJoinThread(stdoutThread, -1);
+      TryJoinThread(stderrThread, -1);
 
       UInt32 exitCode;
       if (!GetExitCodeProcess(pi.hProcess, out exitCode)) throw LastError("GetExitCodeProcess");
@@ -264,8 +270,10 @@ public static class BridgeJobNative {
       CloseHandleSafe(ref stderrWrite);
       CloseHandleSafe(ref stdinRead);
       CloseHandleSafe(ref stdinWrite);
-      if (stdoutThread != null && stdoutThread.IsAlive) stdoutThread.Join(1000);
-      if (stderrThread != null && stderrThread.IsAlive) stderrThread.Join(1000);
+      TryJoinThread(stdoutThread, 1000);
+      TryJoinThread(stderrThread, 1000);
+      DisposeHandleSafe(ref stdoutSafeHandle);
+      DisposeHandleSafe(ref stderrSafeHandle);
       if (logStream != null) logStream.Dispose();
       if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
       if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
@@ -288,8 +296,8 @@ public static class BridgeJobNative {
     }
   }
 
-  private static void CopyPipeToLog(IntPtr readHandle, FileStream logStream, object logLock) {
-    using (FileStream pipeStream = new FileStream(new SafeFileHandle(readHandle, true), FileAccess.Read)) {
+  private static void CopyPipeToLog(SafeFileHandle readHandle, FileStream logStream, object logLock) {
+    using (FileStream pipeStream = new FileStream(readHandle, FileAccess.Read)) {
       byte[] buffer = new byte[4096];
       int count;
       while ((count = pipeStream.Read(buffer, 0, buffer.Length)) > 0) {
@@ -342,6 +350,24 @@ public static class BridgeJobNative {
       CloseHandle(handle);
       handle = IntPtr.Zero;
     }
+  }
+
+  private static void DisposeHandleSafe(ref SafeFileHandle handle) {
+    if (handle != null) {
+      handle.Dispose();
+      handle = null;
+    }
+  }
+
+  private static void TryJoinThread(Thread thread, int millisecondsTimeout) {
+    if (thread == null) return;
+    try {
+      if (millisecondsTimeout < 0) {
+        thread.Join();
+      } else {
+        thread.Join(millisecondsTimeout);
+      }
+    } catch (ThreadStateException) {}
   }
 }
 '@
