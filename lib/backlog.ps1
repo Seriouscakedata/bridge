@@ -4,12 +4,18 @@
 #           also: rejected, failed, held, auto-dropped, auto-resolved.
 
 $script:BacklogCuratorModel = 'gemini-2.5-flash-lite'
+$script:BacklogLibraryDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }
 
 #region Backlog runtime and persistence helpers
 
+function Get-BacklogLibraryDir {
+  if (-not [string]::IsNullOrWhiteSpace([string]$script:BacklogLibraryDir)) { return [string]$script:BacklogLibraryDir }
+  return (Join-Path (Get-BacklogFallbackBridgeRoot) 'lib')
+}
+
 function Get-BacklogFallbackBridgeRoot {
   if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) { return (Get-BridgeRoot) }
-  return (Split-Path -Parent $PSScriptRoot)
+  return (Split-Path -Parent (Get-BacklogLibraryDir))
 }
 
 function Invoke-BacklogLocked {
@@ -160,7 +166,7 @@ try {
 
 function Ensure-BacklogMemoryLoaded {
   if (-not (Get-Command Get-Embedding -ErrorAction SilentlyContinue)) {
-    $p = Join-Path $PSScriptRoot 'memory.ps1'
+    $p = Join-Path (Get-BacklogLibraryDir) 'memory.ps1'
     if (Test-Path -LiteralPath $p) { . $p }
   }
 }
@@ -168,7 +174,7 @@ function Ensure-BacklogMemoryLoaded {
 function Ensure-BacklogLLMLoaded {
   Ensure-BacklogMemoryLoaded
   if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
-    $p = Join-Path $PSScriptRoot 'llm.ps1'
+    $p = Join-Path (Get-BacklogLibraryDir) 'llm.ps1'
     if (Test-Path -LiteralPath $p) { . $p }
   }
 }
@@ -2574,6 +2580,262 @@ function Save-Backlog {
   # 2026-05-28: resolve path before closure (see Add-Idea note about scope).
   $backlogPathForSave = Resolve-BacklogPathValue
   Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
+}
+
+function Get-BacklogFailureClassValues {
+  return @('flaky', 'spec-unclear', 'blocked', 'real-bug')
+}
+
+function Normalize-BacklogFailureClass {
+  param([AllowNull()][string]$Value)
+  $v = ([string]$Value).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($v)) { return '' }
+  $v = ($v -replace '\s+', '-')
+  switch ($v) {
+    'flaky'        { return 'flaky' }
+    'flake'        { return 'flaky' }
+    'transient'    { return 'flaky' }
+    'intermittent' { return 'flaky' }
+    'spec-unclear' { return 'spec-unclear' }
+    'unclear-spec' { return 'spec-unclear' }
+    'unclear'      { return 'spec-unclear' }
+    'ambiguous'    { return 'spec-unclear' }
+    'blocked'      { return 'blocked' }
+    'blocker'      { return 'blocked' }
+    'real-bug'     { return 'real-bug' }
+    'bug'          { return 'real-bug' }
+    'realbug'      { return 'real-bug' }
+    default {
+      foreach ($cls in (Get-BacklogFailureClassValues)) {
+        if ($v -match ('(?<![a-z0-9-])' + [regex]::Escape($cls) + '(?![a-z0-9-])')) { return $cls }
+      }
+      return ''
+    }
+  }
+}
+
+function Get-BacklogFailureClass {
+  param([AllowNull()]$Item)
+  if ($null -eq $Item) { return '' }
+  try {
+    if ($Item.PSObject.Properties.Name -contains 'fail_class') {
+      return (Normalize-BacklogFailureClass ([string]$Item.fail_class))
+    }
+  } catch {}
+  return ''
+}
+
+function New-BacklogFailureClassPrompt {
+  param([Parameter(Mandatory=$true)]$Item)
+  $id = ''
+  $text = ''
+  $reason = ''
+  $status = ''
+  $tags = ''
+  try { $id = [string]$Item.id } catch {}
+  try { $text = ([string]$Item.text -replace '\s+', ' ').Trim() } catch {}
+  try { $reason = ([string]$Item.reason -replace '\s+', ' ').Trim() } catch {}
+  try { $status = [string]$Item.status } catch {}
+  try { $tags = (@($Item.tags | ForEach-Object { [string]$_ }) -join ',') } catch {}
+  if ($text.Length -gt 1800) { $text = $text.Substring(0, 1800) + '...' }
+  if ($reason.Length -gt 800) { $reason = $reason.Substring(0, 800) + '...' }
+
+  return @"
+Classify this failed autonomous backlog task into exactly one class:
+- flaky: transient timeout, model timeout, restart race, intermittent infrastructure issue.
+- spec-unclear: task request/acceptance/touch-set is ambiguous or internally contradictory.
+- blocked: cannot proceed safely because it requires operator approval, forbidden scope, missing dependency, unavailable secret/service, or hard constraint conflict.
+- real-bug: implementation/test failed because bridge code or behavior is actually wrong.
+
+Return only one token from this set: flaky, spec-unclear, blocked, real-bug
+
+Task id: $id
+Status: $status
+Tags: $tags
+Failure reason: $reason
+Task text: $text
+"@
+}
+
+function Invoke-BacklogFailureClassModel {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [string]$Model = 'gemini-2.5-flash-lite',
+    [scriptblock]$Classifier = $null,
+    [int]$TimeoutSec = 45
+  )
+  if ($Classifier) {
+    return (Normalize-BacklogFailureClass ([string](& $Classifier $Item)))
+  }
+
+  if (-not (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue)) {
+    $fallbackRoot = (Get-BacklogFallbackBridgeRoot).Replace("'", "''")
+    Set-Item -Path Function:\Get-BridgeRoot -Value ([scriptblock]::Create("return '$fallbackRoot'")) -Force
+  }
+  if (-not (Get-Command Add-ReplayRecordForCurrentTask -ErrorAction SilentlyContinue)) {
+    function global:Add-ReplayRecordForCurrentTask { param($Role, $Model, $Mode, $Prompt, $Response, $LatencyMs, $CostUsd, $Status, $ErrorType, $Provider) }
+  }
+  if (-not (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue)) {
+    $privateSecrets = Join-Path (Join-Path ([string]$env:USERPROFILE) '.bridge-private') 'secrets.json'
+    $legacySecrets = Join-Path (Get-BacklogFallbackBridgeRoot) 'secrets.json'
+    $secretsPath = ''
+    if (Test-Path -LiteralPath $privateSecrets) { $secretsPath = $privateSecrets }
+    elseif (Test-Path -LiteralPath $legacySecrets) { $secretsPath = $legacySecrets }
+    if (-not [string]::IsNullOrWhiteSpace($secretsPath)) {
+      $escapedSecrets = $secretsPath.Replace("'", "''")
+      Set-Item -Path Function:\Get-SecretsPath -Value ([scriptblock]::Create("return '$escapedSecrets'")) -Force
+    }
+  }
+  if (-not (Get-Command Invoke-LLMProvider -ErrorAction SilentlyContinue) -and -not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) {
+    $memoryLib = Join-Path (Get-BacklogLibraryDir) 'memory.ps1'
+    if (Test-Path -LiteralPath $memoryLib) { . $memoryLib }
+    $llmLib = Join-Path (Get-BacklogLibraryDir) 'llm.ps1'
+    if (Test-Path -LiteralPath $llmLib) { . $llmLib }
+  }
+
+  $prompt = New-BacklogFailureClassPrompt -Item $Item
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    $raw = $null
+    try {
+      if (Get-Command Invoke-LLMProvider -ErrorAction SilentlyContinue) {
+        $raw = Invoke-LLMProvider -Model $Model -Prompt $prompt -TimeoutSec $TimeoutSec -Temperature 0.0 -Purpose 'failure-classifier'
+      } elseif (Get-Command Invoke-LLM -ErrorAction SilentlyContinue) {
+        $raw = Invoke-LLM -Model $Model -Prompt $prompt -TimeoutSec $TimeoutSec -Temperature 0.0 -Purpose 'failure-classifier'
+      }
+    } catch {
+      $raw = $null
+    }
+    $cls = Normalize-BacklogFailureClass ([string]$raw)
+    if (-not [string]::IsNullOrWhiteSpace($cls)) { return $cls }
+    $prompt += "`n`nYour previous answer was invalid. Return exactly one allowed token and nothing else."
+  }
+  return ''
+}
+
+function Get-BacklogFailureClassFallback {
+  param([AllowNull()]$Item)
+  $text = ''
+  $reason = ''
+  try { $text = ([string]$Item.text).ToLowerInvariant() } catch {}
+  try { $reason = ([string]$Item.reason).ToLowerInvariant() } catch {}
+  $combined = ($reason + "`n" + $text)
+  if ($combined -match '(operator|approval|forbidden|hard constraint|touch-?set|scope|blocked|held|control plane|watchdog|supervisor|circuit.?breaker|secret|missing dependency|outside)') {
+    return 'blocked'
+  }
+  if ($combined -match '(timeout|timed out|zero-output|restart|race|transient|network|rate limit|429|503|flaky|intermittent)') {
+    return 'flaky'
+  }
+  if ($combined -match '(unclear|ambiguous|spec|acceptance pending|contradict|н[её]ясн|непонят|противореч)') {
+    return 'spec-unclear'
+  }
+  if ($combined -match '(parse|parser|smoke|test failed|tests failed|build failed|regression|bug|broken|exception|syntax|ошибк|слом)') {
+    return 'real-bug'
+  }
+  return 'spec-unclear'
+}
+
+function Get-BacklogFailureClassGroups {
+  param([object[]]$Items)
+  $groups = [ordered]@{}
+  foreach ($cls in (Get-BacklogFailureClassValues)) { $groups[$cls] = New-Object 'System.Collections.Generic.List[object]' }
+  $groups['unclassified'] = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($item in @($Items)) {
+    if ($null -eq $item) { continue }
+    try { if ([string]$item.status -ne 'failed') { continue } } catch { continue }
+    $cls = Get-BacklogFailureClass -Item $item
+    if ([string]::IsNullOrWhiteSpace($cls)) { $cls = 'unclassified' }
+    if (-not $groups.Contains($cls)) { $groups[$cls] = New-Object 'System.Collections.Generic.List[object]' }
+    [void]$groups[$cls].Add($item)
+  }
+  return $groups
+}
+
+function Update-BacklogFailureClasses {
+  param(
+    [string]$BacklogPath = '',
+    [string]$Model = 'gemini-2.5-flash-lite',
+    [scriptblock]$Classifier = $null
+  )
+
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $getFailureClassFn = ${function:Get-BacklogFailureClass}
+  $invokeFailureClassModelFn = ${function:Invoke-BacklogFailureClassModel}
+  $setBacklogObjectPropertyFn = ${function:Set-BacklogObjectProperty}
+  $writeBacklogAtomicFileFn = ${function:Write-BacklogAtomicFile}
+  $getFailureClassValuesFn = ${function:Get-BacklogFailureClassValues}
+  $getFailureClassFallbackFn = ${function:Get-BacklogFailureClassFallback}
+  return (Invoke-BacklogLocked ({
+    $usingExplicitPath = -not [string]::IsNullOrWhiteSpace($BacklogPath)
+    if ($usingExplicitPath) {
+      $itemsList = New-Object 'System.Collections.Generic.List[object]'
+      $byId = New-Object 'System.Collections.Specialized.OrderedDictionary'
+      $noId = New-Object 'System.Collections.Generic.List[object]'
+      if (Test-Path -LiteralPath $BacklogPath) {
+        foreach ($line in (Get-Content -LiteralPath $BacklogPath -Encoding UTF8)) {
+          if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          try { $parsed = $line | ConvertFrom-Json } catch { continue }
+          $iid = ''
+          try { $iid = [string]$parsed.id } catch { $iid = '' }
+          if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($parsed); continue }
+          if ($byId.Contains($iid)) { $byId[$iid] = $parsed } else { $byId.Add($iid, $parsed) }
+        }
+      }
+      foreach ($k in $byId.Keys) { [void]$itemsList.Add($byId[$k]) }
+      foreach ($v in $noId) { [void]$itemsList.Add($v) }
+      $items = @($itemsList.ToArray())
+    } else {
+      $items = @(& $getBacklogFn)
+    }
+    $checked = 0
+    $updated = 0
+    $failed = 0
+    foreach ($item in $items) {
+      try { if ([string]$item.status -ne 'failed') { continue } } catch { continue }
+      $checked++
+      $existing = & $getFailureClassFn -Item $item
+      if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        if ([string]$item.fail_class -ne $existing) { & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class' -Value $existing; $updated++ }
+        continue
+      }
+      $cls = & $invokeFailureClassModelFn -Item $item -Model $Model -Classifier $Classifier
+      if ([string]::IsNullOrWhiteSpace($cls)) {
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_error' -Value 'classifier-empty-or-invalid'
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_model' -Value $Model
+        $cls = & $getFailureClassFallbackFn -Item $item
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class' -Value $cls
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_source' -Value 'fallback-after-llm-empty'
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+        $failed++
+        $updated++
+        continue
+      }
+      & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class' -Value $cls
+      & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_model' -Value $Model
+      & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_source' -Value $(if ($Classifier) { 'mock' } else { 'llm' })
+      & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+      try {
+        if ($item.PSObject.Properties.Name -contains 'fail_class_error') { $item.PSObject.Properties.Remove('fail_class_error') }
+      } catch {}
+      $updated++
+    }
+    if ($updated -gt 0 -or $failed -gt 0) {
+      if ($usingExplicitPath) {
+        $lines = @($items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+        $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
+        & $writeBacklogAtomicFileFn -Path $BacklogPath -Content $content
+      } else {
+        & $saveBacklogFn $items
+      }
+    }
+    return [pscustomobject]@{
+      checked = [int]$checked
+      updated = [int]$updated
+      failed = [int]$failed
+      model = $Model
+      allowed = @(& $getFailureClassValuesFn)
+    }
+  }.GetNewClosure()))
 }
 
 function New-BacklogLLMPriorityPrompt {

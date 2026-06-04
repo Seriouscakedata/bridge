@@ -215,6 +215,21 @@ if (Test-Path $bk) {
     try { $o = $ln | ConvertFrom-Json; if ($o.id) { $lastStatus[[string]$o.id] = [string]$o.status; $lastObj[[string]$o.id] = $o } } catch {}
   }
 }
+try {
+  if (-not (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue)) { function Get-BridgeRoot { return $root } }
+  $backlogLib = Join-Path $root 'lib\backlog.ps1'
+  if (Test-Path -LiteralPath $backlogLib) { . $backlogLib }
+  if (Get-Command Update-BacklogFailureClasses -ErrorAction SilentlyContinue) {
+    $fc = Update-BacklogFailureClasses -BacklogPath $bk -Model 'gemini-2.5-flash-lite'
+    if ($fc -and ([int]$fc.updated -gt 0 -or [int]$fc.failed -gt 0)) {
+      $lastStatus = @{}; $lastObj = @{}
+      foreach ($ln in [System.IO.File]::ReadAllLines($bk, [System.Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+        try { $o = $ln | ConvertFrom-Json; if ($o.id) { $lastStatus[[string]$o.id] = [string]$o.status; $lastObj[[string]$o.id] = $o } } catch {}
+      }
+    }
+  }
+} catch {}
 $grp = @{}; foreach ($s in $lastStatus.Values) { if (-not $grp.ContainsKey($s)) { $grp[$s] = 0 }; $grp[$s]++ }
 Write-Host ("QUEUE (backlog: " + $Channel + "):") -ForegroundColor Yellow
 $qline = ($grp.GetEnumerator() | Where-Object { $_.Key -in @('approved','running','new','held','failed') } | Sort-Object Name | ForEach-Object { $_.Key + "=" + $_.Value }) -join "  "
@@ -276,22 +291,21 @@ $susp = Join-Path $root 'control\sentinel.suspect'
 if (Test-Path $susp) { $sp = JFile $susp; if ($sp) { [void]$waiting.Add("sentinel: storm suspect sig=" + $sp.sig + " '" + (Trunc $sp.sample 50) + "'") } }
 $heldCount = [int]$grp['held']; $failedCount = [int]$grp['failed']
 if ($heldCount -gt 0) { [void]$waiting.Add("$heldCount task(s) HELD in backlog") }
-# #4 FAILURE-CLASSIFIER (pulse-side heuristic, no LLM): group failed tasks so I know WHAT broke.
+# #4 FAILURE-CLASSIFIER: group failed tasks by stored fail_class so I know WHAT broke.
 if ($failedCount -gt 0) {
-  $failClasses = @{}
-  foreach ($it in $lastObj.Values) {
-    if ([string]$it.status -ne 'failed') { continue }
-    $reason = ([string]$it.reason).ToLowerInvariant()
-    $txt = ([string]$it.text).ToLowerInvariant()
-    $cls = if ($reason -match 'restart.?loop|task_restart|survived') { 'flaky/timeout' }
-           elseif ($txt -match 'watchdog|supervisor|process.?supervision|circuit.?break|runtime.?incident') { 'control-plane (operator-only)' }
-           elseif ($reason -match 'parse|smoke|broken') { 'real-bug' }
-           else { 'needs-review' }
-    if (-not $failClasses.ContainsKey($cls)) { $failClasses[$cls] = 0 }
-    $failClasses[$cls]++
+  if (Get-Command Get-BacklogFailureClassGroups -ErrorAction SilentlyContinue) {
+    $failGroups = Get-BacklogFailureClassGroups -Items @($lastObj.Values)
+    foreach ($cls in @('blocked', 'real-bug', 'spec-unclear', 'flaky', 'unclassified')) {
+      if (-not $failGroups.Contains($cls)) { continue }
+      $items = @($failGroups[$cls].ToArray())
+      if ($items.Count -eq 0) { continue }
+      $titles = @($items | Select-Object -First 3 | ForEach-Object { Trunc ([string]$_.text) 70 })
+      $suffix = if ($titles.Count -gt 0) { ': ' + ($titles -join ' | ') } else { '' }
+      [void]$waiting.Add("FAILED $cls ($($items.Count))$suffix")
+    }
+  } else {
+    [void]$waiting.Add("$failedCount FAILED -> unclassified=$failedCount")
   }
-  $clsLine = ($failClasses.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { $_.Key + '=' + $_.Value }) -join ', '
-  [void]$waiting.Add("$failedCount FAILED -> " + $clsLine)
 }
 Write-Host "NEEDS YOU:" -ForegroundColor Yellow
 if ($waiting.Count -eq 0) { Write-Host "  (nothing waiting)" -ForegroundColor Green }
