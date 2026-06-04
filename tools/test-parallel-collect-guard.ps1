@@ -9,46 +9,13 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'lib\parallel.ps1')
 
 if (-not (Get-Command _NormalizeRelPath -ErrorAction SilentlyContinue)) {
-  function _NormalizeRelPath {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-    $p = [string]$Path
-    if ([System.IO.Path]::IsPathRooted($p)) { return $null }
-    $p = ($p -replace '\\', '/').Trim()
-    if ([string]::IsNullOrWhiteSpace($p)) { return $null }
-    if ($p.StartsWith('./')) { $p = $p.Substring(2) }
-    $parts = New-Object System.Collections.Generic.List[string]
-    foreach ($segment in ($p -split '/+')) {
-      if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.') { continue }
-      if ($segment -eq '..') { return $null }
-      $parts.Add($segment)
-    }
-    if ($parts.Count -eq 0) { return $null }
-    return ($parts -join '/')
-  }
+  Write-Host "FAIL: production helper _NormalizeRelPath is not visible after dot-source"
+  exit 1
 }
 
 if (-not (Get-Command Test-ParallelCollectedPathAllowed -ErrorAction SilentlyContinue)) {
-  function Test-ParallelCollectedPathAllowed {
-    param(
-      [string]$RelativePath,
-      [string[]]$DeclaredFiles
-    )
-
-    $target = _NormalizeRelPath $RelativePath
-    if ([string]::IsNullOrWhiteSpace($target)) { return $false }
-    if ($target -eq '.git' -or $target.StartsWith('.git/')) { return $false }
-    if (-not $DeclaredFiles -or @($DeclaredFiles).Count -eq 0) { return $false }
-
-    foreach ($declared in @($DeclaredFiles)) {
-      $normalized = _NormalizeRelPath $declared
-      if ([string]::IsNullOrWhiteSpace($normalized)) { continue }
-      if ($normalized -eq '.git' -or $normalized.StartsWith('.git/')) { continue }
-      if ($target -eq $normalized) { return $true }
-      if ($target.StartsWith($normalized + '/')) { return $true }
-    }
-    return $false
-  }
+  Write-Host "FAIL: production helper Test-ParallelCollectedPathAllowed is not visible after dot-source"
+  exit 1
 }
 
 $pass = 0
@@ -114,14 +81,14 @@ Assert ($allowedStatuses -contains 'paused-for-restart') "paused-for-restart is 
 $merged = 2
 $total = 2
 $qCount = 0
-$cleanComplete = ($merged -ge $total -and $qCount -eq 0 -and $total -gt 0)
+$cleanComplete = ($merged -eq $total -and $qCount -eq 0 -and $total -gt 0)
 Assert $cleanComplete "clean complete: merged==total, quarantined==0"
 
 # 15. Mixed: merged=1, quarantined=1, total=2 -> not clean, but anyDelivered=true
 $merged = 1
 $total = 2
 $qCount = 1
-$cleanComplete = ($merged -ge $total -and $qCount -eq 0 -and $total -gt 0)
+$cleanComplete = ($merged -eq $total -and $qCount -eq 0 -and $total -gt 0)
 $anyDelivered = ($merged -ge 1)
 Assert (-not $cleanComplete -and $anyDelivered) "mixed: not clean but anyDelivered=true"
 
