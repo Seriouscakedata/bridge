@@ -689,6 +689,8 @@ Status note: Atom 11 adds deterministic user journey scenario extraction into pr
 
 Status note: Atom 12 auto-discovers and auto-runs project-provided browser/e2e smoke scripts by default (smoke:browser, smoke:e2e, etc.) when acceptance.json does not explicitly set smokeScripts; smoke:launch acts as orchestrator and suppresses duplicates; enforcing/generating browser smoke scripts in projects remains a future atom.
 
+Status note: Atom 13 adds a deterministic journey coverage gate: declared journeys must have static journey checks or browser/e2e/smoke:launch coverage, otherwise final project acceptance fails; generated browser harness remains a future atom.
+
 Параллельность:
 
 - route/status checks, auth scenario checks, admin scenario checks can develop parallel;

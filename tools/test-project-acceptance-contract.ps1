@@ -128,6 +128,12 @@ try {
     Assert-True ([string]$js.source -eq 'journey') 'expected journey source marker'
   }
 
+  $cfgFixture = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageStatic = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgFixture
+  $coverageStaticStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageStatic
+  Assert-True ([bool]$coverageStatic.required -and [bool]$coverageStatic.ok -and [int]$coverageStatic.journey_web_specs_count -ge 1) 'expected static journey specs to satisfy coverage'
+  Assert-True ([string]$coverageStaticStep.name -eq 'plan-contract:journey-coverage' -and [bool]$coverageStaticStep.ok) 'expected coverage step to pass with static journey specs'
+
   $pkgA = ('{"scripts":{"smoke:browser":"cmd","smoke:ux":"cmd","smoke:api":"cmd"}}' | ConvertFrom-Json)
   $smokeA = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkgA)
   Assert-True ($smokeA.Count -eq 3) ('expected 3 auto smoke scripts, got ' + [string]$smokeA.Count)
@@ -157,6 +163,37 @@ try {
 
   $cfgEmpty = Get-ProjectAcceptanceConfig -ProjectRoot $project
   Assert-True ($cfgEmpty.smokeScripts.Count -eq 0) 'expected empty smokeScripts when no package.json'
+
+  $actionOnlyContract = [ordered]@{
+    user_journeys = @(
+      [ordered]@{
+        id = 'action-only-flow'
+        steps = @('click login button', 'submit credentials', 'verify profile screen')
+      }
+    )
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($actionOnlyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $project 'package.json'), '{"scripts":{"smoke:browser":"cmd"}}', (New-Object System.Text.UTF8Encoding($false)))
+  $cfgBrowserCoverage = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageBrowser = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgBrowserCoverage
+  $coverageBrowserStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageBrowser
+  Assert-True ([bool]$coverageBrowser.required -and [bool]$coverageBrowser.ok -and [int]$coverageBrowser.journey_web_specs_count -eq 0) 'expected browser smoke script to satisfy action-only journey coverage'
+  Assert-True ((@($coverageBrowser.browser_smoke_scripts) -join ',') -eq 'smoke:browser' -and [bool]$coverageBrowserStep.ok) 'expected smoke:browser to be reported as coverage'
+  Remove-Item -LiteralPath (Join-Path $project 'package.json') -Force
+
+  $cfgNoCoverage = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageMissing = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgNoCoverage
+  $coverageMissingStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageMissing
+  Assert-True ([bool]$coverageMissing.required -and -not [bool]$coverageMissing.ok) 'expected action-only journeys without browser smoke to fail coverage'
+  Assert-True (-not [bool]$coverageMissingStep.ok -and [string]$coverageMissingStep.details -match 'no static journey checks') 'expected coverage failure reason to mention missing static checks'
+
+  $noJourneyContract = [ordered]@{
+    project_goal = 'Contract fixture with no declared journeys for coverage gate tests.'
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($noJourneyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $coverageNotRequired = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config (Get-ProjectAcceptanceConfig -ProjectRoot $project)
+  $coverageNotRequiredStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageNotRequired
+  Assert-True (-not [bool]$coverageNotRequired.required -and [bool]$coverageNotRequired.ok -and [bool]$coverageNotRequiredStep.ok) 'expected no-journey contract to pass coverage as not required'
 
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'project-contract.json') -Force
   $missingSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)

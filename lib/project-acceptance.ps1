@@ -827,6 +827,61 @@ function Get-ProjectAcceptancePlanContractJourneySpecs {
   return @($specs.ToArray())
 }
 
+function Get-ProjectAcceptanceBrowserSmokeScripts {
+  param([object[]]$SmokeScripts = @())
+  $result = @()
+  foreach ($scriptName in @($SmokeScripts)) {
+    $name = ([string]$scriptName).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    $lower = $name.ToLowerInvariant()
+    $isBrowserSmoke = ($lower -eq 'smoke:launch' -or $lower -match 'browser' -or $lower -match 'e2e')
+    if ($isBrowserSmoke -and ($result -notcontains $name)) { $result += $name }
+  }
+  return $result
+}
+
+function Get-ProjectAcceptanceJourneyCoverageFact {
+  param([string]$ProjectRoot, $Config)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  $journeyCount = 0
+  if ($info.contract) {
+    $journeyCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('user_journeys','journeys','flows','workflows','scenarios'))
+  }
+  $journeyWebSpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
+  $browserSmokeScripts = @(Get-ProjectAcceptanceBrowserSmokeScripts -SmokeScripts @($Config.smokeScripts))
+  $required = ($journeyCount -gt 0)
+  $ok = $true
+  $reason = 'no journeys declared'
+  if ($required) {
+    if ($journeyWebSpecs.Count -gt 0) {
+      $reason = 'static journey checks present'
+    } elseif ($browserSmokeScripts.Count -gt 0) {
+      $reason = 'browser/e2e smoke script present'
+    } else {
+      $ok = $false
+      $reason = 'journeys declared but no static journey checks or browser/e2e smoke script'
+    }
+  }
+  return [pscustomobject]@{
+    required = [bool]$required
+    ok = [bool]$ok
+    journey_count = [int]$journeyCount
+    journey_web_specs_count = [int]$journeyWebSpecs.Count
+    browser_smoke_scripts = @($browserSmokeScripts)
+    reason = [string]$reason
+  }
+}
+
+function New-ProjectAcceptanceJourneyCoverageStep {
+  param($Fact)
+  $details = 'required=' + [string]$Fact.required +
+    ' journey_count=' + [string]$Fact.journey_count +
+    ' journey_web_specs_count=' + [string]$Fact.journey_web_specs_count +
+    ' browser_smoke_scripts=' + ((@($Fact.browser_smoke_scripts) | ForEach-Object { [string]$_ }) -join ',') +
+    ' reason=' + [string]$Fact.reason
+  return (New-ProjectAcceptanceStep -Name 'plan-contract:journey-coverage' -Ok ([bool]$Fact.ok) -Details $details)
+}
+
 function Invoke-ProjectAcceptanceHttpText {
   param([string]$Url)
   try {
@@ -864,6 +919,8 @@ function Invoke-ProjectAcceptance {
   foreach ($planStep in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $ProjectRoot)) {
     [void]$steps.Add($planStep)
   }
+  $journeyCoverage = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $ProjectRoot -Config $cfg
+  [void]$steps.Add((New-ProjectAcceptanceJourneyCoverageStep -Fact $journeyCoverage))
 
   foreach ($scriptName in @($cfg.requiredScripts)) {
     Write-ProjectAcceptanceTrace -Channel $ch -Text "script start $scriptName"
