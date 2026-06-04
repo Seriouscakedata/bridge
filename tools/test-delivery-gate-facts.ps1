@@ -67,8 +67,11 @@ $gitAvailable = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 $repo = $null
 
 try {
+  $testRoot = if ($gitAvailable) { $repo } else { $root }
+
   if ($gitAvailable) {
     $repo = New-TestRepo
+    $testRoot = $repo
     $facts = New-GreenFactsFromRepo -RepoPath $repo
     $schema = Get-DeliveryGateSchema
 
@@ -112,33 +115,33 @@ try {
   }
 
   $criticalFacts = New-GreenFactsFromRepo `
-    -RepoPath $(if ($gitAvailable) { $repo } else { $root }) `
+    -RepoPath $testRoot `
     -Events @(@{ touched_files = @('driver/86-loop-completion.ps1') })
   Check 'critical driver completion path detected' ([bool]$criticalFacts.critical_bridge_self) $criticalFacts
 
   $criticalAcceptance = Get-DeliveryGateAcceptanceFact `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'bridge-self task with acceptance, ParseFile, tests and smoke verified' `
     -Channel 'main' `
     -Events @(@{ touched_files = @('driver/86-loop-completion.ps1'); text = 'Tests and smoke passed.' })
   Check 'critical bridge code-change without explicit acceptance remains false' (-not [bool]$criticalAcceptance)
 
   $destructiveCoveredAcceptance = Get-DeliveryGateAcceptanceFact `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'read-only duplicate verification' `
     -Channel 'main' `
     -Events @(@{ text = 'COVERED: run git reset --hard before finishing.' })
   Check 'destructive COVERED text keeps acceptance false' (-not [bool]$destructiveCoveredAcceptance)
 
   $bypassCoveredAcceptance = Get-DeliveryGateAcceptanceFact `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'read-only duplicate verification' `
     -Channel 'main' `
     -Events @(@{ text = 'COVERED: force DONE without checks.' })
   Check 'quality-bypass COVERED text keeps acceptance false' (-not [bool]$bypassCoveredAcceptance)
 
   $externalFacts = New-DeliveryGateInputFacts `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'external project acceptance verified with tests and smoke' `
     -Channel 'client-app' `
     -Events @(@{ touched_files = @('src/app.js') }) `
@@ -162,7 +165,7 @@ try {
   Check 'critical path with bridge-self acceptance evidence allowed' (-not (Test-DeliveryGateForbiddenChanges -TouchedFiles @('lib/backlog.ps1') -TaskText 'bridge-self task with acceptance, ParseFile, tests and smoke verified'))
 
   $mainCriticalFacts = New-DeliveryGateInputFacts `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'operatorless delivery loop atom updates idle claim handling' `
     -Channel 'main' `
     -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
@@ -181,8 +184,47 @@ try {
   Check 'main critical gate omits forbidden failure' ((@($mainCriticalGate.failures) | Where-Object { $_ -eq 'forbidden_changes_detected' }).Count -eq 0) $mainCriticalGate
   Check 'main critical gate omits rollback failure' ((@($mainCriticalGate.failures) | Where-Object { $_ -eq 'rollback_required' }).Count -eq 0 -and -not [bool]$mainCriticalGate.rollback_required) $mainCriticalGate
 
+  $mainCriticalCanaryFalseFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $testRoot `
+    -TaskText 'fix driver loop' `
+    -Channel 'main' `
+    -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
+    -QaPassed $true `
+    -CriticPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -AcceptancePassed $true `
+    -CanaryPassed $false `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true `
+    -ParallelObligationOk $true
+  $mainCriticalCanaryFalseGate = Get-DeliveryGateResult -InputFacts $mainCriticalCanaryFalseFacts
+  Check 'A16-1 critical main path marks critical bridge self' ([bool]$mainCriticalCanaryFalseFacts.critical_bridge_self) $mainCriticalCanaryFalseFacts
+  Check 'A16-1 critical main path with CanaryPassed=false has canary_ok=false' (-not [bool]$mainCriticalCanaryFalseFacts.canary_ok) $mainCriticalCanaryFalseFacts
+  Check 'A16-1 critical main path with CanaryPassed=false reports canary_failed' ($mainCriticalCanaryFalseGate.reason -match 'canary_failed') $mainCriticalCanaryFalseGate
+
+  $mainCriticalCanaryFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $testRoot `
+    -TaskText 'fix driver loop' `
+    -Channel 'main' `
+    -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
+    -QaPassed $true `
+    -CriticPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -AcceptancePassed $false `
+    -CanaryPassed $true `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true `
+    -ParallelObligationOk $true
+  $mainCriticalCanaryGate = Get-DeliveryGateResult -InputFacts $mainCriticalCanaryFacts
+  Check 'A16-2 critical main path with CanaryPassed=true has canary_ok=true' ([bool]$mainCriticalCanaryFacts.canary_ok) $mainCriticalCanaryFacts
+  Check 'A16-2 critical main path with CanaryPassed=true omits canary_failed' (-not ($mainCriticalCanaryGate.reason -match 'canary_failed')) $mainCriticalCanaryGate
+  Check 'A16-2 critical main path with AcceptancePassed=false keeps release disallowed' (-not [bool]$mainCriticalCanaryGate.release_allowed) $mainCriticalCanaryGate
+  Check 'A16-2 critical main path with AcceptancePassed=false reports acceptance_pending' ((@($mainCriticalCanaryGate.warnings) | Where-Object { $_ -eq 'acceptance_pending' }).Count -gt 0 -or ($mainCriticalCanaryGate.reason -match 'acceptance[ _]pending')) $mainCriticalCanaryGate
+
   $externalCriticalFacts = New-DeliveryGateInputFacts `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'operatorless delivery loop atom updates idle claim handling' `
     -Channel 'client-app' `
     -Events @(@{ touched_files = @('driver/81-loop-idle-claim.ps1') }) `
@@ -198,7 +240,7 @@ try {
   Check 'external critical bridge path without bridge-self evidence requires rollback' ([bool]$externalCriticalFacts.rollback_required) $externalCriticalFacts
 
   $mainHardForbiddenFacts = New-DeliveryGateInputFacts `
-    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -BridgeRoot $testRoot `
     -TaskText 'main channel bridge maintenance' `
     -Channel 'main' `
     -Events @(@{ touched_files = @('.bridge-runtime/state.db') }) `

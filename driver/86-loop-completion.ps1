@@ -1053,6 +1053,33 @@ $diff
           -BaseCommit $dgBase `
           -HeadCommit $dgHead `
           -Events $dgEvents
+        # Atom 16: preliminary facts to detect critical_bridge_self before canary.
+        $dgPrelimFacts = New-DeliveryGateInputFacts `
+          -BridgeRoot $bridgeRoot `
+          -Channel $Channel `
+          -TaskText $task `
+          -BaseCommit $dgBase `
+          -HeadCommit $dgHead `
+          -Events $dgEvents `
+          -QaPassed $false `
+          -CriticPassed $false `
+          -ParsePassed $false `
+          -SmokePassed $false `
+          -AcceptancePassed $false `
+          -CanaryPassed $false
+        $dgCanaryPassed = $false
+        if ([bool]$dgPrelimFacts.critical_bridge_self `
+            -and -not [bool]$dgPrelimFacts.rollback_required `
+            -and -not [bool]$dgPrelimFacts.destructive_patterns `
+            -and -not [bool]$dgPrelimFacts.quality_bypass_detected) {
+          try {
+            . (Join-Path $bridgeRoot 'lib\canary.ps1')
+            $dgCanaryResult = Invoke-CanaryCycle -Force -NoStateUpdate
+            $dgCanaryPassed = ([bool]$dgCanaryResult.ok -eq $true) -and ([bool]$dgCanaryResult.skipped -ne $true)
+          } catch {
+            $dgCanaryPassed = $false
+          }
+        }
         $dgFacts = New-DeliveryGateInputFacts `
           -BridgeRoot $bridgeRoot `
           -Channel $Channel `
@@ -1065,6 +1092,7 @@ $diff
           -ParsePassed $true `
           -SmokePassed $true `
           -AcceptancePassed $dgAcceptancePassed `
+          -CanaryPassed $dgCanaryPassed `
           -MemoryUpdated $true `
           -SelfModelRefreshed $true `
           -ParallelObligationOk $true

@@ -124,7 +124,13 @@ try {
   Check 'shadow block does not set plannerStatus' ($block -notmatch '\$plannerStatus\s*=')
   Check 'shadow block does not set task failure' ($block -notmatch '\bSet-TaskLastFailure\b')
   Check 'shadow block does not continue' ($block -notmatch '\bcontinue\b')
-  Check 'shadow block has no hard-coded acceptance false' ($block -notmatch '-AcceptancePassed\s+\$false')
+  Check 'shadow block preserves dynamic acceptance binding for final facts' ($block -match '-AcceptancePassed\s+\$dgAcceptancePassed')
+  # B16-1: 86-loop-completion must reference Invoke-CanaryCycle
+  Check 'B16-1 completion references Invoke-CanaryCycle' ($completion -match 'Invoke-CanaryCycle') $completion
+  # B16-2: completion must pass -CanaryPassed to New-DeliveryGateInputFacts
+  Check 'B16-2 completion passes -CanaryPassed' ($completion -match '-CanaryPassed') $completion
+  # B16-3: canary in shadow must not affect plannerStatus or task failure
+  Check 'B16-3 canary result is shadow-only, no plannerStatus coupling' ($completion -notmatch 'plannerStatus.*canary|canary.*plannerStatus') $completion
 
   Check 'writer ps1 has UTF-8 BOM' (Test-FileHasUtf8Bom -Path (Join-Path $root 'lib\delivery-gate-shadow.ps1'))
   Check 'test ps1 has UTF-8 BOM' (Test-FileHasUtf8Bom -Path (Join-Path $root 'tools\test-delivery-gate-shadow.ps1'))

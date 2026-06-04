@@ -332,6 +332,7 @@ function New-DeliveryGateInputFacts {
     [bool]$ParsePassed = $false,
     [bool]$SmokePassed = $false,
     [bool]$AcceptancePassed = $false,
+    [bool]$CanaryPassed = $false,
     [bool]$MemoryUpdated = $false,
     [bool]$SelfModelRefreshed = $false,
     [bool]$ParallelObligationOk = $false
@@ -353,7 +354,7 @@ function New-DeliveryGateInputFacts {
   $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel
   $destructive = Test-DeliveryGateDestructivePatternsText -Text $scanText
   $qualityBypass = Test-DeliveryGateQualityBypassText -Text $scanText
-  $canaryOk = if ($critical) { ([bool]$ParsePassed -and [bool]$SmokePassed -and [bool]$AcceptancePassed) } else { $true }
+  $canaryOk = if ($critical) { ([bool]$ParsePassed -and [bool]$SmokePassed -and [bool]$CanaryPassed) } else { $true }
   $rollbackRequired = [bool]($forbidden -or $destructive)
 
   $evidence = @(
@@ -361,7 +362,7 @@ function New-DeliveryGateInputFacts {
     ('touched=' + @($touched.ToArray()).Count),
     ('critical=' + [string][bool]$critical),
     ('repo_clean=' + [string][bool]$repoClean),
-    ('qa=' + [string][bool]$QaPassed + ' critic=' + [string][bool]$CriticPassed + ' parse=' + [string][bool]$ParsePassed + ' smoke=' + [string][bool]$SmokePassed + ' acceptance=' + [string][bool]$AcceptancePassed)
+    ('qa=' + [string][bool]$QaPassed + ' critic=' + [string][bool]$CriticPassed + ' parse=' + [string][bool]$ParsePassed + ' smoke=' + [string][bool]$SmokePassed + ' acceptance=' + [string][bool]$AcceptancePassed + ' canary=' + [string][bool]$CanaryPassed)
   ) -join "`n"
 
   return [ordered]@{

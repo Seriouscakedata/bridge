@@ -1,4 +1,4 @@
-# Operatorless Delivery Loop — план развития моста до команды без внешнего ревьюера
+﻿# Operatorless Delivery Loop — план развития моста до команды без внешнего ревьюера
 
 > Цель: превратить мост из "автопилота с оператором" в команду полного цикла.
 > Человек дает входную цель и границы. Дальше мост сам планирует, декомпозирует,
@@ -713,6 +713,7 @@ Status note: Atom 14 fixed active-task transcript contamination: user messages p
 
 - read-only classifiers/tests can run parallel;
 - restart/live-verify/rollback logic serial.
+- **Atom 16** (Bind Canary → Delivery Gate): existing `Invoke-CanaryCycle -Force -NoStateUpdate` wired into shadow block for `critical_bridge_self` completions; `canary_ok` now uses real canary result, not AcceptancePassed; acceptance promotion remains separate.
 
 Атомы:
 
