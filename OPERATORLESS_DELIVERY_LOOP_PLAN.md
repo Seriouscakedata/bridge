@@ -1,4 +1,4 @@
-﻿# Operatorless Delivery Loop — план развития моста до команды без внешнего ревьюера
+# Operatorless Delivery Loop — план развития моста до команды без внешнего ревьюера
 
 > Цель: превратить мост из "автопилота с оператором" в команду полного цикла.
 > Человек дает входную цель и границы. Дальше мост сам планирует, декомпозирует,
@@ -678,7 +678,7 @@ Serial допустим только если есть причина:
    - Status note: Atom 9 shadow-report wiring added for successful normal DONE; promotion to blocking/release gate remains future and evidence-based.
    - Status note: Atom 10 binds deterministic acceptance facts for shadow-only reports; blocking promotion remains future and evidence-based.
    - Status note: Atom 15 splits false rollback from critical bridge-self canary requirements: main-channel self-development changes remain critical and canary-gated, but are not forbidden solely for lacking task-text magic words.
-2. Reuse existing safety/verify checks.
+2. Reuse existing safety/verify functions; do not duplicate.
 3. Add missing acceptance check binding.
 4. Add quality bypass hard fail.
 5. Add bridge-self critical path classifier.
@@ -714,6 +714,7 @@ Status note: Atom 14 fixed active-task transcript contamination: user messages p
 - read-only classifiers/tests can run parallel;
 - restart/live-verify/rollback logic serial.
 - **Atom 16** (Bind Canary → Delivery Gate): existing `Invoke-CanaryCycle -Force -NoStateUpdate` wired into shadow block for `critical_bridge_self` completions; `canary_ok` now uses real canary result, not AcceptancePassed; acceptance promotion remains separate.
+- **Atom 17** (Clean Acceptance API): removed `CanaryPassed` parameter from `Get-DeliveryGateAcceptanceFact`; canary is evidence for `canary_ok` only (via `New-DeliveryGateInputFacts`), never acceptance promotion.
 
 Атомы:
 
@@ -728,7 +729,7 @@ Status note: Atom 14 fixed active-task transcript contamination: user messages p
 
 Параллельность:
 
-- API read endpoints and UI panels can run parallel if files do not overlap;
+- API read endpoints и UI panels can run parallel if files do not overlap;
 - final UI integration serial.
 
 Атомы:
@@ -852,4 +853,3 @@ SelfModel foundation, Contract hardening, Parallel-by-default.
 > Мост может быть без внешнего ревьюера только тогда, когда у него есть внутренние независимые роли,
 > deterministic gates и настоящая acceptance-приемка. Одна модель не должна быть последней инстанцией
 > для собственного кода, merge или release.
-
