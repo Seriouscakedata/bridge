@@ -33,6 +33,29 @@
       $rcDefer   = Join-Path $ctlDir 'restart.deferred'
       $rcMaxDefer = 600
       $rcBusy = $false
+      $rcDeepThinkActive = $false
+      function Test-RestartCoalescerDeepThinkActive {
+        param([object]$ChannelState)
+        if ($null -eq $ChannelState) { return $false }
+        $rcStatus = [string]$ChannelState.status
+        $rcMode   = [string]$ChannelState.task_mode
+        $rcTask   = [string]$ChannelState.current_task
+        $rcSnap   = [string]$ChannelState.discuss_snapshot
+        $rcTexts  = @($rcTask, $rcSnap) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+        $rcHasMarker = $false
+        foreach ($rcText in $rcTexts) {
+          if ([string]$rcText -match '\[\[DEEP-THINK\]\]') { $rcHasMarker = $true; break }
+        }
+        if (-not $rcHasMarker) { return $false }
+
+        # Deep-think filing happens in completion checks before current_task is cleared.
+        # Holding until state cleanup is safer than trusting the final transcript marker:
+        # STATUS: DONE / ## ИТОГ may be present while IDEA filing has not run yet.
+        if (-not [string]::IsNullOrWhiteSpace($rcTask)) { return $true }
+        if ($rcStatus -in @('discuss','planning','working','coding','research','study')) { return $true }
+        if ($rcMode -in @('discuss','planning','working','coding','research','study')) { return $true }
+        return $false
+      }
       # 2026-05-30 defense: Get-ActiveSlugs now lives in lib/channels.ps1 (driver dot-sources it).
       # Guard anyway -- if it's ever unavailable again, fall back to 'main' instead of throwing the
       # WHOLE apply-block into the outer catch. That exact silent failure (supervisor-only function
@@ -44,19 +67,27 @@
         if (Test-Path -LiteralPath $rcSp) {
           try {
             $rcCs = [IO.File]::ReadAllText($rcSp, [Text.Encoding]::UTF8) | ConvertFrom-Json
-            if (([string]$rcCs.status -in @('working','planning','coding','discuss','study','research')) -or (-not [string]::IsNullOrWhiteSpace([string]$rcCs.current_task)) -or [bool]$rcCs.doctor_active) { $rcBusy = $true; break }
+            if (Test-RestartCoalescerDeepThinkActive -ChannelState $rcCs) { $rcDeepThinkActive = $true }
+            if (([string]$rcCs.status -in @('working','planning','coding','discuss','study','research')) -or (-not [string]::IsNullOrWhiteSpace([string]$rcCs.current_task)) -or [bool]$rcCs.doctor_active) { $rcBusy = $true }
           } catch {}
         }
       }
-      if ((Test-Path -LiteralPath $rcFlag) -and $rcBusy) {
+      if ((Test-Path -LiteralPath $rcFlag) -and ($rcBusy -or $rcDeepThinkActive)) {
         # 2026-05-30 v3: stamp the FIRST-defer time into restart.deferred content and do
         # NOT reset it on re-defer. Otherwise continuous self-dev work re-defers every
         # tick, bumping the file mtime, so the maxDefer cap (age) never fires and the
         # restart is held FOREVER -- a never-deploying gate exposed this. Keep original stamp.
         try {
           if (Test-Path -LiteralPath $rcDefer) { Remove-Item -LiteralPath $rcFlag -Force }
-          else { Set-Content -LiteralPath $rcDefer -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII; Remove-Item -LiteralPath $rcFlag -Force }
-          Write-Host 'recycle: deferred restart.flag (a channel is busy, coalescing)'
+          else {
+            Set-Content -LiteralPath $rcDefer -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII
+            Remove-Item -LiteralPath $rcFlag -Force
+            if ($rcDeepThinkActive) {
+              Add-Message -From system -Text '♻ Перезапуск отложен: идёт [[DEEP-THINK]] discuss, жду filing идей или failsafe-timeout.' -Kind event | Out-Null
+            }
+          }
+          if ($rcDeepThinkActive) { Write-Host 'recycle: deferred restart.flag (active deep-think discuss)' }
+          else { Write-Host 'recycle: deferred restart.flag (a channel is busy, coalescing)' }
         } catch {}
       }
       elseif (Test-Path -LiteralPath $rcDefer) {
@@ -94,7 +125,19 @@
         $rcQuietSec = 0
         try { $rcCp = Get-ConversationPath; $rcQuietSec = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $rcCp).LastWriteTimeUtc).TotalSeconds } catch {}
         $rcFailsafeQuiet = 300
-        if (-not $rcPlanHasWork) {
+        if ($rcDeepThinkActive -and $rcQuietSec -ge $rcFailsafeQuiet) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — [[DEEP-THINK]] ещё активен, но мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
+        } elseif ($rcDeepThinkActive -and $rcAge -ge $rcMaxDefer) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: [[DEEP-THINK]] hold превысил максимум.' -Kind event | Out-Null } catch {}
+        } elseif ($rcDeepThinkActive) {
+          Write-Host 'recycle: holding deferred restart (active deep-think discuss)'
+        } elseif ($rcBusy -and $rcQuietSec -ge $rcFailsafeQuiet) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — канал ещё busy, но мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
+        } elseif ($rcBusy -and $rcAge -ge $rcMaxDefer) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: busy-hold превысил максимум.' -Kind event | Out-Null } catch {}
+        } elseif ($rcBusy) {
+          Write-Host 'recycle: holding deferred restart (a channel is busy)'
+        } elseif (-not $rcPlanHasWork) {
           try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Применяю отложенный перезапуск — план пуст, пачка self-dev правок завершена (один recycle).' -Kind event | Out-Null } catch {}
         } elseif ($rcQuietSec -ge $rcFailsafeQuiet) {
           try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
