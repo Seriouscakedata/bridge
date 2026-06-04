@@ -3,6 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $script:TestBridgeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-workpack-batch-test-' + [guid]::NewGuid().ToString('N'))
+$script:TestChannel = 'main'
 
 function Assert-True {
   param([bool]$Condition, [string]$Message)
@@ -30,18 +31,34 @@ function Assert-FrontierReportShape {
     'parallel_required',
     'reason',
     'selected_ids',
-    'selected_groups'
+    'selected_groups',
+    'candidate_count',
+    'blocked_count',
+    'blocked_ids',
+    'selected_lanes',
+    'selected_parallel_groups',
+    'reason_detail',
+    'reason_details',
+    'candidates',
+    'frontier_candidates'
   )
   foreach ($field in $required) {
     Assert-True ($Report.PSObject.Properties.Name -contains $field) ("{0} missing frontier field {1}" -f $Name, $field)
   }
 }
 
+function Get-FrontierCandidateById {
+  param($Report, [string]$Id)
+  $match = @(@($Report.frontier_candidates) | Where-Object { [string]$_.id -eq [string]$Id } | Select-Object -First 1)
+  if ($match.Count -eq 0) { return $null }
+  return $match[0]
+}
+
 function Get-BridgeRoot { return $script:TestBridgeRoot }
-function Get-EffectiveChannel { return 'main' }
+function Get-EffectiveChannel { return $script:TestChannel }
 function Get-ChannelDir {
   param([string]$Slug = $null)
-  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = 'main' }
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = $script:TestChannel }
   return (Join-Path (Join-Path $script:TestBridgeRoot 'channels') $Slug)
 }
 function Get-ChannelBacklogPath {
@@ -51,6 +68,14 @@ function Get-ChannelBacklogPath {
 function Use-BridgeLock {
   param([scriptblock]$Body)
   & $Body
+}
+function Get-EffectiveScope {
+  param([string]$Slug = $null)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = $script:TestChannel }
+  if ($Slug -eq 'main') {
+    return [pscustomobject]@{ is_bridge=$true; bridge_root=$script:TestBridgeRoot; project_root='' }
+  }
+  return [pscustomobject]@{ is_bridge=$false; bridge_root=$script:TestBridgeRoot; project_root=(Join-Path $script:TestBridgeRoot ('project-' + $Slug)) }
 }
 function Get-AutonomySettings {
   return [pscustomobject]@{
@@ -132,8 +157,8 @@ try {
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
   Save-Backlog $items
 
-  $idProtectedA = Add-Idea -Text 'change watchdog restart gate in watchdog.ps1' -From 'test' -Status 'approved' -SkipCurator
-  $idProtectedB = Add-Idea -Text 'change supervisor safety loop in supervisor.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idProtectedA = Add-Idea -Text 'change watchdog restart gate in watchdog.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
+  $idProtectedB = Add-Idea -Text 'change supervisor safety loop in supervisor.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
   foreach ($item in $items) {
     if ([string]$item.id -eq [string]$idProtectedA) {
@@ -155,7 +180,7 @@ try {
   Assert-True ([int]$protectedReport.protected_count -gt 0) 'expected protected-only report protected_count>0'
   Assert-True (@('protected-dominant','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected protected-only reason, got {0}" -f [string]$protectedReport.reason)
 
-  $idProtectedC = Add-Idea -Text 'fix supervisor handle cleanup in supervisor.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idProtectedC = Add-Idea -Text 'fix supervisor handle cleanup in supervisor.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
   foreach ($item in $items) {
     if ([string]$item.id -in @([string]$idProtectedA, [string]$idProtectedB, [string]$idProtectedC)) {
@@ -229,7 +254,7 @@ try {
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
   Save-Backlog $items
 
-  $idAuditModelA = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] attribution-gap -- Restart has no task_id and no task turn within 10 minutes. Add task attribution to restart events.' -From 'test' -Status 'approved' -SkipCurator
+  $idAuditModelA = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] attribution-gap -- Restart has no task_id and no task turn within 10 minutes. Add task attribution to restart events.' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
   $idAuditModelB = Add-Idea -Text "[deep-agent/functional-model/gemini-2.5-flash] Data Structure / Registry Drift -- The 'features\state.json' file contains stale feature activation data." -From 'test' -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
   foreach ($item in $items) {
@@ -304,6 +329,178 @@ try {
   Assert-True (-not (@($frontierBatch.ids) -contains [string]$idWaiting)) 'waiting dependency atom should not block or join frontier'
   Assert-True ([int]$frontierBatch.dependency_wait_count -ge 1) 'expected dependency wait telemetry'
   Assert-True ([string]$frontierBatch.frontier_report.reason -eq 'batch-available') ("expected dependency-ready reason, got {0}" -f [string]$frontierBatch.frontier_report.reason)
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idMixA = Add-Idea -Text 'update account settings copy in app/settings/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idMixB = Add-Idea -Text 'update billing empty state in app/billing/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idOverlapGroup = Add-Idea -Text 'second billing tweak in app/billing/summary.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idOverlapTouch = Add-Idea -Text 'touch same settings page again in app/settings/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idMixC = Add-Idea -Text 'document release checklist in docs/release.md' -From 'test' -Status 'approved' -SkipCurator
+  $idWaitDep = Add-Idea -Text 'wire reports page after reports-api exists in app/reports/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idBridgeControl = Add-Idea -Text 'adjust driver.ps1 control-plane loop without admission' -From 'test' -Status 'approved' -SkipCurator
+  $idProtectedMixed = Add-Idea -Text 'change safety watchdog behavior in watchdog.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idProjectMain = Add-Idea -Text 'project scoped task in app/project/page.tsx' -From 'test' -Status 'approved' -Scope 'project' -Project 'fixture-project' -SkipCurator
+  $idObsolete = Add-Idea -Text 'obsolete done workpack should not affect batch in old/file.ts' -From 'test' -Status 'done' -SkipCurator
+  $idDuplicate = Add-Idea -Text 'duplicate rejected workpack should not affect batch in old/dup.ts' -From 'test' -Status 'rejected' -SkipCurator
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idMixA) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'settings-copy' -Force
+      $item | Add-Member -NotePropertyName parallel_group -NotePropertyValue 'ui-settings' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-settings' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/settings/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/settings/page.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/settings/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idMixB) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'billing-empty' -Force
+      $item | Add-Member -NotePropertyName parallel_group -NotePropertyValue 'ui-billing' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-billing' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/billing/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/billing/page.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/billing/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idMixC) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'release-docs' -Force
+      $item | Add-Member -NotePropertyName parallel_group -NotePropertyValue 'docs-release' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-release' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:docs/release.md' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('docs/release.md') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('docs/release.md') -Force
+    } elseif ([string]$item.id -eq [string]$idOverlapGroup) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'billing-second' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-billing-2' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/billing/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/billing/summary.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/billing/summary.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idOverlapTouch) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'settings-second' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-settings-2' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/settings/other.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/settings/page.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/settings/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idWaitDep) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'reports-page' -Force
+      $item | Add-Member -NotePropertyName depends_on -NotePropertyValue @('reports-api') -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-reports' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/reports/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/reports/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idBridgeControl) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'driver-control' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-driver' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:driver.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('driver.ps1') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('driver.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idProtectedMixed) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'watchdog-safety' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-watchdog' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'safety' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('watchdog.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idProjectMain) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'project-main-scope' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-mix-project-main' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/project/page.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/project/page.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idObsolete) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-obsolete' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:old/file.ts' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('old/file.ts') -Force
+    } elseif ([string]$item.id -eq [string]$idDuplicate) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-duplicate' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:old/dup.ts' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('old/dup.ts') -Force
+    }
+  }
+  Save-Backlog $items
+
+  $mixedBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($mixedBatch -ne $null) 'expected mixed fixture to produce a batch'
+  Assert-FrontierReportShape -Report $mixedBatch.frontier_report -Name 'mixed'
+  Assert-True ([int]$mixedBatch.count -eq 3) ("expected 3 mixed selected items, got {0}" -f [int]$mixedBatch.count)
+  Assert-True (@($mixedBatch.ids) -contains [string]$idMixA) 'expected mixed settings item'
+  Assert-True (@($mixedBatch.ids) -contains [string]$idMixB) 'expected mixed billing item'
+  Assert-True (@($mixedBatch.ids) -contains [string]$idMixC) 'expected mixed docs item'
+  Assert-True (@($mixedBatch.frontier_report.selected_lanes) -contains 'ui-settings') 'expected selected lane ui-settings'
+  Assert-True (@($mixedBatch.frontier_report.selected_parallel_groups) -contains 'ui-billing') 'expected selected parallel group ui-billing'
+  $overlapGroupCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idOverlapGroup
+  $overlapTouchCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idOverlapTouch
+  $depCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idWaitDep
+  $controlCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idBridgeControl
+  $protectedCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idProtectedMixed
+  $projectMainCandidate = Get-FrontierCandidateById -Report $mixedBatch.frontier_report -Id $idProjectMain
+  Assert-True ($overlapGroupCandidate -and [string]$overlapGroupCandidate.block_reason -eq 'conflicts-or-touch-overlap') 'expected conflict-group overlap detail'
+  Assert-True ($overlapTouchCandidate -and [string]$overlapTouchCandidate.block_reason -eq 'conflicts-or-touch-overlap') 'expected touch overlap detail'
+  Assert-True (@($overlapTouchCandidate.conflict_with_touches) -contains 'app/settings/page.tsx') 'expected overlap touch path detail'
+  Assert-True ($depCandidate -and [string]$depCandidate.block_reason -eq 'dependency-wait') 'expected dependency wait candidate'
+  Assert-True (@($depCandidate.unmet_deps) -contains 'reports-api(missing)') 'expected unmet dependency detail'
+  Assert-True ($controlCandidate -and [string]$controlCandidate.block_reason -eq 'control-plane-admission-required') 'expected bridge control-plane admission block'
+  Assert-True ($protectedCandidate -and [string]$protectedCandidate.block_reason -eq 'control-plane-admission-required') 'expected protected control-plane admission block'
+  Assert-True ($projectMainCandidate -and [string]$projectMainCandidate.block_reason -eq 'project-scope-blocked') 'expected main-channel project-scope block'
+  Assert-True (-not (@($mixedBatch.frontier_report.frontier_candidates | ForEach-Object { [string]$_.id }) -contains [string]$idObsolete)) 'obsolete done item should not be frontier candidate'
+  Assert-True (-not (@($mixedBatch.frontier_report.frontier_candidates | ForEach-Object { [string]$_.id }) -contains [string]$idDuplicate)) 'rejected duplicate item should not be frontier candidate'
+  Assert-True ([string]$mixedBatch.frontier_report.reason_detail -match 'selected:') 'expected readable mixed reason detail'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idOnlyA = Add-Idea -Text 'update first overlapping panel in app/same/a.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idOnlyB = Add-Idea -Text 'update second overlapping panel in app/same/b.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idOnlyA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-overlap-a' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'same-lane' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/same/a.tsx') -Force
+    } elseif ([string]$item.id -eq [string]$idOnlyB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-overlap-b' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'same-lane' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('app/same/b.tsx') -Force
+    }
+  }
+  Save-Backlog $items
+  $overlapOnlyReport = Get-BacklogWorkpackFrontierReport
+  Assert-FrontierReportShape -Report $overlapOnlyReport -Name 'overlap-only'
+  Assert-True (-not [bool]$overlapOnlyReport.batch_available) 'expected overlap-only no batch'
+  Assert-True ([int]$overlapOnlyReport.selected_count -eq 1) ("expected 1 overlap-only selected item, got {0}" -f [int]$overlapOnlyReport.selected_count)
+  Assert-True ([string]$overlapOnlyReport.reason -eq 'conflicts-or-touch-overlap') ("expected conflicts-or-touch-overlap, got {0}" -f [string]$overlapOnlyReport.reason)
+  Assert-True ([string]$overlapOnlyReport.reason_detail -match 'skipped:') 'expected overlap-only skipped detail'
+
+  $script:TestChannel = 'project-x'
+  $projectDir = Get-ChannelDir -Slug 'project-x'
+  New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug 'project-x'), '', (New-Object System.Text.UTF8Encoding($false)))
+  $idProjectDriver = Add-Idea -Text 'project task updates its own driver.ps1 adapter' -From 'test' -Status 'approved' -Scope 'project' -Project 'project-x' -SkipCurator
+  $idProjectUi = Add-Idea -Text 'project task updates ui panel in src/panel.tsx' -From 'test' -Status 'approved' -Scope 'project' -Project 'project-x' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idProjectDriver) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'project-driver' -Force
+      $item | Add-Member -NotePropertyName parallel_group -NotePropertyValue 'project-runtime' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-project-driver' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:driver.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('driver.ps1') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('driver.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idProjectUi) {
+      $item | Add-Member -NotePropertyName slug -NotePropertyValue 'project-panel' -Force
+      $item | Add-Member -NotePropertyName parallel_group -NotePropertyValue 'project-ui' -Force
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-project-ui' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:src/panel.tsx' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('src/panel.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('src/panel.tsx') -Force
+    }
+  }
+  Save-Backlog $items
+  $projectBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($projectBatch -ne $null) 'expected external project channel batch'
+  Assert-FrontierReportShape -Report $projectBatch.frontier_report -Name 'external-project'
+  Assert-True (@($projectBatch.ids) -contains [string]$idProjectDriver) 'external project driver.ps1 task should be selectable'
+  $projectDriverCandidate = Get-FrontierCandidateById -Report $projectBatch.frontier_report -Id $idProjectDriver
+  Assert-True ($projectDriverCandidate -and [bool]$projectDriverCandidate.selected) 'expected project driver candidate selected'
+  Assert-True ([string]$projectDriverCandidate.block_reason -ne 'control-plane-admission-required') 'external project channel must not receive bridge control-plane block'
+  $script:TestChannel = 'main'
 
   $startSrvText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Start-Srv and Start-Drv use Start-Process with -NoNewWindow but redirect stdout/stderr to files. If the log file path is unavailable, supervisor can fail silently.'
   $reapText = '[deep-agent/reliability-model/deepseek-v4-flash] process_supervision -- Reap-Bloated kills tracked processes with private memory > 8GB. The threshold is hardcoded.'

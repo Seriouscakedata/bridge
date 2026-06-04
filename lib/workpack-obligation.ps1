@@ -10,6 +10,7 @@ $script:WorkpackSerialReasonEnum = @(
   'foundation',
   'integration',
   'critical_bridge_self',
+  'control_plane',
   'shared_file',
   'shared_schema',
   'active_claim_conflict',
@@ -23,15 +24,27 @@ $script:WorkpackSerialReasonEnum = @(
 $script:WorkpackCriticalSerialReasonEnum = @(
   'foundation',
   'integration',
-  'critical_bridge_self'
+  'critical_bridge_self',
+  'control_plane'
 )
 
 function Get-WorkpackAtomMetadataSchema {
   return [ordered]@{
-    ok       = 'bool'
-    missing  = 'string[]'
-    warnings = 'string[]'
-    blockers = 'string[]'
+    ok              = 'bool'
+    slug            = 'string'
+    files           = 'string[]'
+    touch_set       = 'string[]'
+    depends_on      = 'string[]'
+    lane            = 'string'
+    parallel_group  = 'string'
+    serial_reason   = 'string'
+    acceptance      = 'object'
+    checks          = 'string[]'
+    runnable_reasons = 'string[]'
+    blocked_reasons  = 'string[]'
+    missing         = 'string[]'
+    warnings        = 'string[]'
+    blockers        = 'string[]'
   }
 }
 
@@ -45,6 +58,9 @@ function Get-WorkpackEligibilityReportSchema {
     serial_barriers        = 'string[]'
     parallel_required      = 'bool'
     serial_reason_required = 'bool'
+    runnable_reasons       = 'object'
+    blocked_reasons        = 'object'
+    atom_metadata          = 'object[]'
     warnings               = 'string[]'
     blockers               = 'string[]'
   }
@@ -162,6 +178,20 @@ function Get-WorkpackSerialReason {
   return ([string]$value).Trim()
 }
 
+function Get-WorkpackLane {
+  param($Atom)
+  $value = Get-WorkpackValue -Object $Atom -Names @('lane','Lane')
+  if ($null -eq $value) { return '' }
+  return ([string]$value).Trim()
+}
+
+function Test-WorkpackControlPlaneLane {
+  param([string]$Lane)
+  if ([string]::IsNullOrWhiteSpace($Lane)) { return $false }
+  $normalized = $Lane.Trim().ToLowerInvariant() -replace '_','-'
+  return ($normalized -eq 'control-plane')
+}
+
 function Test-WorkpackValidSerialReason {
   param(
     [string]$SerialReason,
@@ -190,19 +220,64 @@ function Add-WorkpackIssue {
   }
 }
 
+function Add-WorkpackReason {
+  param(
+    [System.Collections.IDictionary]$Target,
+    [string]$Slug,
+    [string]$Reason
+  )
+  if ([string]::IsNullOrWhiteSpace($Slug) -or [string]::IsNullOrWhiteSpace($Reason)) { return }
+  if (-not $Target.Contains($Slug)) {
+    $Target[$Slug] = @()
+  }
+  $current = @($Target[$Slug])
+  if ($current -notcontains $Reason) {
+    $Target[$Slug] = @($current + $Reason)
+  }
+}
+
+function Join-WorkpackReasonValues {
+  param([string[]]$Values)
+  $items = @(ConvertTo-WorkpackUniqueStringArray -Values $Values | Sort-Object)
+  if ($items.Count -eq 0) { return '' }
+  return ($items -join ',')
+}
+
 function New-WorkpackAtomMetadataResult {
   param(
     [Parameter(Mandatory)][bool]$Ok,
+    [string]$Slug = '',
+    [string[]]$Files = @(),
+    [string[]]$TouchSet = @(),
+    [string[]]$DependsOn = @(),
+    [string]$Lane = '',
+    [string]$ParallelGroup = '',
+    [string]$SerialReason = '',
+    $Acceptance = $null,
+    [string[]]$Checks = @(),
+    [string[]]$RunnableReasons = @(),
+    [string[]]$BlockedReasons = @(),
     [string[]]$Missing = @(),
     [string[]]$Warnings = @(),
     [string[]]$Blockers = @()
   )
 
   return [pscustomobject][ordered]@{
-    ok       = $Ok
-    missing  = @(ConvertTo-WorkpackUniqueStringArray -Values $Missing)
-    warnings = @(ConvertTo-WorkpackUniqueStringArray -Values $Warnings)
-    blockers = @(ConvertTo-WorkpackUniqueStringArray -Values $Blockers)
+    ok               = $Ok
+    slug             = $Slug
+    files            = @(ConvertTo-WorkpackNormalizedPathArray -Values $Files)
+    touch_set        = @(ConvertTo-WorkpackNormalizedPathArray -Values $TouchSet)
+    depends_on       = @(ConvertTo-WorkpackUniqueStringArray -Values $DependsOn)
+    lane             = $Lane
+    parallel_group   = $ParallelGroup
+    serial_reason    = $SerialReason
+    acceptance       = $Acceptance
+    checks           = @(ConvertTo-WorkpackUniqueStringArray -Values $Checks)
+    runnable_reasons = @(ConvertTo-WorkpackUniqueStringArray -Values $RunnableReasons)
+    blocked_reasons  = @(ConvertTo-WorkpackUniqueStringArray -Values $BlockedReasons)
+    missing          = @(ConvertTo-WorkpackUniqueStringArray -Values $Missing)
+    warnings         = @(ConvertTo-WorkpackUniqueStringArray -Values $Warnings)
+    blockers         = @(ConvertTo-WorkpackUniqueStringArray -Values $Blockers)
   }
 }
 
@@ -216,6 +291,9 @@ function New-WorkpackEligibilityReport {
     [string[]]$SerialBarriers = @(),
     [Parameter(Mandatory)][bool]$ParallelRequired,
     [Parameter(Mandatory)][bool]$SerialReasonRequired,
+    [System.Collections.IDictionary]$RunnableReasons = @{},
+    [System.Collections.IDictionary]$BlockedReasons = @{},
+    [object[]]$AtomMetadata = @(),
     [string[]]$Warnings = @(),
     [string[]]$Blockers = @()
   )
@@ -229,6 +307,9 @@ function New-WorkpackEligibilityReport {
     serial_barriers        = @(ConvertTo-WorkpackUniqueStringArray -Values $SerialBarriers)
     parallel_required      = $ParallelRequired
     serial_reason_required = $SerialReasonRequired
+    runnable_reasons       = $RunnableReasons
+    blocked_reasons        = $BlockedReasons
+    atom_metadata          = @($AtomMetadata)
     warnings               = @(ConvertTo-WorkpackUniqueStringArray -Values $Warnings)
     blockers               = @(ConvertTo-WorkpackUniqueStringArray -Values $Blockers)
   }
@@ -266,6 +347,7 @@ function Get-WorkpackSelectionResult {
   $blockedByTouch = New-Object System.Collections.Generic.List[string]
   $selectedGroups = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
   $selectedTouch = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $blockedReasons = [ordered]@{}
   $capacityReached = $false
 
   foreach ($candidate in $ordered.ToArray()) {
@@ -275,23 +357,27 @@ function Get-WorkpackSelectionResult {
       break
     }
 
-    $group = [string]$candidate.workpack_conflict_group
+    $group = [string]$candidate.parallel_group
     $hasGroupConflict = (-not [string]::IsNullOrWhiteSpace($group) -and $selectedGroups.Contains($group))
     $hasTouchConflict = $false
+    $touchConflict = ''
     foreach ($touch in @($candidate.workpack_touch_set)) {
       if ($selectedTouch.Contains([string]$touch)) {
         $hasTouchConflict = $true
+        $touchConflict = [string]$touch
         break
       }
     }
 
     if ($hasGroupConflict) {
       Add-WorkpackIssue -Target $blockedByConflict -Value ([string]$candidate.slug)
+      Add-WorkpackReason -Target $blockedReasons -Slug ([string]$candidate.slug) -Reason ('parallel_group:' + $group)
       continue
     }
 
     if ($hasTouchConflict) {
       Add-WorkpackIssue -Target $blockedByTouch -Value ([string]$candidate.slug)
+      Add-WorkpackReason -Target $blockedReasons -Slug ([string]$candidate.slug) -Reason ('touch_overlap:' + $touchConflict)
       continue
     }
 
@@ -306,6 +392,7 @@ function Get-WorkpackSelectionResult {
     selected            = @($selected.ToArray())
     blocked_by_conflict = @($blockedByConflict.ToArray())
     blocked_by_touch    = @($blockedByTouch.ToArray())
+    blocked_reasons     = $blockedReasons
   }
 }
 
@@ -339,6 +426,8 @@ function Test-WorkpackAtomMetadata {
   $missing = New-Object System.Collections.Generic.List[string]
   $warnings = New-Object System.Collections.Generic.List[string]
   $blockers = New-Object System.Collections.Generic.List[string]
+  $runnableReasons = New-Object System.Collections.Generic.List[string]
+  $blockedReasons = New-Object System.Collections.Generic.List[string]
 
   $slug = Get-WorkpackSlug -Atom $Atom
   if ([string]::IsNullOrWhiteSpace($slug)) {
@@ -359,6 +448,7 @@ function Test-WorkpackAtomMetadata {
   }
 
   $filesValue = Get-WorkpackValue -Object $Atom -Names @('files','Files')
+  $files = @()
   if (-not (Test-WorkpackStringEnumerable -Value $filesValue -AllowEmpty $false)) {
     Add-WorkpackIssue -Target $missing -Value 'files'
     Add-WorkpackIssue -Target $blockers -Value 'files'
@@ -373,30 +463,41 @@ function Test-WorkpackAtomMetadata {
   }
 
   $dependsValue = Get-WorkpackValue -Object $Atom -Names @('depends_on','DependsOn')
+  $depends = @()
   if (-not (Test-WorkpackStringEnumerable -Value $dependsValue -AllowEmpty $true)) {
     Add-WorkpackIssue -Target $missing -Value 'depends_on'
     Add-WorkpackIssue -Target $blockers -Value 'depends_on'
-  } elseif (@(ConvertTo-WorkpackUniqueStringArray -Values (ConvertTo-WorkpackStringArray -Value $dependsValue)).Count -lt @(ConvertTo-WorkpackStringArray -Value $dependsValue).Count) {
-    Add-WorkpackIssue -Target $warnings -Value 'depends_on_duplicates'
+  } else {
+    $depends = ConvertTo-WorkpackUniqueStringArray -Values (ConvertTo-WorkpackStringArray -Value $dependsValue)
+    if (@($depends).Count -lt @(ConvertTo-WorkpackStringArray -Value $dependsValue).Count) {
+      Add-WorkpackIssue -Target $warnings -Value 'depends_on_duplicates'
+    }
   }
 
-  $group = [string](Get-WorkpackValue -Object $Atom -Names @('workpack_conflict_group','WorkpackConflictGroup'))
+  $lane = Get-WorkpackLane -Atom $Atom
+  if ([string]::IsNullOrWhiteSpace($lane)) {
+    Add-WorkpackIssue -Target $missing -Value 'lane'
+    Add-WorkpackIssue -Target $blockers -Value 'lane'
+  }
+
+  $group = ([string](Get-WorkpackValue -Object $Atom -Names @('parallel_group','ParallelGroup','workpack_conflict_group','WorkpackConflictGroup'))).Trim()
   if ([string]::IsNullOrWhiteSpace($group)) {
-    Add-WorkpackIssue -Target $missing -Value 'workpack_conflict_group'
-    Add-WorkpackIssue -Target $blockers -Value 'workpack_conflict_group'
+    Add-WorkpackIssue -Target $missing -Value 'parallel_group'
+    Add-WorkpackIssue -Target $blockers -Value 'parallel_group'
   }
 
-  $touchValue = Get-WorkpackValue -Object $Atom -Names @('workpack_touch_set','WorkpackTouchSet')
+  $touchValue = Get-WorkpackValue -Object $Atom -Names @('touch_set','TouchSet','workpack_touch_set','WorkpackTouchSet')
+  $touches = @()
   if (-not (Test-WorkpackStringEnumerable -Value $touchValue -AllowEmpty $false)) {
-    Add-WorkpackIssue -Target $missing -Value 'workpack_touch_set'
-    Add-WorkpackIssue -Target $blockers -Value 'workpack_touch_set'
+    Add-WorkpackIssue -Target $missing -Value 'touch_set'
+    Add-WorkpackIssue -Target $blockers -Value 'touch_set'
   } else {
     $touches = ConvertTo-WorkpackNormalizedPathArray -Values (ConvertTo-WorkpackStringArray -Value $touchValue)
     if (@($touches).Count -eq 0) {
-      Add-WorkpackIssue -Target $missing -Value 'workpack_touch_set'
-      Add-WorkpackIssue -Target $blockers -Value 'workpack_touch_set'
+      Add-WorkpackIssue -Target $missing -Value 'touch_set'
+      Add-WorkpackIssue -Target $blockers -Value 'touch_set'
     } elseif (@($touches).Count -lt @(ConvertTo-WorkpackStringArray -Value $touchValue).Count) {
-      Add-WorkpackIssue -Target $warnings -Value 'workpack_touch_set_duplicates'
+      Add-WorkpackIssue -Target $warnings -Value 'touch_set_duplicates'
     }
   }
 
@@ -407,6 +508,7 @@ function Test-WorkpackAtomMetadata {
   }
 
   $checksValue = Get-WorkpackValue -Object $Atom -Names @('checks','Checks')
+  $checks = @()
   if (-not (Test-WorkpackStringEnumerable -Value $checksValue -AllowEmpty $false)) {
     Add-WorkpackIssue -Target $missing -Value 'checks'
     Add-WorkpackIssue -Target $blockers -Value 'checks'
@@ -434,8 +536,27 @@ function Test-WorkpackAtomMetadata {
     Add-WorkpackIssue -Target $blockers -Value 'serial_reason'
   }
 
+  if ($blockers.Count -eq 0) {
+    Add-WorkpackIssue -Target $runnableReasons -Value 'metadata_ok'
+  } else {
+    foreach ($blocker in @($blockers.ToArray())) {
+      Add-WorkpackIssue -Target $blockedReasons -Value ('metadata:' + $blocker)
+    }
+  }
+
   return New-WorkpackAtomMetadataResult `
     -Ok ($blockers.Count -eq 0) `
+    -Slug $slug `
+    -Files @($files) `
+    -TouchSet @($touches) `
+    -DependsOn @($depends) `
+    -Lane $lane `
+    -ParallelGroup $group `
+    -SerialReason $serialReason `
+    -Acceptance $acceptance `
+    -Checks @($checks) `
+    -RunnableReasons @($runnableReasons.ToArray()) `
+    -BlockedReasons @($blockedReasons.ToArray()) `
     -Missing @($missing.ToArray()) `
     -Warnings @($warnings.ToArray()) `
     -Blockers @($blockers.ToArray())
@@ -452,6 +573,9 @@ function Get-WorkpackEligibilityReport {
   $blockedByDeps = New-Object System.Collections.Generic.List[string]
   $serialBarriers = New-Object System.Collections.Generic.List[string]
   $validAtoms = New-Object System.Collections.Generic.List[object]
+  $atomMetadata = New-Object System.Collections.Generic.List[object]
+  $runnableReasons = [ordered]@{}
+  $blockedReasons = [ordered]@{}
   $seenSlugs = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 
   $completedSlugs = ConvertTo-WorkpackUniqueStringArray -Values (ConvertTo-WorkpackStringArray -Value (Get-WorkpackValue -Object $Context -Names @('CompletedSlugs','completed_slugs')))
@@ -478,6 +602,7 @@ function Get-WorkpackEligibilityReport {
     foreach ($issue in @($metadata.blockers)) {
       Add-WorkpackIssue -Target $blockers -Value ($label + ': ' + $issue)
     }
+    [void]$atomMetadata.Add($metadata)
 
     if (-not $metadata.ok) { continue }
 
@@ -487,11 +612,14 @@ function Get-WorkpackEligibilityReport {
     }
 
     $depends = ConvertTo-WorkpackUniqueStringArray -Values (ConvertTo-WorkpackStringArray -Value (Get-WorkpackValue -Object $atom -Names @('depends_on','DependsOn')))
-    $touches = ConvertTo-WorkpackNormalizedPathArray -Values (ConvertTo-WorkpackStringArray -Value (Get-WorkpackValue -Object $atom -Names @('workpack_touch_set','WorkpackTouchSet')))
+    $touches = ConvertTo-WorkpackNormalizedPathArray -Values (ConvertTo-WorkpackStringArray -Value (Get-WorkpackValue -Object $atom -Names @('touch_set','TouchSet','workpack_touch_set','WorkpackTouchSet')))
+    $parallelGroup = ([string](Get-WorkpackValue -Object $atom -Names @('parallel_group','ParallelGroup','workpack_conflict_group','WorkpackConflictGroup'))).Trim()
     $candidate = [pscustomobject][ordered]@{
       slug                    = $slug
       depends_on              = @($depends)
-      workpack_conflict_group = ([string](Get-WorkpackValue -Object $atom -Names @('workpack_conflict_group','WorkpackConflictGroup'))).Trim()
+      lane                    = (Get-WorkpackLane -Atom $atom)
+      parallel_group          = $parallelGroup
+      workpack_conflict_group = $parallelGroup
       workpack_touch_set      = @($touches)
       serial_reason           = (Get-WorkpackSerialReason -Atom $atom)
     }
@@ -504,17 +632,27 @@ function Get-WorkpackEligibilityReport {
     if ($unmetDeps.Count -gt 0) {
       Add-WorkpackIssue -Target $blockedByDeps -Value ([string]$candidate.slug)
       Add-WorkpackIssue -Target $warnings -Value (([string]$candidate.slug) + ': unmet_deps=' + (($unmetDeps | Sort-Object) -join ','))
+      Add-WorkpackReason -Target $blockedReasons -Slug ([string]$candidate.slug) -Reason ('deps:' + (Join-WorkpackReasonValues -Values $unmetDeps))
       continue
     }
+    Add-WorkpackReason -Target $runnableReasons -Slug ([string]$candidate.slug) -Reason 'deps_met'
     [void]$readyCandidates.Add($candidate)
   }
 
   $parallelCandidates = New-Object System.Collections.Generic.List[object]
   foreach ($candidate in @($readyCandidates | Sort-Object slug)) {
-    if (Test-WorkpackCriticalSerialBarrier -SerialReason ([string]$candidate.serial_reason)) {
+    $serialReason = [string]$candidate.serial_reason
+    if (Test-WorkpackCriticalSerialBarrier -SerialReason $serialReason) {
       Add-WorkpackIssue -Target $serialBarriers -Value ([string]$candidate.slug)
+      Add-WorkpackReason -Target $blockedReasons -Slug ([string]$candidate.slug) -Reason ('serial_reason:' + $serialReason)
       continue
     }
+    if (Test-WorkpackControlPlaneLane -Lane ([string]$candidate.lane)) {
+      Add-WorkpackIssue -Target $serialBarriers -Value ([string]$candidate.slug)
+      Add-WorkpackReason -Target $blockedReasons -Slug ([string]$candidate.slug) -Reason 'lane:control-plane'
+      continue
+    }
+    Add-WorkpackReason -Target $runnableReasons -Slug ([string]$candidate.slug) -Reason 'parallel_candidate'
     [void]$parallelCandidates.Add($candidate)
   }
 
@@ -532,6 +670,15 @@ function Get-WorkpackEligibilityReport {
       } elseif ($serialBarriers.Count -gt 0 -and $serialBarriers -contains $slug) {
         Add-WorkpackIssue -Target $warnings -Value ($slug + ': selected_is_serial_barrier')
       }
+    }
+  }
+
+  foreach ($slug in @($actualSelection.selected)) {
+    Add-WorkpackReason -Target $runnableReasons -Slug $slug -Reason 'selected_frontier'
+  }
+  foreach ($slug in @($actualSelection.blocked_reasons.Keys)) {
+    foreach ($reason in @($actualSelection.blocked_reasons[$slug])) {
+      Add-WorkpackReason -Target $blockedReasons -Slug $slug -Reason $reason
     }
   }
 
@@ -562,6 +709,9 @@ function Get-WorkpackEligibilityReport {
     -SerialBarriers @($serialBarriers.ToArray()) `
     -ParallelRequired $parallelRequired `
     -SerialReasonRequired $serialReasonRequired `
+    -RunnableReasons $runnableReasons `
+    -BlockedReasons $blockedReasons `
+    -AtomMetadata @($atomMetadata.ToArray()) `
     -Warnings @($warnings.ToArray()) `
     -Blockers @($blockers.ToArray())
 }

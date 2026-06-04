@@ -20,7 +20,7 @@ function Check {
     Write-Host ("PASS " + $Name) -ForegroundColor Green
   } else {
     $script:fail++
-    $suffix = if ($null -ne $Actual) { " actual=" + ($Actual | ConvertTo-Json -Compress -Depth 8) } else { '' }
+    $suffix = if ($null -ne $Actual) { " actual=" + ($Actual | ConvertTo-Json -Compress -Depth 10) } else { '' }
     Write-Host ("FAIL " + $Name + $suffix) -ForegroundColor Red
   }
 }
@@ -30,8 +30,9 @@ function New-Atom {
     [Parameter(Mandatory)][string]$Slug,
     [string[]]$DependsOn = @(),
     [Parameter(Mandatory)][string[]]$Files,
-    [Parameter(Mandatory)][string]$ConflictGroup,
+    [Parameter(Mandatory)][string]$ParallelGroup,
     [Parameter(Mandatory)][string[]]$TouchSet,
+    [string]$Lane = 'project',
     [string]$SerialReason = '',
     [string[]]$Checks = @('parser_parsefile'),
     [object]$Acceptance = @('targeted test'),
@@ -39,17 +40,18 @@ function New-Atom {
   )
 
   return [ordered]@{
-    slug                    = $Slug
-    title                   = ('Title for ' + $Slug)
-    task                    = ('Task for ' + $Slug)
-    files                   = @($Files)
-    depends_on              = @($DependsOn)
-    workpack_conflict_group = $ConflictGroup
-    workpack_touch_set      = @($TouchSet)
-    acceptance              = $Acceptance
-    checks                  = @($Checks)
-    risk                    = $Risk
-    serial_reason           = $SerialReason
+    slug           = $Slug
+    title          = ('Title for ' + $Slug)
+    task           = ('Task for ' + $Slug)
+    files          = @($Files)
+    touch_set      = @($TouchSet)
+    depends_on     = @($DependsOn)
+    lane           = $Lane
+    parallel_group = $ParallelGroup
+    acceptance     = $Acceptance
+    checks         = @($Checks)
+    risk           = $Risk
+    serial_reason  = $SerialReason
   }
 }
 
@@ -69,104 +71,112 @@ function Check-ReportShape {
   }
 }
 
-$independentAtoms = @(
-  (New-Atom -Slug 'alpha' -Files @('lib/alpha.ps1') -ConflictGroup 'grp-alpha' -TouchSet @('lib/alpha.ps1')),
-  (New-Atom -Slug 'beta' -Files @('tools/beta.ps1') -ConflictGroup 'grp-beta' -TouchSet @('tools/beta.ps1')),
-  (New-Atom -Slug 'gamma' -Files @('docs/gamma.md') -ConflictGroup 'grp-gamma' -TouchSet @('docs/gamma.md'))
+$mixedAtoms = @(
+  (New-Atom -Slug 'alpha-ui' -Files @('src/ui/alpha.ts') -ParallelGroup 'pg-ui' -TouchSet @('src/ui/alpha.ts')),
+  (New-Atom -Slug 'beta-api' -Files @('src/api/beta.ts') -ParallelGroup 'pg-api' -TouchSet @('src/api/beta.ts')),
+  (New-Atom -Slug 'delta-touch' -Files @('src/ui/delta.ts') -ParallelGroup 'pg-delta' -TouchSet @('src/ui/alpha.ts')),
+  (New-Atom -Slug 'epsilon-group-a' -Files @('lib/shared-a.ps1') -ParallelGroup 'pg-shared' -TouchSet @('lib/shared-a.ps1')),
+  (New-Atom -Slug 'eta-child' -DependsOn @('alpha-ui') -Files @('src/child/eta.ts') -ParallelGroup 'pg-eta' -TouchSet @('src/child/eta.ts')),
+  (New-Atom -Slug 'gamma-docs' -Files @('docs/gamma.md') -ParallelGroup 'pg-docs' -TouchSet @('docs/gamma.md')),
+  (New-Atom -Slug 'iota-project' -Files @('project/config.json') -ParallelGroup 'pg-config' -TouchSet @('project/config.json') -Lane 'project'),
+  (New-Atom -Slug 'kappa-control' -Files @('lib/driver.ps1') -ParallelGroup 'pg-control' -TouchSet @('lib/driver.ps1') -Lane 'control-plane' -SerialReason 'control_plane'),
+  (New-Atom -Slug 'lambda-integration' -Files @('lib/integration.ps1') -ParallelGroup 'pg-integration' -TouchSet @('lib/integration.ps1') -SerialReason 'integration'),
+  (New-Atom -Slug 'mu-schema' -Files @('schemas/mu.json') -ParallelGroup 'pg-schema' -TouchSet @('schemas/mu.json') -SerialReason 'shared_schema'),
+  (New-Atom -Slug 'plan-foundation' -Files @('lib/foundation.ps1') -ParallelGroup 'pg-foundation' -TouchSet @('lib/foundation.ps1') -Lane 'control-plane' -SerialReason 'foundation'),
+  (New-Atom -Slug 'theta-child-met' -DependsOn @('done-base') -Files @('src/child/theta.ts') -ParallelGroup 'pg-theta' -TouchSet @('src/child/theta.ts')),
+  (New-Atom -Slug 'xi-legacy-aliases' -Files @('src/legacy/xi.ts') -ParallelGroup 'pg-xi' -TouchSet @('src/legacy/xi.ts')),
+  (New-Atom -Slug 'zeta-group-b' -Files @('lib/shared-b.ps1') -ParallelGroup 'pg-shared' -TouchSet @('lib/shared-b.ps1'))
 )
-$independentReport = Get-WorkpackEligibilityReport -Atoms $independentAtoms -Context @{ CompletedSlugs = @() }
-Check-ReportShape 'independent report' $independentReport
-Check '3 independent ready count' ($independentReport.ready.Count -eq 3) $independentReport
-Check '3 independent parallel required' ([bool]$independentReport.parallel_required) $independentReport
-Check '3 independent selected count' ($independentReport.selected.Count -ge 2) $independentReport
 
-$overlapAtoms = @(
-  (New-Atom -Slug 'touch-a' -Files @('lib/shared.ps1') -ConflictGroup 'grp-a' -TouchSet @('lib/shared.ps1')),
-  (New-Atom -Slug 'touch-b' -Files @('tools/shared.ps1') -ConflictGroup 'grp-b' -TouchSet @('lib/shared.ps1'))
-)
-$overlapReport = Get-WorkpackEligibilityReport -Atoms $overlapAtoms
-Check-ReportShape 'overlap report' $overlapReport
-Check 'overlap blocked by touch' ($overlapReport.blocked_by_touch -contains 'touch-b') $overlapReport
-Check 'overlap not both selected' (-not (($overlapReport.selected -contains 'touch-a') -and ($overlapReport.selected -contains 'touch-b'))) $overlapReport
+$mixedAtoms[12].Remove('parallel_group')
+$mixedAtoms[12].Remove('touch_set')
+$mixedAtoms[12]['workpack_conflict_group'] = 'pg-xi'
+$mixedAtoms[12]['workpack_touch_set'] = @('src/legacy/xi.ts')
 
-$groupAtoms = @(
-  (New-Atom -Slug 'group-a' -Files @('lib/group-a.ps1') -ConflictGroup 'shared-group' -TouchSet @('lib/group-a.ps1')),
-  (New-Atom -Slug 'group-b' -Files @('lib/group-b.ps1') -ConflictGroup 'shared-group' -TouchSet @('lib/group-b.ps1'))
-)
-$groupReport = Get-WorkpackEligibilityReport -Atoms $groupAtoms
-Check 'same conflict group blocked' ($groupReport.blocked_by_conflict -contains 'group-b') $groupReport
+$mixedReport = Get-WorkpackEligibilityReport -Atoms $mixedAtoms -Context @{ CompletedSlugs = @('done-base') }
+Check-ReportShape 'mixed report' $mixedReport
+Check 'mixed selected independent alpha' ($mixedReport.selected -contains 'alpha-ui') $mixedReport
+Check 'mixed selected independent beta' ($mixedReport.selected -contains 'beta-api') $mixedReport
+Check 'mixed selected met dependency' ($mixedReport.selected -contains 'theta-child-met') $mixedReport
+Check 'mixed parallel required' ([bool]$mixedReport.parallel_required) $mixedReport
+Check 'mixed touch overlap blocked' ($mixedReport.blocked_by_touch -contains 'delta-touch') $mixedReport
+Check 'mixed touch reason present' (@($mixedReport.blocked_reasons['delta-touch']) -contains 'touch_overlap:src/ui/alpha.ts') $mixedReport
+Check 'mixed group conflict blocked' ($mixedReport.blocked_by_conflict -contains 'zeta-group-b') $mixedReport
+Check 'mixed group reason present' (@($mixedReport.blocked_reasons['zeta-group-b']) -contains 'parallel_group:pg-shared') $mixedReport
+Check 'mixed deps blocked' ($mixedReport.blocked_by_deps -contains 'eta-child') $mixedReport
+Check 'mixed deps reason present' (@($mixedReport.blocked_reasons['eta-child']) -contains 'deps:alpha-ui') $mixedReport
+Check 'mixed control plane barrier' ($mixedReport.serial_barriers -contains 'kappa-control') $mixedReport
+Check 'mixed foundation barrier' ($mixedReport.serial_barriers -contains 'plan-foundation') $mixedReport
+Check 'mixed integration barrier' ($mixedReport.serial_barriers -contains 'lambda-integration') $mixedReport
+Check 'mixed control not selected' (-not ($mixedReport.selected -contains 'kappa-control')) $mixedReport
+Check 'mixed runnable selected reason' (@($mixedReport.runnable_reasons['alpha-ui']) -contains 'selected_frontier') $mixedReport
+Check 'mixed legacy aliases selected' ($mixedReport.selected -contains 'xi-legacy-aliases') $mixedReport
 
-$unmetDepAtoms = @(
-  (New-Atom -Slug 'base' -Files @('lib/base.ps1') -ConflictGroup 'grp-base' -TouchSet @('lib/base.ps1')),
-  (New-Atom -Slug 'child' -DependsOn @('base') -Files @('lib/child.ps1') -ConflictGroup 'grp-child' -TouchSet @('lib/child.ps1'))
-)
-$unmetDepReport = Get-WorkpackEligibilityReport -Atoms $unmetDepAtoms -Context @{ CompletedSlugs = @() }
-Check 'unmet deps blocked' ($unmetDepReport.blocked_by_deps -contains 'child') $unmetDepReport
-Check 'unmet deps child not ready' (-not ($unmetDepReport.ready -contains 'child')) $unmetDepReport
+$metadata = Test-WorkpackAtomMetadata -Atom $mixedAtoms[0]
+Check-MetadataShape 'atom metadata' $metadata
+Check 'metadata normalized files' ($metadata.files -contains 'src/ui/alpha.ts') $metadata
+Check 'metadata normalized touch_set' ($metadata.touch_set -contains 'src/ui/alpha.ts') $metadata
+Check 'metadata includes lane' ($metadata.lane -eq 'project') $metadata
+Check 'metadata includes parallel_group' ($metadata.parallel_group -eq 'pg-ui') $metadata
+Check 'metadata runnable reason' ($metadata.runnable_reasons -contains 'metadata_ok') $metadata
 
-$metDepReport = Get-WorkpackEligibilityReport -Atoms $unmetDepAtoms -Context @{ CompletedSlugs = @('base') }
-Check 'met deps child ready' ($metDepReport.ready -contains 'child') $metDepReport
-
-$missingFiles = Test-WorkpackAtomMetadata -Atom ([ordered]@{
-  slug                    = 'missing-files'
-  title                   = 'Missing files'
-  task                    = 'Test files'
-  depends_on              = @()
-  workpack_conflict_group = 'grp-missing-files'
-  workpack_touch_set      = @('lib/missing-files.ps1')
-  acceptance              = @('acceptance')
-  checks                  = @('parser')
-  risk                    = 'normal'
-  serial_reason           = ''
-})
-Check-MetadataShape 'missing files metadata' $missingFiles
-Check 'missing files not ok' (-not [bool]$missingFiles.ok) $missingFiles
-Check 'missing files key present' ($missingFiles.missing -contains 'files') $missingFiles
-Check 'missing files blocker present' ($missingFiles.blockers -contains 'files') $missingFiles
-
-$missingChecks = Test-WorkpackAtomMetadata -Atom ([ordered]@{
-  slug                    = 'missing-checks'
-  title                   = 'Missing checks'
-  task                    = 'Test checks'
-  files                   = @('lib/missing-checks.ps1')
-  depends_on              = @()
-  workpack_conflict_group = 'grp-missing-checks'
-  workpack_touch_set      = @('lib/missing-checks.ps1')
-  acceptance              = @('acceptance')
-  risk                    = 'normal'
-  serial_reason           = ''
-})
-Check 'missing checks not ok' (-not [bool]$missingChecks.ok) $missingChecks
-Check 'missing checks key present' ($missingChecks.missing -contains 'checks') $missingChecks
-Check 'missing checks blocker present' ($missingChecks.blockers -contains 'checks') $missingChecks
+$legacyMetadata = Test-WorkpackAtomMetadata -Atom $mixedAtoms[12]
+Check 'legacy conflict alias accepted' ($legacyMetadata.parallel_group -eq 'pg-xi') $legacyMetadata
+Check 'legacy touch alias accepted' ($legacyMetadata.touch_set -contains 'src/legacy/xi.ts') $legacyMetadata
 
 $missingAcceptance = Test-WorkpackAtomMetadata -Atom ([ordered]@{
-  slug                    = 'missing-acceptance'
-  title                   = 'Missing acceptance'
-  task                    = 'Test acceptance'
-  files                   = @('lib/missing-acceptance.ps1')
-  depends_on              = @()
-  workpack_conflict_group = 'grp-missing-acceptance'
-  workpack_touch_set      = @('lib/missing-acceptance.ps1')
-  checks                  = @('parser')
-  risk                    = 'normal'
-  serial_reason           = ''
+  slug           = 'missing-acceptance'
+  title          = 'Missing acceptance'
+  task           = 'Test acceptance'
+  files          = @('lib/missing-acceptance.ps1')
+  touch_set      = @('lib/missing-acceptance.ps1')
+  depends_on     = @()
+  lane           = 'project'
+  parallel_group = 'pg-missing-acceptance'
+  checks         = @('parser')
+  risk           = 'normal'
+  serial_reason  = ''
 })
 Check 'missing acceptance not ok' (-not [bool]$missingAcceptance.ok) $missingAcceptance
 Check 'missing acceptance key present' ($missingAcceptance.missing -contains 'acceptance') $missingAcceptance
-Check 'missing acceptance blocker present' ($missingAcceptance.blockers -contains 'acceptance') $missingAcceptance
+Check 'missing acceptance blocked reason' ($missingAcceptance.blocked_reasons -contains 'metadata:acceptance') $missingAcceptance
 
-$serialBarrierAtoms = @(
-  (New-Atom -Slug 'foundation' -Files @('lib/foundation.ps1') -ConflictGroup 'grp-foundation' -TouchSet @('lib/foundation.ps1') -SerialReason 'foundation'),
-  (New-Atom -Slug 'parallel' -Files @('lib/parallel.ps1') -ConflictGroup 'grp-parallel' -TouchSet @('lib/parallel.ps1'))
-)
-$serialBarrierReport = Get-WorkpackEligibilityReport -Atoms $serialBarrierAtoms
-Check 'critical serial barrier listed' ($serialBarrierReport.serial_barriers -contains 'foundation') $serialBarrierReport
-Check 'critical serial barrier not selected' (-not ($serialBarrierReport.selected -contains 'foundation')) $serialBarrierReport
+$missingChecks = Test-WorkpackAtomMetadata -Atom ([ordered]@{
+  slug           = 'missing-checks'
+  title          = 'Missing checks'
+  task           = 'Test checks'
+  files          = @('lib/missing-checks.ps1')
+  touch_set      = @('lib/missing-checks.ps1')
+  depends_on     = @()
+  lane           = 'project'
+  parallel_group = 'pg-missing-checks'
+  acceptance     = @('acceptance')
+  risk           = 'normal'
+  serial_reason  = ''
+})
+Check 'missing checks not ok' (-not [bool]$missingChecks.ok) $missingChecks
+Check 'missing checks key present' ($missingChecks.missing -contains 'checks') $missingChecks
+Check 'missing checks blocked reason' ($missingChecks.blocked_reasons -contains 'metadata:checks') $missingChecks
+
+$missingLane = Test-WorkpackAtomMetadata -Atom ([ordered]@{
+  slug           = 'missing-lane'
+  title          = 'Missing lane'
+  task           = 'Test lane'
+  files          = @('lib/missing-lane.ps1')
+  touch_set      = @('lib/missing-lane.ps1')
+  depends_on     = @()
+  parallel_group = 'pg-missing-lane'
+  acceptance     = @('acceptance')
+  checks         = @('parser')
+  risk           = 'normal'
+  serial_reason  = ''
+})
+Check 'missing lane not ok' (-not [bool]$missingLane.ok) $missingLane
+Check 'missing lane key present' ($missingLane.missing -contains 'lane') $missingLane
 
 $serialRequiredAtoms = @(
-  (New-Atom -Slug 'first' -Files @('lib/first.ps1') -ConflictGroup 'grp-first' -TouchSet @('lib/first.ps1')),
-  (New-Atom -Slug 'second' -Files @('lib/second.ps1') -ConflictGroup 'grp-second' -TouchSet @('lib/second.ps1'))
+  (New-Atom -Slug 'first' -Files @('lib/first.ps1') -ParallelGroup 'pg-first' -TouchSet @('lib/first.ps1')),
+  (New-Atom -Slug 'second' -Files @('lib/second.ps1') -ParallelGroup 'pg-second' -TouchSet @('lib/second.ps1'))
 )
 $serialRequiredReport = Get-WorkpackEligibilityReport -Atoms $serialRequiredAtoms -Context @{ SelectedSlugs = @('first') }
 Check 'selected one while parallel possible' ($serialRequiredReport.selected.Count -eq 1) $serialRequiredReport

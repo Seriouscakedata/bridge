@@ -1,4 +1,84 @@
 ﻿$script:DriverLoopIdleClaimBlock = {
+  function Get-DriverWorkpackReportValue {
+    param($Obj, [string]$Name, $Default = $null)
+    try {
+      if ($Obj -and ($Obj.PSObject.Properties.Name -contains $Name) -and $null -ne $Obj.PSObject.Properties[$Name].Value) {
+        return $Obj.PSObject.Properties[$Name].Value
+      }
+    } catch {}
+    return $Default
+  }
+
+  function Format-DriverWorkpackReportArray {
+    param($Value, [int]$Max = 6)
+    $arr = @($Value | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First $Max)
+    if ($arr.Count -eq 0) { return '' }
+    return ($arr -join ',')
+  }
+
+  function Format-DriverWorkpackReasonItems {
+    param($Items, [string]$Field = 'id', [int]$Max = 4)
+    $parts = @()
+    foreach ($item in @($Items | Select-Object -First $Max)) {
+      $id = [string](Get-DriverWorkpackReportValue -Obj $item -Name $Field -Default '')
+      if ([string]::IsNullOrWhiteSpace($id)) { $id = [string](Get-DriverWorkpackReportValue -Obj $item -Name 'id' -Default '') }
+      $detail = [string](Get-DriverWorkpackReportValue -Obj $item -Name 'detail' -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($detail)) { $parts += ($id + '(' + $detail + ')') }
+      elseif (-not [string]::IsNullOrWhiteSpace($id)) { $parts += $id }
+    }
+    return ($parts -join '; ')
+  }
+
+  function Format-DriverWorkpackFrontierBrief {
+    param($Report)
+    if (-not $Report) { return '' }
+    $r = Get-DriverWorkpackReportValue -Obj $Report -Name 'report' -Default $null
+    if ($r) { $Report = $r }
+    $reason = [string](Get-DriverWorkpackReportValue -Obj $Report -Name 'reason' -Default '')
+    $claimBlock = [string](Get-DriverWorkpackReportValue -Obj $Report -Name 'claim_block_reason' -Default '')
+    $selected = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected' -Default 0))
+    $min = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'min_items' -Default 0)
+    $ready = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'ready_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'ready' -Default 0))
+    $eligible = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'eligible_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'eligible' -Default 0))
+    $deps = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'dependency_wait_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'dependency_wait' -Default 0))
+    $barrier = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'structural_wait_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'structural_wait' -Default 0))
+    $conflicts = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'conflict_skip_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'conflict_skips' -Default 0))
+    $touches = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'touch_skip_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'touch_skips' -Default 0))
+    $protected = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'protected_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'protected' -Default 0))
+    $ids = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_ids' -Default @()) -Max 8
+    $groups = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_groups' -Default @()) -Max 6
+    $lanes = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_lanes' -Default @()) -Max 6
+    $detail = [string](Get-DriverWorkpackReportValue -Obj $Report -Name 'reason_detail' -Default '')
+    $details = Get-DriverWorkpackReportValue -Obj $Report -Name 'reason_details' -Default $null
+
+    $parts = @()
+    if (-not [string]::IsNullOrWhiteSpace($reason)) { $parts += ('reason=' + $reason) }
+    if (-not [string]::IsNullOrWhiteSpace($claimBlock)) { $parts += ('claim_block=' + $claimBlock) }
+    if ($min -gt 0) { $parts += ('selected=' + $selected + '/' + $min) } else { $parts += ('selected=' + $selected) }
+    $parts += ('ready=' + $ready + '/' + $eligible)
+    if (-not [string]::IsNullOrWhiteSpace($ids)) { $parts += ('ids=' + $ids) }
+    if (-not [string]::IsNullOrWhiteSpace($groups)) { $parts += ('groups=' + $groups) }
+    if (-not [string]::IsNullOrWhiteSpace($lanes)) { $parts += ('lanes=' + $lanes) }
+    if ($deps -gt 0) { $parts += ('deps_wait=' + $deps) }
+    if ($barrier -gt 0) { $parts += ('structural=' + $barrier) }
+    if (($conflicts + $touches) -gt 0) { $parts += ('conflicts=' + ($conflicts + $touches)) }
+    if ($protected -gt 0) { $parts += ('protected=' + $protected) }
+    if ($details) {
+      $depText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'dependency_wait' -Default @())
+      $conflictText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'conflicts' -Default @())
+      $structText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'structural_barriers' -Default @())
+      $protText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'protected' -Default @())
+      $cpText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'control_plane' -Default @())
+      if (-not [string]::IsNullOrWhiteSpace($depText)) { $parts += ('deps=' + $depText) }
+      if (-not [string]::IsNullOrWhiteSpace($conflictText)) { $parts += ('overlap=' + $conflictText) }
+      if (-not [string]::IsNullOrWhiteSpace($structText)) { $parts += ('barrier=' + $structText) }
+      if (-not [string]::IsNullOrWhiteSpace($protText)) { $parts += ('protected_reason=' + $protText) }
+      if (-not [string]::IsNullOrWhiteSpace($cpText)) { $parts += ('control_plane=' + $cpText) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($detail)) { $parts += ('detail=' + $detail) }
+    return ($parts -join '; ')
+  }
+
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $script:idleStreak = 0   # user activity -> restore snappy idle cadence
@@ -427,6 +507,12 @@
                   with_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.with_workpack_count } else { 0 }
                   without_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.without_workpack_count } else { 0 }
                   protected = if ($workpackFrontierReport) { [int]$workpackFrontierReport.protected_count } else { 0 }
+                  selected_ids = if ($workpackFrontierReport) { @($workpackFrontierReport.selected_ids) } else { @($batchIds) }
+                  selected_groups = if ($workpackFrontierReport) { @($workpackFrontierReport.selected_groups) } else { @($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique) }
+                  selected_lanes = if ($workpackFrontierReport) { @($workpackFrontierReport.selected_lanes) } else { @() }
+                  reason_detail = if ($workpackFrontierReport) { [string]$workpackFrontierReport.reason_detail } else { '' }
+                  reason_details = if ($workpackFrontierReport) { $workpackFrontierReport.reason_details } else { $null }
+                  report = $workpackFrontierReport
                 }
               }
               $claimedWorkpackBatch = $true
@@ -449,7 +535,17 @@
                   structural_wait=[int]$wpBatch.structural_wait_count
                   conflict_skips=[int]$wpBatch.conflict_skip_count
                   touch_skips=[int]$wpBatch.touch_skip_count
+                  selected_ids=if ($workpackFrontierReport) { @($workpackFrontierReport.selected_ids) } else { @($batchIds) }
+                  selected_groups=if ($workpackFrontierReport) { @($workpackFrontierReport.selected_groups) } else { @($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique) }
+                  selected_lanes=if ($workpackFrontierReport) { @($workpackFrontierReport.selected_lanes) } else { @() }
+                  reason_detail=if ($workpackFrontierReport) { [string]$workpackFrontierReport.reason_detail } else { '' }
+                  reason_details=if ($workpackFrontierReport) { $workpackFrontierReport.reason_details } else { $null }
                 })
+              } catch {}
+            } elseif ($workpackFrontierReport) {
+              try {
+                $workpackFrontierReport | Add-Member -NotePropertyName claim_block_reason -NotePropertyValue 'preflight-blocked' -Force
+                $workpackFrontierReport | Add-Member -NotePropertyName claim_block_detail -NotePropertyValue ('safe workpack items below min_items after pre-flight: ' + [int]$safeItems.Count + '/' + [int]$wpCfg.minItems) -Force
               } catch {}
             }
           }
@@ -503,6 +599,12 @@
                   protected = [int]$serialBatch.protected_count
                   root = [string]$serialBatch.selected_root
                   mode = 'serial'
+                  selected_ids = if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_ids) } else { @($batchIds) }
+                  selected_groups = if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_groups) } else { @($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique) }
+                  selected_lanes = if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_lanes) } else { @() }
+                  reason_detail = if ($serialBatch.frontier_report) { [string]$serialBatch.frontier_report.reason_detail } else { '' }
+                  reason_details = if ($serialBatch.frontier_report) { $serialBatch.frontier_report.reason_details } else { $null }
+                  report = $serialBatch.frontier_report
                 }
               }
               $claimedWorkpackBatch = $true
@@ -521,7 +623,17 @@
                   reason=if ($serialBatch.frontier_report) { [string]$serialBatch.frontier_report.reason } else { 'serial-batch-available' }
                   dependency_wait=[int]$serialBatch.dependency_wait_count
                   structural_wait=[int]$serialBatch.structural_wait_count
+                  selected_ids=if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_ids) } else { @($batchIds) }
+                  selected_groups=if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_groups) } else { @($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique) }
+                  selected_lanes=if ($serialBatch.frontier_report) { @($serialBatch.frontier_report.selected_lanes) } else { @() }
+                  reason_detail=if ($serialBatch.frontier_report) { [string]$serialBatch.frontier_report.reason_detail } else { '' }
+                  reason_details=if ($serialBatch.frontier_report) { $serialBatch.frontier_report.reason_details } else { $null }
                 })
+              } catch {}
+            } elseif ($serialBatch.frontier_report) {
+              try {
+                $serialBatch.frontier_report | Add-Member -NotePropertyName claim_block_reason -NotePropertyValue 'preflight-blocked' -Force
+                $serialBatch.frontier_report | Add-Member -NotePropertyName claim_block_detail -NotePropertyValue ('safe protected serial items below min_items after pre-flight: ' + [int]$safeItems.Count + '/' + [int]$wpCfg.serialProtectedMinItems) -Force
               } catch {}
             }
           }
@@ -541,7 +653,10 @@
                 [string][int]$workpackFrontierReport.eligible_count,
                 [string][int]$workpackFrontierReport.protected_count,
                 [string][int]$workpackFrontierReport.with_workpack_count,
-                [string][int]$workpackFrontierReport.without_workpack_count
+                [string][int]$workpackFrontierReport.without_workpack_count,
+                [string]::Join(',', @($workpackFrontierReport.selected_ids)),
+                [string]::Join(',', @($workpackFrontierReport.blocked_ids)),
+                [string](Get-DriverWorkpackReportValue -Obj $workpackFrontierReport -Name 'claim_block_reason' -Default '')
               )))
               $frontierNow = [DateTime]::UtcNow
               $frontierDue = $false
@@ -575,8 +690,15 @@
                   touch_skips=[int]$workpackFrontierReport.touch_skip_count
                   selected_ids=@($workpackFrontierReport.selected_ids)
                   selected_groups=@($workpackFrontierReport.selected_groups)
+                  selected_lanes=@($workpackFrontierReport.selected_lanes)
+                  blocked_ids=@($workpackFrontierReport.blocked_ids)
+                  reason_detail=[string]$workpackFrontierReport.reason_detail
+                  reason_details=$workpackFrontierReport.reason_details
+                  claim_block_reason=[string](Get-DriverWorkpackReportValue -Obj $workpackFrontierReport -Name 'claim_block_reason' -Default '')
+                  claim_block_detail=[string](Get-DriverWorkpackReportValue -Obj $workpackFrontierReport -Name 'claim_block_detail' -Default '')
                 })
-                Add-Message -From system -Text ("🧭 Workpack frontier: batch не claim-ится; reason=" + [string]$workpackFrontierReport.reason + ", approved=" + [int]$workpackFrontierReport.approved_count + ", with_workpack=" + [int]$workpackFrontierReport.with_workpack_count + ", eligible=" + [int]$workpackFrontierReport.eligible_count + ", selected=" + [int]$workpackFrontierReport.selected_count + "/" + [int]$workpackFrontierReport.min_items + ".") -Kind event | Out-Null
+                $frontierBrief = Format-DriverWorkpackFrontierBrief -Report $workpackFrontierReport
+                Add-Message -From system -Text ("🧭 Workpack frontier: batch не claim-ится; " + $frontierBrief + ".") -Kind event | Out-Null
               }
             }
           }
@@ -669,9 +791,13 @@
                 min_items=[int]$workpackFrontierReport.min_items
                 selected_ids=@($workpackFrontierReport.selected_ids)
                 selected_groups=@($workpackFrontierReport.selected_groups)
+                selected_lanes=@($workpackFrontierReport.selected_lanes)
+                reason_detail=[string]$workpackFrontierReport.reason_detail
+                blocked_ids=@($workpackFrontierReport.blocked_ids)
                 serial_reason=$serialReason
               })
-              Add-Message -From system -Text ("⚠ Parallel obligation warning: frontier требует parallel (selected=" + [int]$workpackFrontierReport.selected_count + "/" + [int]$workpackFrontierReport.min_items + "), но выбран single-task без valid serial_reason. Не блокирую выполнение; пишу диагностику.") -Kind event | Out-Null
+              $frontierBrief = Format-DriverWorkpackFrontierBrief -Report $workpackFrontierReport
+              Add-Message -From system -Text ("⚠ Parallel obligation warning: frontier требует parallel, но выбран single-task без valid serial_reason. " + $frontierBrief + ". Не блокирую выполнение; пишу диагностику.") -Kind event | Out-Null
             }
           }
         } catch {}
@@ -922,8 +1048,8 @@
           try {
             if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_frontier' -and $claimedIdea.workpack_frontier) {
               $wf = $claimedIdea.workpack_frontier
-              $frontierText = " Фронт: selected=" + $batchIdsForState.Count + ", ready=" + [int]$wf.ready + "/" + [int]$wf.eligible + ", ждут deps=" + [int]$wf.dependency_wait + ", barrier=" + [int]$wf.structural_wait + ", conflicts=" + ([int]$wf.conflict_skips + [int]$wf.touch_skips) + "."
-              if (-not [string]::IsNullOrWhiteSpace([string]$wf.reason)) { $frontierText += " reason=" + [string]$wf.reason + "." }
+              $frontierBrief = Format-DriverWorkpackFrontierBrief -Report $wf
+              if (-not [string]::IsNullOrWhiteSpace($frontierBrief)) { $frontierText = " Фронт: " + $frontierBrief + "." }
               if (-not [string]::IsNullOrWhiteSpace([string]$wf.root)) { $frontierText += " root=" + [string]$wf.root + "." }
             }
           } catch {}

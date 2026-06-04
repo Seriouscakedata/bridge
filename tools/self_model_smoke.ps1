@@ -96,6 +96,9 @@ if ($selfModelModuleLine.Count -eq 0) {
 if ($pack -match 'owner_files') {
     throw 'pack contains owner_files label; looks like registry dump'
 }
+if ($pack -notmatch 'dispatcher flow: staged planning -> atoms -> frontier') {
+    throw 'dispatcher frontier rule missing'
+}
 
 $registry = [System.IO.File]::ReadAllText($registryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 $features = @($registry)

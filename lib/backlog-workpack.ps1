@@ -1245,17 +1245,169 @@ function Test-BacklogWorkpackTouchesOverlap {
   return $false
 }
 
+function Get-BacklogWorkpackTouchOverlap {
+  param([string[]]$Left, [string[]]$Right)
+  $seen = @{}
+  foreach ($l in @($Left)) {
+    $v = ([string]$l).Trim().ToLowerInvariant() -replace '\\','/'
+    if (-not [string]::IsNullOrWhiteSpace($v)) { $seen[$v] = $true }
+  }
+  $overlap = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($r in @($Right)) {
+    $v = ([string]$r).Trim().ToLowerInvariant() -replace '\\','/'
+    if ([string]::IsNullOrWhiteSpace($v)) { continue }
+    if ($seen.ContainsKey($v) -and -not $overlap.Contains($v)) { [void]$overlap.Add($v) }
+  }
+  return @($overlap.ToArray())
+}
+
+function ConvertTo-BacklogWorkpackStringArray {
+  param($Value)
+  $items = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($v in @($Value)) {
+    $s = ([string]$v).Trim()
+    if ([string]::IsNullOrWhiteSpace($s)) { continue }
+    if (-not $items.Contains($s)) { [void]$items.Add($s) }
+  }
+  return @($items.ToArray())
+}
+
+function Get-BacklogWorkpackItemFileList {
+  param($Item)
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($prop in @('files','touch_set','workpack_touch_set')) {
+    foreach ($f in @(ConvertTo-BacklogWorkpackStringArray (Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @()))) {
+      $v = ([string]$f).Trim() -replace '\\','/'
+      if (-not [string]::IsNullOrWhiteSpace($v) -and -not $files.Contains($v)) { [void]$files.Add($v) }
+    }
+  }
+  if ($files.Count -eq 0) {
+    foreach ($t in @(Get-BacklogWorkpackItemTouches -Item $Item)) {
+      $v = ([string]$t).Trim() -replace '\\','/'
+      if (-not [string]::IsNullOrWhiteSpace($v) -and -not $files.Contains($v)) { [void]$files.Add($v) }
+    }
+  }
+  return @($files.ToArray())
+}
+
+function Test-BacklogWorkpackProjectScopeAllowed {
+  try {
+    if (Get-Command Test-ProjectScopedApprovedBacklogAllowed -ErrorAction SilentlyContinue) {
+      return [bool](Test-ProjectScopedApprovedBacklogAllowed)
+    }
+  } catch {}
+  try {
+    $slug = Get-BacklogPackChannel
+    if (-not [string]::IsNullOrWhiteSpace($slug) -and $slug -ne 'main') { return $true }
+  } catch {}
+  return $false
+}
+
+function Test-BacklogWorkpackProjectScopedItem {
+  param($Item)
+  $scope = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'scope' -Default '')).Trim().ToLowerInvariant()
+  if ($scope -eq 'project') { return $true }
+  $project = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'project' -Default '')
+  return (-not [string]::IsNullOrWhiteSpace($project) -and $scope -ne 'bridge')
+}
+
+function Test-BacklogWorkpackOperatorTagged {
+  param($Item)
+  try {
+    foreach ($tag in @(Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @())) {
+      if (([string]$tag).Trim().ToLowerInvariant() -eq 'operator') { return $true }
+    }
+  } catch {}
+  return $false
+}
+
+function Test-BacklogWorkpackTouchesBridgeControlPlane {
+  param($Item)
+  try {
+    if (Get-Command Test-IdeaTouchesControlPlane -ErrorAction SilentlyContinue) {
+      if ([bool](Test-IdeaTouchesControlPlane -Idea $Item)) { return $true }
+    }
+  } catch {}
+
+  $paths = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($p in @((Get-BacklogWorkpackItemFileList -Item $Item) + (Get-BacklogWorkpackItemTouches -Item $Item))) {
+    $v = ([string]$p).Trim().ToLowerInvariant() -replace '\\','/'
+    if (-not [string]::IsNullOrWhiteSpace($v) -and -not $paths.Contains($v)) { [void]$paths.Add($v) }
+  }
+  foreach ($p in @($paths.ToArray())) {
+    if ($p -in @('driver.ps1','server.ps1','supervisor.ps1','watchdog.ps1','canary.ps1','lib/circuit-breaker.ps1','lib/parallel.ps1')) { return $true }
+    if ($p -match '^lib/backlog.*\.ps1$') { return $true }
+  }
+  return $false
+}
+
+function Get-BacklogWorkpackBridgeAdmission {
+  param($Item)
+  if (Test-BacklogWorkpackOperatorTagged -Item $Item) {
+    return [pscustomobject]@{ ok=$true; reason='operator'; missing=@() }
+  }
+  try {
+    if (Get-Command Test-IdeaBridgeSelfAdmitted -ErrorAction SilentlyContinue) {
+      $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
+      if ($admission -and [bool]$admission.ok) { return $admission }
+      return $admission
+    }
+  } catch {}
+  return [pscustomobject]@{ ok=$false; reason='missing bridge_self_admission'; missing=@('bridge_self_admission') }
+}
+
+function Get-BacklogWorkpackExecEligibility {
+  param(
+    $Item,
+    $Config = $null,
+    [switch]$AllowProtected,
+    [Nullable[bool]]$ProjectScopeAllowed = $null
+  )
+  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
+  if ($null -eq $ProjectScopeAllowed) { $ProjectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed) }
+  if (-not [bool]$Config.enabled) { return [pscustomobject]@{ eligible=$false; reason='disabled'; detail='workpack execution disabled'; admission=$null } }
+  if (-not $Item) { return [pscustomobject]@{ eligible=$false; reason='missing-item'; detail='missing backlog item'; admission=$null } }
+  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') { return [pscustomobject]@{ eligible=$false; reason='not-approved'; detail='status is not approved'; admission=$null } }
+  if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default ''))) { return [pscustomobject]@{ eligible=$false; reason='missing-workpack'; detail='approved item has no workpack_id'; admission=$null } }
+  try {
+    if (Test-IdeaExternal $Item) { return [pscustomobject]@{ eligible=$false; reason='external-source'; detail='external/radar source is not auto-claimed by workpack frontier'; admission=$null } }
+  } catch {}
+
+  $isProjectScoped = Test-BacklogWorkpackProjectScopedItem -Item $Item
+  if ($isProjectScoped -and -not [bool]$ProjectScopeAllowed) {
+    return [pscustomobject]@{ eligible=$false; reason='project-scope-blocked'; detail='project-scoped approved item is not runnable in the bridge channel'; admission=$null }
+  }
+
+  if (-not ($isProjectScoped -and [bool]$ProjectScopeAllowed)) {
+    if (Test-BacklogWorkpackTouchesBridgeControlPlane -Item $Item) {
+      $admission = Get-BacklogWorkpackBridgeAdmission -Item $Item
+      if (-not ($admission -and [bool]$admission.ok)) {
+        $why = if ($admission) { [string]$admission.reason } else { 'missing bridge_self_admission' }
+        $missing = @()
+        try { $missing = @($admission.missing | ForEach-Object { [string]$_ }) } catch { $missing = @() }
+        if ($missing.Count -gt 0) { $why += ' (' + (($missing | Sort-Object -Unique) -join ', ') + ')' }
+        return [pscustomobject]@{
+          eligible = $false
+          reason = 'control-plane-admission-required'
+          detail = 'bridge control-plane touch requires operator tag or bridge_self_admission with canary evidence: ' + $why
+          admission = $admission
+        }
+      }
+    }
+  }
+
+  $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+  if ((-not [bool]$Config.includeProtected) -and (-not $AllowProtected) -and ($cg -in @('core','safety'))) {
+    return [pscustomobject]@{ eligible=$false; reason='protected-dominant'; detail='protected core/safety candidate is excluded from parallel workpack frontier'; admission=$null }
+  }
+
+  return [pscustomobject]@{ eligible=$true; reason='eligible'; detail='approved workpack candidate is runnable'; admission=$null }
+}
+
 function Test-BacklogWorkpackExecEligible {
   param($Item, $Config = $null)
-  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
-  if (-not [bool]$Config.enabled) { return $false }
-  if (-not $Item) { return $false }
-  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') { return $false }
-  if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default ''))) { return $false }
-  try { if (Test-IdeaExternal $Item) { return $false } } catch {}
-  $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
-  if ((-not [bool]$Config.includeProtected) -and ($cg -in @('core','safety'))) { return $false }
-  return $true
+  $eligibility = Get-BacklogWorkpackExecEligibility -Item $Item -Config $Config
+  return ($eligibility -and [bool]$eligibility.eligible)
 }
 
 function Get-BacklogTaskDepSignal {
@@ -1335,6 +1487,197 @@ function Get-BacklogTaskDependencySlugs {
   return @($deps.ToArray() | Sort-Object -Unique)
 }
 
+function New-BacklogWorkpackCandidateReport {
+  param($Item)
+  $id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+  $slug = Get-BacklogTaskSlug -Item $Item
+  $workpackId = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default '')
+  $group = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
+  $touches = @(Get-BacklogWorkpackItemTouches -Item $Item)
+  $files = @(Get-BacklogWorkpackItemFileList -Item $Item)
+  $deps = @(Get-BacklogTaskDependencySlugs -Item $Item)
+  $lane = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_lane_hint' -Default '')
+  if ([string]::IsNullOrWhiteSpace($lane)) { $lane = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'lane' -Default '') }
+  $parallelGroup = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'parallel_group' -Default '')
+  if ([string]::IsNullOrWhiteSpace($lane)) {
+    if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $lane = $parallelGroup }
+    else { $lane = $group }
+  }
+
+  return [pscustomobject][ordered]@{
+    id = $id
+    slug = $slug
+    workpack_id = $workpackId
+    files = @($files)
+    touch_set = @($touches)
+    depends_on = @($deps)
+    unmet_deps = @()
+    lane = $lane
+    parallel_group = $parallelGroup
+    conflict_group = $group
+    selected = $false
+    selected_order = 0
+    blocked = $false
+    block_reason = ''
+    block_detail = ''
+    serial_reason = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'serial_reason' -Default '')
+    conflict_with_ids = @()
+    conflict_with_touches = @()
+  }
+}
+
+function Set-BacklogWorkpackCandidateBlocked {
+  param(
+    $Candidate,
+    [string]$Reason,
+    [string]$Detail = '',
+    [string[]]$UnmetDeps = @(),
+    [string[]]$ConflictWithIds = @(),
+    [string[]]$ConflictWithTouches = @()
+  )
+  if (-not $Candidate) { return }
+  $Candidate.selected = $false
+  $Candidate.blocked = $true
+  $Candidate.block_reason = [string]$Reason
+  $Candidate.block_detail = [string]$Detail
+  $Candidate.unmet_deps = @($UnmetDeps)
+  $Candidate.conflict_with_ids = @($ConflictWithIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+  $Candidate.conflict_with_touches = @($ConflictWithTouches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+}
+
+function Set-BacklogWorkpackCandidateSelected {
+  param($Candidate, [int]$Order)
+  if (-not $Candidate) { return }
+  $Candidate.selected = $true
+  $Candidate.selected_order = [int]$Order
+  $Candidate.blocked = $false
+  $Candidate.block_reason = ''
+  $Candidate.block_detail = ''
+  $Candidate.conflict_with_ids = @()
+  $Candidate.conflict_with_touches = @()
+}
+
+function Get-BacklogWorkpackCandidateReasonItems {
+  param([object[]]$Candidates, [string]$Reason)
+  return @($Candidates | Where-Object { [string]$_.block_reason -eq $Reason })
+}
+
+function New-BacklogWorkpackFrontierReasonDetails {
+  param([object[]]$Candidates, [string[]]$SelectedIds = @())
+  $blocked = @($Candidates | Where-Object { [bool]$_.blocked })
+  return [pscustomobject][ordered]@{
+    selected_ids = @($SelectedIds)
+    skipped_ids = @($blocked | ForEach-Object { [string]$_.id })
+    conflicts = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'conflicts-or-touch-overlap' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        conflict_group = [string]$_.conflict_group
+        touch_set = @($_.touch_set)
+        conflict_with_ids = @($_.conflict_with_ids)
+        conflict_with_touches = @($_.conflict_with_touches)
+        detail = [string]$_.block_detail
+      }
+    })
+    dependency_wait = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'dependency-wait' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        depends_on = @($_.depends_on)
+        unmet_deps = @($_.unmet_deps)
+        detail = [string]$_.block_detail
+      }
+    })
+    structural_barriers = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'structural-barrier' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        files = @($_.files)
+        touch_set = @($_.touch_set)
+        detail = [string]$_.block_detail
+      }
+    })
+    protected = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'protected-dominant' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        conflict_group = [string]$_.conflict_group
+        touch_set = @($_.touch_set)
+        detail = [string]$_.block_detail
+      }
+    })
+    control_plane = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'control-plane-admission-required' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        files = @($_.files)
+        touch_set = @($_.touch_set)
+        detail = [string]$_.block_detail
+      }
+    })
+    project_scope = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'project-scope-blocked' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        detail = [string]$_.block_detail
+      }
+    })
+  }
+}
+
+function Format-BacklogWorkpackFrontierReasonDetail {
+  param([string]$Reason, $Details)
+  $selected = @()
+  try { $selected = @($Details.selected_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+  $selectedText = if ($selected.Count -gt 0) { 'selected: ' + (($selected | Select-Object -First 8) -join ', ') } else { 'selected: none' }
+  switch ([string]$Reason) {
+    'conflicts-or-touch-overlap' {
+      $parts = @()
+      foreach ($c in @($Details.conflicts | Select-Object -First 6)) {
+        $with = (@($c.conflict_with_ids) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ','
+        $touch = (@($c.conflict_with_touches) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ','
+        $why = [string]$c.detail
+        if ([string]::IsNullOrWhiteSpace($why)) { $why = 'conflicts with selected=' + $with + ' touch=' + $touch }
+        $parts += (([string]$c.id) + ' -> ' + $why)
+      }
+      if ($parts.Count -eq 0) { return $selectedText + '; no explicit conflict detail captured' }
+      return $selectedText + '; skipped: ' + ($parts -join '; ')
+    }
+    'dependency-wait' {
+      $parts = @()
+      foreach ($d in @($Details.dependency_wait | Select-Object -First 6)) {
+        $wait = (@($d.unmet_deps) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ', '
+        if ([string]::IsNullOrWhiteSpace($wait)) { $wait = [string]$d.detail }
+        $parts += (([string]$d.id) + ' waits for ' + $wait)
+      }
+      if ($parts.Count -eq 0) { return $selectedText + '; dependency wait without candidate detail' }
+      return $selectedText + '; ' + ($parts -join '; ')
+    }
+    'structural-barrier' {
+      $parts = @()
+      foreach ($b in @($Details.structural_barriers | Select-Object -First 6)) {
+        $files = (@($b.touch_set) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 4) -join ', '
+        $parts += (([string]$b.id) + ' is a foundation/barrier touch=' + $files)
+      }
+      if ($parts.Count -eq 0) { return $selectedText + '; structural barrier without candidate detail' }
+      return $selectedText + '; ' + ($parts -join '; ')
+    }
+    'protected-dominant' {
+      $ids = @($Details.protected | ForEach-Object { [string]$_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+      if ($ids.Count -eq 0) { return $selectedText + '; protected core/safety candidates dominate the frontier' }
+      return $selectedText + '; protected skipped: ' + ($ids -join ', ') + ' (use protected serial/admitted bridge-self path)'
+    }
+    default {
+      if ($Details -and @($Details.control_plane).Count -gt 0) {
+        $ids = @($Details.control_plane | ForEach-Object { [string]$_.id } | Select-Object -First 8)
+        return $selectedText + '; control-plane blocked: ' + ($ids -join ', ')
+      }
+      return $selectedText
+    }
+  }
+}
+
 function Get-BacklogSlugStatusMap {
   param([object[]]$Items)
   $map = @{}
@@ -1389,18 +1732,42 @@ function Resolve-BacklogWorkpackFrontier {
       ($cg -in @('core','safety'))
     }
   )
-  $eligible = @(
-    $allItems |
-    Where-Object { Test-BacklogWorkpackExecEligible -Item $_ -Config $Config } |
+  $projectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed)
+  $candidateItems = @(
+    $withWorkpack |
     Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}}
+  )
+  $candidateReports = New-Object 'System.Collections.Generic.List[object]'
+  $candidateById = @{}
+  $eligibilityById = @{}
+  foreach ($item in @($candidateItems)) {
+    $candidate = New-BacklogWorkpackCandidateReport -Item $item
+    [void]$candidateReports.Add($candidate)
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $candidateById[[string]$candidate.id] = $candidate }
+    $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -ProjectScopeAllowed $projectScopeAllowed
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $eligibilityById[[string]$candidate.id] = $eligibility }
+    if (-not ($eligibility -and [bool]$eligibility.eligible)) {
+      $r = if ($eligibility) { [string]$eligibility.reason } else { 'not-eligible' }
+      $d = if ($eligibility) { [string]$eligibility.detail } else { 'candidate is not eligible' }
+      Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason $r -Detail $d
+    }
+  }
+  $eligible = @(
+    $candidateItems |
+    Where-Object {
+      $cid = [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '')
+      $elig = if ($eligibilityById.ContainsKey($cid)) { $eligibilityById[$cid] } else { $null }
+      ($elig -and [bool]$elig.eligible)
+    }
   )
 
   $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
   $selected = New-Object 'System.Collections.Generic.List[object]'
   $usedGroups = @{}
   $usedTouches = New-Object 'System.Collections.Generic.List[string]'
+  $usedTouchOwners = @{}
   $readyCount = 0
   $dependencyWait = 0
   $structuralWait = 0
@@ -1409,10 +1776,17 @@ function Resolve-BacklogWorkpackFrontier {
   if ([bool]$Config.enabled -and $eligible.Count -ge [int]$Config.minItems) {
     foreach ($item in $eligible) {
       $selectionFull = ($selected.Count -ge [int]$Config.maxItems)
+      $itemId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+      $candidate = if ($candidateById.ContainsKey($itemId)) { $candidateById[$itemId] } else { $null }
       $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
       $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
       $explicitDeps = @($depCheck.deps)
-      if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
+      if (-not [bool]$depCheck.ready) {
+        $dependencyWait++
+        $unmet = @($depCheck.unmet | ForEach-Object { [string]$_ })
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-wait' -Detail ('waiting for dependency: ' + (($unmet | Select-Object -First 6) -join ', ')) -UnmetDeps $unmet
+        continue
+      }
 
       # Dependency-aware frontier: one blocked/dependent item must not freeze the whole team.
       # Explicit depends_on is authoritative. Heuristic "foundation" without explicit deps stays a
@@ -1421,13 +1795,21 @@ function Resolve-BacklogWorkpackFrontier {
       $depSignal = Get-BacklogTaskDepSignal -Text $txt
       if ($depSignal -eq 'foundation' -and $explicitDeps.Count -eq 0) {
         $structuralWait++
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'structural-barrier' -Detail 'foundation/schema/setup task must run before parallel dependents'
         if (-not $selectionFull) { break }
         continue
       }
-      if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) { $dependencyWait++; continue }
+      if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) {
+        $dependencyWait++
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-wait' -Detail 'dependent task has no explicit satisfied depends_on metadata'
+        continue
+      }
 
       $readyCount++
-      if ($selectionFull) { continue }
+      if ($selectionFull) {
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'selection-limit' -Detail ('frontier already selected max_items=' + [int]$Config.maxItems)
+        continue
+      }
       $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
       if ([string]::IsNullOrWhiteSpace($packId)) { continue }
       # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): do NOT dedupe by workpack_id. Truly
@@ -1439,14 +1821,31 @@ function Resolve-BacklogWorkpackFrontier {
       # conflict_group + touch overlap below; workpack_id is reporting-only.
       $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
-      if ($usedGroups.ContainsKey($group)) { $conflictSkips++; continue }
+      if ($usedGroups.ContainsKey($group)) {
+        $conflictSkips++
+        $owner = [string]$usedGroups[$group]
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'conflicts-or-touch-overlap' -Detail ("conflict_group '" + $group + "' already selected by " + $owner) -ConflictWithIds @($owner)
+        continue
+      }
 
       $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
-      if (Test-BacklogWorkpackTouchesOverlap -Left @($usedTouches.ToArray()) -Right $touches) { $touchSkips++; continue }
+      $overlap = @(Get-BacklogWorkpackTouchOverlap -Left @($usedTouches.ToArray()) -Right $touches)
+      if ($overlap.Count -gt 0) {
+        $touchSkips++
+        $owners = @($overlap | ForEach-Object { $k = [string]$_; if ($usedTouchOwners.ContainsKey($k)) { [string]$usedTouchOwners[$k] } } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'conflicts-or-touch-overlap' -Detail ('touch_set overlaps on ' + (($overlap | Select-Object -First 6) -join ', ') + ' with selected ' + (($owners | Select-Object -First 6) -join ', ')) -ConflictWithIds $owners -ConflictWithTouches $overlap
+        continue
+      }
 
       [void]$selected.Add($item)
-      $usedGroups[$group] = $true
-      foreach ($t in $touches) { [void]$usedTouches.Add($t) }
+      Set-BacklogWorkpackCandidateSelected -Candidate $candidate -Order $selected.Count
+      $usedGroups[$group] = $itemId
+      foreach ($t in $touches) {
+        $tv = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
+        if ([string]::IsNullOrWhiteSpace($tv)) { continue }
+        [void]$usedTouches.Add($tv)
+        if (-not $usedTouchOwners.ContainsKey($tv)) { $usedTouchOwners[$tv] = $itemId }
+      }
     }
   }
 
@@ -1481,15 +1880,39 @@ function Resolve-BacklogWorkpackFrontier {
     $reason = 'structural-barrier'
   }
 
+  foreach ($candidate in @($candidateReports.ToArray())) {
+    if ([bool]$candidate.selected -or [bool]$candidate.blocked) { continue }
+    $fallbackReason = [string]$reason
+    $fallbackDetail = 'candidate was not selected for this frontier'
+    if ($batchAvailable) {
+      $fallbackReason = 'selection-limit'
+      $fallbackDetail = 'batch is available; candidate remains for a later frontier'
+    } elseif ([string]::IsNullOrWhiteSpace($fallbackReason) -or $fallbackReason -eq 'unknown') {
+      $fallbackReason = 'not-selected'
+    }
+    Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason $fallbackReason -Detail $fallbackDetail
+  }
+
+  $candidateArr = @($candidateReports.ToArray())
+  $blockedCandidates = @($candidateArr | Where-Object { [bool]$_.blocked })
+  $selectedCandidates = @($candidateArr | Where-Object { [bool]$_.selected })
+  $selectedLanes = @($selectedCandidates | ForEach-Object { [string]$_.lane } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $selectedParallelGroups = @($selectedCandidates | ForEach-Object { [string]$_.parallel_group } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $selectedTouches = @($selectedCandidates | ForEach-Object { @($_.touch_set) } | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $reasonDetails = New-BacklogWorkpackFrontierReasonDetails -Candidates $candidateArr -SelectedIds $ids
+  $reasonDetail = Format-BacklogWorkpackFrontierReasonDetail -Reason $reason -Details $reasonDetails
+
   $report = [pscustomobject][ordered]@{
     enabled               = [bool]$Config.enabled
     approved_count        = [int]$approved.Count
     with_workpack_count   = [int]$withWorkpack.Count
     without_workpack_count = [int]$withoutWorkpack.Count
+    candidate_count       = [int]$candidateArr.Count
     eligible_count        = [int]$eligible.Count
     protected_count       = [int]$protected.Count
     ready_count           = [int]$readyCount
     selected_count        = [int]$selected.Count
+    blocked_count         = [int]$blockedCandidates.Count
     min_items             = [int]$Config.minItems
     max_items             = [int]$Config.maxItems
     dependency_wait_count = [int]$dependencyWait
@@ -1499,8 +1922,18 @@ function Resolve-BacklogWorkpackFrontier {
     batch_available       = [bool]$batchAvailable
     parallel_required     = [bool]$batchAvailable
     reason                = [string]$reason
+    reason_detail         = [string]$reasonDetail
+    reason_details        = $reasonDetails
     selected_ids          = @($ids)
     selected_groups       = @($groups)
+    selected_lanes        = @($selectedLanes)
+    selected_parallel_groups = @($selectedParallelGroups)
+    selected_touches      = @($selectedTouches)
+    blocked_ids           = @($blockedCandidates | ForEach-Object { [string]$_.id })
+    candidates            = @($candidateArr)
+    frontier_candidates   = @($candidateArr)
+    serial_required       = $false
+    serial_reason         = ''
   }
 
   return [pscustomobject][ordered]@{
@@ -1515,6 +1948,7 @@ function Resolve-BacklogWorkpackFrontier {
     structural_wait_count = $structuralWait
     conflict_skip_count = $conflictSkips
     touch_skip_count = $touchSkips
+    candidates = @($candidateArr)
     report = $report
   }
 }
@@ -1541,6 +1975,7 @@ function Get-NextBacklogWorkpackBatch {
     structural_wait_count = [int]$frontier.structural_wait_count
     conflict_skip_count = [int]$frontier.conflict_skip_count
     touch_skip_count = [int]$frontier.touch_skip_count
+    candidates = @($frontier.candidates)
     frontier_report = $frontier.report
   }
 }
@@ -1550,9 +1985,9 @@ function Test-BacklogProtectedSerialCandidate {
   if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
   if (-not [bool]$Config.serialProtectedEnabled) { return $false }
   if (-not $Item) { return $false }
-  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') { return $false }
-  if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default ''))) { return $false }
-  try { if (Test-IdeaExternal $Item) { return $false } } catch {}
+  $projectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed)
+  $eligibility = Get-BacklogWorkpackExecEligibility -Item $Item -Config $Config -AllowProtected -ProjectScopeAllowed $projectScopeAllowed
+  if (-not ($eligibility -and [bool]$eligibility.eligible)) { return $false }
   $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
   return ($cg -in @('core','safety'))
 }
@@ -1584,18 +2019,57 @@ function Resolve-BacklogProtectedSerialFrontier {
       ($cg -in @('core','safety'))
     }
   )
+  $projectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed)
+  $candidateItems = @(
+    $protected |
+    Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+                @{Expression={[string]$_.ts}}
+  )
+  $candidateReports = New-Object 'System.Collections.Generic.List[object]'
+  $candidateById = @{}
+  $eligibilityById = @{}
+  foreach ($item in @($candidateItems)) {
+    $candidate = New-BacklogWorkpackCandidateReport -Item $item
+    [void]$candidateReports.Add($candidate)
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $candidateById[[string]$candidate.id] = $candidate }
+    $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -AllowProtected -ProjectScopeAllowed $projectScopeAllowed
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $eligibilityById[[string]$candidate.id] = $eligibility }
+    if (-not ($eligibility -and [bool]$eligibility.eligible)) {
+      $r = if ($eligibility) { [string]$eligibility.reason } else { 'not-eligible' }
+      $d = if ($eligibility) { [string]$eligibility.detail } else { 'candidate is not eligible' }
+      Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason $r -Detail $d
+    }
+  }
   $eligible = New-Object 'System.Collections.Generic.List[object]'
   $dependencyWait = 0
   $structuralWait = 0
   $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
-  foreach ($item in @($protected)) {
+  foreach ($item in @($candidateItems)) {
+    $itemId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    $candidate = if ($candidateById.ContainsKey($itemId)) { $candidateById[$itemId] } else { $null }
+    $eligibility = if ($eligibilityById.ContainsKey($itemId)) { $eligibilityById[$itemId] } else { $null }
+    if (-not ($eligibility -and [bool]$eligibility.eligible)) { continue }
     if (-not (Test-BacklogProtectedSerialCandidate -Item $item -Config $Config)) { continue }
     $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
     $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
-    if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
+    if (-not [bool]$depCheck.ready) {
+      $dependencyWait++
+      $unmet = @($depCheck.unmet | ForEach-Object { [string]$_ })
+      Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-wait' -Detail ('waiting for dependency: ' + (($unmet | Select-Object -First 6) -join ', ')) -UnmetDeps $unmet
+      continue
+    }
     $depSignal = Get-BacklogTaskDepSignal -Text $txt
-    if ($depSignal -eq 'foundation') { $structuralWait++; continue }
-    if ($depSignal -eq 'dependent') { $dependencyWait++; continue }
+    if ($depSignal -eq 'foundation') {
+      $structuralWait++
+      Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'structural-barrier' -Detail 'foundation/schema/setup task must run before protected serial batch'
+      continue
+    }
+    if ($depSignal -eq 'dependent') {
+      $dependencyWait++
+      Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-wait' -Detail 'dependent task has no explicit satisfied depends_on metadata'
+      continue
+    }
     [void]$eligible.Add($item)
   }
 
@@ -1657,16 +2131,45 @@ function Resolve-BacklogProtectedSerialFrontier {
     $reason = 'not-enough-same-root'
   }
 
+  $serialOrder = 0
+  foreach ($item in @($selected)) {
+    $serialOrder++
+    $sid = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    if ($candidateById.ContainsKey($sid)) { Set-BacklogWorkpackCandidateSelected -Candidate $candidateById[$sid] -Order $serialOrder }
+  }
+  foreach ($candidate in @($candidateReports.ToArray())) {
+    if ([bool]$candidate.selected -or [bool]$candidate.blocked) { continue }
+    $fallbackReason = [string]$reason
+    $fallbackDetail = 'protected candidate was not selected for this serial frontier'
+    if ($batchAvailable) {
+      $fallbackReason = 'serial-root-not-selected'
+      $fallbackDetail = 'another protected root was selected: ' + [string]$selectedKey
+    } elseif ([string]::IsNullOrWhiteSpace($fallbackReason) -or $fallbackReason -eq 'unknown') {
+      $fallbackReason = 'not-selected'
+    }
+    Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason $fallbackReason -Detail $fallbackDetail
+  }
+
+  $candidateArr = @($candidateReports.ToArray())
+  $blockedCandidates = @($candidateArr | Where-Object { [bool]$_.blocked })
+  $selectedCandidates = @($candidateArr | Where-Object { [bool]$_.selected })
+  $selectedLanes = @($selectedCandidates | ForEach-Object { [string]$_.lane } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $selectedParallelGroups = @($selectedCandidates | ForEach-Object { [string]$_.parallel_group } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $reasonDetails = New-BacklogWorkpackFrontierReasonDetails -Candidates $candidateArr -SelectedIds $ids
+  $reasonDetail = Format-BacklogWorkpackFrontierReasonDetail -Reason $reason -Details $reasonDetails
+
   $report = [pscustomobject][ordered]@{
     enabled = [bool]$Config.serialProtectedEnabled
     approved_count = [int]$approved.Count
     with_workpack_count = [int]$protected.Count
     without_workpack_count = 0
+    candidate_count = [int]$candidateArr.Count
     eligible_count = [int]$eligible.Count
     protected_count = [int]$protected.Count
     ready_count = [int]$eligible.Count
     group_count = [int]$groups.Count
     selected_count = [int]$selected.Count
+    blocked_count = [int]$blockedCandidates.Count
     min_items = [int]$Config.serialProtectedMinItems
     max_items = [int]$Config.serialProtectedMaxItems
     dependency_wait_count = [int]$dependencyWait
@@ -1677,10 +2180,18 @@ function Resolve-BacklogProtectedSerialFrontier {
     parallel_required = $false
     serial_required = [bool]$batchAvailable
     reason = [string]$reason
+    reason_detail = [string]$reasonDetail
+    reason_details = $reasonDetails
     selected_root = [string]$selectedKey
     selected_ids = @($ids)
     selected_groups = @($groupsOut)
+    selected_lanes = @($selectedLanes)
+    selected_parallel_groups = @($selectedParallelGroups)
     selected_touches = @($touches)
+    blocked_ids = @($blockedCandidates | ForEach-Object { [string]$_.id })
+    candidates = @($candidateArr)
+    frontier_candidates = @($candidateArr)
+    serial_reason = 'protected-serial'
   }
 
   return [pscustomobject][ordered]@{
@@ -1695,6 +2206,7 @@ function Resolve-BacklogProtectedSerialFrontier {
     dependency_wait_count = [int]$dependencyWait
     structural_wait_count = [int]$structuralWait
     selected_root = [string]$selectedKey
+    candidates = @($candidateArr)
     report = $report
   }
 }
@@ -1721,6 +2233,7 @@ function Get-NextBacklogProtectedSerialBatch {
     dependency_wait_count = [int]$frontier.dependency_wait_count
     structural_wait_count = [int]$frontier.structural_wait_count
     selected_root = [string]$frontier.selected_root
+    candidates = @($frontier.candidates)
     frontier_report = $frontier.report
   }
 }
