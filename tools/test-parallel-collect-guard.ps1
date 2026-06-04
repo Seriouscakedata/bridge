@@ -99,5 +99,28 @@ $qCount = 2
 $anyDelivered = ($merged -ge 1)
 Assert (-not $anyDelivered) "all failed: ok=false"
 
+# 17. Completed can arrive as a one-element Object[] wrapper from dispatcher fallback paths.
+$completedMap = ConvertTo-ParallelDispatchCompletedMap -Completed @(@{ wp1 = [pscustomobject]@{ status = 'done'; commits = @('abc123') } })
+Assert ($completedMap.ContainsKey('wp1') -and $completedMap['wp1'].status -eq 'done') "Completed Object[] wrapper converts to map"
+
+# 18. Aggregation context stores the converted map instead of requiring a hashtable parameter transform.
+$ctx = New-ParallelDispatchAggregationContext -Workers @([pscustomobject]@{ id = 'wp1' }, [pscustomobject]@{ id = 'wp2' }) -Completed @($completedMap) -TaskHash 'unit'
+Assert ($ctx.completed.ContainsKey('wp1') -and $ctx.allowedTerminalStatuses -contains 'paused-for-restart') "aggregation context accepts wrapped completed map"
+
+# 19. Timeout/kill/incomplete workers are quarantined.
+Add-ParallelDispatchIncompleteWorkersToQuarantine -Context $ctx
+Assert ($ctx.quarantined.Contains('wp2')) "incomplete worker quarantined"
+
+# 20. Quarantine accounting keeps all-failed result closed.
+$failedCtx = @{
+  workers = @([pscustomobject]@{ id = 'wp1' }, [pscustomobject]@{ id = 'wp2' })
+  quarantined = (New-Object 'System.Collections.Generic.List[string]')
+  merged = 0
+}
+[void]$failedCtx.quarantined.Add('wp1')
+[void]$failedCtx.quarantined.Add('wp2')
+$failedResult = Complete-ParallelDispatchResult -Context $failedCtx
+Assert ((-not [bool]$failedResult.ok) -and $failedResult.reason -eq 'all_failed') "all quarantined streams produce all_failed"
+
 Write-Host "`nRESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }

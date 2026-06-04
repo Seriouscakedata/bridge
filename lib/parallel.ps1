@@ -605,6 +605,7 @@ function Get-ParallelTaskBaseCommit {
   if ([string]::IsNullOrWhiteSpace($base)) {
     try { $base = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1) } catch {}
   }
+  if ($null -eq $base) { return '' }
   return ([string]$base).Trim()
 }
 

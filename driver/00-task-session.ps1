@@ -226,15 +226,25 @@ function Test-CliFlagsInDiff {
   return @($issues.ToArray())
 }
 
+function Test-QualityBypassDiffLineIsCommentOnly {
+  param([string]$Line)
+  if ([string]::IsNullOrWhiteSpace($Line)) { return $false }
+
+  $trimmed = $Line.TrimStart()
+  if ($trimmed.StartsWith('#')) { return $true }
+  if ($trimmed.StartsWith('//')) { return $true }
+  if ($trimmed.StartsWith('/*') -or $trimmed.StartsWith('*') -or $trimmed.StartsWith('*/')) { return $true }
+  if ($trimmed.StartsWith('<!--')) { return $true }
+  return $false
+}
+
 function Test-QualityBypassesInDiff {
   # Deterministic project-quality guard: reject added lines that disable build,
   # type, or lint gates instead of fixing the code. This is intentionally narrow:
   # only obvious bypass switches are blocked; normal config changes still go to
   # the LLM critic and project build gate.
-  # Security note: the regex below matches the literal Next.js config key
-  # "ignoreBuildErrors: true". It is a policy signature, not a credential,
-  # secret, token, or auth value, so hardcoded-credentials scanners can treat
-  # this spot as a false positive.
+  # Comment-only additions are ignored so documentation examples do not trip
+  # the gate; executable config and command lines remain blocked.
   param([string]$Diff)
   if ([string]::IsNullOrWhiteSpace($Diff)) { return @() }
 
@@ -250,6 +260,7 @@ function Test-QualityBypassesInDiff {
   foreach ($rawLine in @($Diff -split "`r?`n")) {
     if ($rawLine.Length -lt 2 -or $rawLine[0] -ne '+' -or $rawLine[1] -eq '+') { continue }
     $line = $rawLine.Substring(1)
+    if (Test-QualityBypassDiffLineIsCommentOnly -Line $line) { continue }
     foreach ($pat in $patterns) {
       if ($line -match $pat.pattern) {
         $key = [string]$pat.key
