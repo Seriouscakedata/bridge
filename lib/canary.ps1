@@ -245,10 +245,14 @@ function Test-CanaryWorktreeUsable {
 function Repair-CanaryWorktreeRegistration {
   param([string]$RepoRoot, [string]$WorktreePath)
   $repair = Invoke-CanaryGit -RepoPath $RepoRoot -GitArgs @('worktree', 'repair', $WorktreePath)
-  if ($repair.ExitCode -ne 0) {
-    throw "git worktree repair failed (exit $($repair.ExitCode)): $($repair.Output -join ' ')"
-  }
   $check = Test-CanaryWorktreeUsable -WorktreePath $WorktreePath
+  if (($repair.ExitCode -ne 0) -or (-not $check.ok)) {
+    $repairAll = Invoke-CanaryGit -RepoPath $RepoRoot -GitArgs @('worktree', 'repair')
+    $check = Test-CanaryWorktreeUsable -WorktreePath $WorktreePath
+    if (($repairAll.ExitCode -ne 0) -or (-not $check.ok)) {
+      throw "git worktree repair failed (path exit $($repair.ExitCode), root exit $($repairAll.ExitCode)): path=$($repair.Output -join ' '); root=$($repairAll.Output -join ' '); status=$($check.output -join ' ')"
+    }
+  }
   if (-not $check.ok) {
     throw "canary worktree still unusable after repair: $($check.output -join ' ')"
   }
