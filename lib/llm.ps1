@@ -63,9 +63,26 @@ function Invoke-DeepSeekChat {
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   $H = @{ Authorization = "Bearer $key" }
   try {
-    $resp = Invoke-WebRequest -Uri 'https://api.deepseek.com/chat/completions' -Method Post -Headers $H `
-      -ContentType 'application/json' -Body $bytes -UseBasicParsing -TimeoutSec $TimeoutSec
-    $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    $txt = Invoke-WithTimeout -Name ('llm-deepseek-' + $Purpose) -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
+      'https://api.deepseek.com/chat/completions',
+      $H,
+      $bytes,
+      $TimeoutSec
+    ) -ScriptBlock {
+      param([string]$Uri, $Headers, [byte[]]$BodyBytes, [int]$RequestTimeoutSec)
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $resp = Invoke-WebRequest -Uri $Uri -Method Post -Headers $Headers `
+        -ContentType 'application/json' -Body $BodyBytes -UseBasicParsing
+      [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    }
+    if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') {
+      $replayPurpose = if ([string]::IsNullOrWhiteSpace($Purpose)) { 'general' } else { $Purpose }
+      Add-ReplayRecordForCurrentTask -Role ("deepseek-" + $replayPurpose) -Model $Model -Mode $Purpose -Prompt $Prompt -Response '' `
+        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'deepseek_timeout' -Provider 'deepseek'
+      return $null
+    }
+    if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Error') { throw ([string]$txt.Error) }
+    $txt = [string]$txt
     $obj = $txt | ConvertFrom-Json
     $pt = 0; $ct = 0; $costUsd = $null
     try {

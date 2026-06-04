@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common-files.ps1')
 . (Join-Path $PSScriptRoot 'common-strings.ps1')
 . (Join-Path $PSScriptRoot 'common-json.ps1')
+. (Join-Path $PSScriptRoot 'retry-helper.ps1')
 
 function Get-BridgeRoot {
   # lib/ is one level under the bridge root

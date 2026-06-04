@@ -371,8 +371,24 @@ function Invoke-GeminiApi {
     # character into cp866-looking mojibake (we saw `���祢��` instead of
     # `ключевая` in every Gemini audit-fallback finding). Same workaround is
     # already used in Invoke-DeepSeekChat (lib/llm.ps1).
-    $resp = Invoke-WebRequest -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec -UseBasicParsing
-    $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    if (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue) {
+      $txt = Invoke-WithTimeout -Name 'llm-gemini-api' -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
+        $Url,
+        $bytes,
+        $TimeoutSec
+      ) -ScriptBlock {
+        param([string]$RequestUrl, [byte[]]$BodyBytes, [int]$RequestTimeoutSec)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $resp = Invoke-WebRequest -Method Post -Uri $RequestUrl -ContentType 'application/json; charset=utf-8' -Body $BodyBytes -UseBasicParsing
+        [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+      }
+      if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') { throw "Gemini API timeout after $($txt.Attempts) attempts of $TimeoutSec seconds" }
+      if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Error') { throw ([string]$txt.Error) }
+      $txt = [string]$txt
+    } else {
+      $resp = Invoke-WebRequest -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec -UseBasicParsing
+      $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    }
     return ($txt | ConvertFrom-Json)
   } catch {
     $detail = ''
