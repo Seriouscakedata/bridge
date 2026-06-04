@@ -167,6 +167,122 @@ function Get-MetricsForApi {
   }
 }
 
+function Get-MetricsObjectValue {
+  param($Obj, [string]$Name)
+  if ($null -eq $Obj -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
+  try {
+    if ($Obj -is [hashtable] -and $Obj.ContainsKey($Name)) { return $Obj[$Name] }
+    if ($Obj.PSObject.Properties.Name -contains $Name) { return $Obj.PSObject.Properties[$Name].Value }
+  } catch { return $null }
+  return $null
+}
+
+function ConvertTo-MetricsUtcDateTime {
+  param($Value)
+  if ($null -eq $Value) { return $null }
+  $text = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  $dto = [DateTimeOffset]::MinValue
+  if ([DateTimeOffset]::TryParse($text, [ref]$dto)) { return $dto.UtcDateTime }
+  $dt = [DateTime]::MinValue
+  if ([DateTime]::TryParse($text, [ref]$dt)) { return $dt.ToUniversalTime() }
+  return $null
+}
+
+function Get-BacklogAutonomyTerminalTimeUtc {
+  param($Item)
+  if ($null -eq $Item) { return $null }
+
+  $status = ([string](Get-MetricsObjectValue $Item 'status')).ToLowerInvariant()
+  $fields = switch ($status) {
+    'done'          { @('done_at','completed_at','closed_at','updated_at','ts') }
+    'auto-resolved' { @('resolved_at','auto_resolved_at','completed_at','closed_at','updated_at','ts') }
+    'failed'        { @('failed_at','completed_at','closed_at','updated_at','ts') }
+    'held'          { @('held_at','updated_at','ts') }
+    'rejected'      { @('rejected_at','duplicate_rejected_at','updated_at','ts') }
+    'auto-dropped'  { @('dropped_at','auto_dropped_at','updated_at','ts') }
+    default         { @('updated_at','ts') }
+  }
+
+  foreach ($field in $fields) {
+    $dt = ConvertTo-MetricsUtcDateTime (Get-MetricsObjectValue $Item $field)
+    if ($dt) { return $dt }
+  }
+
+  $curator = Get-MetricsObjectValue $Item 'auto_curator'
+  if ($curator) {
+    $dt = ConvertTo-MetricsUtcDateTime (Get-MetricsObjectValue $curator 'ts')
+    if ($dt) { return $dt }
+  }
+  return $null
+}
+
+function Get-BacklogAutonomyWindow {
+  param([object[]]$Items, [DateTime]$NowUtc, [int]$Hours)
+
+  $terminal = @{ done = $true; 'auto-resolved' = $true; failed = $true; held = $true; rejected = $true; 'auto-dropped' = $true }
+  $autonomous = @{ done = $true; 'auto-resolved' = $true }
+  $cutoff = $NowUtc.AddHours(-1 * [Math]::Abs($Hours))
+  $total = 0
+  $auto = 0
+
+  foreach ($item in @($Items)) {
+    $status = ([string](Get-MetricsObjectValue $item 'status')).ToLowerInvariant()
+    if (-not $terminal.ContainsKey($status)) { continue }
+    $terminalAt = Get-BacklogAutonomyTerminalTimeUtc -Item $item
+    if (-not $terminalAt -or $terminalAt -lt $cutoff) { continue }
+    $total++
+    if ($autonomous.ContainsKey($status)) { $auto++ }
+  }
+
+  $pct = if ($total -gt 0) { [Math]::Round(100.0 * $auto / $total, 1) } else { 0.0 }
+  return [pscustomobject]@{
+    hours      = [int]$Hours
+    autonomous = [int]$auto
+    terminal   = [int]$total
+    pct        = [double]$pct
+  }
+}
+
+function Get-ChannelAutonomyMetric {
+  param(
+    [string]$Channel = 'main',
+    [string]$Root = $null,
+    [DateTime]$NowUtc = ([DateTime]::UtcNow)
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) { $Root = Get-BridgeRoot }
+    else { $Root = Split-Path -Parent $PSScriptRoot }
+  }
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+
+  $backlogPath = Join-Path $Root ("channels\" + $Channel + "\backlog.jsonl")
+  $byId = @{}
+  $readErrors = 0
+  if (Test-Path -LiteralPath $backlogPath) {
+    foreach ($line in [System.IO.File]::ReadLines($backlogPath, [System.Text.Encoding]::UTF8)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      try { $item = $line | ConvertFrom-Json } catch { $readErrors++; continue }
+      $id = [string](Get-MetricsObjectValue $item 'id')
+      if ([string]::IsNullOrWhiteSpace($id)) { continue }
+      $byId[$id] = $item
+    }
+  }
+
+  $items = @($byId.Values)
+  $w24 = Get-BacklogAutonomyWindow -Items $items -NowUtc $NowUtc -Hours 24
+  $w7d = Get-BacklogAutonomyWindow -Items $items -NowUtc $NowUtc -Hours (24 * 7)
+  return [pscustomobject]@{
+    channel      = [string]$Channel
+    generated_at = $NowUtc.ToString('o')
+    source       = $backlogPath
+    read_errors  = [int]$readErrors
+    h24          = $w24
+    d7           = $w7d
+  }
+}
+
 function Get-LastMetricsSnapshot {
   $records = Read-MetricsJsonl
   $snaps = $records | Where-Object { $_.type -eq 'snapshot' }

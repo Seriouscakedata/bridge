@@ -93,6 +93,9 @@ function GetChannelCostSnapshot([string]$chName, $cfg) {
     scope             = $(if ($channelTagged -gt 0) { 'channel-tagged-plus-legacy-global' } else { 'legacy-global' })
   }
 }
+function FormatInvariantPct($value) {
+  try { return ([double]$value).ToString('0.#', [System.Globalization.CultureInfo]::InvariantCulture) } catch { return '0' }
+}
 function SaveChannelCostSnapshot($snapshot) {
   try {
     $dir = Join-Path $root ("channels\" + [string]$snapshot.channel)
@@ -254,6 +257,18 @@ $mainState = JFile (Join-Path $root "channels\$Channel\state.json")
 $autoCount = if ($mainState) { [string]$mainState.autonomous_count } else { '?' }
 $streak = if ($mainState) { [string]$mainState.autonomy_streak } else { '?' }
 Write-Host ("  commits=" + $commits.Count + "  autonomous_today=" + $autoCount + "  autonomy_streak=" + $streak)
+try {
+  $metricsPath = Join-Path $root 'lib\metrics.ps1'
+  if (Test-Path -LiteralPath $metricsPath) { . $metricsPath }
+  if (Get-Command Get-ChannelAutonomyMetric -ErrorAction SilentlyContinue) {
+    $autonomy = Get-ChannelAutonomyMetric -Root $root -Channel $Channel -NowUtc $nowU
+    Write-Host ("  autonomy: " + (FormatInvariantPct $autonomy.h24.pct) + "% 24h / " + (FormatInvariantPct $autonomy.d7.pct) + "% 7d")
+  } else {
+    Write-Host "  autonomy: 0% 24h / 0% 7d"
+  }
+} catch {
+  Write-Host "  autonomy: 0% 24h / 0% 7d"
+}
 
 # ---------- WAITING FOR OPERATOR ----------
 if (Test-Path (Join-Path $root 'control\repair.signal')) { [void]$waiting.Add("repair.signal pending (Doctor dispatch)") }
