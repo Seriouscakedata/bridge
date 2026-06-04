@@ -1,4 +1,4 @@
-﻿[
+[
     {
         "id":  "auditor",
         "owner_files":  [
@@ -23,7 +23,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Аудитор",
         "description":  "Фоновый страж: каждые 15 мин проверяет логи и состояние моста на аномалии (зависшая задача, пустые ответы, отсутствие коммитов). При срабатывании зовёт Доктора. Также: respect-idle gate и per-task suppression по hash причины (0f50038)."
@@ -51,7 +51,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Доктор",
         "description":  "Режим саморемонта: запускается аудитором при поломке. Диагностирует, чинит, проверяет фикс критиком, возвращает мост к прерванной задаче. Также собирает event metrics (a137b96) для пост-анализа."
@@ -78,7 +78,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Классификатор намерения",
         "description":  "При новой задаче дёшевый LLM (gemini-flash-lite) определяет режим: discuss/normal/study/fast/chat. Разбивает задачу на подзадачи. Заменяет regex-парсер [[DEEP-THINK]]."
@@ -106,7 +106,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Запускатель сценариев",
         "description":  "Прогоняет JS-сценарии (tools/scenarios/*.js) в headless Chrome против живого UI. Используется для функциональной верификации фич. Результат → control/scenario-results.jsonl."
@@ -135,7 +135,7 @@
         "status":  "active",
         "scenario_recommended":  true,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T01:22:33.8192682+03:00",
         "embedding":  null,
         "scenarios":  [
                           "features-registry.js"
@@ -165,7 +165,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Детектор рецидива",
         "description":  "При новой задаче ищет маркеры рецидива («снова», «опять», «проблема осталась»), вытаскивает fix-коммиты за 72ч. Заставляет планировщика смотреть в другой слой."
@@ -192,7 +192,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Критик кода",
         "description":  "После Codex-фикса независимый deepseek читает diff + HEAD-контекст и выносит вердикт; серьёзный finding возвращает задачу на доработку, лимит 2 ретрая. Перед LLM-критиком deterministic CLI-flag check сверяет новые claude/codex-флаги с --help, а verify gate сопоставляет DONE-отчёт с реальным git diff и ловит over-claim. Промпт критика включает DIFF_META (base, diff_truncated, diff_bytes), CHANGED_FILES, TASK_HISTORY и bounded SYMBOL_EVIDENCE для cross-file функций, чтобы не флагировать отсутствующие фазы или уже существующие функции из-за обрезанного diff."
@@ -220,7 +220,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Канарейка",
         "description":  "Периодический smoke-чек на изолированном worktree: мост может выполнить базовые операции. При падении канарейки → доктор или алерт."
@@ -248,7 +248,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Библиотекарь памяти",
         "description":  "Ночная консолидация vector-памяти: дедуп, обрезка старого, объединение похожих воспоминаний. Поддерживает relevance/recency хранилища. Расписание — гибридное (1cdb9a1): 6h потолок + delta-trigger + 30min floor, не просто ночное."
@@ -273,7 +273,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "scenarios":  [
                           "backlog-add.js"
@@ -304,7 +304,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T07:44:43.0132756+03:00",
         "embedding":  null,
         "name":  "Авто-постмортем",
         "description":  "После timeout или repair-коммита автоматически генерирует короткий разбор «что произошло и почему» через LLM. Сохраняется в decisions/."
@@ -331,7 +331,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Replay задач",
         "description":  "Захватывает все LLM-вызовы в задаче (модель, промпт, ответ, latency, cost) для повторного прогона или детального анализа."
@@ -359,7 +359,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T07:44:43.0132756+03:00",
         "embedding":  null,
         "name":  "Снимки состояния",
         "description":  "Save-StateSnapshot перед рискованными операциями (restart.flag, активация доктора). При боте предлагается восстановление из последнего снимка."
@@ -387,7 +387,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Карточка миссии",
         "description":  "state.session_mission хранит: цель, следующий шаг, accepted_decisions, constraints. Планировщик видит её в каждом промпте."
@@ -415,7 +415,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Runbook diagnostics",
         "description":  "GET /api/runbook — ZIP с логами, снимками state, git-историей для дебага. Кнопка в ⋮-меню UI."
@@ -442,7 +442,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Пул воркеров",
         "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/opus) с complexity-floor и domain-affinity. [[PARALLEL:N]] параллелит на разных воркерах. Включает model usage accounting (cc9f453)."
@@ -469,7 +469,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Параллель + чанки",
         "description":  "Воркер внутри своего потока может разбить работу на N чанков (STATUS: CONTINUE-CHUNK). Драйвер респавнит того же воркера в том же worktree."
@@ -496,7 +496,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Fast-lane",
         "description":  "Тривиальные задачи (\u003c100 символов, императивные) или маркер [[FAST]] → пропустить планировщика, сразу запустить Codex."
@@ -524,7 +524,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Режим изучения",
         "description":  "Триггеры «изучи», «разберись как работает» → исследовательский режим: внешний поиск + локальное чтение → markdown-отчёт пользователю. Включает budget control (7fb06ed) для исследовательских прогонов."
@@ -551,7 +551,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Режим обсуждения",
         "description":  "Триггеры «обсуди», «согласуй», маркер [[DEEP-THINK]] → диалог Claude ↔ Codex до сходимости (max 6 ходов) перед реализацией. Триггеры — LLM-classifier (intent.ps1) + синонимы (6810f55), не regex-based."
@@ -579,7 +579,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-25",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Recall памяти",
         "description":  "Семантический поиск по vector-памяти при каждой задаче: 3-5 релевантных воспоминаний инжектятся в промпт планировщика. Расширен: skill playbooks, study lessons, tag filters, tag-aware dedup, relevant recall scoring (f39ae9e, 1c2c614)."
@@ -604,7 +604,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "scenarios":  [
                           "message-send.js"
@@ -631,7 +631,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-26",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "scenarios":  [
                           "channel-switch.js"
@@ -662,7 +662,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Восстановление zombie-job\u0027ов",
         "description":  "При боте драйвер проверяет state.active_jobs: если PID мёртв и нет .done маркера — пишет fake done=-1 чтобы polling-loop разморозился."
@@ -689,7 +689,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Телеметрия агента",
         "description":  "Каждые 60с активного агента: tick → state.agent_telemetry (elapsed_sec, cpu_sec, files_touched). Видно прогресс долгих задач."
@@ -720,7 +720,7 @@
         "status":  "active",
         "scenario_recommended":  true,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T09:33:12.2550330+03:00",
         "embedding":  null
     },
     {
@@ -749,7 +749,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -778,7 +778,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -806,7 +806,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -836,7 +836,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -866,7 +866,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -894,7 +894,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -924,7 +924,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -952,7 +952,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -981,7 +981,7 @@
         "layer":  "L2",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T01:51:24.2213535+03:00",
         "embedding":  null,
         "status":  "active"
     },
@@ -1015,7 +1015,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -1043,7 +1043,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T07:44:43.0132756+03:00",
         "embedding":  null
     },
     {
@@ -1072,7 +1072,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -1101,7 +1101,7 @@
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null
     },
     {
@@ -1130,7 +1130,7 @@
         "scenario_recommended":  false,
         "human_review":  true,
         "created_at":  "2026-05-28",
-        "last_activated_at":  null,
+        "last_activated_at":  "2026-06-03T21:42:20.1766385+03:00",
         "embedding":  null
     }
 ]
