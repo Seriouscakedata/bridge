@@ -54,3 +54,4 @@ channels/*/checkpoints/
 channels/*/qa-results.jsonl
 channels/*/workpacks/
 channels/*/decision-shadow.jsonl
+channels/*/delivery-gate-shadow.jsonl
