@@ -23,11 +23,19 @@ if ([string]::IsNullOrWhiteSpace($prompt)) { Set-Content $MsgFile 'STATUS: FAILE
 
 # Give the model the CURRENT content of any declared files (lines that look like "Files: a, b").
 $fileBlocks = ''
+$allowedFiles = @{}
+function Normalize-WorkerRel([string]$Rel) {
+  $r = ([string]$Rel).Trim().Trim('"').Trim("'")
+  $r = ($r -replace '\\', '/').TrimStart('/')
+  if ([string]::IsNullOrWhiteSpace($r) -or $r -match '(^|/)\.\.(/|$)') { return '' }
+  return $r
+}
 $declRx = [regex]'(?im)files?\s*:\s*([^\r\n]+)'
 foreach ($mm in $declRx.Matches($prompt)) {
   foreach ($f in ($mm.Groups[1].Value -split '[,;\s]+')) {
-    $rel = ([string]$f).Trim().Trim('"').Trim("'")
+    $rel = Normalize-WorkerRel $f
     if ($rel -notmatch '\.\w{1,5}$') { continue }
+    $allowedFiles[$rel.ToLowerInvariant()] = $true
     $full = Join-Path $Worktree ($rel -replace '/', '\')
     if (Test-Path -LiteralPath $full) {
       $cur = ''
@@ -53,15 +61,19 @@ if ([string]::IsNullOrWhiteSpace($reply)) { Set-Content $MsgFile 'STATUS: FAILED
 
 $rx = [regex]'(?s)<<<FILE:\s*(.+?)>>>\r?\n(.*?)\r?\n<<<END>>>'
 $written = 0
+$writtenPaths = @()
 foreach ($m in $rx.Matches($reply)) {
-  $rel = ($m.Groups[1].Value.Trim() -replace '\\', '/').TrimStart('/')
-  if ([string]::IsNullOrWhiteSpace($rel) -or $rel -match '\.\.') { continue }
+  $rel = Normalize-WorkerRel $m.Groups[1].Value
+  if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+  $relKey = $rel.ToLowerInvariant()
+  if ($relKey -eq 'control/restart.flag') { continue }
+  if ($allowedFiles.Count -gt 0 -and -not $allowedFiles.ContainsKey($relKey)) { continue }
   $content = $m.Groups[2].Value
   $content = $content -replace '^```[\w-]*\r?\n', '' -replace '\r?\n```\s*$', ''
   $path = Join-Path $Worktree ($rel -replace '/', '\')
   $dir = Split-Path $path -Parent
   if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  try { [System.IO.File]::WriteAllText($path, $content, $u8); $written++ } catch {}
+  try { [System.IO.File]::WriteAllText($path, $content, $u8); $written++; $writtenPaths += $path } catch {}
 }
 if ($written -eq 0) { Set-Content $MsgFile 'STATUS: FAILED (no FILE blocks returned)' -Encoding UTF8; exit 1 }
 
@@ -70,7 +82,7 @@ $git = if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { Get-GitExe } 
 # "LF will be replaced by CRLF" stderr warning that PS 5.1 turns into a NativeCommandError, which
 # falsely marked workers as failed even though files were written. Status is decided by the commit
 # result below (real $LASTEXITCODE), NOT by stderr noise.
-& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree add -A 2>$null | Out-Null
+& $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree add -- $writtenPaths 2>$null | Out-Null
 & $git -c core.autocrlf=false -c core.safecrlf=false -C $Worktree commit -m ("parallel-llm (" + $Model + "): " + $written + " file(s)") 2>$null | Out-Null
 $committed = ($LASTEXITCODE -eq 0)
 

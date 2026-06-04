@@ -3525,6 +3525,9 @@ function Set-ProjectPlanApproved {
 
 function Start-ProjectAutopilotIfNeeded {
   param([string]$Reason = 'idle-empty-backlog')
+  # Driver idle hook enters here before autonomy claim; piggyback operator-batch
+  # completion reporting on that existing hook so we do not touch the control plane.
+  try { Publish-OperatorBatchCompletionSummariesIfNeeded | Out-Null } catch {}
   $cfg = Get-ProjectAutopilotConfig
   if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ queued=$false; reason='disabled' } }
   $binding = Get-ProjectAutopilotBinding
@@ -3940,22 +3943,125 @@ function Add-ProjectBacklogFromMarker {
 #region Self-execution safety and final lookup helpers
 
 function Get-OperatorBatchProgress {
-  # Progress of operator-delegated batches for the pulse: per batch id, how many done/total.
+  # Progress of operator-delegated batches for the pulse: per batch id, how many done/failed/
+  # blocked are terminal, plus still-running/nonterminal items.
   $items = @(Get-Backlog | Where-Object { @($_.tags) -contains 'operator' })
   $byBatch = @{}
   foreach ($it in $items) {
     $bid = @($it.tags | Where-Object { $_ -like 'batch:*' } | Select-Object -First 1)
     $bid = if ($bid.Count) { [string]$bid[0] } else { 'batch:?' }
-    if (-not $byBatch.ContainsKey($bid)) { $byBatch[$bid] = [pscustomobject]@{ total = 0; done = 0; failed = 0; running = 0 } }
+    if (-not $byBatch.ContainsKey($bid)) {
+      $byBatch[$bid] = [pscustomobject]@{ total = 0; done = 0; failed = 0; blocked = 0; running = 0 }
+    }
     $byBatch[$bid].total++
     switch ([string]$it.status) {
       'done'         { $byBatch[$bid].done++ }
       'auto-resolved'{ $byBatch[$bid].done++ }
       'failed'       { $byBatch[$bid].failed++ }
+      'held'         { $byBatch[$bid].blocked++ }
+      'rejected'     { $byBatch[$bid].blocked++ }
+      'auto-dropped' { $byBatch[$bid].blocked++ }
       'running'      { $byBatch[$bid].running++ }
+      default        { $byBatch[$bid].running++ }
     }
   }
   return $byBatch
+}
+
+function Get-OperatorBatchTaskTitle {
+  param($Item, [int]$MaxLength = 180)
+  if ($null -eq $Item) { return '' }
+  $title = ''
+  try { $title = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'title' -Default '') } catch { $title = '' }
+  if ([string]::IsNullOrWhiteSpace($title)) {
+    $raw = ''
+    try { $raw = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '') } catch { $raw = '' }
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+      $lines = @($raw -split "\r?\n" | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      if ($lines.Count -gt 0) { $title = [string]$lines[0] }
+      else { $title = $raw }
+    }
+  }
+  $title = ($title -replace '\s+', ' ').Trim()
+  if ($title.Length -gt $MaxLength) { $title = $title.Substring(0, $MaxLength) + '...' }
+  return $title
+}
+
+function Publish-OperatorBatchCompletionSummariesIfNeeded {
+  # Driver idle hook calls Start-ProjectAutopilotIfNeeded even on non-project channels. Use that
+  # existing hook to post ONE terminal summary per operator batch, then persist a marker on the
+  # batch's backlog items so the report never repeats.
+  return (Invoke-BacklogLocked ({
+    $items = @(Get-Backlog)
+    if ($items.Count -eq 0) { return @() }
+
+    $progress = Get-OperatorBatchProgress
+    if ($null -eq $progress -or $progress.Count -eq 0) { return @() }
+
+    $terminal = @{ done = $true; 'auto-resolved' = $true; failed = $true; held = $true; rejected = $true; 'auto-dropped' = $true }
+    $published = New-Object 'System.Collections.Generic.List[object]'
+    $dirty = $false
+
+    foreach ($batchTag in @($progress.Keys | Sort-Object)) {
+      $batchItems = @(
+        $items | Where-Object {
+          (@($_.tags) -contains 'operator') -and (@($_.tags) -contains [string]$batchTag)
+        }
+      )
+      if ($batchItems.Count -eq 0) { continue }
+
+      $alreadyReported = $false
+      foreach ($batchItem in $batchItems) {
+        $reported = $false
+        try { $reported = [bool](Get-BacklogPackObjectValue -Obj $batchItem -Name 'operator_batch_reported' -Default $false) } catch { $reported = $false }
+        if ($reported) { $alreadyReported = $true; break }
+      }
+      if ($alreadyReported) { continue }
+
+      $allTerminal = $true
+      $failedTitles = New-Object 'System.Collections.Generic.List[string]'
+      foreach ($batchItem in $batchItems) {
+        $status = ([string](Get-BacklogPackObjectValue -Obj $batchItem -Name 'status' -Default '')).ToLowerInvariant()
+        if (-not $terminal.ContainsKey($status)) { $allTerminal = $false; break }
+        if ($status -eq 'failed') {
+          $title = Get-OperatorBatchTaskTitle -Item $batchItem
+          if (-not [string]::IsNullOrWhiteSpace($title)) { [void]$failedTitles.Add($title) }
+        }
+      }
+      if (-not $allTerminal) { continue }
+
+      $batchId = ([string]$batchTag -replace '^batch:', '')
+      $batchProgress = $progress[[string]$batchTag]
+      $summary = ("operator-batch {0}: {1} done, {2} failed, {3} blocked" -f $batchId, [int]$batchProgress.done, [int]$batchProgress.failed, [int]$batchProgress.blocked)
+      if ($failedTitles.Count -gt 0) {
+        $summary += "`nfailed tasks:"
+        foreach ($title in @($failedTitles.ToArray())) {
+          $summary += "`n- $title"
+        }
+      }
+
+      $messagePosted = $false
+      try {
+        Add-Message -From system -Text $summary -Kind event | Out-Null
+        $messagePosted = $true
+      } catch {
+        $messagePosted = $false
+      }
+      if (-not $messagePosted) { continue }
+
+      $reportTs = (Get-Date).ToUniversalTime().ToString('o')
+      foreach ($batchItem in $batchItems) {
+        $batchItem | Add-Member -NotePropertyName operator_batch_reported -NotePropertyValue $true -Force
+        $batchItem | Add-Member -NotePropertyName operator_batch_reported_at -NotePropertyValue $reportTs -Force
+        $batchItem | Add-Member -NotePropertyName operator_batch_report -NotePropertyValue $summary -Force
+      }
+      $dirty = $true
+      [void]$published.Add([pscustomobject]@{ batch_id = $batchId; summary = $summary })
+    }
+
+    if ($dirty) { Save-Backlog $items }
+    return @($published.ToArray())
+  }.GetNewClosure()))
 }
 
 function Get-NextSelfExecIdea {

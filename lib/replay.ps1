@@ -89,6 +89,35 @@ function Get-ReplayTaskMeta {
   }
 }
 
+function Move-ReplayFileAtomic {
+  param(
+    [string]$SourcePath,
+    [string]$DestinationPath
+  )
+  if ([string]::IsNullOrWhiteSpace($SourcePath) -or [string]::IsNullOrWhiteSpace($DestinationPath)) { return }
+  if (-not ('BridgeReplayAtomicMove' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class BridgeReplayAtomicMove {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern bool MoveFileExW(string existingFileName, string newFileName, int flags);
+
+  public static void Replace(string sourcePath, string destinationPath) {
+    const int MOVEFILE_REPLACE_EXISTING = 0x1;
+    const int MOVEFILE_WRITE_THROUGH = 0x8;
+    if (!MoveFileExW(sourcePath, destinationPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+"@
+  }
+  [BridgeReplayAtomicMove]::Replace($SourcePath, $DestinationPath)
+}
+
 function Save-ReplayTaskMeta {
   param(
     [string]$TaskId,
@@ -123,7 +152,16 @@ function Save-ReplayTaskMeta {
     $merged['task_id'] = $TaskId
     $json = $merged | ConvertTo-Json -Depth 6
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText((Join-Path $dir '_meta.json'), $json + "`n", $utf8NoBom)
+    $path = Join-Path $dir '_meta.json'
+    $tmpPath = Join-Path $dir ('.' + [System.IO.Path]::GetFileName($path) + '.' + [System.Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+      [System.IO.File]::WriteAllText($tmpPath, $json + "`n", $utf8NoBom)
+      Move-ReplayFileAtomic -SourcePath $tmpPath -DestinationPath $path
+    } finally {
+      if (Test-Path -LiteralPath $tmpPath) {
+        Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+      }
+    }
   } catch {
     Write-ReplayInternalError ("Save-ReplayTaskMeta: " + $_.Exception.Message)
   }
