@@ -63,7 +63,7 @@ function Invoke-WithTimeout {
 
   $attempt = 0
   $lastError = ''
-  $usedBackoff = New-Object System.Collections.Generic.List[int]
+  $usedBackoff = @()
 
   while ($attempt -lt $MaxAttempts) {
     $attempt++
@@ -74,17 +74,18 @@ function Invoke-WithTimeout {
         ScriptBlock  = $ScriptBlock
         ArgumentList = @($ArgumentList)
         Name         = $jobName
-        ErrorAction  = 'Stop'
       }
       if ($InitializationScript) { $jobArgs.InitializationScript = $InitializationScript }
       $job = Start-Job @jobArgs
+      if (-not $job) { throw 'Start-Job returned no job' }
       $done = Wait-Job -Job $job -Timeout $TimeoutSec
       if (-not $done) {
         $lastError = ('Timed out after {0} seconds' -f $TimeoutSec)
         try { Stop-Job -Job $job -ErrorAction SilentlyContinue } catch {}
+        try { Wait-Job -Job $job -Timeout 5 -ErrorAction SilentlyContinue | Out-Null } catch {}
         if ($attempt -lt $MaxAttempts) {
           $delay = Get-InvokeWithTimeoutBackoffSec -Attempt $attempt -BackoffSeconds $BackoffSeconds
-          [void]$usedBackoff.Add($delay)
+          $usedBackoff += $delay
           if ($delay -gt 0) { Start-Sleep -Seconds $delay }
         }
         continue
@@ -92,6 +93,12 @@ function Invoke-WithTimeout {
       return (Receive-Job -Job $job -ErrorAction Stop)
     } catch {
       $lastError = $_.Exception.Message
+      if ($attempt -lt $MaxAttempts) {
+        $delay = Get-InvokeWithTimeoutBackoffSec -Attempt $attempt -BackoffSeconds $BackoffSeconds
+        $usedBackoff += $delay
+        if ($delay -gt 0) { Start-Sleep -Seconds $delay }
+        continue
+      }
       return (New-InvokeWithTimeoutResult -Status 'Error' -Attempts $attempt -TimeoutSec $TimeoutSec -Name $Name -ErrorMessage $lastError -BackoffSecondsUsed @($usedBackoff))
     } finally {
       if ($job) {

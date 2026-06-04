@@ -50,8 +50,21 @@ Assert 'Default backoff attempt 4 is 31 seconds' ((Get-InvokeWithTimeoutBackoffS
 
 $timeoutName = 'retry-helper-timeout-test'
 $errorName = 'retry-helper-error-test'
+$retryName = 'retry-helper-retry-test'
+$uniqueSuffix = [System.Guid]::NewGuid().ToString('N')
+$timeoutName = "$timeoutName-$uniqueSuffix"
+$errorName = "$errorName-$uniqueSuffix"
+$retryName = "$retryName-$uniqueSuffix"
 
-$before = @(Get-Job -Name "$timeoutName*" -ErrorAction SilentlyContinue).Count + @(Get-Job -Name "$errorName*" -ErrorAction SilentlyContinue).Count
+function Remove-TestJobsByNamePrefix {
+  param([string[]]$Prefixes)
+  foreach ($prefix in $Prefixes) {
+    Get-Job -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -like "$prefix*" } | Remove-Job -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Remove-TestJobsByNamePrefix -Prefixes @($timeoutName, $errorName, $retryName)
+$before = @(Get-Job -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -like "$timeoutName*" -or [string]$_.Name -like "$errorName*" -or [string]$_.Name -like "$retryName*" }).Count
 Assert 'No matching jobs before test' ($before -eq 0)
 
 $timeoutResult = Invoke-WithTimeout -Name $timeoutName -TimeoutSec 1 -MaxAttempts 2 -BackoffSeconds @(0,0) -ScriptBlock {
@@ -72,10 +85,33 @@ $errorResult = Invoke-WithTimeout -Name $errorName -TimeoutSec 5 -MaxAttempts 2 
   throw 'planned failure'
 }
 Assert 'Exception returns structured error object' (Test-InvokeWithTimeoutResult -Value $errorResult -Status 'Error')
+Assert 'Exception attempts equals max' ([int]$errorResult.Attempts -eq 2)
 Assert 'Exception message is preserved' ([string]$errorResult.Error -match 'planned failure')
 
-$after = @(Get-Job -Name "$timeoutName*" -ErrorAction SilentlyContinue).Count + @(Get-Job -Name "$errorName*" -ErrorAction SilentlyContinue).Count
+$counterPath = Join-Path $env:TEMP ("$retryName-counter.txt")
+if (Test-Path -LiteralPath $counterPath) { Remove-Item -LiteralPath $counterPath -Force }
+$retryResult = Invoke-WithTimeout -Name $retryName -TimeoutSec 5 -MaxAttempts 2 -BackoffSeconds @(0,0) -ArgumentList @($counterPath) -ScriptBlock {
+  param([string]$Path)
+  $n = 0
+  if (Test-Path -LiteralPath $Path) { $n = [int]([System.IO.File]::ReadAllText($Path).Trim()) }
+  $n++
+  [System.IO.File]::WriteAllText($Path, [string]$n)
+  if ($n -lt 2) { throw 'retry once' }
+  "retried:$n"
+}
+Assert 'Exception path retries then succeeds' ([string]$retryResult -eq 'retried:2')
+if (Test-Path -LiteralPath $counterPath) { Remove-Item -LiteralPath $counterPath -Force }
+
+$llmText = [System.IO.File]::ReadAllText($llm, [System.Text.Encoding]::UTF8)
+$memoryText = [System.IO.File]::ReadAllText($memory, [System.Text.Encoding]::UTF8)
+Assert 'DeepSeek job uses request timeout parameter' ($llmText -match '-TimeoutSec\s+\$RequestTimeoutSec')
+Assert 'DeepSeek job builds headers inside job' ($llmText -match '\$headers\s*=\s*@\{\s*Authorization\s*=\s*\$AuthorizationHeader\s*\}')
+Assert 'Gemini job uses request timeout parameter' ($memoryText -match '-TimeoutSec\s+\$RequestTimeoutSec')
+Assert 'Gemini API has no bare Invoke-WebRequest fallback' ($memoryText -notmatch 'Invoke-WebRequest[\s\S]*-Body\s+\$bytes')
+
+$after = @(Get-Job -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -like "$timeoutName*" -or [string]$_.Name -like "$errorName*" -or [string]$_.Name -like "$retryName*" }).Count
 Assert 'No matching jobs remain after test' ($after -eq 0)
+Remove-TestJobsByNamePrefix -Prefixes @($timeoutName, $errorName, $retryName)
 
 Write-Host "RESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }

@@ -9,6 +9,11 @@ $script:EmbedCacheMax = 500
 $script:LastRecallFlushTs = $null
 $script:RecallFlushMinIntervalSec = 60
 
+if (-not (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue)) {
+  $retryHelperPath = Join-Path $PSScriptRoot 'retry-helper.ps1'
+  if (Test-Path -LiteralPath $retryHelperPath -PathType Leaf) { . $retryHelperPath }
+}
+
 function Get-EmbedCacheKey {
   param([string]$Text, [string]$TaskType)
   $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -362,7 +367,6 @@ function Invoke-GeminiApi {
   param([string]$Url, $BodyObj, [int]$TimeoutSec = 60)
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $json  = $BodyObj | ConvertTo-Json -Depth 8
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   try {
     # 2026-05-28: switched from Invoke-RestMethod to Invoke-WebRequest +
     # RawContentStream + UTF-8 decode. PS 5.1's Invoke-RestMethod has a long-
@@ -371,24 +375,23 @@ function Invoke-GeminiApi {
     # character into cp866-looking mojibake (we saw `���祢��` instead of
     # `ключевая` in every Gemini audit-fallback finding). Same workaround is
     # already used in Invoke-DeepSeekChat (lib/llm.ps1).
-    if (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue) {
-      $txt = Invoke-WithTimeout -Name 'llm-gemini-api' -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
-        $Url,
-        $bytes,
-        $TimeoutSec
-      ) -ScriptBlock {
-        param([string]$RequestUrl, [byte[]]$BodyBytes, [int]$RequestTimeoutSec)
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $resp = Invoke-WebRequest -Method Post -Uri $RequestUrl -ContentType 'application/json; charset=utf-8' -Body $BodyBytes -UseBasicParsing
-        [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
-      }
-      if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') { throw "Gemini API timeout after $($txt.Attempts) attempts of $TimeoutSec seconds" }
-      if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Error') { throw ([string]$txt.Error) }
-      $txt = [string]$txt
-    } else {
-      $resp = Invoke-WebRequest -Method Post -Uri $Url -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec $TimeoutSec -UseBasicParsing
-      $txt = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    if (-not (Get-Command Invoke-WithTimeout -ErrorAction SilentlyContinue)) {
+      throw 'Invoke-WithTimeout is not loaded; refusing unbounded Gemini request'
     }
+    $txt = Invoke-WithTimeout -Name 'llm-gemini-api' -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
+      $Url,
+      $json,
+      $TimeoutSec
+    ) -ScriptBlock {
+      param([string]$RequestUrl, [string]$BodyJson, [int]$RequestTimeoutSec)
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
+      $resp = Invoke-WebRequest -Method Post -Uri $RequestUrl -ContentType 'application/json; charset=utf-8' -Body $bodyBytes -TimeoutSec $RequestTimeoutSec -UseBasicParsing
+      [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    }
+    if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') { throw "Gemini API timeout after $($txt.Attempts) attempts of $TimeoutSec seconds" }
+    if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Error') { throw ([string]$txt.Error) }
+    $txt = [string]$txt
     return ($txt | ConvertFrom-Json)
   } catch {
     $detail = ''

@@ -60,19 +60,20 @@ function Invoke-DeepSeekChat {
   }
   if (-not $Thinking) { $body.thinking = @{ type = 'disabled' } }
   $json  = $body | ConvertTo-Json -Depth 8
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-  $H = @{ Authorization = "Bearer $key" }
+  $authHeader = "Bearer $key"
   try {
     $txt = Invoke-WithTimeout -Name ('llm-deepseek-' + $Purpose) -TimeoutSec $TimeoutSec -MaxAttempts 3 -ArgumentList @(
       'https://api.deepseek.com/chat/completions',
-      $H,
-      $bytes,
+      $authHeader,
+      $json,
       $TimeoutSec
     ) -ScriptBlock {
-      param([string]$Uri, $Headers, [byte[]]$BodyBytes, [int]$RequestTimeoutSec)
+      param([string]$Uri, [string]$AuthorizationHeader, [string]$BodyJson, [int]$RequestTimeoutSec)
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-      $resp = Invoke-WebRequest -Uri $Uri -Method Post -Headers $Headers `
-        -ContentType 'application/json' -Body $BodyBytes -UseBasicParsing
+      $headers = @{ Authorization = $AuthorizationHeader }
+      $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
+      $resp = Invoke-WebRequest -Uri $Uri -Method Post -Headers $headers `
+        -ContentType 'application/json' -Body $bodyBytes -TimeoutSec $RequestTimeoutSec -UseBasicParsing
       [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
     }
     if (Test-InvokeWithTimeoutResult -Value $txt -Status 'Timeout') {
