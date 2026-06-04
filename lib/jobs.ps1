@@ -25,6 +25,7 @@ public static class BridgeJobNative {
   private const UInt32 STARTF_USESTDHANDLES = 0x00000100;
   private const UInt32 HANDLE_FLAG_INHERIT = 0x00000001;
   private const UInt32 INFINITE = 0xFFFFFFFF;
+  private const UInt32 WAIT_TIMEOUT = 0x00000102;
   private const UInt32 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
   private const UInt32 JOB_OBJECT_TERMINATE = 0x0008;
   private const int JobObjectExtendedLimitInformation = 9;
@@ -159,7 +160,7 @@ public static class BridgeJobNative {
     }
   }
 
-  public static int RunCommandInJob(string jobName, string comSpec, string cmdFile, string workDir, string logPath, string readyPath) {
+  public static int RunCommandInJob(string jobName, string comSpec, string cmdFile, string workDir, string logPath, string readyPath, UInt32 timeoutMs) {
     if (String.IsNullOrWhiteSpace(jobName)) throw new InvalidOperationException("jobName is empty");
     if (String.IsNullOrWhiteSpace(cmdFile)) throw new InvalidOperationException("cmdFile is empty");
     if (String.IsNullOrWhiteSpace(logPath)) throw new InvalidOperationException("logPath is empty");
@@ -240,7 +241,13 @@ public static class BridgeJobNative {
       if (resumeResult == UInt32.MaxValue) throw LastError("ResumeThread");
       processResumed = true;
 
-      WaitForSingleObject(pi.hProcess, INFINITE);
+      UInt32 waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
+      if (waitResult == WAIT_TIMEOUT) {
+        TerminateJobObject(hJob, 1);
+        stdoutThread.Join(5000);
+        stderrThread.Join(5000);
+        throw new InvalidOperationException("RunCommandInJob timed out after " + timeoutMs + " ms");
+      }
       stdoutThread.Join();
       stderrThread.Join();
 
@@ -347,7 +354,7 @@ function Ensure-BridgeJobNative {
 
 function Start-BridgeJob {
   # Launch $Command in the background. Returns a job record (hashtable) or $null.
-  param([string]$Command, [string]$WorkDir = '')
+  param([string]$Command, [string]$WorkDir = '', [int]$TimeoutHours = 24)
   if ([string]::IsNullOrWhiteSpace($Command)) { return $null }
   $dir = Get-JobsDir
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -368,6 +375,7 @@ function Start-BridgeJob {
   $workDirLit = ConvertTo-BridgeJobPsLiteral $WorkDir
   $logLit = ConvertTo-BridgeJobPsLiteral $log
   $readyLit = ConvertTo-BridgeJobPsLiteral $ready
+  $timeoutMs = [UInt32]([math]::Min([long]$TimeoutHours * 3600000, [UInt32]::MaxValue - 1))
   $doneLit = ConvertTo-BridgeJobPsLiteral $done
 
   # Runner creates the named Windows Job Object, starts cmd.exe suspended, assigns it
@@ -381,7 +389,7 @@ $nativeSource
 if (-not ('BridgeJobNative' -as [type])) { Add-Type -TypeDefinition `$nativeSource -Language CSharp }
 `$code = 1
 try {
-  `$code = [BridgeJobNative]::RunCommandInJob($jobObjectNameLit, `$env:ComSpec, $cmdFLit, $workDirLit, $logLit, $readyLit)
+  `$code = [BridgeJobNative]::RunCommandInJob($jobObjectNameLit, `$env:ComSpec, $cmdFLit, $workDirLit, $logLit, $readyLit, $timeoutMs)
 } catch {
   try { [System.IO.File]::AppendAllText($logLit, (([string]`$_) + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding(`$false))) } catch {}
   `$code = 1
