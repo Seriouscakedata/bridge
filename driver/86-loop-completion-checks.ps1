@@ -234,11 +234,11 @@ $script:DriverLoopCompletionInitialChecksBlock = {
         foreach ($im in $ideaLines) {
           $itext = $im.Groups[1].Value.Trim() -replace '\*+$',''
           if ([string]::IsNullOrWhiteSpace($itext)) { continue }
-          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'new' -Project ([string]$pbForDeepThink.slug) -Scope 'bridge'
+          $id = Add-Idea -Text $itext -From 'architect' -Tags @('architect','deep-think','dialog-survived') -Status 'approved' -Project ([string]$pbForDeepThink.slug) -Scope 'bridge'
           if ($id) { $filed++ }
         }
         if ($filed -gt 0) {
-          Add-Message -From system -Text ("🧭💭 Deep-think dialog завершён: " + $filed + " идей прошли критику Codex'а и легли в беклог (тег: architect+deep-think+dialog-survived, status=new).") -Kind event | Out-Null
+          Add-Message -From system -Text ("🧭💭 Deep-think dialog завершён: " + $filed + " идей прошли критику Codex'а и легли в беклог (тег: architect+deep-think+dialog-survived, status=approved).") -Kind event | Out-Null
         }
       } catch {}
     }

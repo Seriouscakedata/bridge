@@ -18,6 +18,7 @@ function Get-ArchitectMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect
 function Get-ArchitectCountMarkerPath { Join-Path (Get-BridgeRoot) 'control\architect.taskcount.last' }
 function Get-ArchitectExternalSystemsPath { Join-Path (Get-BridgeRoot) 'external-systems.md' }
 function Get-ArchitectMatrixPath { Join-Path (Get-BridgeRoot) 'architecture-matrix.md' }
+function Get-ArchitectSelfModelPath { Join-Path $env:USERPROFILE '.bridge-runtime\self-model\main.prompt.txt' }
 
 function Get-ArchitectScope {
   # Single source of truth: see Get-EffectiveScope in lib/channels.ps1.
@@ -414,6 +415,26 @@ function Get-ArchitectContext {
   } catch {}
 
   # (scholar knowledge block removed 2026-06-03 slimming rank1 — scholar.ps1 oracle deleted)
+
+  # self-model pack -- bridge structural knowledge (ARCH/CRITICAL/SAFETY/TESTS sections only;
+  # FEATURES skipped here -- capability matrix above already has live feature data).
+  try {
+    $smPath = Get-ArchitectSelfModelPath
+    if (Test-Path $smPath) {
+      $smRaw = [System.IO.File]::ReadAllText($smPath, [System.Text.Encoding]::UTF8)
+      # Strip FEATURES block (already in cap-matrix above) to avoid duplication.
+      # Keep: ARCH, CRITICAL, MODULES, SAFETY, TESTS
+      $smFiltered = $smRaw -replace '(?s)\nFEATURES active:.*?(?=\nMODULES|\nSAFETY|\nTESTS|\z)', ''
+      $smFiltered = $smFiltered -replace '(?s)\nFEATURES dormant:.*?(?=\nMODULES|\nSAFETY|\nTESTS|\z)', ''
+      $smFiltered = $smFiltered.Trim()
+      if ($smFiltered.Length -gt 3000) { $smFiltered = $smFiltered.Substring(0, 3000) + "`n...[truncated]" }
+      if (-not [string]::IsNullOrWhiteSpace($smFiltered)) {
+        [void]$sb.AppendLine('=== BRIDGE SELF-MODEL (ARCH/CRITICAL/MODULES/SAFETY — features см. выше) ===')
+        [void]$sb.AppendLine($smFiltered)
+        [void]$sb.AppendLine('')
+      }
+    }
+  } catch {}
 
   return $sb.ToString()
 }
