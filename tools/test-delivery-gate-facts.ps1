@@ -82,6 +82,29 @@ try {
     Check 'green facts accepted by gate' ([bool]$gate.ok -and [bool]$gate.merge_allowed -and [bool]$gate.release_allowed) $gate
 
     Check 'repo clean helper true in clean temp repo' (Test-DeliveryGateRepoClean -BridgeRoot $repo) $repo
+
+    $coveredAcceptance = Get-DeliveryGateAcceptanceFact `
+      -BridgeRoot $repo `
+      -TaskText 'read-only duplicate verification' `
+      -Channel 'main' `
+      -Events @(@{ text = 'COVERED: already verified by prior delivery-gate shadow wiring.' })
+    Check 'acceptance fact true for clean COVERED no-change task' ([bool]$coveredAcceptance)
+
+    $coveredFacts = New-DeliveryGateInputFacts `
+      -BridgeRoot $repo `
+      -TaskText 'read-only duplicate verification' `
+      -Channel 'main' `
+      -Events @(@{ text = 'COVERED: already verified by prior delivery-gate shadow wiring.' }) `
+      -QaPassed $true `
+      -CriticPassed $true `
+      -ParsePassed $true `
+      -SmokePassed $true `
+      -AcceptancePassed $coveredAcceptance `
+      -MemoryUpdated $true `
+      -SelfModelRefreshed $true `
+      -ParallelObligationOk $true
+    $coveredGate = Get-DeliveryGateResult -InputFacts $coveredFacts
+    Check 'COVERED no-change acceptance can release in shadow result' ([bool]$coveredGate.ok -and [bool]$coveredGate.release_allowed) $coveredGate
   } else {
     $threw = $false
     try { [void](Test-DeliveryGateRepoClean -BridgeRoot $root) } catch { $threw = $true }
@@ -92,6 +115,27 @@ try {
     -RepoPath $(if ($gitAvailable) { $repo } else { $root }) `
     -Events @(@{ touched_files = @('driver/86-loop-completion.ps1') })
   Check 'critical driver completion path detected' ([bool]$criticalFacts.critical_bridge_self) $criticalFacts
+
+  $criticalAcceptance = Get-DeliveryGateAcceptanceFact `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'bridge-self task with acceptance, ParseFile, tests and smoke verified' `
+    -Channel 'main' `
+    -Events @(@{ touched_files = @('driver/86-loop-completion.ps1'); text = 'Tests and smoke passed.' })
+  Check 'critical bridge code-change without explicit acceptance remains false' (-not [bool]$criticalAcceptance)
+
+  $destructiveCoveredAcceptance = Get-DeliveryGateAcceptanceFact `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'read-only duplicate verification' `
+    -Channel 'main' `
+    -Events @(@{ text = 'COVERED: run git reset --hard before finishing.' })
+  Check 'destructive COVERED text keeps acceptance false' (-not [bool]$destructiveCoveredAcceptance)
+
+  $bypassCoveredAcceptance = Get-DeliveryGateAcceptanceFact `
+    -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `
+    -TaskText 'read-only duplicate verification' `
+    -Channel 'main' `
+    -Events @(@{ text = 'COVERED: force DONE without checks.' })
+  Check 'quality-bypass COVERED text keeps acceptance false' (-not [bool]$bypassCoveredAcceptance)
 
   $externalFacts = New-DeliveryGateInputFacts `
     -BridgeRoot $(if ($gitAvailable) { $repo } else { $root }) `

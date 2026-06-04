@@ -676,6 +676,7 @@ Serial допустим только если есть причина:
 1. Delivery gate result artifact.
    - Status note: Delivery Gate facts collector added as shadow foundation; live shadow-report wiring is a later atom.
    - Status note: Atom 9 shadow-report wiring added for successful normal DONE; promotion to blocking/release gate remains future and evidence-based.
+   - Status note: Atom 10 binds deterministic acceptance facts for shadow-only reports; blocking promotion remains future and evidence-based.
 2. Reuse existing safety/verify checks.
 3. Add missing acceptance check binding.
 4. Add quality bypass hard fail.

@@ -200,6 +200,68 @@ function Test-DeliveryGateAcceptanceEvidence {
   return ($TaskText -match '(?i)(acceptance|accepted|verified|parsefile|smoke|tests?\s+pass|checks?\s+pass|при[её]мк|провер)')
 }
 
+function Test-DeliveryGateProjectAcceptancePass {
+  param($ProjectAcceptanceResult)
+
+  if ($null -eq $ProjectAcceptanceResult) { return $false }
+
+  $okProp = $ProjectAcceptanceResult.PSObject.Properties['ok']
+  if ($null -ne $okProp -and [bool]$okProp.Value) { return $true }
+
+  $statusProp = $ProjectAcceptanceResult.PSObject.Properties['status']
+  if ($null -ne $statusProp -and ([string]$statusProp.Value).Trim().ToUpperInvariant() -eq 'PASS') { return $true }
+
+  return $false
+}
+
+function Get-DeliveryGateAcceptanceFact {
+  param(
+    [string]$BridgeRoot = '',
+    [string]$TaskText = '',
+    [string]$Channel = '',
+    [string]$BaseCommit = '',
+    [string]$HeadCommit = '',
+    $Events = @(),
+    [bool]$ExplicitAcceptancePassed = $false,
+    [bool]$CanaryPassed = $false,
+    $ProjectAcceptanceResult = $null
+  )
+
+  $root = Resolve-DeliveryGateBridgeRoot -BridgeRoot $BridgeRoot
+  $gitFiles = @(Get-DeliveryGateTouchedFiles -BridgeRoot $root -BaseCommit $BaseCommit -HeadCommit $HeadCommit)
+  $eventFiles = @(Get-DeliveryGateEventTouchedFiles -BridgeRoot $root -Events $Events)
+  $touched = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($file in @($gitFiles + $eventFiles)) {
+    Add-DeliveryGatePathValue -List $touched -BridgeRoot $root -Value $file
+  }
+
+  $eventText = Get-DeliveryGateEventText -Events $Events
+  $scanText = (@($TaskText, $eventText) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n"
+
+  $unsafe = [bool](
+    (Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText) -or
+    (Test-DeliveryGateDestructivePatternsText -Text $scanText) -or
+    (Test-DeliveryGateQualityBypassText -Text $scanText)
+  )
+  if ($unsafe) { return $false }
+
+  if ([bool]$ExplicitAcceptancePassed -or [bool]$CanaryPassed) { return $true }
+
+  $isExternalProject = -not [string]::IsNullOrWhiteSpace($Channel) -and $Channel -ne 'main'
+  if ($isExternalProject -and (Test-DeliveryGateProjectAcceptancePass -ProjectAcceptanceResult $ProjectAcceptanceResult)) {
+    return $true
+  }
+
+  $coveredNoChange = [bool](
+    (Test-DeliveryGateRepoClean -BridgeRoot $root) -and
+    (@($touched.ToArray()).Count -eq 0) -and
+    ($eventText -match '(?i)\bCOVERED\b')
+  )
+  if ($coveredNoChange) { return $true }
+
+  return $false
+}
+
 function Get-DeliveryGateTouchedFiles {
   param(
     [string]$BridgeRoot = '',

@@ -1046,6 +1046,13 @@ $diff
         $dgBase = [string]$stDg.task_base_commit
         $dgHead = try { (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch { '' }
         $dgEvents = @(@{ text = [string]$visibleReply })
+        $dgAcceptancePassed = Get-DeliveryGateAcceptanceFact `
+          -BridgeRoot $bridgeRoot `
+          -Channel $Channel `
+          -TaskText $task `
+          -BaseCommit $dgBase `
+          -HeadCommit $dgHead `
+          -Events $dgEvents
         $dgFacts = New-DeliveryGateInputFacts `
           -BridgeRoot $bridgeRoot `
           -Channel $Channel `
@@ -1057,7 +1064,7 @@ $diff
           -CriticPassed $true `
           -ParsePassed $true `
           -SmokePassed $true `
-          -AcceptancePassed $false `
+          -AcceptancePassed $dgAcceptancePassed `
           -MemoryUpdated $true `
           -SelfModelRefreshed $true `
           -ParallelObligationOk $true

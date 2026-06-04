@@ -113,6 +113,7 @@ try {
   $completion = Get-Content -LiteralPath (Join-Path $root 'driver\86-loop-completion.ps1') -Raw
   Check 'driver loads delivery-gate-shadow writer' ($driver -match 'delivery-gate-shadow\.ps1') $driver
   Check 'completion builds delivery gate facts' ($completion -match 'New-DeliveryGateInputFacts') $completion
+  Check 'completion binds delivery gate acceptance fact' ($completion -match 'Get-DeliveryGateAcceptanceFact') $completion
   Check 'completion evaluates delivery gate result' ($completion -match 'Get-DeliveryGateResult') $completion
   Check 'completion writes delivery gate shadow record' ($completion -match 'Write-DeliveryGateShadowRecord') $completion
 
@@ -123,6 +124,7 @@ try {
   Check 'shadow block does not set plannerStatus' ($block -notmatch '\$plannerStatus\s*=')
   Check 'shadow block does not set task failure' ($block -notmatch '\bSet-TaskLastFailure\b')
   Check 'shadow block does not continue' ($block -notmatch '\bcontinue\b')
+  Check 'shadow block has no hard-coded acceptance false' ($block -notmatch '-AcceptancePassed\s+\$false')
 
   Check 'writer ps1 has UTF-8 BOM' (Test-FileHasUtf8Bom -Path (Join-Path $root 'lib\delivery-gate-shadow.ps1'))
   Check 'test ps1 has UTF-8 BOM' (Test-FileHasUtf8Bom -Path (Join-Path $root 'tools\test-delivery-gate-shadow.ps1'))
