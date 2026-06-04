@@ -1,4 +1,4 @@
-# project-acceptance.ps1 -- final project acceptance pass for project channels.
+﻿# project-acceptance.ps1 -- final project acceptance pass for project channels.
 #
 # This is intentionally deterministic. It does not decide product quality by itself;
 # it runs the project's declared checks, records evidence, posts chat status, and
@@ -372,6 +372,51 @@ function Test-ProjectAcceptanceDynamicPath {
   return [bool]($Path -match '(^|/):[^/]+|[[\]]')
 }
 
+function Normalize-ProjectAcceptanceJourneyPathCandidate {
+  param([string]$Candidate)
+  if ([string]::IsNullOrWhiteSpace($Candidate)) { return '' }
+  $trimChars = [char[]]@(
+    [char]0x20,
+    [char]0x09,
+    [char]0x0d,
+    [char]0x0a,
+    [char]0x22,
+    [char]0x27,
+    [char]0x2c,
+    [char]0x3b,
+    [char]0x2e,
+    [char]0x28,
+    [char]0x29
+  )
+  return ([string]$Candidate).Trim($trimChars)
+}
+
+function Test-ProjectAcceptanceStaticLocalPath {
+  param([string]$Path)
+  $p = Normalize-ProjectAcceptanceJourneyPathCandidate -Candidate $Path
+  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
+  if ($p -match '^(?i)https?://') { return $false }
+  if (-not $p.StartsWith('/')) { return $false }
+  if ($p -match '(^|/):[^/]+|\[[^\]]+\]|\{[^}]+\}|<[^>]+>|\*') { return $false }
+  return $true
+}
+
+function Get-ProjectAcceptanceJourneyStringPath {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  $tokens = @(([string]$Text) -split '\s+')
+  for ($i = 0; $i -lt $tokens.Count; $i++) {
+    $token = Normalize-ProjectAcceptanceJourneyPathCandidate -Candidate ([string]$tokens[$i])
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    if ($token.ToUpperInvariant() -eq 'GET' -and ($i + 1) -lt $tokens.Count) {
+      $next = Normalize-ProjectAcceptanceJourneyPathCandidate -Candidate ([string]$tokens[$i + 1])
+      if (Test-ProjectAcceptanceStaticLocalPath -Path $next) { return $next }
+    }
+    if (Test-ProjectAcceptanceStaticLocalPath -Path $token) { return $token }
+  }
+  return ''
+}
+
 function Get-ProjectAcceptanceDefaultStatusesForAccess {
   param([string]$Access)
   $a = ([string]$Access).Trim().ToLowerInvariant()
@@ -698,6 +743,74 @@ function Get-ProjectAcceptancePlanContractWebSpecs {
   return @($specs.ToArray())
 }
 
+function Get-ProjectAcceptancePlanContractJourneySpecs {
+  param([string]$ProjectRoot)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  if (-not $info.contract) { return @() }
+
+  $journeys = @()
+  foreach ($names in @(
+    @('user_journeys'),
+    @('journeys'),
+    @('flows'),
+    @('workflows'),
+    @('scenarios')
+  )) {
+    $journeys += @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names $names)
+  }
+
+  $specs = New-Object 'System.Collections.Generic.List[object]'
+  $journeyOrdinal = 0
+  foreach ($journey in @($journeys)) {
+    if ($specs.Count -ge 50) { break }
+    $journeyOrdinal++
+    $journeyId = ([string](Get-ProjectAcceptanceObjectValue -Obj $journey -Names @('id','name','title','label') -Default '')).Trim()
+    if ([string]::IsNullOrWhiteSpace($journeyId)) { $journeyId = 'journey-' + [string]$journeyOrdinal }
+    $journeyAccess = ([string](Get-ProjectAcceptanceObjectValue -Obj $journey -Names @('access','role','persona','actor') -Default '')).Trim()
+    $steps = @(Get-ProjectAcceptanceContractArray -Obj $journey -Names @('steps'))
+    $stepIndex = 0
+    foreach ($step in @($steps)) {
+      $stepIndex++
+      if ($specs.Count -ge 50) { break }
+
+      $path = ''
+      $name = ''
+      $access = $journeyAccess
+      $explicitExpected = $null
+      $tokens = @()
+
+      if ($step -is [string]) {
+        $path = Get-ProjectAcceptanceJourneyStringPath -Text ([string]$step)
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $name = $path
+      } else {
+        $rawPath = [string](Get-ProjectAcceptanceObjectValue -Obj $step -Names @('path','route','url','href','test_path','testPath') -Default '')
+        $path = Normalize-ProjectAcceptanceJourneyPathCandidate -Candidate $rawPath
+        if (-not (Test-ProjectAcceptanceStaticLocalPath -Path $path)) { continue }
+        $name = ([string](Get-ProjectAcceptanceObjectValue -Obj $step -Names @('id','name','title','label','action') -Default $path)).Trim()
+        $stepAccess = ([string](Get-ProjectAcceptanceObjectValue -Obj $step -Names @('access','role','persona','actor','auth','visibility') -Default '')).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($stepAccess)) { $access = $stepAccess }
+        $explicitExpected = Get-ProjectAcceptanceObjectValue -Obj $step -Names @('expected_status','expectedStatus','http_status','httpStatus') -Default $null
+        $tokens = @(Get-ProjectAcceptanceContractArray -Obj $step -Names @('must_contain','mustContain','contains','visible_text','visibleText','text_assertions'))
+      }
+
+      if (-not (Test-ProjectAcceptanceStaticLocalPath -Path $path)) { continue }
+      $expected = if ($null -ne $explicitExpected) { @($explicitExpected) } else { @(Get-ProjectAcceptanceDefaultStatusesForAccess -Access $access) }
+      [void]$specs.Add([pscustomobject]@{
+        name = $name
+        journey_id = $journeyId
+        step_index = [int]$stepIndex
+        path = $path
+        expected = @(ConvertTo-ProjectAcceptanceStatusSet -Values @($expected))
+        access = $access
+        must_contain = @($tokens | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+        source = 'journey'
+      })
+    }
+  }
+  return @($specs.ToArray())
+}
+
 function Invoke-ProjectAcceptanceHttpText {
   param([string]$Url)
   try {
@@ -750,7 +863,8 @@ function Invoke-ProjectAcceptance {
   }
 
   $contractWebSpecs = @(Get-ProjectAcceptancePlanContractWebSpecs -ProjectRoot $ProjectRoot)
-  if ($cfg.checks.Count -gt 0 -or $contractWebSpecs.Count -gt 0) {
+  $contractJourneySpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
+  if ($cfg.checks.Count -gt 0 -or $contractWebSpecs.Count -gt 0 -or $contractJourneySpecs.Count -gt 0) {
     $webServer = $null
     try {
       Write-ProjectAcceptanceTrace -Channel $ch -Text "web server start"
@@ -789,6 +903,30 @@ function Invoke-ProjectAcceptance {
           if (-not [string]::IsNullOrWhiteSpace([string]$http.error)) { $details += " error=" + [string]$http.error }
           [void]$steps.Add((New-ProjectAcceptanceStep -Name ("contract-web:" + [string]$spec.name) -Ok ([bool]$ok) -ExitCode ([int]$http.status) -Details $details))
           Write-ProjectAcceptanceTrace -Channel $ch -Text ("contract web done " + [string]$spec.name + " ok=" + [string]$ok + " actual=" + [string]$http.status)
+        }
+        foreach ($spec in @($contractJourneySpecs)) {
+          $url = Join-ProjectAcceptanceUrl -BaseUrl ([string]$webServer.baseUrl) -Path ([string]$spec.path)
+          $stepName = "contract-journey:" + [string]$spec.journey_id + ":" + [string]$spec.step_index
+          Write-ProjectAcceptanceTrace -Channel $ch -Text ("contract journey start " + [string]$spec.journey_id + " step=" + [string]$spec.step_index + " " + [string]$spec.path)
+          $http = Invoke-ProjectAcceptanceHttpText -Url $url
+          $expectedStatuses = @($spec.expected)
+          if ($expectedStatuses.Count -eq 0) { $expectedStatuses = @(200) }
+          $statusOk = @($expectedStatuses) -contains [int]$http.status
+          $missing = New-Object 'System.Collections.Generic.List[string]'
+          $canAssertBody = ([int]$http.status -eq 200)
+          if ($canAssertBody) {
+            foreach ($token in @($spec.must_contain)) {
+              if (-not [string]::IsNullOrWhiteSpace([string]$token) -and ([string]$http.text).IndexOf([string]$token, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                [void]$missing.Add([string]$token)
+              }
+            }
+          }
+          $ok = ($statusOk -and $missing.Count -eq 0)
+          $details = "status=$($http.status) expected=" + ((@($expectedStatuses) | ForEach-Object { [string]$_ }) -join ',') + " url=$url source=journey name=" + [string]$spec.name
+          if ($missing.Count -gt 0) { $details += " missing=" + (($missing.ToArray()) -join ' | ') }
+          if (-not [string]::IsNullOrWhiteSpace([string]$http.error)) { $details += " error=" + [string]$http.error }
+          [void]$steps.Add((New-ProjectAcceptanceStep -Name $stepName -Ok ([bool]$ok) -ExitCode ([int]$http.status) -Details $details))
+          Write-ProjectAcceptanceTrace -Channel $ch -Text ("contract journey done " + [string]$spec.journey_id + " step=" + [string]$spec.step_index + " ok=" + [string]$ok + " actual=" + [string]$http.status)
         }
       }
     } finally {

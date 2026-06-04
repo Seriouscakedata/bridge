@@ -685,6 +685,8 @@ Serial допустим только если есть причина:
 
 ### Phase 6 — Acceptance Agent upgrade
 
+Status note: Atom 11 adds deterministic user journey scenario extraction into project acceptance; browser/web-smoke execution remains a future atom.
+
 Параллельность:
 
 - route/status checks, auth scenario checks, admin scenario checks can develop parallel;

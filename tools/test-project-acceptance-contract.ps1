@@ -54,8 +54,32 @@ try {
       [ordered]@{ id='admin'; path='/admin'; expected_status=@(302,307) }
     )
     user_journeys = @(
-      [ordered]@{ id='user-flow'; steps=@('register','login','use product') },
-      [ordered]@{ id='admin-flow'; steps=@('login as admin','review','delete') }
+      [ordered]@{
+        id='user-flow'
+        access='public'
+        steps=@(
+          [ordered]@{ id='login-page'; action='open login'; path='/login'; expected_status=200; must_contain=@('Sign in','Email') },
+          'GET /feed',
+          'click primary CTA'
+        )
+      },
+      [ordered]@{
+        id='account-flow'
+        role='user'
+        steps=@(
+          [ordered]@{ name='profile'; route='/profile' },
+          'open /users/:id',
+          'GET /post/[id]'
+        )
+      },
+      [ordered]@{
+        id='admin-flow'
+        access='admin'
+        steps=@(
+          [ordered]@{ label='admin area'; path='/admin'; mustContain='Admin' },
+          'review moderation queue'
+        )
+      }
     )
     ux_contract = [ordered]@{ navigation='Primary user journeys must expose clear navigation and feedback.' }
     backend = 'The acceptance fixture covers account state, admin moderation data, route status expectations, and durable storage checks.'
@@ -82,6 +106,27 @@ try {
   Assert-True (@($webSpecs[0].must_contain).Count -ge 1) 'expected must_contain to be preserved'
   $adminSpec = @($webSpecs | Where-Object { [string]$_.name -eq 'admin' } | Select-Object -First 1)
   Assert-True ($adminSpec.Count -eq 1 -and @($adminSpec[0].expected).Count -eq 2) 'expected status arrays to be preserved'
+
+  $journeySpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $project)
+  Assert-True ($journeySpecs.Count -eq 4) ('expected four journey web specs, got ' + [string]$journeySpecs.Count)
+  $loginJourney = @($journeySpecs | Where-Object { [string]$_.journey_id -eq 'user-flow' -and [string]$_.name -eq 'login-page' } | Select-Object -First 1)
+  Assert-True ($loginJourney.Count -eq 1 -and [int]$loginJourney[0].step_index -eq 1 -and [string]$loginJourney[0].path -eq '/login') 'expected login object step from user-flow'
+  Assert-True (@($loginJourney[0].expected).Count -eq 1 -and [int]$loginJourney[0].expected[0] -eq 200) 'expected explicit login status to be preserved'
+  Assert-True ((@($loginJourney[0].must_contain) -join '|') -eq 'Sign in|Email') 'expected login must_contain to be preserved'
+  $feedJourney = @($journeySpecs | Where-Object { [string]$_.journey_id -eq 'user-flow' -and [string]$_.path -eq '/feed' } | Select-Object -First 1)
+  Assert-True ($feedJourney.Count -eq 1 -and [int]$feedJourney[0].step_index -eq 2 -and [string]$feedJourney[0].name -eq '/feed') 'expected GET /feed string step to be extracted'
+  Assert-True (@($feedJourney[0].expected).Count -eq 1 -and [int]$feedJourney[0].expected[0] -eq 200) 'expected public feed default status'
+  $profileJourney = @($journeySpecs | Where-Object { [string]$_.journey_id -eq 'account-flow' -and [string]$_.path -eq '/profile' } | Select-Object -First 1)
+  Assert-True ($profileJourney.Count -eq 1 -and (@($profileJourney[0].expected) -contains 401) -and (@($profileJourney[0].expected) -contains 403)) 'expected protected profile default statuses from role'
+  $adminJourney = @($journeySpecs | Where-Object { [string]$_.journey_id -eq 'admin-flow' -and [string]$_.path -eq '/admin' } | Select-Object -First 1)
+  Assert-True ($adminJourney.Count -eq 1 -and [string]$adminJourney[0].name -eq 'admin area' -and (@($adminJourney[0].expected) -contains 401) -and (@($adminJourney[0].must_contain) -contains 'Admin')) 'expected admin journey object step'
+  $dynamicJourney = @($journeySpecs | Where-Object { [string]$_.path -match ':id|\[id\]' })
+  Assert-True ($dynamicJourney.Count -eq 0) 'expected dynamic journey paths to be skipped'
+  $actionOnlyJourney = @($journeySpecs | Where-Object { [string]$_.name -match 'click|review' })
+  Assert-True ($actionOnlyJourney.Count -eq 0) 'expected action-only journey strings to be skipped'
+  foreach ($js in @($journeySpecs)) {
+    Assert-True ([string]$js.source -eq 'journey') 'expected journey source marker'
+  }
 
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'project-contract.json') -Force
   $missingSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
