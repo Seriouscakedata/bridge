@@ -66,6 +66,9 @@ function Get-AutonomySettings {
     workpackExecMinItems     = 2
     workpackExecMaxItems     = 3
     workpackExecIncludeProtected = $false
+    workpackExecSerialProtectedEnabled = $true
+    workpackExecSerialProtectedMinItems = 3
+    workpackExecSerialProtectedMaxItems = 8
     # Project Autopilot: for project-bound channels, when the runnable backlog is empty,
     # enqueue a coordinator task that reads PROJECT_MAP/PROJECT_PLAN and emits the next
     # atom batch through [[PROJECT_BACKLOG]]. This keeps "one tab = one project" moving
@@ -135,6 +138,9 @@ function Get-AdvancedSettings {
     'workpackExec.minItems'          = 2
     'workpackExec.maxItems'          = 3
     'workpackExec.includeProtected'  = $false
+    'workpackExec.serialProtectedEnabled' = $true
+    'workpackExec.serialProtectedMinItems' = 3
+    'workpackExec.serialProtectedMaxItems' = 8
   }
   try {
     $cfg = Get-BridgeConfig
@@ -190,6 +196,9 @@ function Test-AdvancedSettingValue {
     'workpackExec.minItems'         = @{ type='int';   min=2;   max=12   }
     'workpackExec.maxItems'         = @{ type='int';   min=2;   max=12   }
     'workpackExec.includeProtected' = @{ type='bool'                    }
+    'workpackExec.serialProtectedEnabled' = @{ type='bool'                    }
+    'workpackExec.serialProtectedMinItems' = @{ type='int';   min=2;   max=24   }
+    'workpackExec.serialProtectedMaxItems' = @{ type='int';   min=2;   max=40   }
   }
   if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
   $r = $ranges[$Key]
@@ -229,7 +238,8 @@ function Set-AdvancedSetting {
     'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',
     'backlogPack.unpackedOpenCount','backlogPack.auditBurstCount','backlogPack.auditWindowMinutes',
     'backlogPack.cooldownMinutes','backlogPack.minItems',
-    'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected'
+    'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected',
+    'workpackExec.serialProtectedEnabled','workpackExec.serialProtectedMinItems','workpackExec.serialProtectedMaxItems'
   )
   $h = @{}
   $s = Get-Settings

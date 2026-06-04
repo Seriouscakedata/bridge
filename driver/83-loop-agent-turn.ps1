@@ -9,8 +9,9 @@
     # deterministic dispatch and fall through to the normal planner, which inspects the already-merged
     # result and drives it to DONE (or fixes it) instead of churning the repo.
     $wpDispatched = $false; try { $wpDispatched = [bool](Read-State).workpack_batch_dispatched } catch {}
+    $wpMode = ''; try { $wpMode = [string](Read-State).workpack_batch_mode } catch {}
     $projRootDet = ''; try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRootDet = [string](Get-EffectiveProjectRoot) } } catch {}
-    if ($wpActive -and -not $wpDispatched -and $projRootDet -and ($projRootDet -ne $bridgeRoot)) {
+    if ($wpActive -and ([string]$wpMode -ne 'serial') -and -not $wpDispatched -and $projRootDet -and ($projRootDet -ne $bridgeRoot)) {
       $detStreams = $null; try { $detStreams = Test-CanParallelize -PlanText $task } catch {}
       if ($detStreams -and @($detStreams).Count -ge 2) {
         try {

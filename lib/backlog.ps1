@@ -1179,18 +1179,27 @@ function Get-BacklogWorkpackExecConfig {
     minItems         = 2
     maxItems         = 6
     includeProtected = $false
+    serialProtectedEnabled = $true
+    serialProtectedMinItems = 3
+    serialProtectedMaxItems = 8
   }
   $dotted = @{
     'workpackExec.enabled'          = 'enabled'
     'workpackExec.minItems'         = 'minItems'
     'workpackExec.maxItems'         = 'maxItems'
     'workpackExec.includeProtected' = 'includeProtected'
+    'workpackExec.serialProtectedEnabled' = 'serialProtectedEnabled'
+    'workpackExec.serialProtectedMinItems' = 'serialProtectedMinItems'
+    'workpackExec.serialProtectedMaxItems' = 'serialProtectedMaxItems'
   }
   $flat = @{
     workpackExecEnabled          = 'enabled'
     workpackExecMinItems         = 'minItems'
     workpackExecMaxItems         = 'maxItems'
     workpackExecIncludeProtected = 'includeProtected'
+    workpackExecSerialProtectedEnabled = 'serialProtectedEnabled'
+    workpackExecSerialProtectedMinItems = 'serialProtectedMinItems'
+    workpackExecSerialProtectedMaxItems = 'serialProtectedMaxItems'
   }
   try {
     if (Get-Command Get-AdvancedSettings -ErrorAction SilentlyContinue) {
@@ -1227,7 +1236,11 @@ function Get-BacklogWorkpackExecConfig {
   $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 2 -Max 12
   $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 6 -Min 2 -Max 24
   $cfg.includeProtected = ConvertTo-BacklogPackBool -Value $cfg.includeProtected -Default $false
+  $cfg.serialProtectedEnabled = ConvertTo-BacklogPackBool -Value $cfg.serialProtectedEnabled -Default $true
+  $cfg.serialProtectedMinItems = ConvertTo-BacklogPackInt -Value $cfg.serialProtectedMinItems -Default 3 -Min 2 -Max 24
+  $cfg.serialProtectedMaxItems = ConvertTo-BacklogPackInt -Value $cfg.serialProtectedMaxItems -Default 8 -Min 2 -Max 40
   if ([int]$cfg.maxItems -lt [int]$cfg.minItems) { $cfg.maxItems = [int]$cfg.minItems }
+  if ([int]$cfg.serialProtectedMaxItems -lt [int]$cfg.serialProtectedMinItems) { $cfg.serialProtectedMaxItems = [int]$cfg.serialProtectedMinItems }
   return [pscustomobject]$cfg
 }
 
@@ -1586,6 +1599,186 @@ function Get-NextBacklogWorkpackBatch {
   }
 }
 
+function Test-BacklogProtectedSerialCandidate {
+  param($Item, $Config = $null)
+  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
+  if (-not [bool]$Config.serialProtectedEnabled) { return $false }
+  if (-not $Item) { return $false }
+  if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') { return $false }
+  if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default ''))) { return $false }
+  try { if (Test-IdeaExternal $Item) { return $false } } catch {}
+  $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+  return ($cg -in @('core','safety'))
+}
+
+function Get-BacklogProtectedSerialGroupKey {
+  param($Item)
+  $root = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_root_cause_key' -Default '')
+  if (-not [string]::IsNullOrWhiteSpace($root)) { return $root.Trim().ToLowerInvariant() }
+  $touches = @(Get-BacklogWorkpackItemTouches -Item $Item)
+  if ($touches.Count -gt 0) { return ('touch:' + ((@($touches) | Sort-Object -Unique) -join '+')) }
+  $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($cg)) { $cg = 'protected' }
+  return ('group:' + $cg)
+}
+
+function Resolve-BacklogProtectedSerialFrontier {
+  param($Config = $null)
+  if (-not $Config) { $Config = Get-BacklogWorkpackExecConfig }
+
+  $allItems = @(Get-Backlog)
+  $approved = @(
+    $allItems |
+    Where-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'status' -Default '') -eq 'approved' }
+  )
+  $protected = @(
+    $approved |
+    Where-Object {
+      $cg = ([string](Get-BacklogPackObjectValue -Obj $_ -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+      ($cg -in @('core','safety'))
+    }
+  )
+  $eligible = New-Object 'System.Collections.Generic.List[object]'
+  $dependencyWait = 0
+  $structuralWait = 0
+  $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
+  foreach ($item in @($protected)) {
+    if (-not (Test-BacklogProtectedSerialCandidate -Item $item -Config $Config)) { continue }
+    $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
+    $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
+    if (-not [bool]$depCheck.ready) { $dependencyWait++; continue }
+    $depSignal = Get-BacklogTaskDepSignal -Text $txt
+    if ($depSignal -eq 'foundation') { $structuralWait++; continue }
+    if ($depSignal -eq 'dependent') { $dependencyWait++; continue }
+    [void]$eligible.Add($item)
+  }
+
+  $groups = @{}
+  foreach ($item in @($eligible.ToArray())) {
+    $key = Get-BacklogProtectedSerialGroupKey -Item $item
+    if ([string]::IsNullOrWhiteSpace($key)) { $key = 'protected' }
+    if (-not $groups.ContainsKey($key)) { $groups[$key] = New-Object 'System.Collections.Generic.List[object]' }
+    [void]$groups[$key].Add($item)
+  }
+
+  $summaries = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($key in @($groups.Keys)) {
+    $arr = @($groups[$key].ToArray())
+    if ($arr.Count -lt [int]$Config.serialProtectedMinItems) { continue }
+    $rank = 999
+    foreach ($i in $arr) {
+      $r = Get-IdeaSeverityRank -Idea $i
+      if ($r -lt $rank) { $rank = $r }
+    }
+    $score = 0.0
+    try { $score = ($arr | ForEach-Object { try { [double]$_.score } catch { 0.0 } } | Measure-Object -Sum).Sum } catch { $score = 0.0 }
+    [void]$summaries.Add([pscustomobject]@{ key=$key; count=$arr.Count; severity_rank=$rank; score=$score; items=$arr })
+  }
+  $best = @($summaries.ToArray() | Sort-Object @{Expression={ -[int]$_.count }}, @{Expression={ [int]$_.severity_rank }}, @{Expression={ -[double]$_.score }}, @{Expression={ [string]$_.key }} | Select-Object -First 1)
+  $selectedKey = ''
+  $selectedGroup = @()
+  if ($best.Count -gt 0) {
+    $selectedKey = [string]$best[0].key
+    $selectedGroup = @($best[0].items)
+  }
+
+  $selected = @(
+    $selectedGroup |
+    Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
+                @{Expression={[string]$_.ts}} |
+    Select-Object -First ([int]$Config.serialProtectedMaxItems)
+  )
+  $ids = @($selected | ForEach-Object { [string]$_.id })
+  $packs = @($selected | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
+  $groupsOut = @($selected | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
+  $touches = @()
+  foreach ($item in @($selected)) { $touches += @(Get-BacklogWorkpackItemTouches -Item $item) }
+  $touches = @($touches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+  $batchAvailable = ($selected.Count -ge [int]$Config.serialProtectedMinItems)
+  $reason = 'unknown'
+  if (-not [bool]$Config.serialProtectedEnabled) {
+    $reason = 'disabled'
+  } elseif ($protected.Count -lt [int]$Config.serialProtectedMinItems) {
+    $reason = 'not-enough-protected'
+  } elseif ($eligible.Count -lt [int]$Config.serialProtectedMinItems) {
+    if ($dependencyWait -gt 0) { $reason = 'dependency-wait' }
+    elseif ($structuralWait -gt 0) { $reason = 'structural-barrier' }
+    else { $reason = 'not-enough-eligible' }
+  } elseif ($batchAvailable) {
+    $reason = 'serial-batch-available'
+  } else {
+    $reason = 'not-enough-same-root'
+  }
+
+  $report = [pscustomobject][ordered]@{
+    enabled = [bool]$Config.serialProtectedEnabled
+    approved_count = [int]$approved.Count
+    with_workpack_count = [int]$protected.Count
+    without_workpack_count = 0
+    eligible_count = [int]$eligible.Count
+    protected_count = [int]$protected.Count
+    ready_count = [int]$eligible.Count
+    group_count = [int]$groups.Count
+    selected_count = [int]$selected.Count
+    min_items = [int]$Config.serialProtectedMinItems
+    max_items = [int]$Config.serialProtectedMaxItems
+    dependency_wait_count = [int]$dependencyWait
+    structural_wait_count = [int]$structuralWait
+    conflict_skip_count = 0
+    touch_skip_count = 0
+    batch_available = [bool]$batchAvailable
+    parallel_required = $false
+    serial_required = [bool]$batchAvailable
+    reason = [string]$reason
+    selected_root = [string]$selectedKey
+    selected_ids = @($ids)
+    selected_groups = @($groupsOut)
+    selected_touches = @($touches)
+  }
+
+  return [pscustomobject][ordered]@{
+    items = @($selected)
+    ids = @($ids)
+    workpacks = @($packs)
+    conflict_groups = @($groupsOut)
+    touches = @($touches)
+    count = [int]$selected.Count
+    eligible_count = [int]$eligible.Count
+    protected_count = [int]$protected.Count
+    dependency_wait_count = [int]$dependencyWait
+    structural_wait_count = [int]$structuralWait
+    selected_root = [string]$selectedKey
+    report = $report
+  }
+}
+
+function Get-BacklogProtectedSerialFrontierReport {
+  param($Config = $null)
+  $frontier = Resolve-BacklogProtectedSerialFrontier -Config $Config
+  return $frontier.report
+}
+
+function Get-NextBacklogProtectedSerialBatch {
+  param($Config = $null)
+  $frontier = Resolve-BacklogProtectedSerialFrontier -Config $Config
+  if (-not $frontier -or -not $frontier.report -or -not [bool]$frontier.report.batch_available) { return $null }
+  return [pscustomobject]@{
+    items = @($frontier.items)
+    ids = @($frontier.ids)
+    workpacks = @($frontier.workpacks)
+    conflict_groups = @($frontier.conflict_groups)
+    touches = @($frontier.touches)
+    count = [int]$frontier.count
+    eligible_count = [int]$frontier.eligible_count
+    protected_count = [int]$frontier.protected_count
+    dependency_wait_count = [int]$frontier.dependency_wait_count
+    structural_wait_count = [int]$frontier.structural_wait_count
+    selected_root = [string]$frontier.selected_root
+    frontier_report = $frontier.report
+  }
+}
+
 function New-BacklogWorkpackBatchTaskText {
   param([object[]]$Items)
   $itemsArr = @($Items | Where-Object { $_ })
@@ -1646,6 +1839,44 @@ function New-BacklogWorkpackBatchTaskText {
     [void]$sb.AppendLine('')
   }
   [void]$sb.AppendLine('STATUS: CONTINUE')
+  return $sb.ToString().Trim()
+}
+
+function New-BacklogProtectedSerialBatchTaskText {
+  param([object[]]$Items, [string]$Root = '')
+  $itemsArr = @($Items | Where-Object { $_ })
+  $n = $itemsArr.Count
+  $rootText = if ([string]::IsNullOrWhiteSpace($Root)) { 'protected/root-cause' } else { [string]$Root }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.AppendLine("[Автозадача из protected-serial-workpack] Выполни $n связанных protected approved задач бэклога одним ПОСЛЕДОВАТЕЛЬНЫМ проверяемым проходом.")
+  [void]$sb.AppendLine('')
+  [void]$sb.AppendLine(("Общий корень/зона: {0}" -f $rootText))
+  [void]$sb.AppendLine('Цель слоя: не идти по одной audit-задаче, а закрыть связанный safety/core кластер одним root-cause фиксом или честным COVERED/duplicate отчётом.')
+  [void]$sb.AppendLine('Правила:')
+  [void]$sb.AppendLine('- НЕ эмить [[PARALLEL:*]] и НЕ запускать несколько воркеров: это protected serial batch.')
+  [void]$sb.AppendLine('- Не обходи safety/guard/verify/rollback. Если пункт опасен или нерелевантен, явно пометь его COVERED/BLOCKED в отчёте.')
+  [void]$sb.AppendLine('- Сначала сгруппируй повторы по смыслу, затем сделай минимальный общий фикс. Не правь unrelated-файлы.')
+  [void]$sb.AppendLine('- Перед STATUS: DONE покажи проверку: ParseFile/smoke/релевантный selftest. Без проверки задача не закрывается.')
+  [void]$sb.AppendLine('- В итоговом отчёте перечисли backlog_id, которые закрыты изменением или COVERED существующим кодом.')
+  [void]$sb.AppendLine('')
+  $idx = 0
+  foreach ($item in $itemsArr) {
+    $idx++
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
+    $group = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'protected')
+    $rootKey = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_root_cause_key' -Default '')
+    $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+    if ($touches.Count -eq 0) { $touches = @($group) }
+    $files = ($touches | Select-Object -First 8) -join ', '
+    $text = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '') -replace '\s+', ' ').Trim()
+    [void]$sb.AppendLine(("ITEM {0}: backlog_id={1}" -f $idx, $id))
+    [void]$sb.AppendLine(("workpack={0}; conflict_group={1}; root={2}" -f $packId, $group, $rootKey))
+    [void]$sb.AppendLine(("Files/touch: {0}" -f $files))
+    [void]$sb.AppendLine(("Task: {0}" -f $text))
+    [void]$sb.AppendLine('')
+  }
+  [void]$sb.AppendLine('Первый ход planner-а: если нужны правки, передай Codex ОДИН последовательный STATUS: CONTINUE с объединённым планом. Если всё уже покрыто, STATUS: DONE с COVERED-обоснованием и проверкой.')
   return $sb.ToString().Trim()
 }
 

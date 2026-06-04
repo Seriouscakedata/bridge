@@ -58,6 +58,9 @@ function Get-AutonomySettings {
     workpackExecMinItems = 2
     workpackExecMaxItems = 3
     workpackExecIncludeProtected = $false
+    workpackExecSerialProtectedEnabled = $true
+    workpackExecSerialProtectedMinItems = 3
+    workpackExecSerialProtectedMaxItems = 5
     backlogPackEnabled = $true
     backlogPackBurstCount = 5
     backlogPackWindowMinutes = 60
@@ -151,6 +154,35 @@ try {
   Assert-True (-not [bool]$protectedReport.batch_available) 'expected protected-only report batch_available=false'
   Assert-True ([int]$protectedReport.protected_count -gt 0) 'expected protected-only report protected_count>0'
   Assert-True (@('protected-dominant','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected protected-only reason, got {0}" -f [string]$protectedReport.reason)
+
+  $idProtectedC = Add-Idea -Text 'fix supervisor handle cleanup in supervisor.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -in @([string]$idProtectedA, [string]$idProtectedB, [string]$idProtectedC)) {
+      $item | Add-Member -NotePropertyName workpack_root_cause_key -NotePropertyValue 'file:supervisor.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'safety' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('supervisor.ps1') -Force
+      if ([string]::IsNullOrWhiteSpace([string]$item.workpack_id)) {
+        $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-protected-supervisor' -Force
+      }
+    }
+  }
+  Save-Backlog $items
+  $serialReport = Get-BacklogProtectedSerialFrontierReport
+  $serialBatch = Get-NextBacklogProtectedSerialBatch
+  Assert-FrontierReportShape -Report $serialReport -Name 'protected-serial'
+  Assert-True ($serialReport.PSObject.Properties.Name -contains 'serial_required') 'protected serial report should expose serial_required'
+  Assert-True ([bool]$serialReport.batch_available) 'expected protected serial batch_available=true'
+  Assert-True ([bool]$serialReport.serial_required) 'expected protected serial_required=true'
+  Assert-True (-not [bool]$serialReport.parallel_required) 'protected serial must not require parallel'
+  Assert-True ([string]$serialReport.reason -eq 'serial-batch-available') ("expected serial-batch-available reason, got {0}" -f [string]$serialReport.reason)
+  Assert-True ([string]$serialReport.selected_root -eq 'file:supervisor.ps1') ("expected supervisor serial root, got {0}" -f [string]$serialReport.selected_root)
+  Assert-True ($serialBatch -ne $null) 'expected protected serial batch'
+  Assert-True ([int]$serialBatch.count -eq 3) ("expected 3 protected serial items, got {0}" -f [int]$serialBatch.count)
+  $serialText = New-BacklogProtectedSerialBatchTaskText -Items @($serialBatch.items) -Root ([string]$serialBatch.selected_root)
+  Assert-True ($serialText -match 'protected-serial-workpack') 'serial task text should identify protected serial mode'
+  Assert-True ($serialText -match 'НЕ эмить \[\[PARALLEL') 'serial task text should explicitly forbid parallel markers'
+  Assert-True ($serialText -notmatch '\[\[PARALLEL:[A-Za-z0-9_.-]+\]\]') 'serial task text must not contain executable parallel blocks'
 
   $items = @(Get-Backlog)
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }

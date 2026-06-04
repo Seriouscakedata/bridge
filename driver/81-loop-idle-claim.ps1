@@ -263,7 +263,7 @@
         if ($failedN -gt 0) {
           Add-Message -From system -Text "⚠ Автозадача из бэклога не завершилась успешно — помечено failed: $failedN." -Kind event | Out-Null
         }
-        Update-State { param($s) $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force } | Out-Null
+        Update-State { param($s) $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force } | Out-Null
         $state = Read-State
       }
       # Learning loop: metric snapshot during idle every 3 hours, plus hypothesis reflection.
@@ -437,6 +437,78 @@
                   structural_wait=[int]$wpBatch.structural_wait_count
                   conflict_skips=[int]$wpBatch.conflict_skip_count
                   touch_skips=[int]$wpBatch.touch_skip_count
+                })
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+      if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
+        # Protected serial batch: safety/core findings are intentionally excluded from the
+        # independent parallel frontier. When many approved protected items share one root cause,
+        # close them as ONE sequential task instead of wasting a full turn per duplicate finding.
+        try {
+          $serialBatch = Get-NextBacklogProtectedSerialBatch
+          if ($serialBatch -and [int]$serialBatch.count -ge 2) {
+            $wpCfg = Get-BacklogWorkpackExecConfig
+            $safeItems = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($wpItem in @($serialBatch.items)) {
+              $wpId = [string]$wpItem.id
+              $wpGate = $null
+              try { $wpGate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из protected serial workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpGate = [pscustomobject]@{ safe=$true; risk='unknown'; reason='gate exception fail-open' } }
+              if ($wpGate -and -not [bool]$wpGate.safe) {
+                try { Set-Idea -Id $wpId -Status 'held' | Out-Null } catch {}
+                Add-Message -From system -Text ("🛑 Protected serial pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpGate.risk + "): " + [string]$wpGate.reason) -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='protected-serial-preflight-blocked'; item_id=$wpId; risk=[string]$wpGate.risk; reason=[string]$wpGate.reason }) } catch {}
+                continue
+              }
+              [void]$safeItems.Add($wpItem)
+            }
+            if ($safeItems.Count -ge [int]$wpCfg.serialProtectedMinItems) {
+              $safeArr = @($safeItems.ToArray())
+              $batchText = New-BacklogProtectedSerialBatchTaskText -Items $safeArr -Root ([string]$serialBatch.selected_root)
+              $batchIds = @($safeArr | ForEach-Object { [string]$_.id })
+              $claimedIdea = [pscustomobject]@{
+                id = [string]$batchIds[0]
+                text = $batchText
+                workpack_batch = $true
+                workpack_batch_mode = 'serial'
+                protected_serial_batch = $true
+                workpack_batch_ids = @($batchIds)
+                workpack_batch_count = $safeArr.Count
+                preflight_checked = $true
+                workpack_frontier = [pscustomobject]@{
+                  eligible = [int]$serialBatch.eligible_count
+                  ready = [int]$serialBatch.eligible_count
+                  dependency_wait = [int]$serialBatch.dependency_wait_count
+                  structural_wait = [int]$serialBatch.structural_wait_count
+                  conflict_skips = 0
+                  touch_skips = 0
+                  reason = if ($serialBatch.frontier_report) { [string]$serialBatch.frontier_report.reason } else { 'serial-batch-available' }
+                  approved = if ($serialBatch.frontier_report) { [int]$serialBatch.frontier_report.approved_count } else { 0 }
+                  with_workpack = if ($serialBatch.frontier_report) { [int]$serialBatch.frontier_report.protected_count } else { 0 }
+                  without_workpack = 0
+                  protected = [int]$serialBatch.protected_count
+                  root = [string]$serialBatch.selected_root
+                  mode = 'serial'
+                }
+              }
+              $claimedWorkpackBatch = $true
+              try {
+                Write-BacklogJsonLine ([ordered]@{
+                  ts=(Get-Date).ToUniversalTime().ToString('o')
+                  action='protected-serial-batch-claim'
+                  item_ids=@($batchIds)
+                  count=$safeArr.Count
+                  root=[string]$serialBatch.selected_root
+                  workpacks=@($safeArr | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
+                  conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
+                  touches=@($serialBatch.touches)
+                  eligible=[int]$serialBatch.eligible_count
+                  protected=[int]$serialBatch.protected_count
+                  reason=if ($serialBatch.frontier_report) { [string]$serialBatch.frontier_report.reason } else { 'serial-batch-available' }
+                  dependency_wait=[int]$serialBatch.dependency_wait_count
+                  structural_wait=[int]$serialBatch.structural_wait_count
                 })
               } catch {}
             }
@@ -704,6 +776,10 @@
           }
         } catch { $batchIdsForState = @() }
         $isWorkpackBatch = ($batchIdsForState.Count -ge 2)
+        $workpackBatchMode = ''
+        try {
+          if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_batch_mode') { $workpackBatchMode = [string]$claimedIdea.workpack_batch_mode }
+        } catch { $workpackBatchMode = '' }
         $btext = if ($isWorkpackBatch) { [string]$claimedIdea.text } else { '[Автозадача из бэклога] ' + [string]$claimedIdea.text }
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
@@ -720,6 +796,7 @@
           $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($batchIdsForState) -Force
           $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $isWorkpackBatch -Force
           $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force  # ERR-006: fresh batch, not yet dispatched
+          $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue $workpackBatchMode -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -752,9 +829,14 @@
               $wf = $claimedIdea.workpack_frontier
               $frontierText = " Фронт: selected=" + $batchIdsForState.Count + ", ready=" + [int]$wf.ready + "/" + [int]$wf.eligible + ", ждут deps=" + [int]$wf.dependency_wait + ", barrier=" + [int]$wf.structural_wait + ", conflicts=" + ([int]$wf.conflict_skips + [int]$wf.touch_skips) + "."
               if (-not [string]::IsNullOrWhiteSpace([string]$wf.reason)) { $frontierText += " reason=" + [string]$wf.reason + "." }
+              if (-not [string]::IsNullOrWhiteSpace([string]$wf.root)) { $frontierText += " root=" + [string]$wf.root + "." }
             }
           } catch {}
-          Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks." + $frontierText + " Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null
+          if ([string]$workpackBatchMode -eq 'serial') {
+            Add-Message -From system -Text ("🧵 Беру protected serial-batch автономно: " + $batchIdsForState.Count + " approved safety/core задач одним последовательным проходом." + $frontierText + " Параллель для этой пачки запрещена; дальше обычный planner/Codex/critic/smoke контур.") -Kind event | Out-Null
+          } else {
+            Add-Message -From system -Text ("🤖 Беру workpack-batch автономно: " + $batchIdsForState.Count + " approved задач из независимых workpacks." + $frontierText + " Дальше обычный planner/parallel/critic/smoke контур.") -Kind event | Out-Null
+          }
         } else {
           Add-Message -From system -Text "🤖 Беру задачу из бэклога в работу (автономно): $([string]$claimedIdea.text)" -Kind event | Out-Null
         }
