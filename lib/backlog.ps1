@@ -6,7 +6,14 @@ $script:BacklogLibraryDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)
 
 $script:BacklogModuleDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } elseif (-not [string]::IsNullOrWhiteSpace($script:BacklogLibraryDir)) { $script:BacklogLibraryDir } else { Split-Path -Parent $PSCommandPath }
 
-foreach ($script:BacklogModuleName in @('backlog-io.ps1', 'backlog-core.ps1', 'backlog-workpack.ps1')) {
+foreach ($script:BacklogModuleName in @(
+  'backlog-io.ps1',
+  'backlog-crud.ps1',
+  'backlog-dedup.ps1',
+  'backlog-core.ps1',
+  'backlog-autopilot.ps1',
+  'backlog-workpack.ps1'
+)) {
   $script:BacklogModulePath = Join-Path $script:BacklogModuleDir $script:BacklogModuleName
   . $script:BacklogModulePath
 }

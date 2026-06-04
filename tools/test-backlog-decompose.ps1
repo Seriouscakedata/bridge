@@ -7,7 +7,10 @@ $libRoot = Join-Path $repoRoot 'lib'
 $aggregatorPath = Join-Path $libRoot 'backlog.ps1'
 $modulePaths = @(
   (Join-Path $libRoot 'backlog-io.ps1'),
+  (Join-Path $libRoot 'backlog-crud.ps1'),
+  (Join-Path $libRoot 'backlog-dedup.ps1'),
   (Join-Path $libRoot 'backlog-core.ps1'),
+  (Join-Path $libRoot 'backlog-autopilot.ps1'),
   (Join-Path $libRoot 'backlog-workpack.ps1')
 )
 
@@ -31,8 +34,42 @@ function Test-BacklogScriptParse {
   }
 }
 
+function Get-BacklogDefinedFunctionNames {
+  param([string]$Path)
+  $tokens = $null
+  $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+  if ($errors -and $errors.Count -gt 0) {
+    $joined = ($errors | ForEach-Object { "$($_.Extent.StartLineNumber):$($_.Message)" }) -join '; '
+    throw "Parse failed for ${Path}: $joined"
+  }
+  return @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    ForEach-Object { [string]$_.Name })
+}
+
 foreach ($path in @($aggregatorPath) + $modulePaths) {
   Test-BacklogScriptParse -Path $path
+}
+
+$coreFunctionNames = @(Get-BacklogDefinedFunctionNames -Path (Join-Path $libRoot 'backlog-core.ps1'))
+$movedFunctionNames = @(
+  'Add-Idea',
+  'Get-Backlog',
+  'Save-Backlog',
+  'Set-Idea',
+  'Remove-Idea',
+  'Get-IdeaById',
+  'Test-IdeaShouldKeep',
+  'Get-IdeaOutcomeStats',
+  'Format-IdeaLearningGuidance',
+  'Get-OpenIdeaCount',
+  'Test-BacklogHasCapacity',
+  'Invoke-BacklogStaleSweep',
+  'Start-ProjectAutopilotIfNeeded',
+  'Add-ProjectBacklogFromMarker'
+)
+foreach ($name in $movedFunctionNames) {
+  Assert-BacklogDecompose (-not ($coreFunctionNames -contains $name)) "Moved function still defined in backlog-core.ps1: $name"
 }
 
 $script:BacklogDecomposeTempBase = Join-Path $repoRoot '.tmp'
@@ -61,6 +98,9 @@ try {
     'Get-Backlog',
     'Save-Backlog',
     'Add-Idea',
+    'Test-IdeaShouldKeep',
+    'Start-ProjectAutopilotIfNeeded',
+    'Add-ProjectBacklogFromMarker',
     'Get-NextBacklogWorkpackBatch'
   )
   foreach ($name in $requiredFunctions) {

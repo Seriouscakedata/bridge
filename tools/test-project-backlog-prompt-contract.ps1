@@ -10,15 +10,15 @@ function Assert-Contains {
 }
 
 $root = Split-Path -Parent $PSScriptRoot
-$driverPath = Join-Path $root 'driver\30-prompt-agent-state.ps1'
-$backlogPath = Join-Path $root 'lib\backlog.ps1'
+$promptBuilderPath = Join-Path $root 'lib\prompt-builder.ps1'
+$backlogAutopilotPath = Join-Path $root 'lib\backlog-autopilot.ps1'
 
-$driverText = [System.IO.File]::ReadAllText($driverPath, [System.Text.Encoding]::UTF8)
-$autopilotStart = $driverText.IndexOf('- PROJECT AUTOPILOT:', [System.StringComparison]::Ordinal)
+$promptBuilderText = [System.IO.File]::ReadAllText($promptBuilderPath, [System.Text.Encoding]::UTF8)
+$autopilotStart = $promptBuilderText.IndexOf('- PROJECT AUTOPILOT:', [System.StringComparison]::Ordinal)
 if ($autopilotStart -lt 0) { throw 'driver PROJECT AUTOPILOT prompt block not found' }
-$autopilotEnd = $driverText.IndexOf('- ДОЛГИЕ ПРОЦЕССЫ:', $autopilotStart, [System.StringComparison]::Ordinal)
-if ($autopilotEnd -lt 0) { $autopilotEnd = [Math]::Min($driverText.Length, $autopilotStart + 2500) }
-$autopilotBlock = $driverText.Substring($autopilotStart, $autopilotEnd - $autopilotStart)
+$autopilotEnd = $promptBuilderText.IndexOf('- ДОЛГИЕ ПРОЦЕССЫ:', $autopilotStart, [System.StringComparison]::Ordinal)
+if ($autopilotEnd -lt 0) { $autopilotEnd = [Math]::Min($promptBuilderText.Length, $autopilotStart + 2500) }
+$autopilotBlock = $promptBuilderText.Substring($autopilotStart, $autopilotEnd - $autopilotStart)
 
 $required = @('slug','title','task','chapter','wave','parallel_group','files','depends_on','acceptance','checks','serial_reason')
 foreach ($field in $required) {
@@ -34,7 +34,7 @@ Assert-Contains -Text $autopilotBlock -Needle 'STRICT JSON array' -Message 'driv
 Assert-Contains -Text $autopilotBlock -Needle 'deterministic gate' -Message 'driver prompt must mention deterministic gate rejection'
 Assert-Contains -Text $autopilotBlock -Needle 'backlog.jsonl' -Message 'driver prompt must forbid manual backlog.jsonl edits'
 
-$backlogText = [System.IO.File]::ReadAllText($backlogPath, [System.Text.Encoding]::UTF8)
+$backlogText = [System.IO.File]::ReadAllText($backlogAutopilotPath, [System.Text.Encoding]::UTF8)
 $coordStart = $backlogText.IndexOf('function New-ProjectAutopilotCoordinatorTaskText', [System.StringComparison]::Ordinal)
 if ($coordStart -lt 0) { throw 'New-ProjectAutopilotCoordinatorTaskText not found' }
 $coordEnd = $backlogText.IndexOf('function Test-ProjectPlanApproved', $coordStart, [System.StringComparison]::Ordinal)
