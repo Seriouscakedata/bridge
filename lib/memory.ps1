@@ -85,6 +85,37 @@ function Get-MemoryLogPath { param([string]$Slug = $null) Resolve-MemoryContaine
 function Get-MemoryMarkerPath { param([string]$Slug = $null) Join-Path (Get-MemoryDir -Slug $Slug) 'librarian.last' }
 
 # ---- secrets / config ----
+$script:SecretsAclChecked = $false
+
+function Test-SecretsFilePermissions {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return $true }
+  try {
+    $acl = Get-Acl -LiteralPath $Path
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $systemSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18').Value
+    $adminsSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544').Value
+    $broad = $acl.Access | Where-Object {
+      $_.AccessControlType -eq 'Allow' -and
+      $_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read
+    } | Where-Object {
+      try {
+        $sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        $sid -notin @($currentSid, $systemSid, $adminsSid)
+      } catch { $false }
+    }
+    if ($broad) {
+      $names = @($broad | ForEach-Object { [string]$_.IdentityReference })
+      Write-Warning "secrets.json: read access granted to non-owner accounts: $($names -join ', '). Consider restricting with: icacls `"$Path`" /inheritance:r /grant:r `"$($acl.Owner):R`""
+      return $false
+    }
+    return $true
+  } catch {
+    Write-Warning "secrets.json: unable to inspect file permissions for '$Path': $($_.Exception.Message)"
+    return $true
+  }
+}
+
 function Get-Secret {
   param([string]$Name)
   if (-not [string]::IsNullOrWhiteSpace($Name)) {
@@ -96,9 +127,44 @@ function Get-Secret {
   }
   $p = if (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' }
   if (-not (Test-Path $p)) { return $null }
-  try { $s = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+  if (-not $script:SecretsAclChecked) {
+    $script:SecretsAclChecked = $true
+    try { $null = Test-SecretsFilePermissions -Path $p } catch { Write-Warning "secrets.json: permission check failed: $($_.Exception.Message)" }
+  }
+  try { $raw = Get-Content $p -Raw -Encoding UTF8 } catch { return $null }
+  try { $s = $raw | ConvertFrom-Json } catch { return $null }
+  if ($s.PSObject.Properties.Name -contains '_dpapi') {
+    try {
+      Add-Type -AssemblyName System.Security
+      $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
+      $enc  = [Convert]::FromBase64String([string]$s.data)
+      $dec  = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+      $json = [System.Text.Encoding]::UTF8.GetString($dec)
+      $s    = $json | ConvertFrom-Json
+    } catch { return $null }
+  }
   if ($s.PSObject.Properties.Name -contains $Name) { return [string]$s.$Name }
   return $null
+}
+
+function Protect-SecretsAtRest {
+  # Encrypt plaintext secrets.json with DPAPI (CurrentUser scope).
+  # The file becomes {"_dpapi":1,"data":"<base64>"} readable only by the current Windows user.
+  param([string]$Path = $null)
+  if (-not $Path) { $Path = if (Get-Command Get-SecretsPath -EA SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' } }
+  if (-not (Test-Path -LiteralPath $Path)) { throw "secrets file not found: $Path" }
+  $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+  try { $obj = $raw | ConvertFrom-Json } catch { throw "secrets file is not valid JSON: $_" }
+  if ($obj.PSObject.Properties.Name -contains '_dpapi') { Write-Host 'Already DPAPI-protected.'; return }
+  $bytes   = [System.Text.Encoding]::UTF8.GetBytes($raw)
+  $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
+  Add-Type -AssemblyName System.Security
+  $enc  = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  $b64  = [Convert]::ToBase64String($enc)
+  $wrapper = [pscustomobject]@{ _dpapi = 1; data = $b64 }
+  $json = $wrapper | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText($Path, $json, [System.Text.Encoding]::UTF8)
+  Write-Host "secrets.json encrypted with DPAPI at: $Path"
 }
 
 function Get-MemoryConfig {
