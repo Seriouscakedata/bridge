@@ -1282,6 +1282,43 @@ function Invoke-ParallelDispatch {
     }
   }
 
+  # ---------------------------------------------------------------------------
+  # Guard helpers for collect-then-commit (Atom 20: truthful parallel collect)
+  # ---------------------------------------------------------------------------
+  function _NormalizeRelPath {
+      param([string]$Rel)
+      if ([string]::IsNullOrWhiteSpace($Rel)) { return $null }
+      $n = $Rel.Trim().TrimStart('/\').Replace('\','/')
+      if ([string]::IsNullOrWhiteSpace($n)) { return $null }
+      return $n
+  }
+
+  function Test-ParallelCollectedPathAllowed {
+      param(
+          [string]$RelativePath,
+          [string[]]$DeclaredFiles
+      )
+      $rel = _NormalizeRelPath $RelativePath
+      if ($null -eq $rel) { return $false }
+      # Deny absolute paths (rooted)
+      if ([System.IO.Path]::IsPathRooted($rel)) { return $false }
+      # Deny path traversal
+      if ($rel -match '(?:^|\/)\.\.(?:\/|$)' -or $rel -match '^\.\.' ) { return $false }
+      # Deny .git access
+      if ($rel -match '(?:^|\/)\.git(?:\/|$)') { return $false }
+      # No declared files -> no touch-set -> deny all
+      if (-not $DeclaredFiles -or $DeclaredFiles.Count -eq 0) { return $false }
+      foreach ($d in $DeclaredFiles) {
+          $dn = _NormalizeRelPath $d
+          if ($null -eq $dn) { continue }
+          # Exact match
+          if ($rel -eq $dn) { return $true }
+          # rel is inside declared directory (prefix match, declared ends without slash)
+          if ($rel.StartsWith($dn + '/')) { return $true }
+      }
+      return $false
+  }
+
   # Merge phase: fast-forward each wip-branch into HEAD on the channel's repo (project_root for
   # project channels, bridge for main). 2026-05-31 Foundation #4 scale.
   $merged = 0
@@ -1300,30 +1337,81 @@ function Invoke-ParallelDispatch {
   $quarantined = New-Object System.Collections.Generic.List[string]
   $base0 = Get-ParallelTaskBaseCommit
   $gitC = Get-GitExe
+  $deliveredPaths = New-Object System.Collections.Generic.List[string]  # actually staged paths
+
+  $allowedTerminalStatuses = @('done', 'paused-for-restart')
+
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
-    # 2026-06-01 ERR-004 fix: QUARANTINE failed streams — never collect a failed worker's worktree
-    # files into the main repo. Before the ERR-003 CRLF fix, workers were falsely marked 'failed' even
-    # though their files were valid, so collecting-regardless was a (lossy) safety net. Now that 003
-    # removed the false-failure path, a 'failed' status means a REAL failure (LLM error, empty reply,
-    # no FILE blocks, trap) — collecting those is exactly how broken/unverified code (e.g. the
-    # inconsistent auth baseline, ERR-005) entered main. Collect only non-failed terminal statuses
-    # (done / paused-for-restart); failed streams are skipped and reported for re-dispatch/verify.
     $wst = ''
     try { $wst = [string]$completed[$w.id].status } catch {}
-    if ($wst -eq 'failed') { $quarantined.Add([string]$w.id); continue }
+
+    # Quarantine: failed or unknown terminal status
+    if ($wst -eq 'failed' -or $allowedTerminalStatuses -notcontains $wst) {
+      $quarantined.Add([string]$w.id)
+      continue
+    }
+
+    # Declared touch-set for this stream
+    $declaredFiles = @()
+    try { $declaredFiles = @($w.files | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+
+    # Quarantine: no declared files (no touch-set -> cannot validate what to copy)
+    if ($declaredFiles.Count -eq 0) {
+      $quarantined.Add([string]$w.id)
+      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет объявленных файлов (w.files пуст) — сбор невозможен") -Kind event | Out-Null } catch {}
+      continue
+    }
+
     try {
       $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $taskHash
-      if (-not (Test-Path -LiteralPath $wtPath)) { continue }
+      if (-not (Test-Path -LiteralPath $wtPath)) {
+        $quarantined.Add([string]$w.id)
+        continue
+      }
+
+      # Collect changed paths from worktree
       $changed = New-Object System.Collections.Generic.HashSet[string]
       if (-not [string]::IsNullOrWhiteSpace($base0)) {
         try { @(& $gitC -C $wtPath diff --name-only $base0 2>$null) | Where-Object { $_ } | ForEach-Object { [void]$changed.Add(($_.Trim() -replace '"','')) } } catch {}
       }
       try { @(& $gitC -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
-      if ($changed.Count -eq 0) { continue }
-      $copiedHere = 0
+
+      # No changed files AND no commits: quarantine (no-change stream)
+      $streamCommits = 0
+      try { $streamCommits = @($completed[$w.id].commits).Count } catch {}
+      if ($changed.Count -eq 0 -and $streamCommits -eq 0) {
+        $quarantined.Add([string]$w.id)
+        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет изменённых файлов и нет коммитов (no-change stream)") -Kind event | Out-Null } catch {}
+        continue
+      }
+
+      # Validate ALL changed paths against declared touch-set BEFORE copying
+      $allowedPaths = New-Object System.Collections.Generic.List[string]
+      $deniedPaths  = New-Object System.Collections.Generic.List[string]
       foreach ($rel in $changed) {
         if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+        if (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $declaredFiles) {
+          $allowedPaths.Add($rel)
+        } else {
+          $deniedPaths.Add($rel)
+        }
+      }
+
+      if ($deniedPaths.Count -gt 0) {
+        try { Add-Message -From system -Text ("⚠️ Поток " + $w.id + ": " + $deniedPaths.Count + " файл(ов) вне touch-set отклонены: " + ($deniedPaths -join ', ')) -Kind event | Out-Null } catch {}
+      }
+
+      if ($allowedPaths.Count -eq 0) {
+        $quarantined.Add([string]$w.id)
+        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет разрешённых путей (все вне touch-set или пустые)") -Kind event | Out-Null } catch {}
+        continue
+      }
+
+      # Copy allowed paths, then verify actual git diff in root
+      $copiedHere = 0
+      $actuallyDelivered = New-Object System.Collections.Generic.List[string]
+      foreach ($rel in $allowedPaths) {
         $src = Join-Path $wtPath $rel
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
         $dst = Join-Path $bridgeRoot $rel
@@ -1331,20 +1419,44 @@ function Invoke-ParallelDispatch {
         if ($dstDir -and -not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item -LiteralPath $src -Destination $dst -Force
         $copiedHere++
+
+        # Post-copy: verify git sees a real diff for this path in root
+        $gitDiffOut = @(& $gitC -C $bridgeRoot status --porcelain -- $rel 2>$null | Where-Object { $_ })
+        if ($gitDiffOut.Count -gt 0) {
+          $actuallyDelivered.Add($rel)
+          $deliveredPaths.Add($rel)
+        }
       }
-      if ($copiedHere -gt 0) {
-        $collected += $copiedHere; $collectedStreams++
+
+      if ($actuallyDelivered.Count -gt 0) {
+        $collected += $actuallyDelivered.Count
+        $collectedStreams++
         try { $completed[$w.id] | Add-Member -NotePropertyName _collected -NotePropertyValue $true -Force } catch {}
+        try { $completed[$w.id] | Add-Member -NotePropertyName _deliveredPaths -NotePropertyValue @($actuallyDelivered) -Force } catch {}
+      } else {
+        # Copied files but git sees no diff (e.g. files identical to root)
+        $quarantined.Add([string]$w.id)
+        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": скопировано " + $copiedHere + " файл(ов), но git diff пуст — изменений нет") -Kind event | Out-Null } catch {}
       }
-    } catch {}
+    } catch {
+      $quarantined.Add([string]$w.id)
+      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": исключение при сборе: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
   }
-  if ($collected -gt 0) {
+
+  # Commit only actually-delivered paths (not git add -A)
+  if ($collectedStreams -gt 0 -and $deliveredPaths.Count -gt 0) {
     try {
-      & $gitC -C $bridgeRoot add -A 2>$null | Out-Null
-      & $gitC -C $bridgeRoot commit -m ("parallel collect: " + $collectedStreams + " streams, " + $collected + " files") 2>$null | Out-Null
+      foreach ($p in $deliveredPaths) {
+        & $gitC -C $bridgeRoot add -- $p 2>$null | Out-Null
+      }
+      $actualFiles = $deliveredPaths.Count
+      & $gitC -C $bridgeRoot commit -m ("parallel collect: " + $collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>$null | Out-Null
       $merged += $collectedStreams
-      Add-Message -From system -Text ("📦 Collect-commit: собрано " + $collected + " файлов из " + $collectedStreams + " потоков напрямую в репо (надёжный путь, не зависит от git-поведения воркеров)") -Kind event | Out-Null
-    } catch {}
+      try { Add-Message -From system -Text ("📦 Collect-commit: " + $actualFiles + " реально изменённых файлов из " + $collectedStreams + " потоков (только staged actual diff, не git add -A)") -Kind event | Out-Null } catch {}
+    } catch {
+      try { Add-Message -From system -Text ("❌ Collect-commit exception: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
   }
   # 2026-06-01 ERR-004: surface quarantined (failed) streams so the operator/driver knows their work
   # was deliberately NOT merged. $quarantinedStreams is also consumed by the terminal-result logic
@@ -1352,11 +1464,15 @@ function Invoke-ParallelDispatch {
   # repeated as a generic "parallel completed".
   $quarantinedStreams = @($quarantined)
   if ($quarantinedStreams.Count -gt 0) {
-    try { Add-Message -From system -Text ("⚠️ Карантин: " + $quarantinedStreams.Count + " поток(ов) со статусом failed НЕ собраны в репо (защита от непроверенного/битого кода, ERR-004): " + ($quarantinedStreams -join ', ') + ". Требуется повторный прогон этих потоков.") -Kind event | Out-Null } catch {}
+    try { Add-Message -From system -Text ("⚠️ Карантин: " + $quarantinedStreams.Count + " поток(ов) не собраны в репо (failed/unknown/no-touch/no-change/outside-touch/no-diff/exception): " + ($quarantinedStreams -join ', ') + ". Требуется повторный прогон этих потоков.") -Kind event | Out-Null } catch {}
   }
 
   foreach ($w in $workers) {
     if (-not $completed.ContainsKey($w.id)) { continue }
+    if ($quarantinedStreams -contains [string]$w.id) {
+      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $taskHash } catch {}
+      continue
+    }
     $res = $completed[$w.id]
     # Already delivered by collect-then-commit above — just clean its worktree and skip branch merge.
     if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
@@ -1459,5 +1575,18 @@ function Invoke-ParallelDispatch {
   # must NOT be reported to the user as a plain "DONE: N потоков" — the caller bounces it for rework.
   $qCount = 0; try { $qCount = @($quarantinedStreams).Count } catch {}
   $totalStreams = 0; try { $totalStreams = @($workers).Count } catch {}
-  return @{ ok=($merged -ge 1); merged=$merged; quarantined=$qCount; total=$totalStreams; reason='' }
+  # Determine ok:
+  # - all delivered (merged == total) and quarantined == 0 -> clean complete, ok=true
+  # - mixed (some delivered, some quarantined) -> ok=true + quarantined>0 (driver enters partial repair)
+  # - none delivered -> ok=false
+  $cleanComplete = ($merged -ge $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
+  $anyDelivered  = ($merged -ge 1)
+  return @{
+    ok          = $anyDelivered
+    merged      = $merged
+    quarantined = $qCount
+    total       = $totalStreams
+    clean       = $cleanComplete
+    reason      = $(if ($cleanComplete) { 'all_delivered' } elseif ($anyDelivered) { 'partial' } else { 'all_failed' })
+  }
 }
