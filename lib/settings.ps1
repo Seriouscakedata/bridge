@@ -59,6 +59,8 @@ function Get-AutonomySettings {
     backlogPackAuditWindowMinutes = 30
     backlogPackCooldownMinutes = 30
     backlogPackMinItems      = 2
+    backlogPackDedupeEnabled = $true
+    backlogPackDedupeMinGroupSize = 2
     # Workpack execution: when the backlog has already been grouped, claim several
     # independent approved workpack items as one batch task. The normal planner,
     # parallel workers, critic, smoke, and pre-flight gates still own execution.
@@ -134,6 +136,8 @@ function Get-AdvancedSettings {
     'backlogPack.auditWindowMinutes' = 30
     'backlogPack.cooldownMinutes'    = 30
     'backlogPack.minItems'           = 2
+    'backlogPack.dedupeEnabled'      = $true
+    'backlogPack.dedupeMinGroupSize' = 2
     'workpackExec.enabled'           = $true
     'workpackExec.minItems'          = 2
     'workpackExec.maxItems'          = 3
@@ -192,6 +196,8 @@ function Test-AdvancedSettingValue {
     'backlogPack.auditWindowMinutes'= @{ type='int';   min=1;   max=1440 }
     'backlogPack.cooldownMinutes'   = @{ type='int';   min=1;   max=1440 }
     'backlogPack.minItems'          = @{ type='int';   min=1;   max=50   }
+    'backlogPack.dedupeEnabled'     = @{ type='bool'                    }
+    'backlogPack.dedupeMinGroupSize'= @{ type='int';   min=2;   max=1000 }
     'workpackExec.enabled'          = @{ type='bool'                    }
     'workpackExec.minItems'         = @{ type='int';   min=2;   max=12   }
     'workpackExec.maxItems'         = @{ type='int';   min=2;   max=12   }
@@ -238,6 +244,7 @@ function Set-AdvancedSetting {
     'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',
     'backlogPack.unpackedOpenCount','backlogPack.auditBurstCount','backlogPack.auditWindowMinutes',
     'backlogPack.cooldownMinutes','backlogPack.minItems',
+    'backlogPack.dedupeEnabled','backlogPack.dedupeMinGroupSize',
     'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected',
     'workpackExec.serialProtectedEnabled','workpackExec.serialProtectedMinItems','workpackExec.serialProtectedMaxItems'
   )

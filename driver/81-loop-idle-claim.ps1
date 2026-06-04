@@ -322,6 +322,18 @@
             Add-Message -From system -Text ("🧭 Workpack classification refreshed: {0} open packed task(s)." -f [int]$reclassified) -Kind event | Out-Null
           }
         }
+        $dedupeRun = $null
+        try {
+          if ($packRun -and ($packRun.PSObject.Properties.Name -contains 'duplicate_compactor')) {
+            $dedupeRun = $packRun.duplicate_compactor
+          }
+        } catch {}
+        if ((-not $dedupeRun) -and ($reclassifyDue -or ($packRun -and [bool]$packRun.ran))) {
+          try { $dedupeRun = Invoke-BacklogDuplicateCompactor -Reason @('idle-maintenance') } catch { $dedupeRun = $null }
+        }
+        if ($dedupeRun -and [int]$dedupeRun.duplicates_rejected -gt 0) {
+          Add-Message -From system -Text ("🧹 Бэклог очищен от дублей: {0} audit-задач помечены как duplicate-of-root-cause в {1} группе(ах)." -f [int]$dedupeRun.duplicates_rejected, [int]$dedupeRun.group_count) -Kind event | Out-Null
+        }
       } catch {}
 
       # Autonomy: after enough idle quiet, take the next approved backlog idea and run it

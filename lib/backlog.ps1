@@ -592,6 +592,8 @@ function Get-BacklogPackConfig {
     auditWindowMinutes = 30
     cooldownMinutes    = 30
     minItems           = 2
+    dedupeEnabled      = $true
+    dedupeMinGroupSize = 2
   }
   $dotted = @{
     'backlogPack.enabled'            = 'enabled'
@@ -602,6 +604,8 @@ function Get-BacklogPackConfig {
     'backlogPack.auditWindowMinutes' = 'auditWindowMinutes'
     'backlogPack.cooldownMinutes'    = 'cooldownMinutes'
     'backlogPack.minItems'           = 'minItems'
+    'backlogPack.dedupeEnabled'      = 'dedupeEnabled'
+    'backlogPack.dedupeMinGroupSize' = 'dedupeMinGroupSize'
   }
   $flat = @{
     backlogPackEnabled            = 'enabled'
@@ -612,6 +616,8 @@ function Get-BacklogPackConfig {
     backlogPackAuditWindowMinutes = 'auditWindowMinutes'
     backlogPackCooldownMinutes    = 'cooldownMinutes'
     backlogPackMinItems           = 'minItems'
+    backlogPackDedupeEnabled      = 'dedupeEnabled'
+    backlogPackDedupeMinGroupSize = 'dedupeMinGroupSize'
   }
   try {
     if (Get-Command Get-AdvancedSettings -ErrorAction SilentlyContinue) {
@@ -652,6 +658,8 @@ function Get-BacklogPackConfig {
   $cfg.auditWindowMinutes = ConvertTo-BacklogPackInt -Value $cfg.auditWindowMinutes -Default 30 -Min 1 -Max 1440
   $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 30 -Min 1 -Max 1440
   $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 1 -Max 50
+  $cfg.dedupeEnabled = ConvertTo-BacklogPackBool -Value $cfg.dedupeEnabled -Default $true
+  $cfg.dedupeMinGroupSize = ConvertTo-BacklogPackInt -Value $cfg.dedupeMinGroupSize -Default 2 -Min 2 -Max 1000
   return [pscustomobject]$cfg
 }
 
@@ -709,6 +717,199 @@ function Test-BacklogPackItemAuditSource {
     }
   } catch {}
   return $false
+}
+
+function Test-BacklogDuplicateCompactorCandidate {
+  param($Item)
+  $status = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '')).ToLowerInvariant()
+  if ($status -notin @('new','approved')) { return $false }
+  if (-not (Test-BacklogPackItemAuditSource -Item $Item)) { return $false }
+  $dupOf = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'duplicate_of' -Default '')
+  if (-not [string]::IsNullOrWhiteSpace($dupOf)) { return $false }
+  return $true
+}
+
+function Get-BacklogDuplicateFindingType {
+  param($Item)
+  $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+  $signal = (Get-BacklogWorkpackSignalText -Text $text)
+  $signal = ([regex]::Replace([string]$signal, '\s+', ' ')).Trim()
+  if ([string]::IsNullOrWhiteSpace($signal)) { return '' }
+
+  $m = [regex]::Match($signal, '^(?<type>[A-Za-z0-9][A-Za-z0-9_-]{2,80})(?=\s*(?:--|\||:|\(|\p{Pd}|\b))')
+  if (-not $m.Success) { return '' }
+  $raw = ([string]$m.Groups['type'].Value).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
+
+  $stop = @(
+    'add','check','create','document','fix','harden','implement','improve','investigate',
+    'review','run','surface','test','update','verify','write'
+  )
+  if ($stop -contains $raw) { return '' }
+
+  $slug = ($raw -replace '_','-' -replace '[^a-z0-9-]+','-' -replace '-+','-').Trim('-')
+  if ($slug.Length -lt 4) { return '' }
+
+  # A typed audit finding normally carries a stable machine-ish token
+  # (orphan-restart, process_supervision, hardcoded-credentials). Refuse broad prose.
+  $singleTokenAllow = @('deadlock','mojibake','storm','zombie')
+  if (($slug -notmatch '-') -and ($singleTokenAllow -notcontains $slug)) { return '' }
+  return $slug
+}
+
+function Get-BacklogDuplicateRootKey {
+  param($Item)
+  $root = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_root_cause_key' -Default '')
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    try {
+      $class = Get-BacklogWorkpackClassification -Item $Item
+      $root = [string]$class.key
+    } catch { $root = '' }
+  }
+  $root = ([string]$root).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($root)) { return '' }
+  if ($root -eq 'module:general') { return '' }
+  return $root
+}
+
+function Get-BacklogDuplicateCompactorKey {
+  param($Item)
+  $root = Get-BacklogDuplicateRootKey -Item $Item
+  if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+  $kind = Get-BacklogDuplicateFindingType -Item $Item
+  if ([string]::IsNullOrWhiteSpace($kind)) { return $null }
+  return [pscustomobject]@{
+    key = ($root + '|' + $kind)
+    root = $root
+    finding_type = $kind
+  }
+}
+
+function Get-BacklogDuplicateStatusRank {
+  param($Item)
+  $status = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '')).ToLowerInvariant()
+  if ($status -eq 'approved') { return 0 }
+  if ($status -eq 'new') { return 1 }
+  return 2
+}
+
+function Get-BacklogDuplicateRepresentative {
+  param([object[]]$Items)
+  $arr = @($Items | Where-Object { $null -ne $_ })
+  if ($arr.Count -eq 0) { return $null }
+  $sorted = @(
+    $arr | Sort-Object `
+      @{Expression={ Get-BacklogDuplicateStatusRank -Item $_ }} `
+      ,@{Expression={ Get-IdeaSeverityRank -Idea $_ }} `
+      ,@{Expression={ [string](Get-BacklogPackObjectValue -Obj $_ -Name 'ts' -Default '') }}
+  )
+  return $sorted[0]
+}
+
+function Invoke-BacklogDuplicateCompactor {
+  param(
+    $Config = $null,
+    [string[]]$Reason = @('manual'),
+    [switch]$DryRun
+  )
+  if (-not $Config) { $Config = Get-BacklogPackConfig }
+  if (-not [bool]$Config.dedupeEnabled) {
+    return [pscustomobject]@{ ran=$false; reason='disabled'; duplicates_rejected=0; group_count=0 }
+  }
+
+  $minGroup = [int]$Config.dedupeMinGroupSize
+  if ($minGroup -lt 2) { $minGroup = 2 }
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $sha = Get-BacklogCurrentSha
+
+  $result = Invoke-BacklogLocked ({
+    $items = @(Get-Backlog)
+    $groups = @{}
+    $meta = @{}
+    foreach ($item in $items) {
+      if (-not (Test-BacklogDuplicateCompactorCandidate -Item $item)) { continue }
+      $keyObj = Get-BacklogDuplicateCompactorKey -Item $item
+      if (-not $keyObj) { continue }
+      $key = [string]$keyObj.key
+      if ([string]::IsNullOrWhiteSpace($key)) { continue }
+      if (-not $groups.ContainsKey($key)) {
+        $groups[$key] = New-Object 'System.Collections.Generic.List[object]'
+        $meta[$key] = $keyObj
+      }
+      [void]$groups[$key].Add($item)
+    }
+
+    $summaries = New-Object 'System.Collections.Generic.List[object]'
+    $changed = 0
+    foreach ($key in @($groups.Keys | Sort-Object)) {
+      $groupItems = @($groups[$key].ToArray())
+      if ($groupItems.Count -lt $minGroup) { continue }
+      $rep = Get-BacklogDuplicateRepresentative -Items $groupItems
+      if (-not $rep) { continue }
+      $repId = [string](Get-BacklogPackObjectValue -Obj $rep -Name 'id' -Default '')
+      if ([string]::IsNullOrWhiteSpace($repId)) { continue }
+
+      $dupIds = New-Object 'System.Collections.Generic.List[string]'
+      foreach ($dup in $groupItems) {
+        $dupId = [string](Get-BacklogPackObjectValue -Obj $dup -Name 'id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($dupId) -or $dupId -eq $repId) { continue }
+        [void]$dupIds.Add($dupId)
+        if (-not $DryRun) {
+          $dup | Add-Member -NotePropertyName status -NotePropertyValue 'rejected' -Force
+          $dup | Add-Member -NotePropertyName rejected_at -NotePropertyValue $now -Force
+          $dup | Add-Member -NotePropertyName duplicate_of -NotePropertyValue $repId -Force
+          $dup | Add-Member -NotePropertyName duplicate_key -NotePropertyValue $key -Force
+          $dup | Add-Member -NotePropertyName duplicate_rejected_at -NotePropertyValue $now -Force
+          $dup | Add-Member -NotePropertyName resolved_reason -NotePropertyValue 'duplicate-of-root-cause' -Force
+          $dup | Add-Member -NotePropertyName auto_curator -NotePropertyValue ([pscustomobject][ordered]@{
+            verdict = 'drop'
+            confidence = 1.0
+            reason = ('backlog duplicate: same root-cause as ' + $repId)
+            model = 'backlog-compactor'
+            ts = $now
+            judged_at_sha = $sha
+          }) -Force
+        }
+        $changed++
+      }
+      if ($dupIds.Count -gt 0) {
+        $keyMeta = $meta[$key]
+        [void]$summaries.Add([ordered]@{
+          key = $key
+          root = [string]$keyMeta.root
+          finding_type = [string]$keyMeta.finding_type
+          representative_id = $repId
+          duplicate_ids = @($dupIds.ToArray())
+          duplicate_count = $dupIds.Count
+        })
+      }
+    }
+
+    if ($changed -gt 0 -and -not $DryRun) { Save-Backlog $items }
+    return [pscustomobject]@{
+      ran = $true
+      dry_run = [bool]$DryRun
+      duplicates_rejected = $changed
+      group_count = $summaries.Count
+      groups = @($summaries.ToArray())
+    }
+  }.GetNewClosure())
+
+  if ($result -and [bool]$result.ran -and [int]$result.duplicates_rejected -gt 0 -and -not $DryRun) {
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = $now
+        action = 'backlog-duplicate-compact'
+        channel = Get-BacklogPackChannel
+        reason = @($Reason)
+        duplicates_rejected = [int]$result.duplicates_rejected
+        group_count = [int]$result.group_count
+        groups = @($result.groups)
+      })
+    } catch {}
+  }
+  return $result
 }
 
 function Get-BacklogPackLastRun {
@@ -1192,6 +1393,16 @@ function Invoke-BacklogPackerIfDue {
   } catch {}
   if ($reason.Count -eq 0) { $reason = @('request') }
   $result = Invoke-BacklogPacker -Reason $reason -Config $cfg
+  $dedupeRun = $null
+  if ($result -and [bool]$result.ran) {
+    try { $dedupeRun = Invoke-BacklogDuplicateCompactor -Config $cfg -Reason (@($reason) + @('after-pack')) } catch { $dedupeRun = $null }
+    if ($dedupeRun) {
+      try {
+        $result | Add-Member -NotePropertyName duplicate_compactor -NotePropertyValue $dedupeRun -Force
+        $result | Add-Member -NotePropertyName duplicates_rejected -NotePropertyValue ([int]$dedupeRun.duplicates_rejected) -Force
+      } catch {}
+    }
+  }
   if ($result -and [bool]$result.ran) {
     try { Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue } catch {}
   }
@@ -2276,8 +2487,11 @@ function Set-Idea {
   # curator approval) silently overwritten, leaving a task re-claimed twice or stuck forever. Under
   # 100 queued items the rewrite window is large and collisions frequent. Hold the bridge lock across
   # the WHOLE RMW; the named mutex is thread-reentrant so Save-Backlog's nested lock is safe.
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $currentShaFn = ${function:Get-BacklogCurrentSha}
   return (Invoke-BacklogLocked ({
-  $items = @(Get-Backlog)
+  $items = @(& $getBacklogFn)
   $found = $false
   foreach ($i in $items) {
     if ([string]$i.id -ne $Id) { continue }
@@ -2294,7 +2508,7 @@ function Set-Idea {
       $i | Add-Member -NotePropertyName status -NotePropertyValue $statusText -Force
       if ($statusText -eq 'approved') {
         $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-        $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (Get-BacklogCurrentSha) -Force
+        $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (& $currentShaFn) -Force
       } elseif ($statusText -eq 'auto-dropped' -and -not [string]::IsNullOrWhiteSpace($Reason)) {
         $manual = [ordered]@{
           verdict = 'drop'
@@ -2302,7 +2516,7 @@ function Set-Idea {
           reason = [string]$Reason
           model = 'manual'
           ts = (Get-Date).ToUniversalTime().ToString('o')
-          judged_at_sha = (Get-BacklogCurrentSha)
+          judged_at_sha = (& $currentShaFn)
         }
         $i | Add-Member -NotePropertyName auto_curator -NotePropertyValue ([pscustomobject]$manual) -Force
       }
@@ -2315,7 +2529,7 @@ function Set-Idea {
     break
   }
   if (-not $found) { return $false }
-  Save-Backlog $items
+  & $saveBacklogFn $items
   return $true
   }.GetNewClosure()))
 }
