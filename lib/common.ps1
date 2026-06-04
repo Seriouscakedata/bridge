@@ -123,7 +123,12 @@ function Resolve-CodexExe {
     $cfg.codexExe,
     "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
   )
-  foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+  foreach ($c in $cands) {
+    if (-not $c) { continue }
+    try {
+      if (Test-Path -LiteralPath $c -ErrorAction Stop) { return $c }
+    } catch {}
+  }
   throw "codex.exe not found (tried: $($cands -join '; '))"
 }
 

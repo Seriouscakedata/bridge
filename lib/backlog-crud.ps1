@@ -198,7 +198,10 @@ function Save-Backlog {
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
   # 2026-05-28: resolve path before closure (see Add-Idea note about scope).
   $backlogPathForSave = Resolve-BacklogPathValue
-  Invoke-BacklogLocked ({ Write-BacklogAtomicFile -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
+  # Parser.ParseFile in caller scopes can leave command lookup brittle for
+  # GetNewClosure(); capture the function explicitly like the RMW helpers below.
+  $writeBacklogAtomicFileFn = ${function:Write-BacklogAtomicFile}
+  Invoke-BacklogLocked ({ & $writeBacklogAtomicFileFn -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
 }
 
 function Set-Idea {

@@ -1087,18 +1087,23 @@ function Update-BacklogWorkpackClassifications {
     $v = ([string]$s).ToLowerInvariant()
     if (-not [string]::IsNullOrWhiteSpace($v)) { $allowed[$v] = $true }
   }
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $getObjectValueFn = ${function:Get-BacklogPackObjectValue}
+  $getClassificationFn = ${function:Get-BacklogWorkpackClassification}
+  $writeBacklogJsonLineFn = ${function:Write-BacklogJsonLine}
   return (Invoke-BacklogLocked {
-    $items = @(Get-Backlog)
+    $items = @(& $getBacklogFn)
     $updated = 0
     foreach ($item in $items) {
-      $status = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).ToLowerInvariant()
+      $status = ([string](& $getObjectValueFn -Obj $item -Name 'status' -Default '')).ToLowerInvariant()
       if (-not $allowed.ContainsKey($status)) { continue }
-      if ([string]::IsNullOrWhiteSpace([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default ''))) { continue }
-      $class = Get-BacklogWorkpackClassification -Item $item
+      if ([string]::IsNullOrWhiteSpace([string](& $getObjectValueFn -Obj $item -Name 'workpack_id' -Default ''))) { continue }
+      $class = & $getClassificationFn -Item $item
       $newTouch = @($class.touch_set | ForEach-Object { [string]$_ })
-      $oldTouch = @(Get-BacklogPackObjectValue -Obj $item -Name 'workpack_touch_set' -Default @() | ForEach-Object { [string]$_ })
-      $oldKey = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_root_cause_key' -Default '')
-      $oldGroup = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default '')
+      $oldTouch = @(& $getObjectValueFn -Obj $item -Name 'workpack_touch_set' -Default @() | ForEach-Object { [string]$_ })
+      $oldKey = [string](& $getObjectValueFn -Obj $item -Name 'workpack_root_cause_key' -Default '')
+      $oldGroup = [string](& $getObjectValueFn -Obj $item -Name 'workpack_conflict_group' -Default '')
       $changed = $false
       if ($oldKey -ne [string]$class.key) { $changed = $true }
       if ($oldGroup -ne [string]$class.conflict_group) { $changed = $true }
@@ -1112,8 +1117,8 @@ function Update-BacklogWorkpackClassifications {
       $updated++
     }
     if ($updated -gt 0) {
-      Save-Backlog $items
-      try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-reclassify'; updated=$updated; statuses=@($Statuses) }) } catch {}
+      & $saveBacklogFn $items
+      try { & $writeBacklogJsonLineFn ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-reclassify'; updated=$updated; statuses=@($Statuses) }) } catch {}
     }
     return $updated
   }.GetNewClosure())
