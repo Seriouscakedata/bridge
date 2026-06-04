@@ -223,7 +223,6 @@ function Get-DeliveryGateAcceptanceFact {
     [string]$HeadCommit = '',
     $Events = @(),
     [bool]$ExplicitAcceptancePassed = $false,
-    [bool]$CanaryPassed = $false,
     $ProjectAcceptanceResult = $null
   )
 
@@ -245,7 +244,7 @@ function Get-DeliveryGateAcceptanceFact {
   )
   if ($unsafe) { return $false }
 
-  if ([bool]$ExplicitAcceptancePassed -or [bool]$CanaryPassed) { return $true }
+  if ([bool]$ExplicitAcceptancePassed) { return $true }
 
   $isExternalProject = -not [string]::IsNullOrWhiteSpace($Channel) -and $Channel -ne 'main'
   if ($isExternalProject -and (Test-DeliveryGateProjectAcceptancePass -ProjectAcceptanceResult $ProjectAcceptanceResult)) {
