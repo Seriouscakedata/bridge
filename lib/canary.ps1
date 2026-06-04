@@ -236,6 +236,24 @@ function Invoke-CanaryGit {
   }
 }
 
+function Test-CanaryWorktreeUsable {
+  param([string]$WorktreePath)
+  $result = Invoke-CanaryGit -RepoPath $WorktreePath -GitArgs @('status', '--porcelain')
+  return [pscustomobject]@{ ok = ($result.ExitCode -eq 0); output = $result.Output }
+}
+
+function Repair-CanaryWorktreeRegistration {
+  param([string]$RepoRoot, [string]$WorktreePath)
+  $repair = Invoke-CanaryGit -RepoPath $RepoRoot -GitArgs @('worktree', 'repair', $WorktreePath)
+  if ($repair.ExitCode -ne 0) {
+    throw "git worktree repair failed (exit $($repair.ExitCode)): $($repair.Output -join ' ')"
+  }
+  $check = Test-CanaryWorktreeUsable -WorktreePath $WorktreePath
+  if (-not $check.ok) {
+    throw "canary worktree still unusable after repair: $($check.output -join ' ')"
+  }
+}
+
 function Initialize-CanaryWorktree {
   param([string]$RepoRoot = (Get-BridgeRoot))
 
@@ -253,7 +271,12 @@ function Initialize-CanaryWorktree {
 
   $registered = @(Get-CanaryRegisteredWorktrees -RepoRoot $repoFull)
   foreach ($p in $registered) {
-    if ($p.Equals($wtFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $wtFull }
+    if ($p.Equals($wtFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $usable = Test-CanaryWorktreeUsable -WorktreePath $wtFull
+      if ($usable.ok) { return $wtFull }
+      Repair-CanaryWorktreeRegistration -RepoRoot $repoFull -WorktreePath $wtFull
+      return $wtFull
+    }
   }
 
   if (Test-Path -LiteralPath $wtFull) {
