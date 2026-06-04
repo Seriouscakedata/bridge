@@ -96,6 +96,110 @@ function Invoke-SecurityAudit {
     return ($relative -match '^(?:\.git|worktrees|node_modules|\.venv|venv|tmp|temp|logs|artifacts)[\\/]')
   }
 
+  function Get-PowerShellAst {
+    param([string]$Path)
+    try {
+      $tokens = $null
+      $parseErrors = $null
+      return [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    } catch {
+      return $null
+    }
+  }
+
+  function Test-SecretName {
+    param([string]$Name)
+    return ([string]$Name -match '(?i)(key|token|password|passwd|secret|api[-_]?key|apikey|credential)')
+  }
+
+  function Test-SecretLiteralValue {
+    param([object]$Value)
+    if ($null -eq $Value) { return $false }
+    $text = [string]$Value
+    return ($text -match '^[A-Za-z0-9_\-]{10,}$')
+  }
+
+  function Get-StaticStringValue {
+    param([object]$Ast)
+    if ($null -eq $Ast) { return $null }
+    if ($Ast -is [System.Management.Automation.Language.CommandExpressionAst]) {
+      return Get-StaticStringValue -Ast $Ast.Expression
+    }
+    if ($Ast -is [System.Management.Automation.Language.ParenExpressionAst]) {
+      return Get-StaticStringValue -Ast $Ast.Pipeline
+    }
+    if ($Ast -is [System.Management.Automation.Language.PipelineAst] -and @($Ast.PipelineElements).Count -eq 1) {
+      return Get-StaticStringValue -Ast @($Ast.PipelineElements)[0]
+    }
+    if ($Ast -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+      return [string]$Ast.Value
+    }
+    if ($Ast -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+      if (@($Ast.NestedExpressions).Count -eq 0) { return [string]$Ast.Value }
+    }
+    return $null
+  }
+
+  function Get-AssignmentName {
+    param([object]$LeftAst)
+    if ($null -eq $LeftAst) { return '' }
+    if ($LeftAst -is [System.Management.Automation.Language.VariableExpressionAst]) {
+      return [string]$LeftAst.VariablePath.UserPath
+    }
+    return ([string]$LeftAst.Extent.Text).Trim().TrimStart('$')
+  }
+
+  function Add-AstSecurityFindings {
+    param(
+      [object]$Ast,
+      [string[]]$Lines,
+      [string]$RelativePath,
+      [string]$FileName
+    )
+    if ($null -eq $Ast) { return }
+
+    $dynamicCommands = @($Ast.FindAll({
+      param($node)
+      if (-not ($node -is [System.Management.Automation.Language.CommandAst])) { return $false }
+      $name = [string]$node.GetCommandName()
+      return ($name -match '^(?i:Invoke-Expression|iex)$')
+    }, $true))
+    foreach ($cmd in $dynamicCommands) {
+      $lineNumber = [int]$cmd.Extent.StartLineNumber
+      $source = if (Test-UserSuppliedContext -Lines $Lines -Index ($lineNumber - 1)) { ' user-supplied request data appears nearby' } else { '' }
+      Add-Finding -Severity critical -Category 'command-injection' -File $RelativePath -Line $lineNumber -Message "Dynamic command execution via Invoke-Expression/iex.${source}"
+    }
+
+    if ($FileName -in @('secrets.json','.gitignore')) { return }
+
+    $assignments = @($Ast.FindAll({
+      param($node)
+      return ($node -is [System.Management.Automation.Language.AssignmentStatementAst])
+    }, $true))
+    foreach ($assignment in $assignments) {
+      $name = Get-AssignmentName -LeftAst $assignment.Left
+      $value = Get-StaticStringValue -Ast $assignment.Right
+      if ((Test-SecretName -Name $name) -and (Test-SecretLiteralValue -Value $value)) {
+        Add-Finding -Severity critical -Category 'hardcoded-credentials' -File $RelativePath -Line ([int]$assignment.Extent.StartLineNumber) -Message 'Possible hardcoded credential in PowerShell source.'
+      }
+    }
+
+    $hashtables = @($Ast.FindAll({
+      param($node)
+      return ($node -is [System.Management.Automation.Language.HashtableAst])
+    }, $true))
+    foreach ($hashtable in $hashtables) {
+      foreach ($pair in @($hashtable.KeyValuePairs)) {
+        $key = Get-StaticStringValue -Ast $pair.Item1
+        if ([string]::IsNullOrWhiteSpace($key)) { $key = ([string]$pair.Item1.Extent.Text).Trim().Trim("'`"") }
+        $value = Get-StaticStringValue -Ast $pair.Item2
+        if ((Test-SecretName -Name $key) -and (Test-SecretLiteralValue -Value $value)) {
+          Add-Finding -Severity critical -Category 'hardcoded-credentials' -File $RelativePath -Line ([int]$pair.Item1.Extent.StartLineNumber) -Message 'Possible hardcoded credential in PowerShell source.'
+        }
+      }
+    }
+  }
+
   if ([string]$AuditKind -eq 'project' -and [string]::IsNullOrWhiteSpace($TargetRoot)) {
     Add-Finding -Severity critical -Category 'configuration' -File '' -Line 0 -Message 'Project audit target root is empty.'
     Write-Host "Security scan: $($results.summary.critical) critical, $($results.summary.warning) warning, $($results.summary.info) info"
@@ -141,6 +245,7 @@ function Invoke-SecurityAudit {
     if ($isBridgeScan -and $selfWhitelist -contains $relative) { continue }
     $lines = @($linesByPath[$file.FullName])
     $raw = [string]$contentByPath[$file.FullName]
+    $ast = Get-PowerShellAst -Path $file.FullName
 
     try {
       $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
@@ -150,14 +255,11 @@ function Invoke-SecurityAudit {
       }
     } catch {}
 
+    Add-AstSecurityFindings -Ast $ast -Lines $lines -RelativePath $relative -FileName ([System.IO.Path]::GetFileName($file.FullName))
+
     for ($i = 0; $i -lt $lines.Count; $i++) {
       $line = [string]$lines[$i]
       $lineNumber = $i + 1
-
-      if ($line -match '(?i)\bInvoke-Expression\b|(?i)(^|[^\w-])iex(\s|\(|$)') {
-        $source = if (Test-UserSuppliedContext -Lines $lines -Index $i) { ' user-supplied request data appears nearby' } else { '' }
-        Add-Finding -Severity critical -Category 'command-injection' -File $relative -Line $lineNumber -Message "Dynamic command execution via Invoke-Expression/iex.${source}"
-      }
 
       if ($line -match '&\s*"\s*\$[A-Za-z_][A-Za-z0-9_:.]*\s*"') {
         Add-Finding -Severity critical -Category 'command-injection' -File $relative -Line $lineNumber -Message 'Call operator executes a variable-derived command path.'
@@ -177,13 +279,6 @@ function Invoke-SecurityAudit {
         $safeStaticServerRead = ($relative -eq 'server.ps1' -and $line -match '(?i)\bGet-Content\b' -and $line -match '(?i)-LiteralPath\s+\$indexPath\b')
         if ((Test-UserSuppliedContext -Lines $lines -Index $i -Radius 5) -and -not (Test-PathValidationContext -Lines $lines -Index $i) -and -not $safeStaticServerRead) {
           Add-Finding -Severity critical -Category 'path-traversal' -File $relative -Line $lineNumber -Message 'File read/write uses request-derived path without nearby GetFullPath and root StartsWith validation.'
-        }
-      }
-
-      if ($line -match '(?i)(key|token|password|secret|api[-_]?key)\s*=\s*[''"][A-Za-z0-9_\-]{10,}[''"]') {
-        $name = [System.IO.Path]::GetFileName($file.FullName)
-        if ($name -notin @('secrets.json','.gitignore')) {
-          Add-Finding -Severity critical -Category 'hardcoded-credentials' -File $relative -Line $lineNumber -Message 'Possible hardcoded credential in PowerShell source.'
         }
       }
 
