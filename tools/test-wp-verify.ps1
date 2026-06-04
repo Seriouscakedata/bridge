@@ -54,6 +54,55 @@ Test-Check 'Resolve-BridgeContainedPath rejects path-traversal' {
   }
 }
 
+Test-Check 'operator-batch summary marker survives read-write and prevents repost' {
+  $sandbox = Join-Path $env:TEMP ('operator-batch-test-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+  $script:testBacklogPath = Join-Path $sandbox 'backlog.jsonl'
+  $script:testConversationPath = Join-Path $sandbox 'conversation.jsonl'
+  $script:msgs = New-Object 'System.Collections.Generic.List[object]'
+  function script:Get-ChannelBacklogPath { return $script:testBacklogPath }
+  function script:Get-ConversationPath { return $script:testConversationPath }
+  function script:Add-Message {
+    param($From, $Text, $Kind)
+    [void]$script:msgs.Add([pscustomobject]@{ From = [string]$From; Text = [string]$Text; Kind = [string]$Kind })
+    $line = ([ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); from = [string]$From; text = [string]$Text; kind = [string]$Kind } | ConvertTo-Json -Compress -Depth 4)
+    [System.IO.File]::AppendAllText($script:testConversationPath, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    return $script:msgs.Count
+  }
+  function Write-TestBacklogItems {
+    param([object[]]$Items)
+    $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+    [System.IO.File]::WriteAllText($script:testBacklogPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  }
+  try {
+    $baseItems = @(
+      [pscustomobject][ordered]@{ id = 'unit-a'; title = 'Done title'; text = 'done text'; status = 'done'; tags = @('operator','batch:unit') },
+      [pscustomobject][ordered]@{ id = 'unit-b'; title = 'Failed title'; text = 'failed text'; status = 'failed'; tags = @('operator','batch:unit') }
+    )
+    Write-TestBacklogItems -Items $baseItems
+    $first = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
+    Write-TestBacklogItems -Items $baseItems
+    $repair = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
+    $second = @(Publish-OperatorBatchCompletionSummariesIfNeeded)
+    $saved = @(Get-Backlog | Where-Object { @($_.tags) -contains 'batch:unit' })
+    $marked = @($saved | Where-Object {
+      [bool](Get-BacklogPackObjectValue -Obj $_ -Name 'operator_batch_reported' -Default $false)
+    }).Count
+    $summary = if ($script:msgs.Count -gt 0) { [string]$script:msgs[0].Text } else { '' }
+    return (
+      $first.Count -eq 1 -and
+      $repair.Count -eq 1 -and
+      $second.Count -eq 0 -and
+      $script:msgs.Count -eq 1 -and
+      $marked -eq 2 -and
+      $summary -match 'operator-batch unit: 1 done, 1 failed, 0 blocked' -and
+      $summary -match 'Failed title'
+    )
+  } finally {
+    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Write-Host ""
 Write-Host "Result: $pass passed, $fail failed"
 exit $fail

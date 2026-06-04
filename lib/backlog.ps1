@@ -3527,7 +3527,11 @@ function Start-ProjectAutopilotIfNeeded {
   param([string]$Reason = 'idle-empty-backlog')
   # Driver idle hook enters here before autonomy claim; piggyback operator-batch
   # completion reporting on that existing hook so we do not touch the control plane.
-  try { Publish-OperatorBatchCompletionSummariesIfNeeded | Out-Null } catch {}
+  try {
+    Publish-OperatorBatchCompletionSummariesIfNeeded | Out-Null
+  } catch {
+    Write-OperatorBatchReportError -Message ("Publish-OperatorBatchCompletionSummariesIfNeeded: " + $_.Exception.Message)
+  }
   $cfg = Get-ProjectAutopilotConfig
   if (-not [bool]$cfg.enabled) { return [pscustomobject]@{ queued=$false; reason='disabled' } }
   $binding = Get-ProjectAutopilotBinding
@@ -3987,6 +3991,76 @@ function Get-OperatorBatchTaskTitle {
   return $title
 }
 
+function Set-BacklogObjectProperty {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [Parameter(Mandatory=$true)][string]$Name,
+    [AllowNull()]$Value
+  )
+  if ($null -eq $Item -or [string]::IsNullOrWhiteSpace($Name)) { return }
+  if ($Item.PSObject.Properties.Name -contains $Name) {
+    $Item.PSObject.Properties[$Name].Value = $Value
+  } else {
+    $Item | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+  }
+}
+
+function Write-OperatorBatchReportError {
+  param([string]$Message)
+  $text = if ([string]::IsNullOrWhiteSpace($Message)) { 'unknown error' } else { [string]$Message }
+  try {
+    $dir = Get-BacklogControlDir
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $line = ((Get-Date).ToUniversalTime().ToString('o') + " " + $text + "`n")
+    [System.IO.File]::AppendAllText((Join-Path $dir 'operator-batch-errors.log'), $line, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  try {
+    if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
+      Add-Message -From system -Text ("⚠ operator-batch summary failed: " + $text) -Kind event | Out-Null
+    }
+  } catch {}
+}
+
+function Test-OperatorBatchSummaryAlreadyPosted {
+  param([string]$Summary, [int]$Tail = 200)
+  if ([string]::IsNullOrWhiteSpace($Summary)) { return $false }
+  if (-not (Get-Command Get-ConversationPath -ErrorAction SilentlyContinue)) { return $false }
+  $path = ''
+  try { $path = [string](Get-ConversationPath) } catch { $path = '' }
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) { return $false }
+  try {
+    foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8 -Tail ([Math]::Max(1, $Tail)) -ErrorAction SilentlyContinue)) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      try {
+        $rec = $line | ConvertFrom-Json
+        $msg = [string]$rec.text
+        $from = [string]$rec.from
+        if ($from -eq 'system' -and $msg -eq $Summary) { return $true }
+      } catch {}
+    }
+  } catch {}
+  return $false
+}
+
+function Test-OperatorBatchReportPersisted {
+  param(
+    [object[]]$Items,
+    [Parameter(Mandatory=$true)][string]$BatchTag,
+    [Parameter(Mandatory=$true)][string]$ReportTs
+  )
+  $matched = 0
+  foreach ($item in @($Items)) {
+    if (-not ((@($item.tags) -contains 'operator') -and (@($item.tags) -contains $BatchTag))) { continue }
+    $matched++
+    $reported = $false
+    $reportedAt = ''
+    try { $reported = [bool](Get-BacklogPackObjectValue -Obj $item -Name 'operator_batch_reported' -Default $false) } catch { $reported = $false }
+    try { $reportedAt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'operator_batch_reported_at' -Default '') } catch { $reportedAt = '' }
+    if (-not $reported -or $reportedAt -ne $ReportTs) { return $false }
+  }
+  return ($matched -gt 0)
+}
+
 function Publish-OperatorBatchCompletionSummariesIfNeeded {
   # Driver idle hook calls Start-ProjectAutopilotIfNeeded even on non-project channels. Use that
   # existing hook to post ONE terminal summary per operator batch, then persist a marker on the
@@ -3999,6 +4073,7 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
     if ($null -eq $progress -or $progress.Count -eq 0) { return @() }
 
     $terminal = @{ done = $true; 'auto-resolved' = $true; failed = $true; held = $true; rejected = $true; 'auto-dropped' = $true }
+    $reports = New-Object 'System.Collections.Generic.List[object]'
     $published = New-Object 'System.Collections.Generic.List[object]'
     $dirty = $false
 
@@ -4040,26 +4115,38 @@ function Publish-OperatorBatchCompletionSummariesIfNeeded {
         }
       }
 
-      $messagePosted = $false
-      try {
-        Add-Message -From system -Text $summary -Kind event | Out-Null
-        $messagePosted = $true
-      } catch {
-        $messagePosted = $false
-      }
-      if (-not $messagePosted) { continue }
-
       $reportTs = (Get-Date).ToUniversalTime().ToString('o')
+      $alreadyPosted = Test-OperatorBatchSummaryAlreadyPosted -Summary $summary
       foreach ($batchItem in $batchItems) {
-        $batchItem | Add-Member -NotePropertyName operator_batch_reported -NotePropertyValue $true -Force
-        $batchItem | Add-Member -NotePropertyName operator_batch_reported_at -NotePropertyValue $reportTs -Force
-        $batchItem | Add-Member -NotePropertyName operator_batch_report -NotePropertyValue $summary -Force
+        Set-BacklogObjectProperty -Item $batchItem -Name operator_batch_reported -Value $true
+        Set-BacklogObjectProperty -Item $batchItem -Name operator_batch_reported_at -Value $reportTs
+        Set-BacklogObjectProperty -Item $batchItem -Name operator_batch_report -Value $summary
       }
       $dirty = $true
-      [void]$published.Add([pscustomobject]@{ batch_id = $batchId; summary = $summary })
+      [void]$reports.Add([pscustomobject]@{ batch_tag = [string]$batchTag; batch_id = $batchId; summary = $summary; report_ts = $reportTs; post_message = (-not $alreadyPosted) })
     }
 
-    if ($dirty) { Save-Backlog $items }
+    if ($dirty) {
+      Save-Backlog $items
+      $savedItems = @(Get-Backlog)
+      foreach ($report in @($reports.ToArray())) {
+        if (-not (Test-OperatorBatchReportPersisted -Items $savedItems -BatchTag ([string]$report.batch_tag) -ReportTs ([string]$report.report_ts))) {
+          throw ("operator-batch marker did not persist for {0}" -f [string]$report.batch_id)
+        }
+      }
+    }
+
+    foreach ($report in @($reports.ToArray())) {
+      if ([bool]$report.post_message) {
+        try {
+          Add-Message -From system -Text ([string]$report.summary) -Kind event | Out-Null
+        } catch {
+          Write-OperatorBatchReportError -Message ("Add-Message failed for operator-batch {0}: {1}" -f [string]$report.batch_id, $_.Exception.Message)
+          continue
+        }
+      }
+      [void]$published.Add([pscustomobject]@{ batch_id = [string]$report.batch_id; summary = [string]$report.summary; posted = [bool]$report.post_message })
+    }
     return @($published.ToArray())
   }.GetNewClosure()))
 }

@@ -95,27 +95,25 @@ function Move-ReplayFileAtomic {
     [string]$DestinationPath
   )
   if ([string]::IsNullOrWhiteSpace($SourcePath) -or [string]::IsNullOrWhiteSpace($DestinationPath)) { return }
-  if (-not ('BridgeReplayAtomicMove' -as [type])) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-public static class BridgeReplayAtomicMove {
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern bool MoveFileExW(string existingFileName, string newFileName, int flags);
-
-  public static void Replace(string sourcePath, string destinationPath) {
-    const int MOVEFILE_REPLACE_EXISTING = 0x1;
-    const int MOVEFILE_WRITE_THROUGH = 0x8;
-    if (!MoveFileExW(sourcePath, destinationPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-      throw new Win32Exception(Marshal.GetLastWin32Error());
+  $sourceFull = [System.IO.Path]::GetFullPath($SourcePath)
+  $destinationFull = [System.IO.Path]::GetFullPath($DestinationPath)
+  $sourceRoot = [System.IO.Path]::GetPathRoot($sourceFull)
+  $destinationRoot = [System.IO.Path]::GetPathRoot($destinationFull)
+  if (-not [string]::Equals($sourceRoot, $destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Replay atomic move requires same volume: '$sourceFull' -> '$destinationFull'"
+  }
+  if (Test-Path -LiteralPath $destinationFull) {
+    $backupPath = $destinationFull + '.bak.' + [System.Guid]::NewGuid().ToString('N')
+    try {
+      [System.IO.File]::Replace($sourceFull, $destinationFull, $backupPath, $true)
+    } finally {
+      if (Test-Path -LiteralPath $backupPath) {
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+      }
     }
+  } else {
+    [System.IO.File]::Move($sourceFull, $destinationFull)
   }
-}
-"@
-  }
-  [BridgeReplayAtomicMove]::Replace($SourcePath, $DestinationPath)
 }
 
 function Save-ReplayTaskMeta {

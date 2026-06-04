@@ -80,6 +80,13 @@ $result = Invoke-VerifySelftestGate -Root $sandbox -ChangedPaths 'lib/orphan.ps1
 Assert 'V4 missing coverage' ((-not $result.Ok) -and $result.Reason -eq 'missing_coverage')
 Assert 'V4 orphan reported' ($result.UncoveredLibPaths -contains 'lib/orphan.ps1')
 
+Write-Host "`n[V5] hanging diagnostic times out instead of blocking verify forever"
+$sleepDiag = Join-Path $sandbox 'tools\diag\slow-selftest.ps1'
+Write-Utf8File -Path $sleepDiag -Content "# VERIFY-COVERS: lib/alpha.ps1`nStart-Sleep -Seconds 5`nWrite-Host 'SLOW: DONE'`nexit 0`n"
+$timeoutResult = Invoke-VerifySelftestDiagnostic -Root $sandbox -DiagnosticPath $sleepDiag -TimeoutSec 1
+Assert 'V5 timeout recorded' ((-not $timeoutResult.Ok) -and $timeoutResult.TimedOut -and $timeoutResult.ExitCode -eq 124)
+Assert 'V5 timeout output explains failure' (@($timeoutResult.Output) -join "`n" -match 'TIMEOUT after 1s')
+
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fails -eq 0) { Write-Host 'VERIFY-SELFTEST: PASS' }

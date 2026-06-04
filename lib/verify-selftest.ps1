@@ -29,6 +29,78 @@ function Resolve-VerifySelftestRelativePath {
   return ($targetFull.Substring($rootPrefix.Length) -replace '\\','/')
 }
 
+function ConvertTo-VerifySelftestProcessArgument {
+  param([AllowNull()][string]$Value)
+
+  if ($null -eq $Value) { return '""' }
+  if ($Value.Length -eq 0) { return '""' }
+  if ($Value -notmatch '[\s"]') { return $Value }
+
+  $escaped = ([string]$Value) -replace '(\\*)"', '$1$1\"'
+  $escaped = $escaped -replace '(\\+)$', '$1$1'
+  return '"' + $escaped + '"'
+}
+
+function Invoke-VerifySelftestProcess {
+  param(
+    [Parameter(Mandatory=$true)][string]$FilePath,
+    [string[]]$Arguments = @(),
+    [string]$WorkingDirectory = (Get-VerifySelftestRoot),
+    [int]$TimeoutSec = 120
+  )
+
+  $timeout = [Math]::Max(1, [int]$TimeoutSec)
+  $output = @()
+  $exitCode = 1
+  $timedOut = $false
+
+  try {
+    $argLine = (@($Arguments) | ForEach-Object { ConvertTo-VerifySelftestProcessArgument ([string]$_) }) -join ' '
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = $argLine
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    try {
+      $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+      $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    } catch {}
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($timeout * 1000)) {
+      $timedOut = $true
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit(3000) | Out-Null } catch {}
+      $exitCode = 124
+    } else {
+      $exitCode = [int]$proc.ExitCode
+    }
+    try { $stdoutTask.Wait(3000) | Out-Null } catch {}
+    try { $stderrTask.Wait(3000) | Out-Null } catch {}
+    if ($stdoutTask.IsCompleted -and -not [string]::IsNullOrEmpty($stdoutTask.Result)) {
+      $output += @($stdoutTask.Result -split "\r?\n" | Where-Object { $_ -ne '' })
+    }
+    if ($stderrTask.IsCompleted -and -not [string]::IsNullOrEmpty($stderrTask.Result)) {
+      $output += @($stderrTask.Result -split "\r?\n" | Where-Object { $_ -ne '' })
+    }
+  } catch {
+    $output += $_.Exception.Message
+    $exitCode = 1
+  }
+
+  if ($timedOut) { $output += ("TIMEOUT after {0}s" -f $timeout) }
+  return [pscustomobject][ordered]@{
+    ExitCode = $exitCode
+    TimedOut = [bool]$timedOut
+    Output = @($output | ForEach-Object { [string]$_ })
+  }
+}
+
 function Get-VerifySelftestChangedLibPaths {
   param(
     [string]$Root = (Get-VerifySelftestRoot),
@@ -46,7 +118,11 @@ function Get-VerifySelftestChangedLibPaths {
     )
     foreach ($gitArgs in $gitSets) {
       try {
-        $rawPaths += @(& git -c "safe.directory=$Root" -C $Root @gitArgs 2>$null)
+        $safeGitArgs = @('-c', "safe.directory=$Root", '-C', $Root) + @($gitArgs)
+        $result = Invoke-VerifySelftestProcess -FilePath 'git' -Arguments $safeGitArgs -WorkingDirectory $Root -TimeoutSec 15
+        if ($result.ExitCode -eq 0 -and -not $result.TimedOut) {
+          $rawPaths += @($result.Output)
+        }
       } catch {}
     }
   }
@@ -152,40 +228,36 @@ function Get-VerifySelftestPlan {
 function Invoke-VerifySelftestDiagnostic {
   param(
     [string]$Root = (Get-VerifySelftestRoot),
-    [Parameter(Mandatory=$true)][string]$DiagnosticPath
+    [Parameter(Mandatory=$true)][string]$DiagnosticPath,
+    [int]$TimeoutSec = 120
   )
 
   $powerShellExe = Join-Path $PSHOME 'powershell.exe'
   if (-not (Test-Path -LiteralPath $powerShellExe)) { $powerShellExe = 'powershell.exe' }
 
-  $output = @()
-  $exitCode = 1
   try {
-    Push-Location $Root
-    try {
-      $output = @(& $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $DiagnosticPath 2>&1)
-      $exitCode = if ($LASTEXITCODE -is [int]) { [int]$LASTEXITCODE } else { 0 }
-    } finally {
-      Pop-Location
-    }
+    $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
+      -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $DiagnosticPath) `
+      -WorkingDirectory $Root -TimeoutSec $TimeoutSec
   } catch {
-    $output = @($_.Exception.Message)
-    $exitCode = 1
+    $run = [pscustomobject][ordered]@{ ExitCode = 1; TimedOut = $false; Output = @($_.Exception.Message) }
   }
 
   return [pscustomobject][ordered]@{
     DiagnosticPath = $DiagnosticPath
     DiagnosticRelativePath = (Resolve-VerifySelftestRelativePath -Root $Root -Path $DiagnosticPath)
-    ExitCode = $exitCode
-    Ok = ($exitCode -eq 0)
-    Output = @($output | ForEach-Object { [string]$_ })
+    ExitCode = [int]$run.ExitCode
+    TimedOut = [bool]$run.TimedOut
+    Ok = ([int]$run.ExitCode -eq 0 -and -not [bool]$run.TimedOut)
+    Output = @($run.Output | ForEach-Object { [string]$_ })
   }
 }
 
 function Invoke-VerifySelftestGate {
   param(
     [string]$Root = (Get-VerifySelftestRoot),
-    [string[]]$ChangedPaths
+    [string[]]$ChangedPaths,
+    [int]$TimeoutSec = 120
   )
 
   $plan = Get-VerifySelftestPlan -Root $Root -ChangedPaths $ChangedPaths
@@ -215,7 +287,7 @@ function Invoke-VerifySelftestGate {
   $results = New-Object System.Collections.Generic.List[object]
   $failedDiagnostics = New-Object System.Collections.Generic.List[string]
   foreach ($diag in $plan.Diagnostics) {
-    $result = Invoke-VerifySelftestDiagnostic -Root $Root -DiagnosticPath $diag.Path
+    $result = Invoke-VerifySelftestDiagnostic -Root $Root -DiagnosticPath $diag.Path -TimeoutSec $TimeoutSec
     [void]$results.Add($result)
     if (-not $result.Ok) {
       [void]$failedDiagnostics.Add($result.DiagnosticRelativePath)

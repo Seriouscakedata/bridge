@@ -20,7 +20,15 @@ function GetJsonProp($obj, [string]$name) {
   } catch {}
   return $null
 }
-function GetNum($v) { try { return [double]$v } catch { return 0.0 } }
+function GetNum($v) {
+  try {
+    $n = [double]$v
+    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return 0.0 }
+    return $n
+  } catch {
+    return 0.0
+  }
+}
 function GetUsageDailyCapUsd($cfg) {
   $usage = GetJsonProp $cfg 'usage'
   $cap = GetJsonProp $usage 'dailyCapUsd'
