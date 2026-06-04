@@ -10,17 +10,27 @@ function ConvertTo-BridgeJobPsLiteral {
   return "'" + ([string]$Value).Replace("'", "''") + "'"
 }
 
+# PROJECT_DECISION: Keep Get-BridgeJobNativeSource as the public string-returning entrypoint and
+# assemble the embedded C# from compact helpers so each PowerShell function stays reviewable.
+# PROJECT_RISK: Validation is fragment-based, so semantic regressions inside the C# still depend on
+# Add-Type compilation and runtime smoke/tests rather than AST-level guarantees.
+# PROJECT_TESTS: Parser.ParseFile + UTF-8 BOM check on lib/jobs.ps1, tools/test-jobs-timeout.ps1, smoke.ps1.
 function Get-BridgeJobNativeSource {
-  $source = Get-BridgeJobNativeSourceCandidate
-  Assert-BridgeJobNativeSourceValid $source
-  return (ConvertTo-BridgeJobNativeSourceDefinition $source)
+  $source = Resolve-BridgeJobNativeSource
+  Validate-BridgeJobDefinition $source
+  return (ConvertTo-NativeJob $source)
 }
 
-function Get-BridgeJobNativeSourceCandidate {
+function Resolve-BridgeJobNativeSource {
   return (Get-BridgeJobNativeSourceEmbedded)
 }
 
-function Assert-BridgeJobNativeSourceValid {
+function ConvertTo-NativeJob {
+  param([string]$Source)
+  return [string]$Source
+}
+
+function Validate-JobDefinition {
   param([string]$Source)
   if ([string]::IsNullOrWhiteSpace($Source)) {
     throw 'Bridge job native source is empty'
@@ -42,12 +52,35 @@ function Assert-BridgeJobNativeSourceValid {
   }
 }
 
+function Get-BridgeJobNativeSourceCandidate {
+  return (Resolve-BridgeJobNativeSource)
+}
+
+function Assert-BridgeJobNativeSourceValid {
+  param([string]$Source)
+  Validate-JobDefinition $Source
+}
+
 function ConvertTo-BridgeJobNativeSourceDefinition {
   param([string]$Source)
-  return [string]$Source
+  return (ConvertTo-NativeJob $Source)
+}
+
+function Validate-BridgeJobDefinition {
+  param([string]$Source)
+  Validate-JobDefinition $Source
 }
 
 function Get-BridgeJobNativeSourceEmbedded {
+  return (@(
+    (Get-BridgeJobNativeSourceEmbeddedHeader),
+    (Get-BridgeJobNativeSourceEmbeddedInterop),
+    (Get-BridgeJobNativeSourceEmbeddedExecution),
+    (Get-BridgeJobNativeSourceEmbeddedHelpers)
+  ) -join "`r`n")
+}
+
+function Get-BridgeJobNativeSourceEmbeddedHeader {
 @'
 using System;
 using System.IO;
@@ -136,7 +169,11 @@ public static class BridgeJobNative {
     public UIntPtr PeakProcessMemoryUsed;
     public UIntPtr PeakJobMemoryUsed;
   }
+'@
+}
 
+function Get-BridgeJobNativeSourceEmbeddedInterop {
+@'
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
   private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
 
@@ -196,7 +233,11 @@ public static class BridgeJobNative {
       CloseHandle(hJob);
     }
   }
+'@
+}
 
+function Get-BridgeJobNativeSourceEmbeddedExecution {
+@'
   public static int RunCommandInJob(string jobName, string comSpec, string cmdFile, string workDir, string logPath, string readyPath, UInt32 timeoutMs) {
     if (String.IsNullOrWhiteSpace(jobName)) throw new InvalidOperationException("jobName is empty");
     if (String.IsNullOrWhiteSpace(cmdFile)) throw new InvalidOperationException("cmdFile is empty");
@@ -332,7 +373,11 @@ public static class BridgeJobNative {
       Marshal.FreeHGlobal(ptr);
     }
   }
+'@
+}
 
+function Get-BridgeJobNativeSourceEmbeddedHelpers {
+@'
   private static void CopyPipeToLog(SafeFileHandle readHandle, FileStream logStream, object logLock) {
     using (FileStream pipeStream = new FileStream(readHandle, FileAccess.Read)) {
       byte[] buffer = new byte[4096];

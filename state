@@ -1,0 +1,57 @@
+{
+  "tasks": {
+    "example_self_dev_task_id": {
+      "task_id": "example_self_dev_task_id",
+      "type": "self-dev",
+      "status": "running",
+      "agent_id": "agent_1",
+      "restart": {
+        "strategy": "deferred",
+        "status": "pending_restart",
+        "reason": "agent_requested_feature_update"
+      },
+      "post_restart_smoke_checks": [
+        {
+          "check_id": "health_check_api",
+          "description": "Verify main API health endpoint",
+          "url": "http://localhost:8080/api/health",
+          "method": "GET",
+          "headers": {
+            "Accept": "application/json"
+          },
+          "body": null,
+          "expected_status_code": 200,
+          "expected_body_regex": "\"status\":\\s*\"UP\"",
+          "timeout_seconds": 10,
+          "agent_placed_timestamp": "2023-10-27T10:00:00Z",
+          "driver_status": "pending",
+          "driver_result": null,
+          "driver_error": null,
+          "driver_completed_timestamp": null
+        },
+        {
+          "check_id": "database_connection_test",
+          "description": "Verify database connection status",
+          "url": "http://localhost:8080/db/status",
+          "method": "GET",
+          "headers": {},
+          "body": null,
+          "expected_status_code": 200,
+          "expected_body_regex": "Database connected successfully",
+          "timeout_seconds": 15,
+          "agent_placed_timestamp": "2023-10-27T10:00:05Z",
+          "driver_status": "pending",
+          "driver_result": null,
+          "driver_error": null,
+          "driver_completed_timestamp": null
+        }
+      ],
+      "qa_report": {
+        "initial_summary": "Initial task setup complete.",
+        "post_restart_smoke_test_results": []
+      }
+    }
+  },
+  "agents": {},
+  "global_settings": {}
+}
