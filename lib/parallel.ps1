@@ -1268,7 +1268,7 @@ function Wait-ParallelDispatchResults {
         if ($completed.ContainsKey($w.id)) { continue }
         try { if ($w.process -and -not $w.process.HasExited) { Start-Process taskkill -ArgumentList '/PID',([string]$w.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
       }
-      try { Add-Message -From system -Text ("⏱ Parallel timeout (" + $TimeoutMin + " min) -- killing in-flight workers") -Kind event } catch {}
+      try { Add-Message -From system -Text ("⏱ Parallel timeout (" + $TimeoutMin + " min) -- killing in-flight workers") -Kind event | Out-Null } catch {}
       break
     }
     Start-Sleep -Seconds $PollSec
@@ -1297,23 +1297,23 @@ function Wait-ParallelDispatchResults {
         if (-not $advanced) {
           # No commit since last chunk — worker lied / forgot to commit. Mark failed.
           $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk emitted but branch did not advance' }
-          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " emitted CONTINUE-CHUNK:" + $chunkN + "/" + $chunkM + " but branch " + $w.branch + " did not advance (no commit). Killing.") -Kind event } catch {}
+          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " emitted CONTINUE-CHUNK:" + $chunkN + "/" + $chunkM + " but branch " + $w.branch + " did not advance (no commit). Killing.") -Kind event | Out-Null } catch {}
           continue
         }
         if ($chunkN -ge 10) {
           # Chunk limit reached — close as done with what we have
           $completed[$w.id] = [pscustomobject]@{ status='done'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error='chunk limit reached (10)' }
-          try { Add-Message -From system -Text ("⚠ Worker " + $w.id + " reached chunk limit (10/" + $chunkM + ") -- closing as done.") -Kind event } catch {}
+          try { Add-Message -From system -Text ("⚠ Worker " + $w.id + " reached chunk limit (10/" + $chunkM + ") -- closing as done.") -Kind event | Out-Null } catch {}
           continue
         }
         # Respawn for next chunk
         $shortLast = if ($branchHead.Length -gt 7) { $branchHead.Substring(0,7) } else { $branchHead }
         try {
           $null = Respawn-WorkerForChunk -Worker $w -NextChunk ($chunkN + 1) -TotalChunks $chunkM -LastCommitSha $branchHead
-          try { Add-Message -From system -Text ("🔂 Worker " + $w.id + " chunk " + $chunkN + "/" + $chunkM + " committed " + $shortLast + " -- respawned on chunk " + ($chunkN + 1) + "/" + $chunkM) -Kind event } catch {}
+          try { Add-Message -From system -Text ("🔂 Worker " + $w.id + " chunk " + $chunkN + "/" + $chunkM + " committed " + $shortLast + " -- respawned on chunk " + ($chunkN + 1) + "/" + $chunkM) -Kind event | Out-Null } catch {}
         } catch {
           $completed[$w.id] = [pscustomobject]@{ status='failed'; reply=$res.reply; commits=$res.commits; chunkN=$chunkN; chunkM=$chunkM; error=("respawn failed: " + $_.Exception.Message) }
-          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " respawn failed at chunk " + ($chunkN + 1) + "/" + $chunkM + ": " + $_.Exception.Message) -Kind event } catch {}
+          try { Add-Message -From system -Text ("❌ Worker " + $w.id + " respawn failed at chunk " + ($chunkN + 1) + "/" + $chunkM + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
         }
         continue
       }
@@ -1321,324 +1321,385 @@ function Wait-ParallelDispatchResults {
       # Terminal status (done / paused-for-restart / failed)
       $completed[$w.id] = $res
       $chunkSummary = if ([int]$w.chunksDone -gt 0) { (" via " + [int]$w.chunksDone + " chunks") } else { '' }
-      try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count + $chunkSummary) -Kind event } catch {}
+      try { Add-Message -From system -Text ("🔀 Worker " + $w.id + " (" + $w.coder + ") finished: status=" + $res.status + ", commits=" + $res.commits.Count + $chunkSummary) -Kind event | Out-Null } catch {}
     }
   }
 
   return $completed
 }
 
-function Complete-ParallelDispatchOutputs {
+function ConvertTo-ParallelDispatchCompletedMap {
+  param($Completed)
+
+  if ($null -eq $Completed) { return @{} }
+  if ($Completed -is [hashtable]) { return $Completed }
+  if ($Completed -is [System.Collections.IDictionary]) {
+    $map = @{}
+    foreach ($key in $Completed.Keys) { $map[$key] = $Completed[$key] }
+    return $map
+  }
+
+  $items = @($Completed)
+  for ($i = $items.Count - 1; $i -ge 0; $i--) {
+    $item = $items[$i]
+    if ($item -is [hashtable]) { return $item }
+    if ($item -is [System.Collections.IDictionary]) {
+      $map = @{}
+      foreach ($key in $item.Keys) { $map[$key] = $item[$key] }
+      return $map
+    }
+  }
+
+  $entryMap = @{}
+  foreach ($item in $items) {
+    if ($item -is [System.Collections.DictionaryEntry]) {
+      $entryMap[$item.Key] = $item.Value
+    }
+  }
+  if ($entryMap.Count -gt 0) { return $entryMap }
+  return @{}
+}
+
+function New-ParallelDispatchAggregationContext {
   param(
     [object[]]$Workers,
-    [hashtable]$Completed,
+    [object]$Completed,
     [string]$TaskHash
   )
 
-  $workers = @($Workers)
-  $completed = $Completed
-
-  # Merge phase: fast-forward each wip-branch into HEAD on the channel's repo (project_root for
-  # project channels, bridge for main). 2026-05-31 Foundation #4 scale.
-  $merged = 0
-  $bridgeRoot = Get-ParallelRepoRoot
-
-  # 2026-06-01 COLLECT-THEN-COMMIT (root reliability fix). Empirically (probe3, 20 streams): workers
-  # RELIABLY produce files in their worktree working-tree, but UNreliably commit them — codex exits
-  # 'paused-for-restart' (sandbox user can't write linked .git), the LLM/claude workers often finish
-  # 'done' with commits=0, and the per-branch ff/merge path below then races Cleanup, so only ~7/20
-  # files survived a single pass (the rest were recovered only by repeated re-dispatch passes). FIX:
-  # before any branch operation, the HOST directly collects every worker's changed files (committed-
-  # vs-base + untracked/modified) straight into the repo working-tree and commits them in ONE pass.
-  # Each stream owns a disjoint touch-set (workpack conflict_group), so there are no add/add conflicts.
-  # This makes delivery independent of each CLI's git behaviour and of merge/cleanup timing.
-  $collected = 0; $collectedStreams = 0
-  $quarantined = New-Object System.Collections.Generic.List[string]
-  $addQuarantine = {
-    param([string]$StreamId)
-    if ([string]::IsNullOrWhiteSpace($StreamId)) { return }
-    if (-not $quarantined.Contains($StreamId)) { [void]$quarantined.Add($StreamId) }
+  $completedMap = ConvertTo-ParallelDispatchCompletedMap -Completed $Completed
+  return @{
+    workers = @($Workers)
+    completed = $completedMap
+    taskHash = $TaskHash
+    merged = 0
+    bridgeRoot = Get-ParallelRepoRoot
+    collected = 0
+    collectedStreams = 0
+    quarantined = (New-Object 'System.Collections.Generic.List[string]')
+    baseCommit = Get-ParallelTaskBaseCommit
+    gitExe = Get-GitExe
+    deliveredPaths = (New-Object 'System.Collections.Generic.List[string]')
+    allowedTerminalStatuses = @('done', 'paused-for-restart')
   }
-  $base0 = Get-ParallelTaskBaseCommit
-  $gitC = Get-GitExe
-  $deliveredPaths = New-Object System.Collections.Generic.List[string]  # actually staged paths
+}
 
-  $allowedTerminalStatuses = @('done', 'paused-for-restart')
+function Add-ParallelDispatchQuarantine {
+  param(
+    [hashtable]$Context,
+    [string]$StreamId
+  )
 
-  foreach ($w in $workers) {
-    if ($completed.ContainsKey($w.id)) { continue }
-    & $addQuarantine ([string]$w.id)
+  if ([string]::IsNullOrWhiteSpace($StreamId)) { return }
+  if (-not $Context.quarantined.Contains($StreamId)) {
+    [void]$Context.quarantined.Add($StreamId)
+  }
+}
+
+function Add-ParallelDispatchIncompleteWorkersToQuarantine {
+  param([hashtable]$Context)
+
+  foreach ($w in $Context.workers) {
+    if ($Context.completed.ContainsKey($w.id)) { continue }
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$w.id)
     try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": worker не завершился до timeout/kill, stream не доставлен") -Kind event | Out-Null } catch {}
   }
+}
 
-  foreach ($w in $workers) {
-    if (-not $completed.ContainsKey($w.id)) { continue }
-    $wst = ''
-    try { $wst = [string]$completed[$w.id].status } catch {}
+function Collect-ParallelDispatchWorkerOutput {
+  param(
+    [hashtable]$Context,
+    [object]$Worker
+  )
 
-    # Quarantine: failed or unknown terminal status
-    if ($wst -eq 'failed' -or $allowedTerminalStatuses -notcontains $wst) {
-      & $addQuarantine ([string]$w.id)
-      continue
-    }
+  if (-not $Context.completed.ContainsKey($Worker.id)) { return }
 
-    # Declared touch-set for this stream
-    $declaredFiles = @()
-    try { $declaredFiles = @($w.files | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+  $workerStatus = ''
+  try { $workerStatus = [string]$Context.completed[$Worker.id].status } catch {}
 
-    # Quarantine: no declared files (no touch-set -> cannot validate what to copy)
-    if ($declaredFiles.Count -eq 0) {
-      & $addQuarantine ([string]$w.id)
-      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет объявленных файлов (w.files пуст) — сбор невозможен") -Kind event | Out-Null } catch {}
-      continue
-    }
-
-    try {
-      $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash
-      if (-not (Test-Path -LiteralPath $wtPath)) {
-        & $addQuarantine ([string]$w.id)
-        continue
-      }
-
-      # Collect changed paths from worktree
-      $changed = New-Object System.Collections.Generic.HashSet[string]
-      if (-not [string]::IsNullOrWhiteSpace($base0)) {
-        try { @(& $gitC -C $wtPath diff --name-only $base0 2>$null) | Where-Object { $_ } | ForEach-Object { [void]$changed.Add(($_.Trim() -replace '"','')) } } catch {}
-      }
-      try { @(& $gitC -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
-
-      # No changed files AND no commits: quarantine (no-change stream)
-      $streamCommits = 0
-      try { $streamCommits = @($completed[$w.id].commits).Count } catch {}
-      if ($changed.Count -eq 0 -and $streamCommits -eq 0) {
-        & $addQuarantine ([string]$w.id)
-        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет изменённых файлов и нет коммитов (no-change stream)") -Kind event | Out-Null } catch {}
-        continue
-      }
-
-      # Validate ALL changed paths against declared touch-set BEFORE copying
-      $allowedPaths = New-Object System.Collections.Generic.List[string]
-      $deniedPaths  = New-Object System.Collections.Generic.List[string]
-      foreach ($rel in $changed) {
-        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-        if (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $declaredFiles) {
-          $allowedPaths.Add($rel)
-        } else {
-          $deniedPaths.Add($rel)
-        }
-      }
-
-      if ($deniedPaths.Count -gt 0) {
-        & $addQuarantine ([string]$w.id)
-        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": stream quarantined because outside touch-set path(s) were changed: " + ($deniedPaths -join ', ')) -Kind event | Out-Null } catch {}
-        continue
-      }
-
-      if ($allowedPaths.Count -eq 0) {
-        & $addQuarantine ([string]$w.id)
-        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": нет разрешённых путей (все вне touch-set или пустые)") -Kind event | Out-Null } catch {}
-        continue
-      }
-
-      # Copy allowed paths, then verify actual git diff in root
-      $copiedHere = 0
-      $actuallyDelivered = New-Object System.Collections.Generic.List[string]
-      foreach ($rel in $allowedPaths) {
-        $src = Join-Path $wtPath $rel
-        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
-        $dst = Join-Path $bridgeRoot $rel
-        $dstDir = Split-Path $dst -Parent
-        if ($dstDir -and -not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
-        Copy-Item -LiteralPath $src -Destination $dst -Force
-        $copiedHere++
-
-        # Post-copy: verify git sees a real diff for this path in root
-        $gitDiffOut = @(& $gitC -C $bridgeRoot status --porcelain -- $rel 2>$null | Where-Object { $_ })
-        if ($gitDiffOut.Count -gt 0) {
-          $actuallyDelivered.Add($rel)
-          $deliveredPaths.Add($rel)
-        }
-      }
-
-      if ($actuallyDelivered.Count -gt 0) {
-        $collected += $actuallyDelivered.Count
-        $collectedStreams++
-        try { $completed[$w.id] | Add-Member -NotePropertyName _collected -NotePropertyValue $true -Force } catch {}
-        try { $completed[$w.id] | Add-Member -NotePropertyName _deliveredPaths -NotePropertyValue @($actuallyDelivered) -Force } catch {}
-      } else {
-        # Copied files but git sees no diff (e.g. files identical to root)
-        & $addQuarantine ([string]$w.id)
-        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": скопировано " + $copiedHere + " файл(ов), но git diff пуст — изменений нет") -Kind event | Out-Null } catch {}
-      }
-    } catch {
-      & $addQuarantine ([string]$w.id)
-      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $w.id + ": исключение при сборе: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-    }
+  if ($workerStatus -eq 'failed' -or $Context.allowedTerminalStatuses -notcontains $workerStatus) {
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+    return
   }
 
-  # Commit only actually-delivered paths (not git add -A)
-  if ($collectedStreams -gt 0 -and $deliveredPaths.Count -gt 0) {
-    try {
-      foreach ($p in $deliveredPaths) {
-        & $gitC -C $bridgeRoot add -- $p 2>$null | Out-Null
-      }
-      $actualFiles = $deliveredPaths.Count
-      & $gitC -C $bridgeRoot commit -m ("parallel collect: " + $collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        $merged += $collectedStreams
-        try { Add-Message -From system -Text ("📦 Collect-commit: " + $actualFiles + " реально изменённых файлов из " + $collectedStreams + " потоков (только staged actual diff, не git add -A)") -Kind event | Out-Null } catch {}
-      } else {
-        foreach ($cw in $workers) {
-          if (-not $completed.ContainsKey($cw.id)) { continue }
-          $cres = $completed[$cw.id]
-          if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) { & $addQuarantine ([string]$cw.id) }
-        }
-        try { Add-Message -From system -Text ("❌ Collect-commit failed; collected streams quarantined") -Kind event | Out-Null } catch {}
-      }
-    } catch {
-      foreach ($cw in $workers) {
-        if (-not $completed.ContainsKey($cw.id)) { continue }
-        $cres = $completed[$cw.id]
-        if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) { & $addQuarantine ([string]$cw.id) }
-      }
-      try { Add-Message -From system -Text ("❌ Collect-commit exception: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-    }
+  $declaredFiles = @()
+  try { $declaredFiles = @($Worker.files | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+  if ($declaredFiles.Count -eq 0) {
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+    try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": нет объявленных файлов (w.files пуст) — сбор невозможен") -Kind event | Out-Null } catch {}
+    return
   }
 
-  foreach ($w in $workers) {
-    if ($quarantined.Contains([string]$w.id)) {
-      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
-      continue
+  try {
+    $wtPath = Get-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash
+    if (-not (Test-Path -LiteralPath $wtPath)) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      return
     }
-    if (-not $completed.ContainsKey($w.id)) { continue }
-    $res = $completed[$w.id]
-    # Already delivered by collect-then-commit above — just clean its worktree and skip branch merge.
-    if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
-      try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
-      continue
+
+    $changed = New-Object System.Collections.Generic.HashSet[string]
+    if (-not [string]::IsNullOrWhiteSpace($Context.baseCommit)) {
+      try { @(& $Context.gitExe -C $wtPath diff --name-only $Context.baseCommit 2>$null) | Where-Object { $_ } | ForEach-Object { [void]$changed.Add(($_.Trim() -replace '"','')) } } catch {}
     }
-    # 2026-06-01: HOST-COMMIT RECOVERY. A worker (especially codex in the Windows sandbox, but also
-    # the new DeepSeek/Gemini LLM-workers if their own commit didn't register) PRODUCES files in its
-    # worktree yet often can't git-commit them (sandbox user has no write to the linked .git), so
-    # commits=0 and the work was silently lost in the cleanup branch below (observed: only 9/19
-    # streams merged). If the worktree has uncommitted changes, the host (repo owner) commits them
-    # now and re-reads commits -> the stream still merges. This recovers ALL clis, not just claude.
-    # 2026-06-01 ROOT FIX: recovery must fire for ANY terminal status when commits=0, NOT just
-    # status='done'. Codex on Windows exits the sandbox in status='paused-for-restart' (the restricted
-    # CodexSandboxOffline user can't create .git/worktrees/<id>/index.lock, so codex aborts its own
-    # commit and reports paused-for-restart) — yet it HAS already written the files into the worktree
-    # cwd (which the sandbox CAN write). The old `status -eq 'done'` guard skipped exactly these
-    # workers, so they fell through to Cleanup below and their files were deleted (observed: only
-    # 9-13/20 streams merged, host-commit fired 0 times even though codex produced every file). Now the
-    # host (repo owner, full write) commits the worktree's pending changes regardless of how the CLI
-    # exited. If the worktree is genuinely empty (real failure), dirtyWt=0 and this is a safe no-op.
-    if (@($res.commits).Count -eq 0) {
-      try {
-        $origStatus = [string]$res.status
-        $wtPath = Get-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash
-        $gitX = Get-GitExe
-        $dirtyWt = @(& $gitX -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if (@($dirtyWt).Count -gt 0) {
-          & $gitX -C $wtPath add -A 2>$null | Out-Null
-          & $gitX -C $wtPath commit -m ("host-commit parallel stream " + $w.id) 2>$null | Out-Null
-          $hc = @(Get-WorkerCommits -Worker $w)
-          if (@($hc).Count -gt 0) {
-            $res = [pscustomobject]@{ status = 'done'; reply = $res.reply; commits = $hc }
-            $completed[$w.id] = $res
-            try { Add-Message -From system -Text ("💾 Host закоммитил файлы воркера " + $w.id + " (" + @($hc).Count + " commit, был " + $dirtyWt.Count + " файл, статус CLI=" + $origStatus + ") — стрим спасён от потери") -Kind event | Out-Null } catch {}
-          }
-        }
-      } catch {}
+    try { @(& $Context.gitExe -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
+
+    $streamCommits = 0
+    try { $streamCommits = @($Context.completed[$Worker.id].commits).Count } catch {}
+    if ($changed.Count -eq 0 -and $streamCommits -eq 0) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": нет изменённых файлов и нет коммитов (no-change stream)") -Kind event | Out-Null } catch {}
+      return
     }
-    if ($res.status -ne 'done' -or $res.commits.Count -eq 0) {
-      $fbRes = $null
-      if (([string]$w.cli -eq 'claude') -and (@($w.files).Count -eq 1)) {
-        try { $fbRes = Invoke-TrivialFallbackWorker -Worker $w -TaskHash $TaskHash } catch {
-          try { Add-Message -From system -Text ("⚠ trivial-fallback exception for stream " + $w.id + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
-        }
-      }
-      if ($null -ne $fbRes -and $fbRes.status -eq 'done' -and $fbRes.commits.Count -gt 0) {
-        $res = $fbRes
-        $completed[$w.id] = $fbRes
+
+    $allowedPaths = New-Object 'System.Collections.Generic.List[string]'
+    $deniedPaths = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($rel in $changed) {
+      if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+      if (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $declaredFiles) {
+        [void]$allowedPaths.Add($rel)
       } else {
-        & $addQuarantine ([string]$w.id)
-        try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
-        continue
+        [void]$deniedPaths.Add($rel)
       }
     }
+
+    if ($deniedPaths.Count -gt 0) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": stream quarantined because outside touch-set path(s) were changed: " + ($deniedPaths -join ', ')) -Kind event | Out-Null } catch {}
+      return
+    }
+
+    if ($allowedPaths.Count -eq 0) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": нет разрешённых путей (все вне touch-set или пустые)") -Kind event | Out-Null } catch {}
+      return
+    }
+
+    $copiedHere = 0
+    $actuallyDelivered = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($rel in $allowedPaths) {
+      $src = Join-Path $wtPath $rel
+      if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+
+      $dst = Join-Path $Context.bridgeRoot $rel
+      $dstDir = Split-Path $dst -Parent
+      if ($dstDir -and -not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+      Copy-Item -LiteralPath $src -Destination $dst -Force
+      $copiedHere++
+
+      $gitDiffOut = @(& $Context.gitExe -C $Context.bridgeRoot status --porcelain -- $rel 2>$null | Where-Object { $_ })
+      if ($gitDiffOut.Count -gt 0) {
+        [void]$actuallyDelivered.Add($rel)
+        [void]$Context.deliveredPaths.Add($rel)
+      }
+    }
+
+    if ($actuallyDelivered.Count -gt 0) {
+      $Context.collected += $actuallyDelivered.Count
+      $Context.collectedStreams++
+      try { $Context.completed[$Worker.id] | Add-Member -NotePropertyName _collected -NotePropertyValue $true -Force } catch {}
+      try { $Context.completed[$Worker.id] | Add-Member -NotePropertyName _deliveredPaths -NotePropertyValue @($actuallyDelivered) -Force } catch {}
+      return
+    }
+
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+    try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": скопировано " + $copiedHere + " файл(ов), но git diff пуст — изменений нет") -Kind event | Out-Null } catch {}
+  } catch {
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+    try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": исключение при сборе: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+  }
+}
+
+function Invoke-ParallelDispatchCollectPhase {
+  param([hashtable]$Context)
+
+  Add-ParallelDispatchIncompleteWorkersToQuarantine -Context $Context
+  foreach ($w in $Context.workers) {
+    Collect-ParallelDispatchWorkerOutput -Context $Context -Worker $w
+  }
+}
+
+function Commit-ParallelDispatchCollectedOutputs {
+  param([hashtable]$Context)
+
+  if ($Context.collectedStreams -le 0 -or $Context.deliveredPaths.Count -le 0) { return }
+
+  try {
+    foreach ($p in $Context.deliveredPaths) {
+      & $Context.gitExe -C $Context.bridgeRoot add -- $p 2>$null | Out-Null
+    }
+    $actualFiles = $Context.deliveredPaths.Count
+    & $Context.gitExe -C $Context.bridgeRoot commit -m ("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      $Context.merged += $Context.collectedStreams
+      try { Add-Message -From system -Text ("📦 Collect-commit: " + $actualFiles + " реально изменённых файлов из " + $Context.collectedStreams + " потоков (только staged actual diff, не git add -A)") -Kind event | Out-Null } catch {}
+      return
+    }
+
+    foreach ($cw in $Context.workers) {
+      if (-not $Context.completed.ContainsKey($cw.id)) { continue }
+      $cres = $Context.completed[$cw.id]
+      if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
+        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$cw.id)
+      }
+    }
+    try { Add-Message -From system -Text ("❌ Collect-commit failed; collected streams quarantined") -Kind event | Out-Null } catch {}
+  } catch {
+    foreach ($cw in $Context.workers) {
+      if (-not $Context.completed.ContainsKey($cw.id)) { continue }
+      $cres = $Context.completed[$cw.id]
+      if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
+        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$cw.id)
+      }
+    }
+    try { Add-Message -From system -Text ("❌ Collect-commit exception: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+  }
+}
+
+function Resolve-ParallelDispatchWorkerResult {
+  param(
+    [hashtable]$Context,
+    [object]$Worker,
+    [object]$Result
+  )
+
+  $res = $Result
+  if (@($res.commits).Count -eq 0) {
     try {
-      # 1) ff-only merge (clean, no merge commit)
-      $mergeOut = & git -C $bridgeRoot merge --ff-only $w.branch 2>&1
+      $origStatus = [string]$res.status
+      $wtPath = Get-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash
+      $dirtyWt = @(& $Context.gitExe -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      if (@($dirtyWt).Count -gt 0) {
+        & $Context.gitExe -C $wtPath add -A 2>$null | Out-Null
+        & $Context.gitExe -C $wtPath commit -m ("host-commit parallel stream " + $Worker.id) 2>$null | Out-Null
+        $hc = @(Get-WorkerCommits -Worker $Worker)
+        if (@($hc).Count -gt 0) {
+          $res = [pscustomobject]@{ status = 'done'; reply = $res.reply; commits = $hc }
+          $Context.completed[$Worker.id] = $res
+          try { Add-Message -From system -Text ("💾 Host закоммитил файлы воркера " + $Worker.id + " (" + @($hc).Count + " commit, был " + $dirtyWt.Count + " файл, статус CLI=" + $origStatus + ") — стрим спасён от потери") -Kind event | Out-Null } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  if ($res.status -eq 'done' -and $res.commits.Count -gt 0) {
+    return $res
+  }
+
+  $fbRes = $null
+  if (([string]$Worker.cli -eq 'claude') -and (@($Worker.files).Count -eq 1)) {
+    try { $fbRes = Invoke-TrivialFallbackWorker -Worker $Worker -TaskHash $Context.taskHash } catch {
+      try { Add-Message -From system -Text ("⚠ trivial-fallback exception for stream " + $Worker.id + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+  }
+  if ($null -ne $fbRes -and $fbRes.status -eq 'done' -and $fbRes.commits.Count -gt 0) {
+    $Context.completed[$Worker.id] = $fbRes
+    return $fbRes
+  }
+
+  Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+  try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
+  return $null
+}
+
+function Merge-ParallelDispatchWorkerOutput {
+  param(
+    [hashtable]$Context,
+    [object]$Worker
+  )
+
+  if ($Context.quarantined.Contains([string]$Worker.id)) {
+    try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
+    return
+  }
+  if (-not $Context.completed.ContainsKey($Worker.id)) { return }
+
+  $res = $Context.completed[$Worker.id]
+  if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
+    try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
+    return
+  }
+
+  $res = Resolve-ParallelDispatchWorkerResult -Context $Context -Worker $Worker -Result $res
+  if ($null -eq $res) { return }
+
+  try {
+    $mergeOut = & git -C $Context.bridgeRoot merge --ff-only $Worker.branch 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      $Context.merged++
+      Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (" + $res.commits.Count + " commits, branch " + $Worker.branch + ")") -Kind event | Out-Null
+    } else {
+      $mergeOut2 = & git -C $Context.bridgeRoot merge --no-ff -m ("merge parallel stream " + $Worker.id) $Worker.branch 2>&1
       if ($LASTEXITCODE -eq 0) {
-        $merged++
-        Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (" + $res.commits.Count + " commits, branch " + $w.branch + ")") -Kind event | Out-Null
+        $Context.merged++
+        Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (non-ff fallback)") -Kind event | Out-Null
       } else {
-        # 2) non-ff merge commit
-        $mergeOut2 = & git -C $bridgeRoot merge --no-ff -m ("merge parallel stream " + $w.id) $w.branch 2>&1
+        try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+        $mergeOut3 = & git -C $Context.bridgeRoot merge --no-ff -X ours -m ("merge parallel stream " + $Worker.id + " (auto-resolve: ours)") $Worker.branch 2>&1
         if ($LASTEXITCODE -eq 0) {
-          $merged++
-          Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (non-ff fallback)") -Kind event | Out-Null
+          $Context.merged++
+          Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $Worker.branch + ")") -Kind event | Out-Null
         } else {
-          # 3) CONFLICT (e.g. two workers created the same new file = add/add). ROOT-CAUSE FIX 2026-05-29:
-          # NEVER leave the tree in an unmerged state -- that blocks EVERY sibling stream ("Merging is not
-          # possible: unmerged files") and sinks the whole parallel run (this is why parallel "failed" and
-          # fell back to sequential, losing the speed-up). Abort to free the tree, then retry with a
-          # conflict-tolerant strategy: -X ours keeps the already-merged side on conflict, while NEW
-          # non-conflicting files from this stream still merge in. If even that fails, abort again so the
-          # tree stays CLEAN and the remaining streams can still merge; the branch is kept for review.
-          try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
-          $mergeOut3 = & git -C $bridgeRoot merge --no-ff -X ours -m ("merge parallel stream " + $w.id + " (auto-resolve: ours)") $w.branch 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            $merged++
-            Add-Message -From system -Text ("✅ Merged stream " + $w.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $w.branch + ")") -Kind event | Out-Null
-          } else {
-            try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
-            & $addQuarantine ([string]$w.id)
-            Add-Message -From system -Text ("⚠ Поток " + $w.id + " не слит (конфликт не разрешился авто). Дерево очищено — остальные потоки сливаются нормально. Ветка " + $w.branch + " сохранена для ручного разбора.") -Kind event | Out-Null
-          }
+          try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+          Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+          Add-Message -From system -Text ("⚠ Поток " + $Worker.id + " не слит (конфликт не разрешился авто). Дерево очищено — остальные потоки сливаются нормально. Ветка " + $Worker.branch + " сохранена для ручного разбора.") -Kind event | Out-Null
         }
       }
-    } catch {
-      try { & git -C $bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
-      & $addQuarantine ([string]$w.id)
-      Add-Message -From system -Text ("❌ Merge exception for stream " + $w.id + " (дерево очищено): " + $_.Exception.Message) -Kind event | Out-Null
     }
-    try { Cleanup-WorkerWorktree -StreamId $w.id -TaskHash $TaskHash } catch {}
+  } catch {
+    try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+    Add-Message -From system -Text ("❌ Merge exception for stream " + $Worker.id + " (дерево очищено): " + $_.Exception.Message) -Kind event | Out-Null
   }
 
-  # 2026-06-01 ERR-004: surface quarantined (failed) streams so the operator/driver knows their work
-  # was deliberately NOT merged. $quarantinedStreams is also consumed by the terminal-result logic
-  # (ERR-006) so a batch with failures is finalized as 'partial' (needs re-dispatch), not silently
-  # repeated as a generic "parallel completed".
-  $quarantinedStreams = @($quarantined)
+  try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
+}
+
+function Invoke-ParallelDispatchMergePhase {
+  param([hashtable]$Context)
+
+  foreach ($w in $Context.workers) {
+    Merge-ParallelDispatchWorkerOutput -Context $Context -Worker $w
+  }
+}
+
+function Complete-ParallelDispatchResult {
+  param([hashtable]$Context)
+
+  $quarantinedStreams = @($Context.quarantined)
   if ($quarantinedStreams.Count -gt 0) {
     try { Add-Message -From system -Text ("⚠️ Карантин: " + $quarantinedStreams.Count + " поток(ов) не собраны в репо (failed/unknown/no-touch/no-change/outside-touch/no-diff/exception/merge-failed/not-completed): " + ($quarantinedStreams -join ', ') + ". Требуется повторный прогон этих потоков.") -Kind event | Out-Null } catch {}
   }
 
-  # Clear parallel_streams from state -- via Update-State (Add-Member preserves other fields)
   try {
     Update-State { param($s) $s | Add-Member -NotePropertyName parallel_streams -NotePropertyValue @() -Force } | Out-Null
   } catch {}
 
-  # 2026-06-01 ERR-009: surface quarantined (failed) stream count + total so the driver can tell a
-  # CLEAN all-streams-merged result apart from a MIXED one (e.g. 4 failed + 1 done). A mixed result
-  # must NOT be reported to the user as a plain "DONE: N потоков" — the caller bounces it for rework.
   $qCount = 0; try { $qCount = @($quarantinedStreams).Count } catch {}
-  $totalStreams = 0; try { $totalStreams = @($workers).Count } catch {}
-  # Determine ok:
-  # - all delivered (merged == total) and quarantined == 0 -> clean complete, ok=true
-  # - mixed (some delivered, some quarantined) -> ok=true + quarantined>0 (driver enters partial repair)
-  # - none delivered -> ok=false
-  $cleanComplete = ($merged -eq $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
-  $anyDelivered  = ($merged -ge 1)
+  $totalStreams = 0; try { $totalStreams = @($Context.workers).Count } catch {}
+  $cleanComplete = ($Context.merged -eq $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
+  $anyDelivered = ($Context.merged -ge 1)
   return @{
     ok          = $anyDelivered
-    merged      = $merged
+    merged      = $Context.merged
     quarantined = $qCount
     total       = $totalStreams
     clean       = $cleanComplete
     reason      = $(if ($cleanComplete) { 'all_delivered' } elseif ($anyDelivered) { 'partial' } else { 'all_failed' })
   }
+}
+
+function Complete-ParallelDispatchOutputs {
+  param(
+    [object[]]$Workers,
+    [object]$Completed,
+    [string]$TaskHash
+  )
+
+  $context = New-ParallelDispatchAggregationContext -Workers $Workers -Completed $Completed -TaskHash $TaskHash
+  Invoke-ParallelDispatchCollectPhase -Context $context
+  Commit-ParallelDispatchCollectedOutputs -Context $context
+  Invoke-ParallelDispatchMergePhase -Context $context
+  return Complete-ParallelDispatchResult -Context $context
 }
 
 function Invoke-ParallelDispatch {

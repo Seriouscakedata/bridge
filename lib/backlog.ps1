@@ -3179,6 +3179,61 @@ function Invoke-ProjectAutopilotDeliveryContractValidation {
   throw 'delivery-contract validator unavailable'
 }
 
+function Get-ProjectAutopilotPlanStageDocLengths {
+  param([string]$ProjectRoot, $Issues)
+  $stageDocLengths = [ordered]@{}
+  foreach ($stageDef in @(Get-ProjectAutopilotPlanningStageDefinitions)) {
+    $stagePath = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { '' } else { Join-Path $ProjectRoot ([string]$stageDef.path) }
+    $stageText = Get-ProjectAutopilotFileText -Path $stagePath
+    $stageDocLengths[[string]$stageDef.id] = [int]$stageText.Length
+    if ($stageText.Length -lt [int]$stageDef.min_chars) {
+      [void]$Issues.Add(([string]$stageDef.path + ' is missing or too shallow (<' + [string]$stageDef.min_chars + ' chars)'))
+    }
+  }
+  return $stageDocLengths
+}
+
+function Test-ProjectAutopilotDeliveryContractReady {
+  param($Contract, $Issues)
+  $result = [ordered]@{
+    ok = $false
+    score = $null
+    missing = @()
+    warnings = @()
+    blockers = @()
+    required_sections = @()
+  }
+
+  try {
+    $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $Contract -Context @{
+      RequireParallelPolicy = $true
+      RequireExplicitProjectSections = $true
+    }
+    $result.ok = [bool]$deliveryResult.ok
+    $result.score = [int]$deliveryResult.score
+    $result.missing = @($deliveryResult.missing)
+    $result.warnings = @($deliveryResult.warnings)
+    $result.blockers = @($deliveryResult.blockers)
+    $result.required_sections = @($deliveryResult.required_sections)
+    if (-not $result.ok) {
+      [void]$Issues.Add('delivery-contract score=' + [string]$result.score)
+      if ($result.missing.Count -gt 0) { [void]$Issues.Add('delivery-contract missing: ' + ($result.missing -join ', ')) }
+      if ($result.blockers.Count -gt 0) { [void]$Issues.Add('delivery-contract blockers: ' + ($result.blockers -join ', ')) }
+      if ($result.warnings.Count -gt 0) { [void]$Issues.Add('delivery-contract warnings: ' + ($result.warnings -join ', ')) }
+    }
+  } catch {
+    $msg = [string]$_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unavailable' }
+    if ($msg -eq 'delivery-contract validator unavailable') {
+      [void]$Issues.Add('delivery-contract validator unavailable')
+    } else {
+      [void]$Issues.Add('delivery-contract validator error: ' + $msg)
+    }
+  }
+
+  return [pscustomobject]$result
+}
+
 function Test-ProjectPlanContractReady {
   param([string]$ProjectRoot)
   $issues = New-Object 'System.Collections.Generic.List[string]'
@@ -3205,15 +3260,7 @@ function Test-ProjectPlanContractReady {
     [void]$issues.Add('PROJECT_PLAN.md is missing or too shallow (<2000 chars)')
   }
 
-  $stageDocLengths = [ordered]@{}
-  foreach ($stageDef in @(Get-ProjectAutopilotPlanningStageDefinitions)) {
-    $stagePath = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { '' } else { Join-Path $ProjectRoot ([string]$stageDef.path) }
-    $stageText = Get-ProjectAutopilotFileText -Path $stagePath
-    $stageDocLengths[[string]$stageDef.id] = [int]$stageText.Length
-    if ($stageText.Length -lt [int]$stageDef.min_chars) {
-      [void]$issues.Add(([string]$stageDef.path + ' is missing or too shallow (<' + [string]$stageDef.min_chars + ' chars)'))
-    }
-  }
+  $stageDocLengths = Get-ProjectAutopilotPlanStageDocLengths -ProjectRoot $ProjectRoot -Issues $issues
 
   if ([string]::IsNullOrWhiteSpace($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
     [void]$issues.Add('.bridge/project-contract.json is missing')
@@ -3233,33 +3280,13 @@ function Test-ProjectPlanContractReady {
   $interfaceCount = 0
   $planningStageCount = 0
   if ($contract) {
-    try {
-      $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $contract -Context @{
-        RequireParallelPolicy = $true
-        RequireExplicitProjectSections = $true
-      }
-      $deliveryContractOk = [bool]$deliveryResult.ok
-      $deliveryContractScore = [int]$deliveryResult.score
-      $deliveryContractMissing = @($deliveryResult.missing)
-      $deliveryContractWarnings = @($deliveryResult.warnings)
-      $deliveryContractBlockers = @($deliveryResult.blockers)
-      $deliveryContractRequiredSections = @($deliveryResult.required_sections)
-      if (-not $deliveryContractOk) {
-        [void]$issues.Add('delivery-contract score=' + [string]$deliveryContractScore)
-        if ($deliveryContractMissing.Count -gt 0) { [void]$issues.Add('delivery-contract missing: ' + ($deliveryContractMissing -join ', ')) }
-        if ($deliveryContractBlockers.Count -gt 0) { [void]$issues.Add('delivery-contract blockers: ' + ($deliveryContractBlockers -join ', ')) }
-        if ($deliveryContractWarnings.Count -gt 0) { [void]$issues.Add('delivery-contract warnings: ' + ($deliveryContractWarnings -join ', ')) }
-      }
-    } catch {
-      $deliveryContractOk = $false
-      $msg = [string]$_.Exception.Message
-      if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unavailable' }
-      if ($msg -eq 'delivery-contract validator unavailable') {
-        [void]$issues.Add('delivery-contract validator unavailable')
-      } else {
-        [void]$issues.Add('delivery-contract validator error: ' + $msg)
-      }
-    }
+    $deliveryContract = Test-ProjectAutopilotDeliveryContractReady -Contract $contract -Issues $issues
+    $deliveryContractOk = [bool]$deliveryContract.ok
+    $deliveryContractScore = $deliveryContract.score
+    $deliveryContractMissing = @($deliveryContract.missing)
+    $deliveryContractWarnings = @($deliveryContract.warnings)
+    $deliveryContractBlockers = @($deliveryContract.blockers)
+    $deliveryContractRequiredSections = @($deliveryContract.required_sections)
 
     $goalText = [string](Get-ProjectAutopilotContractValue -Obj $contract -Names @('project_goal','goal','mission','outcome') -Default '')
     $reqCount = [int](Get-ProjectAutopilotContractCount -Obj $contract -Names @('requirements','capabilities','features','functional_requirements'))

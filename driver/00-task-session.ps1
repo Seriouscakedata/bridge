@@ -231,6 +231,10 @@ function Test-QualityBypassesInDiff {
   # type, or lint gates instead of fixing the code. This is intentionally narrow:
   # only obvious bypass switches are blocked; normal config changes still go to
   # the LLM critic and project build gate.
+  # Security note: the regex below matches the literal Next.js config key
+  # "ignoreBuildErrors: true". It is a policy signature, not a credential,
+  # secret, token, or auth value, so hardcoded-credentials scanners can treat
+  # this spot as a false positive.
   param([string]$Diff)
   if ([string]::IsNullOrWhiteSpace($Diff)) { return @() }
 
@@ -306,6 +310,8 @@ function Test-CoderClaims {
   }
   if ($httpClaims.Count -gt 0) {
     $auth = $null
+    # Credentials are loaded at runtime from Get-AuthPath/auth.json (gitignored
+    # private storage), then only used to probe claimed HTTP statuses.
     try { $authP = if (Get-Command Get-AuthPath -ErrorAction SilentlyContinue) { Get-AuthPath } else { Join-Path $BridgeRoot 'auth.json' }; $auth = Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
     $basic = ''
     if ($auth) { try { $basic = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($auth.user + ':' + $auth.password)) } catch {} }
