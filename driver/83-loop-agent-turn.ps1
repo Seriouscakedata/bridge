@@ -226,9 +226,8 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
       } else {
         $retryBacklogId = ''
         try { $retryBacklogId = [string]$stAction.current_backlog_id } catch {}
-        $retryCovered = Test-TaskActionEvidenceBypassMarker -Reply $reply
         $retrySafety = [bool]([regex]::IsMatch([string]$reply, '(?m)^\s*\[\[SAFETY:\s*.+?\s*\]\]\s*$'))
-        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $retryCovered -and -not $retrySafety) {
+        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $retrySafety) {
           $curEvidenceRetries = 0
           try {
             if ($stAction.PSObject.Properties.Name -contains 'codex_evidence_retry_count') {
@@ -262,7 +261,18 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
           }
         }
       }
-    } catch {}
+    } catch {
+      $actionEvidenceError = $_.Exception.Message
+      try { Set-TaskLastFailure -Kind action_evidence_error -Text ("Codex action evidence guard failed: " + $actionEvidenceError) } catch {}
+      Add-Message -From system -Text ("🚫 Codex action evidence guard failed: " + $actionEvidenceError + ". Не засчитываю действие; передаю планировщику.") -Kind event | Out-Null
+      Update-State { param($s)
+        $s.task_did_actions = $false
+        $s.force_planner = $true
+        $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+        $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+      } | Out-Null
+      continue
+    }
   }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top

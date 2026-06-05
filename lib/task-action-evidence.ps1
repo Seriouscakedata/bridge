@@ -27,12 +27,6 @@ function Test-TaskActionEvidencePathWorth {
   return $true
 }
 
-function Test-TaskActionEvidenceBypassMarker {
-  param([string]$Reply)
-  if ([string]::IsNullOrWhiteSpace($Reply)) { return $false }
-  return [bool]([regex]::IsMatch([string]$Reply, '(?im)^\s*COVERED:\s*'))
-}
-
 function Get-CodexEvidenceRetryPlan {
   param(
     [int]$CurrentRetryCount = 0,
@@ -65,26 +59,36 @@ function Get-CodexEvidenceRetryPlan {
 function Get-TaskDoneEvidenceGateDecision {
   param(
     [bool]$HasBacklogId = $false,
+    [bool]$EvidenceCheckCompleted = $false,
     [bool]$HasEvidence = $false,
-    [bool]$HasCoveredMarker = $false,
     [bool]$IsProjectAutopilot = $false,
     [int]$ProjectBacklogCreated = 0
   )
 
-  $allowed = (-not $HasBacklogId) -or $HasEvidence -or $HasCoveredMarker -or $IsProjectAutopilot -or ($ProjectBacklogCreated -gt 0)
-  $reason = if ($allowed) {
-    if (-not $HasBacklogId) { 'not_backlog_task' }
-    elseif ($HasEvidence) { 'action_evidence' }
-    elseif ($HasCoveredMarker) { 'covered_marker' }
-    elseif ($IsProjectAutopilot) { 'project_autopilot' }
-    else { 'project_backlog_created' }
+  $allowed = $false
+  $reason = 'missing_action_evidence'
+  if (-not $HasBacklogId) {
+    $allowed = $true
+    $reason = 'not_backlog_task'
+  } elseif ($IsProjectAutopilot) {
+    $allowed = $true
+    $reason = 'project_autopilot'
+  } elseif ($ProjectBacklogCreated -gt 0) {
+    $allowed = $true
+    $reason = 'project_backlog_created'
+  } elseif (-not $EvidenceCheckCompleted) {
+    $reason = 'evidence_check_failed'
+  } elseif ($HasEvidence) {
+    $allowed = $true
+    $reason = 'action_evidence'
   } else {
-    'missing_action_evidence'
+    $reason = 'missing_action_evidence'
   }
 
   return [pscustomobject]@{
-    allowed = [bool]$allowed
-    reason  = [string]$reason
+    allowed                  = [bool]$allowed
+    reason                   = [string]$reason
+    evidence_check_completed = [bool]$EvidenceCheckCompleted
   }
 }
 

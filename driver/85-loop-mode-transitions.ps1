@@ -6,36 +6,53 @@
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    $noopHasBacklogId = $true
+    $noopTask = ''
+    $noopHasEvidence = $false
+    $noopEvidenceChecked = $false
+    $noopGuardError = ''
     try {
       $stNoop = Read-State
       $noopBacklogId = [string]$stNoop.current_backlog_id
+      $noopHasBacklogId = -not [string]::IsNullOrWhiteSpace($noopBacklogId)
       $noopTask = [string]$stNoop.current_task
-      $noopHasEvidence = $false
+      $repoNoopRoot = Get-TaskRepoRoot
+      $baseNoop = [string]$stNoop.task_base_commit
+      $baseDirtyNoop = @()
       try {
-        $repoNoopRoot = Get-TaskRepoRoot
-        $baseNoop = [string]$stNoop.task_base_commit
-        $baseDirtyNoop = @()
-        try {
-          if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
-            $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          }
-        } catch { $baseDirtyNoop = @() }
-        $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
-        if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
-          $noopHasEvidence = $true
-          Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+        if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
+          $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         }
-      } catch {}
-      $noopCovered = [bool]([regex]::IsMatch([string]$reply, '(?im)^\s*COVERED:\s*'))
+      } catch { $baseDirtyNoop = @() }
+      $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
+      $noopEvidenceChecked = $true
+      if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
+        $noopHasEvidence = $true
+        Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+      }
+    } catch {
+      $noopGuardError = $_.Exception.Message
+      $noopHasEvidence = $false
+      $noopEvidenceChecked = $false
+    }
+    try {
       $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
-      $noopDecision = Get-TaskDoneEvidenceGateDecision -HasBacklogId (-not [string]::IsNullOrWhiteSpace($noopBacklogId)) -HasEvidence $noopHasEvidence -HasCoveredMarker $noopCovered -IsProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated)
+      $noopDecision = Get-TaskDoneEvidenceGateDecision -HasBacklogId $noopHasBacklogId -EvidenceCheckCompleted $noopEvidenceChecked -HasEvidence $noopHasEvidence -IsProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated)
       if (-not [bool]$noopDecision.allowed) {
         $plannerStatus = 'CONTINUE'
-        Update-State { param($s) $s.task_did_actions = $false } | Out-Null
-        try { Set-TaskLastFailure -Kind test_failed -Text 'DONE rejected: no file changes, no commands, no commit, no COVERED marker' } catch {}
-        Add-Message -From system -Text "🚫 DONE отклонён: это backlog-задача, но в ходе не было действий/коммита/проверок. Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE." -Kind event | Out-Null
+        Update-State { param($s) $s.task_did_actions = $false; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+        $noopRejectReason = [string]$noopDecision.reason
+        if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
+        try { Set-TaskLastFailure -Kind test_failed -Text ('DONE rejected by action evidence guard: ' + $noopRejectReason) } catch {}
+        Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
       }
-    } catch {}
+    } catch {
+      $plannerStatus = 'CONTINUE'
+      $noopDecisionError = $_.Exception.Message
+      Update-State { param($s) $s.task_did_actions = $false; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+      try { Set-TaskLastFailure -Kind test_failed -Text ('DONE evidence guard crashed: ' + $noopDecisionError) } catch {}
+      Add-Message -From system -Text ("🚫 DONE evidence guard failed closed: " + $noopDecisionError + ". Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
+    }
   }
 
   # [[PARALLEL: <repo> || подзадача1 ;; подзадача2 ;; ...]] -> планировщик запускает
