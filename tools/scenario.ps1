@@ -98,6 +98,16 @@ function ConvertTo-RedactedArgument {
   return $Arg
 }
 
+function ConvertTo-RedactedLogText {
+  param([string]$Text)
+  if ($null -eq $Text) { return '' }
+  $out = [string]$Text
+  $out = $out -replace '(https?://)([^/\s:@]+):([^@\s/]+)@', '$1<redacted>@'
+  $out = $out -replace '(?i)(Authorization:\s*Basic\s+)[A-Za-z0-9+/=]+', '$1<redacted>'
+  $out = $out -replace '(?i)(password|token|secret|bearer)(["''\s:=]+)[^"''\s,;]+', '$1$2<redacted>'
+  return $out
+}
+
 function Write-ScenarioDiagnostics {
   param(
     [string]$Path,
@@ -108,6 +118,187 @@ function Write-ScenarioDiagnostics {
     $json = $Data | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
   } catch {}
+}
+
+function Join-ProcessArguments {
+  param([string[]]$Arguments)
+  $parts = @()
+  foreach ($arg in $Arguments) {
+    $s = [string]$arg
+    if ($s -notmatch '[\s"]') {
+      $parts += $s
+      continue
+    }
+    $escaped = $s -replace '"', '\"'
+    if ($escaped.EndsWith('\')) { $escaped = $escaped + '\' }
+    $parts += ('"' + $escaped + '"')
+  }
+  return ($parts -join ' ')
+}
+
+function Start-ScenarioBrowserProcess {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$StdoutPath,
+    [string]$StderrPath,
+    [string]$ProfileDir
+  )
+
+  [System.IO.File]::WriteAllText($StdoutPath, '', (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText($StderrPath, '', (New-Object System.Text.UTF8Encoding($false)))
+
+  $envRoot = Join-Path $ProfileDir 'env'
+  $tempDir = Join-Path $envRoot 'temp'
+  $localAppDataDir = Join-Path $envRoot 'localappdata'
+  $homeDir = Join-Path $envRoot 'home'
+  foreach ($dir in @($tempDir, $localAppDataDir, $homeDir)) {
+    [void](New-Item -ItemType Directory -Path $dir -Force)
+  }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = Join-ProcessArguments -Arguments $Arguments
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.WorkingDirectory = Split-Path -Parent $FilePath
+  try {
+    if ($null -ne $psi.EnvironmentVariables) {
+      $psi.EnvironmentVariables.Set_Item('TMP', $tempDir)
+      $psi.EnvironmentVariables.Set_Item('TEMP', $tempDir)
+      $psi.EnvironmentVariables.Set_Item('LOCALAPPDATA', $localAppDataDir)
+      $psi.EnvironmentVariables.Set_Item('USERPROFILE', $homeDir)
+    } elseif ($null -ne $psi.Environment) {
+      $psi.Environment.Set_Item('TMP', $tempDir)
+      $psi.Environment.Set_Item('TEMP', $tempDir)
+      $psi.Environment.Set_Item('LOCALAPPDATA', $localAppDataDir)
+      $psi.Environment.Set_Item('USERPROFILE', $homeDir)
+    }
+  } catch {}
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+  return @{
+    Process = $proc
+    StdoutTask = $stdoutTask
+    StderrTask = $stderrTask
+    StdoutPath = $StdoutPath
+    StderrPath = $StderrPath
+  }
+}
+
+function Complete-ScenarioBrowserProcess {
+  param(
+    [hashtable]$Handle,
+    [switch]$Kill
+  )
+  if (-not $Handle) { return }
+  $proc = $Handle.Process
+  try {
+    if ($proc -and -not $proc.HasExited -and $Kill) {
+      $proc.Kill() | Out-Null
+    }
+  } catch {}
+  try {
+    if ($proc) { [void]$proc.WaitForExit(3000) }
+  } catch {}
+  try {
+    $stdout = ConvertTo-RedactedLogText -Text ([string]$Handle.StdoutTask.Result)
+    [System.IO.File]::WriteAllText([string]$Handle.StdoutPath, $stdout, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  try {
+    $stderr = ConvertTo-RedactedLogText -Text ([string]$Handle.StderrTask.Result)
+    [System.IO.File]::WriteAllText([string]$Handle.StderrPath, $stderr, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
+
+function Add-ScenarioQueryParam {
+  param(
+    [string]$Original,
+    [string]$ScenarioName
+  )
+  $sep = if ($Original.Contains('?')) { '&' } else { '?' }
+  return ($Original + $sep + 'scenario=' + [Uri]::EscapeDataString($ScenarioName))
+}
+
+function New-BrowserArguments {
+  param(
+    [string]$Mode,
+    [string]$LoadUrl,
+    [string]$ProfileDir,
+    [string]$CrashDir,
+    [string]$CacheDir
+  )
+  $argsList = @()
+  if ($Mode -like 'headless*') { $argsList += '--headless=new' } else { $argsList += '--window-position=-32000,-32000' }
+  $argsList += @(
+    ('--window-size=' + $Width + ',' + $Height),
+    '--hide-scrollbars',
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--no-zygote',
+    '--noerrdialogs',
+    '--enable-logging=stderr',
+    '--v=1',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-default-apps',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-sync',
+    '--disable-background-networking',
+    '--disable-background-mode',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    '--disable-crashpad',
+    ('--crash-dumps-dir=' + $CrashDir),
+    ('--disk-cache-dir=' + $CacheDir),
+    '--disable-features=Translate,OptimizationHints,InterestFeed,AcceptCHFrame,FirstRunExperience,EdgeSplashScreenStandalone,MojoIpcz,RendererCodeIntegrity'
+  )
+  if ($Mode -like '*single-process') {
+    $argsList += @('--single-process', '--in-process-gpu')
+  }
+  if ($Mode -like 'headless*') {
+    $argsList += ('--virtual-time-budget=' + ([int]($TimeoutSec * 1000)))
+  }
+  $argsList += @(
+    ('--user-data-dir=' + $ProfileDir),
+    $LoadUrl
+  )
+  return $argsList
+}
+
+function Test-ScenarioHttpEndpoint {
+  param(
+    [string]$CheckUrl,
+    [hashtable]$Headers
+  )
+  $item = @{
+    url = (Get-RedactedUrl -Original $CheckUrl)
+    ok = $false
+    status = $null
+    error = ''
+  }
+  try {
+    $resp = Invoke-WebRequest -Uri $CheckUrl -Headers $Headers -UseBasicParsing -TimeoutSec 5
+    $item.status = [int]$resp.StatusCode
+    $item.ok = ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400)
+  } catch {
+    $item.error = $_.Exception.Message
+    try {
+      if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+        $item.status = [int]$_.Exception.Response.StatusCode
+      }
+    } catch {}
+  }
+  return $item
 }
 
 if (-not ($Name -match '^[a-z0-9_-]+$')) {
@@ -127,22 +318,28 @@ $browserPaths = @(Get-BrowserPaths)
 
 # Append ?scenario=$Name (preserving auth in URL for headless basic-auth).
 $loadUrl = Get-LocalAuthUrl -Original $Url
-$sep = if ($loadUrl.Contains('?')) { '&' } else { '?' }
-$loadUrl = $loadUrl + $sep + 'scenario=' + [Uri]::EscapeDataString($Name)
+$baseLoadUrl = $loadUrl
+$loadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $Name
+$probeName = $Name + '-probe'
+$probeLoadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $probeName
 
 # Mark start time so we can ignore older results in the JSONL log.
 $startTs = (Get-Date).ToUniversalTime().ToString('o')
 
 # Temp profile dir so Edge/Chrome doesn't fight a real session.
-# Keep it under the bridge runtime tree: sandboxed runs may not have a usable
-# Crashpad/profile location under LocalAppData or %TEMP%.
+# Prefer the bridge runtime tree: this sandbox can write there, while browser
+# subprocesses can hit Access Denied under the user's AppData\Temp.
 $scenarioRuntimeDir = Join-Path $root 'runtime\scenario'
 [void](New-Item -ItemType Directory -Path $scenarioRuntimeDir -Force)
-$scenarioProfileRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'bridge-scenario-runtime'
+$scenarioProfileRoot = Join-Path $scenarioRuntimeDir 'profiles'
 try {
   [void](New-Item -ItemType Directory -Path $scenarioProfileRoot -Force)
+  $probeWrite = Join-Path $scenarioProfileRoot ('.write-test-' + [guid]::NewGuid().ToString('N'))
+  [System.IO.File]::WriteAllText($probeWrite, 'ok', (New-Object System.Text.UTF8Encoding($false)))
+  Remove-Item -LiteralPath $probeWrite -Force -ErrorAction SilentlyContinue
 } catch {
-  $scenarioProfileRoot = $scenarioRuntimeDir
+  $scenarioProfileRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'bridge-scenario-runtime'
+  [void](New-Item -ItemType Directory -Path $scenarioProfileRoot -Force)
 }
 $logDir = Join-Path $scenarioRuntimeDir 'logs'
 [void](New-Item -ItemType Directory -Path $logDir -Force)
@@ -153,22 +350,30 @@ $diag = @{
   name = $Name
   browser_path = $browser
   browser_paths = @($browserPaths)
+  profile_root = $scenarioProfileRoot
   load_url = (Get-RedactedUrl -Original $loadUrl)
+  probe_url = (Get-RedactedUrl -Original $probeLoadUrl)
   result_url = (Get-RedactedUrl -Original (($Url.TrimEnd('/')) + '/api/scenario/result?name=' + [Uri]::EscapeDataString($Name)))
   attempts = @()
+  http_checks = @()
 }
 
 $headers = Get-AuthHeaders
+$diag.http_checks += (Test-ScenarioHttpEndpoint -CheckUrl $loadUrl -Headers $headers)
+$diag.http_checks += (Test-ScenarioHttpEndpoint -CheckUrl (($Url.TrimEnd('/')) + '/tools/scenarios/' + [Uri]::EscapeDataString($Name) + '.js') -Headers $headers)
+Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 $resultUrl = ($Url.TrimEnd('/')) + '/api/scenario/result?name=' + [Uri]::EscapeDataString($Name) + '&since=' + [Uri]::EscapeDataString($startTs)
 $debugName = 'debug-boot-' + $Name
 $debugUrl = ($Url.TrimEnd('/')) + '/api/scenario/result?name=' + [Uri]::EscapeDataString($debugName) + '&since=' + [Uri]::EscapeDataString($startTs)
+$probeDebugName = 'debug-boot-' + $probeName
+$probeDebugUrl = ($Url.TrimEnd('/')) + '/api/scenario/result?name=' + [Uri]::EscapeDataString($probeDebugName) + '&since=' + [Uri]::EscapeDataString($startTs)
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $result = $null
 $debugMarker = $null
-$lastProc = $null
+$lastProcHandle = $null
 $lastProfileDir = ''
 
-$modes = @('headless', 'headed-offscreen')
+$modes = @('headless', 'headless-single-process', 'headed-offscreen', 'headed-single-process')
 foreach ($browserCandidate in $browserPaths) {
 foreach ($mode in $modes) {
   if ((Get-Date) -ge $deadline) { break }
@@ -180,50 +385,95 @@ foreach ($mode in $modes) {
   [void](New-Item -ItemType Directory -Path $profileDir -Force)
   $crashDir = Join-Path $profileDir 'crash'
   [void](New-Item -ItemType Directory -Path $crashDir -Force)
-  $stdoutPath = Join-Path $logDir ($attemptId + '.browser.stdout.log')
-  $stderrPath = Join-Path $logDir ($attemptId + '.browser.stderr.log')
+  $cacheDir = Join-Path $profileDir 'cache'
+  [void](New-Item -ItemType Directory -Path $cacheDir -Force)
 
-  $argsList = @()
-  if ($mode -eq 'headless') { $argsList += '--headless=new' } else { $argsList += '--window-position=-32000,-32000' }
-  $argsList += @(
-    ('--window-size=' + $Width + ',' + $Height),
-    '--hide-scrollbars',
-    '--no-sandbox',
-    '--disable-gpu',
-    # 2026-05-28: fresh --user-data-dir triggers Edge first-run welcome
-    # AND sync-confirmation dialog AND VPN extension auto-install. Without
-    # ALL these flags, Edge spawns multiple background pages and the real
-    # tab's JS does not execute consistently.
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-extensions',
-    '--disable-default-apps',
-    '--disable-component-extensions-with-background-pages',
-    '--disable-sync',
-    '--disable-background-networking',
-    '--disable-background-mode',
-    '--disable-breakpad',
-    '--disable-crash-reporter',
-    '--disable-crashpad',
-    ('--crash-dumps-dir=' + $crashDir),
-    '--disable-features=Translate,OptimizationHints,InterestFeed,AcceptCHFrame,FirstRunExperience,EdgeSplashScreenStandalone,MojoIpcz,RendererCodeIntegrity'
-  )
-  if ($mode -eq 'headless') {
-    $argsList += ('--virtual-time-budget=' + ([int]($TimeoutSec * 1000)))
-  }
-  $argsList += @(
-    ('--user-data-dir=' + $profileDir),
-    $loadUrl
-  )
-
-  $attempt = @{
+  $probeStdoutPath = Join-Path $logDir ($attemptId + '.probe.browser.stdout.log')
+  $probeStderrPath = Join-Path $logDir ($attemptId + '.probe.browser.stderr.log')
+  $probeArgsList = @(New-BrowserArguments -Mode $mode -LoadUrl $probeLoadUrl -ProfileDir $profileDir -CrashDir $crashDir -CacheDir $cacheDir)
+  $probeAttempt = @{
+    phase = 'self-probe'
+    scenario_name = $probeName
     mode = $mode
     browser_path = $browserCandidate
     profile_dir = $profileDir
     crash_dir = $crashDir
+    cache_dir = $cacheDir
+    stdout = $probeStdoutPath
+    stderr = $probeStderrPath
+    args = @($probeArgsList | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) })
+    arguments = (Join-ProcessArguments -Arguments @($probeArgsList | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) }))
+    started_at = (Get-Date).ToUniversalTime().ToString('o')
+    launch_elapsed_ms = $null
+    exit_code = $null
+    elapsed_ms = $null
+    debug_marker_seen = $false
+    result_seen = $false
+  }
+  $diag.attempts += $probeAttempt
+  Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+
+  $probeHandle = $null
+  $probeMarker = $null
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    $probeHandle = Start-ScenarioBrowserProcess -FilePath $browserCandidate -Arguments $probeArgsList -StdoutPath $probeStdoutPath -StderrPath $probeStderrPath -ProfileDir $profileDir
+    $probeAttempt.launch_elapsed_ms = [int]$sw.ElapsedMilliseconds
+  } catch {
+    $probeAttempt.launch_error = $_.Exception.Message
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    if ($mode -eq 'headless') { continue }
+    Write-Error ('Failed to launch browser probe: ' + $_.Exception.Message)
+    exit 2
+  }
+
+  $probeProc = $probeHandle.Process
+  $probeDeadline = (Get-Date).AddSeconds([Math]::Min(8, [Math]::Max(1, [int](($deadline - (Get-Date)).TotalSeconds))))
+  $exitSeenAt = $null
+  $exitGraceUntil = $null
+  while ((Get-Date) -lt $probeDeadline) {
+    try {
+      $dresp = Invoke-RestMethod -Uri $probeDebugUrl -Headers $headers -TimeoutSec 3
+      if ($dresp.ok -and $dresp.result) {
+        $probeMarker = $dresp.result
+        $probeAttempt.debug_marker_seen = $true
+        break
+      }
+    } catch {}
+    if ($probeProc -and $probeProc.HasExited) {
+      if (-not $exitSeenAt) {
+        $exitSeenAt = Get-Date
+        $exitGraceUntil = $exitSeenAt.AddSeconds(2)
+        $probeAttempt.exit_code = $probeProc.ExitCode
+      }
+      if ((Get-Date) -ge $exitGraceUntil) { break }
+    }
+    Start-Sleep -Milliseconds 300
+  }
+  $sw.Stop()
+  if ($probeProc -and $probeProc.HasExited -and $null -eq $probeAttempt.exit_code) { $probeAttempt.exit_code = $probeProc.ExitCode }
+  $probeAttempt.elapsed_ms = [int]$sw.ElapsedMilliseconds
+  $probeAttempt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
+  Complete-ScenarioBrowserProcess -Handle $probeHandle -Kill
+  Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+  if (-not $probeMarker) { continue }
+
+  $stdoutPath = Join-Path $logDir ($attemptId + '.browser.stdout.log')
+  $stderrPath = Join-Path $logDir ($attemptId + '.browser.stderr.log')
+  $argsList = @(New-BrowserArguments -Mode $mode -LoadUrl $loadUrl -ProfileDir $profileDir -CrashDir $crashDir -CacheDir $cacheDir)
+
+  $attempt = @{
+    phase = 'scenario'
+    scenario_name = $Name
+    mode = $mode
+    browser_path = $browserCandidate
+    profile_dir = $profileDir
+    crash_dir = $crashDir
+    cache_dir = $cacheDir
     stdout = $stdoutPath
     stderr = $stderrPath
     args = @($argsList | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) })
+    arguments = (Join-ProcessArguments -Arguments @($argsList | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) }))
     started_at = (Get-Date).ToUniversalTime().ToString('o')
     launch_elapsed_ms = $null
     exit_code = $null
@@ -234,12 +484,11 @@ foreach ($mode in $modes) {
   $diag.attempts += $attempt
   Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
-  $proc = $null
   $sw = [Diagnostics.Stopwatch]::StartNew()
+  $procHandle = $null
   try {
-    [System.IO.File]::WriteAllText($stdoutPath, '', (New-Object System.Text.UTF8Encoding($false)))
-    [System.IO.File]::WriteAllText($stderrPath, '', (New-Object System.Text.UTF8Encoding($false)))
-    $proc = Start-Process -FilePath $browserCandidate -ArgumentList $argsList -PassThru -WindowStyle Hidden
+    $procHandle = Start-ScenarioBrowserProcess -FilePath $browserCandidate -Arguments $argsList -StdoutPath $stdoutPath -StderrPath $stderrPath -ProfileDir $profileDir
+    $proc = $procHandle.Process
     $attempt.launch_elapsed_ms = [int]$sw.ElapsedMilliseconds
   } catch {
     $attempt.launch_error = $_.Exception.Message
@@ -249,7 +498,7 @@ foreach ($mode in $modes) {
     exit 2
   }
 
-  $lastProc = $proc
+  $lastProcHandle = $procHandle
   $lastProfileDir = $profileDir
   $exitSeenAt = $null
   $exitGraceUntil = $null
@@ -291,21 +540,27 @@ foreach ($mode in $modes) {
   if ($proc -and $proc.HasExited -and $null -eq $attempt.exit_code) { $attempt.exit_code = $proc.ExitCode }
   $attempt.elapsed_ms = [int]$sw.ElapsedMilliseconds
   $attempt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
+  if ($proc -and $proc.HasExited) {
+    Complete-ScenarioBrowserProcess -Handle $procHandle
+  }
   Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
   if ($result) { break }
 
-  try { if ($proc -and -not $proc.HasExited) { $proc.Kill() | Out-Null } } catch {}
-  if ($debugMarker) { break }
+  Complete-ScenarioBrowserProcess -Handle $procHandle -Kill
 }
-if ($result -or $debugMarker) { break }
+if ($result) { break }
 }
 
 # Optional: keep browser alive for a bit (useful when chained with visit.ps1 for screenshots).
 if ($KeepBrowserMs -gt 0) { Start-Sleep -Milliseconds $KeepBrowserMs }
 
 # Teardown.
-try { if ($lastProc -and -not $lastProc.HasExited) { $lastProc.Kill() | Out-Null } } catch {}
+try {
+  if ($lastProcHandle -and $lastProcHandle.Process -and -not $lastProcHandle.Process.HasExited) {
+    Complete-ScenarioBrowserProcess -Handle $lastProcHandle -Kill
+  }
+} catch {}
 if ($result -and $lastProfileDir) {
   try { Remove-Item -LiteralPath $lastProfileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
@@ -313,8 +568,8 @@ Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
   $detail = ''
-  if ($lastProc -and $lastProc.HasExited) {
-    $detail = 'browser exited before scenario result (exit ' + $lastProc.ExitCode + ')'
+  if ($lastProcHandle -and $lastProcHandle.Process -and $lastProcHandle.Process.HasExited) {
+    $detail = 'browser exited before scenario result (exit ' + $lastProcHandle.Process.ExitCode + ')'
   } else {
     $detail = 'timeout: no scenario result after ' + $TimeoutSec + 's'
   }
