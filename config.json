@@ -141,6 +141,10 @@
     "doctorRecidivismHours": 24,
     "doctorRecidivismMax": 5
   },
+  "doctor": {
+    "maxRepairAttempts": 3,
+    "maxRestartResumes": 3
+  },
   "canary": {
     "enabled": false,
     "intervalHours": 6,

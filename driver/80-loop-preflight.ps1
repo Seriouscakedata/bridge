@@ -195,16 +195,18 @@
     }
   }
   if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
-    $maxA = Get-DoctorMaxAttempts
-    $att  = [int]$state.doctor_attempts
+    $maxA = Get-DoctorMaxRepairAttempts
+    $att  = Get-DoctorRepairAttemptCount -State $state
     if ($att -ge $maxA) {
-      Abort-Doctor -Reason "max attempts ($maxA) reached"
+      Abort-Doctor -Reason "max repair attempts ($maxA) reached"
       Start-Sleep -Seconds $loopDelay; continue
     }
     try {
       $doctorTask = Get-DoctorTaskText
       $baseCommitD = ''
       try { $baseCommitD = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch {}
+      $newRepairAttempt = $att + 1
+      try { Save-StateSnapshot -Reason 'doctor_repair_attempt' } catch {}
       Update-State ({ param($s)
         $s.current_task     = $doctorTask
         $s.task_turn        = 0
@@ -213,14 +215,15 @@
         Clear-AuditorSuppressedHashes -State $s
         Clear-FastLaneFlags $s
         Clear-ChunkingState $s
-        $s.doctor_attempts  = [int]$s.doctor_attempts + 1
         $s.status           = 'working'
         $s.heartbeat        = (Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
+        $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue $newRepairAttempt -Force
+        $s.doctor_attempts  = $newRepairAttempt
         Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
       try { Add-SessionDecisionEvent -EventType 'doctor_fix' -Meta @{ what='doctor_activated' } -Channel $Channel } catch {}
-      try { Add-Message -From system -Text "🩺 Доктор приступает к диагностике и фиксу." -Kind event | Out-Null } catch {}
+      try { Add-Message -From system -Text ("🩺 Доктор приступает к диагностике и фиксу (repair-попытка " + $newRepairAttempt + "/" + $maxA + ").") -Kind event | Out-Null } catch {}
       $state = Read-State
     } catch {
       try { Add-Message -From system -Text ("🩺 Доктор: ошибка при подготовке задачи: " + $_.Exception.Message) -Kind event | Out-Null } catch {}

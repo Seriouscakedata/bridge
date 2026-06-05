@@ -6,12 +6,67 @@
 #
 # State fields owned by Doctor (initialized in Initialize-Bridge):
 #   held_task          -- text of the original task being suspended
-#   doctor_active      -- bool, Doctor is currently triaging/fixing
-#   doctor_attempts    -- 0/1; MVP allows only one repair attempt per held task
-#   doctor_reason      -- short reason string (planner_timeout, watchdog_rollback, ...)
-#   doctor_started_at  -- ISO timestamp the Doctor activated
+#   doctor_active          -- bool, Doctor is currently triaging/fixing
+#   doctor_repair_attempts -- repair attempts seeded for the held task
+#   doctor_restart_count   -- driver restarts while Doctor is active (restart-loop guard)
+#   doctor_attempts        -- legacy alias, mirrors doctor_repair_attempts
+#   doctor_reason          -- short reason string (planner_timeout, watchdog_rollback, ...)
+#   doctor_started_at      -- ISO timestamp the Doctor activated
 
-function Get-DoctorMaxAttempts { return 1 }   # MVP: one shot per held task
+function Get-DoctorConfigInt {
+  param([string]$Name, [int]$Default, [int]$Min = 1, [int]$Max = 10)
+  $value = $Default
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'doctor') -and $cfg.doctor) {
+      $node = $cfg.doctor
+      if (($node.PSObject.Properties.Name -contains $Name) -and $null -ne $node.$Name) {
+        $value = [int]$node.$Name
+      }
+    }
+  } catch {}
+  if ($value -lt $Min) { return $Min }
+  if ($value -gt $Max) { return $Max }
+  return [int]$value
+}
+
+function Get-DoctorMaxRepairAttempts {
+  return (Get-DoctorConfigInt -Name 'maxRepairAttempts' -Default 3 -Min 1 -Max 5)
+}
+
+function Get-DoctorMaxRestartResumes {
+  return (Get-DoctorConfigInt -Name 'maxRestartResumes' -Default 3 -Min 2 -Max 10)
+}
+
+function Get-DoctorMaxAttempts {
+  # Backward-compatible wrapper for older call sites/tests.
+  return (Get-DoctorMaxRepairAttempts)
+}
+
+function Get-DoctorStateInt {
+  param($State, [string[]]$Names, [int]$Default = 0)
+  if (-not $State) { return $Default }
+  foreach ($name in @($Names)) {
+    try {
+      if (($State.PSObject.Properties.Name -contains $name) -and $null -ne $State.$name) {
+        return [int]$State.$name
+      }
+    } catch {}
+  }
+  return $Default
+}
+
+function Get-DoctorRepairAttemptCount {
+  param($State)
+  $repair = Get-DoctorStateInt -State $State -Names @('doctor_repair_attempts') -Default 0
+  $legacy = Get-DoctorStateInt -State $State -Names @('doctor_attempts') -Default 0
+  return [Math]::Max([int]$repair, [int]$legacy)
+}
+
+function Get-DoctorRestartCount {
+  param($State)
+  return (Get-DoctorStateInt -State $State -Names @('doctor_restart_count') -Default 0)
+}
 
 function Write-DoctorLog {
   param([string]$Message)
@@ -42,6 +97,8 @@ function Activate-Doctor {
   Update-State ({ param($s)
     $s.held_task         = $cur
     $s.doctor_active     = $true
+    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
     $s.doctor_attempts   = 0
     $s.doctor_reason     = $Reason
     $s.doctor_started_at = $now
@@ -122,12 +179,17 @@ function Get-DoctorTaskText {
   $st = Read-State
   $held = [string]$st.held_task
   $reason = [string]$st.doctor_reason
+  $maxRepair = Get-DoctorMaxRepairAttempts
+  $nextAttempt = (Get-DoctorRepairAttemptCount -State $st) + 1
+  if ($nextAttempt -gt $maxRepair) { $nextAttempt = $maxRepair }
   $heldShort = $held; if ($heldShort.Length -gt 400) { $heldShort = $heldShort.Substring(0,400) + '...[truncated]' }
   $ctx = Get-DoctorContext
   return @"
 🩺 ДОКТОР — задача саморемонта моста.
 
 ПРИЧИНА ВЫЗОВА: $reason
+
+ПОПЫТКА ДОКТОРА: $nextAttempt/$maxRepair
 
 ПРИОСТАНОВЛЕННАЯ ЗАДАЧА (восстановим после фикса; не выполняй её саму!):
 ---
@@ -149,7 +211,7 @@ $ctx
 - НЕ трогать `watchdog.ps1`, `supervisor.ps1`, `.git/*`, `secrets.json`, `auth.json`.
 - НЕ трогать структуру state-полей.
 - Если корень требует ручного решения оператора (повреждение данных, потеря секретов) — STATUS: DONE с маркером `[[ESCALATE: оператор]]` и кратким описанием; я уведомлю пользователя.
-- Maximum 1 попытка (это MVP) — если не справишься, я эскалирую.
+- Maximum $maxRepair repair-попыток; если не справишься за лимит, я эскалирую оператору.
 
 Начинай.
 "@
@@ -166,6 +228,8 @@ function Complete-Doctor {
     # doctor diagnostic prompt as a normal task (caught on first wiring test).
     Update-State ({ param($s)
       $s.doctor_active=$false; $s.held_task=$null; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.doctor_attempts=0
+      $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
       $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'
       $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false
       $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.critic_retry_count=0
@@ -184,6 +248,8 @@ function Complete-Doctor {
     $s.doctor_reason        = ''
     $s.doctor_started_at    = $null
     $s.doctor_attempts      = 0
+    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
     $s.task_turn            = 0
     $s.task_mode            = 'normal'
     $s.no_progress_count    = 0
@@ -206,7 +272,13 @@ function Abort-Doctor {
   # Called when Doctor attempts are exhausted or Doctor itself fails. Keep held_task in
   # state (operator decides what to do); clear active/attempts so loop won't retry.
   param([string]$Reason = 'attempts exhausted')
-  Update-State { param($s) $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.current_task=$null; $s.task_turn=0; Clear-AuditorSuppressedHashes -State $s } | Out-Null
+  Update-State {
+    param($s)
+    $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null
+    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+    $s.current_task=$null; $s.task_turn=0; Clear-AuditorSuppressedHashes -State $s
+  } | Out-Null
   try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
   try { Append-DoctorEvent -Event 'abort' -Reason $Reason } catch {}

@@ -154,10 +154,10 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
 # Doctor restart-loop guard (FIX: 2026-05-26).
 # Bug: when Codex (as Doctor's coder) edited a .ps1 and set restart.flag, the bridge
 # restarted, Doctor stayed active (doctor_active=true, current_task=<doctor task>), but
-# doctor_attempts never incremented because the increment branch only triggers when
-# current_task is EMPTY. Result: infinite restart loop, Codex never committed, working tree
-# accumulated changes. This guard treats each driver startup-while-Doctor-active as one
-# "attempt", so the existing max-attempts gate actually fires.
+# restart loops were not counted when current_task was non-empty. Result: infinite restart
+# loop, Codex never committed, working tree accumulated changes. This guard counts driver
+# startups-while-Doctor-active separately from repair attempts, so a legitimate restart no
+# longer consumes the Doctor's repair budget.
 #
 # 2026-05-26 incident: 6 restarts in 10 min while Doctor was "in progress" -- user had to
 # kill the bridge manually. Save Codex's pending edits to a stash branch first if you see
@@ -177,11 +177,17 @@ try {
     }
   } catch {}
   if ([bool]$startupState.doctor_active) {
-    $newAtt = [int]$startupState.doctor_attempts + 1
-    $maxA = 3   # initial + 2 restarts; beyond that the loop is real and we escalate
-    Update-State { param($s) $s.doctor_attempts = [int]$s.doctor_attempts + 1 } | Out-Null
-    Add-Message -From system -Text ("🩺 Доктор резюмирован после рестарта (попытка " + $newAtt + "/" + $maxA + ").") -Kind event | Out-Null
-    if ($newAtt -ge $maxA) {
+    $prevRestartCount = Get-DoctorRestartCount -State $startupState
+    $newRestartCount = $prevRestartCount + 1
+    $maxRestartsWhileDoctor = Get-DoctorMaxRestartResumes
+    $repairAttempt = Get-DoctorRepairAttemptCount -State $startupState
+    $maxRepairAttempts = Get-DoctorMaxRepairAttempts
+    Update-State {
+      param($s)
+      $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue $newRestartCount -Force
+    } | Out-Null
+    Add-Message -From system -Text ("🩺 Доктор резюмирован после рестарта (рестарт " + $newRestartCount + "/" + $maxRestartsWhileDoctor + "; repair-попытка " + $repairAttempt + "/" + $maxRepairAttempts + ").") -Kind event | Out-Null
+    if ($newRestartCount -ge $maxRestartsWhileDoctor) {
       # Restart loop -- abort Doctor cleanly + restore held_task so the operator sees what
       # was running. Doctor's prompt may have generated useful diagnostic memories; those
       # stay in long-term memory regardless.
@@ -191,6 +197,8 @@ try {
         param($s)
         $s.doctor_active = $false
         $s.doctor_attempts = 0
+        $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
         $s.doctor_reason = ''
         $s.doctor_started_at = $null
         Close-ReplayForStateTask -State $s -Status 'aborted'
@@ -206,7 +214,7 @@ try {
         $s.status_text = $null
       } | Out-Null
       $snip = $held; if ($snip.Length -gt 80) { $snip = $snip.Substring(0,80) + '...' }
-      Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newAtt рестартов мостa при reason='" + $reason + "'). Приостановленная задача: «" + $snip + "» — оператор, проверь рабочее дерево (git status / git stash list) и при необходимости перепиши задачу.") -Kind event | Out-Null
+      Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newRestartCount рестартов мостa при reason='" + $reason + "'). Приостановленная задача: «" + $snip + "» — оператор, проверь рабочее дерево (git status / git stash list) и при необходимости перепиши задачу.") -Kind event | Out-Null
     }
   }
 } catch {}

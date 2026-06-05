@@ -1867,6 +1867,8 @@ function Initialize-Bridge {
       held_task          = $null
       doctor_active      = $false
       doctor_attempts    = 0
+      doctor_repair_attempts = 0
+      doctor_restart_count   = 0
       doctor_reason      = ''
       doctor_started_at  = $null
       auditor            = @{ suppressed_hashes = @() }
@@ -1890,7 +1892,7 @@ function Initialize-Bridge {
       active_jobs=@(); task_base_commit=''; chunk_progress=''; chunk_base_commit=''; force_coder=$false; critic_retry_count=0
       current_agent=$null; current_agent_pid=0; current_agent_ticks=0; current_agent_since=$null
       coder_fired=$false; coder_bypass_retry_count=0
-      held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_reason=''; doctor_started_at=$null
+      held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_repair_attempts=0; doctor_restart_count=0; doctor_reason=''; doctor_started_at=$null
       auditor=@{ suppressed_hashes=@() }
       task_checkpoints=@(); task_last_failure=$null
       agent_telemetry=$null

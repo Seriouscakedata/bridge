@@ -240,11 +240,26 @@
       continue
     } else {
       try { Invoke-PostMortem -FailureType 'timeout' -Task $task -Context "$($turnResult.errorType) (${dur}с)" } catch {}
-      # 🩺 If we're already inside a Doctor task and Doctor itself timed out, escalate -- don't recurse.
+      # 🩺 If Doctor itself timed out, retry the Doctor task only while its repair budget remains.
       if ([bool](Read-State).doctor_active) {
-        Add-Message -From system -Text "⏱ Доктор сам упёрся в таймаут (${dur}с). Эскалирую оператору." -Kind event | Out-Null
-        try { Abort-Doctor -Reason "doctor timeout (${dur}с)" } catch {}
-        Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        $docState = Read-State
+        $docAttempt = Get-DoctorRepairAttemptCount -State $docState
+        $docMax = Get-DoctorMaxRepairAttempts
+        if ($docAttempt -lt $docMax) {
+          Add-Message -From system -Text ("⏱ Доктор сам упёрся в таймаут (${dur}с, repair-попытка " + $docAttempt + "/" + $docMax + "). Готовлю следующую repair-попытку.") -Kind event | Out-Null
+          try { Set-TaskLastFailure -Kind doctor_timeout -Text ("doctor timeout ${dur}s on repair attempt " + $docAttempt + "/" + $docMax) } catch {}
+          Update-State {
+            param($s)
+            $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0
+            $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.critic_retry_count=0
+            $s.force_planner=$false; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
+            $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o')
+          } | Out-Null
+        } else {
+          Add-Message -From system -Text ("⏱ Доктор сам упёрся в таймаут (${dur}с, repair-попытка " + $docAttempt + "/" + $docMax + "). Лимит исчерпан, эскалирую оператору.") -Kind event | Out-Null
+          try { Abort-Doctor -Reason ("doctor timeout (${dur}с, repair attempt " + $docAttempt + "/" + $docMax + ")") } catch {}
+          Update-State { param($s) $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        }
       } else {
         $reasonMsg = if ($trc -ge 1) { "повторился (${dur}с)" } elseif ($isLongTimeout) { "длинный (${dur}с) — retry почти наверняка снова упрётся" } else { "(${dur}с)" }
         Add-Message -From system -Text "⏱ Таймаут $who $reasonMsg. Передаю Доктору на саморемонт." -Kind event | Out-Null
