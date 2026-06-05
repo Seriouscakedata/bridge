@@ -64,8 +64,8 @@ try {
   $files2 = @(Get-CanarySmokePs1Files -RepoRoot $tmp2)
   $names2 = @($files2 | ForEach-Object { [System.IO.Path]::GetFileName([string]$_) })
 
-  Assert-True ($names2 -contains 'ok.ps1') "fallback (nested under parent git repo): ok.ps1 is included"
-  Assert-True ($names2 -notcontains 'bad.run.ps1') "fallback (nested under parent git repo): jobs/bad.run.ps1 is excluded"
+  Assert-True ($names2 -contains 'ok.ps1') "fallback: ok.ps1 is included"
+  Assert-True ($names2 -notcontains 'bad.run.ps1') "fallback: jobs/bad.run.ps1 is excluded"
 } finally {
   Remove-Item -LiteralPath $tmp2 -Recurse -Force -ErrorAction SilentlyContinue
 }
