@@ -70,6 +70,9 @@
   "backlog": {
     "useLLMPriority": false
   },
+  "learningLoop": {
+    "autoRevert": false
+  },
   "llm": {
     "gate": "deepseek-v4-flash",
     "librarian": "deepseek-v4-flash",

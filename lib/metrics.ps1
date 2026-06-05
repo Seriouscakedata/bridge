@@ -408,17 +408,22 @@ function Invoke-MetricsReflection {
 
 function Get-LearningLoopConfig {
   # Operator kill-switch for verdict actuation. Default ON (roadmap mandate:
-  # auto-revert regressions). config.json -> { "learningLoop": { "autoRevert": false } }
-  # disables auto-revert without a code change. Every git op stays fail-closed.
+  # auto-revert regressions). config/settings -> { "learningLoop": { "autoRevert": false } }
+  # disables auto-revert without changing the actuation code. Every git op stays fail-closed.
   $cfg = @{ autoRevert = $true }
   try {
-    $cf = Join-Path (Get-BridgeRoot) 'config.json'
-    if (Test-Path -LiteralPath $cf) {
-      $j = [System.IO.File]::ReadAllText($cf, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-      if ($j -and $j.PSObject.Properties['learningLoop']) {
-        $ll = $j.learningLoop
-        if ($ll.PSObject -and $ll.PSObject.Properties['autoRevert']) { $cfg.autoRevert = [bool]$ll.autoRevert }
+    $j = $null
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $j = Get-BridgeConfig
+    } else {
+      $cf = Join-Path (Get-BridgeRoot) 'config.json'
+      if (Test-Path -LiteralPath $cf) {
+        $j = [System.IO.File]::ReadAllText($cf, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
       }
+    }
+    if ($j -and $j.PSObject.Properties['learningLoop']) {
+      $ll = $j.learningLoop
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevert']) { $cfg.autoRevert = [bool]$ll.autoRevert }
     }
   } catch {}
   return $cfg
