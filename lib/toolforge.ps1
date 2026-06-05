@@ -53,61 +53,6 @@ function Get-AutoToolFileHash {
   }
 }
 
-function Test-AutoToolLoadReady {
-  # Immediate pre-load guard for auto-tools. Never throws; returns true only for an
-  # active registry entry whose exact tools/auto/<name>.ps1 file has BOM, parses,
-  # and still matches the stored approval hash.
-  param([string]$Path)
-  try {
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    if (-not [System.IO.Path]::IsPathRooted($Path)) { return $false }
-
-    $tf = Get-ToolForgeRoot
-    if ([string]::IsNullOrWhiteSpace($tf) -or -not (Test-Path -LiteralPath $tf -PathType Container)) { return $false }
-
-    $toolRoot = [System.IO.Path]::GetFullPath($tf)
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $toolRootPrefix = $toolRoot.TrimEnd([char[]]@('\','/')) + [System.IO.Path]::DirectorySeparatorChar
-    if (-not $fullPath.StartsWith($toolRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-    if ([System.IO.Path]::GetExtension($fullPath) -ne '.ps1') { return $false }
-
-    $name = Test-AutoToolName -Name ([System.IO.Path]::GetFileNameWithoutExtension($fullPath))
-    if (-not $name) { return $false }
-    $expectedPath = [System.IO.Path]::GetFullPath((Join-Path $toolRoot "$name.ps1"))
-    if (-not [string]::Equals($fullPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-
-    $entry = $null
-    $reg = Read-ToolRegistry
-    foreach ($t in @($reg.tools)) {
-      if ([string]$t.status -eq 'active' -and [string]::Equals([string]$t.name, $name, [System.StringComparison]::Ordinal)) {
-        $entry = $t
-        break
-      }
-    }
-    if ($null -eq $entry) { return $false }
-    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { return $false }
-    $item = Get-Item -LiteralPath $fullPath -ErrorAction Stop
-    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-
-    $bytes = [System.IO.File]::ReadAllBytes($fullPath)
-    if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { return $false }
-
-    $pt = $null
-    $pe = $null
-    try { [void][System.Management.Automation.Language.Parser]::ParseFile($fullPath, [ref]$pt, [ref]$pe) } catch { return $false }
-    if ($pe -and $pe.Count -gt 0) { return $false }
-
-    $storedHash = [string]$entry.sha256
-    if (-not [string]::IsNullOrWhiteSpace($storedHash)) {
-      $actualHash = Get-AutoToolFileHash -Path $fullPath
-      if (-not [string]::Equals([string]$actualHash, $storedHash, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-    }
-    return $true
-  } catch {
-    return $false
-  }
-}
-
 function New-ToolRegistry {
   [pscustomobject]@{ version = 1; tools = @() }
 }
@@ -213,7 +158,7 @@ function Set-AutoToolUsed {
 }
 
 function Get-ActiveAutoToolPaths {
-  # Return absolute paths of ACTIVE auto-tools whose file is load-ready.
+  # Return absolute paths of ACTIVE auto-tools whose file exists and parses cleanly.
   # PURE (no side effects): the CALLER dot-sources these AT TOP-LEVEL so the tool
   # functions land in the engine's script scope (dot-sourcing inside a function would
   # trap them in that function's scope). A broken/missing tool is silently dropped, so
@@ -227,7 +172,16 @@ function Get-ActiveAutoToolPaths {
     $n = Test-AutoToolName -Name ([string]$t.name)
     if (-not $n) { continue }
     $path = Join-Path $tf "$n.ps1"
-    if (-not (Test-AutoToolLoadReady -Path ([System.IO.Path]::GetFullPath($path)))) { continue }
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $pt = $null; $pe = $null
+    try { [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$pt, [ref]$pe) } catch { $pe = $null }
+    if ($pe -and $pe.Count -gt 0) { continue }
+    # Integrity check: if a hash was stored at approval time, verify it now.
+    $storedHash = [string]$t.sha256
+    if (-not [string]::IsNullOrWhiteSpace($storedHash)) {
+      $actualHash = Get-AutoToolFileHash -Path $path
+      if ($actualHash -ne $storedHash) { continue }
+    }
     [void]$paths.Add($path)
   }
   return @($paths.ToArray())
@@ -424,7 +378,7 @@ function Build-AutoTool {
   if ([string]::IsNullOrWhiteSpace($tf)) { $result.reason = 'no toolforge root'; return $result }
   if (-not (Test-Path -LiteralPath $tf)) { try { New-Item -ItemType Directory -Path $tf -Force | Out-Null } catch {} }
   $finalFile = Join-Path $tf "$n.ps1"
-  $enc = New-Object System.Text.UTF8Encoding($true)
+  $enc = New-Object System.Text.UTF8Encoding($false)
 
   # Default generator/critic via the cheap LLM router. Critic is FORCED onto a different
   # model than the generator (independent review), falling back to the router's fallback.
