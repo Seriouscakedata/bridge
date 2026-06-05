@@ -6003,7 +6003,6 @@ async function switchChannel(slug){
     try{ channelSwitchAbort.abort(); }catch(_e){}
   }
   slug = String(slug || '');
-  const previousSlug = String((channelsCache && channelsCache.active) || '');
   channelSwitchInProgress = true;
   // Spinner instead of full blackout -- cache renders instantly so we usually
   // don't need to hide #log at all. Only hide if this channel has zero cache
@@ -6031,19 +6030,15 @@ async function switchChannel(slug){
       }
       activeOpts.signal = activeCtrl.signal;
     }
-    const persistActive = fetchJson('/api/channels/active', activeOpts)
-      .catch(e => ({ok:false, error:(e && e.message) ? e.message : String(e || 'unknown')}))
+    fetchJson('/api/channels/active', activeOpts)
+      .catch(e => {
+        // Persisting server active_channel is best-effort. The visible channel
+        // is local state, so aborts/timeouts from superseded switches must not
+        // roll the user back to a stale tab.
+        try{ console.warn('[bridge] active channel persist failed', e); }catch(_e){}
+      })
       .finally(() => { if(activeTimer) clearTimeout(activeTimer); });
-    const quickPersist = await Promise.race([
-      persistActive,
-      new Promise(resolve => setTimeout(() => resolve({ok:true, deferred:true}), 1500))
-    ]);
     if(!isCurrent()) return;  // superseded
-    if(quickPersist && quickPersist.ok === false){
-      if(previousSlug){ channelsCache.active = previousSlug; channelEpoch++; renderChannels(); }
-      alert('Не получилось переключиться: ' + (quickPersist.error || 'unknown'));
-      return;
-    }
 
     const loaded = await reloadMessagesForChannel(channelEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
     if(loaded !== false){
