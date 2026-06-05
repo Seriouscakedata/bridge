@@ -557,9 +557,15 @@ function Write-State {
 
 # A named mutex serializes appends + seq increment across the server and driver processes.
 function Use-BridgeLock {
-  param([scriptblock]$Body)
-  $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeLock')
+  param(
+    [scriptblock]$Body,
+    [int]$SlowThresholdMs = 5000,
+    [string]$MutexName = 'Global\ClaudeCodexBridgeLock',
+    [int]$TimeoutMs = 15000
+  )
+  $mutex = New-Object System.Threading.Mutex($false, $MutexName)
   $got = $false
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     # FIX 2026-05-27: handle AbandonedMutexException. When the previous holder PROCESS died
     # without releasing the mutex, WaitOne THROWS AbandonedMutexException -- but the lock
@@ -569,7 +575,7 @@ function Use-BridgeLock {
     # caller too -- chain of silent Update-State failures. Observed overnight: Auditor's
     # pause action failed 52 consecutive times exactly via this path, never landing.
     try {
-      $got = $mutex.WaitOne(15000)
+      $got = $mutex.WaitOne($TimeoutMs)
     } catch [System.Threading.AbandonedMutexException] {
       $got = $true   # we DO own the mutex; release in finally as usual
       try {
@@ -577,11 +583,53 @@ function Use-BridgeLock {
         Add-Content -LiteralPath $alog -Value ("{0}  abandoned mutex recovered by PID {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $PID) -Encoding utf8 -ErrorAction SilentlyContinue
       } catch {}
     }
-    if (-not $got) { throw 'Could not acquire bridge lock within 15s' }
+    $elapsedMs = [int64]$sw.ElapsedMilliseconds
+    if ($elapsedMs -ge $SlowThresholdMs) {
+      try {
+        $alog = Join-Path (Get-BridgeRoot) 'control\bridge-lock.log'
+        Add-Content -LiteralPath $alog -Value ("{0}  slow_lock elapsed_ms={1} pid={2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $elapsedMs, $PID) -Encoding utf8 -ErrorAction SilentlyContinue
+      } catch {}
+    }
+    if (-not $got) { throw ("bridge-lock-timeout-uncertain: could not acquire within {0}s (elapsed_ms={1}); caller must re-read state before retry" -f ([math]::Round($TimeoutMs / 1000, 3)), $elapsedMs) }
     & $Body
   } finally {
     if ($got) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()
+  }
+}
+
+function Test-BridgeLockUncertainTimeout {
+  param([System.Exception]$Err)
+  if ($null -eq $Err) { return $false }
+  return ($Err.Message -like '*bridge-lock-timeout-uncertain*')
+}
+
+function Invoke-BridgeMutationWithReRead {
+  param(
+    [scriptblock]$MutationBody,
+    [scriptblock]$ReReadBody,
+    [int]$SlowThresholdMs = 5000
+  )
+  try {
+    Use-BridgeLock -Body $MutationBody -SlowThresholdMs $SlowThresholdMs
+    return [pscustomobject][ordered]@{
+      success = $true
+      uncertain = $false
+      retried = $false
+    }
+  } catch {
+    if (-not (Test-BridgeLockUncertainTimeout -Err $_.Exception)) {
+      throw
+    }
+  }
+
+  $reReadResult = $null
+  if ($null -ne $ReReadBody) { $reReadResult = & $ReReadBody }
+  return [pscustomobject][ordered]@{
+    success = $false
+    uncertain = $true
+    retried = $false
+    reread_result = $reReadResult
   }
 }
 
