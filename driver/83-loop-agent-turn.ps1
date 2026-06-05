@@ -253,8 +253,7 @@
             $mutCodexEvidenceRetry = {
               param($s)
               $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue $retryAttempt -Force
-              if ($s.PSObject.Properties.Name -contains 'force_coder') { $s.force_coder = $true }
-              else { $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force }
+              $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
               $s.force_planner = $false
               $s.task_did_actions = $false
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
@@ -266,14 +265,15 @@
           } else {
             try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence after " + [int]$retryPlan.max_attempts + " attempts") } catch {}
             Add-Message -From system -Text ("🚫 Codex не оставил commit/diff evidence за " + [int]$retryPlan.max_attempts + " попытки. Не засчитываю действие; передаю планировщику для диагностики/переформулировки.") -Kind event | Out-Null
-            Update-State { param($s)
+            $mutCodexEvidenceExhausted = {
+              param($s)
               $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
               $s.task_did_actions = $false
-              if ($s.PSObject.Properties.Name -contains 'force_coder') { $s.force_coder = $false }
-              else { $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force }
+              $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
               $s.force_planner=$true
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-            } | Out-Null
+            }.GetNewClosure()
+            Update-State $mutCodexEvidenceExhausted | Out-Null
             # Safe: DriverLoopAgentTurnBlock is dot-sourced from Start-DriverMainLoop inside while ($true).
             continue
           }
@@ -283,12 +283,14 @@
       $actionEvidenceError = $_.Exception.Message
       try { Set-TaskLastFailure -Kind action_evidence_error -Text ("Codex action evidence guard failed: " + $actionEvidenceError) } catch {}
       Add-Message -From system -Text ("🚫 Codex action evidence guard failed: " + $actionEvidenceError + ". Не засчитываю действие; передаю планировщику.") -Kind event | Out-Null
-      Update-State { param($s)
+      $mutActionEvidenceGuardError = {
+        param($s)
         $s.task_did_actions = $false
         $s.force_planner = $true
         $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
         $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-      } | Out-Null
+      }.GetNewClosure()
+      Update-State $mutActionEvidenceGuardError | Out-Null
       continue
     }
   }

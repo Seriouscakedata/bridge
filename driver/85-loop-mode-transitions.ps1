@@ -34,7 +34,12 @@
       $noopEvidenceChecked = $true
       if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
         $noopHasEvidence = $true
-        Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+        $mutNoopEvidenceFound = {
+          param($s)
+          $s.task_did_actions = $true
+          $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+        }.GetNewClosure()
+        Update-State $mutNoopEvidenceFound | Out-Null
       }
     } catch {
       $noopGuardError = $_.Exception.Message
@@ -63,7 +68,12 @@
 
       if (-not $noopAllowDone) {
         $plannerStatus = 'CONTINUE'
-        Update-State { param($s) $s.task_did_actions = $false; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+        $mutNoopEvidenceReject = {
+          param($s)
+          $s.task_did_actions = $false
+          $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+        }.GetNewClosure()
+        Update-State $mutNoopEvidenceReject | Out-Null
         if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
         try { Set-TaskLastFailure -Kind test_failed -Text ('DONE rejected by action evidence guard: ' + $noopRejectReason) } catch {}
         Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
@@ -71,7 +81,12 @@
     } catch {
       $plannerStatus = 'CONTINUE'
       $noopDecisionError = $_.Exception.Message
-      Update-State { param($s) $s.task_did_actions = $false; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+      $mutNoopEvidenceError = {
+        param($s)
+        $s.task_did_actions = $false
+        $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+      }.GetNewClosure()
+      Update-State $mutNoopEvidenceError | Out-Null
       try { Set-TaskLastFailure -Kind test_failed -Text ('DONE evidence guard crashed: ' + $noopDecisionError) } catch {}
       Add-Message -From system -Text ("🚫 DONE evidence guard failed closed: " + $noopDecisionError + ". Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
     }

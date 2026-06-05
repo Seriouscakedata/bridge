@@ -45,8 +45,13 @@ Check '85 DONE guard does not rely on stale task_did_actions or decision wrapper
 Check '85 DONE guard fails closed when evidence check fails' ($modeTransitionSource -match '\$noopEvidenceChecked\s*=\s*\$false' -and $modeTransitionSource -match 'evidence_check_failed' -and $modeTransitionSource -match '\$plannerStatus\s*=\s*''CONTINUE''') $modeTransitionSource
 Check '85 DONE guard allows explicit non-action exceptions only' ($modeTransitionSource -match 'not_backlog_task' -and $modeTransitionSource -match 'project_autopilot' -and $modeTransitionSource -match 'project_backlog_created') $modeTransitionSource
 
+$agentTurnSource = Get-Content -LiteralPath (Join-Path $root 'driver\83-loop-agent-turn.ps1') -Raw
+Check '83 retry guard explicitly requires both action evidence helpers' ($agentTurnSource -match "\@\(\'Get-TaskActionEvidence\',\s*\'Get-CodexEvidenceRetryPlan\'\)") $agentTurnSource
+Check '83 action evidence has no COVERED bypass' ($agentTurnSource -notmatch 'Test-TaskActionEvidenceBypassMarker' -and $agentTurnSource -notmatch 'COVERED') $agentTurnSource
+Check '83 force_coder retry flag is set through Add-Member Force' ($agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$true\s+-Force' -and $agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$false\s+-Force' -and $agentTurnSource -notmatch "Properties\.Name\s+-contains\s+'force_coder'") $agentTurnSource
+
 $turnSetupSource = Get-Content -LiteralPath (Join-Path $root 'driver\82-loop-turn-setup.ps1') -Raw
-Check 'force_coder retry flag is consumed by turn setup' ($turnSetupSource -match '\$forceCoder\s*=\s*\[bool\]\$state\.force_coder' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ ''codex'' \}') $turnSetupSource
+Check 'force_coder retry flag is consumed by turn setup' ($turnSetupSource -match '\$forceCoder\s*=\s*\[bool\]\$state\.force_coder' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ ''codex'' \}' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ Update-State \{ param\(\$s\) \$s\.force_coder=\$false \}') $turnSetupSource
 
 $held = [pscustomobject]@{ id='held-1'; status='held'; text='operator held task' }
 $approved = [pscustomobject]@{ id='ok-1'; status='approved'; text='regular task'; tags=@(); scope='bridge' }
