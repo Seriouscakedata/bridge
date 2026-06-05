@@ -184,12 +184,20 @@ try {
   $legacyAliasOnlyContract.Remove('personas')
   [System.IO.File]::WriteAllText($contractPath, (($legacyAliasOnlyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   $legacyAliasOnlyGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
-  Assert-True (-not [bool]$legacyAliasOnlyGate.ready) 'requirements and user_journeys must not satisfy explicit project sections in strict autopilot mode'
-  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'scope/non_goals') 'strict project gate must block on missing explicit scope/non_goals'
-  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'users/roles') 'strict project gate must block on missing explicit users/roles'
+  Assert-True ([bool]$legacyAliasOnlyGate.ready) 'legacy aliases must remain ready unless explicit project sections are opted in'
+  Assert-True (-not (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'scope/non_goals')) 'default project gate must not block legacy scope aliases'
+  Assert-True (-not (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'users/roles')) 'default project gate must not block legacy user journey aliases'
+  Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null
+
+  $legacyAliasOnlyContract['require_explicit_project_sections'] = $true
+  [System.IO.File]::WriteAllText($contractPath, (($legacyAliasOnlyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $legacyAliasOnlyGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$legacyAliasOnlyGate.ready) 'opt-in explicit project sections must reject requirements and user_journeys as replacements'
+  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'scope/non_goals') 'opt-in project gate must block on missing explicit scope/non_goals'
+  Assert-True (@($legacyAliasOnlyGate.delivery_contract_blockers) -contains 'users/roles') 'opt-in project gate must block on missing explicit users/roles'
   $legacyAliasOnlyThrow = $false
   try { Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null } catch { $legacyAliasOnlyThrow = $true }
-  Assert-True $legacyAliasOnlyThrow 'approval must throw when only requirements and user_journeys replace explicit semantic sections'
+  Assert-True $legacyAliasOnlyThrow 'approval must throw when explicit semantic sections are opted in but absent'
 
   [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   & git -C $projectRoot add . | Out-Null

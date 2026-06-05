@@ -425,6 +425,14 @@ function Get-ProjectAutopilotContractValue {
   if (-not $Obj) { return $Default }
   foreach ($name in @($Names)) {
     try {
+      if ($Obj -is [hashtable] -and $Obj.ContainsKey($name)) {
+        $v = $Obj[$name]
+        if ($null -ne $v) { return $v }
+      }
+      if ($Obj -is [System.Collections.IDictionary] -and $Obj.Contains($name)) {
+        $v = $Obj[$name]
+        if ($null -ne $v) { return $v }
+      }
       if ($Obj.PSObject.Properties.Name -contains $name) {
         $v = $Obj.PSObject.Properties[$name].Value
         if ($null -ne $v) { return $v }
@@ -540,9 +548,10 @@ function Test-ProjectAutopilotDeliveryContractReady {
   }
 
   try {
+    $requireExplicitProjectSections = Test-ProjectAutopilotExplicitProjectSectionsRequired -Contract $Contract
     $deliveryResult = Invoke-ProjectAutopilotDeliveryContractValidation -Contract $Contract -Context @{
       RequireParallelPolicy = $true
-      RequireExplicitProjectSections = $true
+      RequireExplicitProjectSections = $requireExplicitProjectSections
     }
     $result.ok = [bool]$deliveryResult.ok
     $result.score = [int]$deliveryResult.score
@@ -567,6 +576,48 @@ function Test-ProjectAutopilotDeliveryContractReady {
   }
 
   return [pscustomobject]$result
+}
+
+function Test-ProjectAutopilotTruthy {
+  param($Value)
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [bool]) { return [bool]$Value }
+  if ($Value -is [string]) {
+    return (@('1','true','yes','y','on') -contains $Value.Trim().ToLowerInvariant())
+  }
+  if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+    return ([double]$Value -ne 0)
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+    foreach ($item in $Value) {
+      if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace([string]$item)) { return $true }
+    }
+  }
+  return $false
+}
+
+function Test-ProjectAutopilotExplicitProjectSectionsRequired {
+  param($Contract)
+  if (-not $Contract) { return $false }
+  $explicit = Get-ProjectAutopilotContractValue -Obj $Contract -Names @(
+    'require_explicit_project_sections',
+    'RequireExplicitProjectSections',
+    'explicit_project_sections_required',
+    'explicitProjectSectionsRequired'
+  ) -Default $null
+  if ($null -ne $explicit) {
+    return (Test-ProjectAutopilotTruthy -Value $explicit)
+  }
+  $schemaVersion = Get-ProjectAutopilotContractValue -Obj $Contract -Names @(
+    'project_contract_schema_version',
+    'contract_schema_version',
+    'contractVersion',
+    'version'
+  ) -Default $null
+  try {
+    if ($null -ne $schemaVersion -and [double]$schemaVersion -ge 2) { return $true }
+  } catch {}
+  return $false
 }
 
 function Test-ProjectPlanContractReady {
