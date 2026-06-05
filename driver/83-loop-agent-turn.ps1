@@ -222,7 +222,45 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
       } catch { $baseDirtyAction = @() }
       $actionEvidence = Get-TaskActionEvidence -RepoRoot $repoActionRoot -BaseCommit $baseAction -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyAction
       if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
-        Update-State { param($s) $s.task_did_actions = $true } | Out-Null
+        Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+      } else {
+        $retryBacklogId = ''
+        try { $retryBacklogId = [string]$stAction.current_backlog_id } catch {}
+        $retryCovered = Test-TaskActionEvidenceBypassMarker -Reply $reply
+        $retrySafety = [bool]([regex]::IsMatch([string]$reply, '(?m)^\s*\[\[SAFETY:\s*.+?\s*\]\]\s*$'))
+        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $retryCovered -and -not $retrySafety) {
+          $curEvidenceRetries = 0
+          try {
+            if ($stAction.PSObject.Properties.Name -contains 'codex_evidence_retry_count') {
+              $curEvidenceRetries = [int]$stAction.codex_evidence_retry_count
+            }
+          } catch { $curEvidenceRetries = 0 }
+          $retryPlan = Get-CodexEvidenceRetryPlan -CurrentRetryCount $curEvidenceRetries -MaxAttempts 3 -BaseDelaySec 5 -MaxDelaySec 20
+          $repoLabel = if ([string]::IsNullOrWhiteSpace($repoActionRoot)) { '<unknown>' } else { [string]$repoActionRoot }
+          if ([bool]$retryPlan.should_retry) {
+            $delaySec = [int]$retryPlan.delay_sec
+            try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence on attempt " + [int]$retryPlan.attempt + "/" + [int]$retryPlan.max_attempts) } catch {}
+            Add-Message -From system -Text ("🔁 Codex не оставил commit/diff evidence для backlog-задачи (attempt " + [int]$retryPlan.attempt + "/" + [int]$retryPlan.max_attempts + ", repo=" + $repoLabel + "). Повторяю Codex после " + $delaySec + "с.") -Kind event | Out-Null
+            Update-State ({ param($s)
+              $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue ([int]$retryPlan.attempt) -Force
+              $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+              $s.task_did_actions = $false
+              $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+            }.GetNewClosure()) | Out-Null
+            if ($delaySec -gt 0) { Start-Sleep -Seconds $delaySec }
+            continue
+          } else {
+            try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence after " + [int]$retryPlan.max_attempts + " attempts") } catch {}
+            Add-Message -From system -Text ("🚫 Codex не оставил commit/diff evidence за " + [int]$retryPlan.max_attempts + " попытки. Не засчитываю действие; передаю планировщику для диагностики/переформулировки.") -Kind event | Out-Null
+            Update-State { param($s)
+              $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+              $s.task_did_actions = $false
+              $s.force_planner=$true
+              $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+            } | Out-Null
+            continue
+          }
+        }
       }
     } catch {}
   }

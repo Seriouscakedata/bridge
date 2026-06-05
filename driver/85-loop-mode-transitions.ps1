@@ -10,28 +10,28 @@
       $stNoop = Read-State
       $noopBacklogId = [string]$stNoop.current_backlog_id
       $noopTask = [string]$stNoop.current_task
-      $noopDidActions = [bool]$stNoop.task_did_actions
-      if (-not $noopDidActions) {
+      $noopHasEvidence = $false
+      try {
+        $repoNoopRoot = Get-TaskRepoRoot
+        $baseNoop = [string]$stNoop.task_base_commit
+        $baseDirtyNoop = @()
         try {
-          $repoNoopRoot = Get-TaskRepoRoot
-          $baseNoop = [string]$stNoop.task_base_commit
-          $baseDirtyNoop = @()
-          try {
-            if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
-              $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-            }
-          } catch { $baseDirtyNoop = @() }
-          $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
-          if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
-            $noopDidActions = $true
-            Update-State { param($s) $s.task_did_actions = $true } | Out-Null
+          if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
+            $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
           }
-        } catch {}
-      }
+        } catch { $baseDirtyNoop = @() }
+        $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
+        if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
+          $noopHasEvidence = $true
+          Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+        }
+      } catch {}
       $noopCovered = [bool]([regex]::IsMatch([string]$reply, '(?im)^\s*COVERED:\s*'))
       $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
-      if (-not [string]::IsNullOrWhiteSpace($noopBacklogId) -and -not $noopDidActions -and -not $noopCovered -and -not $noopProjectAutopilot -and [int]$projectBacklogCreated -le 0) {
+      $noopDecision = Get-TaskDoneEvidenceGateDecision -HasBacklogId (-not [string]::IsNullOrWhiteSpace($noopBacklogId)) -HasEvidence $noopHasEvidence -HasCoveredMarker $noopCovered -IsProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated)
+      if (-not [bool]$noopDecision.allowed) {
         $plannerStatus = 'CONTINUE'
+        Update-State { param($s) $s.task_did_actions = $false } | Out-Null
         try { Set-TaskLastFailure -Kind test_failed -Text 'DONE rejected: no file changes, no commands, no commit, no COVERED marker' } catch {}
         Add-Message -From system -Text "🚫 DONE отклонён: это backlog-задача, но в ходе не было действий/коммита/проверок. Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE." -Kind event | Out-Null
       }

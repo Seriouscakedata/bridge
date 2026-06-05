@@ -52,6 +52,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       $s.driver_started = (Get-Date).ToString('o')
       $s.heartbeat = (Get-Date).ToString('o')
       $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
     } | Out-Null
     Add-Message -From system -Text ("⚠ Задача пережила " + $prevRestartCount + " рестартов без закрытия — помечаю как failed и перехожу к следующей. Текст: «" + $stuckTaskShort + "»") -Kind event | Out-Null
     # Pick up the tail: a failed task often leaves a VALID uncommitted fix behind (the bridge
@@ -78,6 +79,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     $s.status='idle'; $s.stop=$false; $s.abort=$false
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
     $s.current_task=$null; $s.current_task_id=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s
+    $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null

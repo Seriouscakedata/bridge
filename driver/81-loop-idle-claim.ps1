@@ -259,6 +259,7 @@
         elseif ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
         elseif ($intentLowComplexityClosure) { Set-FastLaneFlags -State $s -Reason 'llm-simple'; $s.task_mode='normal' }
         $s.task_start_seq=$maxUser; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$null; $s.status='working'; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o')
+        $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
         $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
         $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
         # 2026-05-28: reset restart-counter when a new task arrives. Counter
@@ -1050,6 +1051,7 @@
           Clear-FastLaneFlags $s
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
           $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($batchIdsForState) -Force

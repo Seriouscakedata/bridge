@@ -27,6 +27,67 @@ function Test-TaskActionEvidencePathWorth {
   return $true
 }
 
+function Test-TaskActionEvidenceBypassMarker {
+  param([string]$Reply)
+  if ([string]::IsNullOrWhiteSpace($Reply)) { return $false }
+  return [bool]([regex]::IsMatch([string]$Reply, '(?im)^\s*COVERED:\s*'))
+}
+
+function Get-CodexEvidenceRetryPlan {
+  param(
+    [int]$CurrentRetryCount = 0,
+    [int]$MaxAttempts = 3,
+    [int]$BaseDelaySec = 5,
+    [int]$MaxDelaySec = 20
+  )
+  if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+  if ($BaseDelaySec -lt 0) { $BaseDelaySec = 0 }
+  if ($MaxDelaySec -lt 0) { $MaxDelaySec = 0 }
+  if ($CurrentRetryCount -lt 0) { $CurrentRetryCount = 0 }
+
+  $attempt = $CurrentRetryCount + 1
+  $shouldRetry = ($attempt -lt $MaxAttempts)
+  $delay = 0
+  if ($shouldRetry -and $BaseDelaySec -gt 0 -and $MaxDelaySec -gt 0) {
+    $multiplier = [Math]::Pow(2, [Math]::Max(0, $attempt - 1))
+    $delay = [int][Math]::Min([double]$MaxDelaySec, [double]($BaseDelaySec * $multiplier))
+  }
+
+  return [pscustomobject]@{
+    attempt      = [int]$attempt
+    max_attempts = [int]$MaxAttempts
+    should_retry = [bool]$shouldRetry
+    exhausted    = [bool](-not $shouldRetry)
+    delay_sec    = [int]$delay
+  }
+}
+
+function Get-TaskDoneEvidenceGateDecision {
+  param(
+    [bool]$HasBacklogId = $false,
+    [bool]$HasEvidence = $false,
+    [bool]$HasCoveredMarker = $false,
+    [bool]$IsProjectAutopilot = $false,
+    [int]$ProjectBacklogCreated = 0
+  )
+
+  $allowed = (-not $HasBacklogId) -or $HasEvidence -or $HasCoveredMarker -or $IsProjectAutopilot -or ($ProjectBacklogCreated -gt 0)
+  $reason = if ($allowed) {
+    if (-not $HasBacklogId) { 'not_backlog_task' }
+    elseif ($HasEvidence) { 'action_evidence' }
+    elseif ($HasCoveredMarker) { 'covered_marker' }
+    elseif ($IsProjectAutopilot) { 'project_autopilot' }
+    else { 'project_backlog_created' }
+  } else {
+    'missing_action_evidence'
+  }
+
+  return [pscustomobject]@{
+    allowed = [bool]$allowed
+    reason  = [string]$reason
+  }
+}
+
 function Get-TaskActionEvidence {
   param(
     [string]$RepoRoot,

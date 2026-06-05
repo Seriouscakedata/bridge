@@ -26,6 +26,22 @@ $telemetry = Test-TaskActionEvidencePathWorth -Path 'channels/main/task-manageme
 $real = Test-TaskActionEvidencePathWorth -Path 'driver/83-loop-agent-turn.ps1' -RepoRoot $root -BridgeRoot $root
 Check 'bridge telemetry path is not action evidence' (-not $telemetry)
 Check 'bridge code path is action evidence' ($real)
+Check 'COVERED marker bypass is detected' (Test-TaskActionEvidenceBypassMarker -Reply "COVERED: checked by command`nSTATUS: DONE")
+Check 'plain DONE is not a COVERED bypass' (-not (Test-TaskActionEvidenceBypassMarker -Reply "STATUS: DONE"))
+
+$retryFirst = Get-CodexEvidenceRetryPlan -CurrentRetryCount 0 -MaxAttempts 3 -BaseDelaySec 5 -MaxDelaySec 20
+$retrySecond = Get-CodexEvidenceRetryPlan -CurrentRetryCount 1 -MaxAttempts 3 -BaseDelaySec 5 -MaxDelaySec 20
+$retryFinal = Get-CodexEvidenceRetryPlan -CurrentRetryCount 2 -MaxAttempts 3 -BaseDelaySec 5 -MaxDelaySec 20
+Check 'Codex evidence retry first miss schedules retry' ([bool]$retryFirst.should_retry -and [int]$retryFirst.attempt -eq 1 -and [int]$retryFirst.delay_sec -eq 5) $retryFirst
+Check 'Codex evidence retry second miss uses exponential delay' ([bool]$retrySecond.should_retry -and [int]$retrySecond.attempt -eq 2 -and [int]$retrySecond.delay_sec -eq 10) $retrySecond
+Check 'Codex evidence retry third miss exhausts limit' ((-not [bool]$retryFinal.should_retry) -and [bool]$retryFinal.exhausted -and [int]$retryFinal.attempt -eq 3) $retryFinal
+
+$doneNoEvidence = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -HasEvidence $false -HasCoveredMarker $false -IsProjectAutopilot $false -ProjectBacklogCreated 0
+$doneEvidence = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -HasEvidence $true -HasCoveredMarker $false -IsProjectAutopilot $false -ProjectBacklogCreated 0
+$doneCovered = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -HasEvidence $false -HasCoveredMarker $true -IsProjectAutopilot $false -ProjectBacklogCreated 0
+Check 'DONE guard rejects backlog DONE without fresh action evidence' ((-not [bool]$doneNoEvidence.allowed) -and [string]$doneNoEvidence.reason -eq 'missing_action_evidence') $doneNoEvidence
+Check 'DONE guard allows backlog DONE with action evidence' ([bool]$doneEvidence.allowed -and [string]$doneEvidence.reason -eq 'action_evidence') $doneEvidence
+Check 'DONE guard allows explicit COVERED marker exception' ([bool]$doneCovered.allowed -and [string]$doneCovered.reason -eq 'covered_marker') $doneCovered
 
 $held = [pscustomobject]@{ id='held-1'; status='held'; text='operator held task' }
 $approved = [pscustomobject]@{ id='ok-1'; status='approved'; text='regular task'; tags=@(); scope='bridge' }
