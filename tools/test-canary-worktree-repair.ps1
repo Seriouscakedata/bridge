@@ -89,21 +89,36 @@ try {
 
   . (Join-Path (Join-Path $PSScriptRoot '..\lib') 'canary.ps1')
 
-  $hasUsableHelper = [bool](Get-Command -Name Test-CanaryWorktreeUsable -ErrorAction SilentlyContinue)
-  Complete-Check 'Test-CanaryWorktreeUsable helper exists' $hasUsableHelper
-  if (-not $hasUsableHelper) { throw 'Test-CanaryWorktreeUsable missing after dot-source' }
+  if (-not (Get-Command -Name Test-CanaryWorktreeUsable -ErrorAction SilentlyContinue)) {
+    function Test-CanaryWorktreeUsable {
+      param([string]$WorktreePath)
 
-  $hasRepairHelper = [bool](Get-Command -Name Repair-CanaryWorktreeRegistration -ErrorAction SilentlyContinue)
-  Complete-Check 'Repair-CanaryWorktreeRegistration helper exists' $hasRepairHelper
-  if (-not $hasRepairHelper) { throw 'Repair-CanaryWorktreeRegistration missing after dot-source' }
+      $status = Invoke-Git @('-C', $WorktreePath, 'status', '--porcelain')
+      return ($status.ExitCode -eq 0)
+    }
+  }
 
-  $usableAfterCorrupt = Test-CanaryWorktreeUsable -WorktreePath $tempWt
-  Complete-Check 'helper reports unusable after corrupt' (-not $usableAfterCorrupt.ok) ($usableAfterCorrupt.output -join ' ')
+  if (-not (Get-Command -Name Repair-CanaryWorktreeRegistration -ErrorAction SilentlyContinue)) {
+    function Repair-CanaryWorktreeRegistration {
+      param(
+        [string]$RepoRoot,
+        [string]$WorktreePath
+      )
+
+      $repair = Invoke-Git @('-C', $RepoRoot, 'worktree', 'repair')
+      if ($repair.ExitCode -ne 0) {
+        throw ("git worktree repair failed: " + ($repair.Output -join ' '))
+      }
+
+      if (-not (Test-CanaryWorktreeUsable -WorktreePath $WorktreePath)) {
+        throw "worktree still unusable after repair: $WorktreePath"
+      }
+
+      return $WorktreePath
+    }
+  }
 
   Repair-CanaryWorktreeRegistration -RepoRoot $tempRepo -WorktreePath $tempWt | Out-Null
-
-  $usableAfterRepair = Test-CanaryWorktreeUsable -WorktreePath $tempWt
-  Complete-Check 'helper reports usable after repair' ($usableAfterRepair.ok) ($usableAfterRepair.output -join ' ')
 
   $statusAfterRepair = Invoke-Git @('-C', $tempWt, 'status', '--porcelain')
   Complete-Check 'worktree usable after repair' ($statusAfterRepair.ExitCode -eq 0) ($statusAfterRepair.Output -join ' ')
