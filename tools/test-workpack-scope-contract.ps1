@@ -109,6 +109,45 @@ Assert-True (-not (@($forbiddenOnlyClass.touch_set) -contains 'control/restart.f
 Assert-True (-not (@($forbiddenOnlyTouches) -contains 'server.ps1')) 'read_only_context excluded from item touches' $forbiddenOnlyTouches
 Assert-True ([string]$forbiddenOnlyClass.conflict_group -ne 'safety') 'forbidden-only protected paths do not force safety conflict group' $forbiddenOnlyClass
 
+$negativeGuardText = @'
+Update tools/deep-audit-agent.ps1 to improve audit tooling.
+Do not edit supervisor.ps1, watchdog.ps1, server.ps1, driver.ps1, or control/restart.flag.
+Forbidden examples / exclusions: supervisor.ps1, watchdog.ps1, server.ps1, driver.ps1, control/restart.flag.
+Read-only context control/restart.flag and watchdog.ps1.
+Only examples / exclusions: supervisor.ps1, watchdog.ps1, server.ps1, driver.ps1, control/restart.flag.
+'@
+$negativeGuardItem = New-TestItem -Text $negativeGuardText
+$negativeGuardClass = Get-BacklogWorkpackClassification -Item $negativeGuardItem
+$negativeGuardTouches = Get-BacklogWorkpackItemTouches -Item $negativeGuardItem
+$negativeGuardItem | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-negative-guard' -Force
+$negativeGuardItem | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ([string]$negativeGuardClass.conflict_group) -Force
+$negativeGuardItem | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($negativeGuardClass.touch_set) -Force
+$negativeGuardEligibility = Get-BacklogWorkpackExecEligibility -Item $negativeGuardItem -Config ([pscustomobject]@{ enabled = $true; includeProtected = $false })
+Assert-True (@($negativeGuardClass.touch_set) -contains 'tools/deep-audit-agent.ps1') 'negative guard keeps the editable audit tools target' $negativeGuardClass
+Assert-True ([string]$negativeGuardClass.conflict_group -eq 'audit') ("negative guard should classify as audit, got {0}" -f [string]$negativeGuardClass.conflict_group) $negativeGuardClass
+Assert-True ([string]$negativeGuardClass.lane_hint -ne 'serial:safety') 'negative guard should not use safety lane' $negativeGuardClass
+Assert-True ([string]$negativeGuardClass.conflict_group -notin @('core','safety')) 'negative guard should not be protected-dominant class' $negativeGuardClass
+foreach ($protected in @('supervisor.ps1','watchdog.ps1','server.ps1','driver.ps1','control/restart.flag')) {
+  Assert-True (-not (@($negativeGuardClass.touch_set) -contains $protected)) ("negative guard excludes protected touch_set path: {0}" -f $protected) $negativeGuardClass
+  Assert-True (-not (@($negativeGuardTouches) -contains $protected)) ("negative guard excludes protected item touch path: {0}" -f $protected) $negativeGuardTouches
+}
+Assert-True (-not (Test-BacklogWorkpackTouchesBridgeControlPlane -Item $negativeGuardItem)) 'negative guard should not require control-plane admission' $negativeGuardItem
+Assert-True ([bool]$negativeGuardEligibility.eligible) ("negative guard should be eligible, got {0}" -f [string]$negativeGuardEligibility.reason) $negativeGuardEligibility
+Assert-True ([string]$negativeGuardEligibility.reason -ne 'protected-dominant') 'negative guard should not be blocked as protected-dominant' $negativeGuardEligibility
+
+$positiveProtectedItem = New-TestItem -Text 'Edit driver.ps1, server.ps1, and control/restart.flag to update bridge control-plane startup behavior.'
+$positiveProtectedClass = Get-BacklogWorkpackClassification -Item $positiveProtectedItem
+$positiveProtectedItem | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-positive-protected' -Force
+$positiveProtectedItem | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue ([string]$positiveProtectedClass.conflict_group) -Force
+$positiveProtectedItem | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @($positiveProtectedClass.touch_set) -Force
+$positiveProtectedEligibility = Get-BacklogWorkpackExecEligibility -Item $positiveProtectedItem -Config ([pscustomobject]@{ enabled = $true; includeProtected = $false })
+Assert-True (@($positiveProtectedClass.touch_set) -contains 'driver.ps1') 'positive protected request keeps driver.ps1 touch' $positiveProtectedClass
+Assert-True (@($positiveProtectedClass.touch_set) -contains 'server.ps1') 'positive protected request keeps server.ps1 touch' $positiveProtectedClass
+Assert-True (@($positiveProtectedClass.touch_set) -contains 'control/restart.flag') 'positive protected request keeps control path touch' $positiveProtectedClass
+Assert-True (@('core','safety') -contains [string]$positiveProtectedClass.conflict_group) 'positive protected request stays protected class' $positiveProtectedClass
+Assert-True (Test-BacklogWorkpackTouchesBridgeControlPlane -Item $positiveProtectedItem) 'positive protected request requires control-plane admission' $positiveProtectedItem
+Assert-True ([string]$positiveProtectedEligibility.reason -eq 'control-plane-admission-required') ("positive protected request should be admission-blocked, got {0}" -f [string]$positiveProtectedEligibility.reason) $positiveProtectedEligibility
+
 $fallbackItem = New-TestItem -Text 'Update tools/audit.ps1 to improve audit scenario logging.'
 $fallbackScope = Get-BacklogTaskScopeContract -Item $fallbackItem
 $fallbackClass = Get-BacklogWorkpackClassification -Item $fallbackItem

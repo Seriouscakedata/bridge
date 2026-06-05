@@ -697,6 +697,30 @@ function Get-BacklogWorkpackSignalText {
   return ([regex]::Replace($v, '^\s*(?:\[[^\]]+\]\s*)+', ''))
 }
 
+function Get-BacklogWorkpackEditableSignalText {
+  param([string]$Text)
+  $base = Get-BacklogTextOutsideForbiddenContexts -Text ([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($base)) { return '' }
+  $negativeTail = '(?i)\b(?:do\s+not|don''t|dont|never)\s+(?:edit|touch|modify|change|update|alter|write\s+to)\b|\b(?:forbidden|read[-_\s]*only\s+context|exclude|excluded|exclusions?|ignore)\b|\bonly\s+(?:as\s+)?(?:examples?|exclusions?|references?)\b|\bexamples?\s*/\s*exclusions?\b'
+  $protectedOnly = '(?i)(?:^|[\s''"`(])(?:supervisor|watchdog|driver|server)\.ps1\b|(?:^|[\s''"`(])lib[\\/]circuit-breaker\.ps1\b|(?:^|[\s''"`(])control[\\/]\S+|\b(?:supervisor|watchdog|control[_ -]?plane|restart\.flag)\b'
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($line in [regex]::Split([string]$base, "\r?\n")) {
+    $clean = [string]$line
+    $m = [regex]::Match($clean, $negativeTail)
+    if ($m.Success) {
+      if ($m.Index -eq 0) {
+        $clean = ''
+      } elseif ($m.Value -match '(?i)only|examples?|exclusions?|references?') {
+        $clean = [regex]::Replace($clean, $protectedOnly, ' ')
+      } else {
+        $clean = $clean.Substring(0, $m.Index)
+      }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($clean)) { [void]$out.Add($clean) }
+  }
+  return (($out.ToArray()) -join "`n")
+}
+
 function Get-BacklogRelativeWorkpackPath {
   param([string]$Path)
   try {
@@ -735,7 +759,7 @@ function Get-BacklogFunctionFileMap {
 function Get-BacklogInferredFiles {
   param([string]$Text)
   $files = New-Object 'System.Collections.Generic.List[string]'
-  $textRaw = Get-BacklogWorkpackSignalText -Text $Text
+  $textRaw = Get-BacklogWorkpackEditableSignalText -Text $Text
   $t = $textRaw.ToLowerInvariant()
 
   try {
@@ -825,9 +849,10 @@ function Get-BacklogPrimaryWorkpackFile {
 
 function Get-BacklogWorkpackModule {
   param([string]$Text, [string[]]$Files = @())
-  $t = (Get-BacklogWorkpackSignalText -Text $Text).ToLowerInvariant()
+  $t = (Get-BacklogWorkpackEditableSignalText -Text $Text).ToLowerInvariant()
   $all = ((@($Files) + @($t)) -join ' ').ToLowerInvariant()
   if ($all -match 'lib/circuit-breaker\.ps1|orphan[- ]restart|restart attribution|restart mechanism|restarts? without associated task|restarts\.jsonl|cb-loop') { return 'safety' }
+  if ($all -match '(^|\s)control/') { return 'safety' }
   if ($all -match 'supervisor\.ps1|start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|bloated pid') { return 'supervisor' }
   if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|snapshot|checkpoint|restart|resume') { return 'state' }
@@ -857,7 +882,7 @@ function Get-BacklogTaskTargetFile {
 
 function Get-BacklogWorkpackConflictGroup {
   param([string]$Text, [string[]]$Files = @())
-  $Text = Get-BacklogTextOutsideForbiddenContexts -Text $Text
+  $Text = Get-BacklogWorkpackEditableSignalText -Text $Text
   # 2026-05-31 (Foundation #4 scale): for a PROJECT channel, group by the TARGET file FIRST — BEFORE
   # the bridge-module patterns below, which falsely match project text ("UI", "DESIGN.md", "frontend")
   # and collapsed redesign tasks into one 'ui'/'docs' group => serial. Different target files =>
@@ -878,6 +903,7 @@ function Get-BacklogWorkpackConflictGroup {
   $signalText = Get-BacklogWorkpackSignalText -Text $Text
   $all = ((@($Files) + @([string]$signalText)) -join ' ').ToLowerInvariant()
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
+  if ($all -match '(^|\s)control/') { return 'safety' }
   if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
   if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|checkpoint|restart') { return 'state' }
   if ($all -match 'audit|doctor|scenario') { return 'audit' }
@@ -1029,7 +1055,7 @@ function Get-BacklogWorkpackClassification {
   param($Item)
   $scopeContract = Get-BacklogTaskScopeContract -Item $Item
   $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
-  $signalText = Get-BacklogTextOutsideForbiddenContexts -Text $text
+  $signalText = Get-BacklogWorkpackEditableSignalText -Text $text
   $scopeSignalText = Remove-BacklogScopeContractReferences -Text $signalText -ScopeContract $scopeContract
   $fileList = New-Object 'System.Collections.Generic.List[string]'
   if ([bool]$scopeContract.has_explicit_expected) {
@@ -1039,8 +1065,8 @@ function Get-BacklogWorkpackClassification {
       Add-BacklogWorkpackFileCandidate -List $fileList -Path $f
     }
   } else {
-    foreach ($f in @(Get-BacklogMentionedFiles -Text $signalText | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
-    foreach ($f in @(Get-BacklogInferredFiles -Text $signalText)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+    foreach ($f in @(Get-BacklogMentionedFiles -Text $scopeSignalText | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+    foreach ($f in @(Get-BacklogInferredFiles -Text $scopeSignalText)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
     if ($scopeContract.forbidden_files.Count -gt 0 -or $scopeContract.read_only_context.Count -gt 0) {
       $filtered = New-Object 'System.Collections.Generic.List[string]'
       foreach ($f in @($fileList.ToArray())) {
@@ -1355,7 +1381,7 @@ function Get-BacklogWorkpackItemTouches {
   # EVERY task overlapped on herosection.ts and the packer treated 6 independent file edits as mutually
   # conflicting -> serial execution. The target file is the only path written, so overlap then reflects
   # REAL conflicts. Falls back to the stored touch_set / mentioned files when no clear target exists.
-  $touchText = Get-BacklogTextOutsideForbiddenContexts -Text ([string]$Item.text)
+  $touchText = Get-BacklogWorkpackEditableSignalText -Text ([string]$Item.text)
   $touchText = Remove-BacklogScopeContractReferences -Text $touchText -ScopeContract $scopeContract
   if ([bool]$scopeContract.has_explicit_expected) {
     foreach ($f in @($scopeContract.expected_files)) {
@@ -1501,7 +1527,8 @@ function Test-BacklogWorkpackTouchesBridgeControlPlane {
   param($Item)
   try {
     if (Get-Command Test-IdeaTouchesControlPlane -ErrorAction SilentlyContinue) {
-      if ([bool](Test-IdeaTouchesControlPlane -Idea $Item)) { return $true }
+      $probeText = Get-BacklogWorkpackEditableSignalText -Text ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default ''))
+      if ([bool](Test-IdeaTouchesControlPlane -Idea ([pscustomobject]@{ text = $probeText }))) { return $true }
     }
   } catch {}
 
@@ -1513,6 +1540,7 @@ function Test-BacklogWorkpackTouchesBridgeControlPlane {
   foreach ($p in @($paths.ToArray())) {
     if ($p -in @('driver.ps1','server.ps1','supervisor.ps1','watchdog.ps1','canary.ps1','lib/circuit-breaker.ps1','lib/parallel.ps1')) { return $true }
     if ($p -match '^lib/backlog.*\.ps1$') { return $true }
+    if ($p -match '^control/') { return $true }
   }
   return $false
 }
