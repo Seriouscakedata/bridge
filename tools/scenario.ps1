@@ -120,6 +120,83 @@ function Write-ScenarioDiagnostics {
   } catch {}
 }
 
+function Get-ScenarioDiagnosticLogLine {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  $patterns = @(
+    'Access is denied',
+    'Отказано в доступе',
+    'Crashpad',
+    'crashpad',
+    'Mojo',
+    'mojo',
+    'sandbox access',
+    'FATAL',
+    'ERROR'
+  )
+  try {
+    foreach ($line in [System.IO.File]::ReadLines($Path)) {
+      foreach ($pattern in $patterns) {
+        if ($line.IndexOf($pattern, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          $safe = ConvertTo-RedactedLogText -Text ([string]$line)
+          if ($safe.Length -gt 500) { return $safe.Substring(0, 500) }
+          return $safe
+        }
+      }
+    }
+  } catch {}
+  return ''
+}
+
+function Get-ScenarioFailureDiagnostic {
+  param(
+    [hashtable]$Diagnostics,
+    [bool]$DebugMarkerSeen
+  )
+  $failures = @()
+  try { $attempts = @($Diagnostics.attempts) } catch { $attempts = @() }
+  foreach ($attempt in $attempts) {
+    if (-not $attempt) { continue }
+    $stderrLine = Get-ScenarioDiagnosticLogLine -Path ([string]$attempt.stderr)
+    $browserName = ''
+    try { $browserName = [IO.Path]::GetFileName([string]$attempt.browser_path) } catch { $browserName = [string]$attempt.browser_path }
+    $failures += [pscustomobject][ordered]@{
+      phase = [string]$attempt.phase
+      scenario_name = [string]$attempt.scenario_name
+      browser = $browserName
+      browser_path = [string]$attempt.browser_path
+      mode = [string]$attempt.mode
+      exit_code = $attempt.exit_code
+      debug_marker_seen = [bool]$attempt.debug_marker_seen
+      result_seen = [bool]$attempt.result_seen
+      stderr = [string]$attempt.stderr
+      stderr_reason = $stderrLine
+    }
+  }
+
+  $primary = $null
+  foreach ($failure in $failures) {
+    if ($failure.stderr_reason -match '(?i)access is denied|отказано в доступе|crashpad|mojo|sandbox access|fatal') {
+      $primary = $failure
+      break
+    }
+  }
+  if (-not $primary -and $failures.Count -gt 0) { $primary = $failures[0] }
+  if (-not $primary) {
+    return @{ summary = ''; failures = @() }
+  }
+
+  $prefix = if (-not $DebugMarkerSeen) { 'browser failed before DOM/debug marker' } else { 'no scenario result' }
+  $exitPart = ''
+  if ($null -ne $primary.exit_code) { $exitPart = (' exit ' + $primary.exit_code) }
+  $stderrPart = ''
+  if (-not [string]::IsNullOrWhiteSpace([string]$primary.stderr_reason)) { $stderrPart = ('; stderr: ' + [string]$primary.stderr_reason) }
+  return @{
+    summary = ($prefix + ': ' + $primary.browser + ' ' + $primary.mode + $exitPart + $stderrPart)
+    failures = @($failures)
+  }
+}
+
 function Join-ProcessArguments {
   param([string[]]$Arguments)
   $parts = @()
@@ -572,8 +649,14 @@ if ($result -and $lastProfileDir) {
 Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
+  $failureDiagnostic = Get-ScenarioFailureDiagnostic -Diagnostics $diag -DebugMarkerSeen ([bool]$debugMarker)
   $detail = ''
-  if ($lastProcHandle -and $lastProcHandle.Process -and $lastProcHandle.Process.HasExited) {
+  if (-not [string]::IsNullOrWhiteSpace([string]$failureDiagnostic.summary)) {
+    $detail = [string]$failureDiagnostic.summary
+    $diag.failure_reason = $detail
+    $diag.browser_failures = @($failureDiagnostic.failures)
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+  } elseif ($lastProcHandle -and $lastProcHandle.Process -and $lastProcHandle.Process.HasExited) {
     $detail = 'browser exited before scenario result (exit ' + $lastProcHandle.Process.ExitCode + ')'
   } else {
     $detail = 'timeout: no scenario result after ' + $TimeoutSec + 's'
