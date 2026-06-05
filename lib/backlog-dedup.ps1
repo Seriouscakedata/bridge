@@ -1,5 +1,11 @@
 ﻿# backlog-dedup.ps1 -- idea deduplication, learning, relevance, and queue hygiene helpers.
 #region Idea deduplication, learning, relevance, and queue hygiene
+if (-not (Get-Command Normalize-BacklogGovernorTouchSet -ErrorAction SilentlyContinue)) {
+  $script:BacklogDedupGovernorPath = Join-Path $PSScriptRoot 'backlog-governor.ps1'
+  if (Test-Path -LiteralPath $script:BacklogDedupGovernorPath) {
+    . $script:BacklogDedupGovernorPath
+  }
+}
 function Test-IdeaShouldKeep {
   param([string]$Text)
   $ok = [pscustomobject]@{ action = 'ok'; matched_id = $null; similarity = 0.0; similar_to = @() }
@@ -81,6 +87,318 @@ function Test-IdeaShouldKeep {
     return $ok
   }
 }
+
+#region Deterministic backlog supersede helpers
+function Get-BacklogDedupObjectValue {
+  param(
+    [Parameter(Mandatory=$false)]$Object,
+    [Parameter(Mandatory=$true)][string[]]$Names,
+    [Parameter(Mandatory=$false)]$Default = $null
+  )
+  if (Get-Command Get-BacklogGovernorObjectValue -ErrorAction SilentlyContinue) {
+    return (Get-BacklogGovernorObjectValue -Object $Object -Names $Names -Default $Default)
+  }
+  if ($null -eq $Object) { return $Default }
+  if ($Object -is [System.Collections.IDictionary]) {
+    foreach ($name in $Names) {
+      foreach ($key in @($Object.Keys)) {
+        if ([string]::Equals([string]$key, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
+          return $Object[$key]
+        }
+      }
+    }
+    return $Default
+  }
+  foreach ($name in $Names) {
+    $prop = @($Object.PSObject.Properties | Where-Object {
+      [string]::Equals([string]$_.Name, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)
+    } | Select-Object -First 1)
+    if ($prop.Count -gt 0) { return $prop[0].Value }
+  }
+  return $Default
+}
+
+function Set-BacklogDedupObjectValue {
+  param(
+    [Parameter(Mandatory=$false)]$Object,
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$false)]$Value
+  )
+  if ($null -eq $Object) { return }
+  if ($Object -is [System.Collections.IDictionary]) {
+    $Object[$Name] = $Value
+    return
+  }
+  $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+function ConvertTo-BacklogDedupStringArray {
+  param([Parameter(Mandatory=$false)]$Value)
+  if (Get-Command ConvertTo-BacklogGovernorStringArray -ErrorAction SilentlyContinue) {
+    return @(ConvertTo-BacklogGovernorStringArray -Value $Value)
+  }
+  if ($null -eq $Value) { return @() }
+  $items = @()
+  if ($Value -is [string]) {
+    $items = @($Value)
+  } elseif ($Value -is [System.Collections.IEnumerable]) {
+    $items = @($Value)
+  } else {
+    $items = @($Value)
+  }
+  return @($items | ForEach-Object { [string]$_ } | Where-Object {
+    -not [string]::IsNullOrWhiteSpace([string]$_)
+  })
+}
+
+function Normalize-BacklogDedupSlug {
+  param([Parameter(Mandatory=$false)][string]$Slug)
+  if ([string]::IsNullOrWhiteSpace($Slug)) { return '' }
+  $s = ([string]$Slug).Trim().ToLowerInvariant()
+  $s = $s -replace '[\s_]+','-'
+  $s = $s -replace '-+','-'
+  return $s.Trim('-')
+}
+
+function Normalize-BacklogDedupRootCauseKey {
+  param([Parameter(Mandatory=$false)][string]$RootCauseKey)
+  if ([string]::IsNullOrWhiteSpace($RootCauseKey)) { return '' }
+  return (([string]$RootCauseKey) -replace '\s+',' ').Trim().ToLowerInvariant()
+}
+
+function Get-BacklogDedupItemId {
+  param([Parameter(Mandatory=$false)]$Item)
+  return [string](Get-BacklogDedupObjectValue -Object $Item -Names @('id') -Default '')
+}
+
+function Get-BacklogDedupItemSlug {
+  param([Parameter(Mandatory=$false)]$Item)
+  return (Normalize-BacklogDedupSlug -Slug ([string](Get-BacklogDedupObjectValue -Object $Item -Names @('slug') -Default '')))
+}
+
+function Get-BacklogDedupItemRootCauseKey {
+  param([Parameter(Mandatory=$false)]$Item)
+  $root = [string](Get-BacklogDedupObjectValue -Object $Item -Names @('root_cause_key','lease_root_cause_key','workpack_root_cause_key') -Default '')
+  return (Normalize-BacklogDedupRootCauseKey -RootCauseKey $root)
+}
+
+function Get-BacklogDedupItemTouchSet {
+  param([Parameter(Mandatory=$false)]$Item)
+  $touch = @()
+  foreach ($name in @('touch_set','files','lease_touch_set','workpack_touch_set')) {
+    $touch += @(ConvertTo-BacklogDedupStringArray -Value (Get-BacklogDedupObjectValue -Object $Item -Names @($name)))
+  }
+  return @($touch | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+}
+
+function Normalize-BacklogDedupTouchSet {
+  param(
+    [Parameter(Mandatory=$false)]$TouchSet,
+    [Parameter(Mandatory=$false)][string]$Root = $script:BacklogGovernorBridgeRoot
+  )
+  if (Get-Command Normalize-BacklogGovernorTouchSet -ErrorAction SilentlyContinue) {
+    return @(Normalize-BacklogGovernorTouchSet -TouchSet $TouchSet -Root $Root)
+  }
+  return @((ConvertTo-BacklogDedupStringArray -Value $TouchSet) | ForEach-Object {
+    ([string]$_).Trim().Trim('"').Trim("'").Replace('\','/').ToLowerInvariant() -replace '/+','/'
+  } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+}
+
+function Test-BacklogDedupTouchSetOverlap {
+  param(
+    [Parameter(Mandatory=$false)]$Left,
+    [Parameter(Mandatory=$false)]$Right,
+    [Parameter(Mandatory=$false)][string]$Root = $script:BacklogGovernorBridgeRoot
+  )
+  if (Get-Command Test-BacklogGovernorTouchSetOverlap -ErrorAction SilentlyContinue) {
+    return [bool](Test-BacklogGovernorTouchSetOverlap -Left $Left -Right $Right -Root $Root)
+  }
+  $leftSet = @(Normalize-BacklogDedupTouchSet -TouchSet $Left -Root $Root)
+  $rightSet = @(Normalize-BacklogDedupTouchSet -TouchSet $Right -Root $Root)
+  foreach ($leftPath in $leftSet) {
+    foreach ($rightPath in $rightSet) {
+      if ([string]::Equals($leftPath, $rightPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+          $rightPath.StartsWith($leftPath.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) -or
+          $leftPath.StartsWith($rightPath.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Get-BacklogDedupItemTimestamp {
+  param([Parameter(Mandatory=$false)]$Item)
+  $best = $null
+  foreach ($name in @('approved_at','created_at','ts')) {
+    $raw = [string](Get-BacklogDedupObjectValue -Object $Item -Names @($name) -Default '')
+    if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+    try {
+      $parsed = [datetime]::Parse($raw).ToUniversalTime()
+      if ($null -eq $best -or $parsed -gt $best) { $best = $parsed }
+    } catch {}
+  }
+  return $best
+}
+
+function New-BacklogDedupRecord {
+  param(
+    [Parameter(Mandatory=$false)]$Item,
+    [Parameter(Mandatory=$true)][int]$Index,
+    [Parameter(Mandatory=$false)][string]$Root = $script:BacklogGovernorBridgeRoot
+  )
+  $ts = Get-BacklogDedupItemTimestamp -Item $Item
+  $ticks = if ($null -ne $ts) { $ts.Ticks } else { [datetime]::MinValue.Ticks + $Index }
+  return [pscustomobject][ordered]@{
+    item = $Item
+    index = $Index
+    id = Get-BacklogDedupItemId -Item $Item
+    status = ([string](Get-BacklogDedupObjectValue -Object $Item -Names @('status') -Default '')).ToLowerInvariant()
+    slug = Get-BacklogDedupItemSlug -Item $Item
+    root_cause_key = Get-BacklogDedupItemRootCauseKey -Item $Item
+    touch_set = @(Get-BacklogDedupItemTouchSet -Item $Item)
+    normalized_touch_set = @(Normalize-BacklogDedupTouchSet -TouchSet (Get-BacklogDedupItemTouchSet -Item $Item) -Root $Root)
+    timestamp = $ts
+    sort_ticks = $ticks
+  }
+}
+
+function Test-BacklogDeterministicDuplicate {
+  param(
+    [Parameter(Mandatory=$false)]$Left,
+    [Parameter(Mandatory=$false)]$Right,
+    [Parameter(Mandatory=$false)][string]$Root = $script:BacklogGovernorBridgeRoot
+  )
+  $leftSlug = Get-BacklogDedupItemSlug -Item $Left
+  $rightSlug = Get-BacklogDedupItemSlug -Item $Right
+  if (-not [string]::IsNullOrWhiteSpace($leftSlug) -and
+      [string]::Equals($leftSlug, $rightSlug, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject][ordered]@{
+      duplicate = $true
+      reason = 'slug'
+      detail = "slug '$leftSlug' matches"
+      evidence = [pscustomobject][ordered]@{ matched_on = 'slug'; value = $leftSlug }
+    }
+  }
+
+  $leftRoot = Get-BacklogDedupItemRootCauseKey -Item $Left
+  $rightRoot = Get-BacklogDedupItemRootCauseKey -Item $Right
+  if (-not [string]::IsNullOrWhiteSpace($leftRoot) -and
+      [string]::Equals($leftRoot, $rightRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject][ordered]@{
+      duplicate = $true
+      reason = 'root_cause_key'
+      detail = "root_cause_key '$leftRoot' matches"
+      evidence = [pscustomobject][ordered]@{ matched_on = 'root_cause_key'; value = $leftRoot }
+    }
+  }
+
+  $leftTouch = @(Get-BacklogDedupItemTouchSet -Item $Left)
+  $rightTouch = @(Get-BacklogDedupItemTouchSet -Item $Right)
+  if (Test-BacklogDedupTouchSetOverlap -Left $leftTouch -Right $rightTouch -Root $Root) {
+    return [pscustomobject][ordered]@{
+      duplicate = $true
+      reason = 'touch_set'
+      detail = 'normalized touch_set overlaps'
+      evidence = [pscustomobject][ordered]@{
+        matched_on = 'touch_set'
+        left = @(Normalize-BacklogDedupTouchSet -TouchSet $leftTouch -Root $Root)
+        right = @(Normalize-BacklogDedupTouchSet -TouchSet $rightTouch -Root $Root)
+      }
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    duplicate = $false
+    reason = 'none'
+    detail = ''
+    evidence = [pscustomobject][ordered]@{ matched_on = ''; value = '' }
+  }
+}
+
+function Set-BacklogDeterministicSupersededItem {
+  param(
+    [Parameter(Mandatory=$false)]$OlderItem,
+    [Parameter(Mandatory=$true)][string]$NewerId,
+    [Parameter(Mandatory=$true)][string]$Reason,
+    [Parameter(Mandatory=$false)]$Evidence
+  )
+  Set-BacklogDedupObjectValue -Object $OlderItem -Name 'status' -Value 'auto-dropped'
+  Set-BacklogDedupObjectValue -Object $OlderItem -Name 'superseded_by' -Value $NewerId
+  Set-BacklogDedupObjectValue -Object $OlderItem -Name 'superseded_reason' -Value $Reason
+  Set-BacklogDedupObjectValue -Object $OlderItem -Name 'superseded_evidence' -Value $Evidence
+}
+
+function Invoke-BacklogDeterministicSupersede {
+  param(
+    [Parameter(Mandatory=$false)]$Items,
+    [Parameter(Mandatory=$false)][string[]]$CandidateStatuses = @('new','approved','held'),
+    [Parameter(Mandatory=$false)][string]$Root = $script:BacklogGovernorBridgeRoot
+  )
+  $allItems = @($Items)
+  $candidateSet = @{}
+  foreach ($status in @($CandidateStatuses)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$status)) {
+      $candidateSet[([string]$status).ToLowerInvariant()] = $true
+    }
+  }
+
+  $records = New-Object 'System.Collections.Generic.List[object]'
+  for ($i = 0; $i -lt $allItems.Count; $i++) {
+    $record = New-BacklogDedupRecord -Item $allItems[$i] -Index $i -Root $Root
+    if ($candidateSet.ContainsKey([string]$record.status)) {
+      [void]$records.Add($record)
+    }
+  }
+
+  $survivors = New-Object 'System.Collections.Generic.List[object]'
+  $dropped = New-Object 'System.Collections.Generic.List[object]'
+  $pairs = New-Object 'System.Collections.Generic.List[object]'
+
+  foreach ($record in @($records.ToArray() | Sort-Object -Property @{Expression='sort_ticks';Descending=$false}, @{Expression='index';Descending=$false})) {
+    $matched = @()
+    foreach ($survivor in @($survivors.ToArray())) {
+      $dup = Test-BacklogDeterministicDuplicate -Left $survivor.item -Right $record.item -Root $Root
+      if ([bool]$dup.duplicate) {
+        $matched += [pscustomobject][ordered]@{ survivor = $survivor; duplicate = $dup }
+      }
+    }
+
+    foreach ($match in $matched) {
+      $older = $match.survivor
+      $reason = [string]$match.duplicate.reason
+      $evidence = [pscustomobject][ordered]@{
+        older_id = [string]$older.id
+        newer_id = [string]$record.id
+        reason = $reason
+        detail = [string]$match.duplicate.detail
+        deterministic = $true
+        match = $match.duplicate.evidence
+      }
+      Set-BacklogDeterministicSupersededItem -OlderItem $older.item -NewerId ([string]$record.id) -Reason $reason -Evidence $evidence
+      [void]$dropped.Add($older.item)
+      [void]$pairs.Add($evidence)
+      [void]$survivors.Remove($older)
+    }
+
+    [void]$survivors.Add($record)
+  }
+
+  $approved = @($allItems | Where-Object { [string](Get-BacklogDedupObjectValue -Object $_ -Names @('status') -Default '') -eq 'approved' })
+  return [pscustomobject][ordered]@{
+    items = @($allItems)
+    approved = @($approved)
+    dropped = @($dropped.ToArray())
+    duplicate_pairs = @($pairs.ToArray())
+    evidence = [pscustomobject][ordered]@{
+      deterministic = $true
+      candidate_statuses = @($CandidateStatuses)
+      duplicate_rules = @('slug','root_cause_key','touch_set')
+      advisory_metadata = @('semantic_similarity')
+    }
+  }
+}
+#endregion Deterministic backlog supersede helpers
 
 function Get-IdeaOutcomeStats {
   # Learning-loop aggregate: distills the FATE of past ideas so a generator (Architect/reflect)
