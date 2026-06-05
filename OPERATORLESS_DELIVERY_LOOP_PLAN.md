@@ -715,6 +715,7 @@ Status note: Atom 13 adds a deterministic journey coverage gate: declared journe
 - **Atom 16** (Bind Canary → Delivery Gate): existing `Invoke-CanaryCycle -Force -NoStateUpdate` wired into shadow block for `critical_bridge_self` completions; `canary_ok` now uses real canary result, not AcceptancePassed; acceptance promotion remains separate.
 - **Atom 17** (Clean Acceptance API): removed `CanaryPassed` parameter from `Get-DeliveryGateAcceptanceFact`; canary is evidence for `canary_ok` only (via `New-DeliveryGateInputFacts`), never acceptance promotion.
 - **Atom 18** (Canary Worktree Self-Repair): `Initialize-CanaryWorktree` now verifies worktree usability via `Test-CanaryWorktreeUsable` before returning registered path; if stale `.git` link detected (e.g. after gitdir/runtime move), calls `Repair-CanaryWorktreeRegistration` which runs `git worktree repair` from repo root, then re-verifies; canary remains non-destructive (no delete/reset/remove).
+- **Atom 19** (Canary Smoke Source Files Only): `Invoke-CanarySmokeChecks` now uses `Get-CanarySmokePs1Files -RepoRoot`; helper uses `git ls-files` as source of truth and fallback-scan excludes runtime dirs (`jobs`, `control`, `memory`, `worktrees`, etc.), so ignored `jobs/*.run.ps1` wrappers are not parsed.
 
 Атомы:
 

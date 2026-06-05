@@ -394,19 +394,91 @@ function Get-CanaryHealthUri {
   }
 }
 
+function Test-CanarySmokeRelativePathAllowed {
+  param(
+    [string]$RelativePath,
+    [string[]]$ExcludedDirs = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RelativePath)) { return $false }
+  $normalized = ([string]$RelativePath).Replace('/', '\').TrimStart('\')
+  $parts = @($normalized -split '\\+' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($parts.Count -eq 0) { return $false }
+
+  for ($i = 0; $i -lt ($parts.Count - 1); $i++) {
+    $segment = [string]$parts[$i]
+    if ($segment.StartsWith('.')) { return $false }
+    if ($ExcludedDirs -contains $segment) { return $false }
+  }
+
+  return $true
+}
+
+function Get-CanarySmokePs1Files {
+  param([string]$RepoRoot)
+
+  $fallbackExcludedDirs = @('.git', 'worktrees', 'audit', 'control', 'files', 'jobs', 'memory', 'projects', 'replay', 'reports', 'runtime', 'sandbox', 'tmp')
+  $gitExcludedDirs = @('.git', 'worktrees')
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot)
+  $repoTrim = $repoFull.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $repoPrefix = $repoTrim + [System.IO.Path]::DirectorySeparatorChar
+
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $result = New-Object 'System.Collections.Generic.List[string]'
+
+  $useGit = $false
+  $tracked = @()
+  $untracked = @()
+  try {
+    $tracked = @(& git -C $RepoRoot ls-files -- '*.ps1' 2>$null)
+    $trackedCode = $LASTEXITCODE
+    $untracked = @(& git -C $RepoRoot ls-files --others --exclude-standard -- '*.ps1' 2>$null)
+    $untrackedCode = $LASTEXITCODE
+    $useGit = (($trackedCode -eq 0) -and ($untrackedCode -eq 0))
+  } catch {
+    $useGit = $false
+  }
+
+  if ($useGit) {
+    foreach ($rel in @($tracked + $untracked)) {
+      $relative = [string]$rel
+      if (-not (Test-CanarySmokeRelativePathAllowed -RelativePath $relative -ExcludedDirs $gitExcludedDirs)) { continue }
+
+      $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($repoTrim, $relative))
+      if ((-not $full.Equals($repoTrim, [System.StringComparison]::OrdinalIgnoreCase)) -and
+          (-not $full.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+        continue
+      }
+      if ($seen.Add($full)) { [void]$result.Add($full) }
+    }
+  } else {
+    foreach ($file in @(Get-ChildItem -LiteralPath $RepoRoot -Recurse -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
+      $full = [System.IO.Path]::GetFullPath([string]$file.FullName)
+      if ((-not $full.Equals($repoTrim, [System.StringComparison]::OrdinalIgnoreCase)) -and
+          (-not $full.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+        continue
+      }
+
+      $relative = $full.Substring($repoTrim.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+      if (-not (Test-CanarySmokeRelativePathAllowed -RelativePath $relative -ExcludedDirs $fallbackExcludedDirs)) { continue }
+      if ($seen.Add($full)) { [void]$result.Add($full) }
+    }
+  }
+
+  return @($result | Sort-Object)
+}
+
 function Invoke-CanarySmokeChecks {
   param([string]$RepoRoot)
 
   $errors = New-Object 'System.Collections.Generic.List[string]'
 
   try {
-    foreach ($file in @(Get-ChildItem -LiteralPath $RepoRoot -Recurse -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
-      $full = [string]$file.FullName
-      if ($full -match '\\\.git\\' -or $full -match '\\worktrees\\') { continue }
+    foreach ($full in @(Get-CanarySmokePs1Files -RepoRoot $RepoRoot)) {
       $tokens = $null; $parseErrors = $null
       [void][System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$tokens, [ref]$parseErrors)
       if ($parseErrors -and $parseErrors.Count -gt 0) {
-        [void]$errors.Add(("parse {0}: {1}" -f $file.Name, [string]$parseErrors[0].Message))
+        [void]$errors.Add(("parse {0}: {1}" -f ([System.IO.Path]::GetFileName($full)), [string]$parseErrors[0].Message))
       }
     }
   } catch {
