@@ -1016,6 +1016,68 @@ function Invoke-AuditSignalCollection {
   } catch { Write-AuditLog -BridgePath $root -Message "signal-collector error: $_" }
 }
 
+function Get-AuditLogSafeText {
+  param($Value, [int]$MaxLength = 220)
+  $text = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+  $text = ($text -replace '[\r\n]+', ' ' -replace '\s+', ' ').Trim()
+  if ($text.Length -gt $MaxLength) { $text = $text.Substring(0, $MaxLength) + '...' }
+  return $text
+}
+
+function Test-DeepAuditAgentSuccess {
+  param($Agent)
+  if (-not $Agent) { return $false }
+  $status = ([string](Get-AuditFindingField -Raw $Agent -Names @('status'))).ToLowerInvariant()
+  if ($status -eq 'ok') { return $true }
+  if ($status -eq 'prompt_ready') { return $true }
+  return $false
+}
+
+function Get-DeepAuditAgentFailureReason {
+  param($Agent)
+  if (-not $Agent -or (Test-DeepAuditAgentSuccess -Agent $Agent)) { return $null }
+  $status = ([string](Get-AuditFindingField -Raw $Agent -Names @('status'))).ToLowerInvariant()
+  $errors = @()
+  try {
+    $rawErrors = Get-AuditFindingField -Raw $Agent -Names @('errors','error','reason')
+    foreach ($e in @($rawErrors)) {
+      $s = Get-AuditLogSafeText $e 180
+      if (-not [string]::IsNullOrWhiteSpace($s)) { $errors += $s }
+    }
+  } catch {}
+  $joined = (($errors | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' | ')
+  $probe = (($status + ' ' + $joined).Trim()).ToLowerInvariant()
+
+  if ($probe -match '(?:^|[^a-z])timeout(?:$|[^a-z])') { return 'timeout' }
+  if ($probe -match 'exit[-_ ]?code[:= ]+(-?\d+)') { return ('exit-code:' + $Matches[1]) }
+  if ($probe -match 'exited with code[:= ]+(-?\d+)') { return ('exit-code:' + $Matches[1]) }
+  if ($probe -match 'empty|empty_llm_reply|missing_output_file|no json|no_json|no output|no_output') { return 'empty-output' }
+  if ($probe -match 'parse|json|convertfrom-json|invalid output') {
+    $detail = if ($joined) { ':' + (Get-AuditLogSafeText $joined 180) } else { '' }
+    return ('parse-error' + $detail)
+  }
+  if ($joined) { return ('exception:' + (Get-AuditLogSafeText $joined 180)) }
+  if (-not [string]::IsNullOrWhiteSpace($status)) { return ('exception:status=' + $status) }
+  return 'exception:unknown'
+}
+
+function Write-DeepAuditAgentFailureLog {
+  param([string]$Root, [object[]]$Agents)
+  foreach ($agent in @($Agents)) {
+    if (-not $agent) { continue }
+    $reason = Get-DeepAuditAgentFailureReason -Agent $agent
+    if ([string]::IsNullOrWhiteSpace([string]$reason)) { continue }
+    $role = Get-AuditLogSafeText (Get-AuditFindingField -Raw $agent -Names @('role','name','id')) 80
+    $model = Get-AuditLogSafeText (Get-AuditFindingField -Raw $agent -Names @('model')) 80
+    $id = Get-AuditLogSafeText (Get-AuditFindingField -Raw $agent -Names @('id','name','role')) 80
+    if ([string]::IsNullOrWhiteSpace($role)) { $role = 'unknown' }
+    if ([string]::IsNullOrWhiteSpace($model)) { $model = 'unknown' }
+    if ([string]::IsNullOrWhiteSpace($id)) { $id = $role }
+    Write-AuditLog -BridgePath $Root -Message ("deep-audit agent failed: role={0} model={1} id={2} reason={3}" -f $role, $model, $id, $reason)
+  }
+}
+
 function Invoke-DeepAuditProcess {
   param(
     [string]$Root,
@@ -1095,6 +1157,7 @@ function Invoke-DeepAuditProcess {
             try { $deepProc.WaitForExit(5000) | Out-Null } catch {}
             [void]$Errors.Value.Add("deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; process killed")
             Write-AuditLog -BridgePath $root -Message "deep-audit watchdog timeout after ${DeepAuditTimeoutSec}s; pid=$($deepProc.Id) killed"
+            Write-AuditLog -BridgePath $root -Message "deep-audit agent failed: role=orchestrator model=powershell id=deep-audit reason=timeout"
           } else {
             try { $deepExitCode = [int]$deepProc.ExitCode } catch { $deepExitCode = 0 }
           }
@@ -1119,6 +1182,7 @@ function Invoke-DeepAuditProcess {
           $deepStatus = 'deep_failed'
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           [void]$Errors.Value.Add(("deep-audit exited with code {0}: {1}" -f $deepExitCode, $stderrTail))
+          Write-AuditLog -BridgePath $root -Message ("deep-audit agent failed: role=orchestrator model=powershell id=deep-audit reason=exit-code:{0}" -f $deepExitCode)
         }
         # Extract last JSON line from stdout
         $deepJson = $null
@@ -1151,12 +1215,14 @@ function Invoke-DeepAuditProcess {
             $jsonSnippet = $deepJson
             if ($jsonSnippet.Length -gt 500) { $jsonSnippet = $jsonSnippet.Substring(0,500) + '...' }
             [void]$Errors.Value.Add('deep-audit JSON parse failed: ' + $_.Exception.Message + '; json_snippet=' + $jsonSnippet)
+            Write-AuditLog -BridgePath $root -Message ('deep-audit agent failed: role=orchestrator model=powershell id=deep-audit reason=parse-error:' + (Get-AuditLogSafeText $_.Exception.Message 220))
           }
         } elseif (-not $deepWatchdogFired) {
           $deepStatus = 'deep_failed'
           $stdoutTail = (($deepStdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           $stderrTail = (($deepStderr -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 8) -join ' | '
           [void]$Errors.Value.Add('deep-audit: no JSON in stdout; stdout_tail=' + $stdoutTail + '; stderr_tail=' + $stderrTail)
+          Write-AuditLog -BridgePath $root -Message 'deep-audit agent failed: role=orchestrator model=powershell id=deep-audit reason=empty-output'
         }
       } else {
         $deepStatus = 'skipped'
@@ -1164,6 +1230,7 @@ function Invoke-DeepAuditProcess {
     } catch {
       $deepStatus = 'deep_failed'
       [void]$Errors.Value.Add('deep-audit invocation failed: ' + $_.Exception.Message)
+      Write-AuditLog -BridgePath $root -Message ('deep-audit agent failed: role=orchestrator model=powershell id=deep-audit reason=exception:' + (Get-AuditLogSafeText $_.Exception.Message 220))
     }
   return [pscustomobject]@{
     deepCodexResult        = $deepCodexResult
@@ -1650,6 +1717,7 @@ function Invoke-BridgeAuditDeepPhase {
   $deepCodexResult = $deepR.deepCodexResult; $deepClaudeResult = $deepR.deepClaudeResult; $deepModelAgentResults = @($deepR.deepModelAgentResults)
   $deepStatus = [string]$deepR.deepStatus; $deepRuntimeSec = [double]$deepR.deepRuntimeSec; $deepWatchdogFired = [bool]$deepR.deepWatchdogFired
   $deepRequiredSlices = @($deepR.deepRequiredSlices); $deepCoverageGap = @($deepR.deepCoverageGap)
+  Write-DeepAuditAgentFailureLog -Root $Root -Agents @($deepModelAgentResults)
   $addIdeaAvailable = Initialize-AuditBacklogHelpers -Root $Root -ResolvedChannel $ResolvedChannel -Errors $Errors
   $filingR = Add-DeepAuditFindingsToBacklog -Root $Root -AuditCtx $AuditCtx -DeepCodexResult $deepCodexResult -DeepClaudeResult $deepClaudeResult -DeepModelAgentResults @($deepModelAgentResults) -AddIdeaAvailable $addIdeaAvailable -Errors $Errors
   $deepFiled = [int]$filingR.deepFiled; $deepCodexCount = [int]$filingR.deepCodexCount; $deepClaudeCount = [int]$filingR.deepClaudeCount; $deepModelAgentCount = [int]$filingR.deepModelAgentCount
@@ -1693,9 +1761,11 @@ function Get-BridgeAuditDeepTruth {
   $errorCount = 0
   foreach ($agent in @($agents)) {
     if (-not $agent) { continue }
-    $status = ([string]$agent.status).ToLowerInvariant()
-    if ($status -eq 'ok' -or $status -eq 'prompt_ready') { $successCount++ }
-    if ($status -eq 'error') { $errorCount++ }
+    if (Test-DeepAuditAgentSuccess -Agent $agent) {
+      $successCount++
+    } elseif (Get-DeepAuditAgentFailureReason -Agent $agent) {
+      $errorCount++
+    }
   }
 
   $requiredFailures = @()
@@ -1705,7 +1775,7 @@ function Get-BridgeAuditDeepTruth {
     $hasSuccess = $false
     foreach ($agent in @($matching)) {
       $status = ([string]$agent.status).ToLowerInvariant()
-      if ($status -eq 'ok' -or $status -eq 'prompt_ready') { $hasSuccess = $true }
+      if (Test-DeepAuditAgentSuccess -Agent $agent) { $hasSuccess = $true }
       if ($status -eq 'error' -and ((@($agent.errors) -join ' ') -match 'empty_llm_reply')) {
         $emptyReplyRoles += $role
       }
@@ -1722,10 +1792,12 @@ function Get-BridgeAuditDeepTruth {
   }
 
   $effectiveDeepStatus = [string]$DeepResult.deepStatus
-  if ($effectiveDeepStatus -eq 'deep_failed' -or $reasons.Count -gt 0) {
+  if ($successCount -ge 1 -and ($errorCount -ge 1 -or $effectiveDeepStatus -eq 'deep_failed' -or $reasons.Count -gt 0)) {
+    $effectiveDeepStatus = 'deep_partial'
+  } elseif ($successCount -eq 0 -and ($errorCount -gt 0 -or $effectiveDeepStatus -eq 'deep_failed' -or $reasons.Count -gt 0)) {
     $effectiveDeepStatus = 'deep_failed'
   }
-  $finalStatus = if ($effectiveDeepStatus -eq 'deep_failed') { 'partial' } else { 'ok' }
+  $finalStatus = if ($effectiveDeepStatus -eq 'deep_failed' -or $effectiveDeepStatus -eq 'deep_partial') { 'partial' } else { 'ok' }
   return [pscustomobject]@{
     finalStatus = $finalStatus
     deepStatus = $effectiveDeepStatus
