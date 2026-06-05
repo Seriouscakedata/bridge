@@ -103,7 +103,6 @@ function Get-DeepAuditConfig {
 function Resolve-DeepCodexExe {
   param($Cfg)
   $cands = @(
-    $env:BRIDGE_CODEX_EXE,
     "$env:LOCALAPPDATA\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\OpenAI\Codex\bin\codex.exe",
     "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
   )
@@ -115,7 +114,6 @@ function Resolve-DeepCodexExe {
 function Resolve-DeepClaudeExe {
   param($Cfg)
   $globs = @(
-    $env:BRIDGE_CLAUDE_GLOB,
     "$env:LOCALAPPDATA\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\*\claude.exe",
     "$env:APPDATA\Claude\claude-code\*\claude.exe"
   )
