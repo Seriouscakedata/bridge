@@ -9,12 +9,6 @@ $root = Split-Path -Parent $PSScriptRoot
 $script:pass = 0
 $script:fail = 0
 
-# A17 regression: Get-DeliveryGateAcceptanceFact must NOT accept CanaryPassed
-$cmd17 = Get-Command Get-DeliveryGateAcceptanceFact -ErrorAction SilentlyContinue
-Check 'A17 Get-DeliveryGateAcceptanceFact has no CanaryPassed parameter' (
-  ($null -ne $cmd17) -and (-not $cmd17.Parameters.ContainsKey('CanaryPassed'))
-) $null
-
 function Check {
   param(
     [string]$Name,
@@ -30,6 +24,12 @@ function Check {
     Write-Host ("FAIL " + $Name + $suffix) -ForegroundColor Red
   }
 }
+
+# A17 regression: Get-DeliveryGateAcceptanceFact must NOT accept CanaryPassed
+$cmd17 = Get-Command Get-DeliveryGateAcceptanceFact -ErrorAction SilentlyContinue
+Check 'A17 Get-DeliveryGateAcceptanceFact has no CanaryPassed parameter' (
+  ($null -ne $cmd17) -and (-not $cmd17.Parameters.ContainsKey('CanaryPassed'))
+) $null
 
 function New-TestRepo {
   $path = Join-Path $root ('tmp\delivery-gate-facts-' + [guid]::NewGuid().ToString('N'))
