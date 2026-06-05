@@ -87,6 +87,16 @@ try {
     @($touchRun.approved | Where-Object { [string]$_.id -eq 'old-touch' }).Count -eq 0
   ) ($touchRun.approved | ConvertTo-Json -Compress -Depth 8)
 
+  $staleApproved = New-DedupItem -Id 'stale-approved' -Slug 'stale-approved' -RootCauseKey 'dedup:stale-approved' -TouchSet @('lib/stale-approved.ps1')
+  $staleApproved | Add-Member -NotePropertyName superseded_by -NotePropertyValue 'newer-stale' -Force
+  $staleApproved | Add-Member -NotePropertyName superseded_reason -NotePropertyValue 'slug' -Force
+  $cleanApproved = New-DedupItem -Id 'clean-approved' -Slug 'clean-approved' -RootCauseKey 'dedup:clean-approved' -TouchSet @('lib/clean-approved.ps1')
+  $approvedSurvivors = @(Get-BacklogDeterministicApprovedItems -Items @($staleApproved,$cleanApproved))
+  Assert-BacklogDedup 'superseded metadata excludes stale approved survivor' (
+    @($approvedSurvivors | Where-Object { [string]$_.id -eq 'stale-approved' }).Count -eq 0 -and
+    @($approvedSurvivors | Where-Object { [string]$_.id -eq 'clean-approved' }).Count -eq 1
+  ) ($approvedSurvivors | ConvertTo-Json -Compress -Depth 8)
+
   $providerRootOld = New-DedupItem -Id 'provider-root-old' -Slug 'provider-backed-one' -RootCauseKey 'provider:story-flow' -TouchSet @('slopvid/provider.py')
   $providerRootNew = New-DedupItem -Id 'provider-root-new' -Slug 'provider-backed-two' -RootCauseKey 'PROVIDER:STORY-FLOW' -TouchSet @('slopvid/story.py')
   Invoke-BacklogDeterministicSupersede -Items @($providerRootOld,$providerRootNew) -Root $bridgeRoot | Out-Null

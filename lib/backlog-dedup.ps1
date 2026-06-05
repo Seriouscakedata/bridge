@@ -329,6 +329,18 @@ function Set-BacklogDeterministicSupersededItem {
   Set-BacklogDedupObjectValue -Object $OlderItem -Name 'superseded_evidence' -Value $Evidence
 }
 
+function Get-BacklogDeterministicApprovedItems {
+  param([Parameter(Mandatory=$false)]$Items)
+  return @(@($Items) | Where-Object {
+    $status = ([string](Get-BacklogDedupObjectValue -Object $_ -Names @('status') -Default '')).Trim().ToLowerInvariant()
+    $supersededBy = [string](Get-BacklogDedupObjectValue -Object $_ -Names @('superseded_by') -Default '')
+    $supersededReason = [string](Get-BacklogDedupObjectValue -Object $_ -Names @('superseded_reason') -Default '')
+    $status -eq 'approved' -and
+      [string]::IsNullOrWhiteSpace($supersededBy) -and
+      [string]::IsNullOrWhiteSpace($supersededReason)
+  })
+}
+
 function Invoke-BacklogDeterministicSupersede {
   param(
     [Parameter(Mandatory=$false)]$Items,
@@ -384,7 +396,7 @@ function Invoke-BacklogDeterministicSupersede {
     [void]$survivors.Add($record)
   }
 
-  $approved = @($allItems | Where-Object { [string](Get-BacklogDedupObjectValue -Object $_ -Names @('status') -Default '') -eq 'approved' })
+  $approved = @(Get-BacklogDeterministicApprovedItems -Items $allItems)
   return [pscustomobject][ordered]@{
     items = @($allItems)
     approved = @($approved)
