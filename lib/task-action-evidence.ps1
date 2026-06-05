@@ -56,42 +56,6 @@ function Get-CodexEvidenceRetryPlan {
   }
 }
 
-function Get-TaskDoneEvidenceGateDecision {
-  param(
-    [bool]$HasBacklogId = $false,
-    [bool]$EvidenceCheckCompleted = $false,
-    [bool]$HasEvidence = $false,
-    [bool]$IsProjectAutopilot = $false,
-    [int]$ProjectBacklogCreated = 0
-  )
-
-  $allowed = $false
-  $reason = 'missing_action_evidence'
-  if (-not $HasBacklogId) {
-    $allowed = $true
-    $reason = 'not_backlog_task'
-  } elseif ($IsProjectAutopilot) {
-    $allowed = $true
-    $reason = 'project_autopilot'
-  } elseif ($ProjectBacklogCreated -gt 0) {
-    $allowed = $true
-    $reason = 'project_backlog_created'
-  } elseif (-not $EvidenceCheckCompleted) {
-    $reason = 'evidence_check_failed'
-  } elseif ($HasEvidence) {
-    $allowed = $true
-    $reason = 'action_evidence'
-  } else {
-    $reason = 'missing_action_evidence'
-  }
-
-  return [pscustomobject]@{
-    allowed                  = [bool]$allowed
-    reason                   = [string]$reason
-    evidence_check_completed = [bool]$EvidenceCheckCompleted
-  }
-}
-
 function Get-TaskActionEvidence {
   param(
     [string]$RepoRoot,

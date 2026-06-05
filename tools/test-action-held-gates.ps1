@@ -22,6 +22,11 @@ function Check {
   }
 }
 
+$evidenceHelperSource = Get-Content -LiteralPath (Join-Path $root 'lib\task-action-evidence.ps1') -Raw
+Check 'action evidence helper exports action evidence reader' ([bool](Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue))
+Check 'action evidence helper exports Codex retry planner' ([bool](Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue))
+Check 'action evidence helper has no DONE decision wrapper' ($evidenceHelperSource -notmatch 'function\s+Get-TaskDoneEvidenceGateDecision') $evidenceHelperSource
+
 $telemetry = Test-TaskActionEvidencePathWorth -Path 'channels/main/task-management-shadow.jsonl' -RepoRoot $root -BridgeRoot $root
 $real = Test-TaskActionEvidencePathWorth -Path 'driver/83-loop-agent-turn.ps1' -RepoRoot $root -BridgeRoot $root
 Check 'bridge telemetry path is not action evidence' (-not $telemetry)
@@ -34,14 +39,14 @@ Check 'Codex evidence retry first miss schedules retry' ([bool]$retryFirst.shoul
 Check 'Codex evidence retry second miss uses exponential delay' ([bool]$retrySecond.should_retry -and [int]$retrySecond.attempt -eq 2 -and [int]$retrySecond.delay_sec -eq 10) $retrySecond
 Check 'Codex evidence retry third miss exhausts limit' ((-not [bool]$retryFinal.should_retry) -and [bool]$retryFinal.exhausted -and [int]$retryFinal.attempt -eq 3) $retryFinal
 
-$doneUncheckedEvidence = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -EvidenceCheckCompleted $false -HasEvidence $true -IsProjectAutopilot $false -ProjectBacklogCreated 0
-$doneNoEvidence = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -EvidenceCheckCompleted $true -HasEvidence $false -IsProjectAutopilot $false -ProjectBacklogCreated 0
-$doneEvidence = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -EvidenceCheckCompleted $true -HasEvidence $true -IsProjectAutopilot $false -ProjectBacklogCreated 0
-$doneProjectBacklog = Get-TaskDoneEvidenceGateDecision -HasBacklogId $true -EvidenceCheckCompleted $false -HasEvidence $false -IsProjectAutopilot $false -ProjectBacklogCreated 1
-Check 'DONE guard rejects unchecked stale evidence flag' ((-not [bool]$doneUncheckedEvidence.allowed) -and [string]$doneUncheckedEvidence.reason -eq 'evidence_check_failed') $doneUncheckedEvidence
-Check 'DONE guard rejects backlog DONE without fresh action evidence' ((-not [bool]$doneNoEvidence.allowed) -and [string]$doneNoEvidence.reason -eq 'missing_action_evidence') $doneNoEvidence
-Check 'DONE guard allows backlog DONE with action evidence' ([bool]$doneEvidence.allowed -and [string]$doneEvidence.reason -eq 'action_evidence') $doneEvidence
-Check 'DONE guard allows project backlog creation exception' ([bool]$doneProjectBacklog.allowed -and [string]$doneProjectBacklog.reason -eq 'project_backlog_created') $doneProjectBacklog
+$modeTransitionSource = Get-Content -LiteralPath (Join-Path $root 'driver\85-loop-mode-transitions.ps1') -Raw
+Check '85 DONE guard reads fresh action evidence' ($modeTransitionSource -match 'Get-TaskActionEvidence') $modeTransitionSource
+Check '85 DONE guard does not rely on stale task_did_actions or decision wrapper' ($modeTransitionSource -notmatch '\$stNoop\.task_did_actions' -and $modeTransitionSource -notmatch 'Get-TaskDoneEvidenceGateDecision') $modeTransitionSource
+Check '85 DONE guard fails closed when evidence check fails' ($modeTransitionSource -match '\$noopEvidenceChecked\s*=\s*\$false' -and $modeTransitionSource -match 'evidence_check_failed' -and $modeTransitionSource -match '\$plannerStatus\s*=\s*''CONTINUE''') $modeTransitionSource
+Check '85 DONE guard allows explicit non-action exceptions only' ($modeTransitionSource -match 'not_backlog_task' -and $modeTransitionSource -match 'project_autopilot' -and $modeTransitionSource -match 'project_backlog_created') $modeTransitionSource
+
+$turnSetupSource = Get-Content -LiteralPath (Join-Path $root 'driver\82-loop-turn-setup.ps1') -Raw
+Check 'force_coder retry flag is consumed by turn setup' ($turnSetupSource -match '\$forceCoder\s*=\s*\[bool\]\$state\.force_coder' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ ''codex'' \}') $turnSetupSource
 
 $held = [pscustomobject]@{ id='held-1'; status='held'; text='operator held task' }
 $approved = [pscustomobject]@{ id='ok-1'; status='approved'; text='regular task'; tags=@(); scope='bridge' }

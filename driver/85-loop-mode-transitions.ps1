@@ -1,6 +1,12 @@
 ﻿$script:DriverLoopModeTransitionBlock = {
-  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+  $modeTransitionEvidenceHelpers = @('Get-TaskActionEvidence')
+  $missingModeTransitionEvidenceHelpers = @($modeTransitionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+  if (@($missingModeTransitionEvidenceHelpers).Count -gt 0) {
     . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+  }
+  $missingModeTransitionEvidenceHelpers = @($modeTransitionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+  if (@($missingModeTransitionEvidenceHelpers).Count -gt 0) {
+    throw ('Missing task-action-evidence helper(s): ' + (@($missingModeTransitionEvidenceHelpers) -join ', '))
   }
   if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
@@ -37,11 +43,27 @@
     }
     try {
       $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
-      $noopDecision = Get-TaskDoneEvidenceGateDecision -HasBacklogId $noopHasBacklogId -EvidenceCheckCompleted $noopEvidenceChecked -HasEvidence $noopHasEvidence -IsProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated)
-      if (-not [bool]$noopDecision.allowed) {
+      $noopAllowDone = $false
+      $noopRejectReason = 'missing_action_evidence'
+      if (-not $noopHasBacklogId) {
+        $noopAllowDone = $true
+        $noopRejectReason = 'not_backlog_task'
+      } elseif ($noopProjectAutopilot) {
+        $noopAllowDone = $true
+        $noopRejectReason = 'project_autopilot'
+      } elseif ([int]$projectBacklogCreated -gt 0) {
+        $noopAllowDone = $true
+        $noopRejectReason = 'project_backlog_created'
+      } elseif (-not $noopEvidenceChecked) {
+        $noopRejectReason = 'evidence_check_failed'
+      } elseif ($noopHasEvidence) {
+        $noopAllowDone = $true
+        $noopRejectReason = 'action_evidence'
+      }
+
+      if (-not $noopAllowDone) {
         $plannerStatus = 'CONTINUE'
         Update-State { param($s) $s.task_did_actions = $false; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
-        $noopRejectReason = [string]$noopDecision.reason
         if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
         try { Set-TaskLastFailure -Kind test_failed -Text ('DONE rejected by action evidence guard: ' + $noopRejectReason) } catch {}
         Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null

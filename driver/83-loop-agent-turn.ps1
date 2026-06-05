@@ -1,10 +1,16 @@
 ﻿$script:DriverLoopAgentTurnBlock = {
-if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
-  . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
-}
-if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
-  . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
-}
+  if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
+    . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
+  }
+  $taskActionEvidenceHelpers = @('Get-TaskActionEvidence', 'Get-CodexEvidenceRetryPlan')
+  $missingTaskActionEvidenceHelpers = @($taskActionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+  if (@($missingTaskActionEvidenceHelpers).Count -gt 0) {
+    . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+  }
+  $missingTaskActionEvidenceHelpers = @($taskActionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+  if (@($missingTaskActionEvidenceHelpers).Count -gt 0) {
+    throw ('Missing task-action-evidence helper(s): ' + (@($missingTaskActionEvidenceHelpers) -join ', '))
+  }
 
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
     $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
@@ -115,11 +121,13 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
     $turnSec = 0
     try { $turnSec = [int]$turnResult.duration } catch {}
     if ($turnSec -gt 0) {
-      Update-State ({ param($s)
+      $mutTaskAgentDuration = {
+        param($s)
         $curSec = 0
         try { $curSec = [int]$s.task_agent_duration_sec } catch {}
         $s | Add-Member -NotePropertyName task_agent_duration_sec -NotePropertyValue ($curSec + $turnSec) -Force
-      }.GetNewClosure()) | Out-Null
+      }.GetNewClosure()
+      Update-State $mutTaskAgentDuration | Out-Null
     }
   } catch {}
   if ($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
@@ -238,15 +246,22 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
           $repoLabel = if ([string]::IsNullOrWhiteSpace($repoActionRoot)) { '<unknown>' } else { [string]$repoActionRoot }
           if ([bool]$retryPlan.should_retry) {
             $delaySec = [int]$retryPlan.delay_sec
-            try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence on attempt " + [int]$retryPlan.attempt + "/" + [int]$retryPlan.max_attempts) } catch {}
-            Add-Message -From system -Text ("🔁 Codex не оставил commit/diff evidence для backlog-задачи (attempt " + [int]$retryPlan.attempt + "/" + [int]$retryPlan.max_attempts + ", repo=" + $repoLabel + "). Повторяю Codex после " + $delaySec + "с.") -Kind event | Out-Null
-            Update-State ({ param($s)
-              $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue ([int]$retryPlan.attempt) -Force
-              $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+            $retryAttempt = [int]$retryPlan.attempt
+            $retryMaxAttempts = [int]$retryPlan.max_attempts
+            try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence on attempt " + $retryAttempt + "/" + $retryMaxAttempts) } catch {}
+            Add-Message -From system -Text ("🔁 Codex не оставил commit/diff evidence для backlog-задачи (attempt " + $retryAttempt + "/" + $retryMaxAttempts + ", repo=" + $repoLabel + "). Повторяю Codex после " + $delaySec + "с.") -Kind event | Out-Null
+            $mutCodexEvidenceRetry = {
+              param($s)
+              $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue $retryAttempt -Force
+              if ($s.PSObject.Properties.Name -contains 'force_coder') { $s.force_coder = $true }
+              else { $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force }
+              $s.force_planner = $false
               $s.task_did_actions = $false
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-            }.GetNewClosure()) | Out-Null
+            }.GetNewClosure()
+            Update-State $mutCodexEvidenceRetry | Out-Null
             if ($delaySec -gt 0) { Start-Sleep -Seconds $delaySec }
+            # Safe: DriverLoopAgentTurnBlock is dot-sourced from Start-DriverMainLoop inside while ($true).
             continue
           } else {
             try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence after " + [int]$retryPlan.max_attempts + " attempts") } catch {}
@@ -254,9 +269,12 @@ if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
             Update-State { param($s)
               $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
               $s.task_did_actions = $false
+              if ($s.PSObject.Properties.Name -contains 'force_coder') { $s.force_coder = $false }
+              else { $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force }
               $s.force_planner=$true
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
             } | Out-Null
+            # Safe: DriverLoopAgentTurnBlock is dot-sourced from Start-DriverMainLoop inside while ($true).
             continue
           }
         }

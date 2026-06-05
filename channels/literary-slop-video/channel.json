@@ -4,5 +4,35 @@
     "description":  "Production pipeline that turns a literary work title into a cohesive 60-second vertical AI-slop video made of 12 linked 5-second clips.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\literary-slop-video",
     "created":  "2026-06-05T16:33:23.7837692+03:00",
-    "archived":  false
+    "archived":  false,
+    "plan_approved":  true,
+    "plan_approved_at":  "2026-06-05T14:36:21.6246240Z",
+    "plan_approved_signature":  "feae4b758b0ba46cc66ffa676f34643f4d1862dfdc6bd52382f3ef5ef2243098",
+    "plan_approved_signature_version":  "staged-v1",
+    "plan_approved_files":  [
+                                "PROJECT_BRIEF.md",
+                                "DISCUSS_PRODUCT.md",
+                                "DISCUSS_UX.md",
+                                "DISCUSS_UI.md",
+                                "DISCUSS_BACKEND.md",
+                                "DISCUSS_QA.md",
+                                "DISCUSS_INTEGRATION.md",
+                                "PROJECT_MAP.md",
+                                "PROJECT_PLAN.md",
+                                ".bridge\\project-contract.json"
+                            ],
+    "plan_approved_git_head":  "34003d6a51890f8dd716aa35700f5e043dd4477f",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\literary-slop-video\\.bridge\\project-contract.json",
+    "plan_contract_score":  100,
+    "plan_contract_required_sections":  [
+                                            "goal",
+                                            "scope/non_goals",
+                                            "users/roles",
+                                            "surfaces/routes/screens",
+                                            "data/backend",
+                                            "acceptance_scenarios",
+                                            "checks",
+                                            "risk",
+                                            "parallel_policy"
+                                        ]
 }
