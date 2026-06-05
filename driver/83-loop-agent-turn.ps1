@@ -1,4 +1,8 @@
 ﻿$script:DriverLoopAgentTurnBlock = {
+if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
+  . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
+}
+
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
     $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
     # 2026-06-01 ERR-006 fix: a workpack-batch must be dispatched to the worker pool EXACTLY ONCE.
@@ -150,22 +154,14 @@
     try {
       $headNowAC = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
       if ($headNowAC -and $headBeforeTurn -and $headNowAC -eq $headBeforeTurn) {
-        $acDirty = @(& git -C $bridgeRoot status --porcelain 2>$null | Where-Object {
-          $line = ([string]$_).Substring(3).Trim()
-          $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*|audit/.*|logs/.*)$'
-        })
+        $acDirty = @(& git -C $bridgeRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         if (@($acDirty).Count -gt 0) {
-          $acFiles = @()
-          foreach ($d in $acDirty) {
-            $l = [string]$d; if ($l.Length -le 3) { continue }
-            $nm = $l.Substring(3).Trim()
-            if ($nm -match ' -> ') { $nm = ($nm -split ' -> ', 2)[1].Trim() }
-            $nm = $nm.Trim('"'); if ($nm) { $acFiles += $nm }
-          }
-          if ($acFiles.Count -gt 0) {
+          $acFiles = @($acDirty | ForEach-Object { Normalize-AutoCommitStatusPath -StatusLine ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+          $commitWorthyFiles = @($acFiles | Where-Object { Test-BridgeAutoCommitWorthPath -Path ([string]$_) })
+          if ($acFiles.Count -gt 0 -and $commitWorthyFiles.Count -gt 0) {
             $acMsg = 'auto-commit (driver; coder sandbox cannot reach .git): ' + (($task -replace '\s+',' ').Trim())
             if ($acMsg.Length -gt 180) { $acMsg = $acMsg.Substring(0,180) }
-            & git -C $bridgeRoot add -- @($acFiles) 2>$null | Out-Null
+            & git -C $bridgeRoot add -- @($commitWorthyFiles) 2>$null | Out-Null
             & git -C $bridgeRoot commit -m $acMsg 2>$null | Out-Null
             $acNewHead = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
             if ($acNewHead -and $acNewHead -ne $headBeforeTurn) {
