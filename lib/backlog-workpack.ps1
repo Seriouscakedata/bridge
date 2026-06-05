@@ -899,21 +899,171 @@ function New-BacklogWorkpackId {
   return ('wp-{0}-{1}-{2}' -f (Get-Date -Format 'yyyyMMddHHmmss'), $slug, ([guid]::NewGuid().ToString('N').Substring(0,6)))
 }
 
+function ConvertTo-BacklogScopeFileList {
+  param($Value)
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  if ($null -eq $Value) { return $out }
+  foreach ($raw in @($Value)) {
+    if ($null -eq $raw) { continue }
+    $text = [string]$raw
+    foreach ($line in ($text -split "`r?`n")) {
+      $s = ([string]$line).Trim()
+      if ([string]::IsNullOrWhiteSpace($s)) { continue }
+      $s = $s -replace '^[-*]\s+', ''
+      foreach ($part in ($s -split ',')) {
+        $p = ([string]$part).Trim().Trim(" `t`r`n""'`.,;")
+        if ($p.StartsWith('./') -or $p.StartsWith('.\')) { $p = $p.Substring(2) }
+        $p = $p -replace '\\','/'
+        while ($p.StartsWith('/')) { $p = $p.Substring(1) }
+        if (-not [string]::IsNullOrWhiteSpace($p)) { [void]$out.Add($p.ToLowerInvariant()) }
+      }
+    }
+  }
+  return $out
+}
+
+function Test-BacklogScopeContractForbidden {
+  param([string]$Path, $Forbidden)
+  $norm = ([string]$Path).Trim().ToLowerInvariant() -replace '\\','/'
+  if ([string]::IsNullOrWhiteSpace($norm)) { return $false }
+  foreach ($f in @($Forbidden)) {
+    $fn = ([string]$f).Trim().ToLowerInvariant() -replace '\\','/'
+    if ([string]::IsNullOrWhiteSpace($fn)) { continue }
+    if ($fn -eq $norm) { return $true }
+    if ($fn.EndsWith('/*')) {
+      $prefix = $fn.Substring(0, $fn.Length - 1)
+      if ($norm.StartsWith($prefix)) { return $true }
+    }
+  }
+  return $false
+}
+
+function Remove-BacklogScopeContractReferences {
+  param([string]$Text, $ScopeContract)
+  $out = [string]$Text
+  if ([string]::IsNullOrWhiteSpace($out) -or $null -eq $ScopeContract) { return $out }
+  foreach ($raw in (@($ScopeContract.forbidden_files) + @($ScopeContract.read_only_context))) {
+    $v = ([string]$raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($v)) { continue }
+    $norm = $v -replace '\\','/'
+    if ($norm.EndsWith('/*')) {
+      $prefix = [regex]::Escape($norm.Substring(0, $norm.Length - 1)).Replace('/', '[\\/]')
+      $out = [regex]::Replace($out, $prefix + '\S*', ' ', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    } else {
+      $pattern = [regex]::Escape($norm).Replace('/', '[\\/]')
+      $out = [regex]::Replace($out, $pattern, ' ', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+  }
+  return $out
+}
+
+function Add-BacklogScopeSectionValues {
+  param(
+    [System.Collections.Generic.List[string]]$Expected,
+    [System.Collections.Generic.List[string]]$Forbidden,
+    [System.Collections.Generic.List[string]]$ReadOnly,
+    [System.Collections.Generic.List[string]]$RiskArea,
+    [string]$Mode,
+    $Value
+  )
+  foreach ($v in @(ConvertTo-BacklogScopeFileList $Value)) {
+    switch ($Mode) {
+      'expected'  { [void]$Expected.Add($v) }
+      'forbidden' { [void]$Forbidden.Add($v) }
+      'readonly'  { [void]$ReadOnly.Add($v) }
+      'risk'      { [void]$RiskArea.Add($v) }
+    }
+  }
+}
+
+function Get-BacklogTaskScopeContract {
+  param($Item)
+  $expected = New-Object 'System.Collections.Generic.List[string]'
+  $forbidden = New-Object 'System.Collections.Generic.List[string]'
+  $readOnly = New-Object 'System.Collections.Generic.List[string]'
+  $riskArea = New-Object 'System.Collections.Generic.List[string]'
+
+  Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode 'expected' -Value (Get-BacklogPackObjectValue -Obj $Item -Name 'expected_files' -Default @())
+  Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode 'forbidden' -Value (Get-BacklogPackObjectValue -Obj $Item -Name 'forbidden_files' -Default @())
+  Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode 'readonly' -Value (Get-BacklogPackObjectValue -Obj $Item -Name 'read_only_context' -Default @())
+  Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode 'risk' -Value (Get-BacklogPackObjectValue -Obj $Item -Name 'risk_area' -Default @())
+
+  $bodyText = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+  $taskText = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'task' -Default '')
+  foreach ($src in @($bodyText, $taskText)) {
+    if ([string]::IsNullOrWhiteSpace($src)) { continue }
+    $mode = ''
+    foreach ($line in ($src -split "`r?`n")) {
+      $trimmed = ([string]$line).Trim()
+      if ($trimmed -match '^(EXPECTED_FILES|FORBIDDEN_FILES|READ_ONLY_CONTEXT|RISK_AREA)\s*:\s*(.*)$') {
+        $name = $Matches[1].ToUpperInvariant()
+        $inline = [string]$Matches[2]
+        switch ($name) {
+          'EXPECTED_FILES' { $mode = 'expected' }
+          'FORBIDDEN_FILES' { $mode = 'forbidden' }
+          'READ_ONLY_CONTEXT' { $mode = 'readonly' }
+          'RISK_AREA' { $mode = 'risk' }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($inline)) {
+          Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode $mode -Value $inline
+          $mode = ''
+        }
+        continue
+      }
+      if ($trimmed -match '^[A-Z_]{3,}\s*:?\s*$' -or $trimmed -match '^[A-Za-z][A-Za-z0-9 _-]{1,40}:\s*$') { $mode = ''; continue }
+      if ([string]::IsNullOrWhiteSpace($mode)) { continue }
+      Add-BacklogScopeSectionValues -Expected $expected -Forbidden $forbidden -ReadOnly $readOnly -RiskArea $riskArea -Mode $mode -Value $trimmed
+    }
+  }
+
+  return [pscustomobject]@{
+    expected_files        = @($expected.ToArray() | Sort-Object -Unique)
+    forbidden_files       = @($forbidden.ToArray() | Sort-Object -Unique)
+    read_only_context     = @($readOnly.ToArray() | Sort-Object -Unique)
+    risk_area             = @($riskArea.ToArray() | Sort-Object -Unique)
+    has_explicit_expected = ($expected.Count -gt 0)
+  }
+}
+
 function Get-BacklogWorkpackClassification {
   param($Item)
+  $scopeContract = Get-BacklogTaskScopeContract -Item $Item
   $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
   $signalText = Get-BacklogTextOutsideForbiddenContexts -Text $text
+  $scopeSignalText = Remove-BacklogScopeContractReferences -Text $signalText -ScopeContract $scopeContract
   $fileList = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($f in @(Get-BacklogMentionedFiles -Text $signalText | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
-  foreach ($f in @(Get-BacklogInferredFiles -Text $signalText)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+  if ([bool]$scopeContract.has_explicit_expected) {
+    foreach ($f in @($scopeContract.expected_files)) {
+      if ((Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.forbidden_files) -or
+          (Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.read_only_context)) { continue }
+      Add-BacklogWorkpackFileCandidate -List $fileList -Path $f
+    }
+  } else {
+    foreach ($f in @(Get-BacklogMentionedFiles -Text $signalText | Sort-Object)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+    foreach ($f in @(Get-BacklogInferredFiles -Text $signalText)) { Add-BacklogWorkpackFileCandidate -List $fileList -Path $f }
+    if ($scopeContract.forbidden_files.Count -gt 0 -or $scopeContract.read_only_context.Count -gt 0) {
+      $filtered = New-Object 'System.Collections.Generic.List[string]'
+      foreach ($f in @($fileList.ToArray())) {
+        if ((Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.forbidden_files) -or
+            (Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.read_only_context)) { continue }
+        [void]$filtered.Add($f)
+      }
+      $fileList = $filtered
+    }
+  }
   $files = @($fileList.ToArray())
-  $module = Get-BacklogWorkpackModule -Text $signalText -Files $files
+  $classificationText = $scopeSignalText
+  if ([bool]$scopeContract.has_explicit_expected) {
+    $classificationText = ((@($scopeContract.expected_files) + @($scopeContract.risk_area)) -join ' ')
+  }
+  $module = Get-BacklogWorkpackModule -Text $classificationText -Files $files
   $touch = @()
   $key = ''
   if ($files.Count -gt 0) {
     # 2026-05-31 (Foundation #4): prefer the task's TARGET file (after the action verb) over an
     # эталон/reference path, so independent tasks land in distinct workpacks and run in parallel.
-    $primary = Get-BacklogTaskTargetFile -Text $signalText
+    $primary = ''
+    if (-not [bool]$scopeContract.has_explicit_expected) { $primary = Get-BacklogTaskTargetFile -Text $scopeSignalText }
     if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
     $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
     # 2026-06-01 (Foundation #4 scale): for a PROJECT channel, key by the FULL file path so that N
@@ -939,7 +1089,7 @@ function Get-BacklogWorkpackClassification {
     $touch = @($module)
   }
   if ([string]::IsNullOrWhiteSpace($key)) { $key = 'module:general' }
-  $conflict = Get-BacklogWorkpackConflictGroup -Text $signalText -Files $files
+  $conflict = Get-BacklogWorkpackConflictGroup -Text $classificationText -Files $files
   return [pscustomobject]@{
     key            = $key.ToLowerInvariant()
     touch_set      = @($touch)
@@ -1197,6 +1347,7 @@ function Get-BacklogWorkpackExecConfig {
 
 function Get-BacklogWorkpackItemTouches {
   param($Item)
+  $scopeContract = Get-BacklogTaskScopeContract -Item $Item
   $touches = New-Object 'System.Collections.Generic.List[string]'
   # 2026-06-01 ROOT FIX (parallelism / "bridge as a team"): prefer the SINGLE target file the task
   # actually EDITS (action verb + path), not every path it mentions. redesign tasks cite a shared
@@ -1205,19 +1356,30 @@ function Get-BacklogWorkpackItemTouches {
   # conflicting -> serial execution. The target file is the only path written, so overlap then reflects
   # REAL conflicts. Falls back to the stored touch_set / mentioned files when no clear target exists.
   $touchText = Get-BacklogTextOutsideForbiddenContexts -Text ([string]$Item.text)
+  $touchText = Remove-BacklogScopeContractReferences -Text $touchText -ScopeContract $scopeContract
+  if ([bool]$scopeContract.has_explicit_expected) {
+    foreach ($f in @($scopeContract.expected_files)) {
+      if ((Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.forbidden_files) -or
+          (Test-BacklogScopeContractForbidden -Path $f -Forbidden $scopeContract.read_only_context)) { continue }
+      $v = ([string]$f).Trim().ToLowerInvariant() -replace '\\','/'
+      if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$touches.Add($v) }
+    }
+  }
   try {
-    if (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue) {
+    if ($touches.Count -eq 0 -and (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue)) {
       $tgt = [string](Get-BacklogTaskTargetFile -Text $touchText)
       if (-not [string]::IsNullOrWhiteSpace($tgt)) {
         $tv = $tgt.Trim().ToLowerInvariant() -replace '\\','/'
-        if (-not [string]::IsNullOrWhiteSpace($tv)) { return @($tv) }
+        if (-not [string]::IsNullOrWhiteSpace($tv)) { [void]$touches.Add($tv) }
       }
     }
   } catch {}
   try {
+    if ($touches.Count -eq 0) {
     foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_touch_set' -Default @())) {
       $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
       if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$touches.Add($v) }
+    }
     }
   } catch {}
   if ($touches.Count -eq 0) {
@@ -1231,6 +1393,15 @@ function Get-BacklogWorkpackItemTouches {
   if ($touches.Count -eq 0) {
     $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
     if (-not [string]::IsNullOrWhiteSpace($cg)) { [void]$touches.Add($cg) }
+  }
+  if ($scopeContract.forbidden_files.Count -gt 0 -or $scopeContract.read_only_context.Count -gt 0) {
+    $allowed = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($t in @($touches.ToArray())) {
+      if ((Test-BacklogScopeContractForbidden -Path $t -Forbidden $scopeContract.forbidden_files) -or
+          (Test-BacklogScopeContractForbidden -Path $t -Forbidden $scopeContract.read_only_context)) { continue }
+      [void]$allowed.Add($t)
+    }
+    $touches = $allowed
   }
   return @($touches.ToArray() | Sort-Object -Unique)
 }
