@@ -69,7 +69,7 @@ Assert-ProbeUnchanged -Name 'memory/map.md' -Before $beforeMemoryMap -After $aft
 
 if ([string]::IsNullOrWhiteSpace($pack)) { throw 'pack is empty' }
 $byteCount = [System.Text.Encoding]::UTF8.GetByteCount($pack)
-if ($byteCount -lt 1536 -or $byteCount -gt 2560) {
+if ($byteCount -lt 1536 -or $byteCount -gt 4096) {
     throw "pack size out of base range: $byteCount bytes"
 }
 

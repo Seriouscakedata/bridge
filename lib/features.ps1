@@ -164,7 +164,7 @@ function Save-FeatureState {
     $ordered = [ordered]@{}
     foreach ($key in ($dict.Keys | Sort-Object)) { $ordered[$key] = $dict[$key] }
     $json = ([pscustomobject]$ordered) | ConvertTo-Json -Depth 6 -Compress
-    [System.IO.File]::WriteAllText($p, $json, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($p, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Save-FeatureRegistry {
@@ -174,7 +174,7 @@ function Save-FeatureRegistry {
     $dir = Split-Path $p
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $json = ConvertTo-Json -InputObject @($Registry) -Depth 8
-    [System.IO.File]::WriteAllText($p, $json, (New-Object System.Text.UTF8Encoding($true)))
+    [System.IO.File]::WriteAllText($p, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Get-Feature {
