@@ -108,6 +108,64 @@ try {
   [System.Environment]::SetEnvironmentVariable($envName, $oldEnv, 'Process')
 }
 
+$secretTestRoot = Join-Path $root ("audit\tmp\retry-helper-secret-test-" + [System.Guid]::NewGuid().ToString('N'))
+$oldUserProfile = $env:USERPROFILE
+$privateEnvName = 'BRIDGE_RETRY_HELPER_PRIVATE_KEY'
+$oldPrivateEnv = [System.Environment]::GetEnvironmentVariable($privateEnvName)
+try {
+  $privateDir = Join-Path $secretTestRoot '.bridge-private'
+  $legacyRoot = Join-Path $secretTestRoot 'legacy-root'
+  New-Item -ItemType Directory -Path $privateDir,$legacyRoot -Force | Out-Null
+  [System.IO.File]::WriteAllText(
+    (Join-Path $privateDir 'secrets.json'),
+    '{"retry_helper_private_key":"private-ok","retry_helper_env_priority_key":"private-loses"}',
+    (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText(
+    (Join-Path $legacyRoot 'secrets.json'),
+    '{"retry_helper_legacy_key":"legacy-ok","retry_helper_private_key":"legacy-loses"}',
+    (New-Object System.Text.UTF8Encoding($false)))
+
+  $env:USERPROFILE = $secretTestRoot
+  Assert 'Private secrets path is preferred before legacy' ([string](Get-InvokeWithTimeoutSecretValue -BridgeRoot $legacyRoot -Name 'retry_helper_private_key') -eq 'private-ok')
+  $privateJobResult = Invoke-WithTimeout -Name 'retry helper private secret path test' -TimeoutSec 5 -MaxAttempts 1 -BackoffSeconds @(0) `
+    -InitializationScript (New-InvokeWithTimeoutInitializationScript -HelperPath $helper) -ArgumentList @($legacyRoot) -ScriptBlock {
+      param([string]$BridgeRoot)
+      Get-InvokeWithTimeoutSecretValue -BridgeRoot $BridgeRoot -Name 'retry_helper_private_key'
+    }
+  Assert 'Job helper reads private secrets path' ([string]$privateJobResult -eq 'private-ok')
+  Assert 'Legacy secrets fallback is preserved' ([string](Get-InvokeWithTimeoutSecretValue -BridgeRoot $legacyRoot -Name 'retry_helper_legacy_key') -eq 'legacy-ok')
+
+  [System.Environment]::SetEnvironmentVariable($privateEnvName, 'env-ok', 'Process')
+  Assert 'Environment secret has priority over files' ([string](Get-InvokeWithTimeoutSecretValue -BridgeRoot $legacyRoot -Name 'retry_helper_private_key') -eq 'env-ok')
+
+  [System.Environment]::SetEnvironmentVariable($privateEnvName, $null, 'Process')
+  $dpapiProfile = Join-Path $secretTestRoot 'dpapi-profile'
+  $dpapiPrivateDir = Join-Path $dpapiProfile '.bridge-private'
+  New-Item -ItemType Directory -Path $dpapiPrivateDir -Force | Out-Null
+  Add-Type -AssemblyName System.Security
+  $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
+  $plainBytes = [System.Text.Encoding]::UTF8.GetBytes('{"retry_helper_dpapi_key":"dpapi-ok"}')
+  $encryptedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
+    $plainBytes,
+    $entropy,
+    [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  $dpapiWrapper = [pscustomobject]@{
+    _dpapi = $true
+    data = [Convert]::ToBase64String($encryptedBytes)
+  } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText(
+    (Join-Path $dpapiPrivateDir 'secrets.json'),
+    $dpapiWrapper,
+    (New-Object System.Text.UTF8Encoding($false)))
+
+  $env:USERPROFILE = $dpapiProfile
+  Assert 'Private DPAPI secrets wrapper is preserved' ([string](Get-InvokeWithTimeoutSecretValue -BridgeRoot $legacyRoot -Name 'retry_helper_dpapi_key') -eq 'dpapi-ok')
+} finally {
+  [System.Environment]::SetEnvironmentVariable($privateEnvName, $oldPrivateEnv, 'Process')
+  $env:USERPROFILE = $oldUserProfile
+  if (Test-Path -LiteralPath $secretTestRoot) { Remove-Item -LiteralPath $secretTestRoot -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 $counterPath = Join-Path $env:TEMP ("$retryName-counter.txt")
 if (Test-Path -LiteralPath $counterPath) { Remove-Item -LiteralPath $counterPath -Force }
 $retryResult = Invoke-WithTimeout -Name $retryName -TimeoutSec 5 -MaxAttempts 2 -BackoffSeconds @(0,0) -ArgumentList @($counterPath) -ScriptBlock {

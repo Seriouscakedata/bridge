@@ -143,6 +143,28 @@ function Format-AuditNativeArg {
   return '"' + ($s -replace '"','\"') + '"'
 }
 
+function Set-AuditSinglePathEnvironment {
+  $envs = [System.Environment]::GetEnvironmentVariables('Process')
+  $pathKeys = @($envs.Keys | Where-Object { [string]$_ -ieq 'Path' })
+  if ($pathKeys.Count -le 1) { return }
+
+  $pathValue = ''
+  foreach ($key in @('Path','PATH')) {
+    $value = [System.Environment]::GetEnvironmentVariable($key, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+      $pathValue = [string]$value
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($pathValue)) { return }
+
+  foreach ($key in $pathKeys) {
+    [System.Environment]::SetEnvironmentVariable([string]$key, $null, 'Process')
+  }
+  [System.Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
+  $env:Path = $pathValue
+}
+
 function Invoke-AuditBridgeLocked {
   param([scriptblock]$Body)
   $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeLock')
@@ -1053,6 +1075,7 @@ function Invoke-DeepAuditProcess {
             '-OutputFile', $deepResultPath
           )
           $deepArgs = @($deepArgValues | ForEach-Object { Format-AuditNativeArg ([string]$_) })
+          Set-AuditSinglePathEnvironment
           $startDeepProcess = {
             Start-Process -FilePath 'powershell.exe' `
               -ArgumentList $deepArgs `

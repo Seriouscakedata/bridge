@@ -255,6 +255,7 @@ function Start-CodexSecurityAsync {
   Write-Host "[deep-audit] codex: spawning codex.exe (timeout ${TimeoutSec}s, project=$ProjRoot)..."
   try {
     $reasonArg = 'model_reasoning_effort="medium"'
+    Set-DeepAuditSinglePathEnvironment
     $spawn = {
       Start-Process -FilePath $CodexExe `
         -ArgumentList 'exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s','read-only','-C',$ProjRoot,'-o',$msgF,'-' `
@@ -408,6 +409,7 @@ function Start-ClaudeFunctionalAsync {
   $allowedTools = @('Read','Grep','Glob')
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$ProjRoot,'--allowedTools') + $allowedTools + @('--model','sonnet')
   try {
+    Set-DeepAuditSinglePathEnvironment
     $spawn = {
       Start-Process -FilePath $ClaudeExe -ArgumentList $claudeArgs `
         -WorkingDirectory $ProjRoot -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
@@ -590,6 +592,28 @@ function New-DeepAuditAgentResult {
   }
 }
 
+function Set-DeepAuditSinglePathEnvironment {
+  $envs = [System.Environment]::GetEnvironmentVariables('Process')
+  $pathKeys = @($envs.Keys | Where-Object { [string]$_ -ieq 'Path' })
+  if ($pathKeys.Count -le 1) { return }
+
+  $pathValue = ''
+  foreach ($key in @('Path','PATH')) {
+    $value = [System.Environment]::GetEnvironmentVariable($key, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+      $pathValue = [string]$value
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($pathValue)) { return }
+
+  foreach ($key in $pathKeys) {
+    [System.Environment]::SetEnvironmentVariable([string]$key, $null, 'Process')
+  }
+  [System.Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
+  $env:Path = $pathValue
+}
+
 function Start-DeepAuditAgentProcess {
   param($Spec, [string]$BridgeRoot, [string]$ProjRoot, [int]$TimeoutSec, [bool]$RunLLM = $true)
   $tmpDir = Join-Path $BridgeRoot 'audit\tmp'
@@ -602,7 +626,7 @@ function Start-DeepAuditAgentProcess {
   $psExe = $null
   try { $psExe = (Get-Process -Id $PID).Path } catch {}
   if ([string]::IsNullOrWhiteSpace($psExe)) { $psExe = 'powershell.exe' }
-  $args = @(
+  $agentArgs = @(
     '-NoProfile','-ExecutionPolicy','Bypass','-File',$agentScript,
     '-Role',[string]$Spec.role,
     '-Model',[string]$Spec.model,
@@ -611,8 +635,23 @@ function Start-DeepAuditAgentProcess {
     '-OutputFile',$resultF,
     '-TimeoutSec',[string]$TimeoutSec
   )
-  if ($RunLLM) { $args += '-RunLLM' } else { $args += '-NoLLM' }
-  $proc = Start-Process -FilePath $psExe -ArgumentList $args -WorkingDirectory $ProjRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+  if ($RunLLM) { $agentArgs += '-RunLLM' } else { $agentArgs += '-NoLLM' }
+  Set-DeepAuditSinglePathEnvironment
+  $spawn = {
+    Start-Process -FilePath $psExe -ArgumentList $agentArgs -WorkingDirectory $ProjRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+  }.GetNewClosure()
+  if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+    $channel = 'main'
+    try {
+      if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+        $detectedChannel = [string](Get-EffectiveChannel)
+        if (-not [string]::IsNullOrWhiteSpace($detectedChannel)) { $channel = $detectedChannel }
+      }
+    } catch {}
+    $proc = Invoke-WithChannelEnv -Slug $channel -Action $spawn
+  } else {
+    $proc = & $spawn
+  }
   return [pscustomobject]@{
     spec = $Spec
     proc = $proc

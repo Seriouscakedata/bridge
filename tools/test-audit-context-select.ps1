@@ -22,6 +22,7 @@ function Write-TestResult {
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $agentScript = Join-Path $repoRoot 'tools\deep-audit-agent.ps1'
+$deepAuditScript = Join-Path $repoRoot 'tools\deep-audit.ps1'
 
 # --- Parse check ---
 try {
@@ -40,6 +41,8 @@ try {
   Write-TestResult -SuccessMessage 'deep-audit-agent.ps1 contains prompt_chars in result' -Condition ($src -match 'prompt_chars')
   Write-TestResult -SuccessMessage 'deep-audit-agent.ps1 contains context_policy in result' -Condition ($src -match 'context_policy')
   Write-TestResult -SuccessMessage 'deep-audit-agent.ps1 empty_llm_reply includes prompt_chars' -Condition ($src -match "empty_llm_reply.*prompt_chars")
+  $deepSrc = [System.IO.File]::ReadAllText($deepAuditScript, [System.Text.Encoding]::UTF8)
+  Write-TestResult -SuccessMessage 'deep-audit model agents inherit channel env' -Condition ($deepSrc -match 'function Start-DeepAuditAgentProcess[\s\S]*Invoke-WithChannelEnv')
 } catch {
   Write-TestResult -SuccessMessage 'source inspection' -Condition $false -FailureDetail $_.Exception.Message
 }
@@ -85,6 +88,35 @@ try {
   }
 } catch {
   Write-TestResult -SuccessMessage 'architecture-model -NoLLM run' -Condition $false -FailureDetail $_.Exception.Message
+}
+
+# --- deep-audit wrapper NoLLM spawn path ---
+try {
+  $tmpDir = Join-Path $repoRoot 'audit\tmp'
+  if (-not (Test-Path -LiteralPath $tmpDir -PathType Container)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+  $outFile = Join-Path $tmpDir ('test-deep-audit-nollm-' + [guid]::NewGuid().ToString('N') + '.json')
+  $null = & powershell -NoProfile -ExecutionPolicy Bypass -File $deepAuditScript -BridgePath $repoRoot -ProjectRoot $repoRoot -NoCodex -NoClaude -NoLLM -OutputFile $outFile 2>&1
+  $wrapper = $null
+  if (Test-Path -LiteralPath $outFile -PathType Leaf) {
+    try { $wrapper = Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+  }
+  Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM writes wrapper JSON' -Condition ($null -ne $wrapper)
+  if ($null -ne $wrapper) {
+    $agents = @($wrapper.agents)
+    $spawnFailures = @($agents | Where-Object { @($_.errors) -contains 'spawn_failed' })
+    $requiredRoles = @('security-model','functional-model','runtime-incident-model')
+    $requiredNotReady = @($agents | Where-Object { $requiredRoles -contains [string]$_.role -and [string]$_.status -ne 'prompt_ready' })
+    $unexpectedErrors = @($agents | Where-Object {
+      [string]$_.status -eq 'error' -and -not (@($_.errors) -contains 'aborted_by_quorum')
+    })
+    Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM starts model agents' -Condition ($agents.Count -gt 0) -FailureDetail "agents=$($agents.Count)"
+    Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM has no spawn_failed agents' -Condition ($spawnFailures.Count -eq 0) -FailureDetail (($spawnFailures | ForEach-Object { $_.role }) -join ',')
+    Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM required agents are prompt_ready' -Condition ($requiredNotReady.Count -eq 0) -FailureDetail (($requiredNotReady | ForEach-Object { "$($_.role):$($_.status)" }) -join ',')
+    Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM has no unexpected agent errors' -Condition ($unexpectedErrors.Count -eq 0) -FailureDetail (($unexpectedErrors | ForEach-Object { "$($_.role):$($_.errors -join '|')" }) -join ',')
+  }
+  try { if (Test-Path -LiteralPath $outFile) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue } } catch {}
+} catch {
+  Write-TestResult -SuccessMessage 'deep-audit.ps1 -NoLLM wrapper run' -Condition $false -FailureDetail $_.Exception.Message
 }
 
 Write-Host ("RESULT: {0} PASS, {1} FAIL" -f $script:PassCount, $script:FailCount)

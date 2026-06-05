@@ -60,33 +60,42 @@ function Get-InvokeWithTimeoutSecretValue {
     if (-not [string]::IsNullOrWhiteSpace($envValue)) { return $envValue }
   }
 
-  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { return $null }
-  $secretPath = Join-Path $BridgeRoot 'secrets.json'
-  if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { return $null }
-
-  $item = Get-Item -LiteralPath $secretPath -Force
-  if ($item.Length -gt 65536) { throw "secrets file exceeds 65536 bytes: $secretPath" }
-  $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
-  $raw = [System.IO.File]::ReadAllText($item.FullName, $utf8)
-  $secrets = $raw | ConvertFrom-Json
-
-  if ($secrets -and ($secrets.PSObject.Properties.Name -contains '_dpapi')) {
-    if ($secrets.PSObject.Properties.Name -notcontains 'data' -or [string]::IsNullOrWhiteSpace([string]$secrets.data)) {
-      throw 'DPAPI wrapper is missing data'
-    }
-    Add-Type -AssemblyName System.Security
-    $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
-    $encrypted = [Convert]::FromBase64String([string]$secrets.data)
-    $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-      $encrypted,
-      $entropy,
-      [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-    $secrets = ([System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json)
+  $secretPaths = New-Object 'System.Collections.Generic.List[string]'
+  if (-not [string]::IsNullOrWhiteSpace([string]$env:USERPROFILE)) {
+    [void]$secretPaths.Add((Join-Path (Join-Path ([string]$env:USERPROFILE) '.bridge-private') 'secrets.json'))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($BridgeRoot)) {
+    [void]$secretPaths.Add((Join-Path $BridgeRoot 'secrets.json'))
   }
 
-  foreach ($candidate in $candidates) {
-    if ($secrets -and ($secrets.PSObject.Properties.Name -contains $candidate)) {
-      return [string]$secrets.$candidate
+  foreach ($secretPath in @($secretPaths.ToArray() | Select-Object -Unique)) {
+    if ([string]::IsNullOrWhiteSpace($secretPath)) { continue }
+    if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) { continue }
+
+    $item = Get-Item -LiteralPath $secretPath -Force
+    if ($item.Length -gt 65536) { throw "secrets file exceeds 65536 bytes: $secretPath" }
+    $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $raw = [System.IO.File]::ReadAllText($item.FullName, $utf8)
+    $secrets = $raw | ConvertFrom-Json
+
+    if ($secrets -and ($secrets.PSObject.Properties.Name -contains '_dpapi')) {
+      if ($secrets.PSObject.Properties.Name -notcontains 'data' -or [string]::IsNullOrWhiteSpace([string]$secrets.data)) {
+        throw 'DPAPI wrapper is missing data'
+      }
+      Add-Type -AssemblyName System.Security
+      $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
+      $encrypted = [Convert]::FromBase64String([string]$secrets.data)
+      $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+        $encrypted,
+        $entropy,
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+      $secrets = ([System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json)
+    }
+
+    foreach ($candidate in $candidates) {
+      if ($secrets -and ($secrets.PSObject.Properties.Name -contains $candidate)) {
+        return [string]$secrets.$candidate
+      }
     }
   }
   return $null
