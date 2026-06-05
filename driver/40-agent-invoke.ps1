@@ -271,6 +271,22 @@ function Get-CoderSandboxMode {
     $cfg = Get-BridgeConfig
     if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'coder') -and $cfg.coder) {
       $coderCfg = $cfg.coder
+      # 2026-06-06 (operator): PER-CHANNEL override. Lets a specific project channel that genuinely
+      # needs broader access (e.g. a media project calling an external image/video API) run with a
+      # wider sandbox WITHOUT lowering protection on main / control-plane channels — those keep the
+      # global default (workspace-write). main is never in this map, so the bridge stays confined
+      # while editing itself. Checked BEFORE the global coder.sandboxMode.
+      try {
+        $ch = ''
+        try { $ch = [string](Get-EffectiveChannel) } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($ch) -and ($coderCfg.PSObject.Properties.Name -contains 'sandboxModeByChannel') -and $coderCfg.sandboxModeByChannel) {
+          $byCh = $coderCfg.sandboxModeByChannel
+          if ($byCh.PSObject.Properties.Name -contains $ch) {
+            $cm = [string]$byCh.$ch
+            if (-not [string]::IsNullOrWhiteSpace($cm) -and ($valid -contains $cm)) { return $cm }
+          }
+        }
+      } catch {}
       if (($coderCfg.PSObject.Properties.Name -contains 'sandboxMode')) {
         $m = [string]$coderCfg.sandboxMode
         if (-not [string]::IsNullOrWhiteSpace($m) -and ($valid -contains $m)) { return $m }

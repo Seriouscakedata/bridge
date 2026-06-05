@@ -9,7 +9,10 @@
   "planner": "claude",
   "coder": {
     "agent": "codex",
-    "sandboxMode": "workspace-write"
+    "sandboxMode": "workspace-write",
+    "sandboxModeByChannel": {
+      "literary-slop-video": "danger-full-access"
+    }
   },
   "workRoot": "C:/Users/rafie",
   "idlePollSeconds": 1,
