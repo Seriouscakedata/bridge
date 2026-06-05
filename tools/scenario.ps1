@@ -93,9 +93,15 @@ $loadUrl = $loadUrl + $sep + 'scenario=' + [Uri]::EscapeDataString($Name)
 # Mark start time so we can ignore older results in the JSONL log.
 $startTs = (Get-Date).ToUniversalTime().ToString('o')
 
-# Temp profile dir so Edge doesn't fight a real session.
-$profileDir = Join-Path $env:TEMP ('scenario_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+# Temp profile dir so Edge/Chrome doesn't fight a real session.
+# Keep it under the bridge runtime tree: sandboxed runs may not have a usable
+# Crashpad/profile location under LocalAppData or %TEMP%.
+$scenarioRuntimeDir = Join-Path $root 'runtime\scenario'
+[void](New-Item -ItemType Directory -Path $scenarioRuntimeDir -Force)
+$profileDir = Join-Path $scenarioRuntimeDir ('scenario_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 [void](New-Item -ItemType Directory -Path $profileDir -Force)
+$crashDir = Join-Path $profileDir 'crash'
+[void](New-Item -ItemType Directory -Path $crashDir -Force)
 
 $argsList = @(
   '--headless=new',
@@ -116,6 +122,10 @@ $argsList = @(
   '--disable-sync',                      # kills the sync-confirmation tab
   '--disable-background-networking',
   '--disable-background-mode',
+  '--disable-breakpad',
+  '--disable-crash-reporter',
+  '--disable-crashpad',
+  ('--crash-dumps-dir=' + $crashDir),
   '--disable-features=Translate,OptimizationHints,InterestFeed,AcceptCHFrame,FirstRunExperience,EdgeSplashScreenStandalone',
   # 2026-05-28: --virtual-time-budget is THE flag that makes headless actually
   # execute pending JS callbacks (setTimeout/fetch) instead of idling.
@@ -148,6 +158,7 @@ while ((Get-Date) -lt $deadline) {
   } catch {
     # Server may be transiently slow; keep polling.
   }
+  if ($proc -and $proc.HasExited) { break }
 }
 
 # Optional: keep browser alive for a bit (useful when chained with visit.ps1 for screenshots).
@@ -158,7 +169,13 @@ try { if ($proc -and -not $proc.HasExited) { $proc.Kill() | Out-Null } } catch {
 try { Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 
 if (-not $result) {
-  $err = [ordered]@{ ok = $false; name = $Name; error = 'timeout: no scenario result after ' + $TimeoutSec + 's' }
+  $detail = ''
+  if ($proc -and $proc.HasExited) {
+    $detail = 'browser exited before scenario result (exit ' + $proc.ExitCode + ')'
+  } else {
+    $detail = 'timeout: no scenario result after ' + $TimeoutSec + 's'
+  }
+  $err = [ordered]@{ ok = $false; name = $Name; error = $detail }
   $err | ConvertTo-Json -Compress -Depth 4
   exit 1
 }

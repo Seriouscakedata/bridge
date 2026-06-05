@@ -96,6 +96,15 @@ function Invoke-HeadlessScreenshot {
     return $false
   }
 
+  $visitRuntimeDir = Join-Path $root 'runtime\visit'
+  try { [void](New-Item -ItemType Directory -Path $visitRuntimeDir -Force) } catch { return $false }
+  $profileDir = Join-Path $visitRuntimeDir ('visit_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  $crashDir = Join-Path $profileDir 'crash'
+  try {
+    [void](New-Item -ItemType Directory -Path $profileDir -Force)
+    [void](New-Item -ItemType Directory -Path $crashDir -Force)
+  } catch { return $false }
+
   $args = @(
     '--headless=new',
     "--window-size=$ShotWidth,$ShotHeight",
@@ -108,13 +117,25 @@ function Invoke-HeadlessScreenshot {
     "--screenshot=$OutputPath",
     '--disable-gpu',
     '--no-sandbox',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    '--disable-crashpad',
+    "--crash-dumps-dir=$crashDir",
+    "--user-data-dir=$profileDir",
     $ShotUrl
   )
   try {
-    $process = Start-Process -FilePath $Browser -ArgumentList $args -Wait -PassThru -WindowStyle Hidden
+    $process = Start-Process -FilePath $Browser -ArgumentList $args -PassThru -WindowStyle Hidden
+    $waitMs = [Math]::Max(5000, $DelayMs + 10000)
+    if (-not $process.WaitForExit($waitMs)) {
+      try { $process.Kill() | Out-Null } catch {}
+      return $false
+    }
     if ($process.ExitCode -ne 0 -and -not (Test-Path $OutputPath)) { return $false }
   } catch {
     return $false
+  } finally {
+    try { Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
   }
   return (Test-Path $OutputPath)
 }

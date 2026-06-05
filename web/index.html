@@ -6002,6 +6002,8 @@ async function switchChannel(slug){
   if(channelSwitchAbort){
     try{ channelSwitchAbort.abort(); }catch(_e){}
   }
+  slug = String(slug || '');
+  const previousSlug = String((channelsCache && channelsCache.active) || '');
   channelSwitchInProgress = true;
   // Spinner instead of full blackout -- cache renders instantly so we usually
   // don't need to hide #log at all. Only hide if this channel has zero cache
@@ -6012,22 +6014,46 @@ async function switchChannel(slug){
   channelSwitchAbort = ctrl;
   const isCurrent = () => (channelSwitchAbort === ctrl);
   try{
-    const r = await fetchJson('/api/channels/active', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})});
+    closeChannelMenu();
+    channelEpoch++;
+    channelsCache.active = slug;
+    renderChannels();
+
+    const activeOpts = {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})};
+    let activeTimer = null;
+    if(typeof AbortController !== 'undefined'){
+      const activeCtrl = new AbortController();
+      activeTimer = setTimeout(() => activeCtrl.abort(), 5000);
+      if(ctrl && ctrl.signal){
+        ctrl.signal.addEventListener('abort', () => {
+          try{ activeCtrl.abort(); }catch(_e){}
+        }, {once:true});
+      }
+      activeOpts.signal = activeCtrl.signal;
+    }
+    const persistActive = fetchJson('/api/channels/active', activeOpts)
+      .catch(e => ({ok:false, error:(e && e.message) ? e.message : String(e || 'unknown')}))
+      .finally(() => { if(activeTimer) clearTimeout(activeTimer); });
+    const quickPersist = await Promise.race([
+      persistActive,
+      new Promise(resolve => setTimeout(() => resolve({ok:true, deferred:true}), 1500))
+    ]);
     if(!isCurrent()) return;  // superseded
-    if(r && r.ok){
-      closeChannelMenu();
-      channelEpoch++;
-      channelsCache.active = slug;
-      await reloadMessagesForChannel(channelEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
+    if(quickPersist && quickPersist.ok === false){
+      if(previousSlug){ channelsCache.active = previousSlug; channelEpoch++; renderChannels(); }
+      alert('Не получилось переключиться: ' + (quickPersist.error || 'unknown'));
+      return;
+    }
+
+    const loaded = await reloadMessagesForChannel(channelEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
+    if(loaded !== false){
       if(!isCurrent()) return;
       renderChannels();
       // 2026-05-28: refresh ALL per-channel pollers on switch (pollBacklog was
-      // missing — left UI showing stale backlog from previous channel).
+      // missing - left UI showing stale backlog from previous channel).
       status(); pollPlan(); pollMetrics(); pollBacklog();
       // Wait two frames so layout and paint commit before #log becomes visible again.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    } else {
-      alert('Не получилось переключиться: ' + (r && r.error ? r.error : 'unknown'));
     }
   }catch(e){
     if(e && e.name === 'AbortError'){
