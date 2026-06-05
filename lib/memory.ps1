@@ -159,133 +159,35 @@ function Get-MemoryMarkerPath {
 }
 
 # ---- secrets / config ----
-$script:SecretsAclCheckStamp = $null
-$script:SecretsJsonMaxBytes = 65536
-$script:SecretsJsonMaxDepth = 16
-
-function Get-SecretsUtf8Encoding {
-  param([bool]$ThrowOnInvalidBytes = $true)
-  return [System.Text.UTF8Encoding]::new($false, $ThrowOnInvalidBytes)
-}
-
-function Assert-SecretsJsonWithinLimits {
-  param(
-    [AllowEmptyString()][string]$Json,
-    [string]$Purpose = 'secrets JSON'
-  )
-  if ($null -eq $Json) { throw "$Purpose is empty" }
-  $byteCount = [System.Text.Encoding]::UTF8.GetByteCount($Json)
-  if ($byteCount -gt $script:SecretsJsonMaxBytes) {
-    throw "$Purpose exceeds $script:SecretsJsonMaxBytes bytes"
-  }
-
-  $depth = 0
-  $inString = $false
-  $escaped = $false
-  for ($i = 0; $i -lt $Json.Length; $i++) {
-    $code = [int][char]$Json[$i]
-    if ($inString) {
-      if ($escaped) {
-        $escaped = $false
-      } elseif ($code -eq 92) {
-        $escaped = $true
-      } elseif ($code -eq 34) {
-        $inString = $false
-      }
-      continue
-    }
-
-    if ($code -eq 34) {
-      $inString = $true
-    } elseif ($code -eq 123 -or $code -eq 91) {
-      $depth++
-      if ($depth -gt $script:SecretsJsonMaxDepth) {
-        throw "$Purpose exceeds max JSON depth $script:SecretsJsonMaxDepth"
-      }
-    } elseif ($code -eq 125 -or $code -eq 93) {
-      $depth--
-      if ($depth -lt 0) { throw "$Purpose has invalid JSON nesting" }
-    }
-  }
-  if ($inString -or $depth -ne 0) { throw "$Purpose has invalid JSON nesting" }
-}
-
-function ConvertFrom-SecretsJson {
-  param(
-    [AllowEmptyString()][string]$Json,
-    [string]$Purpose = 'secrets JSON'
-  )
-  Assert-SecretsJsonWithinLimits -Json $Json -Purpose $Purpose
-  try {
-    return ($Json | ConvertFrom-Json)
-  } catch {
-    throw "$Purpose is not valid JSON: $($_.Exception.Message)"
-  }
-}
-
-function Read-SecretsFileRaw {
-  param([string]$Path)
-  $item = Get-Item -LiteralPath $Path -Force
-  if ($item.Length -gt $script:SecretsJsonMaxBytes) {
-    throw "secrets file exceeds $script:SecretsJsonMaxBytes bytes: $Path"
-  }
-  return [System.IO.File]::ReadAllText($item.FullName, (Get-SecretsUtf8Encoding -ThrowOnInvalidBytes $true))
-}
-
-function Write-SecretsFileRaw {
-  param(
-    [string]$Path,
-    [AllowEmptyString()][string]$Content
-  )
-  [System.IO.File]::WriteAllText($Path, $Content, (Get-SecretsUtf8Encoding -ThrowOnInvalidBytes $false))
-}
-
-function Get-SecretsAclCacheStamp {
-  param([string]$Path)
-  try {
-    $item = Get-Item -LiteralPath $Path -Force
-    $full = [System.IO.Path]::GetFullPath($item.FullName).TrimEnd(
-      [System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-    return "$full|$($item.Length)|$($item.LastWriteTimeUtc.Ticks)"
-  } catch {
-    return "$Path|unreadable|$([DateTime]::UtcNow.Ticks)"
-  }
-}
+$script:SecretsAclChecked = $false
 
 function Test-SecretsFilePermissions {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path)) { return $true }
   try {
     $acl = Get-Acl -LiteralPath $Path
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $systemSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18').Value
+    $adminsSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544').Value
+    $broad = $acl.Access | Where-Object {
+      $_.AccessControlType -eq 'Allow' -and
+      $_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read
+    } | Where-Object {
+      try {
+        $sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        $sid -notin @($currentSid, $systemSid, $adminsSid)
+      } catch { $false }
+    }
+    if ($broad) {
+      $names = @($broad | ForEach-Object { [string]$_.IdentityReference })
+      Write-Warning "secrets.json: read access granted to non-owner accounts: $($names -join ', '). Consider restricting with: icacls `"$Path`" /inheritance:r /grant:r `"$($acl.Owner):R`""
+      return $false
+    }
+    return $true
   } catch {
     Write-Warning "secrets.json: unable to inspect file permissions for '$Path': $($_.Exception.Message)"
-    return $false
+    return $true
   }
-
-  $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  $systemSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18').Value
-  $adminsSid  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544').Value
-  $ownerSid = $null
-  try { $ownerSid = ([System.Security.Principal.NTAccount]::new($acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
-  $allowedSids = @($currentSid, $systemSid, $adminsSid, $ownerSid) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
-
-  $broad = $acl.Access | Where-Object {
-    $_.AccessControlType -eq 'Allow' -and
-    (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read) -ne 0)
-  } | Where-Object {
-    try {
-      $sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-      $sid -notin $allowedSids
-    } catch {
-      $true
-    }
-  }
-  if ($broad) {
-    $names = @($broad | ForEach-Object { [string]$_.IdentityReference })
-    Write-Warning "secrets.json: read access granted to non-owner accounts: $($names -join ', '). Consider restricting with: icacls `"$Path`" /inheritance:r /grant:r `"$($acl.Owner):R`""
-    return $false
-  }
-  return $true
 }
 
 function Get-Secret {
@@ -298,36 +200,22 @@ function Get-Secret {
     if (-not [string]::IsNullOrWhiteSpace($envVal)) { return $envVal }
   }
   $p = if (Get-Command Get-SecretsPath -ErrorAction SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' }
-  if (-not (Test-Path -LiteralPath $p)) { return $null }
-  $aclStamp = Get-SecretsAclCacheStamp -Path $p
-  if ($script:SecretsAclCheckStamp -ne $aclStamp) {
+  if (-not (Test-Path $p)) { return $null }
+  if (-not $script:SecretsAclChecked) {
+    $script:SecretsAclChecked = $true
     try { $null = Test-SecretsFilePermissions -Path $p } catch { Write-Warning "secrets.json: permission check failed: $($_.Exception.Message)" }
-    $script:SecretsAclCheckStamp = $aclStamp
   }
-
-  try {
-    $raw = Read-SecretsFileRaw -Path $p
-    $s = ConvertFrom-SecretsJson -Json $raw -Purpose "secrets file '$p'"
-  } catch {
-    Write-Warning "secrets.json: unable to read secrets file '$p': $($_.Exception.Message)"
-    return $null
-  }
-
+  try { $raw = Get-Content $p -Raw -Encoding UTF8 } catch { return $null }
+  try { $s = $raw | ConvertFrom-Json } catch { return $null }
   if ($s.PSObject.Properties.Name -contains '_dpapi') {
     try {
-      if ($s.PSObject.Properties.Name -notcontains 'data' -or [string]::IsNullOrWhiteSpace([string]$s.data)) {
-        throw 'DPAPI wrapper is missing data'
-      }
       Add-Type -AssemblyName System.Security
       $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
       $enc  = [Convert]::FromBase64String([string]$s.data)
       $dec  = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
       $json = [System.Text.Encoding]::UTF8.GetString($dec)
-      $s    = ConvertFrom-SecretsJson -Json $json -Purpose "DPAPI payload in '$p'"
-    } catch {
-      Write-Warning "secrets.json: failed to decrypt DPAPI-protected file '$p': $($_.Exception.Message)"
-      return $null
-    }
+      $s    = $json | ConvertFrom-Json
+    } catch { return $null }
   }
   if ($s.PSObject.Properties.Name -contains $Name) { return [string]$s.$Name }
   return $null
@@ -339,8 +227,8 @@ function Protect-SecretsAtRest {
   param([string]$Path = $null)
   if (-not $Path) { $Path = if (Get-Command Get-SecretsPath -EA SilentlyContinue) { Get-SecretsPath } else { Join-Path (Get-BridgeRoot) 'secrets.json' } }
   if (-not (Test-Path -LiteralPath $Path)) { throw "secrets file not found: $Path" }
-  $raw = Read-SecretsFileRaw -Path $Path
-  $obj = ConvertFrom-SecretsJson -Json $raw -Purpose "secrets file '$Path'"
+  $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+  try { $obj = $raw | ConvertFrom-Json } catch { throw "secrets file is not valid JSON: $_" }
   if ($obj.PSObject.Properties.Name -contains '_dpapi') { Write-Host 'Already DPAPI-protected.'; return }
   $bytes   = [System.Text.Encoding]::UTF8.GetBytes($raw)
   $entropy = [System.Text.Encoding]::UTF8.GetBytes('bridge-secrets-v1')
@@ -348,8 +236,8 @@ function Protect-SecretsAtRest {
   $enc  = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
   $b64  = [Convert]::ToBase64String($enc)
   $wrapper = [pscustomobject]@{ _dpapi = 1; data = $b64 }
-  $json = $wrapper | ConvertTo-Json -Compress -Depth 3
-  Write-SecretsFileRaw -Path $Path -Content $json
+  $json = $wrapper | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText($Path, $json, [System.Text.Encoding]::UTF8)
   Write-Host "secrets.json encrypted with DPAPI at: $Path"
 }
 
