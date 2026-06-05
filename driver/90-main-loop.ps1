@@ -1,6 +1,6 @@
 ﻿function Start-DriverMainLoop {
 # ---------- main loop ----------
-while ($true) {
+:mainDriverLoop while ($true) {
  try {
   . $script:DriverLoopPreflightBlock
   . $script:DriverLoopIdleClaimBlock

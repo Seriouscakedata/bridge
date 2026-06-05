@@ -2,14 +2,15 @@
   if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
   }
-  $taskActionEvidenceHelpers = @('Get-TaskActionEvidence', 'Get-CodexEvidenceRetryPlan')
-  $missingTaskActionEvidenceHelpers = @($taskActionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
-  if (@($missingTaskActionEvidenceHelpers).Count -gt 0) {
+  if ((-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) -or
+      (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue))) {
     . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
   }
-  $missingTaskActionEvidenceHelpers = @($taskActionEvidenceHelpers | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
-  if (@($missingTaskActionEvidenceHelpers).Count -gt 0) {
-    throw ('Missing task-action-evidence helper(s): ' + (@($missingTaskActionEvidenceHelpers) -join ', '))
+  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+    throw 'Missing task-action-evidence helper: Get-TaskActionEvidence'
+  }
+  if (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue)) {
+    throw 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan'
   }
 
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
@@ -80,6 +81,8 @@
     throw
   }
   $reply = [string]$turnResult.text
+  $replySafetyGatePattern = '(?m)^\s*\[\[SAFETY:\s*(.+?)\s*\]\]\s*$'
+  $replySafetyGateMatch = [regex]::Match([string]$reply, $replySafetyGatePattern)
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status) -FastLane:$fastLaneTurn
   $guardChannelSlug = [string]$Channel
   try { $guardChannelSlug = Normalize-ChannelSlug $guardChannelSlug } catch {}
@@ -121,13 +124,12 @@
     $turnSec = 0
     try { $turnSec = [int]$turnResult.duration } catch {}
     if ($turnSec -gt 0) {
-      $mutTaskAgentDuration = {
+      Update-State {
         param($s)
         $curSec = 0
         try { $curSec = [int]$s.task_agent_duration_sec } catch {}
         $s | Add-Member -NotePropertyName task_agent_duration_sec -NotePropertyValue ($curSec + $turnSec) -Force
-      }.GetNewClosure()
-      Update-State $mutTaskAgentDuration | Out-Null
+      } | Out-Null
     }
   } catch {}
   if ($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') {
@@ -234,8 +236,8 @@
       } else {
         $retryBacklogId = ''
         try { $retryBacklogId = [string]$stAction.current_backlog_id } catch {}
-        $retrySafety = [bool]([regex]::IsMatch([string]$reply, '(?m)^\s*\[\[SAFETY:\s*.+?\s*\]\]\s*$'))
-        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $retrySafety) {
+        $replyHasSafetyGateMarker = ($speaker -eq 'codex' -and $replySafetyGateMatch.Success)
+        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $replyHasSafetyGateMarker) {
           $curEvidenceRetries = 0
           try {
             if ($stAction.PSObject.Properties.Name -contains 'codex_evidence_retry_count') {
@@ -250,32 +252,30 @@
             $retryMaxAttempts = [int]$retryPlan.max_attempts
             try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence on attempt " + $retryAttempt + "/" + $retryMaxAttempts) } catch {}
             Add-Message -From system -Text ("🔁 Codex не оставил commit/diff evidence для backlog-задачи (attempt " + $retryAttempt + "/" + $retryMaxAttempts + ", repo=" + $repoLabel + "). Повторяю Codex после " + $delaySec + "с.") -Kind event | Out-Null
-            $mutCodexEvidenceRetry = {
+            Update-State {
               param($s)
               $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue $retryAttempt -Force
               $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
               $s.force_planner = $false
               $s.task_did_actions = $false
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-            }.GetNewClosure()
-            Update-State $mutCodexEvidenceRetry | Out-Null
+            } | Out-Null
             if ($delaySec -gt 0) { Start-Sleep -Seconds $delaySec }
-            # Safe: DriverLoopAgentTurnBlock is dot-sourced from Start-DriverMainLoop inside while ($true).
-            continue
+            # Safe: driver/90-main-loop.ps1 dot-sources this block under :mainDriverLoop.
+            continue mainDriverLoop
           } else {
             try { Set-TaskLastFailure -Kind no_action_evidence -Text ("Codex produced no commit/diff evidence after " + [int]$retryPlan.max_attempts + " attempts") } catch {}
             Add-Message -From system -Text ("🚫 Codex не оставил commit/diff evidence за " + [int]$retryPlan.max_attempts + " попытки. Не засчитываю действие; передаю планировщику для диагностики/переформулировки.") -Kind event | Out-Null
-            $mutCodexEvidenceExhausted = {
+            Update-State {
               param($s)
               $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
               $s.task_did_actions = $false
               $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
               $s.force_planner=$true
               $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-            }.GetNewClosure()
-            Update-State $mutCodexEvidenceExhausted | Out-Null
-            # Safe: DriverLoopAgentTurnBlock is dot-sourced from Start-DriverMainLoop inside while ($true).
-            continue
+            } | Out-Null
+            # Safe: driver/90-main-loop.ps1 dot-sources this block under :mainDriverLoop.
+            continue mainDriverLoop
           }
         }
       }
@@ -283,15 +283,15 @@
       $actionEvidenceError = $_.Exception.Message
       try { Set-TaskLastFailure -Kind action_evidence_error -Text ("Codex action evidence guard failed: " + $actionEvidenceError) } catch {}
       Add-Message -From system -Text ("🚫 Codex action evidence guard failed: " + $actionEvidenceError + ". Не засчитываю действие; передаю планировщику.") -Kind event | Out-Null
-      $mutActionEvidenceGuardError = {
+      Update-State {
         param($s)
         $s.task_did_actions = $false
         $s.force_planner = $true
         $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
         $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
-      }.GetNewClosure()
-      Update-State $mutActionEvidenceGuardError | Out-Null
-      continue
+      } | Out-Null
+      # Safe: driver/90-main-loop.ps1 dot-sources this block under :mainDriverLoop.
+      continue mainDriverLoop
     }
   }
 
@@ -361,11 +361,9 @@
 
   # Safety gate: intercept dangerous-action flag from Codex before processing reply
   if ($speaker -eq 'codex') {
-    $safetyPat = '(?m)^\s*\[\[SAFETY:\s*(.+?)\s*\]\]\s*$'
-    $safetyM = [regex]::Match([string]$reply, $safetyPat)
-    if ($safetyM.Success) {
-      $safetyDesc = $safetyM.Groups[1].Value.Trim()
-      $preReply = [regex]::Replace([string]$reply, $safetyPat, '').Trim()
+    if ($replySafetyGateMatch.Success) {
+      $safetyDesc = $replySafetyGateMatch.Groups[1].Value.Trim()
+      $preReply = [regex]::Replace([string]$reply, $replySafetyGatePattern, '').Trim()
       if (-not [string]::IsNullOrWhiteSpace($preReply)) {
         Add-Message -From codex -Text $preReply | Out-Null
       }

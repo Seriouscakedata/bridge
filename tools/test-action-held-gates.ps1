@@ -41,14 +41,20 @@ Check 'Codex evidence retry third miss exhausts limit' ((-not [bool]$retryFinal.
 
 $modeTransitionSource = Get-Content -LiteralPath (Join-Path $root 'driver\85-loop-mode-transitions.ps1') -Raw
 Check '85 DONE guard reads fresh action evidence' ($modeTransitionSource -match 'Get-TaskActionEvidence') $modeTransitionSource
+Check '85 DONE guard loads action evidence helper explicitly' ($modeTransitionSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $modeTransitionSource -notmatch 'modeTransitionEvidenceHelpers') $modeTransitionSource
 Check '85 DONE guard does not rely on stale task_did_actions or decision wrapper' ($modeTransitionSource -notmatch '\$stNoop\.task_did_actions' -and $modeTransitionSource -notmatch 'Get-TaskDoneEvidenceGateDecision') $modeTransitionSource
 Check '85 DONE guard fails closed when evidence check fails' ($modeTransitionSource -match '\$noopEvidenceChecked\s*=\s*\$false' -and $modeTransitionSource -match 'evidence_check_failed' -and $modeTransitionSource -match '\$plannerStatus\s*=\s*''CONTINUE''') $modeTransitionSource
 Check '85 DONE guard allows explicit non-action exceptions only' ($modeTransitionSource -match 'not_backlog_task' -and $modeTransitionSource -match 'project_autopilot' -and $modeTransitionSource -match 'project_backlog_created') $modeTransitionSource
 
 $agentTurnSource = Get-Content -LiteralPath (Join-Path $root 'driver\83-loop-agent-turn.ps1') -Raw
-Check '83 retry guard explicitly requires both action evidence helpers' ($agentTurnSource -match "\@\(\'Get-TaskActionEvidence\',\s*\'Get-CodexEvidenceRetryPlan\'\)") $agentTurnSource
+Check '83 retry guard explicitly requires both action evidence helpers' ($agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $agentTurnSource -match 'Get-Command\s+Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidence' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan') $agentTurnSource
 Check '83 action evidence has no COVERED bypass' ($agentTurnSource -notmatch 'Test-TaskActionEvidenceBypassMarker' -and $agentTurnSource -notmatch 'COVERED') $agentTurnSource
 Check '83 force_coder retry flag is set through Add-Member Force' ($agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$true\s+-Force' -and $agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$false\s+-Force' -and $agentTurnSource -notmatch "Properties\.Name\s+-contains\s+'force_coder'") $agentTurnSource
+Check '83 retry state updates do not use named closure wrappers' ($agentTurnSource -notmatch '\$mut(TaskAgentDuration|CodexEvidenceRetry|CodexEvidenceExhausted|ActionEvidenceGuardError)\s*=') $agentTurnSource
+Check '83 retry safety marker is not a commit/diff bypass' ($agentTurnSource -match '\$replySafetyGateMatch\s*=\s*\[regex\]::Match' -and $agentTurnSource -match '\$replyHasSafetyGateMarker\s*=\s*\(\$speaker\s+-eq\s+''codex''\s+-and\s+\$replySafetyGateMatch\.Success\)' -and $agentTurnSource -notmatch '\$retrySafety') $agentTurnSource
+
+$mainLoopSource = Get-Content -LiteralPath (Join-Path $root 'driver\90-main-loop.ps1') -Raw
+Check '83 retry continue targets the named main loop' ($mainLoopSource -match ':mainDriverLoop\s+while\s*\(\$true\)' -and $agentTurnSource -match 'continue\s+mainDriverLoop') $mainLoopSource
 
 $turnSetupSource = Get-Content -LiteralPath (Join-Path $root 'driver\82-loop-turn-setup.ps1') -Raw
 Check 'force_coder retry flag is consumed by turn setup' ($turnSetupSource -match '\$forceCoder\s*=\s*\[bool\]\$state\.force_coder' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ ''codex'' \}' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ Update-State \{ param\(\$s\) \$s\.force_coder=\$false \}') $turnSetupSource
