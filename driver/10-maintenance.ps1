@@ -341,7 +341,19 @@ function Start-AuditIfDue {
   if (Test-Path -LiteralPath $marker) {
     try {
       $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
-      if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($floorH)) { return }
+      # 2026-06-05 FIX (operator): once-per-window-OCCURRENCE, not a sliding floorHours.
+      # Bug: a sliding floorHours anchored on audit.last let an off-window/manual run (e.g. 19:13)
+      # push the next allowed run (19:13+20h=15:13) PAST the whole 01-06 night window, silently
+      # skipping the nightly audit. We are already inside the window here (checked above), so anchor
+      # to the START of the current window occurrence: skip only if the last audit already landed
+      # at/after this window opened. An earlier off-window run no longer blocks the night.
+      $nowD = Get-Date
+      $winStart = Get-Date -Hour $startH -Minute 0 -Second 0
+      if ($startH -gt $endH -and $nowD.Hour -le $endH) { $winStart = $winStart.AddDays(-1) }
+      if ($last -ge $winStart) { return }
+      # secondary anti-double-run guard: never re-run within floorH of a run that already happened
+      # AFTER the window opened (cheap protection if the window is ever misconfigured very wide).
+      if ($last -ge $winStart -and (($nowD - $last) -lt [TimeSpan]::FromHours($floorH))) { return }
     } catch {}
   }
   $auditScript = Join-Path $bridgeRoot 'tools\audit.ps1'
