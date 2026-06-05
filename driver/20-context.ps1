@@ -369,28 +369,15 @@ function Get-RecurrenceContext {
 function Format-Transcript {
   param([string]$TaskText = '')
   # Compressed context: a rolling summary of older messages + the hot window (full).
-  # Active-task fence (Atom 14): read state once — used for both fence check and summarized_seq.
-  $fenceState = Read-State
-  $summarizedSeq = [int]$fenceState.summarized_seq
-  $fenceActive = (-not [string]::IsNullOrWhiteSpace([string]$fenceState.current_task)) -and ([int]$fenceState.task_start_seq -gt 0)
-  $taskStartSeq = if ($fenceActive) { [int]$fenceState.task_start_seq } else { 0 }
   $labels = @{ claude='[PLANNER/Claude]'; codex='[CODER/Codex]'; user='[USER]'; system='[SYSTEM]' }
-  $pendingHiddenCount = 0
+  $summarizedSeq = [int](Read-State).summarized_seq
   $lines = foreach ($m in (Get-Messages -Since $summarizedSeq)) {
-    if ($fenceActive -and ([string]$m.from -eq 'user') -and ([int]$m.seq -gt $taskStartSeq)) {
-      $pendingHiddenCount++
-      continue
-    }
     $line = "$($labels[$m.from]): $($m.text)"
     $attPaths = @(Get-MessageAttachmentPaths $m)
     if ($attPaths.Count -gt 0) { $line += " (вложения: $($attPaths -join '; '))" }
     $line
   }
   $body = ($lines -join "`n`n")
-  if ($fenceActive -and $pendingHiddenCount -gt 0) {
-    $pendingNote = "[SYSTEM]: Pending operator message(s) after current task start are queued and hidden from this active task: $pendingHiddenCount"
-    $body = if ([string]::IsNullOrWhiteSpace($body)) { $pendingNote } else { $body + "`n`n" + $pendingNote }
-  }
   $summary = Read-Summary
   if ([string]::IsNullOrWhiteSpace($TaskText)) {
     try { $TaskText = [string](Read-State).current_task } catch { $TaskText = '' }

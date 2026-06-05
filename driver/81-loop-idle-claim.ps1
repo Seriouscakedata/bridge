@@ -1210,9 +1210,6 @@
       }
     }
   } else {
-    # Active task fence (Atom 14): while a task is running, do NOT advance last_user_seq.
-    # User messages that arrived after task_start_seq stay pending in the queue and will be
-    # claimed as the next task when the channel returns to idle. Advancing here would consume
-    # them silently, so they'd never be picked up.
+    if ($maxUser -gt [int]$state.last_user_seq) { Update-State ({ param($s) $s.last_user_seq=$maxUser }.GetNewClosure()) | Out-Null }
   }
 }
