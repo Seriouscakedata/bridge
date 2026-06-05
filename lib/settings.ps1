@@ -145,6 +145,8 @@ function Get-AdvancedSettings {
     'workpackExec.serialProtectedEnabled' = $true
     'workpackExec.serialProtectedMinItems' = 3
     'workpackExec.serialProtectedMaxItems' = 8
+    'channelMaintenance.nonMainBrainstormEnabled' = $false
+    'channelMaintenance.nonMainAuditEnabled' = $false
   }
   try {
     $cfg = Get-BridgeConfig
@@ -205,6 +207,8 @@ function Test-AdvancedSettingValue {
     'workpackExec.serialProtectedEnabled' = @{ type='bool'                    }
     'workpackExec.serialProtectedMinItems' = @{ type='int';   min=2;   max=24   }
     'workpackExec.serialProtectedMaxItems' = @{ type='int';   min=2;   max=40   }
+    'channelMaintenance.nonMainBrainstormEnabled' = @{ type='bool'                    }
+    'channelMaintenance.nonMainAuditEnabled' = @{ type='bool'                    }
   }
   if (-not $ranges.ContainsKey($Key)) { return @{ ok=$false; reason="unknown key" } }
   $r = $ranges[$Key]
@@ -246,7 +250,8 @@ function Set-AdvancedSetting {
     'backlogPack.cooldownMinutes','backlogPack.minItems',
     'backlogPack.dedupeEnabled','backlogPack.dedupeMinGroupSize',
     'workpackExec.enabled','workpackExec.minItems','workpackExec.maxItems','workpackExec.includeProtected',
-    'workpackExec.serialProtectedEnabled','workpackExec.serialProtectedMinItems','workpackExec.serialProtectedMaxItems'
+    'workpackExec.serialProtectedEnabled','workpackExec.serialProtectedMinItems','workpackExec.serialProtectedMaxItems',
+    'channelMaintenance.nonMainBrainstormEnabled','channelMaintenance.nonMainAuditEnabled'
   )
   $h = @{}
   $s = Get-Settings

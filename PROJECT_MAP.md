@@ -51,6 +51,8 @@ Task Scheduler: ClaudeCodexBridge
 - `private-community`: внешний проект закрытого комьюнити. `project_root` = `C:\Users\rafie\bridge-projects\private-community`.
 - `travel`: бывший учебный внешний проект, сейчас архивный/не основной.
 - Новые вкладки должны повторять эту модель: один канал, один корень проекта, отдельная память, отдельный индекс кода, отдельный контекст.
+- Фоновый audit/brainstorm для всех каналов кроме `main` выключен по умолчанию: `channelMaintenance.nonMainAuditEnabled=false`,
+  `channelMaintenance.nonMainBrainstormEnabled=false`. `main` этими флагами не ограничивается.
 
 Ключевые функции скоупа в `lib/channels.ps1`:
 
@@ -178,6 +180,10 @@ Readiness проекта считается по мягкому гейту:
 - `lib/postmortem.ps1`: разбор провалов задач/коммитов.
 - `reflect.ps1`: entrypoint рефлексии.
 - `lib/architect.ps1`: architecture critique, deep-think, capability matrix, thinking journal.
+- `config.channelMaintenance`: `main` всегда может запускать nightly audit и idle-brainstorm. Для не-main каналов
+  автоматические `Start-AuditIfDue`, Architect, DeepThink, thinking reflection, Reflect и TechRadar включаются только
+  явными флагами `nonMainAuditEnabled=true` / `nonMainBrainstormEnabled=true`. Health-аудитор `lib/auditor.ps1`
+  остаётся отдельным механизмом.
 
 ### Исследования, foundry, инструменты
 

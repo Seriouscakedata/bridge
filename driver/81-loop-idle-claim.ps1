@@ -360,9 +360,13 @@
       # closed tasks accumulated since last run. Architect proposes STRUCTURAL gaps as
       # backlog ideas (tag=architect status=new -> needs user approval). Different from
       # reflect.ps1 (leaf-level tweaks) and Doctor (acute repair).
-      try { Start-ArchitectIfDue -Mode 'normal' } catch {}
-      try { Start-DeepThinkIfDue } catch {}
-      try { Start-ThinkingReflectionIfDue } catch {}   # internal-thinking step 3: deep reflection -> one insight -> journal
+      $brainstormMaintenanceEnabled = $false
+      try { $brainstormMaintenanceEnabled = [bool](Test-ChannelMaintenanceEnabled -Kind 'brainstorm' -Channel $Channel) } catch { $brainstormMaintenanceEnabled = ([string]$Channel -eq 'main') }
+      if ($brainstormMaintenanceEnabled) {
+        try { Start-ArchitectIfDue -Mode 'normal' } catch {}
+        try { Start-DeepThinkIfDue } catch {}
+        try { Start-ThinkingReflectionIfDue } catch {}   # internal-thinking step 3: deep reflection -> one insight -> journal
+      }
       try { Start-AuditorIfDue } catch {}
       try {
         if ([string]$Channel -eq 'main') {
@@ -1075,8 +1079,12 @@
         try { Start-AuditIfDue } catch {}
         try { Start-FeatureVerifierIfDue } catch {}
         try { Update-FeatureActivations | Out-Null } catch {}
-        try { Start-ReflectIfDue } catch {}
-        try { Start-TechRadarIfDue } catch {}
+        $brainstormMaintenanceEnabled = $false
+        try { $brainstormMaintenanceEnabled = [bool](Test-ChannelMaintenanceEnabled -Kind 'brainstorm' -Channel $Channel) } catch { $brainstormMaintenanceEnabled = ([string]$Channel -eq 'main') }
+        if ($brainstormMaintenanceEnabled) {
+          try { Start-ReflectIfDue } catch {}
+          try { Start-TechRadarIfDue } catch {}
+        }
         try { Start-CanaryIfDue } catch {}
         # 🧹 Anti-junk hygiene: archive unclaimed 'new' ideas older than ideaStaleDays. Throttled to
         # once per 24h via control/stale-sweep.last so it's near-free on the idle path.

@@ -298,6 +298,38 @@ function Test-AuditMaintenanceBusy {
   return $false
 }
 
+function Test-ChannelMaintenanceEnabled {
+  param(
+    [ValidateSet('audit','brainstorm')]
+    [string]$Kind,
+    [string]$Channel = ''
+  )
+
+  $slug = $Channel
+  try {
+    if ([string]::IsNullOrWhiteSpace($slug) -and (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue)) {
+      $slug = [string](Get-EffectiveChannel)
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'main' }
+  try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $slug = Normalize-ChannelSlug $slug } } catch {}
+  if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'main' }
+  if ($slug -eq 'main') { return $true }
+
+  $field = if ($Kind -eq 'audit') { 'nonMainAuditEnabled' } else { 'nonMainBrainstormEnabled' }
+  $enabled = $false
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'channelMaintenance') -and $cfg.channelMaintenance) {
+      $node = $cfg.channelMaintenance
+      if (($node.PSObject.Properties.Name -contains $field) -and $null -ne $node.$field) {
+        $enabled = [bool]$node.$field
+      }
+    }
+  } catch {}
+  return [bool]$enabled
+}
+
 function Start-AuditIfDue {
   # Run the daily audit for this driver's channel during the configured night window:
   #   - audit.enabled in config.json gates the whole thing.
@@ -335,6 +367,7 @@ function Start-AuditIfDue {
   try { $auditChannel = [string](Get-EffectiveChannel) } catch {}
   if ([string]::IsNullOrWhiteSpace($auditChannel)) { $auditChannel = 'main' }
   try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $auditChannel = Normalize-ChannelSlug $auditChannel } } catch {}
+  if (-not (Test-ChannelMaintenanceEnabled -Kind 'audit' -Channel $auditChannel)) { return }
   $auditDir = Get-AuditMaintenanceDir -Channel $auditChannel
   $marker   = Join-Path $auditDir 'audit.last'
   $waitMarker = Join-Path $auditDir 'audit.waiting'

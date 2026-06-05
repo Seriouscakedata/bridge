@@ -186,6 +186,10 @@
       { "role": "dependency-model", "model": "deepseek-v4-flash", "timeoutSec": 120 }
     ]
   },
+  "channelMaintenance": {
+    "nonMainBrainstormEnabled": false,
+    "nonMainAuditEnabled": false
+  },
   "chunking": {
     "enabled": true,
     "maxChunksPerTask": 10
