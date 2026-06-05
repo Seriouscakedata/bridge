@@ -32,8 +32,15 @@ $ErrorActionPreference = 'Continue'
 # tools/auto/. MUST stay at TOP LEVEL -- dot-sourcing inside a function would trap the
 # tool functions in that function's local scope instead of the engine's script scope.
 # Get-ActiveAutoToolPaths is pure + best-effort: broken/missing tools are silently
-# dropped (re-validated names, parse-checked) so a bad tool can never block the engine.
-try { foreach ($p in (Get-ActiveAutoToolPaths)) { . $p } } catch {}
+# dropped (re-validated names, BOM + parse + hash checked) so a bad tool can never
+# block the engine. Re-check immediately before dot-source to close TOCTOU gaps.
+try {
+  foreach ($p in (Get-ActiveAutoToolPaths)) {
+    try {
+      if (Test-AutoToolLoadReady -Path $p) { . $p }
+    } catch {}
+  }
+} catch {}
 
 # Resolve and lock the channel for this driver process. If -Channel wasn't passed
 # (legacy single-driver mode or supervisor before update), fall back to active marker.
