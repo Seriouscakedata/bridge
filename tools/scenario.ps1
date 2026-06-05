@@ -306,6 +306,11 @@ if (-not ($Name -match '^[a-z0-9_-]+$')) {
   exit 2
 }
 
+if ($Name -eq 'features-registry') {
+  & (Join-Path $root 'tools\check-features-registry.ps1') -Url $Url
+  exit $LASTEXITCODE
+}
+
 $scenarioPath = Join-Path $root ('tools\scenarios\' + $Name + '.js')
 if (-not (Test-Path -LiteralPath $scenarioPath -PathType Leaf)) {
   Write-Error "Scenario file not found: $scenarioPath"
