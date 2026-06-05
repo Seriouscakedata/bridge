@@ -45,6 +45,7 @@
     $conflicts = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'conflict_skip_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'conflict_skips' -Default 0))
     $touches = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'touch_skip_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'touch_skips' -Default 0))
     $protected = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'protected_count' -Default (Get-DriverWorkpackReportValue -Obj $Report -Name 'protected' -Default 0))
+    $governorDeferred = [int](Get-DriverWorkpackReportValue -Obj $Report -Name 'governor_deferred_count' -Default 0)
     $ids = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_ids' -Default @()) -Max 8
     $groups = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_groups' -Default @()) -Max 6
     $lanes = Format-DriverWorkpackReportArray -Value (Get-DriverWorkpackReportValue -Obj $Report -Name 'selected_lanes' -Default @()) -Max 6
@@ -63,17 +64,20 @@
     if ($barrier -gt 0) { $parts += ('structural=' + $barrier) }
     if (($conflicts + $touches) -gt 0) { $parts += ('conflicts=' + ($conflicts + $touches)) }
     if ($protected -gt 0) { $parts += ('protected=' + $protected) }
+    if ($governorDeferred -gt 0) { $parts += ('governor_deferred=' + $governorDeferred) }
     if ($details) {
       $depText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'dependency_wait' -Default @())
       $conflictText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'conflicts' -Default @())
       $structText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'structural_barriers' -Default @())
       $protText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'protected' -Default @())
       $cpText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'control_plane' -Default @())
+      $govText = Format-DriverWorkpackReasonItems -Items (Get-DriverWorkpackReportValue -Obj $details -Name 'governor_deferred' -Default @())
       if (-not [string]::IsNullOrWhiteSpace($depText)) { $parts += ('deps=' + $depText) }
       if (-not [string]::IsNullOrWhiteSpace($conflictText)) { $parts += ('overlap=' + $conflictText) }
       if (-not [string]::IsNullOrWhiteSpace($structText)) { $parts += ('barrier=' + $structText) }
       if (-not [string]::IsNullOrWhiteSpace($protText)) { $parts += ('protected_reason=' + $protText) }
       if (-not [string]::IsNullOrWhiteSpace($cpText)) { $parts += ('control_plane=' + $cpText) }
+      if (-not [string]::IsNullOrWhiteSpace($govText)) { $parts += ('governor=' + $govText) }
     }
     if (-not [string]::IsNullOrWhiteSpace($detail)) { $parts += ('detail=' + $detail) }
     return ($parts -join '; ')
@@ -742,7 +746,10 @@
               $ids = @()
               try { $ids += @($claimability.control_plane_ids | ForEach-Object { [string]$_ }) } catch {}
               try { $ids += @($claimability.project_scope_ids | ForEach-Object { [string]$_ }) } catch {}
-              $sig = ([string]$Channel + ':' + [int]$claimability.approved_count + ':' + [int]$claimability.control_plane_blocked + ':' + [int]$claimability.project_scope_blocked + ':' + ([string]::Join(',', @($ids | Select-Object -First 8))))
+              $governorDeferredItems = @()
+              try { $governorDeferredItems = @($claimability.governor_deferred) } catch { $governorDeferredItems = @() }
+              $governorIds = @($governorDeferredItems | ForEach-Object { [string](Get-DriverWorkpackReportValue -Obj $_ -Name 'id' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+              $sig = ([string]$Channel + ':' + [int]$claimability.approved_count + ':' + [int]$claimability.control_plane_blocked + ':' + [int]$claimability.project_scope_blocked + ':' + [int]$claimability.governor_deferred_count + ':' + ([string]::Join(',', @((@($ids) + @($governorIds)) | Select-Object -First 8))))
               $nowClaimability = [DateTime]::UtcNow
               $dueClaimability = $false
               if ([string]$script:LastBacklogClaimabilitySignature -ne $sig) {
@@ -764,10 +771,18 @@
                   control_plane = [int]$claimability.control_plane_blocked
                   project_scope = [int]$claimability.project_scope_blocked
                   other = [int]$claimability.other_blocked
+                  governor_deferred = [int]$claimability.governor_deferred_count
+                  governor_dropped = [int]$claimability.governor_dropped_count
                   control_plane_ids = @($claimability.control_plane_ids)
                   project_scope_ids = @($claimability.project_scope_ids)
+                  governor_deferred_items = @($governorDeferredItems)
                 })
-                Add-Message -From system -Text ("🧭 Backlog claimability: approved=" + [int]$claimability.approved_count + ", runnable=0; control-plane blocked=" + [int]$claimability.control_plane_blocked + ", project-scope blocked=" + [int]$claimability.project_scope_blocked + ". Обычная автономия не исполняет эти задачи без operator tag / bridge-self canary gate.") -Kind event | Out-Null
+                if ($governorDeferredItems.Count -gt 0) {
+                  $gd = $governorDeferredItems[0]
+                  Add-Message -From system -Text ("🧭 Backlog claim deferred: " + [string](Get-DriverWorkpackReportValue -Obj $gd -Name 'id' -Default '') + " " + [string](Get-DriverWorkpackReportValue -Obj $gd -Name 'reason' -Default '') + " " + [string](Get-DriverWorkpackReportValue -Obj $gd -Name 'detail' -Default '')) -Kind event | Out-Null
+                } else {
+                  Add-Message -From system -Text ("🧭 Backlog claimability: approved=" + [int]$claimability.approved_count + ", runnable=0; control-plane blocked=" + [int]$claimability.control_plane_blocked + ", project-scope blocked=" + [int]$claimability.project_scope_blocked + ". Обычная автономия не исполняет эти задачи без operator tag / bridge-self canary gate.") -Kind event | Out-Null
+                }
               }
             }
           }

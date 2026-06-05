@@ -8,6 +8,7 @@ $script:BacklogModuleDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot))
 
 foreach ($script:BacklogModuleName in @(
   'backlog-io.ps1',
+  'backlog-governor.ps1',
   'backlog-crud.ps1',
   'backlog-dedup.ps1',
   'backlog-core.ps1',

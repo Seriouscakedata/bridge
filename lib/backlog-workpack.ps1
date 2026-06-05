@@ -1827,6 +1827,15 @@ function New-BacklogWorkpackFrontierReasonDetails {
         detail = [string]$_.block_detail
       }
     })
+    governor_deferred = @(Get-BacklogWorkpackCandidateReasonItems -Candidates $Candidates -Reason 'governor-deferred' | ForEach-Object {
+      [pscustomobject][ordered]@{
+        id = [string]$_.id
+        slug = [string]$_.slug
+        detail = [string]$_.block_detail
+        touch_set = @($_.touch_set)
+        evidence = (Get-BacklogPackObjectValue -Obj $_ -Name 'governor_evidence' -Default $null)
+      }
+    })
   }
 }
 
@@ -1872,7 +1881,19 @@ function Format-BacklogWorkpackFrontierReasonDetail {
       if ($ids.Count -eq 0) { return $selectedText + '; protected core/safety candidates dominate the frontier' }
       return $selectedText + '; protected skipped: ' + ($ids -join ', ') + ' (use protected serial/admitted bridge-self path)'
     }
+    'governor-deferred' {
+      $parts = @()
+      foreach ($g in @($Details.governor_deferred | Select-Object -First 6)) {
+        $parts += (([string]$g.id) + ' -> ' + [string]$g.detail)
+      }
+      if ($parts.Count -eq 0) { return $selectedText + '; queue governor deferred candidate(s)' }
+      return $selectedText + '; governor_deferred: ' + ($parts -join '; ')
+    }
     default {
+      if ($Details -and @($Details.governor_deferred).Count -gt 0) {
+        $parts = @($Details.governor_deferred | Select-Object -First 6 | ForEach-Object { ([string]$_.id) + ' -> ' + [string]$_.detail })
+        return $selectedText + '; governor_deferred: ' + ($parts -join '; ')
+      }
       if ($Details -and @($Details.control_plane).Count -gt 0) {
         $ids = @($Details.control_plane | ForEach-Object { [string]$_.id } | Select-Object -First 8)
         return $selectedText + '; control-plane blocked: ' + ($ids -join ', ')
@@ -1937,6 +1958,11 @@ function Resolve-BacklogWorkpackFrontier {
     }
   )
   $projectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed)
+  $governorActiveItems = @(Get-BacklogGovernorActiveItems -Items $allItems)
+  $governorManualLocks = @(Get-BacklogGovernorManualLocks)
+  $governorDeferred = 0
+  $governorDropped = 0
+  $governorDirty = $false
   $candidateItems = @(
     $withWorkpack |
     Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
@@ -1950,6 +1976,34 @@ function Resolve-BacklogWorkpackFrontier {
     $candidate = New-BacklogWorkpackCandidateReport -Item $item
     [void]$candidateReports.Add($candidate)
     if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $candidateById[[string]$candidate.id] = $candidate }
+    $governorVerdict = $null
+    try { $governorVerdict = Test-BacklogGovernorClaimable -Item $item -ActiveItems $governorActiveItems -ManualLocks $governorManualLocks } catch { $governorVerdict = $null }
+    if ($governorVerdict) {
+      $candidate | Add-Member -NotePropertyName governor_evidence -NotePropertyValue $governorVerdict.evidence -Force
+      Set-BacklogObjectProperty -Item $item -Name 'governor_claim_evidence' -Value $governorVerdict.evidence
+      if ([string]$governorVerdict.action -eq 'drop') {
+        Set-BacklogGovernorDrop -Item $item -Verdict $governorVerdict -Phase 'workpack-frontier'
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'governor-dropped' -Detail ([string]$governorVerdict.detail)
+        $governorDropped++
+        $governorDirty = $true
+        continue
+      } elseif ([string]$governorVerdict.action -eq 'defer') {
+        Set-BacklogGovernorDeferred -Item $item -Verdict $governorVerdict -Phase 'workpack-frontier'
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'governor-deferred' -Detail ([string]$governorVerdict.reason + ': ' + [string]$governorVerdict.detail)
+        $governorDeferred++
+        $governorDirty = $true
+        continue
+      } else {
+        Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+          action = 'allow'
+          reason = [string]$governorVerdict.reason
+          detail = [string]$governorVerdict.detail
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          evidence = $governorVerdict.evidence
+        })
+        $governorDirty = $true
+      }
+    }
     $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -ProjectScopeAllowed $projectScopeAllowed
     if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $eligibilityById[[string]$candidate.id] = $eligibility }
     if (-not ($eligibility -and [bool]$eligibility.eligible)) {
@@ -1963,9 +2017,11 @@ function Resolve-BacklogWorkpackFrontier {
     Where-Object {
       $cid = [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '')
       $elig = if ($eligibilityById.ContainsKey($cid)) { $eligibilityById[$cid] } else { $null }
-      ($elig -and [bool]$elig.eligible)
+      $candidate = if ($candidateById.ContainsKey($cid)) { $candidateById[$cid] } else { $null }
+      ($elig -and [bool]$elig.eligible -and -not ($candidate -and [bool]$candidate.blocked))
     }
   )
+  if ($governorDirty) { Save-Backlog $allItems }
 
   $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
   $selected = New-Object 'System.Collections.Generic.List[object]'
@@ -2065,7 +2121,9 @@ function Resolve-BacklogWorkpackFrontier {
   } elseif ($withWorkpack.Count -lt [int]$Config.minItems) {
     $reason = 'not-enough-workpack'
   } elseif ($eligible.Count -lt [int]$Config.minItems) {
-    if (($protected.Count -ge [int]$Config.minItems) -and (-not [bool]$Config.includeProtected)) {
+    if ($governorDeferred -gt 0) {
+      $reason = 'governor-deferred'
+    } elseif (($protected.Count -ge [int]$Config.minItems) -and (-not [bool]$Config.includeProtected)) {
       $reason = 'protected-dominant'
     } else {
       $reason = 'not-enough-eligible'
@@ -2082,6 +2140,8 @@ function Resolve-BacklogWorkpackFrontier {
     $reason = 'dependency-wait'
   } elseif ($structuralWait -gt 0) {
     $reason = 'structural-barrier'
+  } elseif ($governorDeferred -gt 0) {
+    $reason = 'governor-deferred'
   }
 
   foreach ($candidate in @($candidateReports.ToArray())) {
@@ -2123,6 +2183,8 @@ function Resolve-BacklogWorkpackFrontier {
     structural_wait_count = [int]$structuralWait
     conflict_skip_count   = [int]$conflictSkips
     touch_skip_count      = [int]$touchSkips
+    governor_deferred_count = [int]$governorDeferred
+    governor_dropped_count = [int]$governorDropped
     batch_available       = [bool]$batchAvailable
     parallel_required     = [bool]$batchAvailable
     reason                = [string]$reason
@@ -2152,6 +2214,8 @@ function Resolve-BacklogWorkpackFrontier {
     structural_wait_count = $structuralWait
     conflict_skip_count = $conflictSkips
     touch_skip_count = $touchSkips
+    governor_deferred_count = $governorDeferred
+    governor_dropped_count = $governorDropped
     candidates = @($candidateArr)
     report = $report
   }
@@ -2224,6 +2288,11 @@ function Resolve-BacklogProtectedSerialFrontier {
     }
   )
   $projectScopeAllowed = [bool](Test-BacklogWorkpackProjectScopeAllowed)
+  $governorActiveItems = @(Get-BacklogGovernorActiveItems -Items $allItems)
+  $governorManualLocks = @(Get-BacklogGovernorManualLocks)
+  $governorDeferred = 0
+  $governorDropped = 0
+  $governorDirty = $false
   $candidateItems = @(
     $protected |
     Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
@@ -2237,6 +2306,34 @@ function Resolve-BacklogProtectedSerialFrontier {
     $candidate = New-BacklogWorkpackCandidateReport -Item $item
     [void]$candidateReports.Add($candidate)
     if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $candidateById[[string]$candidate.id] = $candidate }
+    $governorVerdict = $null
+    try { $governorVerdict = Test-BacklogGovernorClaimable -Item $item -ActiveItems $governorActiveItems -ManualLocks $governorManualLocks } catch { $governorVerdict = $null }
+    if ($governorVerdict) {
+      $candidate | Add-Member -NotePropertyName governor_evidence -NotePropertyValue $governorVerdict.evidence -Force
+      Set-BacklogObjectProperty -Item $item -Name 'governor_claim_evidence' -Value $governorVerdict.evidence
+      if ([string]$governorVerdict.action -eq 'drop') {
+        Set-BacklogGovernorDrop -Item $item -Verdict $governorVerdict -Phase 'protected-serial-frontier'
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'governor-dropped' -Detail ([string]$governorVerdict.detail)
+        $governorDropped++
+        $governorDirty = $true
+        continue
+      } elseif ([string]$governorVerdict.action -eq 'defer') {
+        Set-BacklogGovernorDeferred -Item $item -Verdict $governorVerdict -Phase 'protected-serial-frontier'
+        Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'governor-deferred' -Detail ([string]$governorVerdict.reason + ': ' + [string]$governorVerdict.detail)
+        $governorDeferred++
+        $governorDirty = $true
+        continue
+      } else {
+        Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+          action = 'allow'
+          reason = [string]$governorVerdict.reason
+          detail = [string]$governorVerdict.detail
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          evidence = $governorVerdict.evidence
+        })
+        $governorDirty = $true
+      }
+    }
     $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -AllowProtected -ProjectScopeAllowed $projectScopeAllowed
     if (-not [string]::IsNullOrWhiteSpace([string]$candidate.id)) { $eligibilityById[[string]$candidate.id] = $eligibility }
     if (-not ($eligibility -and [bool]$eligibility.eligible)) {
@@ -2253,6 +2350,7 @@ function Resolve-BacklogProtectedSerialFrontier {
     $itemId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
     $candidate = if ($candidateById.ContainsKey($itemId)) { $candidateById[$itemId] } else { $null }
     $eligibility = if ($eligibilityById.ContainsKey($itemId)) { $eligibilityById[$itemId] } else { $null }
+    if ($candidate -and [bool]$candidate.blocked) { continue }
     if (-not ($eligibility -and [bool]$eligibility.eligible)) { continue }
     if (-not (Test-BacklogProtectedSerialCandidate -Item $item -Config $Config)) { continue }
     $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
@@ -2328,12 +2426,14 @@ function Resolve-BacklogProtectedSerialFrontier {
   } elseif ($eligible.Count -lt [int]$Config.serialProtectedMinItems) {
     if ($dependencyWait -gt 0) { $reason = 'dependency-wait' }
     elseif ($structuralWait -gt 0) { $reason = 'structural-barrier' }
+    elseif ($governorDeferred -gt 0) { $reason = 'governor-deferred' }
     else { $reason = 'not-enough-eligible' }
   } elseif ($batchAvailable) {
     $reason = 'serial-batch-available'
   } else {
     $reason = 'not-enough-same-root'
   }
+  if ($governorDirty) { Save-Backlog $allItems }
 
   $serialOrder = 0
   foreach ($item in @($selected)) {
@@ -2378,6 +2478,8 @@ function Resolve-BacklogProtectedSerialFrontier {
     max_items = [int]$Config.serialProtectedMaxItems
     dependency_wait_count = [int]$dependencyWait
     structural_wait_count = [int]$structuralWait
+    governor_deferred_count = [int]$governorDeferred
+    governor_dropped_count = [int]$governorDropped
     conflict_skip_count = 0
     touch_skip_count = 0
     batch_available = [bool]$batchAvailable
@@ -2409,6 +2511,8 @@ function Resolve-BacklogProtectedSerialFrontier {
     protected_count = [int]$protected.Count
     dependency_wait_count = [int]$dependencyWait
     structural_wait_count = [int]$structuralWait
+    governor_deferred_count = [int]$governorDeferred
+    governor_dropped_count = [int]$governorDropped
     selected_root = [string]$selectedKey
     candidates = @($candidateArr)
     report = $report

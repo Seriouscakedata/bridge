@@ -748,11 +748,190 @@ function Test-BacklogApprovedItemClaimable {
   return [pscustomobject]@{ claimable=$true; reason=$claimReason; admission=$null }
 }
 
+function Get-BacklogGovernorManualLocks {
+  $locks = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($path in @(
+      (Join-Path (Get-BacklogFallbackBridgeRoot) 'state\manual-locks.json'),
+      (Join-Path (Get-BacklogControlDir) 'manual-locks.json')
+    )) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+    try {
+      $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+      if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+      $parsed = $raw | ConvertFrom-Json
+      $arr = @()
+      if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+        $arr = @($parsed)
+      } else {
+        $inner = Get-BacklogPackObjectValue -Obj $parsed -Name 'locks' -Default $null
+        if ($null -eq $inner) { $inner = Get-BacklogPackObjectValue -Obj $parsed -Name 'manual_locks' -Default $null }
+        if ($null -eq $inner) { $inner = Get-BacklogPackObjectValue -Obj $parsed -Name 'items' -Default $null }
+        if ($null -ne $inner) { $arr = @($inner) } else { $arr = @($parsed) }
+      }
+      foreach ($lock in @($arr)) {
+        if ($null -ne $lock) { [void]$locks.Add($lock) }
+      }
+    } catch {}
+  }
+  return @($locks.ToArray())
+}
+
+function Get-BacklogGovernorActiveItems {
+  param([object[]]$Items)
+  return @($Items | Where-Object {
+    $st = ([string](Get-BacklogPackObjectValue -Obj $_ -Name 'status' -Default '')).ToLowerInvariant()
+    ($st -in @('running','working'))
+  })
+}
+
+function Set-BacklogGovernorDrop {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [Parameter(Mandatory=$true)]$Verdict,
+    [string]$Phase = 'claim'
+  )
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $reason = 'queue-governor:' + [string]$Verdict.reason
+  Set-BacklogObjectProperty -Item $Item -Name 'status' -Value 'auto-dropped'
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_drop_reason' -Value $reason
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_drop_detail' -Value ([string]$Verdict.detail)
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_drop_evidence' -Value $Verdict.evidence
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+    action = 'drop'
+    reason = [string]$Verdict.reason
+    detail = [string]$Verdict.detail
+    ts = $now
+    evidence = $Verdict.evidence
+  })
+  Set-BacklogObjectProperty -Item $Item -Name 'auto_curator' -Value ([pscustomobject][ordered]@{
+    verdict = 'drop'
+    confidence = 1.0
+    reason = $reason
+    model = 'queue-governor-v1'
+    ts = $now
+    judged_at_sha = (Get-BacklogCurrentSha)
+  })
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'governor-auto-drop'
+      item_id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+      reason = [string]$Verdict.reason
+      detail = [string]$Verdict.detail
+      evidence = $Verdict.evidence
+      phase = [string]$Phase
+    })
+  } catch {}
+}
+
+function Set-BacklogGovernorDeferred {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [Parameter(Mandatory=$true)]$Verdict,
+    [string]$Phase = 'claim'
+  )
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_deferred_reason' -Value ([string]$Verdict.reason)
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_deferred_detail' -Value ([string]$Verdict.detail)
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_deferred_evidence' -Value $Verdict.evidence
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_deferred_at' -Value $now
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+    action = 'defer'
+    reason = [string]$Verdict.reason
+    detail = [string]$Verdict.detail
+    ts = $now
+    evidence = $Verdict.evidence
+  })
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'governor-deferred'
+      item_id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+      reason = [string]$Verdict.reason
+      detail = [string]$Verdict.detail
+      evidence = $Verdict.evidence
+      phase = [string]$Phase
+    })
+  } catch {}
+}
+
+function Invoke-BacklogGovernorFilterApprovedItems {
+  param(
+    [object[]]$Items,
+    [bool]$ProjectScopeAllowed = $false,
+    [string]$Phase = 'claim'
+  )
+  $allowed = New-Object 'System.Collections.Generic.List[object]'
+  $deferred = New-Object 'System.Collections.Generic.List[object]'
+  $dropped = New-Object 'System.Collections.Generic.List[object]'
+  $blocked = New-Object 'System.Collections.Generic.List[object]'
+  $dirty = $false
+  $activeItems = @(Get-BacklogGovernorActiveItems -Items $Items)
+  $manualLocks = @(Get-BacklogGovernorManualLocks)
+  foreach ($item in @($Items)) {
+    if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '') -ne 'approved') { continue }
+    $base = Test-BacklogApprovedItemClaimable -Item $item -ProjectScopeAllowed $ProjectScopeAllowed
+    if (-not ($base -and [bool]$base.claimable)) {
+      [void]$blocked.Add([pscustomobject][ordered]@{
+        id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+        reason = [string]$base.reason
+        detail = ''
+      })
+      continue
+    }
+
+    $verdict = Test-BacklogGovernorClaimable -Item $item -ActiveItems $activeItems -ManualLocks $manualLocks
+    Set-BacklogObjectProperty -Item $item -Name 'governor_last_checked_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+    Set-BacklogObjectProperty -Item $item -Name 'governor_claim_evidence' -Value $verdict.evidence
+    if ([string]$verdict.action -eq 'allow') {
+      Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+        action = 'allow'
+        reason = [string]$verdict.reason
+        detail = [string]$verdict.detail
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        evidence = $verdict.evidence
+      })
+      [void]$allowed.Add($item)
+      $dirty = $true
+      continue
+    }
+    if ([string]$verdict.action -eq 'drop') {
+      Set-BacklogGovernorDrop -Item $item -Verdict $verdict -Phase $Phase
+      [void]$dropped.Add([pscustomobject][ordered]@{
+        id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+        reason = [string]$verdict.reason
+        detail = [string]$verdict.detail
+        evidence = $verdict.evidence
+      })
+      $dirty = $true
+      continue
+    }
+    Set-BacklogGovernorDeferred -Item $item -Verdict $verdict -Phase $Phase
+    [void]$deferred.Add([pscustomobject][ordered]@{
+      id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+      reason = [string]$verdict.reason
+      detail = [string]$verdict.detail
+      evidence = $verdict.evidence
+    })
+    $dirty = $true
+  }
+  if ($dirty) { Save-Backlog $Items }
+  return [pscustomobject][ordered]@{
+    items = @($allowed.ToArray())
+    deferred = @($deferred.ToArray())
+    dropped = @($dropped.ToArray())
+    blocked = @($blocked.ToArray())
+    changed = [bool]$dirty
+  }
+}
+
 function Get-ApprovedBacklogClaimabilityReport {
   param([object[]]$Items = $null)
 
   if ($null -eq $Items) { $Items = @(Get-Backlog) }
   $approved = @($Items | Where-Object { [string]$_.status -eq 'approved' })
+  $governorResult = $null
+  try { $governorResult = Invoke-BacklogGovernorFilterApprovedItems -Items $Items -ProjectScopeAllowed ([bool](Test-ProjectScopedApprovedBacklogAllowed)) -Phase 'claimability-report' } catch { $governorResult = $null }
   $runnable = New-Object 'System.Collections.Generic.List[object]'
   $controlPlane = New-Object 'System.Collections.Generic.List[object]'
   $admittedControlPlane = New-Object 'System.Collections.Generic.List[object]'
@@ -773,6 +952,9 @@ function Get-ApprovedBacklogClaimabilityReport {
     }
     $claim = Test-BacklogApprovedItemClaimable -Item $item -ProjectScopeAllowed $projectAllowed
     if ($claim -and [bool]$claim.claimable) {
+      $governorAction = ''
+      try { $governorAction = [string](Get-BacklogPackObjectValue -Obj (Get-BacklogPackObjectValue -Obj $item -Name 'governor_claim' -Default $null) -Name 'action' -Default '') } catch { $governorAction = '' }
+      if ($governorAction -eq 'defer' -or $governorAction -eq 'drop') { continue }
       if ([string]$claim.reason -eq 'bridge-self-admission') { [void]$admittedControlPlane.Add($sample) }
       [void]$runnable.Add($sample)
       continue
@@ -793,11 +975,15 @@ function Get-ApprovedBacklogClaimabilityReport {
     admitted_control_plane = [int]$admittedControlPlane.Count
     project_scope_blocked = [int]$projectScope.Count
     other_blocked = [int]$other.Count
+    governor_deferred_count = $(if ($governorResult) { @($governorResult.deferred).Count } else { 0 })
+    governor_dropped_count = $(if ($governorResult) { @($governorResult.dropped).Count } else { 0 })
     project_scope_allowed = [bool]$projectAllowed
     runnable_ids = @($runnable.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     control_plane_ids = @($controlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     admitted_control_plane_ids = @($admittedControlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     project_scope_ids = @($projectScope.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+    governor_deferred = $(if ($governorResult) { @($governorResult.deferred) } else { @() })
+    governor_dropped = $(if ($governorResult) { @($governorResult.dropped) } else { @() })
   }
 }
 
@@ -812,7 +998,9 @@ function Get-NextApprovedIdea {
     # the operator delegated it (tag 'operator') OR it has deterministic bridge_self_admission.
     $projectScopeAllowedForClaim = $false
     try { $projectScopeAllowedForClaim = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectScopeAllowedForClaim = $false }
-    $items = @(Get-Backlog | Where-Object { [bool](Test-BacklogApprovedItemClaimable -Item $_ -ProjectScopeAllowed $projectScopeAllowedForClaim).claimable } |
+    $allItems = @(Get-Backlog)
+    $governorFiltered = Invoke-BacklogGovernorFilterApprovedItems -Items $allItems -ProjectScopeAllowed $projectScopeAllowedForClaim -Phase 'single-claim'
+    $items = @($governorFiltered.items |
       Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
@@ -889,15 +1077,16 @@ function Get-NextRunnableIdea {
   # Audit criticals always outrank warnings, warnings outrank info, info outranks plain ideas.
   $projectScopeAllowedForRunnable = $false
   try { $projectScopeAllowedForRunnable = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectScopeAllowedForRunnable = $false }
-  $items = @(Get-Backlog | Where-Object {
-      $st = [string]$_.status
-      # SYSTEMIC GUARD 2026-05-31: never AUTO-claim a task that edits the bridge's own control plane
-      # (supervisor/watchdog/circuit-breaker/...). Those repeatedly deadlocked the bridge. Only the
-      # OPERATOR (tag 'operator') or a deterministic bridge_self_admission may delegate control-plane work.
-      if ($st -eq 'approved') { [bool](Test-BacklogApprovedItemClaimable -Item $_ -ProjectScopeAllowed $projectScopeAllowedForRunnable).claimable }
-      elseif ($IncludeNew -and $st -eq 'new' -and -not (Test-IdeaExternal $_)) { $true }
-      else { $false }
-    } |
+  $allRunnableItems = @(Get-Backlog)
+  $governorRunnable = Invoke-BacklogGovernorFilterApprovedItems -Items $allRunnableItems -ProjectScopeAllowed $projectScopeAllowedForRunnable -Phase 'runnable-claim'
+  $approvedRunnable = @($governorRunnable.items)
+  $newRunnable = @()
+  if ($IncludeNew) {
+    $newRunnable = @($allRunnableItems | Where-Object {
+      [string]$_.status -eq 'new' -and -not (Test-IdeaExternal $_)
+    })
+  }
+  $items = @((@($approvedRunnable) + @($newRunnable)) |
     Sort-Object @{Expression={ if (@($_.tags) -contains 'operator') {0} else {1} }},
                 @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
                 @{Expression={ Get-IdeaSeverityRank -Idea $_ }},

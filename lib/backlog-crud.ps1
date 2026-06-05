@@ -126,6 +126,59 @@ function Add-Idea {
       }
     }
   }
+
+  $governorStatus = ([string]$rec['status']).ToLowerInvariant()
+  if (@('approved','running','working') -contains $governorStatus -and (Get-Command Test-BacklogGovernorClaimable -ErrorAction SilentlyContinue)) {
+    $governorClaim = $null
+    try {
+      $governorClaim = Test-BacklogGovernorClaimable -Item ([pscustomobject]$rec) -ActiveItems @(Get-Backlog) -ManualLocks @(Get-BacklogGovernorManualLocks)
+    } catch { $governorClaim = $null }
+    if ($governorClaim -and [string]$governorClaim.action -eq 'drop') {
+      $dropReason = 'queue-governor:' + [string]$governorClaim.reason
+      $rec['status'] = 'auto-dropped'
+      $rec['governor_claim'] = [ordered]@{
+        action = 'drop'
+        reason = [string]$governorClaim.reason
+        detail = [string]$governorClaim.detail
+        ts = $now
+        evidence = $governorClaim.evidence
+      }
+      $rec['governor_drop_reason'] = $dropReason
+      $rec['governor_drop_evidence'] = $governorClaim.evidence
+      if ($rec.Contains('intake_gate')) {
+        try { $rec['intake_gate']['governor_evidence'] = $governorClaim.evidence } catch {}
+      } else {
+        $rec['intake_gate'] = [ordered]@{
+          action = 'drop'
+          requested_status = [string]$Status
+          final_status = 'auto-dropped'
+          reason = $dropReason
+          model = 'queue-governor-v1'
+          ts = $now
+          evidence = $governorClaim.evidence
+        }
+      }
+      $rec['auto_curator'] = [ordered]@{
+        verdict = 'drop'
+        confidence = 1.0
+        reason = $dropReason
+        model = 'queue-governor-v1'
+        ts = $now
+        judged_at_sha = (Get-BacklogCurrentSha)
+      }
+      try {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = $now
+          action = 'governor-auto-drop'
+          item_id = [string]$rec['id']
+          reason = [string]$governorClaim.reason
+          detail = [string]$governorClaim.detail
+          evidence = $governorClaim.evidence
+          phase = 'intake'
+        })
+      } catch {}
+    }
+  }
   # 2026-05-27: critic-flagged fix. Same BOM issue as in Write-BacklogJsonLine
   # plus a real risk: $rec is a hashtable here (fresh, not from ConvertFrom-Json
   # so no ETS-graph), but consumers re-read via Get-Backlog → PSCustomObject;
