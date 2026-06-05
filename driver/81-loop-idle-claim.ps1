@@ -672,10 +672,13 @@
                 [string][int]$workpackFrontierReport.selected_count,
                 [string][int]$workpackFrontierReport.eligible_count,
                 [string][int]$workpackFrontierReport.protected_count,
+                [string][int]$workpackFrontierReport.governor_deferred_count,
+                [string][int]$workpackFrontierReport.governor_dropped_count,
                 [string][int]$workpackFrontierReport.with_workpack_count,
                 [string][int]$workpackFrontierReport.without_workpack_count,
                 [string]::Join(',', @($workpackFrontierReport.selected_ids)),
                 [string]::Join(',', @($workpackFrontierReport.blocked_ids)),
+                [string]$workpackFrontierReport.reason_detail,
                 [string](Get-DriverWorkpackReportValue -Obj $workpackFrontierReport -Name 'claim_block_reason' -Default '')
               )))
               $frontierNow = [DateTime]::UtcNow
@@ -708,6 +711,8 @@
                   structural_wait=[int]$workpackFrontierReport.structural_wait_count
                   conflict_skips=[int]$workpackFrontierReport.conflict_skip_count
                   touch_skips=[int]$workpackFrontierReport.touch_skip_count
+                  governor_deferred=[int]$workpackFrontierReport.governor_deferred_count
+                  governor_dropped=[int]$workpackFrontierReport.governor_dropped_count
                   selected_ids=@($workpackFrontierReport.selected_ids)
                   selected_groups=@($workpackFrontierReport.selected_groups)
                   selected_lanes=@($workpackFrontierReport.selected_lanes)
