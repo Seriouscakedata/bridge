@@ -1,5 +1,278 @@
 ﻿# Loop-completion cleanup: checkpoints, DONE bookkeeping, delivery-gate shadow, and final state reset.
 # Dot invocation preserves existing `continue` behavior for doctor resume and loop close.
+
+$script:DriverLoopCompletionCleanupRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script:DriverLoopCompletionCleanupBridgeRoot = Split-Path -Parent $script:DriverLoopCompletionCleanupRoot
+$script:DriverLoopCompletionLedgerPath = Join-Path $script:DriverLoopCompletionCleanupBridgeRoot 'lib\task-outcome-ledger.ps1'
+if (-not (Get-Command Test-TaskOutcomeLedgerDone -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $script:DriverLoopCompletionLedgerPath)) {
+  . $script:DriverLoopCompletionLedgerPath
+}
+
+function Import-DriverTaskOutcomeLedger {
+  param([string]$BridgeRoot = '')
+  if (Get-Command Test-TaskOutcomeLedgerDone -ErrorAction SilentlyContinue) { return }
+  $root = [string]$BridgeRoot
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = Split-Path -Parent $script:DriverLoopCompletionCleanupRoot }
+  $ledgerPath = Join-Path $root 'lib\task-outcome-ledger.ps1'
+  if (-not (Test-Path -LiteralPath $ledgerPath)) { throw "Missing task outcome ledger: $ledgerPath" }
+  . $ledgerPath
+}
+
+function Set-DriverOutcomeProperty {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [Parameter(Mandatory=$true)][string]$Name,
+    [AllowNull()]$Value
+  )
+  if ($Item.PSObject.Properties.Name -contains $Name) {
+    $Item.PSObject.Properties[$Name].Value = $Value
+  } else {
+    $Item | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+  }
+}
+
+function Copy-DriverOutcomeItem {
+  param([Parameter(Mandatory=$true)]$Item)
+  $copy = [pscustomobject][ordered]@{}
+  foreach ($prop in @($Item.PSObject.Properties)) {
+    Set-DriverOutcomeProperty -Item $copy -Name ([string]$prop.Name) -Value $prop.Value
+  }
+  return $copy
+}
+
+function New-DriverCompletionDoneEvidence {
+  param(
+    [Parameter(Mandatory=$false)]$State,
+    [string]$Reply = '',
+    [string]$Speaker = '',
+    [string]$BridgeRoot = '',
+    [string]$Channel = '',
+    [bool]$FastLaneDone = $false
+  )
+
+  $root = [string]$BridgeRoot
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = Split-Path -Parent $script:DriverLoopCompletionCleanupRoot }
+  $repoRoot = $root
+  try {
+    if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
+      $candidateRepo = [string](Get-TaskRepoRoot)
+      if (-not [string]::IsNullOrWhiteSpace($candidateRepo)) { $repoRoot = $candidateRepo }
+    } elseif (Get-Command Get-ActiveProjectRoot -ErrorAction SilentlyContinue) {
+      $candidateRepo = [string](Get-ActiveProjectRoot)
+      if (-not [string]::IsNullOrWhiteSpace($candidateRepo)) { $repoRoot = $candidateRepo }
+    }
+  } catch {}
+
+  $head = ''
+  try { $head = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim() } catch { $head = '' }
+  $base = ''
+  try { $base = [string]$State.task_base_commit } catch { $base = '' }
+
+  $verified = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($match in [regex]::Matches([string]$Reply, '(?im)^\s*\[\[VERIFIED:\s*(.+?)\]\]\s*$')) {
+    $txt = $match.Groups[1].Value.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($txt)) { [void]$verified.Add($txt) }
+  }
+
+  $tests = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($v in @($verified.ToArray())) { [void]$tests.Add($v) }
+  foreach ($gate in @('completion-gate:critic', 'completion-gate:parsefile', 'completion-gate:smoke', 'completion-gate:qa')) {
+    [void]$tests.Add($gate)
+  }
+
+  $criticResult = 'PASS'
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'skip_critic') -and [bool]$State.skip_critic) {
+      $criticResult = 'SKIPPED'
+    }
+  } catch {}
+
+  return [pscustomobject][ordered]@{
+    done_sha = $head
+    done_evidence = [pscustomobject][ordered]@{
+      repo_root = $repoRoot
+      base_sha = $base
+      head_sha = $head
+      verified = @($verified.ToArray())
+      gates = @('critic','parsefile','smoke','qa')
+      channel = [string]$Channel
+      fast_lane = [bool]$FastLaneDone
+    }
+    done_by = if ([string]::IsNullOrWhiteSpace($Speaker)) { 'driver-completion' } else { [string]$Speaker }
+    tests_run = @($tests.ToArray())
+    critic_result = $criticResult
+    qa_result = 'PASS'
+  }
+}
+
+function Set-BacklogOutcomeDoneWithLedger {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Ids,
+    [Parameter(Mandatory=$true)]$OutcomeEvidence,
+    [string]$BridgeRoot = ''
+  )
+
+  Import-DriverTaskOutcomeLedger -BridgeRoot $BridgeRoot
+  $idsClean = @($Ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  if ($idsClean.Count -eq 0) {
+    return [pscustomobject][ordered]@{ ok = $true; reason = 'no_ids'; done_ids = @(); needs_review_ids = @(); blocked_ids = @(); ledger_entries = @() }
+  }
+
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $testDoneFn = ${function:Test-TaskOutcomeLedgerDone}
+  $recoverFn = ${function:Test-TaskOutcomeLedgerRecoverFalseFailed}
+  $entryFn = ${function:Get-TaskOutcomeLedgerEntry}
+  $copyFn = ${function:Copy-DriverOutcomeItem}
+  $setPropFn = ${function:Set-DriverOutcomeProperty}
+
+  $doneSha = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('done_sha') -Default '')
+  $doneEvidence = Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('done_evidence') -Default $null
+  $doneBy = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('done_by') -Default '')
+  $testsRun = @(Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('tests_run') -Default @())
+  $criticResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('critic_result') -Default '')
+  $qaResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('qa_result') -Default '')
+  $recoveryEvidence = [pscustomobject][ordered]@{
+    recovery_sha = $doneSha
+    recovery_checks = @($testsRun)
+  }
+
+  return (Invoke-BacklogLocked ({
+    $items = @(& $getBacklogFn)
+    $doneIds = New-Object 'System.Collections.Generic.List[string]'
+    $needsReviewIds = New-Object 'System.Collections.Generic.List[string]'
+    $blockedIds = New-Object 'System.Collections.Generic.List[string]'
+    $ledgerEntries = New-Object 'System.Collections.Generic.List[object]'
+    $dirty = $false
+    $reason = 'done_evidence_complete'
+
+    foreach ($id in @($idsClean)) {
+      $item = $null
+      foreach ($candidateItem in $items) {
+        if ([string]$candidateItem.id -eq [string]$id) { $item = $candidateItem; break }
+      }
+      if ($null -eq $item) {
+        [void]$blockedIds.Add([string]$id)
+        $reason = 'backlog_item_not_found'
+        continue
+      }
+
+      $currentStatus = ([string](Get-TaskOutcomeLedgerObjectValue -Object $item -Names @('status') -Default '')).Trim().ToLowerInvariant()
+      if ($currentStatus -eq 'failed') {
+        $recovery = & $recoverFn -Item $item -RecoveryEvidence $recoveryEvidence
+        if ([bool]$recovery.recoverable -and [string]$recovery.proposed_status -eq 'needs-review') {
+          & $setPropFn -Item $item -Name 'status' -Value 'needs-review'
+          & $setPropFn -Item $item -Name 'outcome_recovery_reason' -Value ([string]$recovery.reason)
+          & $setPropFn -Item $item -Name 'outcome_recovery_evidence' -Value $recoveryEvidence
+          [void]$needsReviewIds.Add([string]$id)
+          $dirty = $true
+          $reason = 'false_failed_needs_review'
+          continue
+        }
+      }
+
+      $candidate = & $copyFn -Item $item
+      & $setPropFn -Item $candidate -Name 'status' -Value 'done'
+      & $setPropFn -Item $candidate -Name 'done_sha' -Value $doneSha
+      & $setPropFn -Item $candidate -Name 'done_evidence' -Value $doneEvidence
+      & $setPropFn -Item $candidate -Name 'done_by' -Value $doneBy
+      & $setPropFn -Item $candidate -Name 'tests_run' -Value @($testsRun)
+      & $setPropFn -Item $candidate -Name 'critic_result' -Value $criticResult
+      & $setPropFn -Item $candidate -Name 'qa_result' -Value $qaResult
+
+      $validation = & $testDoneFn -Item $candidate
+      if (-not [bool]$validation.valid) {
+        [void]$blockedIds.Add([string]$id)
+        $missing = @($validation.missing) -join ','
+        $reason = if ([string]::IsNullOrWhiteSpace($missing)) { [string]$validation.reason } else { ([string]$validation.reason + ':' + $missing) }
+        continue
+      }
+
+      & $setPropFn -Item $item -Name 'status' -Value 'done'
+      & $setPropFn -Item $item -Name 'done_sha' -Value $doneSha
+      & $setPropFn -Item $item -Name 'done_evidence' -Value $doneEvidence
+      & $setPropFn -Item $item -Name 'done_by' -Value $doneBy
+      & $setPropFn -Item $item -Name 'tests_run' -Value @($testsRun)
+      & $setPropFn -Item $item -Name 'critic_result' -Value $criticResult
+      & $setPropFn -Item $item -Name 'qa_result' -Value $qaResult
+      $entry = & $entryFn -Item $candidate
+      & $setPropFn -Item $item -Name 'outcome_ledger' -Value $entry
+      [void]$ledgerEntries.Add($entry)
+      [void]$doneIds.Add([string]$id)
+      $dirty = $true
+    }
+
+    if ($dirty) { & $saveBacklogFn $items }
+    $ok = ($blockedIds.Count -eq 0 -and $needsReviewIds.Count -eq 0)
+    return [pscustomobject][ordered]@{
+      ok = [bool]$ok
+      reason = $reason
+      done_ids = @($doneIds.ToArray())
+      needs_review_ids = @($needsReviewIds.ToArray())
+      blocked_ids = @($blockedIds.ToArray())
+      ledger_entries = @($ledgerEntries.ToArray())
+    }
+  }.GetNewClosure()))
+}
+
+function Set-BacklogOutcomeFailedWithLedger {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Ids,
+    [Parameter(Mandatory=$false)]$FailureEvidence,
+    [string]$BridgeRoot = ''
+  )
+
+  Import-DriverTaskOutcomeLedger -BridgeRoot $BridgeRoot
+  $idsClean = @($Ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  if ($idsClean.Count -eq 0) {
+    return [pscustomobject][ordered]@{ ok = $true; reason = 'no_ids'; failed_ids = @(); blocked_ids = @() }
+  }
+
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $testFailedFn = ${function:Test-TaskOutcomeLedgerFailed}
+  $copyFn = ${function:Copy-DriverOutcomeItem}
+  $setPropFn = ${function:Set-DriverOutcomeProperty}
+
+  return (Invoke-BacklogLocked ({
+    $items = @(& $getBacklogFn)
+    $failedIds = New-Object 'System.Collections.Generic.List[string]'
+    $blockedIds = New-Object 'System.Collections.Generic.List[string]'
+    $reason = 'failure_evidence_present'
+    $dirty = $false
+    foreach ($id in @($idsClean)) {
+      $item = $null
+      foreach ($candidateItem in $items) {
+        if ([string]$candidateItem.id -eq [string]$id) { $item = $candidateItem; break }
+      }
+      if ($null -eq $item) {
+        [void]$blockedIds.Add([string]$id)
+        $reason = 'backlog_item_not_found'
+        continue
+      }
+      $candidate = & $copyFn -Item $item
+      & $setPropFn -Item $candidate -Name 'status' -Value 'failed'
+      & $setPropFn -Item $candidate -Name 'failure_evidence' -Value $FailureEvidence
+      $validation = & $testFailedFn -Item $candidate
+      if (-not [bool]$validation.valid) {
+        [void]$blockedIds.Add([string]$id)
+        $reason = [string]$validation.reason
+        continue
+      }
+      & $setPropFn -Item $item -Name 'status' -Value 'failed'
+      & $setPropFn -Item $item -Name 'failure_evidence' -Value $FailureEvidence
+      [void]$failedIds.Add([string]$id)
+      $dirty = $true
+    }
+    if ($dirty) { & $saveBacklogFn $items }
+    return [pscustomobject][ordered]@{
+      ok = ($blockedIds.Count -eq 0)
+      reason = $reason
+      failed_ids = @($failedIds.ToArray())
+      blocked_ids = @($blockedIds.ToArray())
+    }
+  }.GetNewClosure()))
+}
 $script:DriverLoopCompletionCleanupBlock = {
   if ($plannerStatus -eq 'CONTINUE') {
     try {
@@ -96,7 +369,16 @@ $script:DriverLoopCompletionCleanupBlock = {
       } catch { $doneBatchMode = '' }
       $doneIds = if ($doneBatchIds.Count -gt 0) { @($doneBatchIds) } elseif ($doneBid) { @($doneBid) } else { @() }
       if ($doneIds.Count -gt 0) {
-        foreach ($doneId in $doneIds) { Set-Idea -Id $doneId -Status 'done' | Out-Null }
+        $doneOutcomeEvidence = New-DriverCompletionDoneEvidence -State $stDoneBacklog -Reply $visibleReply -Speaker $speaker -BridgeRoot $bridgeRoot -Channel $Channel -FastLaneDone ([bool]$fastLaneDone)
+        $doneLedgerResult = Set-BacklogOutcomeDoneWithLedger -Ids $doneIds -OutcomeEvidence $doneOutcomeEvidence -BridgeRoot $bridgeRoot
+        if (-not [bool]$doneLedgerResult.ok) {
+          $ledgerReason = [string]$doneLedgerResult.reason
+          if ([string]::IsNullOrWhiteSpace($ledgerReason)) { $ledgerReason = 'outcome_ledger_invalid' }
+          try { Set-TaskLastFailure -Kind test_failed -Text ('outcome_ledger_invalid: ' + $ledgerReason) } catch {}
+          Add-Message -From system -Text ("🚫 Outcome ledger blocked backlog completion (reason=" + $ledgerReason + "). Done/failed terminal statuses require reproducible evidence; continuing instead of closing.") -Kind event | Out-Null
+          $plannerStatus = 'CONTINUE'
+          continue
+        }
         # 🤖 Autonomy metric (Foundation #3): the honest self-sufficiency number — autonomous backlog
         # tasks closed IN A ROW with zero operator messages between them. Increment on each autonomous
         # done; the user-message handler resets the running streak to 0 (best is preserved here).

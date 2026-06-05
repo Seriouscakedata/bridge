@@ -1,4 +1,9 @@
 ﻿# backlog-crud.ps1 -- public backlog CRUD helpers.
+$script:BacklogCrudOutcomeLedgerPath = Join-Path $PSScriptRoot 'task-outcome-ledger.ps1'
+if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $script:BacklogCrudOutcomeLedgerPath)) {
+  . $script:BacklogCrudOutcomeLedgerPath
+}
+
 #region Public backlog CRUD API
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
@@ -259,8 +264,14 @@ function Save-Backlog {
 
 function Set-Idea {
   # Edit a backlog item. Pass $null to leave a field unchanged.
-  param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false, [bool]$ClearAutoCurator = $false, [string]$Reason = $null)
+  param([string]$Id, $Status = $null, $Text = $null, $IncrementAttempts = $false, [bool]$ClearAutoCurator = $false, [string]$Reason = $null, $FailureEvidence = $null)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $requestedStatus = ''
+  if ($null -ne $Status) { $requestedStatus = ([string]$Status).Trim().ToLowerInvariant() }
+  if ($requestedStatus -eq 'failed' -and -not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) {
+    $ledgerPath = Join-Path $PSScriptRoot 'task-outcome-ledger.ps1'
+    if (Test-Path -LiteralPath $ledgerPath) { . $ledgerPath }
+  }
   # H2 FIX (2026-05-31 load audit): the read-modify-write was NOT transactional. Get-Backlog (read)
   # and Save-Backlog (write) each took the lock independently, so a concurrent Set-Idea / curator /
   # packer landing between them caused a LOST UPDATE -- a status mutation (approved->running, or a
@@ -285,6 +296,30 @@ function Set-Idea {
     }
     if ($null -ne $Status) {
       $statusText = [string]$Status
+      if ($statusText.Trim().ToLowerInvariant() -eq 'failed') {
+        if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { return $false }
+        $failedCandidate = [pscustomobject][ordered]@{}
+        foreach ($prop in @($i.PSObject.Properties)) {
+          $failedCandidate | Add-Member -NotePropertyName ([string]$prop.Name) -NotePropertyValue $prop.Value -Force
+        }
+        $failedCandidate | Add-Member -NotePropertyName status -NotePropertyValue 'failed' -Force
+        $failedCandidate | Add-Member -NotePropertyName failure_evidence -NotePropertyValue $FailureEvidence -Force
+        $failedValidation = Test-TaskOutcomeLedgerFailed -Item $failedCandidate
+        if (-not [bool]$failedValidation.valid) {
+          try {
+            Write-BacklogJsonLine ([ordered]@{
+              ts = (Get-Date).ToUniversalTime().ToString('o')
+              action = 'outcome-ledger-block'
+              item_id = [string]$Id
+              requested_status = 'failed'
+              reason = [string]$failedValidation.reason
+              missing = @($failedValidation.missing)
+            })
+          } catch {}
+          return $false
+        }
+        $i | Add-Member -NotePropertyName failure_evidence -NotePropertyValue $FailureEvidence -Force
+      }
       $i | Add-Member -NotePropertyName status -NotePropertyValue $statusText -Force
       if ($statusText -eq 'approved') {
         $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
