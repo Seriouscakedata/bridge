@@ -1,0 +1,8 @@
+{
+    "slug":  "literary-slop-video",
+    "name":  "Literary Slop Video Pipeline",
+    "description":  "Production pipeline that turns a literary work title into a cohesive 60-second vertical AI-slop video made of 12 linked 5-second clips.",
+    "project_root":  "C:\\Users\\rafie\\bridge-projects\\literary-slop-video",
+    "created":  "2026-06-05T16:33:23.7837692+03:00",
+    "archived":  false
+}

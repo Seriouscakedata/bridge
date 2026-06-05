@@ -1,10 +1,33 @@
 ﻿$script:DriverLoopModeTransitionBlock = {
+  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+    . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+  }
+  if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
+    . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
+  }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     try {
       $stNoop = Read-State
       $noopBacklogId = [string]$stNoop.current_backlog_id
       $noopTask = [string]$stNoop.current_task
       $noopDidActions = [bool]$stNoop.task_did_actions
+      if (-not $noopDidActions) {
+        try {
+          $repoNoopRoot = Get-TaskRepoRoot
+          $baseNoop = [string]$stNoop.task_base_commit
+          $baseDirtyNoop = @()
+          try {
+            if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
+              $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            }
+          } catch { $baseDirtyNoop = @() }
+          $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
+          if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
+            $noopDidActions = $true
+            Update-State { param($s) $s.task_did_actions = $true } | Out-Null
+          }
+        } catch {}
+      }
       $noopCovered = [bool]([regex]::IsMatch([string]$reply, '(?im)^\s*COVERED:\s*'))
       $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
       if (-not [string]::IsNullOrWhiteSpace($noopBacklogId) -and -not $noopDidActions -and -not $noopCovered -and -not $noopProjectAutopilot -and [int]$projectBacklogCreated -le 0) {
@@ -68,8 +91,22 @@
         Add-Message -From system -Text ("⚠ Stagnation detector project_root check failed: " + $_.Exception.Message) -Kind event | Out-Null
       }
     }
-    if ($mode -eq 'normal') { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
+    $hasActionEvidence = ($attachmentMetas.Count -gt 0)
+    try {
+      $stEvidence = Read-State
+      $repoEvidenceRoot = Get-TaskRepoRoot
+      $baseEvidence = [string]$stEvidence.task_base_commit
+      $baseDirtyEvidence = @()
+      try {
+        if ($stEvidence.PSObject.Properties.Name -contains 'task_base_dirty') {
+          $baseDirtyEvidence = @($stEvidence.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+      } catch { $baseDirtyEvidence = @() }
+      $actionEvidence = Get-TaskActionEvidence -RepoRoot $repoEvidenceRoot -BaseCommit $baseEvidence -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyEvidence
+      if ($actionEvidence -and [bool]$actionEvidence.has_actions) { $hasActionEvidence = $true }
+    } catch {}
+    if ($mode -eq 'normal' -and $hasActionEvidence) { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $npc = [int](Read-State).no_progress_count
     if ($hasChanges) {
       Update-State { param($s) $s.no_progress_count=0 } | Out-Null

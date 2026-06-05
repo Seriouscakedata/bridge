@@ -52,7 +52,12 @@ if (Test-Path -LiteralPath $decDir) {
 }
 Write-LibLog "ingested decisions: $ingested"
 
-# 2) Dedup near-duplicates (local, free).
+# 2) Dedup exact content-hash duplicates before semantic consolidation (local, free).
+$hashRemoved = 0
+try { $hashRemoved = Invoke-MemoryContentHashDedup } catch { Write-LibLog "content-hash dedup error: $($_.Exception.Message)" }
+Write-LibLog "content-hash dedup removed: $hashRemoved"
+
+# 2a) Dedup near-duplicates (local, free).
 $removed = 0
 try { $removed = Invoke-MemoryDedup } catch { Write-LibLog "dedup error: $($_.Exception.Message)" }
 Write-LibLog "dedup removed: $removed"

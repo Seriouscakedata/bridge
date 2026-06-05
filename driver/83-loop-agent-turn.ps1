@@ -2,6 +2,9 @@
 if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
   . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
 }
+if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+  . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+}
 
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
     $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
@@ -154,7 +157,7 @@ if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContin
     try {
       $headNowAC = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
       if ($headNowAC -and $headBeforeTurn -and $headNowAC -eq $headBeforeTurn) {
-        $acDirty = @(& git -C $bridgeRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        $acDirty = @(& git -C $bridgeRoot status --porcelain -uall 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         if (@($acDirty).Count -gt 0) {
           $acFiles = @($acDirty | ForEach-Object { Normalize-AutoCommitStatusPath -StatusLine ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
           $commitWorthyFiles = @($acFiles | Where-Object { Test-BridgeAutoCommitWorthPath -Path ([string]$_) })
@@ -184,7 +187,7 @@ if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContin
     $projRoot = ''
     try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRoot = [string](Get-EffectiveProjectRoot) } } catch {}
     if ($projRoot -and ($projRoot -ne $bridgeRoot) -and (Test-Path (Join-Path $projRoot '.git'))) {
-      $pDirty = @(& git -C $projRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      $pDirty = @(& git -C $projRoot status --porcelain -uall 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
       if (@($pDirty).Count -gt 0) {
         $pMsg = 'auto-commit (driver): ' + (($task -replace '\s+', ' ').Trim())
         if ($pMsg.Length -gt 160) { $pMsg = $pMsg.Substring(0, 160) }
@@ -203,6 +206,26 @@ if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContin
     $headAfterTurn = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
     if ($headAfterTurn -and $headBeforeTurn -and $headAfterTurn -ne $headBeforeTurn) { Invoke-AutoPush -Root $bridgeRoot }
   } catch {}
+
+  # Record deterministic action evidence after the coder turn. This keeps the later
+  # planner DONE gate tied to actual commit/diff evidence, not to "Codex replied OK".
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and ([string]$turnResult.status -eq 'ok') -and $mode -eq 'normal') {
+    try {
+      $stAction = Read-State
+      $repoActionRoot = Get-TaskRepoRoot
+      $baseAction = [string]$stAction.task_base_commit
+      $baseDirtyAction = @()
+      try {
+        if ($stAction.PSObject.Properties.Name -contains 'task_base_dirty') {
+          $baseDirtyAction = @($stAction.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+      } catch { $baseDirtyAction = @() }
+      $actionEvidence = Get-TaskActionEvidence -RepoRoot $repoActionRoot -BaseCommit $baseAction -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyAction
+      if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
+        Update-State { param($s) $s.task_did_actions = $true } | Out-Null
+      }
+    } catch {}
+  }
 
   if ((Read-State).abort) { continue }   # killed mid-turn -> handled at top
 

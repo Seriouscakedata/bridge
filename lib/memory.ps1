@@ -72,6 +72,36 @@ function Add-MemoryJsonlContent {
   [System.IO.File]::AppendAllText($Path, $Content, $utf8NoBom)
 }
 
+function Normalize-MemoryContentForHash {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  return (([string]$Text) -replace '\s+', ' ').Trim()
+}
+
+function Get-MemoryContentHash {
+  param([string]$Text)
+  $norm = Normalize-MemoryContentForHash -Text $Text
+  if ([string]::IsNullOrWhiteSpace($norm)) { return '' }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($norm)
+    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-MemoryRecordContentHash {
+  param($Mem)
+  if (-not $Mem) { return '' }
+  try {
+    if ($Mem.PSObject.Properties['content_hash'] -and -not [string]::IsNullOrWhiteSpace([string]$Mem.content_hash)) {
+      return ([string]$Mem.content_hash).Trim().ToLowerInvariant()
+    }
+  } catch {}
+  return (Get-MemoryContentHash -Text ([string]$Mem.text))
+}
+
 function Get-MemoryScope {
   param([string]$Slug = $null)
   if ([string]::IsNullOrWhiteSpace($Slug)) {
@@ -645,6 +675,7 @@ function Add-Memory {
     kind       = [string]$Kind
     trust      = [string]$Trust
     status     = [string]$Status
+    content_hash = (Get-MemoryContentHash -Text ([string]$Text))
     text       = [string]$Text
     vec        = @($vec)
   }
@@ -771,6 +802,7 @@ function Add-ProjectMemoryBatch {
       kind           = [string]$kind
       trust          = [string]$trust
       status         = [string]$status
+      content_hash   = (Get-MemoryContentHash -Text ([string]$r.text))
       text           = [string]$r.text
       vec            = @($vec)
     }
@@ -1253,6 +1285,66 @@ function Invoke-MemoryDedup {
   return $removed
 }
 
+function Invoke-MemoryContentHashDedup {
+  # Drop exact duplicate memory text by content_hash before expensive semantic consolidation.
+  # Scope-aware: shared records compare with shared, local records compare inside their channel.
+  param()
+  $mems = @(Get-AllMemories)
+  if ($mems.Count -lt 2) { return 0 }
+
+  $keep = @()
+  for ($i = 0; $i -lt $mems.Count; $i++) { $keep += $true }
+  $bestByKey = @{}
+  $hashBackfilled = $false
+
+  for ($i = 0; $i -lt $mems.Count; $i++) {
+    $m = $mems[$i]
+    $hash = Get-MemoryRecordContentHash -Mem $m
+    if ([string]::IsNullOrWhiteSpace($hash)) { continue }
+    if (-not ($m.PSObject.Properties.Name -contains 'content_hash')) {
+      $m | Add-Member -NotePropertyName content_hash -NotePropertyValue $hash -Force
+      $hashBackfilled = $true
+    }
+    $scope = if (Test-MemoryShared $m) { '__shared__' } else { Get-MemoryChannel $m }
+    $skill = if (@($m.tags) -contains 'skill') { 'skill' } else { 'memory' }
+    $key = $scope + '|' + $skill + '|' + $hash
+    if (-not $bestByKey.ContainsKey($key)) {
+      $bestByKey[$key] = $i
+      continue
+    }
+
+    $prev = [int]$bestByKey[$key]
+    $a = $mems[$prev]
+    $b = $m
+    $aPinned = [bool]($a.PSObject.Properties['pinned'] -and $a.pinned)
+    $bPinned = [bool]($b.PSObject.Properties['pinned'] -and $b.pinned)
+    $replace = $false
+    if ($bPinned -and -not $aPinned) {
+      $replace = $true
+    } elseif ($bPinned -eq $aPinned) {
+      $ai = 0.0; $bi = 0.0
+      try { $ai = [double]$a.importance } catch {}
+      try { $bi = [double]$b.importance } catch {}
+      if ($bi -gt $ai) { $replace = $true }
+    }
+
+    if ($replace) {
+      $keep[$prev] = $false
+      $bestByKey[$key] = $i
+    } else {
+      $keep[$i] = $false
+    }
+  }
+
+  $kept = New-Object 'System.Collections.Generic.List[object]'
+  for ($i = 0; $i -lt $mems.Count; $i++) {
+    if ($keep[$i]) { [void]$kept.Add($mems[$i]) }
+  }
+  $removed = $mems.Count - $kept.Count
+  if ($removed -gt 0 -or $hashBackfilled) { Save-AllMemories @($kept.ToArray()) }
+  return $removed
+}
+
 function Invoke-MemoryAgePrune {
   # Drop old, low-importance, unused, non-pinned memories. Returns number removed.
   param([int]$AgeDays = 0, [double]$MinImportance = -1, [int]$UnusedDays = 0)
@@ -1403,6 +1495,7 @@ function Set-Memory {
       $newVec = Get-Embedding -Text ([string]$Text) -TaskType 'RETRIEVAL_DOCUMENT'
       if (-not $newVec) { return $false }   # embedding failed -> don't half-update
       $m | Add-Member -NotePropertyName text -NotePropertyValue ([string]$Text) -Force
+      $m | Add-Member -NotePropertyName content_hash -NotePropertyValue (Get-MemoryContentHash -Text ([string]$Text)) -Force
       $m | Add-Member -NotePropertyName vec  -NotePropertyValue (@($newVec)) -Force
     }
     break

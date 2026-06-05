@@ -201,6 +201,16 @@
       $taskProjectRoot = Get-ActiveProjectRoot
       if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
       $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+      $baseDirty = @()
+      try {
+        $baseDirty = @(& git -C $taskProjectRoot status --porcelain -uall 2>$null | ForEach-Object {
+          $ln = [string]$_
+          if ($ln.Length -le 3) { return }
+          $bp = $ln.Substring(3).Trim()
+          if ($bp -match '\s+->\s+(.+)$') { $bp = $Matches[1].Trim() }
+          $bp -replace '\\','/'
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+      } catch { $baseDirty = @() }
 
       # Snapshot intent for the state mutator closure.
       $intentRecord = $null
@@ -258,6 +268,7 @@
         Clear-AuditorSuppressedHashes -State $s
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
+        $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirty) -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
         # Persist intent so planner can render it via Format-IntentForPrompt on later turns too.
         $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $intentRecord -Force
@@ -931,14 +942,28 @@
         # to delete a still-used file passes smoke). Blocked tasks -> 'held' (selectors
         # only pick new/approved, so they won't be re-claimed) + operator escalation.
         try {
+          $currentClaimedIdea = $claimedIdea
+          try {
+            $curId = [string]$claimedIdea.id
+            if (-not [string]::IsNullOrWhiteSpace($curId)) {
+              $freshClaimedIdea = Get-IdeaById -Id $curId
+              if ($freshClaimedIdea) { $currentClaimedIdea = $freshClaimedIdea }
+            }
+          } catch {}
+          if (Test-BacklogItemHeld -Item $currentClaimedIdea) {
+            $hid = [string]$claimedIdea.id
+            Add-Message -From system -Text ("🛑 Pre-flight gate: задача уже имеет статус 'held' (" + $hid + "), повторно не блокирую и не запускаю.") -Kind event | Out-Null
+            try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-held-skip'; item_id=$hid; reason='already-held' }) } catch {}
+            $claimedIdea = $null
+          }
           $preflightChecked = $false
           try {
-            if ($claimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$claimedIdea.preflight_checked }
+            if ($claimedIdea -and $currentClaimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$currentClaimedIdea.preflight_checked }
           } catch {}
-          if (-not $preflightChecked) {
-            $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$claimedIdea.text) -BridgeRoot $bridgeRoot
+          if ($claimedIdea -and -not $preflightChecked) {
+            $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$currentClaimedIdea.text) -BridgeRoot $bridgeRoot
             if (-not $gate.safe) {
-              $gid = [string]$claimedIdea.id
+              $gid = [string]$currentClaimedIdea.id
               try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
               Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gate.risk + "): " + [string]$gate.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
               try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gate.risk; reason=[string]$gate.reason }) } catch {}
@@ -966,6 +991,16 @@
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
         $taskRepoRootForBacklog = Get-TaskRepoRoot
         $baseCommit = try { (& git -C $taskRepoRootForBacklog rev-parse HEAD 2>$null).Trim() } catch { '' }
+        $baseDirty = @()
+        try {
+          $baseDirty = @(& git -C $taskRepoRootForBacklog status --porcelain -uall 2>$null | ForEach-Object {
+            $ln = [string]$_
+            if ($ln.Length -le 3) { return }
+            $bp = $ln.Substring(3).Trim()
+            if ($bp -match '\s+->\s+(.+)$') { $bp = $Matches[1].Trim() }
+            $bp -replace '\\','/'
+          } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        } catch { $baseDirty = @() }
         $taskManagementSnapshot = $null
         try {
           $tmTouched = New-Object 'System.Collections.Generic.List[string]'
@@ -1025,6 +1060,7 @@
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
+          $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirty) -Force
           $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
           Reset-TaskAgentDuration $s
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }

@@ -611,6 +611,13 @@ function Test-BacklogClaimTextMatch {
   return $false
 }
 
+function Test-BacklogItemHeld {
+  param($Item)
+  if (-not $Item) { return $false }
+  $status = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '')
+  return ($status -eq 'held')
+}
+
 function Get-IdeaBridgeSelfAdmission {
   param($Idea)
   if (-not $Idea) { return $null }
@@ -710,6 +717,9 @@ function Test-BacklogApprovedItemClaimable {
     [bool]$ProjectScopeAllowed = $false
   )
   if (-not $Item) { return [pscustomobject]@{ claimable=$false; reason='missing-item'; admission=$null } }
+  if (Test-BacklogItemHeld -Item $Item) {
+    return [pscustomobject]@{ claimable=$false; reason='held'; admission=$null }
+  }
   if ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'status' -Default '') -ne 'approved') {
     return [pscustomobject]@{ claimable=$false; reason='not-approved'; admission=$null }
   }

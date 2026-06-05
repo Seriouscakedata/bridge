@@ -205,6 +205,16 @@
       $doctorTask = Get-DoctorTaskText
       $baseCommitD = ''
       try { $baseCommitD = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch {}
+      $baseDirtyD = @()
+      try {
+        $baseDirtyD = @(& git -C $bridgeRoot status --porcelain -uall 2>$null | ForEach-Object {
+          $ln = [string]$_
+          if ($ln.Length -le 3) { return }
+          $bp = $ln.Substring(3).Trim()
+          if ($bp -match '\s+->\s+(.+)$') { $bp = $Matches[1].Trim() }
+          $bp -replace '\\','/'
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+      } catch { $baseDirtyD = @() }
       $newRepairAttempt = $att + 1
       try { Save-StateSnapshot -Reason 'doctor_repair_attempt' } catch {}
       Update-State ({ param($s)
@@ -218,6 +228,7 @@
         $s.status           = 'working'
         $s.heartbeat        = (Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
+        $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirtyD) -Force
         $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue $newRepairAttempt -Force
         $s.doctor_attempts  = $newRepairAttempt
         Reset-TaskAgentDuration $s
