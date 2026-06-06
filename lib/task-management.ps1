@@ -135,16 +135,38 @@ function New-TaskManagementSnapshot {
   }
 
   if ($frontier) {
-    if ([bool]$frontier.parallel_required -and -not $parallelApplied) {
+    $readyCount = [int]$frontier.ready
+    if ($readyCount -le 0) { $readyCount = [int]$frontier.eligible }
+    $minItems = [int]$frontier.min_items
+    if ($minItems -le 0) { $minItems = 2 }
+    $hasReadyParallelFrontier = ([bool]$frontier.batch_available -and $readyCount -ge $minItems)
+
+    if ([bool]$frontier.parallel_required -and -not $parallelApplied -and $hasReadyParallelFrontier) {
       Add-TaskManagementIssue -List $warnings -Value 'parallel_obligation_unsatisfied'
       if ([string]::IsNullOrWhiteSpace($serialReason)) { $serialReason = 'missing_serial_reason' }
     }
     if (-not [bool]$frontier.batch_available -and [int]$frontier.eligible -ge 2 -and [int]$frontier.selected -lt [int]$frontier.min_items) {
-      Add-TaskManagementIssue -List $warnings -Value ('frontier_no_batch:' + [string]$frontier.reason)
+      $frontierReason = [string]$frontier.reason
+      if ($frontierReason -eq 'dependency-wait') {
+        Add-TaskManagementIssue -List $warnings -Value 'frontier_waiting_on_dependencies'
+      } else {
+        Add-TaskManagementIssue -List $warnings -Value ('frontier_no_batch:' + $frontierReason)
+      }
     }
   }
 
-  if ([string]$delivery.parallel_policy -eq 'required' -and -not $parallelApplied -and [string]$executionPath -notin @('blocked','protected_serial')) {
+  $deliveryReadyParallelFrontier = $false
+  if ($frontier) {
+    $readyCount = [int]$frontier.ready
+    if ($readyCount -le 0) { $readyCount = [int]$frontier.eligible }
+    $minItems = [int]$frontier.min_items
+    if ($minItems -le 0) { $minItems = 2 }
+    $deliveryReadyParallelFrontier = ([bool]$frontier.batch_available -and $readyCount -ge $minItems)
+  } else {
+    $deliveryReadyParallelFrontier = ($batch.Count -ge 2)
+  }
+
+  if ([string]$delivery.parallel_policy -eq 'required' -and -not $parallelApplied -and [string]$executionPath -notin @('blocked','protected_serial') -and [bool]$deliveryReadyParallelFrontier) {
     Add-TaskManagementIssue -List $warnings -Value 'delivery_parallel_required_not_applied'
   }
 

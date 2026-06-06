@@ -1,5 +1,9 @@
 ﻿# task-action-evidence.ps1 -- deterministic evidence that a coder turn changed repository state.
 
+if (-not (Get-Command Test-ProjectGeneratedArtifactPath -ErrorAction SilentlyContinue)) {
+  . (Join-Path $PSScriptRoot 'project-artifact-policy.ps1')
+}
+
 function Normalize-TaskActionEvidencePath {
   param([string]$StatusLine)
   if ([string]::IsNullOrWhiteSpace($StatusLine)) { return '' }
@@ -23,6 +27,9 @@ function Test-TaskActionEvidencePathWorth {
   } catch {}
   if ($isBridge -and (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
     return [bool](Test-BridgeAutoCommitWorthPath -Path $Path)
+  }
+  if (-not $isBridge -and (Get-Command Test-ProjectGeneratedArtifactPath -ErrorAction SilentlyContinue)) {
+    if (Test-ProjectGeneratedArtifactPath -Path $Path) { return $false }
   }
   return $true
 }

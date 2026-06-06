@@ -112,6 +112,18 @@ $conflicts = New-TaskManagementSnapshot `
 Check 'conflict frontier warning' (@($conflicts.warnings) -contains 'frontier_no_batch:conflicts-or-touch-overlap') $conflicts
 Check 'conflict no blocker' (@($conflicts.blockers).Count -eq 0) $conflicts
 
+$dependencyWait = New-TaskManagementSnapshot `
+  -TaskId 'd1' `
+  -TaskText 'Continue after prerequisite backlog atoms finish.' `
+  -Channel 'main' `
+  -TouchedFiles @('docs/waiting.md') `
+  -WorkpackFrontier ([pscustomobject]@{ reason='dependency-wait'; batch_available=$false; parallel_required=$true; eligible=3; ready=1; selected=1; min_items=2 }) `
+  -ChannelFacts @{ Channel='main'; ChannelType='bridge' } `
+  -Context @{ Kind='backlog'; IsBacklog=$true }
+Check 'dependency wait is explicit' (@($dependencyWait.warnings) -contains 'frontier_waiting_on_dependencies') $dependencyWait
+Check 'dependency wait no parallel obligation warning' (@($dependencyWait.warnings) -notcontains 'parallel_obligation_unsatisfied') $dependencyWait
+Check 'dependency wait no delivery required warning' (@($dependencyWait.warnings) -notcontains 'delivery_parallel_required_not_applied') $dependencyWait
+
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-task-management-test-' + [Guid]::NewGuid().ToString('N'))
 try {
   New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'channels\main') -Force | Out-Null

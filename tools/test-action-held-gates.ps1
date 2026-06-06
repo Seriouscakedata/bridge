@@ -120,6 +120,26 @@ try {
   & git -C $repoCommit commit -q -m config 2>$null
   $realCommit = Get-TaskActionEvidence -RepoRoot $repoCommit -BaseCommit $baseCommit -BridgeRoot $repoCommit
   Check 'real commit is action evidence' ([bool]$realCommit.has_actions -and (@($realCommit.committed_worthy) -contains 'config.json')) $realCommit
+
+  $repoGeneratedDirty = New-TestRepo -Name 'generated-dirty'
+  $baseGeneratedDirty = ((Invoke-Git -Repo $repoGeneratedDirty -GitArgs @('rev-parse','HEAD')) | Select-Object -First 1).Trim()
+  New-Item -ItemType Directory -Path (Join-Path $repoGeneratedDirty '.verify_ch7') -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $repoGeneratedDirty '.verify_ch7\summary.json'), "{}" + "`n", [System.Text.UTF8Encoding]::new($false))
+  $generatedDirty = Get-TaskActionEvidence -RepoRoot $repoGeneratedDirty -BaseCommit $baseGeneratedDirty -BridgeRoot $root
+  Check 'external generated dirty artifact is not action evidence' (-not [bool]$generatedDirty.has_actions -and (@($generatedDirty.dirty_all) -contains '.verify_ch7/summary.json') -and (@($generatedDirty.dirty_worthy).Count -eq 0)) $generatedDirty
+  New-Item -ItemType Directory -Path (Join-Path $repoGeneratedDirty 'src') -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $repoGeneratedDirty 'src\app.py'), "print('ok')`n", [System.Text.UTF8Encoding]::new($false))
+  $mixedDirty = Get-TaskActionEvidence -RepoRoot $repoGeneratedDirty -BaseCommit $baseGeneratedDirty -BridgeRoot $root
+  Check 'external real dirty file remains action evidence beside generated artifact' ([bool]$mixedDirty.has_actions -and (@($mixedDirty.dirty_worthy) -contains 'src/app.py') -and (@($mixedDirty.dirty_worthy) -notcontains '.verify_ch7/summary.json')) $mixedDirty
+
+  $repoGeneratedCommit = New-TestRepo -Name 'generated-commit'
+  $baseGeneratedCommit = ((Invoke-Git -Repo $repoGeneratedCommit -GitArgs @('rev-parse','HEAD')) | Select-Object -First 1).Trim()
+  New-Item -ItemType Directory -Path (Join-Path $repoGeneratedCommit 'runs_ch6_check') -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $repoGeneratedCommit 'runs_ch6_check\asset.json'), "{}" + "`n", [System.Text.UTF8Encoding]::new($false))
+  & git -C $repoGeneratedCommit add runs_ch6_check/asset.json 2>$null
+  & git -C $repoGeneratedCommit commit -q -m generated-artifact 2>$null
+  $generatedCommit = Get-TaskActionEvidence -RepoRoot $repoGeneratedCommit -BaseCommit $baseGeneratedCommit -BridgeRoot $root
+  Check 'external generated-only commit is not action evidence' (-not [bool]$generatedCommit.has_actions -and (@($generatedCommit.committed_worthy).Count -eq 0)) $generatedCommit
 } finally {
   $safeTmp = [System.IO.Path]::GetFullPath((Join-Path $root 'tmp')).TrimEnd('\') + '\'
   $fullTmp = [System.IO.Path]::GetFullPath($tmpRoot)

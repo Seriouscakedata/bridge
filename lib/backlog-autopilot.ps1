@@ -762,6 +762,10 @@ Rules:
 - Treat planning as staged: brief -> product -> UX -> UI -> backend -> QA -> integration. Every later stage must explicitly use decisions from earlier stages. The integration stage resolves cross-stage conflicts before implementation.
 - If the stage docs, map, plan, or contract are shallow/missing/stale, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen PROJECT_BRIEF.md, DISCUSS_*.md, PROJECT_MAP.md, PROJECT_PLAN.md, and .bridge/project-contract.json.
 - Determine the next approved/incomplete chapter from the contract and plan, not from a guessed feature list.
+- Treat the approved contract/plan as a bounded current release, not open-ended permission to invent future product areas.
+- Before creating a new chapter after the previous chapter appears complete, check the current acceptance/report/check status. If the approved release can now be accepted, or only nice-to-have/future work remains, finish without PROJECT_BACKLOG and emit concise durable memory/operator-review notes.
+- Do not expand into new surfaces such as dashboards, admin panels, regeneration tools, web UIs, APIs, analytics, or background services unless that surface is explicitly in the approved current-release contract. "Could be useful" is not enough.
+- If the contract does not explicitly authorize the next chapter/wave, do not create atoms for it; emit [[PROJECT_OPEN_QUESTION: release scope needs approval before new chapter]] and finish without PROJECT_BACKLOG.
 - Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.

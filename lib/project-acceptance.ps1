@@ -4,6 +4,10 @@
 # it runs the project's declared checks, records evidence, posts chat status, and
 # optionally opens one follow-up backlog task when acceptance fails.
 
+if (-not (Get-Command Get-ProjectTrackedGeneratedArtifactPaths -ErrorAction SilentlyContinue)) {
+  . (Join-Path $PSScriptRoot 'project-artifact-policy.ps1')
+}
+
 function Get-ProjectAcceptanceBridgeRoot {
   try { return (Get-BridgeRoot) } catch {}
   try { return (Split-Path -Parent $PSScriptRoot) } catch {}
@@ -985,6 +989,13 @@ function Invoke-ProjectAcceptance {
   foreach ($planStep in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $ProjectRoot)) {
     [void]$steps.Add($planStep)
   }
+  $trackedGeneratedArtifacts = @(Get-ProjectTrackedGeneratedArtifactPaths -ProjectRoot $ProjectRoot)
+  $artifactDetails = if ($trackedGeneratedArtifacts.Count -eq 0) {
+    'none'
+  } else {
+    'count=' + [string]$trackedGeneratedArtifacts.Count + ' sample=' + (($trackedGeneratedArtifacts | Select-Object -First 20) -join ', ')
+  }
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'repo:generated-artifacts-not-tracked' -Ok ($trackedGeneratedArtifacts.Count -eq 0) -Details $artifactDetails))
   $journeyCoverage = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $ProjectRoot -Config $cfg
   [void]$steps.Add((New-ProjectAcceptanceJourneyCoverageStep -Fact $journeyCoverage))
 
