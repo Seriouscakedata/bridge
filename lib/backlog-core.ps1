@@ -733,9 +733,16 @@ function Test-BacklogApprovedItemClaimable {
 
   $isOperator = $false
   try { $isOperator = (@($Item.tags) -contains 'operator') } catch { $isOperator = $false }
+  # 2026-06-06 (operator hotfix): project-autopilot coordinator tasks (scope=project, work-ONLY-in-project-root)
+  # are PLANNERS, not control-plane executors. Their text mentions driver.ps1/supervisor/backlog ONLY as
+  # instructions teaching the worker how to flag control-plane atoms — the control-plane regex false-matches
+  # those words and blocked the coordinator, wedging CHAPTER autopilot. The atoms the coordinator emits are
+  # re-checked by THIS gate at their own claim time, so exempting the coordinator is safe.
+  $isProjectAutopilot = $false
+  try { $isProjectAutopilot = (($scope -eq 'project') -and (@($Item.tags) -contains 'project-autopilot')) } catch { $isProjectAutopilot = $false }
   $touchesControl = $false
   try { $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item) } catch { $touchesControl = $false }
-  if ($touchesControl -and -not $isOperator) {
+  if ($touchesControl -and -not $isOperator -and -not $isProjectAutopilot) {
     $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
     if ($admission -and [bool]$admission.ok) {
       return [pscustomobject]@{ claimable=$true; reason='bridge-self-admission'; admission=$admission }
