@@ -222,6 +222,295 @@ function Format-SelfModelModuleList {
     return @($lines.ToArray())
 }
 
+function Get-SelfModelObjectValue {
+    param(
+        $Object,
+        [string[]]$Names,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) { return $Default }
+    if ($Object -is [System.Collections.IDictionary]) {
+        foreach ($name in $Names) {
+            foreach ($key in @($Object.Keys)) {
+                if ([string]::Equals([string]$key, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $Object[$key]
+                }
+            }
+        }
+        return $Default
+    }
+
+    foreach ($name in $Names) {
+        try {
+            if ($Object.PSObject.Properties[$name]) {
+                return $Object.$name
+            }
+        } catch {}
+    }
+    return $Default
+}
+
+function Get-SelfModelCurrentChannel {
+    param([string]$BridgeRoot)
+
+    $slug = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:BRIDGE_CHANNEL)) {
+        $slug = ([string]$env:BRIDGE_CHANNEL).Trim().ToLowerInvariant()
+    }
+    if ([string]::IsNullOrWhiteSpace($slug)) {
+        $markerPath = Join-Path $BridgeRoot 'control\active_channel'
+        if (Test-Path -LiteralPath $markerPath) {
+            try { $slug = ([string](Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8)).Trim().ToLowerInvariant() } catch {}
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($slug)) { return 'main' }
+    if ($slug -eq 'main') { return $slug }
+    $channelDir = Join-Path $BridgeRoot ('channels\' + $slug)
+    if (Test-Path -LiteralPath $channelDir -PathType Container) { return $slug }
+    return 'main'
+}
+
+function Get-SelfModelBacklogPath {
+    param(
+        [string]$BridgeRoot,
+        [string]$Channel
+    )
+
+    $slug = [string]$Channel
+    if ([string]::IsNullOrWhiteSpace($slug)) {
+        $slug = Get-SelfModelCurrentChannel -BridgeRoot $BridgeRoot
+    }
+
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    [void]$candidates.Add((Join-Path $BridgeRoot ('channels\' + $slug + '\backlog.jsonl')))
+    if ($slug -eq 'main') {
+        [void]$candidates.Add((Join-Path $BridgeRoot 'backlog.jsonl'))
+    }
+
+    foreach ($path in $candidates) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            return $path
+        }
+    }
+    return $candidates[0]
+}
+
+function Read-SelfModelBacklogItems {
+    param([string]$Path)
+
+    $result = [ordered]@{
+        Path = $Path
+        ReadErrors = 0
+        Items = @()
+    }
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject]$result
+    }
+
+    $byId = New-Object 'System.Collections.Specialized.OrderedDictionary'
+    foreach ($line in [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $item = $line | ConvertFrom-Json
+        } catch {
+            $result.ReadErrors = [int]$result.ReadErrors + 1
+            continue
+        }
+        $id = [string](Get-SelfModelObjectValue -Object $item -Names @('id') -Default '')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        if ($byId.Contains($id)) {
+            $byId[$id] = $item
+        } else {
+            $byId.Add($id, $item)
+        }
+    }
+
+    $result.Items = @($byId.Values)
+    return [pscustomobject]$result
+}
+
+function Test-SelfModelIdeaDropped {
+    param($Item)
+
+    $status = ([string](Get-SelfModelObjectValue -Object $Item -Names @('status') -Default '')).Trim().ToLowerInvariant()
+    if ($status -in @('rejected', 'auto-dropped')) { return $true }
+
+    $autoCurator = Get-SelfModelObjectValue -Object $Item -Names @('auto_curator')
+    foreach ($name in @('verdict', 'action')) {
+        $value = ([string](Get-SelfModelObjectValue -Object $autoCurator -Names @($name) -Default '')).Trim().ToLowerInvariant()
+        if ($value -eq 'drop') { return $true }
+    }
+
+    $intakeGate = Get-SelfModelObjectValue -Object $Item -Names @('intake_gate')
+    $intakeAction = ([string](Get-SelfModelObjectValue -Object $intakeGate -Names @('action', 'final_status') -Default '')).Trim().ToLowerInvariant()
+    if ($intakeAction -in @('drop', 'auto-dropped')) { return $true }
+
+    $governorClaim = Get-SelfModelObjectValue -Object $Item -Names @('governor_claim')
+    $governorAction = ([string](Get-SelfModelObjectValue -Object $governorClaim -Names @('action') -Default '')).Trim().ToLowerInvariant()
+    if ($governorAction -eq 'drop') { return $true }
+
+    return $false
+}
+
+function Get-SelfModelIdeaSourceStats {
+    [CmdletBinding()]
+    param(
+        [string]$BridgeRoot = $null,
+        [string]$Channel = $null,
+        [int]$MinTerminalSample = 3,
+        [int]$MaxSources = 4
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BridgeRoot)) {
+        $BridgeRoot = Get-SelfModelBridgeRoot
+    }
+
+    $slug = if ([string]::IsNullOrWhiteSpace($Channel)) {
+        Get-SelfModelCurrentChannel -BridgeRoot $BridgeRoot
+    } else {
+        [string]$Channel
+    }
+    $backlogPath = Get-SelfModelBacklogPath -BridgeRoot $BridgeRoot -Channel $slug
+    $read = Read-SelfModelBacklogItems -Path $backlogPath
+
+    $openStatuses = @{
+        'new' = $true
+        'approved' = $true
+        'running' = $true
+        'working' = $true
+        'inprogress' = $true
+        'green' = $true
+        'yellow' = $true
+    }
+    $doneStatuses = @{
+        'done' = $true
+        'auto-resolved' = $true
+    }
+
+    $perSource = @{}
+    foreach ($item in @($read.Items)) {
+        $source = ([string](Get-SelfModelObjectValue -Object $item -Names @('from') -Default '')).Trim()
+        if ([string]::IsNullOrWhiteSpace($source)) { continue }
+        if (-not $perSource.ContainsKey($source)) {
+            $perSource[$source] = [ordered]@{
+                source = $source
+                total = 0
+                terminal = 0
+                open = 0
+                done = 0
+                dropped = 0
+            }
+        }
+
+        $row = $perSource[$source]
+        $row.total = [int]$row.total + 1
+        $status = ([string](Get-SelfModelObjectValue -Object $item -Names @('status') -Default '')).Trim().ToLowerInvariant()
+        $isDropped = Test-SelfModelIdeaDropped -Item $item
+
+        if ($isDropped) {
+            $row.dropped = [int]$row.dropped + 1
+            $row.terminal = [int]$row.terminal + 1
+            continue
+        }
+        if ($doneStatuses.ContainsKey($status)) {
+            $row.done = [int]$row.done + 1
+            $row.terminal = [int]$row.terminal + 1
+            continue
+        }
+        if ($openStatuses.ContainsKey($status)) {
+            $row.open = [int]$row.open + 1
+            continue
+        }
+        $row.terminal = [int]$row.terminal + 1
+    }
+
+    $rows = @($perSource.Keys | Sort-Object | ForEach-Object {
+            $row = $perSource[$_]
+            $dropRate = if ([int]$row.terminal -gt 0) {
+                [Math]::Round(([double]$row.dropped / [double]$row.terminal), 2)
+            } else {
+                0.0
+            }
+            [pscustomobject]@{
+                source = [string]$row.source
+                total = [int]$row.total
+                terminal = [int]$row.terminal
+                open = [int]$row.open
+                done = [int]$row.done
+                dropped = [int]$row.dropped
+                drop_rate = [double]$dropRate
+                eligible_for_risk = ([int]$row.terminal -ge [Math]::Max(1, $MinTerminalSample))
+            }
+        })
+    $risky = @($rows |
+        Where-Object { $_.eligible_for_risk -and $_.dropped -gt 0 } |
+        Sort-Object @{ Expression = { $_.drop_rate }; Descending = $true },
+        @{ Expression = { $_.dropped }; Descending = $true },
+        @{ Expression = { $_.terminal }; Descending = $true },
+        @{ Expression = { $_.source } } |
+        Select-Object -First $MaxSources)
+
+    return [pscustomobject]@{
+        channel = $slug
+        backlog_path = $backlogPath
+        read_errors = [int]$read.ReadErrors
+        min_terminal_sample = [Math]::Max(1, $MinTerminalSample)
+        total_items = @($read.Items).Count
+        source_count = $rows.Count
+        eligible_source_count = @($rows | Where-Object { $_.eligible_for_risk }).Count
+        sources = $rows
+        risky_sources = $risky
+    }
+}
+
+function Format-SelfModelIdeaSourceSummary {
+    param(
+        $Stats,
+        [int]$MaxSources = 2
+    )
+
+    if ($null -eq $Stats) {
+        return 'IDEA SOURCES: unavailable.'
+    }
+
+    $risky = @($Stats.risky_sources | Select-Object -First $MaxSources)
+    if ($risky.Count -eq 0) {
+        return ('IDEA SOURCES: none above risk threshold (terminal sample >= ' + $Stats.min_terminal_sample + ').')
+    }
+
+    $parts = @()
+    foreach ($row in $risky) {
+        $pct = [int][Math]::Round([double]$row.drop_rate * 100.0)
+        $parts += ('{0} {1}% drop ({2}/{3} term, done={4}, open={5})' -f $row.source, $pct, $row.dropped, $row.terminal, $row.done, $row.open)
+    }
+    return ('IDEA SOURCES: ' + ($parts -join '; '))
+}
+
+function Get-SelfModelIdeaSourceGuidance {
+    [CmdletBinding()]
+    param(
+        [string]$BridgeRoot = $null,
+        [string]$Channel = $null,
+        [int]$MinTerminalSample = 3,
+        [int]$MaxSources = 3
+    )
+
+    $stats = Get-SelfModelIdeaSourceStats -BridgeRoot $BridgeRoot -Channel $Channel -MinTerminalSample $MinTerminalSample -MaxSources $MaxSources
+    $risky = @($stats.risky_sources)
+    if ($risky.Count -eq 0) {
+        return 'Источники идей: высокий drop-rate не выявлен или ещё мало terminal-данных.'
+    }
+
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$lines.Add(('Источники идей с высоким drop-rate (минимум terminal-выборки: ' + $stats.min_terminal_sample + '):'))
+    foreach ($row in $risky) {
+        $pct = [int][Math]::Round([double]$row.drop_rate * 100.0)
+        [void]$lines.Add(('- ' + $row.source + ': dropped ' + $row.dropped + '/' + $row.terminal + ' (' + $pct + '%), done ' + $row.done + ', open ' + $row.open))
+    }
+    return (($lines.ToArray()) -join "`n")
+}
+
 function Get-SelfModelPack {
     [CmdletBinding()]
     param(
@@ -273,9 +562,11 @@ function Get-SelfModelPack {
     $allUnregisteredModules = @(Get-SelfModelUnregisteredModules -BridgeRoot $BridgeRoot -Features $features -Limit 1000)
     $moduleTop = @($allUnregisteredModules | Select-Object -First 3)
     $moduleLines = Format-SelfModelModuleList -Modules $moduleTop -TotalCount $allUnregisteredModules.Count
+    $ideaSourceStats = Get-SelfModelIdeaSourceStats -BridgeRoot $BridgeRoot -MaxSources 4
+    $ideaSourceSummary = Format-SelfModelIdeaSourceSummary -Stats $ideaSourceStats -MaxSources 2
 
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    [void]$lines.Add('=== BRIDGE SELF-MODEL PACK v2.1/base ===')
+    [void]$lines.Add('=== BRIDGE SELF-MODEL PACK v2.2/base ===')
     [void]$lines.Add('ARCH:')
     [void]$lines.Add('- scheduler starts supervisor; supervisor keeps server and channel drivers alive.')
     [void]$lines.Add('- server.ps1 exposes UI/API; driver.ps1 runs planner/coder/critic turns.')
@@ -295,6 +586,8 @@ function Get-SelfModelPack {
     [void]$lines.Add('')
     [void]$lines.Add('FEATURES dormant:')
     [void]$lines.Add(('- top: ' + $dormantSummary))
+    [void]$lines.Add('')
+    [void]$lines.Add($ideaSourceSummary)
     [void]$lines.Add('')
     [void]$lines.Add('MODULES (scanned, not in registry):')
     foreach ($moduleLine in $moduleLines) {

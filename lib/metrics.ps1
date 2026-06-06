@@ -593,6 +593,69 @@ function Test-LearningLoopAutoRevertGuard {
   return (Allow-LearningLoopAutoRevert)
 }
 
+function Test-LearningLoopRegressionFixIdeaFiled {
+  param(
+    [string]$HypothesisTs = '',
+    [string]$Commit = '',
+    [string]$Action = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($HypothesisTs) -or [string]::IsNullOrWhiteSpace($Commit) -or [string]::IsNullOrWhiteSpace($Action)) {
+    return $false
+  }
+
+  foreach ($rec in @(Read-MetricsJsonl)) {
+    if ([string]$rec.type -ne 'regression_fix_backlog') { continue }
+    if ([string]$rec.hypothesis_ts -ne $HypothesisTs) { continue }
+    if ([string]$rec.commit -ne $Commit) { continue }
+    if ([string]$rec.action -ne $Action) { continue }
+    return $true
+  }
+
+  return $false
+}
+
+function Add-LearningLoopRegressionFixIdea {
+  param(
+    [string]$Commit = '',
+    [string]$Task = '',
+    [string]$HypothesisTs = '',
+    [string]$Action = ''
+  )
+
+  $supported = @{
+    revert_shadow        = $true
+    revert_disabled      = $true
+    revert_guard_blocked = $true
+    revert_failed        = $true
+  }
+  if ([string]::IsNullOrWhiteSpace($Commit) -or [string]::IsNullOrWhiteSpace($HypothesisTs) -or -not $supported.ContainsKey($Action)) {
+    return $false
+  }
+  if (Test-LearningLoopRegressionFixIdeaFiled -HypothesisTs $HypothesisTs -Commit $Commit -Action $Action) {
+    return $false
+  }
+
+  $shortTask = if ([string]::IsNullOrWhiteSpace($Task)) { 'без описания' } elseif ($Task.Length -gt 80) { $Task.Substring(0, 80) + '...' } else { $Task }
+  $ideaId = $null
+  try {
+    $ideaId = Add-Idea -Text ("Изоляция и фикс регресса: коммит $Commit ('$shortTask'), hypothesis_ts=$HypothesisTs, причина действия=$Action. Требуется изолировать регресс, доказать root cause, внести фикс или подтвердить false positive.") -From 'learning-loop' -Tags @('learning-loop','regression','fix',$Action) -Severity 'warning'
+  } catch {
+    return $false
+  }
+  if ($null -eq $ideaId -or [string]::IsNullOrWhiteSpace([string]$ideaId)) {
+    return $false
+  }
+
+  Append-MetricsRecord @{
+    type          = 'regression_fix_backlog'
+    hypothesis_ts = $HypothesisTs
+    commit        = $Commit
+    action        = $Action
+    backlog_id    = [string]$ideaId
+  }
+  return $true
+}
+
 function Invoke-VerdictActuation {
   # Closes the learning loop. 'worse' -> auto-revert the commit with a SAFE
   # `git revert` (creates an inverse commit; never reset --hard / push --force).
@@ -625,9 +688,11 @@ function Invoke-VerdictActuation {
       if ([bool]$cfg.autoRevertShadow) {
         $shadowGuard = Test-LearningLoopAutoRevertGuard -Root $root -Commit $Commit -HypothesisTs $HypothesisTs -Config $cfg
         Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_shadow'; would_revert=[bool]$shadowGuard.allowed; reason=[string]$shadowGuard.reason; guard=$shadowGuard.detail }
+        try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_shadow' | Out-Null } catch {}
         $result.action = 'revert_shadow'; return $result
       }
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_disabled' }
+      try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_disabled' | Out-Null } catch {}
       $result.action = 'revert_disabled'; return $result
     }
     if (-not (Test-GitCommitExists -Root $root -Commit $Commit)) {
@@ -637,6 +702,7 @@ function Invoke-VerdictActuation {
     $guard = Test-LearningLoopAutoRevertGuard -Root $root -Commit $Commit -HypothesisTs $HypothesisTs -Config $cfg
     if (-not [bool]$guard.allowed) {
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_guard_blocked'; reason=[string]$guard.reason; guard=$guard.detail }
+      try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_guard_blocked' | Out-Null } catch {}
       $result.action = 'revert_guard_blocked'; return $result
     }
     if (-not $AllowRevert) { $result.action = 'revert_deferred_cap'; return $result }   # transient: retry next cycle
@@ -660,6 +726,7 @@ function Invoke-VerdictActuation {
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_failed'; reason=$why }
       try { Add-Memory -Text ("Авто-откат регресса '$shortTask' (коммит $Commit) не прошёл: $why. Откат отменён, дерево чистое. Нужен ручной разбор.") -Tags @('learning-loop','worse','revert-failed') -Importance 0.8 | Out-Null } catch {}
       try { Add-Idea -Text ("Ручной разбор регресса: коммит $Commit ('$shortTask') ухудшил метрики, авто-откат не прошёл ($why).") -Tags @('learning-loop','regression') -Severity 'warning' | Out-Null } catch {}
+      try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_failed' | Out-Null } catch {}
       $result.action = 'revert_failed'; return $result
     }
     $revHead = try { (& git -C $root log -1 --format='%H' 2>$null).Trim() } catch { '' }

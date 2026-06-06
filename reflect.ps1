@@ -3,6 +3,7 @@
 # Reads recent activity + memory + open backlog, asks the CHEAP router (deepseek-v4-flash)
 # for a few concrete, safe improvement ideas, and files them into the backlog as 'new'.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\self-model.ps1')
 $ErrorActionPreference = 'Continue'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
@@ -85,6 +86,14 @@ try {
   }
 } catch {}
 
+$ideaSourceSection = 'Источники идей: высокий drop-rate не выявлен или ещё мало terminal-данных.'
+try {
+  if (Get-Command Get-SelfModelIdeaSourceGuidance -ErrorAction SilentlyContinue) {
+    $sg = Get-SelfModelIdeaSourceGuidance -BridgeRoot $bridgeRoot -MaxSources 3
+    if (-not [string]::IsNullOrWhiteSpace($sg)) { $ideaSourceSection = $sg }
+  }
+} catch {}
+
 $prompt = @"
 Ты — аналитик-наблюдатель ИИ-моста (пара агентов Claude+Codex, разработка на ПК пользователя Тимура).
 Твоя задача: на основе ДАННЫХ ниже предложить до $maxIdeas КОНКРЕТНЫХ, выполнимых улучшений самого моста (код, процесс, надёжность, UX, память, автономия).
@@ -98,6 +107,7 @@ $goalsSection
 - конкретные и проверяемые (не «улучшить качество», а «что и где изменить и зачем»);
 - опирайся ТОЛЬКО на данные ниже (телеметрия, память, диалог); не выдумывай проблем;
 - НЕ повторяй то, что уже есть в открытом бэклоге;
+- избегай источников/тем с высоким drop-rate; если предлагаешь оттуда, нужна сильная evidence;
 - безопасные: не предлагай трогать watchdog/supervisor/.git, не предлагай рискованных необратимых действий;
 - если данных мало или всё хорошо — верни пустой массив [].
 
@@ -112,6 +122,9 @@ $convoTail
 
 УЖЕ В БЭКЛОГЕ (не повторять):
 $openIdeas
+
+РИСК ПО ИСТОЧНИКАМ ИДЕЙ:
+$ideaSourceSection
 
 $learningSection
 

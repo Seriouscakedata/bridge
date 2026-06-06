@@ -64,14 +64,33 @@
 
       if (-not $noopAllowDone) {
         $plannerStatus = 'CONTINUE'
-        Update-State {
+        $noopBaseRejectReason = $noopRejectReason
+        if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
+        $noopFailureText = 'DONE rejected by action evidence guard: ' + $noopRejectReason
+        $noopForceCoderRecovery = ($noopBaseRejectReason -eq 'missing_action_evidence')
+        $noopRecoveryMessage = "Codex: создай реальный commit/diff evidence для текущей backlog-задачи, затем проверки и DONE."
+        $noopFailureRecord = [pscustomobject]@{
+          kind = 'test_failed'
+          reason = $noopBaseRejectReason
+          text = $noopFailureText
+          ts = (Get-Date).ToString('o')
+        }
+        Update-State ({
           param($s)
           $s.task_did_actions = $false
           $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
-        } | Out-Null
-        if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
-        try { Set-TaskLastFailure -Kind test_failed -Text ('DONE rejected by action evidence guard: ' + $noopRejectReason) } catch {}
-        Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
+          $s | Add-Member -NotePropertyName task_failure_record -NotePropertyValue $noopFailureRecord -Force
+          if ($noopForceCoderRecovery) {
+            $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+            $s.force_planner = $false
+          }
+        }.GetNewClosure()) | Out-Null
+        try { Set-TaskLastFailure -Kind test_failed -Text $noopFailureText } catch {}
+        if ($noopForceCoderRecovery) {
+          Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). " + $noopRecoveryMessage + " Нельзя планировщику снова закрывать задачу без commit/diff evidence.") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
+        }
       }
     } catch {
       $plannerStatus = 'CONTINUE'

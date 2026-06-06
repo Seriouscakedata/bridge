@@ -49,23 +49,36 @@ $registryPath = Join-Path $BridgeRoot 'features\registry.json'
 $statePath = Join-Path $BridgeRoot 'features\state.json'
 $runtimeCachePath = Join-Path $BridgeRoot '.bridge-runtime\self-model\main.prompt.txt'
 $memoryMapPath = Join-Path $BridgeRoot 'memory\map.md'
+$activeChannelPath = Join-Path $BridgeRoot 'control\active_channel'
+$channelSlug = Get-SelfModelCurrentChannel -BridgeRoot $BridgeRoot
+$channelBacklogPath = Get-SelfModelBacklogPath -BridgeRoot $BridgeRoot -Channel $channelSlug
 
 $beforeRegistry = Get-FileProbe -Path $registryPath
 $beforeState = Get-FileProbe -Path $statePath
 $beforeRuntimeCache = Get-FileProbe -Path $runtimeCachePath
 $beforeMemoryMap = Get-FileProbe -Path $memoryMapPath
+$beforeActiveChannel = Get-FileProbe -Path $activeChannelPath
+$beforeChannelBacklog = Get-FileProbe -Path $channelBacklogPath
 
+$ideaSourceStatsBefore = Get-SelfModelIdeaSourceStats -BridgeRoot $BridgeRoot
+if ([string]$ideaSourceStatsBefore.backlog_path -ne [string]$channelBacklogPath) {
+    throw 'idea source stats resolved an unexpected backlog path'
+}
 $pack = Get-SelfModelPack -BridgeRoot $BridgeRoot
 
 $afterRegistry = Get-FileProbe -Path $registryPath
 $afterState = Get-FileProbe -Path $statePath
 $afterRuntimeCache = Get-FileProbe -Path $runtimeCachePath
 $afterMemoryMap = Get-FileProbe -Path $memoryMapPath
+$afterActiveChannel = Get-FileProbe -Path $activeChannelPath
+$afterChannelBacklog = Get-FileProbe -Path $channelBacklogPath
 
 Assert-ProbeUnchanged -Name 'features/registry.json' -Before $beforeRegistry -After $afterRegistry
 Assert-ProbeUnchanged -Name 'features/state.json' -Before $beforeState -After $afterState
 Assert-ProbeUnchanged -Name '.bridge-runtime/self-model/main.prompt.txt' -Before $beforeRuntimeCache -After $afterRuntimeCache
 Assert-ProbeUnchanged -Name 'memory/map.md' -Before $beforeMemoryMap -After $afterMemoryMap
+Assert-ProbeUnchanged -Name 'control/active_channel' -Before $beforeActiveChannel -After $afterActiveChannel
+Assert-ProbeUnchanged -Name $channelBacklogPath -Before $beforeChannelBacklog -After $afterChannelBacklog
 
 if ([string]::IsNullOrWhiteSpace($pack)) { throw 'pack is empty' }
 $byteCount = [System.Text.Encoding]::UTF8.GetByteCount($pack)
@@ -99,6 +112,12 @@ if ($pack -match 'owner_files') {
 if ($pack -notmatch 'dispatcher flow: staged planning -> atoms -> frontier') {
     throw 'dispatcher frontier rule missing'
 }
+if ($pack -notmatch '(?m)^IDEA SOURCES:\s+') {
+    throw 'missing compact idea source metric'
+}
+if ($pack -match 'backlog\.jsonl') {
+    throw 'pack leaked backlog path'
+}
 
 $registry = [System.IO.File]::ReadAllText($registryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 $features = @($registry)
@@ -129,7 +148,10 @@ if ($ownerFiles.Count -gt 0 -and $ownerHits -ge [Math]::Min(10, $ownerFiles.Coun
     stateUnchanged = $true
     runtimeCacheUnchanged = $true
     memoryMapUnchanged = $true
+    activeChannelUnchanged = $true
+    channelBacklogUnchanged = $true
     modulesSection = $true
+    ideaSourcesSection = $true
     deliveryModeScanned = $true
     selfModelScanned = $true
     ownerFileHits = $ownerHits
