@@ -222,6 +222,7 @@ try {
   Assert-True ([int]$coverageCliOnly.non_web_surface_count -ge 2 -and [int]$coverageCliOnly.non_web_command_check_count -eq 3) 'expected CLI/artifact surfaces plus three command checks'
   $webFactCliOnly = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgCliOnly
   Assert-True (-not [bool]$webFactCliOnly.required -and [int]$webFactCliOnly.config_checks_count -eq 0 -and [int]$webFactCliOnly.contract_web_specs_count -eq 0 -and [int]$webFactCliOnly.contract_journey_specs_count -eq 0) 'expected CLI-only acceptance to skip server:web-start'
+  Assert-True ([bool]$coverageCliOnly.required -and -not [bool]$webFactCliOnly.required) 'expected CLI-only journeys to require coverage without requiring web acceptance'
   New-Item -ItemType Directory -Path $routeLikeDir -Force | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $routeLikeDir 'page.tsx'), 'export default function Page() { return null }', (New-Object System.Text.UTF8Encoding($false)))
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'acceptance.json'), $emptyServerChecksAcc, (New-Object System.Text.UTF8Encoding($false)))
