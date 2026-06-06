@@ -65,9 +65,9 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     # alongside Codex's claim. Catches the over-claim pattern (curator-задача
     # 2026-05-27) before the LLM verify gate spends a 30s round.
     try {
-      $projRootForGate = ''
-      try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $projRootForGate = [string](Get-EffectiveProjectRoot -Slug $Channel) } } catch {}
-      $gateReport = Test-CoderClaims -Reply $reply -BridgeRoot $bridgeRoot -ProjectRoot $projRootForGate
+      $repoClaimRoot = $bridgeRoot
+      try { if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) { $repoClaimRoot = [string](Get-TaskRepoRoot) } } catch {}
+      $gateReport = Test-CoderClaims -Reply $reply -BridgeRoot $bridgeRoot -ProjectRoot $repoClaimRoot
       if ($gateReport.violations.Count -gt 0) {
         $vparts = New-Object 'System.Collections.Generic.List[string]'
         foreach ($v in $gateReport.violations) {

@@ -353,6 +353,7 @@ function Add-CanaryStateCounters {
   if ($Success) {
     $State.last_outcome = 'ok'
     $State.consecutive_failures = 0
+    $State.quarantine_until = $null
     $State.total_heartbeats = [int]$State.total_heartbeats + 1
     return
   }
@@ -521,7 +522,12 @@ function Invoke-CanarySmokeChecks {
     $beforeSeq = 0
     try { $beforeSeq = [int]$beforeObj.lastSeq } catch {}
 
-    [void](Add-Message -From system -Kind event -Text ("🧪 Canary smoke heartbeat " + (Get-Date).ToUniversalTime().ToString('o')))
+    $heartbeatText = "🧪 Canary smoke heartbeat " + (Get-Date).ToUniversalTime().ToString('o')
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      [void](Invoke-WithChannelEnv -Slug 'main' -Action { Add-Message -From system -Kind event -Text $heartbeatText })
+    } else {
+      [void](Add-Message -From system -Kind event -Text $heartbeatText)
+    }
 
     Start-Sleep -Milliseconds 200
     $after = Invoke-WebRequest -Uri $uri -Headers $authHeaders -UseBasicParsing -TimeoutSec 5
