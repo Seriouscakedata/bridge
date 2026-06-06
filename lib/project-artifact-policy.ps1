@@ -26,8 +26,20 @@ function Test-ProjectGeneratedArtifactPath {
   return $false
 }
 
+function Test-ProjectVerificationArtifactPath {
+  param([string]$Path)
+
+  $p = Normalize-ProjectArtifactPolicyPath -Path $Path
+  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
+  return ($p -match '^\.verify($|[-_][^/]*|_runs)(/|$)' -or
+    $p -match '^runs[-_]ch[0-9]+[-_]check(/|$)')
+}
+
 function Get-ProjectTrackedGeneratedArtifactPaths {
-  param([string]$ProjectRoot)
+  param(
+    [string]$ProjectRoot,
+    [switch]$ExcludeVerificationArtifacts
+  )
 
   $items = New-Object 'System.Collections.Generic.List[string]'
   if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
@@ -38,6 +50,7 @@ function Get-ProjectTrackedGeneratedArtifactPaths {
     foreach ($line in @(& git -C $ProjectRoot ls-files 2>$null)) {
       $p = Normalize-ProjectArtifactPolicyPath -Path ([string]$line)
       if ([string]::IsNullOrWhiteSpace($p)) { continue }
+      if ($ExcludeVerificationArtifacts -and (Test-ProjectVerificationArtifactPath -Path $p)) { continue }
       if (Test-ProjectGeneratedArtifactPath -Path $p) { [void]$items.Add($p) }
     }
   } catch {}

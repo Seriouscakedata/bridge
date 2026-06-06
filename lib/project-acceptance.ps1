@@ -989,7 +989,7 @@ function Invoke-ProjectAcceptance {
   foreach ($planStep in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $ProjectRoot)) {
     [void]$steps.Add($planStep)
   }
-  $trackedGeneratedArtifacts = @(Get-ProjectTrackedGeneratedArtifactPaths -ProjectRoot $ProjectRoot)
+  $trackedGeneratedArtifacts = @(Get-ProjectTrackedGeneratedArtifactPaths -ProjectRoot $ProjectRoot -ExcludeVerificationArtifacts)
   $artifactDetails = if ($trackedGeneratedArtifacts.Count -eq 0) {
     'none'
   } else {
