@@ -158,11 +158,14 @@ function Test-BacklogGovernorItemShape {
 
   if ($governedStatus) {
     if ([string]::IsNullOrWhiteSpace([string](Get-BacklogGovernorObjectValue -Object $Item -Names @('id') -Default ''))) { $missing += 'id' }
-    if ([string]::IsNullOrWhiteSpace([string](Get-BacklogGovernorObjectValue -Object $Item -Names @('title') -Default ''))) { $missing += 'title' }
+    # 2026-06-06 (operator hotfix): shape requires only IDENTITY (id + title|text|task).
+    # touch_set/root_cause_key are workpack-COORDINATION fields assigned at claim time, NOT
+    # existence preconditions. Requiring them at intake dropped EVERY plain Add-Idea/operator
+    # task as 'invalid-shape' (regression that wedged operator + project-autopilot atoms,
+    # forced Codex to pause literary-slop-video). title is optional when text|task is present.
+    $title = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @('title') -Default '')
     $body = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @('text','task') -Default '')
-    if ([string]::IsNullOrWhiteSpace($body)) { $missing += 'text|task' }
-    if (@(Get-BacklogGovernorItemTouchSet -Item $Item).Count -eq 0) { $missing += 'touch_set|files|lease_touch_set|workpack_touch_set' }
-    if ([string]::IsNullOrWhiteSpace((Get-BacklogGovernorRootCauseKey -Item $Item))) { $missing += 'root_cause_key|lease_root_cause_key|workpack_root_cause_key' }
+    if ([string]::IsNullOrWhiteSpace($title) -and [string]::IsNullOrWhiteSpace($body)) { $missing += 'title|text|task' }
   }
 
   $valid = ($missing.Count -eq 0)
