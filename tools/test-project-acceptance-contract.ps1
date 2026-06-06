@@ -239,6 +239,34 @@ try {
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'acceptance.json') -Force
   Remove-Item -LiteralPath (Join-Path $project 'app') -Recurse -Force
 
+  $singleCommandCliContract = [ordered]@{
+    project_goal = 'Deliver a CLI report-only product with one deterministic command check.'
+    surfaces = @(
+      [ordered]@{ id='cli'; kind='cli'; command='tool report'; purpose='Generate the report.' },
+      [ordered]@{ id='report'; kind='report'; path='reports/report.md'; purpose='Review generated output.' }
+    )
+    journeys = @(
+      [ordered]@{
+        id='report-review'
+        steps=@(
+          'Run the report command.',
+          'Open the generated report artifact.',
+          'Confirm completion is recorded in the report.'
+        )
+      }
+    )
+    checks = @(
+      [ordered]@{ id='report-smoke'; command='tool report --smoke'; purpose='Verify report generation.' }
+    )
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($singleCommandCliContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgSingleCommandCli = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageSingleCommandCli = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgSingleCommandCli
+  Assert-True ([bool]$coverageSingleCommandCli.required -and [bool]$coverageSingleCommandCli.ok) 'expected one non-web command check plus non-web surfaces to satisfy journey coverage'
+  Assert-True ([int]$coverageSingleCommandCli.non_web_command_check_count -eq 1) ('expected one non-web command check, got ' + [string]$coverageSingleCommandCli.non_web_command_check_count)
+  $webFactSingleCommandCli = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgSingleCommandCli
+  Assert-True (-not [bool]$webFactSingleCommandCli.required) 'expected single-command CLI-only contract to skip server:web-start'
+
   $actionOnlyContract = [ordered]@{
     user_journeys = @(
       [ordered]@{
