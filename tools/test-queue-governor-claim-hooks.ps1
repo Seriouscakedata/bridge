@@ -91,13 +91,36 @@ function Get-TestItem {
 
 try {
   Reset-TestBacklog
-  $invalidId = Add-Idea -Text 'approved without governor lease metadata' -Status 'approved' -SkipCurator
-  $invalid = Get-TestItem -Id $invalidId
-  Assert-QueueGovernorHook 'intake invalid approved auto-dropped' ([string]$invalid.status -eq 'auto-dropped') ($invalid | ConvertTo-Json -Compress -Depth 8)
-  Assert-QueueGovernorHook 'intake auto-drop evidence includes missing fields' (
+  $plainId = Add-Idea -Text 'approved with plain identity only; claim/workpack metadata is assigned later' -Status 'approved' -SkipCurator
+  $plain = Get-TestItem -Id $plainId
+  $plainDropVerdict = ''
+  try { if ($plain.PSObject.Properties.Name -contains 'auto_curator') { $plainDropVerdict = [string]$plain.auto_curator.verdict } } catch {}
+  $plainHasDropEvidence = ($plain.PSObject.Properties.Name -contains 'governor_drop_evidence')
+  Assert-QueueGovernorHook 'intake plain approved identity accepted' ([string]$plain.status -eq 'approved') ($plain | ConvertTo-Json -Compress -Depth 8)
+  Assert-QueueGovernorHook 'intake plain approved is not auto-dropped for missing coordination metadata' (
+    $plainDropVerdict -ne 'drop' -and
+    -not $plainHasDropEvidence
+  ) ($plain | ConvertTo-Json -Compress -Depth 8)
+
+  Reset-TestBacklog
+  Save-Backlog @([pscustomobject][ordered]@{
+    id = 'invalid-missing-body'
+    ts = '2026-06-06T00:00:00Z'
+    from = 'test'
+    status = 'approved'
+    tags = @()
+    attempts = 0
+    score = 1.0
+    project = ''
+    scope = 'bridge'
+  })
+  $invalidPick = Get-NextApprovedIdea
+  $invalid = Get-TestItem -Id 'invalid-missing-body'
+  Assert-QueueGovernorHook 'claim invalid approved auto-dropped' ($null -eq $invalidPick -and [string]$invalid.status -eq 'auto-dropped') ($invalid | ConvertTo-Json -Compress -Depth 8)
+  Assert-QueueGovernorHook 'claim auto-drop evidence includes missing identity fields' (
     [string]$invalid.auto_curator.verdict -eq 'drop' -and
     [string]$invalid.auto_curator.reason -like 'queue-governor:*' -and
-    @($invalid.governor_drop_evidence.shape.missing).Count -gt 0
+    @($invalid.governor_drop_evidence.shape.missing) -contains 'title|text|task'
   ) ($invalid | ConvertTo-Json -Compress -Depth 8)
 
   Reset-TestBacklog

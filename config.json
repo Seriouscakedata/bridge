@@ -71,7 +71,12 @@
     "useLLMPriority": false
   },
   "learningLoop": {
-    "autoRevert": false
+    "autoRevert": false,
+    "autoRevertShadow": true,
+    "autoRevertMaxHypothesisAgeHours": 30,
+    "autoRevertMaxCommitsBehindHead": 0,
+    "autoRevertRequireUnhealthy": true,
+    "autoRevertRequireCleanWorktree": true
   },
   "llm": {
     "gate": "deepseek-v4-flash",

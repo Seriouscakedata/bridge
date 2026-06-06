@@ -390,7 +390,7 @@ function Invoke-MetricsReflection {
     $allRec      = Read-MetricsJsonl
     $allVerdicts = @($allRec | Where-Object { $_.type -eq 'verdict' })
     $allActs     = @($allRec | Where-Object { $_.type -eq 'actuation' })
-    $terminal    = @('reverted','cement','revert_disabled','revert_failed','revert_skipped')
+    $terminal    = @('reverted','cement','revert_disabled','revert_shadow','revert_guard_blocked','revert_failed','revert_skipped')
     $revertedThisCycle = $false
     foreach ($v in ($allVerdicts | Sort-Object ts)) {
       $vv = [string]$v.verdict
@@ -407,10 +407,17 @@ function Invoke-MetricsReflection {
 }
 
 function Get-LearningLoopConfig {
-  # Operator kill-switch for verdict actuation. Default ON (roadmap mandate:
-  # auto-revert regressions). config/settings -> { "learningLoop": { "autoRevert": false } }
-  # disables auto-revert without changing the actuation code. Every git op stays fail-closed.
-  $cfg = @{ autoRevert = $true }
+  # Operator kill-switch for verdict actuation. Default is OFF + shadow evidence:
+  # models/metrics may say "worse", but the bridge only records what it would do.
+  # Real auto-revert must pass Test-LearningLoopAutoRevertGuard. Every git op stays fail-closed.
+  $cfg = @{
+    autoRevert = $false
+    autoRevertShadow = $true
+    autoRevertMaxHypothesisAgeHours = 30.0
+    autoRevertMaxCommitsBehindHead = 0
+    autoRevertRequireUnhealthy = $true
+    autoRevertRequireCleanWorktree = $true
+  }
   try {
     $j = $null
     if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
@@ -424,6 +431,11 @@ function Get-LearningLoopConfig {
     if ($j -and $j.PSObject.Properties['learningLoop']) {
       $ll = $j.learningLoop
       if ($ll.PSObject -and $ll.PSObject.Properties['autoRevert']) { $cfg.autoRevert = [bool]$ll.autoRevert }
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevertShadow']) { $cfg.autoRevertShadow = [bool]$ll.autoRevertShadow }
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevertMaxHypothesisAgeHours']) { try { $cfg.autoRevertMaxHypothesisAgeHours = [double]$ll.autoRevertMaxHypothesisAgeHours } catch {} }
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevertMaxCommitsBehindHead']) { try { $cfg.autoRevertMaxCommitsBehindHead = [int]$ll.autoRevertMaxCommitsBehindHead } catch {} }
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevertRequireUnhealthy']) { $cfg.autoRevertRequireUnhealthy = [bool]$ll.autoRevertRequireUnhealthy }
+      if ($ll.PSObject -and $ll.PSObject.Properties['autoRevertRequireCleanWorktree']) { $cfg.autoRevertRequireCleanWorktree = [bool]$ll.autoRevertRequireCleanWorktree }
     }
   } catch {}
   return $cfg
@@ -437,6 +449,148 @@ function Test-GitCommitExists {
     & git -C $Root rev-parse --verify --quiet $arg 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
   } catch { return $false }
+}
+
+function Get-LearningLoopGitText {
+  param([string]$Root, [string[]]$ArgsList)
+  if ([string]::IsNullOrWhiteSpace($Root) -or -not $ArgsList -or $ArgsList.Count -eq 0) { return '' }
+  try {
+    $out = & git -C $Root @ArgsList 2>$null
+    if ($LASTEXITCODE -ne 0) { return '' }
+    return ((@($out) | Select-Object -First 1) -join "`n").Trim()
+  } catch {
+    return ''
+  }
+}
+
+function Test-LearningLoopGitCleanTracked {
+  param([string]$Root)
+  try {
+    & git -C $Root diff --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ clean = $false; reason = 'dirty_worktree' } }
+    & git -C $Root diff --cached --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ clean = $false; reason = 'dirty_index' } }
+    return [pscustomobject]@{ clean = $true; reason = 'clean' }
+  } catch {
+    return [pscustomobject]@{ clean = $false; reason = 'git_clean_check_failed' }
+  }
+}
+
+function Test-LearningLoopCommitAlreadyReverted {
+  param([string]$Root, [string]$Commit)
+  $full = Get-LearningLoopGitText -Root $Root -ArgsList @('rev-parse', $Commit)
+  if ([string]::IsNullOrWhiteSpace($full)) { return $false }
+  $needle = 'This reverts commit ' + $full
+  $hit = Get-LearningLoopGitText -Root $Root -ArgsList @('log', '--all', '--fixed-strings', '--grep', $needle, '--format=%H', '-n', '1')
+  return (-not [string]::IsNullOrWhiteSpace($hit))
+}
+
+function Get-LearningLoopHealthRed {
+  param([string]$Root)
+  $port = 8787
+  try {
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $bc = Get-BridgeConfig
+      if ($bc -and $bc.PSObject.Properties.Name -contains 'port') { $port = [int]$bc.port }
+    }
+  } catch {}
+  try {
+    $uri = 'http://127.0.0.1:' + $port + '/api/health'
+    $resp = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $body = $resp.Content | ConvertFrom-Json
+    $ok = $false
+    try { $ok = [bool]$body.ok } catch { $ok = $false }
+    return [pscustomobject]@{ known = $true; red = (-not $ok); reason = ('health_ok=' + $ok) }
+  } catch {
+    return [pscustomobject]@{ known = $false; red = $false; reason = ('health_probe_failed: ' + $_.Exception.Message) }
+  }
+}
+
+function Test-LearningLoopAutoRevertGuard {
+  param(
+    [string]$Root,
+    [string]$Commit,
+    [string]$HypothesisTs = '',
+    $Config = $null,
+    [Nullable[bool]]$HealthRed = $null,
+    [DateTime]$NowUtc = ([DateTime]::UtcNow)
+  )
+  if ($null -eq $Config) { $Config = Get-LearningLoopConfig }
+  $detail = [ordered]@{
+    commit = [string]$Commit
+    hypothesis_ts = [string]$HypothesisTs
+  }
+  function Deny-LearningLoopAutoRevert([string]$Reason) {
+    return [pscustomobject][ordered]@{ allowed = $false; reason = $Reason; detail = [pscustomobject]$detail }
+  }
+  function Allow-LearningLoopAutoRevert {
+    return [pscustomobject][ordered]@{ allowed = $true; reason = 'guard_passed'; detail = [pscustomobject]$detail }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($Root)) { return (Deny-LearningLoopAutoRevert 'missing_root') }
+  if ([string]::IsNullOrWhiteSpace($Commit)) { return (Deny-LearningLoopAutoRevert 'missing_commit') }
+
+  $fullCommit = Get-LearningLoopGitText -Root $Root -ArgsList @('rev-parse', $Commit)
+  if ([string]::IsNullOrWhiteSpace($fullCommit)) { return (Deny-LearningLoopAutoRevert 'commit_not_found') }
+  $detail.full_commit = $fullCommit
+
+  $maxAgeHours = 0.0
+  try { $maxAgeHours = [double]$Config.autoRevertMaxHypothesisAgeHours } catch { $maxAgeHours = 0.0 }
+  if ($maxAgeHours -gt 0) {
+    $hypDto = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$HypothesisTs, [ref]$hypDto)) { return (Deny-LearningLoopAutoRevert 'invalid_hypothesis_ts') }
+    $ageHours = ($NowUtc.ToUniversalTime() - $hypDto.UtcDateTime).TotalHours
+    $detail.age_hours = [Math]::Round($ageHours, 3)
+    $detail.max_age_hours = $maxAgeHours
+    if ($ageHours -gt $maxAgeHours) { return (Deny-LearningLoopAutoRevert 'stale_hypothesis') }
+  }
+
+  try {
+    & git -C $Root merge-base --is-ancestor $fullCommit HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) { return (Deny-LearningLoopAutoRevert 'commit_not_in_head_lineage') }
+  } catch {
+    return (Deny-LearningLoopAutoRevert 'lineage_check_failed')
+  }
+
+  $maxBehind = 0
+  try { $maxBehind = [int]$Config.autoRevertMaxCommitsBehindHead } catch { $maxBehind = 0 }
+  if ($maxBehind -ge 0) {
+    $behindText = Get-LearningLoopGitText -Root $Root -ArgsList @('rev-list', '--count', ($fullCommit + '..HEAD'))
+    $behind = -1
+    try { $behind = [int]$behindText } catch { $behind = -1 }
+    if ($behind -lt 0) { return (Deny-LearningLoopAutoRevert 'distance_unknown') }
+    $detail.commits_behind_head = $behind
+    $detail.max_commits_behind_head = $maxBehind
+    if ($behind -gt $maxBehind) { return (Deny-LearningLoopAutoRevert 'commit_too_far_behind_head') }
+  }
+
+  if (Test-LearningLoopCommitAlreadyReverted -Root $Root -Commit $fullCommit) {
+    return (Deny-LearningLoopAutoRevert 'already_reverted')
+  }
+
+  $requireClean = $true
+  try { $requireClean = [bool]$Config.autoRevertRequireCleanWorktree } catch { $requireClean = $true }
+  if ($requireClean) {
+    $clean = Test-LearningLoopGitCleanTracked -Root $Root
+    $detail.clean_reason = [string]$clean.reason
+    if (-not [bool]$clean.clean) { return (Deny-LearningLoopAutoRevert ([string]$clean.reason)) }
+  }
+
+  $requireUnhealthy = $true
+  try { $requireUnhealthy = [bool]$Config.autoRevertRequireUnhealthy } catch { $requireUnhealthy = $true }
+  if ($requireUnhealthy) {
+    $health = $null
+    if ($HealthRed.HasValue) {
+      $health = [pscustomobject]@{ known = $true; red = [bool]$HealthRed.Value; reason = ('test_health_red=' + [bool]$HealthRed.Value) }
+    } else {
+      $health = Get-LearningLoopHealthRed -Root $Root
+    }
+    $detail.health_reason = [string]$health.reason
+    if (-not [bool]$health.known) { return (Deny-LearningLoopAutoRevert 'health_unknown') }
+    if (-not [bool]$health.red) { return (Deny-LearningLoopAutoRevert 'health_not_red') }
+  }
+
+  return (Allow-LearningLoopAutoRevert)
 }
 
 function Invoke-VerdictActuation {
@@ -468,12 +622,22 @@ function Invoke-VerdictActuation {
   if ($Verdict -eq 'worse') {
     $cfg = Get-LearningLoopConfig
     if (-not $cfg.autoRevert) {
+      if ([bool]$cfg.autoRevertShadow) {
+        $shadowGuard = Test-LearningLoopAutoRevertGuard -Root $root -Commit $Commit -HypothesisTs $HypothesisTs -Config $cfg
+        Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_shadow'; would_revert=[bool]$shadowGuard.allowed; reason=[string]$shadowGuard.reason; guard=$shadowGuard.detail }
+        $result.action = 'revert_shadow'; return $result
+      }
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_disabled' }
       $result.action = 'revert_disabled'; return $result
     }
     if (-not (Test-GitCommitExists -Root $root -Commit $Commit)) {
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_skipped'; reason='commit not found' }
       $result.action = 'revert_skipped'; return $result
+    }
+    $guard = Test-LearningLoopAutoRevertGuard -Root $root -Commit $Commit -HypothesisTs $HypothesisTs -Config $cfg
+    if (-not [bool]$guard.allowed) {
+      Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_guard_blocked'; reason=[string]$guard.reason; guard=$guard.detail }
+      $result.action = 'revert_guard_blocked'; return $result
     }
     if (-not $AllowRevert) { $result.action = 'revert_deferred_cap'; return $result }   # transient: retry next cycle
     # Precondition: clean INDEX (no staged changes). The bridge repo perpetually
