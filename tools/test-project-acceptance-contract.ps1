@@ -223,6 +223,12 @@ try {
   $webFactCliOnly = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgCliOnly
   Assert-True (-not [bool]$webFactCliOnly.required -and [int]$webFactCliOnly.config_checks_count -eq 0 -and [int]$webFactCliOnly.contract_web_specs_count -eq 0 -and [int]$webFactCliOnly.contract_journey_specs_count -eq 0) 'expected CLI-only acceptance to skip server:web-start'
   Assert-True ([bool]$coverageCliOnly.required -and -not [bool]$webFactCliOnly.required) 'expected CLI-only journeys to require coverage without requiring web acceptance'
+  $cliOnlyAcceptanceStepNames = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($step in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)) { [void]$cliOnlyAcceptanceStepNames.Add([string]$step.name) }
+  [void]$cliOnlyAcceptanceStepNames.Add('repo:generated-artifacts-not-tracked')
+  [void]$cliOnlyAcceptanceStepNames.Add([string]$coverageCliOnlyStep.name)
+  if ([bool]$webFactCliOnly.required) { [void]$cliOnlyAcceptanceStepNames.Add('server:web-start') }
+  Assert-True (-not (@($cliOnlyAcceptanceStepNames.ToArray()) -contains 'server:web-start')) 'expected full CLI-only acceptance step set to omit server:web-start'
   New-Item -ItemType Directory -Path $routeLikeDir -Force | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $routeLikeDir 'page.tsx'), 'export default function Page() { return null }', (New-Object System.Text.UTF8Encoding($false)))
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'acceptance.json'), $emptyServerChecksAcc, (New-Object System.Text.UTF8Encoding($false)))
