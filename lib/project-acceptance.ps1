@@ -279,6 +279,7 @@ function Get-ProjectAcceptanceConfig {
     checks = @($checks)
     timeoutSec = [int](Get-ProjectAcceptanceObjectValue -Obj $server -Names @('timeoutSec') -Default 180)
     startScript = [string](Get-ProjectAcceptanceObjectValue -Obj $server -Names @('startScript') -Default 'start')
+    startCommand = [string](Get-ProjectAcceptanceObjectValue -Obj $server -Names @('startCommand','command') -Default '')
   }
 }
 
@@ -467,15 +468,25 @@ function Parse-ProjectAcceptanceCheck {
 
 function Start-ProjectAcceptanceServer {
   param([string]$ProjectRoot, $Config)
-  $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
-  $scriptName = [string]$Config.startScript
-  if ([string]::IsNullOrWhiteSpace($scriptName)) { $scriptName = 'start' }
-  if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
-    return [pscustomobject]@{ ok=$false; reason="missing package script '$scriptName'" }
-  }
   $port = Get-ProjectAcceptanceFreePort
   $baseUrl = "http://127.0.0.1:$port"
-  $cmd = "npm.cmd run $scriptName -- --hostname 127.0.0.1 --port $port"
+  $startCommand = ''
+  try { $startCommand = ([string]$Config.startCommand).Trim() } catch { $startCommand = '' }
+  if (-not [string]::IsNullOrWhiteSpace($startCommand)) {
+    $cmd = $startCommand.
+      Replace('{port}', [string]$port).
+      Replace('{host}', '127.0.0.1').
+      Replace('{hostname}', '127.0.0.1').
+      Replace('{baseUrl}', $baseUrl)
+  } else {
+    $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
+    $scriptName = [string]$Config.startScript
+    if ([string]::IsNullOrWhiteSpace($scriptName)) { $scriptName = 'start' }
+    if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
+      return [pscustomobject]@{ ok=$false; reason="missing package script '$scriptName'" }
+    }
+    $cmd = "npm.cmd run $scriptName -- --hostname 127.0.0.1 --port $port"
+  }
   $logDir = Join-Path $ProjectRoot '.bridge-acceptance'
   if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

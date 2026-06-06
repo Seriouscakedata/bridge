@@ -263,6 +263,59 @@ try {
   $coverageNotRequiredStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageNotRequired
   Assert-True (-not [bool]$coverageNotRequired.required -and [bool]$coverageNotRequired.ok -and [bool]$coverageNotRequiredStep.ok) 'expected no-journey contract to pass coverage as not required'
 
+  $customServerPath = Join-Path $project 'custom-acceptance-server.ps1'
+  $customServerScript = @'
+param([int]$Port = 0)
+
+$ErrorActionPreference = 'Stop'
+if ($Port -le 0) { $Port = [int]$env:PORT }
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('127.0.0.1'), $Port)
+$listener.Start()
+try {
+  while ($true) {
+    $client = $listener.AcceptTcpClient()
+    try {
+      $stream = $client.GetStream()
+      $buffer = New-Object byte[] 2048
+      [void]$stream.Read($buffer, 0, $buffer.Length)
+      $body = 'custom startCommand ok'
+      $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+      $header = "HTTP/1.1 200 OK`r`nContent-Type: text/plain`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+      $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
+      $stream.Write($headerBytes, 0, $headerBytes.Length)
+      $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+    } finally {
+      try { $client.Close() } catch {}
+    }
+  }
+} finally {
+  try { $listener.Stop() } catch {}
+}
+'@
+  [System.IO.File]::WriteAllText($customServerPath, $customServerScript, (New-Object System.Text.UTF8Encoding($false)))
+  $startCommandAcceptance = [ordered]@{
+    server = [ordered]@{
+      startCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $customServerPath + '" -Port {port}'
+      readyPath = '/'
+      readyStatuses = @(200)
+      checks = @('/=200')
+      timeoutSec = 20
+    }
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'acceptance.json'), (($startCommandAcceptance | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgStartCommand = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$cfgStartCommand.startCommand)) 'expected server.startCommand to be loaded from acceptance config'
+  $customServer = $null
+  try {
+    $customServer = Start-ProjectAcceptanceServer -ProjectRoot $project -Config $cfgStartCommand
+    Assert-True ([bool]$customServer.ok) ('expected custom server.startCommand to start without npm start, got ' + [string]$customServer.reason)
+    Assert-True ([int]$customServer.readyStatus -eq 200) ('expected custom server ready status 200, got ' + [string]$customServer.readyStatus)
+    Assert-True ([string]$customServer.command -notmatch '\{port\}' -and [string]$customServer.command -match '-Port \d+') 'expected startCommand port placeholder to be expanded'
+  } finally {
+    if ($customServer) { Stop-ProjectAcceptanceServer -Server $customServer }
+    Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'acceptance.json') -Force -ErrorAction SilentlyContinue
+  }
+
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'project-contract.json') -Force
   $missingSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
   $present = @($missingSteps | Where-Object { [string]$_.name -eq 'plan-contract:present' } | Select-Object -First 1)
