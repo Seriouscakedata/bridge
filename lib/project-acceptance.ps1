@@ -251,7 +251,7 @@ function Get-ProjectAcceptanceConfig {
     if (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $name) { $defaultScripts += $name }
   }
   $defaultSmoke = @(Get-ProjectAcceptanceDefaultSmokeScripts -PackageJson $pkg)
-  $defaultChecks = @('/=200')
+  $defaultChecks = @()
   if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'app\api\health\route.ts')) { $defaultChecks += '/api/health=200' }
   if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'app\login\page.tsx')) { $defaultChecks += '/login=200' }
   if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'app\register\page.tsx')) { $defaultChecks += '/register=200' }
@@ -840,6 +840,47 @@ function Get-ProjectAcceptanceBrowserSmokeScripts {
   return $result
 }
 
+function Get-ProjectAcceptancePlanContractNonWebEvidence {
+  param([string]$ProjectRoot)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  if (-not $info.contract) {
+    return [pscustomobject]@{
+      surface_count = 0
+      command_check_count = 0
+      surface_kinds = @()
+      command_check_ids = @()
+      ok = $false
+    }
+  }
+
+  $nonWebKinds = @('cli','artifact','report','file','document','data','manifest')
+  $surfaceKinds = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($surface in @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('surfaces'))) {
+    if ($surface -is [string]) { continue }
+    $kind = ([string](Get-ProjectAcceptanceObjectValue -Obj $surface -Names @('kind','type','surface_kind','surfaceKind') -Default '')).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($kind)) { continue }
+    if ($nonWebKinds -contains $kind) { [void]$surfaceKinds.Add($kind) }
+  }
+
+  $commandIds = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($check in @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('checks','quality_gates','done_criteria'))) {
+    if ($check -is [string]) { continue }
+    $command = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('command','cmd','shell','run') -Default '')).Trim()
+    if ([string]::IsNullOrWhiteSpace($command)) { continue }
+    $id = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('id','name','title','label') -Default $command)).Trim()
+    if ([string]::IsNullOrWhiteSpace($id)) { $id = $command }
+    [void]$commandIds.Add($id)
+  }
+
+  return [pscustomobject]@{
+    surface_count = [int]$surfaceKinds.Count
+    command_check_count = [int]$commandIds.Count
+    surface_kinds = @($surfaceKinds.ToArray() | Select-Object -Unique)
+    command_check_ids = @($commandIds.ToArray() | Select-Object -First 12)
+    ok = ([int]$surfaceKinds.Count -gt 0 -and [int]$commandIds.Count -gt 0)
+  }
+}
+
 function Get-ProjectAcceptanceJourneyCoverageFact {
   param([string]$ProjectRoot, $Config)
   $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
@@ -849,6 +890,7 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
   }
   $journeyWebSpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
   $browserSmokeScripts = @(Get-ProjectAcceptanceBrowserSmokeScripts -SmokeScripts @($Config.smokeScripts))
+  $nonWebEvidence = Get-ProjectAcceptancePlanContractNonWebEvidence -ProjectRoot $ProjectRoot
   $required = ($journeyCount -gt 0)
   $ok = $true
   $reason = 'no journeys declared'
@@ -857,9 +899,11 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
       $reason = 'static journey checks present'
     } elseif ($browserSmokeScripts.Count -gt 0) {
       $reason = 'browser/e2e smoke script present'
+    } elseif ([bool]$nonWebEvidence.ok) {
+      $reason = 'cli/artifact contract checks present'
     } else {
       $ok = $false
-      $reason = 'journeys declared but no static journey checks or browser/e2e smoke script'
+      $reason = 'journeys declared but no static journey checks, browser/e2e smoke script, or cli/artifact contract checks'
     }
   }
   return [pscustomobject]@{
@@ -868,7 +912,25 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
     journey_count = [int]$journeyCount
     journey_web_specs_count = [int]$journeyWebSpecs.Count
     browser_smoke_scripts = @($browserSmokeScripts)
+    non_web_surface_count = [int]$nonWebEvidence.surface_count
+    non_web_command_check_count = [int]$nonWebEvidence.command_check_count
+    non_web_surface_kinds = @($nonWebEvidence.surface_kinds)
+    non_web_command_check_ids = @($nonWebEvidence.command_check_ids)
     reason = [string]$reason
+  }
+}
+
+function Get-ProjectAcceptanceWebAcceptanceFact {
+  param([string]$ProjectRoot, $Config)
+  $contractWebSpecs = @(Get-ProjectAcceptancePlanContractWebSpecs -ProjectRoot $ProjectRoot)
+  $contractJourneySpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
+  $configChecks = @()
+  try { $configChecks = @($Config.checks) } catch { $configChecks = @() }
+  return [pscustomobject]@{
+    required = ($configChecks.Count -gt 0 -or $contractWebSpecs.Count -gt 0 -or $contractJourneySpecs.Count -gt 0)
+    config_checks_count = [int]$configChecks.Count
+    contract_web_specs_count = [int]$contractWebSpecs.Count
+    contract_journey_specs_count = [int]$contractJourneySpecs.Count
   }
 }
 
@@ -878,6 +940,10 @@ function New-ProjectAcceptanceJourneyCoverageStep {
     ' journey_count=' + [string]$Fact.journey_count +
     ' journey_web_specs_count=' + [string]$Fact.journey_web_specs_count +
     ' browser_smoke_scripts=' + ((@($Fact.browser_smoke_scripts) | ForEach-Object { [string]$_ }) -join ',') +
+    ' non_web_surface_count=' + [string]$Fact.non_web_surface_count +
+    ' non_web_command_check_count=' + [string]$Fact.non_web_command_check_count +
+    ' non_web_surface_kinds=' + ((@($Fact.non_web_surface_kinds) | ForEach-Object { [string]$_ }) -join ',') +
+    ' non_web_command_check_ids=' + ((@($Fact.non_web_command_check_ids) | ForEach-Object { [string]$_ }) -join ',') +
     ' reason=' + [string]$Fact.reason
   return (New-ProjectAcceptanceStep -Name 'plan-contract:journey-coverage' -Ok ([bool]$Fact.ok) -Details $details)
 }
@@ -937,7 +1003,8 @@ function Invoke-ProjectAcceptance {
 
   $contractWebSpecs = @(Get-ProjectAcceptancePlanContractWebSpecs -ProjectRoot $ProjectRoot)
   $contractJourneySpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
-  if ($cfg.checks.Count -gt 0 -or $contractWebSpecs.Count -gt 0 -or $contractJourneySpecs.Count -gt 0) {
+  $webAcceptance = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $ProjectRoot -Config $cfg
+  if ([bool]$webAcceptance.required) {
     $webServer = $null
     try {
       Write-ProjectAcceptanceTrace -Channel $ch -Text "web server start"

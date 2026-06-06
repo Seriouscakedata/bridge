@@ -164,6 +164,55 @@ try {
   $cfgEmpty = Get-ProjectAcceptanceConfig -ProjectRoot $project
   Assert-True ($cfgEmpty.smokeScripts.Count -eq 0) 'expected empty smokeScripts when no package.json'
 
+  $cliOnlyContract = [ordered]@{
+    project_goal = 'Deliver a local CLI pipeline that writes durable artifacts and reports for operator review.'
+    requirements = @('plan command works','artifact manifest exists','report output exists')
+    surfaces = @(
+      [ordered]@{ id='cli-plan'; kind='cli'; command='slopvid plan --title <title>'; purpose='Create deterministic planning artifacts.' },
+      [ordered]@{ id='run-manifest'; kind='artifact'; path='runs/<run_id>/manifest.json'; purpose='Machine-readable run state.' },
+      [ordered]@{ id='report'; kind='artifact'; path='runs/<run_id>/reports/report.html'; purpose='Human review surface.' }
+    )
+    journeys = @(
+      [ordered]@{
+        id='title-to-report'
+        steps=@(
+          'Run planning mode for a title.',
+          'Review generated manifest and report artifacts.',
+          'Confirm CLI output records completion.'
+        )
+      },
+      [ordered]@{
+        id='resume-validation'
+        steps=@(
+          'Run validation for an existing run id.',
+          'Inspect validation records in manifest.',
+          'Regenerate failed assets outside web UI.'
+        )
+      }
+    )
+    ux_contract = [ordered]@{ primary_interface='CLI plus generated report artifacts.' }
+    checks = @(
+      [ordered]@{ id='unit'; command='pytest'; purpose='Run unit and pipeline tests.' },
+      [ordered]@{ id='lint'; command='ruff check .'; purpose='Run linter.' },
+      [ordered]@{ id='plan-smoke'; command='slopvid plan --title "The Trial" --provider stub'; purpose='Run CLI smoke.' }
+    )
+    acceptance_scenarios = @('pytest passes','ruff passes','CLI smoke writes artifacts')
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($cliOnlyContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgCliOnly = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  Assert-True ($cfgCliOnly.checks.Count -eq 0) ('expected CLI-only contract to avoid default web checks, got ' + ((@($cfgCliOnly.checks) | ForEach-Object { [string]$_ }) -join ','))
+  Assert-True ((@($cfgCliOnly.checks) -notcontains '/=200')) 'expected CLI-only contract to avoid default /=200 web check'
+  $cliOnlyJourneySpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $project)
+  Assert-True ($cliOnlyJourneySpecs.Count -eq 0) ('expected CLI-only journeys to have no web route specs, got ' + [string]$cliOnlyJourneySpecs.Count)
+  $coverageCliOnly = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgCliOnly
+  $coverageCliOnlyStep = New-ProjectAcceptanceJourneyCoverageStep -Fact $coverageCliOnly
+  Assert-True ([bool]$coverageCliOnly.required -and [bool]$coverageCliOnly.ok) 'expected CLI/artifact command checks to satisfy journey coverage'
+  Assert-True ([string]$coverageCliOnly.reason -eq 'cli/artifact contract checks present') ('expected CLI/artifact coverage reason, got ' + [string]$coverageCliOnly.reason)
+  Assert-True ([string]$coverageCliOnlyStep.details -match 'reason=cli/artifact contract checks present') 'expected coverage step details to report CLI/artifact reason'
+  Assert-True ([int]$coverageCliOnly.non_web_surface_count -ge 2 -and [int]$coverageCliOnly.non_web_command_check_count -eq 3) 'expected CLI/artifact surfaces plus three command checks'
+  $webFactCliOnly = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgCliOnly
+  Assert-True (-not [bool]$webFactCliOnly.required -and [int]$webFactCliOnly.config_checks_count -eq 0 -and [int]$webFactCliOnly.contract_web_specs_count -eq 0 -and [int]$webFactCliOnly.contract_journey_specs_count -eq 0) 'expected CLI-only acceptance to skip server:web-start'
+
   $actionOnlyContract = [ordered]@{
     user_journeys = @(
       [ordered]@{
