@@ -384,12 +384,24 @@ function Test-CoderClaims {
     if ($sha -match '^\d+$') { continue }
     if (-not $shaClaims.ContainsKey($sha)) { $shaClaims[$sha] = $true }
   }
+  # 2026-06-06 (operator hotfix): project atoms commit to the PROJECT repo (bridge-projects/<slug>),
+  # not $BridgeRoot. Checking the sha only in the bridge repo flagged every real project commit as a
+  # phantom 'нет такого объекта' violation -> gate-check loop wedged project atoms. Also check the
+  # effective project repo before declaring a violation.
+  $shaProjRoot = ''
+  try { if (Get-Command Get-EffectiveProjectRoot -ErrorAction SilentlyContinue) { $shaProjRoot = [string](Get-EffectiveProjectRoot) } } catch {}
   foreach ($sha in $shaClaims.Keys) {
     $exists = $false
     try {
       $null = & git -C $BridgeRoot cat-file -e $sha 2>$null
       $exists = ($LASTEXITCODE -eq 0)
     } catch {}
+    if ((-not $exists) -and -not [string]::IsNullOrWhiteSpace($shaProjRoot) -and $shaProjRoot -ne $BridgeRoot -and (Test-Path -LiteralPath $shaProjRoot)) {
+      try {
+        $null = & git -C $shaProjRoot cat-file -e $sha 2>$null
+        $exists = ($LASTEXITCODE -eq 0)
+      } catch {}
+    }
     if ($exists) {
       [void]$checks.Add(@{ kind='git-sha'; claim="commit $sha"; actual='существует' })
     } else {
