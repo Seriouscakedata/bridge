@@ -168,7 +168,11 @@ function Test-DeliveryAuditBacklog {
   $kind = [string](Get-DeliveryFactValue -Object $Context -Names @('Kind','kind','TaskKind','task_kind'))
   if ($kind.Trim().ToLowerInvariant() -in @('audit','audit_backlog','finding_batch','findings')) { return $true }
   $text = if ($null -eq $TaskText) { '' } else { $TaskText.ToLowerInvariant() }
-  return ($text -match '(?i)\b(audit|auditor|finding|findings|backlog|workpack)\b' -or $text -match '(?i)(аудит|находк|бэклог)')
+  # 2026-06-06 (operator hotfix): removed backlog|workpack|бэклог — the driver wraps EVERY autonomous
+  # task with "[Автозадача из бэклога]" / "[Автозадача из workpack-batch]", so these words matched on
+  # EVERY coding atom, misrouting it to audit_pack flow (analysis, not implementation) → false-green
+  # done with zero code. Real audit tasks still match via audit|finding|auditor + Context Kind flag.
+  return ($text -match '(?i)\b(audit|auditor|finding|findings)\b' -or $text -match '(?i)(аудит|находк)')
 }
 
 function Get-DeliveryFileGroups {
