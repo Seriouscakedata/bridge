@@ -27,8 +27,22 @@ function Get-BridgeConfig {
 function Get-Secret { param([string]$Name) return $null }
 function Use-BridgeLock { param([scriptblock]$Action) & $Action }
 function Resolve-BridgeContainedPath {
-  param([Parameter(Mandatory=$true)][string]$Path, [string]$Purpose = 'test path')
-  return [System.IO.Path]::GetFullPath($Path)
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [string]$BasePath = $null,
+    [string]$Purpose = 'test path'
+  )
+  if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = $script:TestBridgeRoot }
+  $baseFull = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\','/')
+  $targetInput = $Path
+  if (-not [System.IO.Path]::IsPathRooted($targetInput)) {
+    $targetInput = Join-Path $baseFull $targetInput
+  }
+  $targetFull = [System.IO.Path]::GetFullPath($targetInput).TrimEnd('\','/')
+  if ($targetFull.Equals($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($targetFull.StartsWith($basePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $targetFull }
+  throw "Resolve-BridgeContainedPath: $Purpose escapes test base: $targetFull (base: $baseFull)"
 }
 function Get-EffectiveChannel { return 'bigproj' }
 function Get-CurrentMemoryChannel { return 'bigproj' }
@@ -96,6 +110,14 @@ try {
   Set-Content -LiteralPath (Join-Path $projectRoot 'PROJECT_MAP.md') -Encoding UTF8 -Value "# Canonical Project Map`n- project-root-map-wins`n- Tests: npm test"
   Set-Content -LiteralPath (Join-Path $memoryRoot 'map.md') -Encoding UTF8 -Value "# Big Project`n- Stack: TypeScript`n- Auth entrypoint: src/auth.ts`n- Tests: npm test"
   $sha = Get-ProjectFileSha1 -Path $authPath
+
+  $traversalRejected = $false
+  try {
+    [void](Resolve-MemoryContainedPath -Path (Join-Path $memoryRoot '..\escape.md') -BasePath $memoryRoot -Purpose 'memory traversal test')
+  } catch {
+    $traversalRejected = ([string]$_.Exception.Message -match 'parent traversal|escapes')
+  }
+  Add-Check $results 'memory contained path rejects traversal' $traversalRejected
 
   $codeSlug = Get-ProjectSlug -Root $projectRoot
   $idx = Index-CodeBase -ProjectRoot $projectRoot -Slug $codeSlug

@@ -10,6 +10,28 @@ function Assert-True {
   if (-not $Condition) { throw $Message }
 }
 
+function Get-BacklogItemBySlug {
+  param([string]$Slug, [string]$Label)
+  $items = @(Get-Backlog | Where-Object { [string]$_.slug -eq $Slug } | Select-Object -First 1)
+  Assert-True ($items.Count -eq 1) ("missing {0}" -f $Label)
+  return $items[0]
+}
+
+function Assert-BacklogItemLane {
+  param(
+    $Item,
+    [string]$Label,
+    [string]$ExpectedLane = ''
+  )
+  Assert-True ($Item.PSObject.Properties.Name -contains 'lane') ("{0} missing top-level lane" -f $Label)
+  $lane = [string]$Item.lane
+  Assert-True (-not [string]::IsNullOrWhiteSpace($lane)) ("{0} lane is blank" -f $Label)
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedLane)) {
+    Assert-True ($lane -eq $ExpectedLane) ("{0} lane mismatch: expected '{1}', got '{2}'" -f $Label, $ExpectedLane, $lane)
+  }
+  return $lane
+}
+
 function Get-BridgeRoot { return $script:TestBridgeRoot }
 function Get-EffectiveChannel { return $script:EffectiveChannel }
 function Get-ChannelDir {
@@ -114,29 +136,30 @@ try {
   $mainResult = Add-ProjectBacklogFromMarker -Block $mainMarker -Channel 'main' -Source 'test' -SourceTaskId 'main-test'
   Assert-True ([int]$mainResult.created -eq 1) ("expected one main bridge-self atom, got {0}" -f [int]$mainResult.created)
   Assert-True (-not (@($mainResult.errors) -contains 'project backlog marker ignored outside project channel')) 'main channel marker was ignored'
-  $mainItem = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'bridge-self-project-backlog-test' } | Select-Object -First 1)
-  Assert-True ($mainItem.Count -eq 1) 'missing main bridge-self item'
-  Assert-True ([string]$mainItem[0].status -eq 'approved') 'main bridge-self item is not approved'
-  Assert-True ([string]$mainItem[0].scope -eq 'bridge') 'main bridge-self item scope is not bridge'
-  Assert-True (@($mainItem[0].tags) -contains 'project-autopilot') 'main bridge-self item missing project-autopilot tag'
-  Assert-True (@($mainItem[0].tags) -contains 'bridge-self') 'main bridge-self item missing bridge-self tag'
-  Assert-True (@($mainItem[0].tags) -contains 'atom') 'main bridge-self item missing atom tag'
-  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'depends_on') 'main bridge-self item missing top-level depends_on'
-  $dependsType = if ($null -eq $mainItem[0].depends_on) { '<null>' } else { $mainItem[0].depends_on.GetType().FullName }
-  $dependsCount = if ($null -eq $mainItem[0].depends_on) { -1 } else { [int]$mainItem[0].depends_on.Count }
-  Assert-True (($null -ne $mainItem[0].depends_on) -and ($mainItem[0].depends_on -is [System.Collections.IEnumerable]) -and ($mainItem[0].depends_on -isnot [string]) -and ($dependsCount -eq 0)) ("main bridge-self item depends_on is not an empty array: type={0} count={1} value={2}" -f $dependsType, $dependsCount, ([string]$mainItem[0].depends_on))
-  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'files') 'main bridge-self item missing top-level files'
-  Assert-True (@($mainItem[0].files) -contains 'lib/review-verdict.ps1') 'main bridge-self item files were not normalized'
-  Assert-True (@($mainItem[0].acceptance) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing top-level acceptance'
-  Assert-True (@($mainItem[0].acceptance_checks) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing acceptance_checks alias'
-  Assert-True (@($mainItem[0].checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing top-level checks'
-  Assert-True (@($mainItem[0].verification_checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing verification_checks alias'
-  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'bridge_self_admission') 'main bridge-self item missing bridge_self_admission'
-  $mainAdmission = Test-IdeaBridgeSelfAdmitted -Idea $mainItem[0]
+  $mainItem = Get-BacklogItemBySlug -Slug 'bridge-self-project-backlog-test' -Label 'main bridge-self item'
+  Assert-True ([string]$mainItem.status -eq 'approved') 'main bridge-self item is not approved'
+  Assert-True ([string]$mainItem.scope -eq 'bridge') 'main bridge-self item scope is not bridge'
+  Assert-True (@($mainItem.tags) -contains 'project-autopilot') 'main bridge-self item missing project-autopilot tag'
+  Assert-True (@($mainItem.tags) -contains 'bridge-self') 'main bridge-self item missing bridge-self tag'
+  Assert-True (@($mainItem.tags) -contains 'atom') 'main bridge-self item missing atom tag'
+  $mainLane = Assert-BacklogItemLane -Item $mainItem -Label 'main bridge-self item'
+  Assert-True (-not (Test-WorkpackControlPlaneLane -Lane $mainLane)) 'main bridge-self item lane was misclassified as control-plane'
+  Assert-True ($mainItem.PSObject.Properties.Name -contains 'depends_on') 'main bridge-self item missing top-level depends_on'
+  $dependsType = if ($null -eq $mainItem.depends_on) { '<null>' } else { $mainItem.depends_on.GetType().FullName }
+  $dependsCount = if ($null -eq $mainItem.depends_on) { -1 } else { [int]$mainItem.depends_on.Count }
+  Assert-True (($null -ne $mainItem.depends_on) -and ($mainItem.depends_on -is [System.Collections.IEnumerable]) -and ($mainItem.depends_on -isnot [string]) -and ($dependsCount -eq 0)) ("main bridge-self item depends_on is not an empty array: type={0} count={1} value={2}" -f $dependsType, $dependsCount, ([string]$mainItem.depends_on))
+  Assert-True ($mainItem.PSObject.Properties.Name -contains 'files') 'main bridge-self item missing top-level files'
+  Assert-True (@($mainItem.files) -contains 'lib/review-verdict.ps1') 'main bridge-self item files were not normalized'
+  Assert-True (@($mainItem.acceptance) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing top-level acceptance'
+  Assert-True (@($mainItem.acceptance_checks) -contains 'Main PROJECT_BACKLOG marker creates an approved bridge-self atom.') 'main bridge-self item missing acceptance_checks alias'
+  Assert-True (@($mainItem.checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing top-level checks'
+  Assert-True (@($mainItem.verification_checks) -contains 'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-backlog-packer.ps1') 'main bridge-self item missing verification_checks alias'
+  Assert-True ($mainItem.PSObject.Properties.Name -contains 'bridge_self_admission') 'main bridge-self item missing bridge_self_admission'
+  $mainAdmission = Test-IdeaBridgeSelfAdmitted -Idea $mainItem
   Assert-True ([bool]$mainAdmission.ok) ("main bridge-self admission did not validate: {0}" -f (@($mainAdmission.missing) -join ', '))
-  Assert-True ([string]$mainItem[0].risk -eq 'high') 'main bridge-self item risk was not normalized from marker risk'
-  Assert-True ($mainItem[0].PSObject.Properties.Name -contains 'serial_reason') 'main bridge-self item missing top-level serial_reason'
-  $metadataResult = Test-WorkpackAtomMetadata -Atom $mainItem[0]
+  Assert-True ([string]$mainItem.risk -eq 'high') 'main bridge-self item risk was not normalized from marker risk'
+  Assert-True ($mainItem.PSObject.Properties.Name -contains 'serial_reason') 'main bridge-self item missing top-level serial_reason'
+  $metadataResult = Test-WorkpackAtomMetadata -Atom $mainItem
   Assert-True ([bool]$metadataResult.ok) ("main bridge-self item did not pass workpack metadata validation: {0}" -f ((@($metadataResult.blockers) + @($metadataResult.missing)) -join ', '))
 
   $missingAcceptanceChecksMarker = @'
@@ -226,6 +249,105 @@ try {
   Assert-True (-not (@($explicitItem[0].workpack_touch_set) -contains 'lib/backlog.ps1')) 'files-derived fallback overrode explicit workpack_touch_set'
   Assert-True ([string]$explicitItem[0].workpack_conflict_group -eq 'custom:operatorless-metadata') 'explicit workpack_conflict_group was not preserved'
   Assert-True ([string]$explicitItem[0].risk -eq 'high') 'explicit item severity warning did not normalize to high risk'
+
+  $laneSeparatedMarker = @'
+[
+  {
+    "slug": "bridge-self-lane-separated-test",
+    "title": "Bridge self lane separation metadata test",
+    "task": "Create a synthetic bridge self atom proving marker-created default lane is top-level metadata and does not overwrite parallel_group.",
+    "parallel_group": "pg-ui-layout",
+    "files": ["src/ui/lane-separated.tsx"],
+    "depends_on": [],
+    "acceptance": ["Marker-created atoms keep lane and parallel_group distinct."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1"],
+    "risk": "normal",
+    "serial_reason": ""
+  }
+]
+'@
+  $laneSeparatedResult = Add-ProjectBacklogFromMarker -Block $laneSeparatedMarker -Channel 'main' -Source 'test' -SourceTaskId 'lane-separated-test'
+  Assert-True ([int]$laneSeparatedResult.created -eq 1) ("expected one lane-separated atom, got {0}" -f [int]$laneSeparatedResult.created)
+  $laneSeparatedItem = Get-BacklogItemBySlug -Slug 'bridge-self-lane-separated-test' -Label 'lane-separated item'
+  $laneSeparatedLane = Assert-BacklogItemLane -Item $laneSeparatedItem -Label 'lane-separated item' -ExpectedLane 'bridge'
+  Assert-True ($laneSeparatedItem.PSObject.Properties.Name -contains 'parallel_group') 'lane-separated item missing top-level parallel_group'
+  Assert-True ([string]$laneSeparatedItem.parallel_group -eq 'pg-ui-layout') 'lane-separated item parallel_group was not preserved'
+  Assert-True ([string]$laneSeparatedItem.parallel_group -ne $laneSeparatedLane) 'lane-separated item mixed lane with parallel_group'
+  Assert-True (-not (Test-WorkpackControlPlaneLane -Lane $laneSeparatedLane)) 'project lane was incorrectly treated as control-plane'
+  Assert-True (-not (Test-WorkpackControlPlaneLane -Lane ([string]$laneSeparatedItem.parallel_group))) 'parallel_group value was incorrectly treated as control-plane lane'
+  $laneSeparatedMetadata = Test-WorkpackAtomMetadata -Atom $laneSeparatedItem
+  Assert-True ([bool]$laneSeparatedMetadata.ok) ("lane-separated item did not pass workpack metadata validation: {0}" -f ((@($laneSeparatedMetadata.blockers) + @($laneSeparatedMetadata.missing)) -join ', '))
+
+  $controlPlaneExplicitMarker = @'
+[
+  {
+    "slug": "bridge-self-control-plane-explicit-lane-test",
+    "title": "Bridge self explicit control-plane lane test",
+    "task": "Create a synthetic bridge self control-plane atom proving an explicit lane marker survives as top-level control-plane metadata.",
+    "lane": "control-plane",
+    "parallel_group": "pg-control-explicit",
+    "files": ["driver.ps1"],
+    "depends_on": [],
+    "acceptance": ["Explicit control-plane markers normalize top-level lane correctly."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
+    "risk": "high",
+    "serial_reason": "control_plane",
+    "bridge_self_admission": {
+      "admitted": true,
+      "mode": "bridge_self_canary",
+      "canary_required": true,
+      "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
+      "rollback_plan": "Use stable ref + watchdog rollback if health/smoke/canary fails."
+    }
+  }
+]
+'@
+  $controlPlaneExplicitResult = Add-ProjectBacklogFromMarker -Block $controlPlaneExplicitMarker -Channel 'main' -Source 'test' -SourceTaskId 'control-plane-explicit-lane-test'
+  Assert-True ([int]$controlPlaneExplicitResult.created -eq 1) ("expected one explicit control-plane lane atom, got {0}" -f [int]$controlPlaneExplicitResult.created)
+  $controlPlaneExplicitItem = Get-BacklogItemBySlug -Slug 'bridge-self-control-plane-explicit-lane-test' -Label 'explicit control-plane lane item'
+  $controlPlaneExplicitLane = Assert-BacklogItemLane -Item $controlPlaneExplicitItem -Label 'explicit control-plane lane item' -ExpectedLane 'control-plane'
+  Assert-True ($controlPlaneExplicitItem.PSObject.Properties.Name -contains 'parallel_group') 'explicit control-plane lane item missing top-level parallel_group'
+  Assert-True ([string]$controlPlaneExplicitItem.parallel_group -eq 'pg-control-explicit') 'explicit control-plane lane item parallel_group was not preserved'
+  Assert-True ([string]$controlPlaneExplicitItem.parallel_group -ne $controlPlaneExplicitLane) 'explicit control-plane lane item mixed lane with parallel_group'
+  Assert-True (Test-WorkpackControlPlaneLane -Lane $controlPlaneExplicitLane) 'explicit control-plane lane was not recognized by Test-WorkpackControlPlaneLane'
+  Assert-True (-not (Test-WorkpackControlPlaneLane -Lane ([string]$controlPlaneExplicitItem.parallel_group))) 'explicit control-plane parallel_group was incorrectly treated as control-plane lane'
+  $controlPlaneExplicitMetadata = Test-WorkpackAtomMetadata -Atom $controlPlaneExplicitItem
+  Assert-True ([bool]$controlPlaneExplicitMetadata.ok) ("explicit control-plane lane item did not pass workpack metadata validation: {0}" -f ((@($controlPlaneExplicitMetadata.blockers) + @($controlPlaneExplicitMetadata.missing)) -join ', '))
+
+  $controlPlaneInferredMarker = @'
+[
+  {
+    "slug": "bridge-self-control-plane-inferred-lane-test",
+    "title": "Bridge self inferred control-plane lane test",
+    "task": "Create a synthetic bridge self control-plane atom proving inferred control-plane touch sets lane without clobbering parallel_group.",
+    "parallel_group": "pg-control-inferred",
+    "files": ["lib/parallel.ps1"],
+    "depends_on": [],
+    "acceptance": ["Inferred control-plane markers normalize top-level lane correctly."],
+    "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\test-backlog-packer.ps1", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
+    "risk": "high",
+    "serial_reason": "control_plane",
+    "bridge_self_admission": {
+      "admitted": true,
+      "mode": "bridge_self_canary",
+      "canary_required": true,
+      "checks": ["powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest", "powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1", "Invoke-CanaryCycle -Force"],
+      "rollback_plan": "Use stable ref + watchdog rollback if health/smoke/canary fails."
+    }
+  }
+]
+'@
+  $controlPlaneInferredResult = Add-ProjectBacklogFromMarker -Block $controlPlaneInferredMarker -Channel 'main' -Source 'test' -SourceTaskId 'control-plane-inferred-lane-test'
+  Assert-True ([int]$controlPlaneInferredResult.created -eq 1) ("expected one inferred control-plane lane atom, got {0}" -f [int]$controlPlaneInferredResult.created)
+  $controlPlaneInferredItem = Get-BacklogItemBySlug -Slug 'bridge-self-control-plane-inferred-lane-test' -Label 'inferred control-plane lane item'
+  $controlPlaneInferredLane = Assert-BacklogItemLane -Item $controlPlaneInferredItem -Label 'inferred control-plane lane item' -ExpectedLane 'control-plane'
+  Assert-True ($controlPlaneInferredItem.PSObject.Properties.Name -contains 'parallel_group') 'inferred control-plane lane item missing top-level parallel_group'
+  Assert-True ([string]$controlPlaneInferredItem.parallel_group -eq 'pg-control-inferred') 'inferred control-plane lane item parallel_group was not preserved'
+  Assert-True ([string]$controlPlaneInferredItem.parallel_group -ne $controlPlaneInferredLane) 'inferred control-plane lane item mixed lane with parallel_group'
+  Assert-True (Test-WorkpackControlPlaneLane -Lane $controlPlaneInferredLane) 'inferred control-plane lane was not recognized by Test-WorkpackControlPlaneLane'
+  Assert-True (-not (Test-WorkpackControlPlaneLane -Lane ([string]$controlPlaneInferredItem.parallel_group))) 'inferred control-plane parallel_group was incorrectly treated as control-plane lane'
+  $controlPlaneInferredMetadata = Test-WorkpackAtomMetadata -Atom $controlPlaneInferredItem
+  Assert-True ([bool]$controlPlaneInferredMetadata.ok) ("inferred control-plane lane item did not pass workpack metadata validation: {0}" -f ((@($controlPlaneInferredMetadata.blockers) + @($controlPlaneInferredMetadata.missing)) -join ', '))
 
   $script:EffectiveChannel = 'external-project'
   $externalDir = Get-ChannelDir -Slug 'external-project'

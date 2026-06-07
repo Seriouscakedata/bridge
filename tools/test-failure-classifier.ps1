@@ -75,7 +75,10 @@ try {
 
   $pulseLibDir = Join-Path $script:TestBridgeRoot 'lib'
   New-Item -ItemType Directory -Path $pulseLibDir -Force | Out-Null
-  Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\backlog.ps1') -Destination (Join-Path $pulseLibDir 'backlog.ps1') -Force
+  $repoLibDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'lib'
+  foreach ($backlogLib in @(Get-ChildItem -LiteralPath $repoLibDir -Filter 'backlog*.ps1' -File)) {
+    Copy-Item -LiteralPath $backlogLib.FullName -Destination (Join-Path $pulseLibDir $backlogLib.Name) -Force
+  }
   $pulseScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\operator-pulse.ps1'
   $oldBridgeRoot = [string]$env:BRIDGE_ROOT
   $env:BRIDGE_ROOT = $script:TestBridgeRoot
