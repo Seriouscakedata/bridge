@@ -2,11 +2,7 @@
   if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
   }
-  if ((-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) -or
-      (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue)) -or
-      (-not (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue))) {
-    . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
-  }
+  . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
   if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
     throw 'Missing task-action-evidence helper: Get-TaskActionEvidence'
   }

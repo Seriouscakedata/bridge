@@ -17,7 +17,17 @@ function Check {
     Write-Host ("PASS " + $Name) -ForegroundColor Green
   } else {
     $script:fail++
-    $suffix = if ($null -ne $Actual) { ' actual=' + ($Actual | ConvertTo-Json -Compress -Depth 6) } else { '' }
+    $suffix = ''
+    if ($null -ne $Actual) {
+      $actualText = ''
+      try {
+        $actualText = if ($Actual -is [string]) { [string]$Actual } else { ($Actual | ConvertTo-Json -Compress -Depth 6) }
+      } catch {
+        $actualText = [string]$Actual
+      }
+      if ($actualText.Length -gt 500) { $actualText = $actualText.Substring(0, 500) + '...<truncated>' }
+      $suffix = ' actual=' + $actualText
+    }
     Write-Host ("FAIL " + $Name + $suffix) -ForegroundColor Red
   }
 }
@@ -64,7 +74,7 @@ Check 'regular project evidence context keeps external repo' ((-not [bool]$exter
 $modeTransitionSource = Get-Content -LiteralPath (Join-Path $root 'driver\85-loop-mode-transitions.ps1') -Raw
 Check '85 DONE guard reads fresh action evidence' ($modeTransitionSource -match 'Get-TaskActionEvidence') $modeTransitionSource
 Check '85 DONE guard resolves bridge-side evidence context' ($modeTransitionSource -match 'Get-TaskActionEvidenceContext' -and $modeTransitionSource -match 'noopEvidenceContext') $modeTransitionSource
-Check '85 DONE guard loads action evidence helper explicitly' ($modeTransitionSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $modeTransitionSource -match 'Get-Command\s+Get-TaskActionEvidenceContext' -and $modeTransitionSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext' -and $modeTransitionSource -notmatch 'modeTransitionEvidenceHelpers') $modeTransitionSource
+Check '85 DONE guard reloads action evidence helper before evidence check' ($modeTransitionSource -match '\.\s*\(Join-Path\s+\$bridgeRoot\s+''lib\\task-action-evidence\.ps1''\)' -and $modeTransitionSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext' -and $modeTransitionSource -notmatch 'modeTransitionEvidenceHelpers') $modeTransitionSource
 Check '85 DONE guard does not rely on stale task_did_actions or decision wrapper' ($modeTransitionSource -notmatch '\$stNoop\.task_did_actions' -and $modeTransitionSource -notmatch 'Get-TaskDoneEvidenceGateDecision') $modeTransitionSource
 Check '85 DONE guard fails closed when evidence check fails' ($modeTransitionSource -match '\$noopEvidenceChecked\s*=\s*\$false' -and $modeTransitionSource -match 'evidence_check_failed' -and $modeTransitionSource -match '\$plannerStatus\s*=\s*''CONTINUE''') $modeTransitionSource
 Check '85 DONE guard allows explicit non-action exceptions only' ($modeTransitionSource -match 'not_backlog_task' -and $modeTransitionSource -match 'project_autopilot' -and $modeTransitionSource -match 'project_backlog_created') $modeTransitionSource
@@ -74,7 +84,7 @@ Check '85 missing action evidence records failure for reflection' ($modeTransiti
 Check '85 missing action evidence does not hand control back to planner' ($modeTransitionSource -match '\$s\.force_planner\s*=\s*\$false' -and $modeTransitionSource -notmatch 'force_planner\s*=\s*\$true') $modeTransitionSource
 
 $agentTurnSource = Get-Content -LiteralPath (Join-Path $root 'driver\83-loop-agent-turn.ps1') -Raw
-Check '83 retry guard explicitly requires action evidence helpers' ($agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $agentTurnSource -match 'Get-Command\s+Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidenceContext' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidence' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext') $agentTurnSource
+Check '83 retry guard reloads and explicitly requires action evidence helpers' ($agentTurnSource -match '\.\s*\(Join-Path\s+\$bridgeRoot\s+''lib\\task-action-evidence\.ps1''\)' -and $agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $agentTurnSource -match 'Get-Command\s+Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidenceContext' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidence' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext') $agentTurnSource
 Check '83 retry guard resolves bridge-side evidence context' ($agentTurnSource -match 'Get-TaskActionEvidenceContext' -and $agentTurnSource -match 'actionEvidenceContext') $agentTurnSource
 Check '83 action evidence has no COVERED bypass' ($agentTurnSource -notmatch 'Test-TaskActionEvidenceBypassMarker' -and $agentTurnSource -notmatch 'COVERED') $agentTurnSource
 Check '83 force_coder retry flag is set through Add-Member Force' ($agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$true\s+-Force' -and $agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$false\s+-Force' -and $agentTurnSource -notmatch "Properties\.Name\s+-contains\s+'force_coder'") $agentTurnSource
