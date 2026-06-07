@@ -298,6 +298,28 @@ function Test-AuditMaintenanceBusy {
   return $false
 }
 
+function ConvertTo-AuditLaunchJsonLine {
+  param(
+    [Parameter(Mandatory=$true)]$Object
+  )
+
+  $json = ConvertTo-Json -InputObject $Object -Compress -Depth 8 -ErrorAction Stop
+  if ([string]::IsNullOrWhiteSpace($json)) { throw 'empty audit launch json' }
+  if ($json -match "[`r`n]") { throw 'audit launch json must be single-line jsonl' }
+  return [string]$json
+}
+
+function ConvertFrom-AuditLaunchJsonLine {
+  param([string]$Line)
+
+  if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+  try {
+    return (ConvertFrom-Json -InputObject $Line -ErrorAction Stop)
+  } catch {
+    return $null
+  }
+}
+
 function Write-AuditLaunchLedgerEntry {
   param(
     [Parameter(Mandatory=$true)][string]$AuditDir,
@@ -320,9 +342,25 @@ function Write-AuditLaunchLedgerEntry {
     window_minutes = [int]$WindowMinutes
     pid            = [int]$ProcessId
   }
-  $line = ($entry | ConvertTo-Json -Compress)
-  [System.IO.File]::AppendAllText($ledgerPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
-  return $ledgerPath
+  $line = ConvertTo-AuditLaunchJsonLine -Object $entry
+  $encoding = New-Object System.Text.UTF8Encoding($false)
+  $bytes = $encoding.GetBytes($line + "`n")
+  $lastError = $null
+  for ($attempt = 1; $attempt -le 5; $attempt++) {
+    $stream = $null
+    try {
+      $stream = [System.IO.File]::Open($ledgerPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+      $stream.Write($bytes, 0, $bytes.Length)
+      return $ledgerPath
+    } catch {
+      $lastError = $_.Exception
+      if ($attempt -lt 5) { Start-Sleep -Milliseconds (25 * $attempt) }
+    } finally {
+      if ($stream) { $stream.Dispose() }
+    }
+  }
+  if ($lastError) { throw $lastError }
+  throw 'audit launch ledger append failed'
 }
 
 function Get-AuditLaunchAttemptCount {
@@ -340,11 +378,11 @@ function Get-AuditLaunchAttemptCount {
   foreach ($line in @($lines)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try {
-      $entry = $line | ConvertFrom-Json
+      $entry = ConvertFrom-AuditLaunchJsonLine -Line $line
       if (-not $entry) { continue }
       if ([string]$entry.decision -ne 'started') { continue }
       if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
-      $ts = ([datetime]([string]$entry.ts)).ToUniversalTime()
+      $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
       if ($ts -ge $SinceUtc.ToUniversalTime()) { $count++ }
     } catch {}
   }
@@ -365,9 +403,13 @@ function Test-AuditLaunchLockActive {
   try {
     $raw = Get-Content -LiteralPath $LockPath -Raw -Encoding UTF8
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
-      $lock = $raw | ConvertFrom-Json
-      if ($lock -and $lock.PSObject.Properties.Name -contains 'created_at') { $created = ([datetime]([string]$lock.created_at)).ToUniversalTime() }
-      if ($lock -and $lock.PSObject.Properties.Name -contains 'pid') { $lockPid = [int]$lock.pid }
+      $lock = ConvertFrom-AuditLaunchJsonLine -Line $raw
+      if ($lock -and $lock.PSObject.Properties.Name -contains 'created_at') {
+        try { $created = [datetime]::Parse([string]$lock.created_at, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch {}
+      }
+      if ($lock -and $lock.PSObject.Properties.Name -contains 'pid') {
+        try { $lockPid = [int]$lock.pid } catch { $lockPid = 0 }
+      }
     }
   } catch {}
   if (-not $created) {
@@ -403,12 +445,13 @@ function New-AuditLaunchAdmissionLock {
   }
 
   $token = [guid]::NewGuid().ToString('N')
-  $payload = ([ordered]@{
+  $payloadObject = [ordered]@{
     token      = $token
     channel    = [string]$Channel
     pid        = [int]$PID
     created_at = (Get-Date).ToUniversalTime().ToString('o')
-  } | ConvertTo-Json -Compress)
+  }
+  $payload = ConvertTo-AuditLaunchJsonLine -Object $payloadObject
   $stream = $null
   try {
     $stream = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
@@ -432,7 +475,7 @@ function Remove-AuditLaunchAdmissionLock {
   if (-not [string]::IsNullOrWhiteSpace($Token)) {
     try {
       $raw = Get-Content -LiteralPath $LockPath -Raw -Encoding UTF8
-      $lock = $raw | ConvertFrom-Json
+      $lock = ConvertFrom-AuditLaunchJsonLine -Line $raw
       if ($lock -and [string]$lock.token -ne [string]$Token) { return }
     } catch { return }
   }

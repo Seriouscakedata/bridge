@@ -24,7 +24,7 @@ function Check-AuditLaunchGuard {
     $suffix = ''
     if ($null -ne $Actual) {
       $text = ''
-      try { $text = if ($Actual -is [string]) { [string]$Actual } else { ($Actual | ConvertTo-Json -Compress -Depth 6) } } catch { $text = [string]$Actual }
+      try { $text = if ($Actual -is [string]) { [string]$Actual } else { ($Actual | Format-List * | Out-String).Trim() } } catch { $text = [string]$Actual }
       if ($text.Length -gt 500) { $text = $text.Substring(0, 500) + '...<truncated>' }
       $suffix = ' actual=' + $text
     }
@@ -50,7 +50,7 @@ try {
   Check-AuditLaunchGuard 'third repeated-due audit launch is denied by attempt window' ((-not [bool]$third.allowed) -and [string]$third.reason -eq 'max_attempts_per_window' -and [int]$third.count -eq 2) $third
 
   $ledgerPath = Join-Path $auditDir 'audit.launches.jsonl'
-  $entries = @([System.IO.File]::ReadAllLines($ledgerPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+  $entries = @([System.IO.File]::ReadAllLines($ledgerPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ConvertFrom-AuditLaunchJsonLine -Line $_ })
   $started = @($entries | Where-Object { [string]$_.decision -eq 'started' })
   $denied = @($entries | Where-Object { [string]$_.decision -eq 'denied' })
   Check-AuditLaunchGuard 'ledger records exactly two started attempts before denying' ($started.Count -eq 2) $entries
@@ -59,23 +59,25 @@ try {
   Remove-Item -LiteralPath $auditDir -Recurse -Force
   New-Item -ItemType Directory -Path $auditDir -Force | Out-Null
   $lockPath = Join-Path $auditDir 'audit.launch.lock'
-  $activeLock = [ordered]@{
+  $activeLockObject = [ordered]@{
     token      = 'active-test'
     channel    = 'main'
     pid        = [int]$PID
     created_at = (Get-Date).ToUniversalTime().ToString('o')
-  } | ConvertTo-Json -Compress
+  }
+  $activeLock = ConvertTo-AuditLaunchJsonLine -Object $activeLockObject
   [System.IO.File]::WriteAllText($lockPath, $activeLock, (New-Object System.Text.UTF8Encoding($false)))
   $activeDenied = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5
   Check-AuditLaunchGuard 'active pid launch lock denies concurrent launch' ((-not [bool]$activeDenied.allowed) -and [string]$activeDenied.reason -eq 'launch_lock_active') $activeDenied
 
   Remove-Item -LiteralPath $lockPath -Force
-  $staleLock = [ordered]@{
+  $staleLockObject = [ordered]@{
     token      = 'stale-test'
     channel    = 'main'
     pid        = 999999
     created_at = (Get-Date).ToUniversalTime().ToString('o')
-  } | ConvertTo-Json -Compress
+  }
+  $staleLock = ConvertTo-AuditLaunchJsonLine -Object $staleLockObject
   [System.IO.File]::WriteAllText($lockPath, $staleLock, (New-Object System.Text.UTF8Encoding($false)))
   $staleAllowed = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5
   Check-AuditLaunchGuard 'stale dead-pid launch lock is cleared before admission' ([bool]$staleAllowed.allowed -and [string]$staleAllowed.reason -eq '') $staleAllowed
@@ -83,12 +85,13 @@ try {
   Remove-Item -LiteralPath $auditDir -Recurse -Force
   New-Item -ItemType Directory -Path $auditDir -Force | Out-Null
   $lockPath = Join-Path $auditDir 'audit.launch.lock'
-  $oldLock = [ordered]@{
+  $oldLockObject = [ordered]@{
     token      = 'old-test'
     channel    = 'main'
     pid        = [int]$PID
     created_at = (Get-Date).ToUniversalTime().AddMinutes(-10).ToString('o')
-  } | ConvertTo-Json -Compress
+  }
+  $oldLock = ConvertTo-AuditLaunchJsonLine -Object $oldLockObject
   [System.IO.File]::WriteAllText($lockPath, $oldLock, (New-Object System.Text.UTF8Encoding($false)))
   $oldAllowed = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5
   Check-AuditLaunchGuard 'stale ttl launch lock is cleared even when pid is alive' ([bool]$oldAllowed.allowed -and [string]$oldAllowed.reason -eq '') $oldAllowed

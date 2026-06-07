@@ -20,7 +20,15 @@ function Check {
     Write-Host ("PASS " + $Name) -ForegroundColor Green
   } else {
     $script:fail++
-    $suffix = if ($null -ne $Actual) { " actual=" + ($Actual | ConvertTo-Json -Compress -Depth 10) } else { '' }
+    # Hang-proof diff: WinPS 5.1 ConvertTo-Json -Depth N hangs (exponential) on multiline strings, so
+    # render a string Actual plainly (objects still serialize at low depth) and cap length. A failing
+    # check must print a fast, readable diff -- never freeze the whole gate-regression suite on timeout.
+    $suffix = ''
+    if ($null -ne $Actual) {
+      $actualText = if ($Actual -is [string]) { [string]$Actual } else { ($Actual | ConvertTo-Json -Compress -Depth 6) }
+      if ($actualText.Length -gt 400) { $actualText = $actualText.Substring(0, 400) + '...(truncated)' }
+      $suffix = " actual=" + $actualText
+    }
     Write-Host ("FAIL " + $Name + $suffix) -ForegroundColor Red
   }
 }
@@ -110,7 +118,10 @@ try {
   Check 'writer fail-open invalid input returns ok=false' ($null -ne $badWrite -and -not [bool]$badWrite.ok -and -not [string]::IsNullOrWhiteSpace([string]$badWrite.error)) $badWrite
 
   $driver = Get-Content -LiteralPath (Join-Path $root 'driver.ps1') -Raw
-  $completion = Get-Content -LiteralPath (Join-Path $root 'driver\86-loop-completion.ps1') -Raw
+  # The loop-completion subsystem was split into 86-loop-completion*.ps1 (a thin dispatcher that dot-
+  # sources -checks / -actions / -cleanup). Read the whole subsystem so these wiring assertions track
+  # the delivery-gate-shadow block wherever the refactor places it, not the now-thin monolith path.
+  $completion = ((Get-ChildItem -LiteralPath (Join-Path $root 'driver') -Filter '86-loop-completion*.ps1' -File | Sort-Object Name) | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
   Check 'driver loads delivery-gate-shadow writer' ($driver -match 'delivery-gate-shadow\.ps1') $driver
   Check 'completion builds delivery gate facts' ($completion -match 'New-DeliveryGateInputFacts') $completion
   Check 'completion binds delivery gate acceptance fact' ($completion -match 'Get-DeliveryGateAcceptanceFact') $completion
