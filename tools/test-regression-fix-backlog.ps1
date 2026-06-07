@@ -157,6 +157,30 @@ try {
     $shadowMetricsAfterRepeat.Count -eq 1
   ) @{ result = $shadowRepeat; ideas = $shadowFixAfterRepeat; metrics = $shadowMetricsAfterRepeat }
 
+  $script:GuardResult = [pscustomobject]@{
+    allowed = $false
+    reason = 'stale_hypothesis'
+    detail = [pscustomobject]@{ age_hours = 36.591; max_age_hours = 30 }
+  }
+  $blockedShadowTs = '2026-06-04T00:00:00Z'
+  $blockedShadow = Invoke-VerdictActuation -Verdict 'worse' -Commit 'stale123' -Task 'Stale shadow candidate' -HypothesisTs $blockedShadowTs -AfterTurns 9
+  $blockedShadowFix = @(Get-FixIdeasByAction -Action 'revert_shadow' | Where-Object { $_.text -match 'stale123' })
+  $blockedShadowMetrics = @(Get-MetricsRecords | Where-Object { [string]$_.type -eq 'regression_fix_backlog' -and [string]$_.action -eq 'revert_shadow' -and [string]$_.commit -eq 'stale123' })
+  $blockedShadowActuation = @(Get-MetricsRecords | Where-Object { [string]$_.type -eq 'actuation' -and [string]$_.action -eq 'revert_shadow' -and [string]$_.commit -eq 'stale123' })
+  Check 'blocked revert_shadow records actuation but does not create fix backlog idea' (
+    [string]$blockedShadow.action -eq 'revert_shadow' -and
+    $blockedShadowActuation.Count -eq 1 -and
+    [bool]$blockedShadowActuation[0].would_revert -eq $false -and
+    [string]$blockedShadowActuation[0].reason -eq 'stale_hypothesis' -and
+    $blockedShadowFix.Count -eq 0 -and
+    $blockedShadowMetrics.Count -eq 0
+  ) @{ result = $blockedShadow; ideas = $blockedShadowFix; metrics = $blockedShadowMetrics; actuation = $blockedShadowActuation }
+  $script:GuardResult = [pscustomobject]@{
+    allowed = $true
+    reason = 'guard_passed'
+    detail = [pscustomobject]@{}
+  }
+
   $script:BridgeConfig.learningLoop.autoRevert = $true
   $script:BridgeConfig.learningLoop.autoRevertShadow = $false
   $script:GitMode = 'fail'

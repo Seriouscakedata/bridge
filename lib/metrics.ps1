@@ -688,7 +688,9 @@ function Invoke-VerdictActuation {
       if ([bool]$cfg.autoRevertShadow) {
         $shadowGuard = Test-LearningLoopAutoRevertGuard -Root $root -Commit $Commit -HypothesisTs $HypothesisTs -Config $cfg
         Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_shadow'; would_revert=[bool]$shadowGuard.allowed; reason=[string]$shadowGuard.reason; guard=$shadowGuard.detail }
-        try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_shadow' | Out-Null } catch {}
+        if ([bool]$shadowGuard.allowed) {
+          try { Add-LearningLoopRegressionFixIdea -Commit $Commit -Task $Task -HypothesisTs $HypothesisTs -Action 'revert_shadow' | Out-Null } catch {}
+        }
         $result.action = 'revert_shadow'; return $result
       }
       Append-MetricsRecord @{ type='actuation'; hypothesis_ts=$HypothesisTs; commit=$Commit; verdict=$Verdict; action='revert_disabled' }
