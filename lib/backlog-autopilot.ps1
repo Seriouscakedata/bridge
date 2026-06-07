@@ -1140,6 +1140,50 @@ function Get-ProjectAutopilotTaskRisk {
   }
 }
 
+function Normalize-ProjectAutopilotLane {
+  param([string]$Lane)
+  if ([string]::IsNullOrWhiteSpace($Lane)) { return '' }
+  $normalized = $Lane.Trim().ToLowerInvariant() -replace '_','-' -replace '\s+','-'
+  switch ($normalized) {
+    'project' { return 'project' }
+    'bridge' { return 'bridge' }
+    'control-plane' { return 'control-plane' }
+    default { return '' }
+  }
+}
+
+function Test-ProjectAutopilotControlPlanePath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $p = $Path.Replace('\','/').Trim().ToLowerInvariant()
+  if ($p -in @('driver.ps1','server.ps1','supervisor.ps1','watchdog.ps1','lib/circuit-breaker.ps1','lib/parallel.ps1')) { return $true }
+  if ($p -match '^lib/backlog.*\.ps1$') { return $true }
+  return $false
+}
+
+function Test-ProjectAutopilotControlPlaneTouch {
+  param([string[]]$Paths = @())
+  foreach ($path in @($Paths)) {
+    if (Test-ProjectAutopilotControlPlanePath -Path $path) { return $true }
+  }
+  return $false
+}
+
+function Get-ProjectAutopilotTaskLane {
+  param(
+    $Task,
+    [string]$Channel = '',
+    [string[]]$Files = @(),
+    [string[]]$TouchSet = @()
+  )
+  $explicitLane = Normalize-ProjectAutopilotLane (Get-ProjectAutopilotTaskStringField -Task $Task -Names @('lane'))
+  if ($explicitLane -eq 'control-plane') { return 'control-plane' }
+  if (Test-ProjectAutopilotControlPlaneTouch -Paths (@($Files) + @($TouchSet))) { return 'control-plane' }
+  if (-not [string]::IsNullOrWhiteSpace($explicitLane)) { return $explicitLane }
+  if (([string]$Channel).Trim().ToLowerInvariant() -eq 'main') { return 'bridge' }
+  return 'project'
+}
+
 function Test-ProjectAutopilotTaskMetadata {
   param($Task)
   $missing = New-Object 'System.Collections.Generic.List[string]'
@@ -1182,13 +1226,16 @@ function Set-ProjectAutopilotIdeaMetadata {
       $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()))
       $chapter = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('chapter','phase','area')
       $wave = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('wave','milestone')
-      $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('parallel_group','lane','workstream')
+      $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('parallel_group','workstream')
       $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('acceptance','acceptance_checks','criteria'))
       $checks = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('checks','verify','verification'))
       $risk = Get-ProjectAutopilotTaskRisk -Task $Task
       $serialReason = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('serial_reason')
       $explicitTouch = @(ConvertTo-ProjectAutopilotPathArray (Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('workpack_touch_set','touch_set')))
       $explicitGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('workpack_conflict_group')
+      $touchSet = if ($explicitTouch.Count -gt 0) { @($explicitTouch) } else { @($files) }
+      $metadataChannel = [string](Get-BacklogPackObjectValue -Obj $i -Name 'project' -Default (Get-EffectiveChannel))
+      $lane = Get-ProjectAutopilotTaskLane -Task $Task -Channel $metadataChannel -Files @($files) -TouchSet @($touchSet)
       $bridgeSelfAdmission = Get-BacklogPackObjectValue -Obj $Task -Name 'bridge_self_admission' -Default $null
       $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
       $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
@@ -1199,6 +1246,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       $i | Add-Member -NotePropertyName depends_on -NotePropertyValue ([object[]]@($deps)) -Force
       $i | Add-Member -NotePropertyName risk -NotePropertyValue $risk -Force
       $i | Add-Member -NotePropertyName serial_reason -NotePropertyValue $serialReason -Force
+      $i | Add-Member -NotePropertyName lane -NotePropertyValue $lane -Force
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $i | Add-Member -NotePropertyName chapter -NotePropertyValue $chapter -Force }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $i | Add-Member -NotePropertyName wave -NotePropertyValue $wave -Force }
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $i | Add-Member -NotePropertyName parallel_group -NotePropertyValue $parallelGroup -Force }
@@ -1207,7 +1255,6 @@ function Set-ProjectAutopilotIdeaMetadata {
       if ($acceptance.Count -gt 0) { $i | Add-Member -NotePropertyName acceptance -NotePropertyValue @($acceptance) -Force }
       if ($checks.Count -gt 0) { $i | Add-Member -NotePropertyName checks -NotePropertyValue @($checks) -Force }
       if ($bridgeSelfAdmission) { $i | Add-Member -NotePropertyName bridge_self_admission -NotePropertyValue $bridgeSelfAdmission -Force }
-      $touchSet = if ($explicitTouch.Count -gt 0) { @($explicitTouch) } else { @($files) }
       if ($touchSet.Count -gt 0) {
         $group = if (-not [string]::IsNullOrWhiteSpace($explicitGroup)) { [string]$explicitGroup } else { 'file:' + [string]$touchSet[0] }
         $i | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue ([object[]]@($touchSet)) -Force
@@ -1218,6 +1265,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $meta.chapter = $chapter }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $meta.wave = $wave }
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $meta.parallel_group = $parallelGroup }
+      $meta.lane = $lane
       $meta.depends_on = @($deps)
       if ($files.Count -gt 0) { $meta.files = @($files) }
       if ($acceptance.Count -gt 0) { $meta.acceptance = @($acceptance) }
@@ -1283,13 +1331,15 @@ function Add-ProjectBacklogFromMarker {
     $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-ProjectAutopilotTaskStringArray -Task $t -Names @('depends_on','dependencies')))
     $chapter = Get-ProjectAutopilotTaskStringField -Task $t -Names @('chapter','phase','area')
     $wave = Get-ProjectAutopilotTaskStringField -Task $t -Names @('wave','milestone')
-    $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $t -Names @('parallel_group','lane','workstream')
+    $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $t -Names @('parallel_group','workstream')
+    $lane = Get-ProjectAutopilotTaskLane -Task $t -Channel $Channel -Files @($files) -TouchSet @()
     $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('acceptance','acceptance_checks','criteria'))
     $checks = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('checks','verify','verification'))
     $detailLines = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($chapter)) { [void]$detailLines.Add("Chapter: $chapter") }
     if (-not [string]::IsNullOrWhiteSpace($wave)) { [void]$detailLines.Add("Wave: $wave") }
     if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { [void]$detailLines.Add("Parallel group: $parallelGroup") }
+    if (-not [string]::IsNullOrWhiteSpace($lane)) { [void]$detailLines.Add("Lane: $lane") }
     if ($deps.Count -gt 0) { [void]$detailLines.Add("Depends on: " + (($deps | Select-Object -First 12) -join ', ')) }
     if ($acceptance.Count -gt 0) { [void]$detailLines.Add("Acceptance: " + (($acceptance | Select-Object -First 6) -join ' ; ')) }
     if ($checks.Count -gt 0) { [void]$detailLines.Add("Checks: " + (($checks | Select-Object -First 6) -join ' ; ')) }
