@@ -896,6 +896,33 @@ function Get-ProjectAcceptancePlanContractNonWebEvidence {
   }
 }
 
+function Get-ProjectAcceptancePlanContractJourneyTraceCount {
+  param([string]$ProjectRoot)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  if (-not $info.contract) { return 0 }
+
+  $journeys = @()
+  foreach ($names in @(
+    @('user_journeys'),
+    @('journeys'),
+    @('flows'),
+    @('workflows'),
+    @('scenarios')
+  )) {
+    $journeys += @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names $names)
+  }
+
+  $traceCount = 0
+  foreach ($journey in @($journeys)) {
+    if ($journey -is [string]) { continue }
+    $traces = @(Get-ProjectAcceptanceContractArray -Obj $journey -Names @('acceptance_trace','acceptanceTrace','acceptance','checks','coverage'))
+    foreach ($trace in @($traces)) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$trace)) { $traceCount++ }
+    }
+  }
+  return [int]$traceCount
+}
+
 function Get-ProjectAcceptanceJourneyCoverageFact {
   param([string]$ProjectRoot, $Config)
   $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
@@ -906,6 +933,7 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
   $journeyWebSpecs = @(Get-ProjectAcceptancePlanContractJourneySpecs -ProjectRoot $ProjectRoot)
   $browserSmokeScripts = @(Get-ProjectAcceptanceBrowserSmokeScripts -SmokeScripts @($Config.smokeScripts))
   $nonWebEvidence = Get-ProjectAcceptancePlanContractNonWebEvidence -ProjectRoot $ProjectRoot
+  $acceptanceTraceCount = Get-ProjectAcceptancePlanContractJourneyTraceCount -ProjectRoot $ProjectRoot
   $required = ($journeyCount -gt 0)
   $ok = $true
   $reason = 'no journeys declared'
@@ -916,9 +944,11 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
       $reason = 'browser/e2e smoke script present'
     } elseif ([bool]$nonWebEvidence.ok) {
       $reason = 'cli/artifact contract checks present'
+    } elseif ($acceptanceTraceCount -gt 0) {
+      $reason = 'journey acceptance traces present'
     } else {
       $ok = $false
-      $reason = 'journeys declared but no static journey checks, browser/e2e smoke script, or cli/artifact contract checks'
+      $reason = 'journeys declared but no static journey checks, browser/e2e smoke script, cli/artifact contract checks, or journey acceptance traces'
     }
   }
   return [pscustomobject]@{
@@ -927,6 +957,7 @@ function Get-ProjectAcceptanceJourneyCoverageFact {
     journey_count = [int]$journeyCount
     journey_web_specs_count = [int]$journeyWebSpecs.Count
     browser_smoke_scripts = @($browserSmokeScripts)
+    acceptance_trace_count = [int]$acceptanceTraceCount
     non_web_surface_count = [int]$nonWebEvidence.surface_count
     non_web_command_check_count = [int]$nonWebEvidence.command_check_count
     non_web_surface_kinds = @($nonWebEvidence.surface_kinds)
@@ -955,6 +986,7 @@ function New-ProjectAcceptanceJourneyCoverageStep {
     ' journey_count=' + [string]$Fact.journey_count +
     ' journey_web_specs_count=' + [string]$Fact.journey_web_specs_count +
     ' browser_smoke_scripts=' + ((@($Fact.browser_smoke_scripts) | ForEach-Object { [string]$_ }) -join ',') +
+    ' acceptance_trace_count=' + [string]$Fact.acceptance_trace_count +
     ' non_web_surface_count=' + [string]$Fact.non_web_surface_count +
     ' non_web_command_check_count=' + [string]$Fact.non_web_command_check_count +
     ' non_web_surface_kinds=' + ((@($Fact.non_web_surface_kinds) | ForEach-Object { [string]$_ }) -join ',') +

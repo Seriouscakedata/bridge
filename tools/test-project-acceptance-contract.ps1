@@ -180,7 +180,8 @@ try {
     surfaces = @(
       [ordered]@{ id='cli-plan'; kind='cli'; command='slopvid plan --title <title>'; purpose='Create deterministic planning artifacts.' },
       [ordered]@{ id='run-manifest'; kind='artifact'; path='runs/<run_id>/manifest.json'; purpose='Machine-readable run state.' },
-      [ordered]@{ id='report'; kind='artifact'; path='runs/<run_id>/reports/report.html'; purpose='Human review surface.' }
+      [ordered]@{ id='report'; kind='artifact'; path='runs/<run_id>/reports/report.html'; purpose='Human review surface.' },
+      [ordered]@{ id='api-later'; kind='api'; purpose='Optional local API surface, deferred until web smoke checks exist.' }
     )
     journeys = @(
       [ordered]@{
@@ -266,6 +267,35 @@ try {
   Assert-True ([int]$coverageSingleCommandCli.non_web_command_check_count -eq 1) ('expected one non-web command check, got ' + [string]$coverageSingleCommandCli.non_web_command_check_count)
   $webFactSingleCommandCli = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgSingleCommandCli
   Assert-True (-not [bool]$webFactSingleCommandCli.required) 'expected single-command CLI-only contract to skip server:web-start'
+
+  $traceOnlyCliContract = [ordered]@{
+    project_goal = 'Deliver a report-first CLI product with journey coverage delegated to named acceptance traces.'
+    surfaces = @(
+      [ordered]@{ id='cli'; kind='cli'; command='tool report'; purpose='Generate report artifacts.' },
+      [ordered]@{ id='report'; kind='report'; path='reports/report.md'; purpose='Review generated output.' },
+      [ordered]@{ id='api-later'; kind='api'; purpose='Optional API wording without a runnable web surface.' }
+    )
+    journeys = @(
+      [ordered]@{
+        id='title-to-report'
+        steps=@(
+          'Run the report command.',
+          'Open the generated report artifact.',
+          'Confirm completion is recorded in the report.'
+        )
+        acceptance_trace=@('qa:report','qa:manifest')
+      }
+    )
+    checks = @()
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($traceOnlyCliContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgTraceOnlyCli = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageTraceOnlyCli = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgTraceOnlyCli
+  Assert-True ([bool]$coverageTraceOnlyCli.required -and [bool]$coverageTraceOnlyCli.ok) 'expected journey acceptance_trace to satisfy non-web journey coverage'
+  Assert-True ([int]$coverageTraceOnlyCli.acceptance_trace_count -eq 2) ('expected two journey acceptance traces, got ' + [string]$coverageTraceOnlyCli.acceptance_trace_count)
+  Assert-True ([string]$coverageTraceOnlyCli.reason -eq 'journey acceptance traces present') ('expected acceptance trace coverage reason, got ' + [string]$coverageTraceOnlyCli.reason)
+  $webFactTraceOnlyCli = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgTraceOnlyCli
+  Assert-True (-not [bool]$webFactTraceOnlyCli.required) 'expected optional api-later wording without checks/path to skip server:web-start'
 
   $actionOnlyContract = [ordered]@{
     user_journeys = @(
