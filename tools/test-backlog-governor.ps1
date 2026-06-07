@@ -52,19 +52,32 @@ try {
     Test-BacklogGovernorPathOverlap -Left 'lib/foo' -Right 'lib/foobar.ps1' -Root $bridgeRoot
   ))
 
+  # Invalid = missing IDENTITY under the corrected shape: id + (title|text). touch_set/root_cause_key
+  # are intentionally OPTIONAL (b4eec87 — requiring them on intake wedged operator + project-autopilot
+  # atoms, since workpack fields are assigned at claim time). So an item is dropped only when it lacks
+  # an id, or lacks BOTH title and text -- not merely because it omits workpack metadata.
   $invalidApproved = New-GovernorItem -Id 'invalid-approved'
   $invalidApproved.PSObject.Properties.Remove('title')
-  $invalidApproved.PSObject.Properties.Remove('touch_set')
+  $invalidApproved.PSObject.Properties.Remove('text')
   $approvedVerdict = Test-BacklogGovernorClaimable -Item $invalidApproved
   Assert-BacklogGovernor 'invalid approved is not claimable' (-not [bool]$approvedVerdict.claimable) ($approvedVerdict | ConvertTo-Json -Compress -Depth 8)
   Assert-BacklogGovernor 'invalid approved action drop' ([string]$approvedVerdict.action -eq 'drop') $approvedVerdict.action
   Assert-BacklogGovernor 'invalid approved reason' ([string]$approvedVerdict.reason -eq 'invalid-shape') $approvedVerdict.reason
 
   $invalidRunning = New-GovernorItem -Id 'invalid-running' -Status 'running'
-  $invalidRunning.PSObject.Properties.Remove('text')
+  $invalidRunning.PSObject.Properties.Remove('id')
   $runningVerdict = Test-BacklogGovernorClaimable -Item $invalidRunning
   Assert-BacklogGovernor 'invalid running is not claimable' (-not [bool]$runningVerdict.claimable) ($runningVerdict | ConvertTo-Json -Compress -Depth 8)
   Assert-BacklogGovernor 'invalid running action drop' ([string]$runningVerdict.action -eq 'drop') $runningVerdict.action
+
+  # Regression guard for b4eec87: an identity-only item (id + title, NO touch_set / root_cause_key)
+  # MUST stay claimable. If this flips to non-claimable again, operator and project-autopilot atoms
+  # get wedged as 'invalid-shape' on intake -- the exact regression that broke autonomy before.
+  $identityOnly = New-GovernorItem -Id 'identity-only'
+  $identityOnly.PSObject.Properties.Remove('touch_set')
+  $identityOnly.PSObject.Properties.Remove('root_cause_key')
+  $identityVerdict = Test-BacklogGovernorClaimable -Item $identityOnly
+  Assert-BacklogGovernor 'identity-only item stays claimable (workpack fields optional)' ([bool]$identityVerdict.claimable) ($identityVerdict | ConvertTo-Json -Compress -Depth 8)
 
   $candidateTouch = New-GovernorItem -Id 'candidate-touch' -TouchSet @('lib/foo/bar.ps1') -RootCauseKey 'queue-governor:touch'
   $activeTouch = New-GovernorItem -Id 'active-touch' -Status 'working' -TouchSet @('LIB\foo') -RootCauseKey 'queue-governor:other'
