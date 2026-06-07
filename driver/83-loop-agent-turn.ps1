@@ -3,7 +3,8 @@
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
   }
   if ((-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) -or
-      (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue))) {
+      (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue)) -or
+      (-not (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue))) {
     . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
   }
   if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
@@ -11,6 +12,9 @@
   }
   if (-not (Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue)) {
     throw 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan'
+  }
+  if (-not (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue)) {
+    throw 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext'
   }
 
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
