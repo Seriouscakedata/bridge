@@ -63,6 +63,72 @@ function Get-CodexEvidenceRetryPlan {
   }
 }
 
+function Test-TaskBridgeSideActionEvidenceTask {
+  param(
+    [object]$State = $null,
+    [string]$TaskText = ''
+  )
+  $texts = New-Object 'System.Collections.Generic.List[string]'
+  if (-not [string]::IsNullOrWhiteSpace($TaskText)) { [void]$texts.Add([string]$TaskText) }
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'current_task')) {
+      $stTask = [string]$State.current_task
+      if (-not [string]::IsNullOrWhiteSpace($stTask)) { [void]$texts.Add($stTask) }
+    }
+  } catch {}
+
+  foreach ($text in @($texts.ToArray())) {
+    if ([string]$text -match '(?i)\[project-acceptance-fix\]') { return $true }
+  }
+  return $false
+}
+
+function Get-TaskActionEvidenceContext {
+  param(
+    [object]$State,
+    [string]$DefaultRepoRoot,
+    [string]$BridgeRoot
+  )
+
+  $repoRoot = [string]$DefaultRepoRoot
+  $baseCommit = ''
+  $baseDirty = @()
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'task_base_commit')) {
+      $baseCommit = [string]$State.task_base_commit
+    }
+  } catch { $baseCommit = '' }
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'task_base_dirty')) {
+      $baseDirty = @($State.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+  } catch { $baseDirty = @() }
+
+  $bridgeSide = Test-TaskBridgeSideActionEvidenceTask -State $State
+  if ($bridgeSide -and -not [string]::IsNullOrWhiteSpace($BridgeRoot)) {
+    $repoRoot = [string]$BridgeRoot
+    try {
+      if ($State -and ($State.PSObject.Properties.Name -contains 'task_bridge_base_commit')) {
+        $bridgeBase = [string]$State.task_bridge_base_commit
+        if (-not [string]::IsNullOrWhiteSpace($bridgeBase)) { $baseCommit = $bridgeBase }
+      }
+    } catch {}
+    try {
+      if ($State -and ($State.PSObject.Properties.Name -contains 'task_bridge_base_dirty')) {
+        $bridgeDirty = @($State.task_bridge_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $baseDirty = @($bridgeDirty)
+      }
+    } catch {}
+  }
+
+  return [pscustomobject]@{
+    repo_root        = [string]$repoRoot
+    base_commit      = [string]$baseCommit
+    base_dirty_paths = @($baseDirty)
+    bridge_side      = [bool]$bridgeSide
+  }
+}
+
 function Get-TaskActionEvidence {
   param(
     [string]$RepoRoot,

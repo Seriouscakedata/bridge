@@ -229,6 +229,8 @@
         $s.heartbeat        = (Get-Date).ToString('o')
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommitD -Force
         $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirtyD) -Force
+        $s | Add-Member -NotePropertyName task_bridge_base_commit -NotePropertyValue $baseCommitD -Force
+        $s | Add-Member -NotePropertyName task_bridge_base_dirty -NotePropertyValue @($baseDirtyD) -Force
         $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue $newRepairAttempt -Force
         $s.doctor_attempts  = $newRepairAttempt
         Reset-TaskAgentDuration $s

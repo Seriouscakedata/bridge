@@ -25,6 +25,8 @@ function Check {
 $evidenceHelperSource = Get-Content -LiteralPath (Join-Path $root 'lib\task-action-evidence.ps1') -Raw
 Check 'action evidence helper exports action evidence reader' ([bool](Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue))
 Check 'action evidence helper exports Codex retry planner' ([bool](Get-Command Get-CodexEvidenceRetryPlan -ErrorAction SilentlyContinue))
+Check 'action evidence helper exports evidence context resolver' ([bool](Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue))
+Check 'action evidence helper exports bridge-side task detector' ([bool](Get-Command Test-TaskBridgeSideActionEvidenceTask -ErrorAction SilentlyContinue))
 Check 'action evidence helper has no DONE decision wrapper' ($evidenceHelperSource -notmatch 'function\s+Get-TaskDoneEvidenceGateDecision') $evidenceHelperSource
 
 $telemetry = Test-TaskActionEvidencePathWorth -Path 'channels/main/task-management-shadow.jsonl' -RepoRoot $root -BridgeRoot $root
@@ -39,8 +41,29 @@ Check 'Codex evidence retry first miss schedules retry' ([bool]$retryFirst.shoul
 Check 'Codex evidence retry second miss uses exponential delay' ([bool]$retrySecond.should_retry -and [int]$retrySecond.attempt -eq 2 -and [int]$retrySecond.delay_sec -eq 10) $retrySecond
 Check 'Codex evidence retry third miss exhausts limit' ((-not [bool]$retryFinal.should_retry) -and [bool]$retryFinal.exhausted -and [int]$retryFinal.attempt -eq 3) $retryFinal
 
+$bridgeSideState = [pscustomobject]@{
+  current_task = '[Автозадача из бэклога] [project-acceptance-fix] acceptance failed'
+  task_base_commit = 'project-base'
+  task_base_dirty = @('project-dirty.txt')
+  task_bridge_base_commit = 'bridge-base'
+  task_bridge_base_dirty = @('bridge-dirty.txt')
+}
+$bridgeSideContext = Get-TaskActionEvidenceContext -State $bridgeSideState -DefaultRepoRoot 'C:\example\project' -BridgeRoot $root
+Check 'project-acceptance-fix evidence context uses bridge repo' ([bool]$bridgeSideContext.bridge_side -and [string]$bridgeSideContext.repo_root -eq $root -and [string]$bridgeSideContext.base_commit -eq 'bridge-base' -and (@($bridgeSideContext.base_dirty_paths) -contains 'bridge-dirty.txt')) $bridgeSideContext
+
+$externalState = [pscustomobject]@{
+  current_task = '[Автозадача из бэклога] regular project task'
+  task_base_commit = 'project-base'
+  task_base_dirty = @('project-dirty.txt')
+  task_bridge_base_commit = 'bridge-base'
+  task_bridge_base_dirty = @('bridge-dirty.txt')
+}
+$externalContext = Get-TaskActionEvidenceContext -State $externalState -DefaultRepoRoot 'C:\example\project' -BridgeRoot $root
+Check 'regular project evidence context keeps external repo' ((-not [bool]$externalContext.bridge_side) -and [string]$externalContext.repo_root -eq 'C:\example\project' -and [string]$externalContext.base_commit -eq 'project-base' -and (@($externalContext.base_dirty_paths) -contains 'project-dirty.txt')) $externalContext
+
 $modeTransitionSource = Get-Content -LiteralPath (Join-Path $root 'driver\85-loop-mode-transitions.ps1') -Raw
 Check '85 DONE guard reads fresh action evidence' ($modeTransitionSource -match 'Get-TaskActionEvidence') $modeTransitionSource
+Check '85 DONE guard resolves bridge-side evidence context' ($modeTransitionSource -match 'Get-TaskActionEvidenceContext' -and $modeTransitionSource -match 'noopEvidenceContext') $modeTransitionSource
 Check '85 DONE guard loads action evidence helper explicitly' ($modeTransitionSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $modeTransitionSource -notmatch 'modeTransitionEvidenceHelpers') $modeTransitionSource
 Check '85 DONE guard does not rely on stale task_did_actions or decision wrapper' ($modeTransitionSource -notmatch '\$stNoop\.task_did_actions' -and $modeTransitionSource -notmatch 'Get-TaskDoneEvidenceGateDecision') $modeTransitionSource
 Check '85 DONE guard fails closed when evidence check fails' ($modeTransitionSource -match '\$noopEvidenceChecked\s*=\s*\$false' -and $modeTransitionSource -match 'evidence_check_failed' -and $modeTransitionSource -match '\$plannerStatus\s*=\s*''CONTINUE''') $modeTransitionSource
@@ -52,6 +75,7 @@ Check '85 missing action evidence does not hand control back to planner' ($modeT
 
 $agentTurnSource = Get-Content -LiteralPath (Join-Path $root 'driver\83-loop-agent-turn.ps1') -Raw
 Check '83 retry guard explicitly requires both action evidence helpers' ($agentTurnSource -match 'Get-Command\s+Get-TaskActionEvidence' -and $agentTurnSource -match 'Get-Command\s+Get-CodexEvidenceRetryPlan' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-TaskActionEvidence' -and $agentTurnSource -match 'Missing task-action-evidence helper: Get-CodexEvidenceRetryPlan') $agentTurnSource
+Check '83 retry guard resolves bridge-side evidence context' ($agentTurnSource -match 'Get-TaskActionEvidenceContext' -and $agentTurnSource -match 'actionEvidenceContext') $agentTurnSource
 Check '83 action evidence has no COVERED bypass' ($agentTurnSource -notmatch 'Test-TaskActionEvidenceBypassMarker' -and $agentTurnSource -notmatch 'COVERED') $agentTurnSource
 Check '83 force_coder retry flag is set through Add-Member Force' ($agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$true\s+-Force' -and $agentTurnSource -match 'Add-Member\s+-NotePropertyName\s+force_coder\s+-NotePropertyValue\s+\$false\s+-Force' -and $agentTurnSource -notmatch "Properties\.Name\s+-contains\s+'force_coder'") $agentTurnSource
 Check '83 retry state updates do not use named closure wrappers' ($agentTurnSource -notmatch '\$mut(TaskAgentDuration|CodexEvidenceRetry|CodexEvidenceExhausted|ActionEvidenceGuardError)\s*=') $agentTurnSource
@@ -62,6 +86,9 @@ Check '83 retry continue targets the named main loop' ($mainLoopSource -match ':
 
 $turnSetupSource = Get-Content -LiteralPath (Join-Path $root 'driver\82-loop-turn-setup.ps1') -Raw
 Check 'force_coder retry flag is consumed by turn setup' ($turnSetupSource -match '\$forceCoder\s*=\s*\[bool\]\$state\.force_coder' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ ''codex'' \}' -and $turnSetupSource -match 'if \(\$forceCoder\) \{ Update-State \{ param\(\$s\) \$s\.force_coder=\$false \}') $turnSetupSource
+
+$idleClaimSource = Get-Content -LiteralPath (Join-Path $root 'driver\81-loop-idle-claim.ps1') -Raw
+Check '81 task claim stores bridge baseline for external project tasks' ($idleClaimSource -match 'task_bridge_base_commit' -and $idleClaimSource -match 'task_bridge_base_dirty' -and $idleClaimSource -match '\$bridgeBaseCommit') $idleClaimSource
 
 $held = [pscustomobject]@{ id='held-1'; status='held'; text='operator held task' }
 $approved = [pscustomobject]@{ id='ok-1'; status='approved'; text='regular task'; tags=@(); scope='bridge' }

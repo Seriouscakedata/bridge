@@ -223,14 +223,8 @@
     try {
       $stAction = Read-State
       $repoActionRoot = Get-TaskRepoRoot
-      $baseAction = [string]$stAction.task_base_commit
-      $baseDirtyAction = @()
-      try {
-        if ($stAction.PSObject.Properties.Name -contains 'task_base_dirty') {
-          $baseDirtyAction = @($stAction.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        }
-      } catch { $baseDirtyAction = @() }
-      $actionEvidence = Get-TaskActionEvidence -RepoRoot $repoActionRoot -BaseCommit $baseAction -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyAction
+      $actionEvidenceContext = Get-TaskActionEvidenceContext -State $stAction -DefaultRepoRoot $repoActionRoot -BridgeRoot $bridgeRoot
+      $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$actionEvidenceContext.repo_root) -BaseCommit ([string]$actionEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($actionEvidenceContext.base_dirty_paths)
       if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
         Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
       } else {
@@ -245,7 +239,7 @@
             }
           } catch { $curEvidenceRetries = 0 }
           $retryPlan = Get-CodexEvidenceRetryPlan -CurrentRetryCount $curEvidenceRetries -MaxAttempts 3 -BaseDelaySec 5 -MaxDelaySec 20
-          $repoLabel = if ([string]::IsNullOrWhiteSpace($repoActionRoot)) { '<unknown>' } else { [string]$repoActionRoot }
+          $repoLabel = if ([string]::IsNullOrWhiteSpace([string]$actionEvidenceContext.repo_root)) { '<unknown>' } else { [string]$actionEvidenceContext.repo_root }
           if ([bool]$retryPlan.should_retry) {
             $delaySec = [int]$retryPlan.delay_sec
             $retryAttempt = [int]$retryPlan.attempt

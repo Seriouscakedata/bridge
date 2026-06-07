@@ -20,14 +20,8 @@
       $noopHasBacklogId = -not [string]::IsNullOrWhiteSpace($noopBacklogId)
       $noopTask = [string]$stNoop.current_task
       $repoNoopRoot = Get-TaskRepoRoot
-      $baseNoop = [string]$stNoop.task_base_commit
-      $baseDirtyNoop = @()
-      try {
-        if ($stNoop.PSObject.Properties.Name -contains 'task_base_dirty') {
-          $baseDirtyNoop = @($stNoop.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        }
-      } catch { $baseDirtyNoop = @() }
-      $noopEvidence = Get-TaskActionEvidence -RepoRoot $repoNoopRoot -BaseCommit $baseNoop -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyNoop
+      $noopEvidenceContext = Get-TaskActionEvidenceContext -State $stNoop -DefaultRepoRoot $repoNoopRoot -BridgeRoot $bridgeRoot
+      $noopEvidence = Get-TaskActionEvidence -RepoRoot ([string]$noopEvidenceContext.repo_root) -BaseCommit ([string]$noopEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($noopEvidenceContext.base_dirty_paths)
       $noopEvidenceChecked = $true
       if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
         $noopHasEvidence = $true
@@ -163,14 +157,8 @@
     try {
       $stEvidence = Read-State
       $repoEvidenceRoot = Get-TaskRepoRoot
-      $baseEvidence = [string]$stEvidence.task_base_commit
-      $baseDirtyEvidence = @()
-      try {
-        if ($stEvidence.PSObject.Properties.Name -contains 'task_base_dirty') {
-          $baseDirtyEvidence = @($stEvidence.task_base_dirty | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        }
-      } catch { $baseDirtyEvidence = @() }
-      $actionEvidence = Get-TaskActionEvidence -RepoRoot $repoEvidenceRoot -BaseCommit $baseEvidence -BridgeRoot $bridgeRoot -BaseDirtyPaths $baseDirtyEvidence
+      $evidenceContext = Get-TaskActionEvidenceContext -State $stEvidence -DefaultRepoRoot $repoEvidenceRoot -BridgeRoot $bridgeRoot
+      $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$evidenceContext.repo_root) -BaseCommit ([string]$evidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($evidenceContext.base_dirty_paths)
       if ($actionEvidence -and [bool]$actionEvidence.has_actions) { $hasActionEvidence = $true }
     } catch {}
     if ($mode -eq 'normal' -and $hasActionEvidence) { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }

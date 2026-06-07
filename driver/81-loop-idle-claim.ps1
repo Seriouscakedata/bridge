@@ -215,6 +215,17 @@
           $bp -replace '\\','/'
         } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
       } catch { $baseDirty = @() }
+      $bridgeBaseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+      $bridgeBaseDirty = @()
+      try {
+        $bridgeBaseDirty = @(& git -C $bridgeRoot status --porcelain -uall 2>$null | ForEach-Object {
+          $ln = [string]$_
+          if ($ln.Length -le 3) { return }
+          $bp = $ln.Substring(3).Trim()
+          if ($bp -match '\s+->\s+(.+)$') { $bp = $Matches[1].Trim() }
+          $bp -replace '\\','/'
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+      } catch { $bridgeBaseDirty = @() }
 
       # Snapshot intent for the state mutator closure.
       $intentRecord = $null
@@ -274,6 +285,8 @@
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
         $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirty) -Force
+        $s | Add-Member -NotePropertyName task_bridge_base_commit -NotePropertyValue $bridgeBaseCommit -Force
+        $s | Add-Member -NotePropertyName task_bridge_base_dirty -NotePropertyValue @($bridgeBaseDirty) -Force
         $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
         # Persist intent so planner can render it via Format-IntentForPrompt on later turns too.
         $s | Add-Member -NotePropertyName task_intent -NotePropertyValue $intentRecord -Force
@@ -1022,6 +1035,17 @@
             $bp -replace '\\','/'
           } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         } catch { $baseDirty = @() }
+        $bridgeBaseCommit = try { (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
+        $bridgeBaseDirty = @()
+        try {
+          $bridgeBaseDirty = @(& git -C $bridgeRoot status --porcelain -uall 2>$null | ForEach-Object {
+            $ln = [string]$_
+            if ($ln.Length -le 3) { return }
+            $bp = $ln.Substring(3).Trim()
+            if ($bp -match '\s+->\s+(.+)$') { $bp = $Matches[1].Trim() }
+            $bp -replace '\\','/'
+          } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        } catch { $bridgeBaseDirty = @() }
         $taskManagementSnapshot = $null
         try {
           $tmTouched = New-Object 'System.Collections.Generic.List[string]'
@@ -1083,6 +1107,8 @@
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
           $s | Add-Member -NotePropertyName task_base_dirty -NotePropertyValue @($baseDirty) -Force
+          $s | Add-Member -NotePropertyName task_bridge_base_commit -NotePropertyValue $bridgeBaseCommit -Force
+          $s | Add-Member -NotePropertyName task_bridge_base_dirty -NotePropertyValue @($bridgeBaseDirty) -Force
           $s | Add-Member -NotePropertyName critic_retry_count -NotePropertyValue 0 -Force
           Reset-TaskAgentDuration $s
           if ([string]$s.autonomous_day -eq $today) { $s.autonomous_count=[int]$s.autonomous_count+1 } else { $s.autonomous_day=$today; $s.autonomous_count=1 }
