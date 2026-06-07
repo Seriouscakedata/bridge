@@ -318,3 +318,51 @@ function Invoke-VerifySelftestGate {
     FailedDiagnostics = @($failedDiagnostics.ToArray())
   }
 }
+
+function Get-GateRegressionScope {
+  param([string[]]$ChangedPaths = @())
+
+  if ($null -eq $ChangedPaths -or $ChangedPaths.Count -eq 0) { return @() }
+
+  $matchingPaths = New-Object System.Collections.Generic.List[string]
+  foreach ($path in @($ChangedPaths)) {
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+
+    $normalizedPath = ([string]$path).Trim() -replace '\\','/'
+    $normalizedPath = $normalizedPath.ToLowerInvariant()
+    $extension = [System.IO.Path]::GetExtension($normalizedPath)
+    if ($extension -eq '.ps1') {
+      [void]$matchingPaths.Add([string]$path)
+    }
+  }
+
+  return @($matchingPaths.ToArray())
+}
+
+function Invoke-GateRegressionSuite {
+  param(
+    [string]$BridgeRoot = (Get-VerifySelftestRoot),
+    [int]$TimeoutSec = 180
+  )
+
+  $root = [System.IO.Path]::GetFullPath($BridgeRoot).TrimEnd('\','/')
+  $scriptPath = Join-Path $root 'tools\run-tests.ps1'
+  $powerShellExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+  if ([string]::IsNullOrWhiteSpace($powerShellExe) -or -not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
+    $powerShellExe = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) { $powerShellExe = 'powershell.exe' }
+  }
+
+  $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+  $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
+    -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$TimeoutSec)) `
+    -WorkingDirectory $root -TimeoutSec ([Math]::Max(1, [int]$TimeoutSec) + 30)
+  $stopwatch.Stop()
+
+  return [pscustomobject][ordered]@{
+    Ok = ([int]$run.ExitCode -eq 0 -and -not [bool]$run.TimedOut)
+    ExitCode = [int]$run.ExitCode
+    Elapsed = $stopwatch.Elapsed
+    TimedOut = [bool]$run.TimedOut
+  }
+}
