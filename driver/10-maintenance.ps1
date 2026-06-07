@@ -298,6 +298,186 @@ function Test-AuditMaintenanceBusy {
   return $false
 }
 
+function Write-AuditLaunchLedgerEntry {
+  param(
+    [Parameter(Mandatory=$true)][string]$AuditDir,
+    [Parameter(Mandatory=$true)][string]$Channel,
+    [Parameter(Mandatory=$true)][string]$Decision,
+    [string]$Reason = '',
+    [int]$MaxAttempts = 0,
+    [int]$WindowMinutes = 0,
+    [int]$ProcessId = 0
+  )
+
+  if (-not (Test-Path -LiteralPath $AuditDir)) { New-Item -ItemType Directory -Path $AuditDir -Force | Out-Null }
+  $ledgerPath = Join-Path $AuditDir 'audit.launches.jsonl'
+  $entry = [ordered]@{
+    ts             = (Get-Date).ToUniversalTime().ToString('o')
+    channel        = [string]$Channel
+    decision       = [string]$Decision
+    reason         = [string]$Reason
+    max_attempts   = [int]$MaxAttempts
+    window_minutes = [int]$WindowMinutes
+    pid            = [int]$ProcessId
+  }
+  $line = ($entry | ConvertTo-Json -Compress)
+  [System.IO.File]::AppendAllText($ledgerPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  return $ledgerPath
+}
+
+function Get-AuditLaunchAttemptCount {
+  param(
+    [Parameter(Mandatory=$true)][string]$AuditDir,
+    [Parameter(Mandatory=$true)][datetime]$SinceUtc,
+    [string]$Channel = ''
+  )
+
+  $ledgerPath = Join-Path $AuditDir 'audit.launches.jsonl'
+  if (-not (Test-Path -LiteralPath $ledgerPath)) { return 0 }
+  $count = 0
+  $lines = @()
+  try { $lines = [System.IO.File]::ReadAllLines($ledgerPath) } catch { return 0 }
+  foreach ($line in @($lines)) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try {
+      $entry = $line | ConvertFrom-Json
+      if (-not $entry) { continue }
+      if ([string]$entry.decision -ne 'started') { continue }
+      if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
+      $ts = ([datetime]([string]$entry.ts)).ToUniversalTime()
+      if ($ts -ge $SinceUtc.ToUniversalTime()) { $count++ }
+    } catch {}
+  }
+  return $count
+}
+
+function Test-AuditLaunchLockActive {
+  param(
+    [Parameter(Mandatory=$true)][string]$LockPath,
+    [int]$TtlMinutes = 10
+  )
+
+  if (-not (Test-Path -LiteralPath $LockPath)) { return $false }
+  $ttl = [TimeSpan]::FromMinutes([Math]::Max(1, $TtlMinutes))
+  $now = (Get-Date).ToUniversalTime()
+  $created = $null
+  $lockPid = 0
+  try {
+    $raw = Get-Content -LiteralPath $LockPath -Raw -Encoding UTF8
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+      $lock = $raw | ConvertFrom-Json
+      if ($lock -and $lock.PSObject.Properties.Name -contains 'created_at') { $created = ([datetime]([string]$lock.created_at)).ToUniversalTime() }
+      if ($lock -and $lock.PSObject.Properties.Name -contains 'pid') { $lockPid = [int]$lock.pid }
+    }
+  } catch {}
+  if (-not $created) {
+    try { $created = ([System.IO.File]::GetLastWriteTimeUtc($LockPath)) } catch { $created = $now }
+  }
+  $age = $now - $created
+  if ($age -ge $ttl) {
+    try { Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue } catch {}
+    return $false
+  }
+  if ($lockPid -gt 0) {
+    $alive = $false
+    try { $alive = [bool](Get-Process -Id $lockPid -ErrorAction SilentlyContinue) } catch {}
+    if (-not $alive) {
+      try { Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue } catch {}
+      return $false
+    }
+  }
+  return $true
+}
+
+function New-AuditLaunchAdmissionLock {
+  param(
+    [Parameter(Mandatory=$true)][string]$LockPath,
+    [Parameter(Mandatory=$true)][string]$Channel,
+    [int]$TtlMinutes = 10
+  )
+
+  $parent = Split-Path -Parent $LockPath
+  if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+  if (Test-AuditLaunchLockActive -LockPath $LockPath -TtlMinutes $TtlMinutes) {
+    return [pscustomobject]@{ acquired = $false; reason = 'launch_lock_active'; token = '' }
+  }
+
+  $token = [guid]::NewGuid().ToString('N')
+  $payload = ([ordered]@{
+    token      = $token
+    channel    = [string]$Channel
+    pid        = [int]$PID
+    created_at = (Get-Date).ToUniversalTime().ToString('o')
+  } | ConvertTo-Json -Compress)
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($payload)
+    $stream.Write($bytes, 0, $bytes.Length)
+    return [pscustomobject]@{ acquired = $true; reason = ''; token = $token }
+  } catch {
+    return [pscustomobject]@{ acquired = $false; reason = 'launch_lock_race'; token = '' }
+  } finally {
+    if ($stream) { $stream.Dispose() }
+  }
+}
+
+function Remove-AuditLaunchAdmissionLock {
+  param(
+    [Parameter(Mandatory=$true)][string]$LockPath,
+    [string]$Token = ''
+  )
+
+  if (-not (Test-Path -LiteralPath $LockPath)) { return }
+  if (-not [string]::IsNullOrWhiteSpace($Token)) {
+    try {
+      $raw = Get-Content -LiteralPath $LockPath -Raw -Encoding UTF8
+      $lock = $raw | ConvertFrom-Json
+      if ($lock -and [string]$lock.token -ne [string]$Token) { return }
+    } catch { return }
+  }
+  try { Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue } catch {}
+}
+
+function Request-AuditLaunchAdmission {
+  param(
+    [Parameter(Mandatory=$true)][string]$AuditDir,
+    [string]$Channel = 'main',
+    [int]$MaxAttempts = 2,
+    [int]$WindowMinutes = 60,
+    [int]$LockTtlMinutes = 10
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  if ($MaxAttempts -lt 1) { $MaxAttempts = 1 } elseif ($MaxAttempts -gt 24) { $MaxAttempts = 24 }
+  if ($WindowMinutes -lt 5) { $WindowMinutes = 5 } elseif ($WindowMinutes -gt 1440) { $WindowMinutes = 1440 }
+  if ($LockTtlMinutes -lt 1) { $LockTtlMinutes = 1 } elseif ($LockTtlMinutes -gt 60) { $LockTtlMinutes = 60 }
+  if (-not (Test-Path -LiteralPath $AuditDir)) { New-Item -ItemType Directory -Path $AuditDir -Force | Out-Null }
+
+  $lockPath = Join-Path $AuditDir 'audit.launch.lock'
+  $lock = New-AuditLaunchAdmissionLock -LockPath $lockPath -Channel $Channel -TtlMinutes $LockTtlMinutes
+  if (-not [bool]$lock.acquired) {
+    try { Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason ([string]$lock.reason) -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null } catch {}
+    return [pscustomobject]@{ allowed = $false; reason = [string]$lock.reason; count = $null; lock_path = $lockPath }
+  }
+
+  try {
+    $since = (Get-Date).ToUniversalTime().AddMinutes(-1 * $WindowMinutes)
+    $count = Get-AuditLaunchAttemptCount -AuditDir $AuditDir -SinceUtc $since -Channel $Channel
+    if ($count -ge $MaxAttempts) {
+      Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'max_attempts_per_window' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null
+      return [pscustomobject]@{ allowed = $false; reason = 'max_attempts_per_window'; count = $count; lock_path = $lockPath }
+    }
+    Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'started' -Reason '' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null
+    return [pscustomobject]@{ allowed = $true; reason = ''; count = ($count + 1); lock_path = $lockPath }
+  } catch {
+    try { Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'launch_ledger_error' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null } catch {}
+    return [pscustomobject]@{ allowed = $false; reason = 'launch_ledger_error'; count = $null; lock_path = $lockPath }
+  } finally {
+    Remove-AuditLaunchAdmissionLock -LockPath $lockPath -Token ([string]$lock.token)
+  }
+}
+
 function Test-ChannelMaintenanceEnabled {
   param(
     [ValidateSet('audit','brainstorm')]
@@ -350,10 +530,16 @@ function Start-AuditIfDue {
   $endH    = if ($null -ne $auditCfg.windowEndHour)   { [int]$auditCfg.windowEndHour }   else { 6 }
   $floorH  = if ($null -ne $auditCfg.floorHours)      { [int]$auditCfg.floorHours }      else { 20 }
   $maxWait = if ($null -ne $auditCfg.maxWaitMinutes)  { [int]$auditCfg.maxWaitMinutes }  else { 60 }
+  $launchMax = if ($null -ne $auditCfg.maxLaunchAttemptsPerWindow) { [int]$auditCfg.maxLaunchAttemptsPerWindow } else { 2 }
+  $launchWindow = if ($null -ne $auditCfg.launchAttemptWindowMinutes) { [int]$auditCfg.launchAttemptWindowMinutes } else { 60 }
+  $launchLockTtl = if ($null -ne $auditCfg.launchLockTtlMinutes) { [int]$auditCfg.launchLockTtlMinutes } else { 10 }
   if ($startH -lt 0) { $startH = 0 } elseif ($startH -gt 23) { $startH = 23 }
   if ($endH -lt 0) { $endH = 0 } elseif ($endH -gt 23) { $endH = 23 }
   if ($floorH -lt 1) { $floorH = 1 } elseif ($floorH -gt 168) { $floorH = 168 }
   if ($maxWait -lt 1) { $maxWait = 1 } elseif ($maxWait -gt 240) { $maxWait = 240 }
+  if ($launchMax -lt 1) { $launchMax = 1 } elseif ($launchMax -gt 24) { $launchMax = 24 }
+  if ($launchWindow -lt 5) { $launchWindow = 5 } elseif ($launchWindow -gt 1440) { $launchWindow = 1440 }
+  if ($launchLockTtl -lt 1) { $launchLockTtl = 1 } elseif ($launchLockTtl -gt 60) { $launchLockTtl = 60 }
   $hourNow = (Get-Date).Hour
   $inWindow = $false
   if ($startH -le $endH) {
@@ -394,6 +580,8 @@ function Start-AuditIfDue {
   $auditRunner = Join-Path $bridgeRoot 'tools\audit-runner.ps1'
   if (-not (Test-Path -LiteralPath $auditRunner)) { return }
   if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) { return }
+  $launchAdmission = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel $auditChannel -MaxAttempts $launchMax -WindowMinutes $launchWindow -LockTtlMinutes $launchLockTtl
+  if (-not $launchAdmission -or -not [bool]$launchAdmission.allowed) { return }
   $waitMarkerWritten = $false
   try {
     if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
