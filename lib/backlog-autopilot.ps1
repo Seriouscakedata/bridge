@@ -1176,12 +1176,13 @@ function Get-ProjectAutopilotTaskLane {
     [string[]]$Files = @(),
     [string[]]$TouchSet = @()
   )
+  $channelSlug = ([string]$Channel).Trim().ToLowerInvariant()
+  if ($channelSlug -ne '' -and $channelSlug -ne 'main') { return 'project' }
+
   $explicitLane = Normalize-ProjectAutopilotLane (Get-ProjectAutopilotTaskStringField -Task $Task -Names @('lane'))
   if ($explicitLane -eq 'control-plane') { return 'control-plane' }
   if (Test-ProjectAutopilotControlPlaneTouch -Paths (@($Files) + @($TouchSet))) { return 'control-plane' }
-  if (-not [string]::IsNullOrWhiteSpace($explicitLane)) { return $explicitLane }
-  if (([string]$Channel).Trim().ToLowerInvariant() -eq 'main') { return 'bridge' }
-  return 'project'
+  return 'bridge'
 }
 
 function Test-ProjectAutopilotTaskMetadata {
