@@ -614,6 +614,28 @@ function Test-LearningLoopRegressionFixIdeaFiled {
   return $false
 }
 
+function Test-LearningLoopRegressionFixCommitWorth {
+  param(
+    [string]$Root = '',
+    [string]$Commit = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($Commit)) { return $false }
+  if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) { return $true }
+
+  $paths = @()
+  try {
+    $paths = @(& git -C $Root diff-tree --no-commit-id --name-only -r $Commit 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($LASTEXITCODE -ne 0) { return $true }
+  } catch {
+    return $true
+  }
+  if ($paths.Count -eq 0) { return $true }
+
+  foreach ($path in @($paths)) {
+    if (Test-BridgeAutoCommitWorthPath -Path ([string]$path)) { return $true }
+  }
+  return $false
+}
 function Add-LearningLoopRegressionFixIdea {
   param(
     [string]$Commit = '',
@@ -629,6 +651,9 @@ function Add-LearningLoopRegressionFixIdea {
     revert_failed        = $true
   }
   if ([string]::IsNullOrWhiteSpace($Commit) -or [string]::IsNullOrWhiteSpace($HypothesisTs) -or -not $supported.ContainsKey($Action)) {
+    return $false
+  }
+  if (-not (Test-LearningLoopRegressionFixCommitWorth -Root (Get-BridgeRoot) -Commit $Commit)) {
     return $false
   }
   if (Test-LearningLoopRegressionFixIdeaFiled -HypothesisTs $HypothesisTs -Commit $Commit -Action $Action) {

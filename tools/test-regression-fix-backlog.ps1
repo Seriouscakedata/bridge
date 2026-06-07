@@ -15,6 +15,14 @@ $script:GuardResult = [pscustomobject]@{
   reason = 'guard_passed'
   detail = [pscustomobject]@{}
 }
+$script:CommitFiles = @{
+  abc1234 = @('lib/code.ps1')
+  stale123 = @('lib/code.ps1')
+  def5678 = @('lib/code.ps1')
+  ghi9012 = @('lib/code.ps1')
+  jkl3456 = @('lib/code.ps1')
+  marker123 = @('channels/demo/.plan-gate-notified')
+}
 $script:BridgeConfig = [pscustomobject]@{
   learningLoop = [pscustomobject]@{
     autoRevert = $false
@@ -55,6 +63,7 @@ function Add-Idea {
   return ('idea-' + $script:Ideas.Count)
 }
 
+. (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
 . (Join-Path $bridgeRoot 'lib\metrics.ps1')
 
 Set-Item -Path Function:\Test-GitCommitExists -Value {
@@ -94,6 +103,12 @@ Set-Item -Path Function:\git -Value {
     'log' {
       $global:LASTEXITCODE = 0
       return 'revert-head-123'
+    }
+    'diff-tree' {
+      $commit = @($cmd | Select-Object -Last 1)[0]
+      $global:LASTEXITCODE = 0
+      if ($script:CommitFiles.ContainsKey([string]$commit)) { return @($script:CommitFiles[[string]$commit]) }
+      return @('lib/code.ps1')
     }
     default {
       $global:LASTEXITCODE = 0
@@ -157,6 +172,14 @@ try {
     $shadowMetricsAfterRepeat.Count -eq 1
   ) @{ result = $shadowRepeat; ideas = $shadowFixAfterRepeat; metrics = $shadowMetricsAfterRepeat }
 
+  $markerShadow = Invoke-VerdictActuation -Verdict 'worse' -Commit 'marker123' -Task 'Plan gate marker only' -HypothesisTs '2026-06-06T00:05:00Z' -AfterTurns 7
+  $markerFix = @(Get-FixIdeasByAction -Action 'revert_shadow' | Where-Object { $_.text -match 'marker123' })
+  $markerMetrics = @(Get-MetricsRecords | Where-Object { [string]$_.type -eq 'regression_fix_backlog' -and [string]$_.commit -eq 'marker123' })
+  Check 'marker-only revert_shadow does not create fix backlog idea' (
+    [string]$markerShadow.action -eq 'revert_shadow' -and
+    $markerFix.Count -eq 0 -and
+    $markerMetrics.Count -eq 0
+  ) @{ result = $markerShadow; ideas = $markerFix; metrics = $markerMetrics }
   $script:GuardResult = [pscustomobject]@{
     allowed = $false
     reason = 'stale_hypothesis'
