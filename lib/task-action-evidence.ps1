@@ -63,10 +63,45 @@ function Get-CodexEvidenceRetryPlan {
   }
 }
 
+function Get-TaskActionEvidenceBacklogTextById {
+  param(
+    [string]$BridgeRoot = '',
+    [string]$BacklogId = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot) -or [string]::IsNullOrWhiteSpace($BacklogId)) { return '' }
+  $root = ''
+  try { $root = [System.IO.Path]::GetFullPath($BridgeRoot) } catch { return '' }
+  $channelsDir = Join-Path $root 'channels'
+  if (-not (Test-Path -LiteralPath $channelsDir -PathType Container)) { return '' }
+
+  foreach ($backlogPath in @(Get-ChildItem -LiteralPath $channelsDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'backlog.jsonl' })) {
+    if (-not (Test-Path -LiteralPath $backlogPath -PathType Leaf)) { continue }
+    try {
+      foreach ($line in @([System.IO.File]::ReadLines($backlogPath, [System.Text.Encoding]::UTF8))) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.IndexOf($BacklogId, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $item = $line | ConvertFrom-Json
+        $id = ''
+        try { $id = [string]$item.id } catch {}
+        if (-not $id.Equals($BacklogId, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        foreach ($name in @('text','task','title')) {
+          try {
+            if ($item.PSObject.Properties.Name -contains $name) {
+              $value = [string]$item.$name
+              if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+  return ''
+}
+
 function Test-TaskBridgeSideActionEvidenceTask {
   param(
     [object]$State = $null,
-    [string]$TaskText = ''
+    [string]$TaskText = '',
+    [string]$BridgeRoot = ''
   )
   $texts = New-Object 'System.Collections.Generic.List[string]'
   if (-not [string]::IsNullOrWhiteSpace($TaskText)) { [void]$texts.Add([string]$TaskText) }
@@ -74,6 +109,13 @@ function Test-TaskBridgeSideActionEvidenceTask {
     if ($State -and ($State.PSObject.Properties.Name -contains 'current_task')) {
       $stTask = [string]$State.current_task
       if (-not [string]::IsNullOrWhiteSpace($stTask)) { [void]$texts.Add($stTask) }
+    }
+  } catch {}
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'current_backlog_id')) {
+      $backlogId = [string]$State.current_backlog_id
+      $backlogText = Get-TaskActionEvidenceBacklogTextById -BridgeRoot $BridgeRoot -BacklogId $backlogId
+      if (-not [string]::IsNullOrWhiteSpace($backlogText)) { [void]$texts.Add($backlogText) }
     }
   } catch {}
 
@@ -104,7 +146,7 @@ function Get-TaskActionEvidenceContext {
     }
   } catch { $baseDirty = @() }
 
-  $bridgeSide = Test-TaskBridgeSideActionEvidenceTask -State $State
+  $bridgeSide = Test-TaskBridgeSideActionEvidenceTask -State $State -BridgeRoot $BridgeRoot
   if ($bridgeSide -and -not [string]::IsNullOrWhiteSpace($BridgeRoot)) {
     $repoRoot = [string]$BridgeRoot
     try {

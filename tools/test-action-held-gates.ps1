@@ -61,6 +61,30 @@ $bridgeSideState = [pscustomobject]@{
 $bridgeSideContext = Get-TaskActionEvidenceContext -State $bridgeSideState -DefaultRepoRoot 'C:\example\project' -BridgeRoot $root
 Check 'project-acceptance-fix evidence context uses bridge repo' ([bool]$bridgeSideContext.bridge_side -and [string]$bridgeSideContext.repo_root -eq $root -and [string]$bridgeSideContext.base_commit -eq 'bridge-base' -and (@($bridgeSideContext.base_dirty_paths) -contains 'bridge-dirty.txt')) $bridgeSideContext
 
+$backlogLookupRoot = Join-Path $env:TEMP ('bridge-action-evidence-context-' + [guid]::NewGuid().ToString('N'))
+try {
+  $backlogChannelDir = Join-Path $backlogLookupRoot 'channels\fixture'
+  New-Item -ItemType Directory -Path $backlogChannelDir -Force | Out-Null
+  $backlogItem = [ordered]@{
+    id = 'fix-acceptance-1'
+    text = '[project-acceptance-fix] Acceptance failed for channel fixture.'
+    status = 'running'
+  }
+  [System.IO.File]::WriteAllText((Join-Path $backlogChannelDir 'backlog.jsonl'), (($backlogItem | ConvertTo-Json -Compress) + "`n"), [System.Text.UTF8Encoding]::new($false))
+  $emptyTaskBridgeSideState = [pscustomobject]@{
+    current_backlog_id = 'fix-acceptance-1'
+    current_task = ''
+    task_base_commit = 'project-base'
+    task_base_dirty = @('project-dirty.txt')
+    task_bridge_base_commit = 'bridge-base'
+    task_bridge_base_dirty = @('bridge-dirty.txt')
+  }
+  $emptyTaskBridgeSideContext = Get-TaskActionEvidenceContext -State $emptyTaskBridgeSideState -DefaultRepoRoot 'C:\example\project' -BridgeRoot $backlogLookupRoot
+  Check 'project-acceptance-fix evidence context survives empty current_task via backlog id' ([bool]$emptyTaskBridgeSideContext.bridge_side -and [string]$emptyTaskBridgeSideContext.repo_root -eq $backlogLookupRoot -and [string]$emptyTaskBridgeSideContext.base_commit -eq 'bridge-base') $emptyTaskBridgeSideContext
+} finally {
+  if (Test-Path -LiteralPath $backlogLookupRoot) { Remove-Item -LiteralPath $backlogLookupRoot -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 $externalState = [pscustomobject]@{
   current_task = '[Автозадача из бэклога] regular project task'
   task_base_commit = 'project-base'
