@@ -25,7 +25,7 @@ vs «harden существующего» (безопасно, предпочти
 - [ ] B. Honest Acceptance
 - [ ] C. Capability/Provider Readiness
 - [ ] D. Doctor/Watchdog/State-repair (harden существующего)
-- [ ] E. Gate Discipline (regression + deterministic, фикс gate-каскада)
+- [~] E. Gate Discipline — IN PROGRESS (2026-06-07): runner построен + фикс hang + 1/4 drift re-synced
 
 ## A. Deterministic Plan/Scope/Release (Codex #1,2,11,27)
 КОРЕНЬ: потеря CHAPTER 8 — coordinator выбирал next-chapter суждением LLM, остановился после 6/10.
@@ -65,3 +65,32 @@ prompt, gate-check) — матчили текст regex широко, добав
 - Gate матчит СЕМАНТИКУ (поля/флаги/structured), не regex по свободному тексту.
 - Regression suite моста: на каждый найденный дефект — тест (scope-creep, stub-acceptance,
   dead-working-state, malformed-backlog, dependency-wait, false-gate-block).
+
+### E — прогресс оператора (2026-06-07, hybrid «фундамент сам»)
+СДЕЛАНО (committed):
+- `tools/run-tests.ps1` — консолидированный gate-regression раннер (59 тестов, изолированный child-процесс
+  на тест, per-test timeout, exit 1 при любом красном). Операционализирует «Regression suite моста»:
+  даёт одну команду «все гейты зелёные?». Коммиты: 184f1d1 (salvage-смёл), ac5ea26, 6f452f6.
+- Фикс реального hang: хелпер `Check` дампил упавший `$Actual` через `ConvertTo-Json -Compress -Depth 10`,
+  что ВИСНЕТ (экспоненциально) в WinPS 5.1 на многострочных строках. Любой реальный провал = зависание
+  всего suite на полный timeout вместо быстрого FAIL. Сошёлся к уже существующей конвенции репо
+  (`test-action-held-gates.ps1`: string→как есть, объект→low-depth JSON, cap длины). Починены shadow +
+  workpack-obligation (оба Depth-10).
+
+НАЙДЕНО (корневая E-проблема — НЕ закрыта):
+- **4 gate-теста дрейфанули рассинхрон с self-modified кодом моста** (suite поймал ровно тот класс
+  отказа, ради которого E и существует): governor (strict-shape vs b4eec87 lenient — RE-SYNCED 6f452f6),
+  packer (`lane` workpack-метадата теперь обязательна), failure-classifier (operator-pulse grouping),
+  project-memory (`Resolve-MemoryContainedPath` сменил сигнатуру). Каждый требует stale-vs-regression
+  триажа (НЕ массово ослаблять тесты — можно замаскировать реальный баг).
+- **Suite НЕ ENFORCED:** `Invoke-VerifySelftestGate` не вшит в driver; coverage-сканер verify-selftest
+  смотрит только `tools/diag/`, не 59 `tools/test-*.ps1`. Поэтому дрейф копился незаметно — мост менял
+  код, тесты ржавели. КОРЕНЬ дрейфа = отсутствие enforcement (а не сами 4 теста).
+- **Suite недетерминирован относительно дерева:** baseline был зелёным, потом красным БЕЗ смены кода —
+  раннер гонит по живому рабочему дереву, которое мост мутирует + OneDrive-sync latency отдаёт устаревшие
+  версии файлов. Раннер должен гонять по стабильному коммиту/копии, не по live-дереву.
+
+ДАЛЕЕ (предложение): (1) дотриажить + re-sync packer/classifier/memory (фундамент, безопасно);
+(2) КОРЕНЬ — вшить run-tests в self-mod verify-путь моста, чтобы дрейф ловился сразу (control-plane,
+согласовать); (3) раннер по чистому checkout. Альтернатива по hybrid-плану: (2)+(3) отдать мосту через
+Discuss-First после стабилизации.
