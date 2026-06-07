@@ -1644,9 +1644,9 @@ function Collect-ParallelDispatchWorkerOutput {
 
     $changed = New-Object System.Collections.Generic.HashSet[string]
     if (-not [string]::IsNullOrWhiteSpace($Context.baseCommit)) {
-      try { @(& $Context.gitExe -C $wtPath diff --name-only $Context.baseCommit 2>$null) | Where-Object { $_ } | ForEach-Object { [void]$changed.Add(($_.Trim() -replace '"','')) } } catch {}
+      try { @(& $Context.gitExe -C $wtPath diff --name-only $Context.baseCommit 2>$null) | Where-Object { $_ } | ForEach-Object { $rel = ($_.Trim() -replace '"',''); if ($rel -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($rel) } } } catch {}
     }
-    try { @(& $Context.gitExe -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->') { [void]$changed.Add($p) } } } catch {}
+    try { @(& $Context.gitExe -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->' -and $p -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($p) } } } catch {}
 
     $streamCommits = 0
     try { $streamCommits = @($Context.completed[$Worker.id].commits).Count } catch {}

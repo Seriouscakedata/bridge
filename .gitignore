@@ -43,6 +43,10 @@ bridge_shot_*.png
 desktop-screenshot*.png
 _archive_*.tmp*
 .git/
+# Alt-index plumbing for the sandboxed bridge-git setup. It surfaces in worker
+# worktrees' `git status`, where the parallel collector wrongly treats it as an
+# out-of-touch-set change and quarantines an otherwise-good stream. Never a real edit.
+.git-alt*
 turns.jsonl
 reports/
 audit/
