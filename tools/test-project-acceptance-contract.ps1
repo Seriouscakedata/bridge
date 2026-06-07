@@ -306,6 +306,7 @@ try {
   $cfgTraceOnlyCliDeferredApi = Get-ProjectAcceptanceConfig -ProjectRoot $project
   $webFactTraceOnlyCliDeferredApi = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgTraceOnlyCliDeferredApi
   Assert-True (-not [bool]$webFactTraceOnlyCliDeferredApi.required) 'expected deferred api-later path to skip server:web-start until real web checks exist'
+  Assert-True ([int]$webFactTraceOnlyCliDeferredApi.contract_web_specs_count -eq 0 -and [int]$webFactTraceOnlyCliDeferredApi.config_checks_count -eq 0) 'expected deferred api-later path to add no web specs or config checks'
 
   $activeApiContract = [ordered]@{
     project_goal = 'Deliver a web API product with an active health endpoint.'
