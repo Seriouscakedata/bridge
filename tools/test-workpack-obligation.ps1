@@ -20,7 +20,15 @@ function Check {
     Write-Host ("PASS " + $Name) -ForegroundColor Green
   } else {
     $script:fail++
-    $suffix = if ($null -ne $Actual) { " actual=" + ($Actual | ConvertTo-Json -Compress -Depth 10) } else { '' }
+    # Hang-proof diff: WinPS 5.1 ConvertTo-Json -Depth N hangs (exponential) on multiline strings, so
+    # render a string Actual plainly (objects still serialize at low depth) and cap length. A failing
+    # check must print a fast, readable diff -- never freeze the whole gate-regression suite on timeout.
+    $suffix = ''
+    if ($null -ne $Actual) {
+      $actualText = if ($Actual -is [string]) { [string]$Actual } else { ($Actual | ConvertTo-Json -Compress -Depth 6) }
+      if ($actualText.Length -gt 400) { $actualText = $actualText.Substring(0, 400) + '...(truncated)' }
+      $suffix = " actual=" + $actualText
+    }
     Write-Host ("FAIL " + $Name + $suffix) -ForegroundColor Red
   }
 }
