@@ -297,6 +297,27 @@ try {
   $webFactTraceOnlyCli = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgTraceOnlyCli
   Assert-True (-not [bool]$webFactTraceOnlyCli.required) 'expected optional api-later wording without checks/path to skip server:web-start'
 
+  $traceOnlyCliContract.surfaces = @(
+    [ordered]@{ id='cli'; kind='cli'; command='tool report'; purpose='Generate report artifacts.' },
+    [ordered]@{ id='report'; kind='report'; path='reports/report.md'; purpose='Review generated output.' },
+    [ordered]@{ id='api-later'; kind='api'; path='/api/future-report'; status='deferred'; required=$false; purpose='Optional local API surface, deferred until web smoke checks exist.' }
+  )
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($traceOnlyCliContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgTraceOnlyCliDeferredApi = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $webFactTraceOnlyCliDeferredApi = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgTraceOnlyCliDeferredApi
+  Assert-True (-not [bool]$webFactTraceOnlyCliDeferredApi.required) 'expected deferred api-later path to skip server:web-start until real web checks exist'
+
+  $activeApiContract = [ordered]@{
+    project_goal = 'Deliver a web API product with an active health endpoint.'
+    surfaces = @(
+      [ordered]@{ id='health-api'; kind='api'; path='/api/health'; expected_status=200; purpose='Runnable health endpoint.' }
+    )
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($activeApiContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgActiveApi = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $webFactActiveApi = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgActiveApi
+  Assert-True ([bool]$webFactActiveApi.required -and [int]$webFactActiveApi.contract_web_specs_count -eq 1) 'expected active api path to require web acceptance'
+
   $actionOnlyContract = [ordered]@{
     user_journeys = @(
       [ordered]@{

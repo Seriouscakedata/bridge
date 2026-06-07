@@ -446,6 +446,28 @@ function Get-ProjectAcceptanceDefaultStatusesForAccess {
   return @(200)
 }
 
+function Test-ProjectAcceptanceDeferredWebSurface {
+  param($Item)
+  if ($null -eq $Item -or $Item -is [string]) { return $false }
+
+  $required = Get-ProjectAcceptanceObjectValue -Obj $Item -Names @('required','acceptance_required','acceptanceRequired','required_for_acceptance','requiredForAcceptance') -Default $null
+  if ($null -ne $required) {
+    $requiredText = ([string]$required).Trim().ToLowerInvariant()
+    if ($requiredText -in @('false','0','no','optional','deferred','later')) { return $true }
+  }
+
+  $status = ([string](Get-ProjectAcceptanceObjectValue -Obj $Item -Names @('status','state','phase','stage') -Default '')).Trim().ToLowerInvariant()
+  if ($status -in @('deferred','later','future','planned','backlog','not_started','todo','optional')) { return $true }
+
+  $kind = ([string](Get-ProjectAcceptanceObjectValue -Obj $Item -Names @('kind','type','surface_kind','surfaceKind') -Default '')).Trim().ToLowerInvariant()
+  if ($kind -in @('api','web','server')) {
+    $label = ([string](Get-ProjectAcceptanceObjectValue -Obj $Item -Names @('id','name','title','label') -Default '')).Trim().ToLowerInvariant()
+    if ($label -match '(^|[-_\s])(later|future|deferred|optional)($|[-_\s])') { return $true }
+  }
+
+  return $false
+}
+
 function Parse-ProjectAcceptanceCheck {
   param([string]$Spec, [string]$BaseUrl)
   $s = ([string]$Spec).Trim()
@@ -754,6 +776,7 @@ function Get-ProjectAcceptancePlanContractWebSpecs {
   }
   $specs = New-Object 'System.Collections.Generic.List[object]'
   foreach ($it in @($items)) {
+    if (Test-ProjectAcceptanceDeferredWebSurface -Item $it) { continue }
     $path = [string](Get-ProjectAcceptanceObjectValue -Obj $it -Names @('test_path','testPath','example_path','examplePath','sample_path','samplePath','path','route','url','href') -Default '')
     if ([string]::IsNullOrWhiteSpace($path)) { continue }
     if (-not ($path.StartsWith('/') -or $path -match '^(?i)https?://')) { continue }
