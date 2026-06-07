@@ -7,6 +7,7 @@ param(
   [int]$TimeoutSec = 120,
   [string]$Filter = 'test-*.ps1',
   [string[]]$Only = @(),
+  [switch]$NoSnapshot,
   [switch]$Quiet
 )
 
@@ -32,6 +33,64 @@ function Join-TestProcessArguments {
     $quoted += ('"' + ($value -replace '"','\"') + '"')
   }
   return ($quoted -join ' ')
+}
+
+if (-not $NoSnapshot) {
+  $snapshotId = [System.Guid]::NewGuid().ToString('N')
+  $snapshotDir = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-run-tests-{0}" -f $snapshotId)
+  $tmpZip = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-run-tests-{0}.zip" -f $snapshotId)
+  try {
+    [void](New-Item -ItemType Directory -Path $snapshotDir -Force)
+    $gitSafeDirectory = "safe.directory=$bridgeRoot"
+    $head = [string]((& git -c $gitSafeDirectory -C $bridgeRoot rev-parse HEAD 2>$null) -join '')
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) {
+      throw 'Cannot resolve HEAD for gate-regression snapshot.'
+    }
+    $head = $head.Trim()
+    Write-Host ("=== gate-regression snapshot: ref {0} ===" -f $head)
+    Write-Host ("=== gate-regression snapshot: path {0} ===" -f $snapshotDir)
+
+    & git -c $gitSafeDirectory -C $bridgeRoot archive --format zip --output $tmpZip HEAD
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tmpZip)) {
+      throw 'Cannot create git archive for gate-regression snapshot.'
+    }
+    Expand-Archive -LiteralPath $tmpZip -DestinationPath $snapshotDir -Force
+
+    $snapshotScript = Join-Path $snapshotDir 'tools\run-tests.ps1'
+    if (-not (Test-Path -LiteralPath $snapshotScript)) {
+      throw 'Snapshot does not contain tools\run-tests.ps1.'
+    }
+
+    $childArgs = @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      $snapshotScript,
+      '-NoSnapshot',
+      '-TimeoutSec',
+      [string]$TimeoutSec,
+      '-Filter',
+      $Filter
+    )
+    if ($Only.Count -gt 0) {
+      $childArgs += '-Only'
+      foreach ($item in $Only) { $childArgs += [string]$item }
+    }
+    if ($Quiet) { $childArgs += '-Quiet' }
+
+    & $ps @childArgs
+    $childExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    exit $childExitCode
+  } catch {
+    Write-Host ("ERROR: {0}" -f $_.Exception.Message)
+    exit 1
+  } finally {
+    Remove-Item -LiteralPath $snapshotDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $tmpZip) {
+      Remove-Item -LiteralPath $tmpZip -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 $testFiles = @(Get-ChildItem -LiteralPath $toolsDir -Filter $Filter -File -ErrorAction SilentlyContinue | Sort-Object Name)
