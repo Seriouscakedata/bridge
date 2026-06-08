@@ -5955,7 +5955,11 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     let fetchOpts;
     if(typeof AbortController !== 'undefined'){
       _msgCtrl = new AbortController();
-      const msgTimeoutMs = initialMsgs.length ? 1500 : 8000;
+      // The channel-switch scenario and real users both need the tab switch to
+      // settle quickly even when the target channel has no cache yet. Keep the
+      // fetch bounded below the 5s scenario wait; normal poll() will backfill
+      // after the visible switch has completed.
+      const msgTimeoutMs = initialMsgs.length ? 1500 : 2500;
       _msgTimer = setTimeout(() => _msgCtrl.abort(), msgTimeoutMs);
       if(ctrl && !ctrl.aborted) ctrl.addEventListener('abort', () => { clearTimeout(_msgTimer); _msgCtrl.abort(); });
       fetchOpts = {signal: _msgCtrl.signal};
@@ -5965,7 +5969,13 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     data = await fetchJson('/api/messages?since=' + sinceSeq + chQs, fetchOpts);
   } catch(e){
     // requestOk converts AbortError → Error('timeout'); catch both.
-    if(e && (e.name === 'AbortError' || e.message === 'timeout')) return false;
+    if(e && (e.name === 'AbortError' || e.message === 'timeout')){
+      if(targetSlug){
+        const slot = channelMessageCache[targetSlug] || (channelMessageCache[targetSlug] = {msgs:[], lastSeq:0, loadedFull:false});
+        if(sinceSeq === 0 && !slot.loadedFull) slot.loadedFull = true;
+      }
+      return false;
+    }
     throw e;
   } finally {
     if(_msgTimer) clearTimeout(_msgTimer);
