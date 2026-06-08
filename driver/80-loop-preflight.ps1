@@ -164,6 +164,36 @@
   }
   if ($state.paused) { Update-State { param($s) $s.status='paused'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='Пауза: мост ждёт команды продолжить.'; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null; Start-Sleep -Seconds $loopDelay; continue }
 
+  # ───────── RESUME VALIDATION (2026-06-09) — never resume an operator-vetoed task ─────────
+  # PROBLEM: on restart (and each loop) the driver resumes current_task from state.json
+  # (current_backlog_id) WITHOUT re-checking the backlog item is still claimable. So if the
+  # operator/curator rejects or holds a task while it is in-flight, the NEXT restart resumes it
+  # verbatim and re-runs the vetoed work — an endless re-run loop. Real incident: a self-built
+  # "energy-saving idle mode" was reverted + rejected by the operator, then resumed and rebuilt
+  # after the restart. CURE: if the current task's backlog item is now terminated/vetoed
+  # (rejected/held/done/dropped/cancelled/archived) or gone, drop it cleanly and go idle to claim
+  # fresh work. Runs every iteration, so an operator veto also takes effect on the very next turn.
+  if ((-not [string]::IsNullOrWhiteSpace([string]$state.current_backlog_id)) -and (-not [string]::IsNullOrWhiteSpace([string]$state.current_task))) {
+    $rvId = [string]$state.current_backlog_id
+    $rvItem = $null
+    try { $rvItem = @(Get-Backlog | Where-Object { [string]$_.id -eq $rvId } | Select-Object -First 1)[0] } catch { $rvItem = $null }
+    $rvStatus = if ($rvItem) { [string]$rvItem.status } else { 'missing' }
+    $rvAbortStatuses = @('rejected','held','done','dropped','cancelled','archived')
+    if (($rvStatus -eq 'missing') -or ($rvAbortStatuses -contains $rvStatus)) {
+      $rvShort = $rvId; if ($rvShort.Length -gt 8) { $rvShort = $rvShort.Substring(0,8) }
+      try { Add-Message -From system -Text ("↩ Не возобновляю задачу бэклога " + $rvShort + " — её статус теперь '" + $rvStatus + "' (снята/отклонена/завершена). Сбрасываю и беру новую.") -Kind event | Out-Null } catch {}
+      Update-State ({ param($s)
+        try { Complete-TaskAgentDuration $s } catch {}
+        try { Close-ReplayForStateTask -State $s -Status 'cancelled' } catch {}
+        $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.verify_retry_count=0
+        try { Clear-FastLaneFlags $s } catch {}
+        $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'
+        $s | Add-Member -NotePropertyName current_backlog_id -NotePropertyValue '' -Force
+      }.GetNewClosure()) | Out-Null
+      Start-Sleep -Seconds 1; continue
+    }
+  }
+
   # 🩺 Doctor pre-checks: pick up watchdog's repair.signal, or seed the doctor task if active.
   # When Doctor is active and current_task is empty, we synthesize the doctor task (diagnose +
   # minimal fix + verify + commit) and let the normal pipeline run it. On its DONE we restore
