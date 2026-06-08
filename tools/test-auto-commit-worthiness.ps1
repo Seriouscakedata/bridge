@@ -42,7 +42,8 @@ $telemetryOnly = @(
   ' M decisions/session-ledger.jsonl',
   ' M features/state.json',
   ' M channels/main/state.json',
-  ' M channels/main/conversation.jsonl'
+  ' M channels/main/conversation.jsonl',
+  ' M channels/main/project-autopilot.last.json'
 )
 $telemetryWorthy = @(Get-WorthyPaths -StatusLines $telemetryOnly)
 Check 'telemetry-only dirty status has no commit-worthy paths' ($telemetryWorthy.Count -eq 0) $telemetryWorthy

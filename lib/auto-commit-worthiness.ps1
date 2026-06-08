@@ -35,6 +35,7 @@ function Test-BridgeAutoCommitWorthPath {
     '^logs/.*$',
     '^channels/[^/]+/state\.json$',
     '^channels/[^/]+/conversation\.jsonl$',
+    '^channels/[^/]+/project-autopilot\.last\.json$',
     '^channels/[^/]+/\.plan-gate-notified$',
     '^channels/[^/]+/task-management-shadow\.jsonl$',
     '^channels/[^/]+/[^/]*shadow[^/]*\.jsonl$',

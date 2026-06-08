@@ -22,6 +22,7 @@ $script:CommitFiles = @{
   ghi9012 = @('lib/code.ps1')
   jkl3456 = @('lib/code.ps1')
   marker123 = @('channels/demo/.plan-gate-notified')
+  autopilotstate123 = @('channels/demo/project-autopilot.last.json')
 }
 $script:BridgeConfig = [pscustomobject]@{
   learningLoop = [pscustomobject]@{
@@ -180,6 +181,14 @@ try {
     $markerFix.Count -eq 0 -and
     $markerMetrics.Count -eq 0
   ) @{ result = $markerShadow; ideas = $markerFix; metrics = $markerMetrics }
+  $autopilotStateShadow = Invoke-VerdictActuation -Verdict 'worse' -Commit 'autopilotstate123' -Task 'Project autopilot state only' -HypothesisTs '2026-06-06T00:06:00Z' -AfterTurns 7
+  $autopilotStateFix = @(Get-FixIdeasByAction -Action 'revert_shadow' | Where-Object { $_.text -match 'autopilotstate123' })
+  $autopilotStateMetrics = @(Get-MetricsRecords | Where-Object { [string]$_.type -eq 'regression_fix_backlog' -and [string]$_.commit -eq 'autopilotstate123' })
+  Check 'project-autopilot state-only revert_shadow does not create fix backlog idea' (
+    [string]$autopilotStateShadow.action -eq 'revert_shadow' -and
+    $autopilotStateFix.Count -eq 0 -and
+    $autopilotStateMetrics.Count -eq 0
+  ) @{ result = $autopilotStateShadow; ideas = $autopilotStateFix; metrics = $autopilotStateMetrics }
   $script:GuardResult = [pscustomobject]@{
     allowed = $false
     reason = 'stale_hypothesis'
