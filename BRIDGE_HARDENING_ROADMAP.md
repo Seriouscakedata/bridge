@@ -25,7 +25,9 @@ vs «harden существующего» (безопасно, предпочти
 - [ ] B. Honest Acceptance
 - [ ] C. Capability/Provider Readiness
 - [ ] D. Doctor/Watchdog/State-repair (harden существующего)
-- [~] E. Gate Discipline — IN PROGRESS (2026-06-07): runner построен + фикс hang + 1/4 drift re-synced
+- [~] E. Gate Discipline — IN PROGRESS (2026-06-08): runner + hang-fix + governor re-sync; dogfooding
+  A1–A8 → 5 реальных багов автономии моста (collection .git-alt, gate-cascade admission ×2, dirty-guard)
+  ПОЧИНЕНЫ durable; A1(регресс)+A8(enforcement) done автономно; открыты #2 reaper, #3 frontier-serial
 
 ## A. Deterministic Plan/Scope/Release (Codex #1,2,11,27)
 КОРЕНЬ: потеря CHAPTER 8 — coordinator выбирал next-chapter суждением LLM, остановился после 6/10.
@@ -113,12 +115,22 @@ Discuss-First после стабилизации.
    ложно пересеклись по run-tests.ps1 → frontier не смог собрать непересекающийся batch → wedge
    (`open-unpacked`, `lease-conflict`). Нужно: (а) planner объявляет УЗКИЙ touch_set = edit-таргет, не
    verify-deps; (б) frontier fallback на serial-single когда batch wedged (давно в беклоге кандидатом).
-4. **Gate-cascade на control-plane-планах [открыто]:** после сужения touch_set вылез
-   `pre-flight risk=high` + `control-plane blocked=9` + `protected-dominant` — control-plane атомы без
-   self-admission (A6 `lib/verify-selftest.ps1` — adm=no, в отличие от A8 adm=YES) wedge'ят batch. Нужно:
-   autopilot ставит bridge_self_admission КОНСИСТЕНТНО на ВСЕ control-plane атомы, что генерит (не часть).
+4. **Gate-cascade на control-plane-планах [ПОЧИНЕНО, bf6c39d + 419ead2]:** КОРЕНЬ — ДВЕ несогласованные
+   control-plane детекции: claim-gate `Test-IdeaTouchesControlPlane` (широкая, блокирует A6
+   `lib/verify-selftest.ps1`) vs autopilot `Test-ProjectAutopilotControlPlanePath` (узкая, не ловит →
+   admission не ставит). Атом control-plane-blocked, но без admission → frontier wedge (protected-dominant,
+   нет single-path). Фикс: autopilot авто-синтезирует canary-admission (с обязательными
+   selftest/smoke/canary checks) для ЛЮБОГО атома, который claim-gate считает control-plane — admission
+   согласован с гейтом, что реально блокирует; canary остаётся required. Доказано: A2/A6/A7
+   control-plane-blocked → claimable=True.
+5. **Dirty-guard: ротированные usage-логи [ПОЧИНЕНО]:** `usage.jsonl.1/.2` (ротация cost-логов) не покрыты
+   `.gitignore` (только `usage.jsonl`) → грязнят дерево → dirty-guard откладывает ВСЮ очередь. Фикс:
+   `usage.jsonl*` + untrack. Тот же класс, что `.git-alt`.
 
-ВЫВОД: оператор НЕ добивал хвост руками (стоп на 4-м слое — это babysitting-ловушка). Корни 2–4 —
-durable-задачи для отдельной сфокусированной сессии (или мосту через Discuss-First, как A1–A8). Главный
-durable-выигрыш сессии = collection-фикс (#1) + доказано, что мост МОЖЕТ Discuss-First+canary+реальный
-регресс-фикс автономно; пробел = многоатомная финализация (reaper/frontier/admission).
+ВЫВОД: оператор чинил КОРНИ в мосте (5 реальных багов: collection, gate-cascade ×2, dirty-guard +
+E-runner/hang/governor), а НЕ добивал хвост руками. После каждого фикса мост проходил дальше — это
+доказывает, что чинились реальные wedge-причины, не симптомы. Из 5 найденных багов 3+ ПОЧИНЕНЫ durable;
+остаются открытыми #2 orphan-reaper (state=running висел 13ч, watchdog не выгреб) и #3 frontier
+serial-fallback (нет fallback на single когда batch wedged) — это durable-задачи на отдельную сессию.
+Доказано: мост МОЖЕТ Discuss-First + canary + реальный регресс-фикс (A1) + control-plane enforcement (A8)
+автономно; харденинг сессии радикально снизил wedge-причины многоатомной финализации.
