@@ -324,26 +324,44 @@ function Get-GateRegressionScope {
 
   if ($null -eq $ChangedPaths -or $ChangedPaths.Count -eq 0) { return @() }
 
-  $matchingPaths = New-Object System.Collections.Generic.List[string]
+  $matchingPaths = New-Object System.Collections.Generic.SortedSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($path in @($ChangedPaths)) {
     if ([string]::IsNullOrWhiteSpace($path)) { continue }
 
-    $normalizedPath = ([string]$path).Trim() -replace '\\','/'
-    $normalizedPath = $normalizedPath.ToLowerInvariant()
+    $normalizedPath = (([string]$path).Trim() -replace '\\','/').TrimStart('./')
+    if ([string]::IsNullOrWhiteSpace($normalizedPath)) { continue }
     $extension = [System.IO.Path]::GetExtension($normalizedPath)
     if ($extension -eq '.ps1') {
-      [void]$matchingPaths.Add([string]$path)
+      [void]$matchingPaths.Add($normalizedPath)
     }
   }
 
-  return @($matchingPaths.ToArray())
+  return @($matchingPaths | ForEach-Object { [string]$_ })
 }
 
 function Invoke-GateRegressionSuite {
   param(
     [string]$BridgeRoot = (Get-VerifySelftestRoot),
-    [int]$TimeoutSec = 180
+    [int]$TimeoutSec = 180,
+    [string[]]$ChangedPaths = $null
   )
+
+  $scopeWasExplicit = $PSBoundParameters.ContainsKey('ChangedPaths')
+  $scope = @()
+  if ($scopeWasExplicit) {
+    $scope = @(Get-GateRegressionScope -ChangedPaths @($ChangedPaths))
+    if ($scope.Count -eq 0) {
+      return [pscustomobject][ordered]@{
+        Ok = $true
+        Skipped = $true
+        Reason = 'empty_scope'
+        Scope = @()
+        ExitCode = 0
+        Elapsed = [System.TimeSpan]::Zero
+        TimedOut = $false
+      }
+    }
+  }
 
   $root = [System.IO.Path]::GetFullPath($BridgeRoot).TrimEnd('\','/')
   $scriptPath = Join-Path $root 'tools\run-tests.ps1'
@@ -361,6 +379,9 @@ function Invoke-GateRegressionSuite {
 
   return [pscustomobject][ordered]@{
     Ok = ([int]$run.ExitCode -eq 0 -and -not [bool]$run.TimedOut)
+    Skipped = $false
+    Reason = 'snapshot_suite'
+    Scope = @($scope)
     ExitCode = [int]$run.ExitCode
     Elapsed = $stopwatch.Elapsed
     TimedOut = [bool]$run.TimedOut
