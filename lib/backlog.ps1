@@ -13,7 +13,8 @@ foreach ($script:BacklogModuleName in @(
   'backlog-dedup.ps1',
   'backlog-core.ps1',
   'backlog-autopilot.ps1',
-  'backlog-workpack.ps1'
+  'backlog-workpack.ps1',
+  'backlog-state-reaper.ps1'
 )) {
   $script:BacklogModulePath = Join-Path $script:BacklogModuleDir $script:BacklogModuleName
   . $script:BacklogModulePath

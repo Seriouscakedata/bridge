@@ -553,6 +553,35 @@ function Test-ChannelMaintenanceEnabled {
   return [bool]$enabled
 }
 
+function Start-BacklogReaperIfDue {
+  # Recover zombie running/working backlog items whose worker died -- no live agent_pid, no fresh
+  # worker heartbeat, and no matching active runtime task. The reaper (lib/backlog-state-reaper.ps1)
+  # was built + unit-tested but NEVER wired into the loop, so an orphaned 'running' atom (e.g. a stream
+  # the parallel collector quarantined) sat indefinitely holding a lease that wedged the whole queue
+  # (observed: an atom stuck 'running' ~13h). Run on idle: any running item with no live owner is a
+  # zombie -> recovered to 'held', releasing the lease for a clean re-attempt. The reaper preserves
+  # anything with a live PID / fresh heartbeat / matching active runtime, so it never reaps live work.
+  if (-not (Get-Command Invoke-BacklogStateReaper -ErrorAction SilentlyContinue)) { return }
+  $recovered = @()
+  try {
+    $preItems = @(Get-Backlog)
+    $hasRunning = @($preItems | Where-Object { @('running','working') -contains ([string]$_.status).Trim().ToLowerInvariant() }).Count
+    if ($hasRunning -eq 0) { return }
+    $recovered = @(Invoke-BacklogLocked ({
+      $items = @(Get-Backlog)
+      $reapState = $null; try { $reapState = Read-State } catch {}
+      $r = Invoke-BacklogStateReaper -Items $items -RuntimeState $reapState -HeartbeatMaxAgeSeconds 900
+      if (@($r.recovered).Count -gt 0) { Save-Backlog @($r.items); return @($r.recovered) }
+      return @()
+    }.GetNewClosure()))
+  } catch { $recovered = @() }
+  foreach ($rec in @($recovered)) {
+    try {
+      Add-Message -From system -Text ("♻️ Zombie-reaper восстановил задачу " + [string]$rec.id + " (была '" + [string]$rec.from_status + "' без живого владельца) → held; lease освобождён для повторного claim.") -Kind event | Out-Null
+    } catch {}
+  }
+}
+
 function Start-AuditIfDue {
   # Run the daily audit for this driver's channel during the configured night window:
   #   - audit.enabled in config.json gates the whole thing.
