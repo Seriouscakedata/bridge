@@ -94,3 +94,31 @@ prompt, gate-check) — матчили текст regex широко, добав
 (2) КОРЕНЬ — вшить run-tests в self-mod verify-путь моста, чтобы дрейф ловился сразу (control-plane,
 согласовать); (3) раннер по чистому checkout. Альтернатива по hybrid-плану: (2)+(3) отдать мосту через
 Discuss-First после стабилизации.
+
+### DOGFOODING-находки (2026-06-08): мост сам исполнял план A1–A8 → вскрыл 4 пробела автономии
+Мост АВТОНОМНО прошёл Discuss-First (DISCUSS→план→атомы с canary), РЕАЛИЗОВАЛ A1 (реальная регрессия
+`lane`, packer-тест зелёный) + A8 (control-plane enforcement, прошёл canary) = **3/8 done, включая 2
+самых трудных**. Но застрял на 5 оставшихся — исполнение многоатомного плана вскрыло реальные баги:
+1. **Collection .git-alt quarantine [ПОЧИНЕНО, commit 4fbac65]:** sandbox bridge-git оставляет
+   `.git-alt.index` в ворктри воркера → `Collect-ParallelDispatchWorkerOutput` видел его в git status,
+   считал «outside touch-set», пытался `git checkout` (untracked→fail) → кварантинил ХОРОШИЙ поток.
+   Любой автономный workpack-ран так заклинивал. Фикс: `.gitignore .git-alt*` + skip git-plumbing в
+   change-detection `parallel.ps1`. Verified: collect-guard 30/30. **Без этого фикса A1/A3/A8 не закрылись бы.**
+2. **Orphan-reaper gap [D, открыто]:** A3 заклеймлена до фикса → словила .git-alt-карантин → застряла
+   `running` 13 ЧАСОВ; working-without-agent watchdog её НЕ выгреб → её мёртвый lease заблокировал
+   очередь. Оператор закрыл руками (код верифицирован). Нужен: reaper stale-`running` (state=running +
+   bridge idle + N часов → recover). Roadmap D «Working-without-agent watchdog».
+3. **Frontier overbroad-touch_set + нет serial-fallback [#4, открыто]:** planner объявил
+   `workpack_touch_set`, включающий verify-зависимости (`tools/run-tests.ps1`) как «тронутые» → 5 атомов
+   ложно пересеклись по run-tests.ps1 → frontier не смог собрать непересекающийся batch → wedge
+   (`open-unpacked`, `lease-conflict`). Нужно: (а) planner объявляет УЗКИЙ touch_set = edit-таргет, не
+   verify-deps; (б) frontier fallback на serial-single когда batch wedged (давно в беклоге кандидатом).
+4. **Gate-cascade на control-plane-планах [открыто]:** после сужения touch_set вылез
+   `pre-flight risk=high` + `control-plane blocked=9` + `protected-dominant` — control-plane атомы без
+   self-admission (A6 `lib/verify-selftest.ps1` — adm=no, в отличие от A8 adm=YES) wedge'ят batch. Нужно:
+   autopilot ставит bridge_self_admission КОНСИСТЕНТНО на ВСЕ control-plane атомы, что генерит (не часть).
+
+ВЫВОД: оператор НЕ добивал хвост руками (стоп на 4-м слое — это babysitting-ловушка). Корни 2–4 —
+durable-задачи для отдельной сфокусированной сессии (или мосту через Discuss-First, как A1–A8). Главный
+durable-выигрыш сессии = collection-фикс (#1) + доказано, что мост МОЖЕТ Discuss-First+canary+реальный
+регресс-фикс автономно; пробел = многоатомная финализация (reaper/frontier/admission).
