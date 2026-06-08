@@ -22,6 +22,7 @@ param([string]$Channel = $null, [switch]$SelfTest)
 . (Join-Path $PSScriptRoot 'lib\features.ps1')
 . (Join-Path $PSScriptRoot 'lib\qa-agent.ps1')
 . (Join-Path $PSScriptRoot 'lib\project-acceptance.ps1')
+. (Join-Path $PSScriptRoot 'lib\verify-selftest.ps1')
 . (Join-Path $PSScriptRoot 'lib\delivery-gate-shadow.ps1')
 . (Join-Path $PSScriptRoot 'lib\task-management.ps1')
 . (Join-Path $PSScriptRoot 'lib\checkpoint.ps1')
@@ -147,7 +148,7 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
   }
   foreach ($sbName in @('DriverLoopPreflightBlock','DriverLoopIdleClaimBlock','DriverLoopTurnSetupBlock','DriverLoopAgentTurnBlock','DriverLoopReplyMarkersBlock','DriverLoopModeTransitionBlock','DriverLoopCompletionBlock','DriverLoopFinalGuardBlock')) {

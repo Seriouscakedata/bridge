@@ -33,6 +33,15 @@ function Assert-GateSentinel {
   }
 }
 
+function Invoke-DriverSelfTestForGateSentinel {
+  $driverPath = Join-Path $repoRoot 'driver.ps1'
+  $out = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $driverPath -SelfTest 2>&1)
+  return [pscustomobject][ordered]@{
+    ExitCode = [int]$LASTEXITCODE
+    Output = @($out | ForEach-Object { [string]$_ })
+  }
+}
+
 function Invoke-TestGit {
   param(
     [Parameter(Mandatory=$true)][string]$Root,
@@ -127,6 +136,13 @@ function Test-NoSkippedMessage {
   return (@($Case.Messages | Where-Object { [string]$_ -match 'skipped' })).Count -eq 0
 }
 
+Write-Host '[GRS0] real driver selftest imports gate-regression runtime functions'
+$selfTest = Invoke-DriverSelfTestForGateSentinel
+$selfTestText = (@($selfTest.Output) -join "`n")
+Assert-GateSentinel 'GRS0 driver selftest exits 0' ($selfTest.ExitCode -eq 0) $selfTestText
+Assert-GateSentinel 'GRS0 driver selftest reports OK' ($selfTestText -match 'DRIVER SELFTEST OK') $selfTestText
+
+Write-Host ''
 Write-Host '[GRS1] missing gate-regression imports fail closed'
 $case = Invoke-GateRuntimeCase -Setup {}
 Assert-GateSentinel 'GRS1 plannerStatus CONTINUE' ($case.PlannerStatus -eq 'CONTINUE')
