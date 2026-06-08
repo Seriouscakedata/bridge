@@ -1159,6 +1159,7 @@
         $state = Read-State
       } else {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        try { Start-BacklogReaperIfDue } catch {}
         try { Start-LibrarianIfDue } catch {}
         try { Start-AuditIfDue } catch {}
         try { Start-FeatureVerifierIfDue } catch {}
