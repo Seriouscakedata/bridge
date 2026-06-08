@@ -1463,6 +1463,33 @@ function Get-BacklogWorkpackTouchOverlap {
   return @($overlap.ToArray())
 }
 
+function Get-BacklogWorkpackItemEditTouches {
+  param($Item)
+  $scopeContract = Get-BacklogTaskScopeContract -Item $Item
+  $touches = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($prop in @('edit_touches','files')) {
+    foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @())) {
+      $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
+      if ([string]::IsNullOrWhiteSpace($v)) { continue }
+      if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
+          (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
+      if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
+    }
+    if ($touches.Count -gt 0) { break }
+  }
+  if ($touches.Count -eq 0) {
+    foreach ($t in @(Get-BacklogWorkpackItemTouches -Item $Item)) {
+      $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
+      if (-not [string]::IsNullOrWhiteSpace($v) -and -not $touches.Contains($v)) { [void]$touches.Add($v) }
+    }
+  }
+  if ($touches.Count -eq 0) {
+    $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($cg)) { [void]$touches.Add($cg) }
+  }
+  return @($touches.ToArray() | Sort-Object -Unique)
+}
+
 function ConvertTo-BacklogWorkpackStringArray {
   param($Value)
   $items = New-Object 'System.Collections.Generic.List[string]'
@@ -1477,7 +1504,7 @@ function ConvertTo-BacklogWorkpackStringArray {
 function Get-BacklogWorkpackItemFileList {
   param($Item)
   $files = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($prop in @('files','touch_set','workpack_touch_set')) {
+  foreach ($prop in @('edit_touches','files','touch_set','workpack_touch_set')) {
     foreach ($f in @(ConvertTo-BacklogWorkpackStringArray (Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @()))) {
       $v = ([string]$f).Trim() -replace '\\','/'
       if (-not [string]::IsNullOrWhiteSpace($v) -and -not $files.Contains($v)) { [void]$files.Add($v) }
@@ -1698,7 +1725,7 @@ function New-BacklogWorkpackCandidateReport {
   $workpackId = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_id' -Default '')
   $group = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
-  $touches = @(Get-BacklogWorkpackItemTouches -Item $Item)
+  $touches = @(Get-BacklogWorkpackItemEditTouches -Item $Item)
   $files = @(Get-BacklogWorkpackItemFileList -Item $Item)
   $deps = @(Get-BacklogTaskDependencySlugs -Item $Item)
   $lane = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_lane_hint' -Default '')
@@ -2033,7 +2060,7 @@ function Resolve-BacklogWorkpackFrontier {
   $structuralWait = 0
   $conflictSkips = 0
   $touchSkips = 0
-  if ([bool]$Config.enabled -and $eligible.Count -ge [int]$Config.minItems) {
+  if ([bool]$Config.enabled -and $eligible.Count -ge 1) {
     foreach ($item in $eligible) {
       $selectionFull = ($selected.Count -ge [int]$Config.maxItems)
       $itemId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
@@ -2088,7 +2115,7 @@ function Resolve-BacklogWorkpackFrontier {
         continue
       }
 
-      $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+      $touches = @(Get-BacklogWorkpackItemEditTouches -Item $item)
       $overlap = @(Get-BacklogWorkpackTouchOverlap -Left @($usedTouches.ToArray()) -Right $touches)
       if ($overlap.Count -gt 0) {
         $touchSkips++
@@ -2113,6 +2140,10 @@ function Resolve-BacklogWorkpackFrontier {
   $packs = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
   $groups = @($usedGroups.Keys | Sort-Object -Unique)
   $batchAvailable = ($selected.Count -ge [int]$Config.minItems)
+  $serialAvailable = ((-not [bool]$batchAvailable) -and $selected.Count -eq 1 -and $readyCount -ge 1)
+  $claimAvailable = ([bool]$batchAvailable -or [bool]$serialAvailable)
+  $workpackBatchMode = if ($serialAvailable) { 'serial' } elseif ($batchAvailable) { 'parallel' } else { '' }
+  $serialReason = if ($serialAvailable) { 'serial-single-fallback' } else { '' }
   $reason = 'unknown'
   if (-not [bool]$Config.enabled) {
     $reason = 'disabled'
@@ -2185,8 +2216,10 @@ function Resolve-BacklogWorkpackFrontier {
     touch_skip_count      = [int]$touchSkips
     governor_deferred_count = [int]$governorDeferred
     governor_dropped_count = [int]$governorDropped
+    claim_available       = [bool]$claimAvailable
     batch_available       = [bool]$batchAvailable
     parallel_required     = [bool]$batchAvailable
+    workpack_batch_mode   = [string]$workpackBatchMode
     reason                = [string]$reason
     reason_detail         = [string]$reasonDetail
     reason_details        = $reasonDetails
@@ -2198,8 +2231,8 @@ function Resolve-BacklogWorkpackFrontier {
     blocked_ids           = @($blockedCandidates | ForEach-Object { [string]$_.id })
     candidates            = @($candidateArr)
     frontier_candidates   = @($candidateArr)
-    serial_required       = $false
-    serial_reason         = ''
+    serial_required       = [bool]$serialAvailable
+    serial_reason         = [string]$serialReason
   }
 
   return [pscustomobject][ordered]@{
@@ -2230,7 +2263,7 @@ function Get-BacklogWorkpackFrontierReport {
 function Get-NextBacklogWorkpackBatch {
   param($Config = $null)
   $frontier = Resolve-BacklogWorkpackFrontier -Config $Config
-  if (-not $frontier -or -not $frontier.report -or -not [bool]$frontier.report.batch_available) { return $null }
+  if (-not $frontier -or -not $frontier.report -or -not [bool]$frontier.report.claim_available) { return $null }
   return [pscustomobject]@{
     items = @($frontier.items)
     ids = @($frontier.ids)
@@ -2243,6 +2276,9 @@ function Get-NextBacklogWorkpackBatch {
     structural_wait_count = [int]$frontier.structural_wait_count
     conflict_skip_count = [int]$frontier.conflict_skip_count
     touch_skip_count = [int]$frontier.touch_skip_count
+    serial_required = [bool]$frontier.report.serial_required
+    serial_reason = [string]$frontier.report.serial_reason
+    workpack_batch_mode = [string]$frontier.report.workpack_batch_mode
     candidates = @($frontier.candidates)
     frontier_report = $frontier.report
   }
@@ -2482,8 +2518,10 @@ function Resolve-BacklogProtectedSerialFrontier {
     governor_dropped_count = [int]$governorDropped
     conflict_skip_count = 0
     touch_skip_count = 0
+    claim_available = [bool]$batchAvailable
     batch_available = [bool]$batchAvailable
     parallel_required = $false
+    workpack_batch_mode = if ($batchAvailable) { 'serial' } else { '' }
     serial_required = [bool]$batchAvailable
     reason = [string]$reason
     reason_detail = [string]$reasonDetail
@@ -2569,7 +2607,7 @@ function New-BacklogWorkpackBatchTaskText {
     $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
     $packId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_id' -Default '')
     $group = [string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')
-    $touches = @(Get-BacklogWorkpackItemTouches -Item $item)
+    $touches = @(Get-BacklogWorkpackItemEditTouches -Item $item)
     if ($touches.Count -eq 0) { $touches = @($group) }
     $files = ($touches | Select-Object -First 8) -join ', '
     $deps = @(Get-BacklogTaskDependencySlugs -Item $item)

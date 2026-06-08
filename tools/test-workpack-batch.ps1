@@ -27,8 +27,12 @@ function Assert-FrontierReportShape {
     'structural_wait_count',
     'conflict_skip_count',
     'touch_skip_count',
+    'claim_available',
     'batch_available',
     'parallel_required',
+    'serial_required',
+    'serial_reason',
+    'workpack_batch_mode',
     'reason',
     'selected_ids',
     'selected_groups',
@@ -142,6 +146,10 @@ try {
   $report = Get-BacklogWorkpackFrontierReport
   Assert-FrontierReportShape -Report $report -Name 'independent'
   Assert-True ([bool]$report.batch_available) 'expected frontier report batch_available=true'
+  Assert-True ([bool]$report.claim_available) 'expected frontier report claim_available=true'
+  Assert-True ([bool]$report.parallel_required) 'expected frontier report parallel_required=true'
+  Assert-True (-not [bool]$report.serial_required) 'expected independent frontier serial_required=false'
+  Assert-True ([string]$report.workpack_batch_mode -ne 'serial') 'expected independent frontier not to use serial mode'
   Assert-True ([int]$report.selected_count -ge 2) 'expected frontier report selected_count>=2'
   Assert-True ([string]$report.reason -eq 'batch-available') ("expected batch-available frontier reason, got {0}" -f [string]$report.reason)
   Assert-True (@($report.selected_ids) -contains [string]$idAudit) 'expected frontier report audit id'
@@ -152,6 +160,35 @@ try {
   Assert-True ($taskText -match '\[\[PARALLEL:wp1\]\]') 'expected parallel template wp1'
   Assert-True ($taskText -match '\[\[PARALLEL:wp2\]\]') 'expected parallel template wp2'
   Assert-True ($taskText -match 'STATUS:\s*CONTINUE') 'expected planner status hint'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idOneReady = Add-Idea -Text 'update one ready workpack in tools/one-ready.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idOneReady) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-one-ready' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'one-ready' -Force
+      $item | Add-Member -NotePropertyName edit_touches -NotePropertyValue @('tools/one-ready.ps1') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('tools/one-ready.ps1') -Force
+    }
+  }
+  Save-Backlog $items
+  $oneReadyReport = Get-BacklogWorkpackFrontierReport
+  $oneReadyBatch = Get-NextBacklogWorkpackBatch
+  Assert-FrontierReportShape -Report $oneReadyReport -Name 'one-ready'
+  Assert-True ($oneReadyBatch -ne $null) 'expected one-ready serial fallback claim'
+  Assert-True ([int]$oneReadyBatch.count -eq 1) ("expected one-ready count=1, got {0}" -f [int]$oneReadyBatch.count)
+  Assert-True (-not [bool]$oneReadyReport.batch_available) 'one-ready should not be a parallel batch'
+  Assert-True ([bool]$oneReadyReport.claim_available) 'one-ready should be claimable'
+  Assert-True (-not [bool]$oneReadyReport.parallel_required) 'one-ready should not require parallel'
+  Assert-True ([bool]$oneReadyReport.serial_required) 'one-ready should require serial fallback'
+  Assert-True ([string]$oneReadyReport.serial_reason -eq 'serial-single-fallback') ("one-ready serial_reason mismatch: {0}" -f [string]$oneReadyReport.serial_reason)
+  Assert-True ([string]$oneReadyReport.workpack_batch_mode -eq 'serial') 'one-ready should reuse serial batch mode'
+  Assert-True ([string]$oneReadyBatch.serial_reason -eq 'serial-single-fallback') 'one-ready batch should carry serial reason'
+  Assert-True ([string]$oneReadyBatch.workpack_batch_mode -eq 'serial') 'one-ready batch should carry serial mode'
 
   $items = @(Get-Backlog)
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
@@ -179,6 +216,8 @@ try {
   Assert-True (-not [bool]$protectedReport.batch_available) 'expected protected-only report batch_available=false'
   Assert-True ([int]$protectedReport.protected_count -gt 0) 'expected protected-only report protected_count>0'
   Assert-True (@('protected-dominant','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected protected-only reason, got {0}" -f [string]$protectedReport.reason)
+  Assert-True (-not [bool]$protectedReport.claim_available) 'protected-only must not be claimed as normal serial fallback'
+  Assert-True (-not [bool]$protectedReport.serial_required) 'protected-only normal frontier must not set serial fallback'
 
   $idProtectedC = Add-Idea -Text 'fix supervisor handle cleanup in supervisor.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
@@ -208,6 +247,37 @@ try {
   Assert-True ($serialText -match 'protected-serial-workpack') 'serial task text should identify protected serial mode'
   Assert-True ($serialText -match 'НЕ эмить \[\[PARALLEL') 'serial task text should explicitly forbid parallel markers'
   Assert-True ($serialText -notmatch '\[\[PARALLEL:[A-Za-z0-9_.-]+\]\]') 'serial task text must not contain executable parallel blocks'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idNormalWithProtected = Add-Idea -Text 'update normal residue in tools/normal-residue.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idProtectedResidue = Add-Idea -Text 'change watchdog residue behavior in watchdog.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idNormalWithProtected) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-normal-residue' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'normal-residue' -Force
+      $item | Add-Member -NotePropertyName edit_touches -NotePropertyValue @('tools/normal-residue.ps1') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('tools/normal-residue.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idProtectedResidue) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-protected-residue' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'safety' -Force
+      $item | Add-Member -NotePropertyName edit_touches -NotePropertyValue @('watchdog.ps1') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('watchdog.ps1') -Force
+    }
+  }
+  Save-Backlog $items
+  $protectedMixedReport = Get-BacklogWorkpackFrontierReport
+  $protectedMixedBatch = Get-NextBacklogWorkpackBatch
+  Assert-FrontierReportShape -Report $protectedMixedReport -Name 'protected-plus-normal'
+  Assert-True ($protectedMixedBatch -ne $null) 'expected protected+normal to claim normal residue'
+  Assert-True ([int]$protectedMixedBatch.count -eq 1) ("expected protected+normal serial count=1, got {0}" -f [int]$protectedMixedBatch.count)
+  Assert-True (@($protectedMixedBatch.ids) -contains [string]$idNormalWithProtected) 'expected normal residue selected'
+  Assert-True (-not (@($protectedMixedBatch.ids) -contains [string]$idProtectedResidue)) 'protected residue must not be selected by normal frontier'
+  Assert-True ([bool]$protectedMixedReport.serial_required) 'protected+normal normal residue should use serial fallback'
+  Assert-True ([string]$protectedMixedReport.serial_reason -eq 'serial-single-fallback') 'protected+normal should use serial-single fallback reason'
 
   $items = @(Get-Backlog)
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
@@ -462,11 +532,83 @@ try {
   }
   Save-Backlog $items
   $overlapOnlyReport = Get-BacklogWorkpackFrontierReport
+  $overlapOnlyBatch = Get-NextBacklogWorkpackBatch
   Assert-FrontierReportShape -Report $overlapOnlyReport -Name 'overlap-only'
-  Assert-True (-not [bool]$overlapOnlyReport.batch_available) 'expected overlap-only no batch'
+  Assert-True ($overlapOnlyBatch -ne $null) 'expected overlap-only serial fallback batch'
+  Assert-True ([int]$overlapOnlyBatch.count -eq 1) ("expected overlap-only serial count=1, got {0}" -f [int]$overlapOnlyBatch.count)
+  Assert-True (-not [bool]$overlapOnlyReport.batch_available) 'expected overlap-only no parallel batch'
+  Assert-True ([bool]$overlapOnlyReport.claim_available) 'expected overlap-only claimable via serial fallback'
+  Assert-True (-not [bool]$overlapOnlyReport.parallel_required) 'expected overlap-only no parallel requirement'
+  Assert-True ([bool]$overlapOnlyReport.serial_required) 'expected overlap-only serial fallback required'
+  Assert-True ([string]$overlapOnlyReport.serial_reason -eq 'serial-single-fallback') ("expected serial-single-fallback, got {0}" -f [string]$overlapOnlyReport.serial_reason)
+  Assert-True ([string]$overlapOnlyReport.workpack_batch_mode -eq 'serial') 'expected overlap-only to reuse serial mode'
   Assert-True ([int]$overlapOnlyReport.selected_count -eq 1) ("expected 1 overlap-only selected item, got {0}" -f [int]$overlapOnlyReport.selected_count)
   Assert-True ([string]$overlapOnlyReport.reason -eq 'conflicts-or-touch-overlap') ("expected conflicts-or-touch-overlap, got {0}" -f [string]$overlapOnlyReport.reason)
   Assert-True ([string]$overlapOnlyReport.reason_detail -match 'skipped:') 'expected overlap-only skipped detail'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idReportOnlyA = Add-Idea -Text 'update report-only alpha in app/alpha/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idReportOnlyB = Add-Idea -Text 'update report-only beta in app/beta/page.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idReportOnlyA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-report-alpha' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/alpha/page.tsx' -Force
+      $item | Add-Member -NotePropertyName edit_touches -NotePropertyValue @('app/alpha/page.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/alpha/page.tsx') -Force
+      $item | Add-Member -NotePropertyName verify -NotePropertyValue @('tools/shared-smoke.ps1') -Force
+      $item | Add-Member -NotePropertyName read -NotePropertyValue @('docs/shared-context.md') -Force
+      $item | Add-Member -NotePropertyName acceptance -NotePropertyValue @('docs/shared-acceptance.md') -Force
+    } elseif ([string]$item.id -eq [string]$idReportOnlyB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-report-beta' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/beta/page.tsx' -Force
+      $item | Add-Member -NotePropertyName edit_touches -NotePropertyValue @('app/beta/page.tsx') -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/beta/page.tsx') -Force
+      $item | Add-Member -NotePropertyName verify -NotePropertyValue @('tools/shared-smoke.ps1') -Force
+      $item | Add-Member -NotePropertyName read -NotePropertyValue @('docs/shared-context.md') -Force
+      $item | Add-Member -NotePropertyName acceptance -NotePropertyValue @('docs/shared-acceptance.md') -Force
+    }
+  }
+  Save-Backlog $items
+  $reportOnlyBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($reportOnlyBatch -ne $null) 'expected report-only path overlap not to block batch'
+  Assert-True ([int]$reportOnlyBatch.count -eq 2) ("expected report-only batch count=2, got {0}" -f [int]$reportOnlyBatch.count)
+  Assert-True (@($reportOnlyBatch.ids) -contains [string]$idReportOnlyA) 'expected report-only alpha selected'
+  Assert-True (@($reportOnlyBatch.ids) -contains [string]$idReportOnlyB) 'expected report-only beta selected'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
+  $idLegacyFilesA = Add-Idea -Text 'update legacy files alpha in app/legacy-a.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $idLegacyFilesB = Add-Idea -Text 'update legacy files beta in app/legacy-b.tsx' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idLegacyFilesA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-legacy-alpha' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/legacy-a.tsx' -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/legacy-a.tsx') -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('docs/shared-reference.md') -Force
+    } elseif ([string]$item.id -eq [string]$idLegacyFilesB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-legacy-beta' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:app/legacy-b.tsx' -Force
+      $item | Add-Member -NotePropertyName files -NotePropertyValue @('app/legacy-b.tsx') -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('docs/shared-reference.md') -Force
+    }
+  }
+  Save-Backlog $items
+  $legacyFilesBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($legacyFilesBatch -ne $null) 'expected legacy files fallback batch'
+  Assert-True ([int]$legacyFilesBatch.count -eq 2) ("expected legacy files fallback count=2, got {0}" -f [int]$legacyFilesBatch.count)
+  Assert-True (@($legacyFilesBatch.ids) -contains [string]$idLegacyFilesA) 'expected legacy files alpha selected'
+  Assert-True (@($legacyFilesBatch.ids) -contains [string]$idLegacyFilesB) 'expected legacy files beta selected'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
 
   $script:TestChannel = 'project-x'
   $projectDir = Get-ChannelDir -Slug 'project-x'

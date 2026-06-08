@@ -502,8 +502,18 @@
           $wpBatch = Get-NextBacklogWorkpackBatch
           if ($wpBatch -and ($wpBatch.PSObject.Properties.Name -contains 'frontier_report')) { $workpackFrontierReport = $wpBatch.frontier_report }
           if (-not $workpackFrontierReport -and (Get-Command Get-BacklogWorkpackFrontierReport -ErrorAction SilentlyContinue)) { $workpackFrontierReport = Get-BacklogWorkpackFrontierReport }
-          if ($wpBatch -and [int]$wpBatch.count -ge 2) {
+          $isSerialSingleFallback = $false
+          try {
+            $isSerialSingleFallback = (
+              $wpBatch -and
+              [int]$wpBatch.count -eq 1 -and
+              [bool]$wpBatch.serial_required -and
+              [string]$wpBatch.serial_reason -eq 'serial-single-fallback'
+            )
+          } catch { $isSerialSingleFallback = $false }
+          if ($wpBatch -and ([int]$wpBatch.count -ge 2 -or [bool]$isSerialSingleFallback)) {
             $wpCfg = Get-BacklogWorkpackExecConfig
+            $wpClaimMinItems = if ($isSerialSingleFallback) { 1 } else { [int]$wpCfg.minItems }
             $safeItems = New-Object 'System.Collections.Generic.List[object]'
             foreach ($wpItem in @($wpBatch.items)) {
               $wpId = [string]$wpItem.id
@@ -517,14 +527,30 @@
               }
               [void]$safeItems.Add($wpItem)
             }
-            if ($safeItems.Count -ge [int]$wpCfg.minItems) {
+            if ($safeItems.Count -ge [int]$wpClaimMinItems) {
               $safeArr = @($safeItems.ToArray())
-              $batchText = New-BacklogWorkpackBatchTaskText -Items $safeArr
+              $claimMode = if ($isSerialSingleFallback) { 'serial' } else { '' }
+              $claimSerialReason = if ($isSerialSingleFallback) { 'serial-single-fallback' } else { '' }
+              $claimAction = if ($isSerialSingleFallback) { 'workpack-serial-single-claim' } else { 'workpack-batch-claim' }
+              if ($isSerialSingleFallback) {
+                $serialItem = $safeArr[0]
+                $serialText = ([string](Get-BacklogPackObjectValue -Obj $serialItem -Name 'text' -Default '') -replace '\s+', ' ').Trim()
+                $serialFiles = @()
+                try { $serialFiles = @(Get-BacklogWorkpackItemEditTouches -Item $serialItem) } catch { $serialFiles = @() }
+                if ($serialFiles.Count -eq 0) { try { $serialFiles = @(Get-BacklogWorkpackItemTouches -Item $serialItem) } catch { $serialFiles = @() } }
+                $serialFilesText = ($serialFiles | Select-Object -First 8) -join ', '
+                if ([string]::IsNullOrWhiteSpace($serialFilesText)) { $serialFilesText = [string](Get-BacklogPackObjectValue -Obj $serialItem -Name 'workpack_conflict_group' -Default 'general') }
+                $batchText = ("[Автозадача из workpack-serial] Выполни approved задачу бэклога одним последовательным проверяемым проходом.`n`nSerial reason: serial-single-fallback`nFiles: {0}`nTask: {1}`n`nПеред STATUS: DONE покажи фактические проверки и не создавай parallel-блоки." -f $serialFilesText, $serialText)
+              } else {
+                $batchText = New-BacklogWorkpackBatchTaskText -Items $safeArr
+              }
               $batchIds = @($safeArr | ForEach-Object { [string]$_.id })
               $claimedIdea = [pscustomobject]@{
                 id = [string]$batchIds[0]
                 text = $batchText
                 workpack_batch = $true
+                workpack_batch_mode = [string]$claimMode
+                serial_reason = [string]$claimSerialReason
                 workpack_batch_ids = @($batchIds)
                 workpack_batch_count = $safeArr.Count
                 preflight_checked = $true
@@ -536,6 +562,9 @@
                   conflict_skips = [int]$wpBatch.conflict_skip_count
                   touch_skips = [int]$wpBatch.touch_skip_count
                   reason = if ($workpackFrontierReport) { [string]$workpackFrontierReport.reason } else { 'batch-available' }
+                  serial_required = [bool]$wpBatch.serial_required
+                  serial_reason = [string]$wpBatch.serial_reason
+                  workpack_batch_mode = [string]$claimMode
                   approved = if ($workpackFrontierReport) { [int]$workpackFrontierReport.approved_count } else { 0 }
                   with_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.with_workpack_count } else { 0 }
                   without_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.without_workpack_count } else { 0 }
@@ -552,9 +581,11 @@
               try {
                 Write-BacklogJsonLine ([ordered]@{
                   ts=(Get-Date).ToUniversalTime().ToString('o')
-                  action='workpack-batch-claim'
+                  action=[string]$claimAction
                   item_ids=@($batchIds)
                   count=$safeArr.Count
+                  workpack_batch_mode=[string]$claimMode
+                  serial_reason=[string]$claimSerialReason
                   workpacks=@($safeArr | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
                   conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
                   eligible=[int]$wpBatch.eligible_count
@@ -578,7 +609,7 @@
             } elseif ($workpackFrontierReport) {
               try {
                 $workpackFrontierReport | Add-Member -NotePropertyName claim_block_reason -NotePropertyValue 'preflight-blocked' -Force
-                $workpackFrontierReport | Add-Member -NotePropertyName claim_block_detail -NotePropertyValue ('safe workpack items below min_items after pre-flight: ' + [int]$safeItems.Count + '/' + [int]$wpCfg.minItems) -Force
+                $workpackFrontierReport | Add-Member -NotePropertyName claim_block_detail -NotePropertyValue ('safe workpack items below min_items after pre-flight: ' + [int]$safeItems.Count + '/' + [int]$wpClaimMinItems) -Force
               } catch {}
             }
           }
@@ -1015,11 +1046,11 @@
             $batchIdsForState = @($claimedIdea.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
           }
         } catch { $batchIdsForState = @() }
-        $isWorkpackBatch = ($batchIdsForState.Count -ge 2)
         $workpackBatchMode = ''
         try {
           if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_batch_mode') { $workpackBatchMode = [string]$claimedIdea.workpack_batch_mode }
         } catch { $workpackBatchMode = '' }
+        $isWorkpackBatch = (($batchIdsForState.Count -ge 2) -or ($batchIdsForState.Count -eq 1 -and [string]$workpackBatchMode -eq 'serial'))
         $btext = if ($isWorkpackBatch) { [string]$claimedIdea.text } else { '[Автозадача из бэклога] ' + [string]$claimedIdea.text }
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
