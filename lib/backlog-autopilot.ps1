@@ -1262,6 +1262,31 @@ function Set-ProjectAutopilotIdeaMetadata {
         $i | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue $group -Force
         $i | Add-Member -NotePropertyName workpack_lane_hint -NotePropertyValue ('serial:' + $group) -Force
       }
+      # Gate-cascade fix: the claim-gate's control-plane detection (Test-IdeaTouchesControlPlane)
+      # is BROADER than the autopilot lane heuristic above, so an autopilot atom can be
+      # control-plane-BLOCKED at claim yet generated WITHOUT admission (the planner has to remember
+      # it per-atom, and misses some -- e.g. lib/verify-selftest.ps1). That wedges the frontier
+      # (protected-dominant, no single-path). Synthesize a default canary admission for ANY atom the
+      # claim-gate would block, so admission is consistent with the gate that actually blocks. The
+      # canary stays REQUIRED (this is not a free pass -- the change must still pass parse/smoke/
+      # selftest/canary). Planner/operator-provided admission already set above still wins.
+      if (-not ($i.PSObject.Properties.Name -contains 'bridge_self_admission') -and (Get-Command Test-IdeaTouchesControlPlane -ErrorAction SilentlyContinue)) {
+        $touchesCp = $false
+        try { $touchesCp = [bool](Test-IdeaTouchesControlPlane -Idea $i) } catch { $touchesCp = $false }
+        if ($touchesCp) {
+          $autoAdm = [pscustomobject][ordered]@{
+            admitted        = $true
+            mode            = 'bridge_self_canary'
+            canary_required = $true
+            checks          = @()
+            rollback_plan   = 'Revert this atom commit and rerun Parser.ParseFile, tools/run-tests.ps1, driver.ps1 -SelfTest, smoke.ps1, and canary before resuming dependent atoms.'
+            auto_synthesized = $true
+            reason          = 'autopilot auto-admission: atom touches control-plane (Test-IdeaTouchesControlPlane) but no admission was provided by the planner'
+          }
+          $i | Add-Member -NotePropertyName bridge_self_admission -NotePropertyValue $autoAdm -Force
+          $bridgeSelfAdmission = $autoAdm
+        }
+      }
       $meta = [ordered]@{}
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $meta.chapter = $chapter }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $meta.wave = $wave }
