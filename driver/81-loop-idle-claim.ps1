@@ -1,4 +1,109 @@
 ﻿$script:DriverLoopIdleClaimBlock = {
+  function Get-DriverStatePropertyValue {
+    param($State, [string]$Name, $Default = $null)
+    try {
+      if ($State -and ($State.PSObject.Properties.Name -contains $Name)) {
+        $value = $State.PSObject.Properties[$Name].Value
+        if ($null -ne $value) { return $value }
+      }
+    } catch {}
+    return $Default
+  }
+
+  function Get-DriverLastOperatorMessageTimestampUtc {
+    $fallback = (Get-Date).ToUniversalTime()
+    try {
+      $lastUser = @(Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' } | Select-Object -Last 1)
+      if ($lastUser.Count -gt 0) {
+        $tsText = [string](Get-DriverStatePropertyValue -State $lastUser[0] -Name 'ts' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($tsText)) {
+          $parsed = [DateTime]::MinValue
+          if ([DateTime]::TryParse($tsText, [ref]$parsed)) { return $parsed.ToUniversalTime() }
+        }
+      }
+    } catch {}
+    return $fallback
+  }
+
+  function Get-DriverOperatorInteractionTimestampUtc {
+    param($State)
+    $tsText = [string](Get-DriverStatePropertyValue -State $State -Name 'lastOperatorInteractionTimestamp' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($tsText)) {
+      $parsed = [DateTime]::MinValue
+      if ([DateTime]::TryParse($tsText, [ref]$parsed)) { return $parsed.ToUniversalTime() }
+    }
+
+    $initUtc = Get-DriverLastOperatorMessageTimestampUtc
+    $initIso = $initUtc.ToString('o')
+    try {
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName lastOperatorInteractionTimestamp -NotePropertyValue $initIso -Force
+        if (-not ($s.PSObject.Properties.Name -contains 'energy_saving_mode')) {
+          $s | Add-Member -NotePropertyName energy_saving_mode -NotePropertyValue $false -Force
+        }
+      }.GetNewClosure()) | Out-Null
+    } catch {}
+    return $initUtc
+  }
+
+  function Set-DriverOperatorInteraction {
+    param([DateTime]$WhenUtc)
+    $iso = $WhenUtc.ToUniversalTime().ToString('o')
+    $wasEnergySaving = $false
+    try { $wasEnergySaving = [bool](Get-DriverStatePropertyValue -State (Read-State) -Name 'energy_saving_mode' -Default $false) } catch {}
+    try {
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName lastOperatorInteractionTimestamp -NotePropertyValue $iso -Force
+        $s | Add-Member -NotePropertyName energy_saving_mode -NotePropertyValue $false -Force
+      }.GetNewClosure()) | Out-Null
+    } catch {}
+    if ($wasEnergySaving) {
+      try { Write-Log ("energy-saving: exit on operator interaction at " + $iso) } catch {}
+    }
+  }
+
+  function Test-DriverEnergySavingIdleDue {
+    param($State, [DateTime]$NowUtc = (Get-Date).ToUniversalTime(), [double]$ThresholdHours = 24)
+    $lastUtc = Get-DriverOperatorInteractionTimestampUtc -State $State
+    return (($NowUtc.ToUniversalTime() - $lastUtc).TotalHours -gt $ThresholdHours)
+  }
+
+  function Set-DriverEnergySavingMode {
+    param([bool]$Enabled, [string]$Reason = '')
+    $stateNow = $null
+    $hasEnergySavingProperty = $false
+    $wasEnabled = $false
+    try {
+      $stateNow = Read-State
+      $hasEnergySavingProperty = ($stateNow -and ($stateNow.PSObject.Properties.Name -contains 'energy_saving_mode'))
+      $wasEnabled = [bool](Get-DriverStatePropertyValue -State $stateNow -Name 'energy_saving_mode' -Default $false)
+    } catch {}
+    if ($hasEnergySavingProperty -and ($wasEnabled -eq $Enabled)) { return }
+    try {
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName energy_saving_mode -NotePropertyValue $Enabled -Force
+        $s.heartbeat=(Get-Date).ToUniversalTime().ToString('o')
+      }.GetNewClosure()) | Out-Null
+    } catch {}
+    if ($wasEnabled -ne $Enabled) {
+      $modeText = if ($Enabled) { 'enter' } else { 'exit' }
+      if ([string]::IsNullOrWhiteSpace($Reason)) { $Reason = 'unspecified' }
+      try { Write-Log ("energy-saving: " + $modeText + " (" + $Reason + ")") } catch {}
+    }
+  }
+
+  function Wait-DriverEnergySavingSleep {
+    param([int]$LastUserSeq, [int]$Seconds = 300)
+    $deadline = (Get-Date).ToUniversalTime().AddSeconds([Math]::Max(1, $Seconds))
+    while ((Get-Date).ToUniversalTime() -lt $deadline) {
+      try {
+        if ((Get-MaxUserSeq) -gt $LastUserSeq) { return $true }
+      } catch {}
+      Start-Sleep -Seconds 1
+    }
+    return $false
+  }
+
   function Get-DriverWorkpackReportValue {
     param($Obj, [string]$Name, $Default = $null)
     try {
@@ -85,6 +190,7 @@
 
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
+      Set-DriverOperatorInteraction -WhenUtc (Get-Date).ToUniversalTime()
       $script:idleStreak = 0   # user activity -> restore snappy idle cadence
       # 🤖 Autonomy metric (Foundation #3): operator stepped in -> the "no-intervention" streak ends.
       # Best is already captured at done-time; just reset the running counter.
@@ -251,6 +357,8 @@
 
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
+        $s | Add-Member -NotePropertyName lastOperatorInteractionTimestamp -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+        $s | Add-Member -NotePropertyName energy_saving_mode -NotePropertyValue $false -Force
         Start-ReplayForStateTask -State $s -TaskText $taskMsg -ChannelName $Channel
         $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
         Clear-FastLaneFlags $s
@@ -410,6 +518,18 @@
           }
         }
       } catch {}
+
+      $energySavingDue = $false
+      try { $energySavingDue = [bool](Test-DriverEnergySavingIdleDue -State $state -NowUtc (Get-Date).ToUniversalTime() -ThresholdHours 24) } catch { $energySavingDue = $false }
+      if ($energySavingDue) {
+        Set-DriverEnergySavingMode -Enabled $true -Reason 'operator idle >24h'
+        try { Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text='energy-saving: waiting for operator'; $s.heartbeat=(Get-Date).ToUniversalTime().ToString('o') } | Out-Null } catch {}
+        [void](Wait-DriverEnergySavingSleep -LastUserSeq ([int]$state.last_user_seq) -Seconds 300)
+        $script:idleStreak = 0
+        continue
+      } else {
+        Set-DriverEnergySavingMode -Enabled $false -Reason 'operator activity within 24h'
+      }
 
       # Backlog packer: when many ideas arrived in a short window, annotate them into workpacks
       # before the autonomy picker starts draining the queue one task at a time. This only groups
