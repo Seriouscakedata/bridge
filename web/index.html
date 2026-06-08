@@ -6009,6 +6009,20 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
   }
   return true;
 }
+function waitForChannelPaint(){
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if(done) return;
+      done = true;
+      resolve();
+    };
+    setTimeout(finish, 120);
+    if(typeof requestAnimationFrame === 'function'){
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    }
+  });
+}
 async function switchChannel(slug){
   // 2026-05-28: abortable switch. If a previous switch is still in flight,
   // abort its fetch and supersede it. The old switchChannel's `finally` only
@@ -6068,7 +6082,8 @@ async function switchChannel(slug){
       // missing - left UI showing stale backlog from previous channel).
       status(); pollPlan(); pollMetrics(); pollBacklog();
       // Wait two frames so layout and paint commit before #log becomes visible again.
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Headless/hidden tabs may throttle RAF, so keep switch completion bounded.
+      await waitForChannelPaint();
     }
   }catch(e){
     if(e && e.name === 'AbortError'){
