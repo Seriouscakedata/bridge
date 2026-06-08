@@ -403,6 +403,88 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
       try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'smoke.log') -Value ((Get-Date).ToString('s') + '  auto-smoke-gate-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
     }
   }
+  # Gate-regression gate: before DONE promotion, run the full snapshot suite only
+  # when this task touched gate/control-plane paths. Docs/HTML/config-only edits
+  # intentionally produce an empty scope and must not block promotion.
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $stGate = Read-State
+      if ([bool]$stGate.task_did_actions) {
+        $gateChangedPaths = New-Object 'System.Collections.Generic.List[string]'
+        $gateSeenPaths = @{}
+        $addGatePath = {
+          param($RawPath)
+          if ($null -eq $RawPath) { return }
+          $normalized = ([string]$RawPath).Trim()
+          if ([string]::IsNullOrWhiteSpace($normalized)) { return }
+          $normalized = $normalized -replace '\\','/'
+          if (-not $gateSeenPaths.ContainsKey($normalized)) {
+            $gateSeenPaths[$normalized] = $true
+            [void]$gateChangedPaths.Add($normalized)
+          }
+        }
+
+        $gitSafeDirectory = "safe.directory=$bridgeRoot"
+        $gateBase = [string]$stGate.task_base_commit
+        if (-not [string]::IsNullOrWhiteSpace($gateBase)) {
+          $gateBaseType = ''
+          try { $gateBaseType = [string]((& git -c $gitSafeDirectory -C $bridgeRoot cat-file -t $gateBase 2>$null | Select-Object -First 1) -join '') } catch { $gateBaseType = '' }
+          if ($gateBaseType.Trim() -eq 'commit') {
+            try {
+              foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only $gateBase HEAD 2>$null)) {
+                & $addGatePath $p
+              }
+            } catch {}
+          }
+        }
+
+        try {
+          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only --cached 2>$null)) {
+            & $addGatePath $p
+          }
+        } catch {}
+        try {
+          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only 2>$null)) {
+            & $addGatePath $p
+          }
+        } catch {}
+        try {
+          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot ls-files --others --exclude-standard 2>$null)) {
+            & $addGatePath $p
+          }
+        } catch {}
+
+        $gateScope = @(Get-GateRegressionScope -ChangedPaths @($gateChangedPaths.ToArray()))
+        if ($gateScope.Count -eq 0) {
+          Add-Message -From system -Text "🧪 Gate-regression: scope empty, skipped." -Kind event | Out-Null
+        } else {
+          $gateResult = $null
+          $gateOk = $false
+          for ($gateAttempt = 1; $gateAttempt -le 2; $gateAttempt++) {
+            Add-Message -From system -Text ("🧪 Gate-regression: running snapshot suite (attempt {0}/2, timeout 180s)." -f $gateAttempt) -Kind event | Out-Null
+            $gateResult = Invoke-GateRegressionSuite -BridgeRoot $bridgeRoot -TimeoutSec 180
+            if ($gateResult -and [bool]$gateResult.Ok) {
+              $gateOk = $true
+              Add-Message -From system -Text "✅ Gate-regression: snapshot suite PASS." -Kind event | Out-Null
+              break
+            }
+            if ($gateAttempt -lt 2) {
+              $retryReason = if ($gateResult) { "exit=$($gateResult.ExitCode), timedOut=$($gateResult.TimedOut)" } else { 'no result' }
+              Add-Message -From system -Text ("🚨 Gate-regression failed ({0}); retrying once." -f $retryReason) -Kind event | Out-Null
+            }
+          }
+          if (-not $gateOk) {
+            $failReason = if ($gateResult) { "exit=$($gateResult.ExitCode), timedOut=$($gateResult.TimedOut)" } else { 'no result' }
+            try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
+            Add-Message -From system -Text ("🚨 Gate-regression FAILED after retry ({0}). Gate/control-plane scope is fail-closed; возвращаю задачу на CONTINUE." -f $failReason) -Kind event | Out-Null
+            $plannerStatus = 'CONTINUE'
+          }
+        }
+      }
+    } catch {
+      Add-Message -From system -Text ("⚠ Gate-regression: exception before scoped run (" + $_.Exception.Message + "), skipped.") -Kind event | Out-Null
+    }
+  }
   # QA agent gate: after verify/coder-bypass/critic/parse/smoke gates, run runtime QA before accepting DONE.
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     try {
