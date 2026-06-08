@@ -424,35 +424,67 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
           }
         }
 
+        $missingGateRegressionCommands = @()
+        foreach ($gateCommandName in @('Get-GateRegressionScope','Invoke-GateRegressionSuite')) {
+          if (-not (Get-Command $gateCommandName -ErrorAction SilentlyContinue)) {
+            $missingGateRegressionCommands += $gateCommandName
+          }
+        }
+        if ($missingGateRegressionCommands.Count -gt 0) {
+          throw ("gate-regression runtime import missing: " + ($missingGateRegressionCommands -join ', '))
+        }
+
         $gitSafeDirectory = "safe.directory=$bridgeRoot"
-        $gateBase = [string]$stGate.task_base_commit
-        if (-not [string]::IsNullOrWhiteSpace($gateBase)) {
-          $gateBaseType = ''
-          try { $gateBaseType = [string]((& git -c $gitSafeDirectory -C $bridgeRoot cat-file -t $gateBase 2>$null | Select-Object -First 1) -join '') } catch { $gateBaseType = '' }
-          if ($gateBaseType.Trim() -eq 'commit') {
-            try {
-              foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only $gateBase HEAD 2>$null)) {
-                & $addGatePath $p
-              }
-            } catch {}
+        $invokeGateGitLines = {
+          param(
+            [Parameter(Mandatory=$true)][string[]]$Arguments,
+            [Parameter(Mandatory=$true)][string]$Description
+          )
+          $gitErrFile = [System.IO.Path]::GetTempFileName()
+          $oldGateGitErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $gitOutput = @(& git -c $gitSafeDirectory -C $bridgeRoot @Arguments 2> $gitErrFile)
+            $gitExit = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+            if ($gitExit -ne 0) {
+              $gitErr = ''
+              try { $gitErr = [System.IO.File]::ReadAllText($gitErrFile, [System.Text.Encoding]::UTF8) } catch {}
+              $gitShort = (($gitOutput | ForEach-Object { [string]$_ }) -join ' ')
+              if (-not [string]::IsNullOrWhiteSpace($gitErr)) { $gitShort = ($gitShort + ' ' + $gitErr) }
+              $gitShort = $gitShort.Trim()
+              if ($gitShort.Length -gt 240) { $gitShort = $gitShort.Substring(0,240) + '...' }
+              if ([string]::IsNullOrWhiteSpace($gitShort)) { $gitShort = '<no output>' }
+              throw ("git {0} failed (exit {1}): {2}" -f $Description, $gitExit, $gitShort)
+            }
+            return @($gitOutput)
+          } finally {
+            $ErrorActionPreference = $oldGateGitErrorActionPreference
+            Remove-Item -LiteralPath $gitErrFile -Force -ErrorAction SilentlyContinue
           }
         }
 
-        try {
-          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only --cached 2>$null)) {
-            & $addGatePath $p
+        $gateBase = [string]$stGate.task_base_commit
+        if (-not [string]::IsNullOrWhiteSpace($gateBase)) {
+          $gateBaseType = [string]((& $invokeGateGitLines -Arguments @('cat-file','-t',$gateBase) -Description 'cat-file task_base_commit' | Select-Object -First 1) -join '')
+          if ($gateBaseType.Trim() -ne 'commit') {
+            throw ("git task_base_commit is not a commit: {0}" -f $gateBase)
           }
-        } catch {}
-        try {
-          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot diff --name-only 2>$null)) {
-            & $addGatePath $p
+          if ($gateBaseType.Trim() -eq 'commit') {
+            foreach ($p in @(& $invokeGateGitLines -Arguments @('diff','--name-only',$gateBase,'HEAD') -Description 'diff task_base_commit..HEAD')) {
+              & $addGatePath $p
+            }
           }
-        } catch {}
-        try {
-          foreach ($p in @(& git -c $gitSafeDirectory -C $bridgeRoot ls-files --others --exclude-standard 2>$null)) {
-            & $addGatePath $p
-          }
-        } catch {}
+        }
+
+        foreach ($p in @(& $invokeGateGitLines -Arguments @('diff','--name-only','--cached') -Description 'diff --cached')) {
+          & $addGatePath $p
+        }
+        foreach ($p in @(& $invokeGateGitLines -Arguments @('diff','--name-only') -Description 'diff working tree')) {
+          & $addGatePath $p
+        }
+        foreach ($p in @(& $invokeGateGitLines -Arguments @('ls-files','--others','--exclude-standard') -Description 'ls-files untracked')) {
+          & $addGatePath $p
+        }
 
         $gateScope = @(Get-GateRegressionScope -ChangedPaths @($gateChangedPaths.ToArray()))
         if ($gateScope.Count -eq 0) {
@@ -482,7 +514,11 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         }
       }
     } catch {
-      Add-Message -From system -Text ("⚠ Gate-regression: exception before scoped run (" + $_.Exception.Message + "), skipped.") -Kind event | Out-Null
+      $gateRuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
+      if ($gateRuntimeError.Length -gt 300) { $gateRuntimeError = $gateRuntimeError.Substring(0,300) + '...' }
+      try { Set-TaskLastFailure -Kind gate_regression_runtime_error -Text $gateRuntimeError } catch {}
+      Add-Message -From system -Text ("🚨 Gate-regression fail-closed: " + $gateRuntimeError + ". Возвращаю задачу на CONTINUE.") -Kind event | Out-Null
+      $plannerStatus = 'CONTINUE'
     }
   }
   # QA agent gate: after verify/coder-bypass/critic/parse/smoke gates, run runtime QA before accepting DONE.
