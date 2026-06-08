@@ -56,8 +56,8 @@ try {
   $dead = New-ReaperItem -Id 'dead-pid-working' -Status 'working' -AgentPid 424242
   $deadRun = Invoke-BacklogStateReaper -Items @($dead) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @($PID)
   $deadOut = Get-ReaperItemById -Items $deadRun.items -Id 'dead-pid-working'
-  Assert-BacklogStateReaper 'dead PID working item becomes held' (
-    [string]$deadOut.status -eq 'held' -and -not [string]::IsNullOrWhiteSpace([string]$deadOut.recovered_reason)
+  Assert-BacklogStateReaper 'dead PID working item recovers to approved for retry (1st death)' (
+    [string]$deadOut.status -eq 'approved' -and [int]$deadOut.zombie_recovery_count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$deadOut.recovered_reason)
   ) ($deadRun | ConvertTo-Json -Compress -Depth 8)
   Assert-BacklogStateReaper 'dead PID working item gets recovered_reason' (
     [string]$deadOut.recovered_reason -like 'zombie-working:*no live agent_pid*'
@@ -95,8 +95,8 @@ try {
   $stuckRunning = New-ReaperItem -Id 'stuck-running' -Status 'running'
   $stuckRun = Invoke-BacklogStateReaper -Items @($stuckRunning) -RuntimeState @([pscustomobject][ordered]@{ current_backlog_id = 'other'; status = 'working'; heartbeat = $fresh }) -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @()
   $stuckOut = Get-ReaperItemById -Items $stuckRun.items -Id 'stuck-running'
-  Assert-BacklogStateReaper 'running without matching runtime state becomes held' (
-    [string]$stuckOut.status -eq 'held' -and [string]$stuckOut.recovered_reason -like 'zombie-running:*'
+  Assert-BacklogStateReaper 'running without matching runtime state recovers to approved (1st death)' (
+    [string]$stuckOut.status -eq 'approved' -and [string]$stuckOut.recovered_reason -like 'zombie-running:*'
   ) ($stuckRun | ConvertTo-Json -Compress -Depth 8)
 
   $runtimeMatched = New-ReaperItem -Id 'runtime-matched' -Status 'running'
@@ -116,8 +116,18 @@ try {
   $staleRun = Invoke-BacklogStateReaper -Items @($staleHeartbeat) -WorkerHeartbeats $staleMap -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @()
   $staleOut = Get-ReaperItemById -Items $staleRun.items -Id 'stale-worker'
   Assert-BacklogStateReaper 'stale worker heartbeat does not preserve zombie item' (
-    [string]$staleOut.status -eq 'held'
+    [string]$staleOut.status -eq 'approved'
   ) ($staleRun | ConvertTo-Json -Compress -Depth 8)
+
+  # Retry cap: an item already zombie-recovered MaxZombieRetries times falls back to 'held' for
+  # operator review instead of retry-looping forever on a genuinely-broken atom.
+  $exhausted = New-ReaperItem -Id 'exhausted-retries' -Status 'running' -AgentPid 888888
+  $exhausted | Add-Member -NotePropertyName zombie_recovery_count -NotePropertyValue 2 -Force
+  $exhaustedRun = Invoke-BacklogStateReaper -Items @($exhausted) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @($PID) -MaxZombieRetries 2
+  $exhaustedOut = Get-ReaperItemById -Items $exhaustedRun.items -Id 'exhausted-retries'
+  Assert-BacklogStateReaper 'zombie past retry cap falls back to held' (
+    [string]$exhaustedOut.status -eq 'held' -and [int]$exhaustedOut.zombie_recovery_count -eq 3
+  ) ($exhaustedRun | ConvertTo-Json -Compress -Depth 8)
 
   Assert-BacklogStateReaper 'original item is not mutated by proposal helper' (
     [string]$dead.status -eq 'working' -and [string]$stuckRunning.status -eq 'running'

@@ -262,7 +262,8 @@ function Invoke-BacklogStateReaper {
     [Parameter(Mandatory=$false)][datetime]$NowUtc = (Get-Date).ToUniversalTime(),
     [Parameter(Mandatory=$false)][int]$HeartbeatMaxAgeSeconds = 900,
     [Parameter(Mandatory=$false)][int[]]$LivePids = @(),
-    [Parameter(Mandatory=$false)]$WorkerHeartbeats = $null
+    [Parameter(Mandatory=$false)]$WorkerHeartbeats = $null,
+    [Parameter(Mandatory=$false)][int]$MaxZombieRetries = 2
   )
   $now = $NowUtc.ToUniversalTime()
   if ($HeartbeatMaxAgeSeconds -lt 1) { $HeartbeatMaxAgeSeconds = 1 }
@@ -295,15 +296,25 @@ function Invoke-BacklogStateReaper {
       continue
     }
 
-    $reason = ("zombie-{0}: no live agent_pid, no fresh worker heartbeat, no active runtime state" -f $status)
-    Set-BacklogStateReaperObjectValue -Object $copy -Name 'status' -Value 'held'
+    # Recover the zombie for RETRY, not permanent sideline: a worker can die transiently (a restart,
+    # timeout, or killed parallel stream) without the task itself being broken. Recover to 'approved'
+    # so it re-claims and finishes -- but CAP it: after MaxZombieRetries deaths fall back to 'held' for
+    # operator review, so a genuinely-broken atom can never retry-loop forever.
+    $priorRecoveries = 0
+    try { $priorRecoveries = [int](Get-BacklogStateReaperObjectValue -Object $copy -Names @('zombie_recovery_count') -Default 0) } catch { $priorRecoveries = 0 }
+    $recoveryCount = $priorRecoveries + 1
+    $recoverTo = if ($recoveryCount -le $MaxZombieRetries) { 'approved' } else { 'held' }
+    $reason = ("zombie-{0}: no live agent_pid, no fresh worker heartbeat, no active runtime state (recovery {1}/{2} -> {3})" -f $status, $recoveryCount, $MaxZombieRetries, $recoverTo)
+    Set-BacklogStateReaperObjectValue -Object $copy -Name 'status' -Value $recoverTo
+    Set-BacklogStateReaperObjectValue -Object $copy -Name 'zombie_recovery_count' -Value $recoveryCount
     Set-BacklogStateReaperObjectValue -Object $copy -Name 'recovered_reason' -Value $reason
     Set-BacklogStateReaperObjectValue -Object $copy -Name 'recovered_at' -Value ($now.ToString('o'))
     [void]$resultItems.Add($copy)
     [void]$recovered.Add([pscustomobject][ordered]@{
       id = $id
       from_status = $status
-      to_status = 'held'
+      to_status = $recoverTo
+      recovery_count = $recoveryCount
       recovered_reason = $reason
       recovered_at = $now.ToString('o')
     })
