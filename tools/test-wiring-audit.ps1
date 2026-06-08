@@ -80,6 +80,43 @@ function Get-SyntheticWiringStatus {
   return 'DEAD'
 }
 
+function Test-WiringAuditIgnoredRealPath {
+  param([AllowNull()][string]$File)
+
+  if ([string]::IsNullOrWhiteSpace($File)) { return $true }
+  return (
+    $File -like 'tmp/*' -or
+    $File -like 'tools/diag/*' -or
+    $File -like 'tools/test-*.ps1'
+  )
+}
+
+function Get-RealCodePrimaryFunctionStatus {
+  param(
+    [Parameter(Mandatory = $true)]$Graph,
+    [Parameter(Mandatory = $true)][string]$File,
+    [Parameter(Mandatory = $true)][string]$PrimaryFunction
+  )
+
+  $scanned = @($Graph.scanned_files | Where-Object { [string]$_ -eq $File }).Count -gt 0
+  if (-not $scanned) { return 'MISSING' }
+
+  $realCallers = @($Graph.static_call_sites | Where-Object {
+    [string]$_.callee -eq $PrimaryFunction -and
+    [string]$_.from -ne $File -and
+    -not (Test-WiringAuditIgnoredRealPath -File ([string]$_.from))
+  })
+  if ($realCallers.Count -gt 0) { return 'USED' }
+
+  $realLoads = @($Graph.load_edges | Where-Object {
+    [string]$_.to -eq $File -and
+    -not (Test-WiringAuditIgnoredRealPath -File ([string]$_.from))
+  })
+  if ($realLoads.Count -gt 0) { return 'LOADED_ONLY' }
+
+  return 'DEAD'
+}
+
 function Write-WiringAuditWarning {
   param(
     [Parameter(Mandatory = $true)][string]$File,
@@ -199,11 +236,15 @@ function Invoke-DynamicFixture {
   $reaperStatus = Get-SyntheticWiringStatus -Graph $realGraph -File 'lib/backlog-state-reaper.ps1'
   Assert-WiringAudit 'current backlog-state-reaper is not DEAD' ($reaperStatus -ne 'DEAD') ("status={0}" -f $reaperStatus)
 
-  $verifyStatus = Get-SyntheticWiringStatus -Graph $realGraph -File 'lib/verify-selftest.ps1'
+  $verifyStatus = Get-RealCodePrimaryFunctionStatus `
+    -Graph $realGraph `
+    -File 'lib/verify-selftest.ps1' `
+    -PrimaryFunction 'Invoke-VerifySelftestGate'
   if ($verifyStatus -eq 'DEAD' -or $verifyStatus -eq 'LOADED_ONLY') {
     Write-WiringAuditWarning -File 'lib/verify-selftest.ps1' -Status $verifyStatus
+    Assert-WiringAudit 'current verify-selftest is a warning-only candidate' $true ("status={0}" -f $verifyStatus)
   } else {
-    Write-Host ("WARN: current verify-selftest candidate expectation is not active; status={0}" -f $verifyStatus)
+    Assert-WiringAudit 'current verify-selftest is a warning-only candidate' $false ("status={0}" -f $verifyStatus)
   }
 } catch {
   Write-Host "FAIL: unhandled exception :: $($_.Exception.Message)"
