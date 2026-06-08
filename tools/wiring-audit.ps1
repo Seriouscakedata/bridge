@@ -267,6 +267,9 @@ function Get-DotSourceEdges {
     if ($elements.Count -lt 1) {
       continue
     }
+    if ($elements[0] -is [System.Management.Automation.Language.VariableExpressionAst]) {
+      continue
+    }
 
     $raw = ConvertFrom-WiringPathAst -Ast $elements[0] -SourceDir $sourceDir -Root $Root
     if ([string]::IsNullOrWhiteSpace($raw)) {
@@ -339,6 +342,143 @@ function Get-ImportModuleEdges {
   return @($edges.ToArray())
 }
 
+function Get-WiringFunctionDefinitions {
+  param(
+    [Parameter(Mandatory = $true)]$Ast,
+    [Parameter(Mandatory = $true)][string]$SourceFile,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $from = ConvertTo-WiringRelative -Path $SourceFile -Root $Root
+  $defs = New-Object System.Collections.Generic.List[object]
+  $functions = $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+
+  foreach ($function in @($functions)) {
+    $defs.Add([pscustomobject][ordered]@{
+      file = $from
+      name = $function.Name
+      line = $function.Extent.StartLineNumber
+    })
+  }
+
+  return @($defs.ToArray())
+}
+
+function Get-WiringAllCommandCalls {
+  param(
+    [Parameter(Mandatory = $true)]$Ast,
+    [Parameter(Mandatory = $true)][string]$SourceFile,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $from = ConvertTo-WiringRelative -Path $SourceFile -Root $Root
+  $calls = New-Object System.Collections.Generic.List[object]
+  $commands = $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)
+
+  foreach ($command in @($commands)) {
+    if ($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot) {
+      continue
+    }
+
+    $name = $command.GetCommandName()
+    if ([string]::IsNullOrWhiteSpace($name)) {
+      continue
+    }
+
+    $calls.Add([pscustomobject][ordered]@{
+      from = $from
+      callee = $name
+      line = $command.Extent.StartLineNumber
+    })
+  }
+
+  return @($calls.ToArray())
+}
+
+function Get-WiringDynamicDispatchSites {
+  param(
+    [Parameter(Mandatory = $true)]$Ast,
+    [Parameter(Mandatory = $true)][string]$SourceFile,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $from = ConvertTo-WiringRelative -Path $SourceFile -Root $Root
+  $sites = New-Object System.Collections.Generic.List[object]
+  $commands = $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)
+
+  foreach ($command in @($commands)) {
+    $elements = @($command.CommandElements)
+    $form = $null
+
+    if ($elements.Count -gt 0 -and $elements[0] -is [System.Management.Automation.Language.VariableExpressionAst]) {
+      if ($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand) {
+        $form = '& $var'
+      } elseif ($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot) {
+        $form = '. $var'
+      }
+    }
+
+    $name = $command.GetCommandName()
+    if ($null -eq $form -and ($name -eq 'Invoke-Expression' -or $name -eq 'iex')) {
+      $form = 'Invoke-Expression'
+    }
+
+    if ($null -eq $form) {
+      continue
+    }
+
+    $sites.Add([pscustomobject][ordered]@{
+      file = $from
+      form = $form
+      line = $command.Extent.StartLineNumber
+    })
+  }
+
+  return @($sites.ToArray())
+}
+
+function Get-WiringLoadedFileClassifications {
+  param(
+    [Parameter(Mandatory = $true)][object[]]$LoadEdges,
+    [Parameter(Mandatory = $true)][object[]]$FunctionDefs,
+    [Parameter(Mandatory = $true)][object[]]$StaticCallSites
+  )
+
+  $loadedFiles = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($edge in @($LoadEdges)) {
+    if (-not [string]::IsNullOrWhiteSpace($edge.to)) {
+      [void]$loadedFiles.Add([string]$edge.to)
+    }
+  }
+
+  $calledFunctions = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($site in @($StaticCallSites)) {
+    if (-not [string]::IsNullOrWhiteSpace($site.callee)) {
+      [void]$calledFunctions.Add([string]$site.callee)
+    }
+  }
+
+  $classifications = New-Object System.Collections.Generic.List[object]
+  foreach ($loadedFile in @($loadedFiles | Sort-Object)) {
+    $fileFunctions = @($FunctionDefs | Where-Object { $_.file -eq $loadedFile } | ForEach-Object { $_.name })
+    $isUsed = $false
+    foreach ($functionName in $fileFunctions) {
+      if ($calledFunctions.Contains([string]$functionName)) {
+        $isUsed = $true
+        break
+      }
+    }
+
+    $classification = if ($isUsed) { 'USED' } else { 'LOADED_ONLY' }
+    $classifications.Add([pscustomobject][ordered]@{
+      file = $loadedFile
+      classification = $classification
+    })
+  }
+
+  return @($classifications.ToArray())
+}
+
 function Build-WiringAstGraph {
   param([Parameter(Mandatory = $true)][string]$Root)
 
@@ -353,6 +493,9 @@ function Build-WiringAstGraph {
 
   $scannedFiles = New-Object System.Collections.Generic.List[string]
   $edges = New-Object System.Collections.Generic.List[object]
+  $allFnDefs = New-Object System.Collections.Generic.List[object]
+  $allCommandCalls = New-Object System.Collections.Generic.List[object]
+  $allDynSites = New-Object System.Collections.Generic.List[object]
   $scanErrors = New-Object System.Collections.Generic.List[object]
 
   foreach ($file in $files) {
@@ -377,6 +520,15 @@ function Build-WiringAstGraph {
     foreach ($edge in @(Get-ImportModuleEdges -Ast $ast -SourceFile $file.FullName -Root $rootFull)) {
       $edges.Add($edge)
     }
+    foreach ($def in @(Get-WiringFunctionDefinitions -Ast $ast -SourceFile $file.FullName -Root $rootFull)) {
+      $allFnDefs.Add($def)
+    }
+    foreach ($call in @(Get-WiringAllCommandCalls -Ast $ast -SourceFile $file.FullName -Root $rootFull)) {
+      $allCommandCalls.Add($call)
+    }
+    foreach ($dyn in @(Get-WiringDynamicDispatchSites -Ast $ast -SourceFile $file.FullName -Root $rootFull)) {
+      $allDynSites.Add($dyn)
+    }
   }
 
   $orderedScanned = @($scannedFiles.ToArray() | Sort-Object)
@@ -386,11 +538,24 @@ function Build-WiringAstGraph {
     @{ Expression = { $_.kind } }, `
     @{ Expression = { $_.line } }, `
     @{ Expression = { $_.to_raw } })
+  $knownFns = @{}
+  foreach ($def in @($allFnDefs.ToArray())) {
+    $knownFns[$def.name] = $def.file
+  }
+  $staticCallSites = @($allCommandCalls.ToArray() | Where-Object { $knownFns.ContainsKey($_.callee) })
+  $fileClassifications = Get-WiringLoadedFileClassifications `
+    -LoadEdges $orderedEdges `
+    -FunctionDefs @($allFnDefs.ToArray()) `
+    -StaticCallSites $staticCallSites
   $orderedErrors = @($scanErrors.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.error } })
 
   return [pscustomobject][ordered]@{
     scanned_files = $orderedScanned
     load_edges = $orderedEdges
+    function_defs = @($allFnDefs.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.name } }, @{ Expression = { $_.line } })
+    static_call_sites = @($staticCallSites | Sort-Object @{ Expression = { $_.from } }, @{ Expression = { $_.callee } }, @{ Expression = { $_.line } })
+    dynamic_dispatch_sites = @($allDynSites.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.line } })
+    file_classifications = $fileClassifications
     scan_errors = $orderedErrors
   }
 }
@@ -399,15 +564,38 @@ function Format-WiringAstGraphText {
   param([Parameter(Mandatory = $true)]$Graph)
 
   $lines = New-Object System.Collections.Generic.List[string]
-  $lines.Add('WIRING AUDIT -- Load Graph')
+  $lines.Add('WIRING AUDIT -- Load Graph + Call Analysis')
   $lines.Add(('Scanned: {0} files' -f @($Graph.scanned_files).Count))
   $lines.Add(('Load edges: {0}' -f @($Graph.load_edges).Count))
+  $lines.Add(('Function defs: {0}' -f @($Graph.function_defs).Count))
+  $lines.Add(('Static call sites (to known fns): {0}' -f @($Graph.static_call_sites).Count))
+  $lines.Add(('Dynamic dispatch sites: {0}' -f @($Graph.dynamic_dispatch_sites).Count))
   $lines.Add(('Scan errors: {0}' -f @($Graph.scan_errors).Count))
   $lines.Add('')
   $lines.Add('LOAD EDGES:')
   foreach ($edge in @($Graph.load_edges)) {
     $target = if ([string]::IsNullOrWhiteSpace($edge.to)) { $edge.to_raw } else { $edge.to }
     $lines.Add(('  {0} -> {1} [{2}:{3}]' -f $edge.from, $target, $edge.kind, $edge.line))
+  }
+  $lines.Add('')
+  $used = @($Graph.file_classifications | Where-Object { $_.classification -eq 'USED' })
+  $loadedOnly = @($Graph.file_classifications | Where-Object { $_.classification -eq 'LOADED_ONLY' })
+  $lines.Add('LOADED-FILE CLASSIFICATION:')
+  $lines.Add(('  USED: {0}  LOADED_ONLY: {1}' -f $used.Count, $loadedOnly.Count))
+  $lines.Add('')
+  $lines.Add('  USED:')
+  foreach ($item in $used) {
+    $lines.Add(('    {0}' -f $item.file))
+  }
+  $lines.Add('')
+  $lines.Add('  LOADED_ONLY:')
+  foreach ($item in $loadedOnly) {
+    $lines.Add(('    {0}' -f $item.file))
+  }
+  $lines.Add('')
+  $lines.Add(('DYNAMIC DISPATCH EVIDENCE: {0} sites (UNKNOWN_DYNAMIC)' -f @($Graph.dynamic_dispatch_sites).Count))
+  foreach ($site in @($Graph.dynamic_dispatch_sites)) {
+    $lines.Add(('  {0} [{1}:{2}]' -f $site.file, $site.form, $site.line))
   }
   $lines.Add('')
   $lines.Add('SCAN ERRORS:')
@@ -430,6 +618,33 @@ function Format-WiringAstGraphJson {
         to_raw = $_.to_raw
         kind = $_.kind
         line = $_.line
+      }
+    })
+    function_defs = @($Graph.function_defs | ForEach-Object {
+      [pscustomobject][ordered]@{
+        file = $_.file
+        name = $_.name
+        line = $_.line
+      }
+    })
+    static_call_sites = @($Graph.static_call_sites | ForEach-Object {
+      [pscustomobject][ordered]@{
+        from = $_.from
+        callee = $_.callee
+        line = $_.line
+      }
+    })
+    dynamic_dispatch_sites = @($Graph.dynamic_dispatch_sites | ForEach-Object {
+      [pscustomobject][ordered]@{
+        file = $_.file
+        form = $_.form
+        line = $_.line
+      }
+    })
+    file_classifications = @($Graph.file_classifications | ForEach-Object {
+      [pscustomobject][ordered]@{
+        file = $_.file
+        classification = $_.classification
       }
     })
     scan_errors = @($Graph.scan_errors | ForEach-Object {
