@@ -1009,26 +1009,6 @@
       if ($claimedIdea) {
         $script:idleStreak = 0   # autonomous task claimed -> snappy idle again once it finishes
         $bid = [string]$claimedIdea.id
-        try {
-          $claimStateNow = Read-State
-          $dupClaim = Test-BacklogClaimAlreadyActiveInState -State $claimStateNow -ItemId $bid
-          if ($dupClaim -and [bool]$dupClaim.active) {
-            Add-Message -From system -Text ("⏭ Backlog claim skipped: item " + $bid + " already has unfinished state evidence (" + [string]$dupClaim.reason + ").") -Kind event | Out-Null
-            try {
-              Write-BacklogJsonLine ([ordered]@{
-                ts = (Get-Date).ToUniversalTime().ToString('o')
-                action = 'backlog-duplicate-claim-blocked'
-                item_id = $bid
-                reason = [string]$dupClaim.reason
-                evidence = $dupClaim.evidence
-              })
-            } catch {}
-            $claimedIdea = $null
-          }
-        } catch {}
-      }
-      if ($claimedIdea) {
-        $bid = [string]$claimedIdea.id
         $batchIdsForState = @()
         try {
           if ($claimedIdea.PSObject.Properties.Name -contains 'workpack_batch_ids') {

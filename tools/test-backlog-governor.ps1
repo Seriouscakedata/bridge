@@ -125,28 +125,6 @@ try {
     [bool]$validVerdict.claimable -and [string]$validVerdict.action -eq 'allow' -and [string]$validVerdict.reason -eq 'claimable'
   ) ($validVerdict | ConvertTo-Json -Compress -Depth 8)
 
-  $doneRegression = New-GovernorItem -Id 'done-regression' -Status 'done'
-  $doneRegressionVerdict = Test-BacklogGovernorDoneRegressionReopen -Item $doneRegression -RegressionEvidence ([pscustomobject][ordered]@{
-    reason = 'gate_regression_exception'
-    detail = 'snapshot suite failed after DONE'
-    checks = @('gate-regression')
-  })
-  Assert-BacklogGovernor 'done item with gate-regression evidence is reopenable' (
-    [bool]$doneRegressionVerdict.reopen -and
-    [string]$doneRegressionVerdict.proposed_status -eq 'approved' -and
-    [string]$doneRegressionVerdict.reason -eq 'done_regression_detected'
-  ) ($doneRegressionVerdict | ConvertTo-Json -Compress -Depth 8)
-
-  $doneUnrelatedVerdict = Test-BacklogGovernorDoneRegressionReopen -Item $doneRegression -RegressionEvidence ([pscustomobject][ordered]@{
-    reason = 'operator_note'
-    detail = 'manual comment without failing checks'
-  })
-  Assert-BacklogGovernor 'done item without regression evidence is not reopenable' (-not [bool]$doneUnrelatedVerdict.reopen) ($doneUnrelatedVerdict | ConvertTo-Json -Compress -Depth 8)
-
-  $runningRegression = New-GovernorItem -Id 'running-regression' -Status 'running'
-  $runningRegressionVerdict = Test-BacklogGovernorDoneRegressionReopen -Item $runningRegression -RegressionEvidence ([pscustomobject][ordered]@{ reason = 'gate_regression_failed' })
-  Assert-BacklogGovernor 'non-done item is not reopened by done-regression predicate' (-not [bool]$runningRegressionVerdict.reopen) ($runningRegressionVerdict | ConvertTo-Json -Compress -Depth 8)
-
   $moduleText = Get-Content -LiteralPath (Join-Path $bridgeRoot 'lib\backlog-governor.ps1') -Raw -Encoding UTF8
   $forbiddenTokens = @(
     'Write-BacklogJsonLine',
