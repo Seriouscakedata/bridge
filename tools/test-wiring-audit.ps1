@@ -2,8 +2,8 @@
 # test-wiring-audit.ps1 -- synthetic regression tests for tools/wiring-audit.ps1.
 
 $ErrorActionPreference = 'Stop'
-$bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-. (Join-Path $bridgeRoot 'tools\wiring-audit.ps1')
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $repoRoot 'tools\wiring-audit.ps1')
 
 $script:pass = 0
 $script:fail = 0
@@ -78,6 +78,15 @@ function Get-SyntheticWiringStatus {
   }
 
   return 'DEAD'
+}
+
+function Write-WiringAuditWarning {
+  param(
+    [Parameter(Mandatory = $true)][string]$File,
+    [Parameter(Mandatory = $true)][string]$Status
+  )
+
+  Write-Host ("WARN: real-code wiring candidate {0} => {1}" -f $File, $Status)
 }
 
 function Invoke-SyntheticWiringAudit {
@@ -171,6 +180,31 @@ function Invoke-DynamicFixture {
   $dynamicStatus = Get-SyntheticWiringStatus -Graph $dynamicGraph -File 'lib/dynamic.ps1'
   Assert-WiringAudit 'dynamic dispatch fixture is UNKNOWN_DYNAMIC' ($dynamicStatus -eq 'UNKNOWN_DYNAMIC') ($dynamicGraph | ConvertTo-Json -Compress -Depth 8)
   Assert-WiringAudit 'dynamic dispatch evidence is present' (@($dynamicGraph.dynamic_dispatch_sites).Count -gt 0) ($dynamicGraph | ConvertTo-Json -Compress -Depth 8)
+
+  $realGraph = Build-WiringAstGraph -Root $repoRoot -WarningOnly
+  $realCandidates = New-Object System.Collections.Generic.List[object]
+  foreach ($file in @($realGraph.scanned_files | Sort-Object)) {
+    if ($file -like 'tmp/*') { continue }
+
+    $status = Get-SyntheticWiringStatus -Graph $realGraph -File $file
+    if ($status -eq 'DEAD' -or $status -eq 'LOADED_ONLY') {
+      $realCandidates.Add([pscustomobject][ordered]@{
+        file = $file
+        status = $status
+      })
+      Write-WiringAuditWarning -File $file -Status $status
+    }
+  }
+
+  $reaperStatus = Get-SyntheticWiringStatus -Graph $realGraph -File 'lib/backlog-state-reaper.ps1'
+  Assert-WiringAudit 'current backlog-state-reaper is not DEAD' ($reaperStatus -ne 'DEAD') ("status={0}" -f $reaperStatus)
+
+  $verifyStatus = Get-SyntheticWiringStatus -Graph $realGraph -File 'lib/verify-selftest.ps1'
+  if ($verifyStatus -eq 'DEAD' -or $verifyStatus -eq 'LOADED_ONLY') {
+    Write-WiringAuditWarning -File 'lib/verify-selftest.ps1' -Status $verifyStatus
+  } else {
+    Write-Host ("WARN: current verify-selftest candidate expectation is not active; status={0}" -f $verifyStatus)
+  }
 } catch {
   Write-Host "FAIL: unhandled exception :: $($_.Exception.Message)"
   $script:fail++
