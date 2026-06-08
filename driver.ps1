@@ -72,18 +72,6 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 try { [Console]::OutputEncoding = $Utf8NoBom; [Console]::InputEncoding = $Utf8NoBom } catch {}
 
-if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
-  function Write-Log {
-    param([string]$Message)
-    try {
-      $logDir = Join-Path (Get-BridgeRoot) 'logs'
-      if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-      $line = ((Get-Date).ToUniversalTime().ToString('o') + ' ' + [string]$Message + "`n")
-      [System.IO.File]::AppendAllText((Join-Path $logDir 'driver.log'), $line, $Utf8NoBom)
-    } catch {}
-  }
-}
-
 try {
   $cfg = Get-BridgeConfig
   $requiredConfigKeys = @('port','maxTurns','loopDelaySeconds','workRoot')
@@ -174,7 +162,7 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Write-Log','Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Save-TaskCheckpointFromState','Format-TaskCheckpointRestoreText','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Save-TaskCheckpointFromState','Format-TaskCheckpointRestoreText','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
   }
   foreach ($sbName in @('DriverLoopPreflightBlock','DriverLoopIdleClaimBlock','DriverLoopTurnSetupBlock','DriverLoopAgentTurnBlock','DriverLoopReplyMarkersBlock','DriverLoopModeTransitionBlock','DriverLoopCompletionBlock','DriverLoopFinalGuardBlock')) {

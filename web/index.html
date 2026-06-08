@@ -2481,7 +2481,6 @@ let channelsCache = { active: 'main', items: [], scope: null };
 // background-fetch a diff (since=cachedLastSeq) instead of full reload.
 const channelMessageCache = Object.create(null);
 let channelSwitchAbort = null;  // AbortController for in-flight switch fetch
-let channelActiveLocalUntil = 0; // keep local tab intent ahead of stale channel polls
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
@@ -5806,12 +5805,7 @@ async function pollChannels(){
     const data = await fetchJson('/api/channels');
     if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
-    const keepLocalActive = Date.now() < channelActiveLocalUntil && channelsCache && channelsCache.active;
-    channelsCache = {
-      active: keepLocalActive ? String(channelsCache.active) : String(data.active || 'main'),
-      items: Array.isArray(data.items) ? data.items : [],
-      scope: keepLocalActive ? null : (data.active_scope || null)
-    };
+    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
     renderChannels();
   }catch(e){ /* keep last cache */ }
 }
@@ -5943,9 +5937,10 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     renderMessageBatch(initialMsgs, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
   }
   // Background fetch. AbortController lets a subsequent switchChannel cancel us.
-  // Always bound the fetch: requestOk skips its built-in timer when opts.signal
-  // is already set. Cached switches should clear quickly after painting cached
-  // messages; uncached first loads keep the longer timeout.
+  // Always bound the fetch with a 8s timeout: requestOk skips its built-in timer
+  // when opts.signal is already set, so without this guard the fetch hangs
+  // indefinitely if the server is unresponsive (e.g. mid-restart), keeping
+  // channelSwitchInProgress=true and stalling the UI forever.
   const ctrl = opts.signal || null;
   const chQs = targetSlug ? ('&channel=' + encodeURIComponent(targetSlug)) : '';
   let data;
@@ -5955,12 +5950,7 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     let fetchOpts;
     if(typeof AbortController !== 'undefined'){
       _msgCtrl = new AbortController();
-      // The channel-switch scenario and real users both need the tab switch to
-      // settle quickly even when the target channel has no cache yet. Keep the
-      // fetch bounded below the 5s scenario wait; normal poll() will backfill
-      // after the visible switch has completed.
-      const msgTimeoutMs = initialMsgs.length ? 1500 : 2500;
-      _msgTimer = setTimeout(() => _msgCtrl.abort(), msgTimeoutMs);
+      _msgTimer = setTimeout(() => _msgCtrl.abort(), 8000);
       if(ctrl && !ctrl.aborted) ctrl.addEventListener('abort', () => { clearTimeout(_msgTimer); _msgCtrl.abort(); });
       fetchOpts = {signal: _msgCtrl.signal};
     } else if(ctrl){
@@ -5969,13 +5959,7 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     data = await fetchJson('/api/messages?since=' + sinceSeq + chQs, fetchOpts);
   } catch(e){
     // requestOk converts AbortError → Error('timeout'); catch both.
-    if(e && (e.name === 'AbortError' || e.message === 'timeout')){
-      if(targetSlug){
-        const slot = channelMessageCache[targetSlug] || (channelMessageCache[targetSlug] = {msgs:[], lastSeq:0, loadedFull:false});
-        if(sinceSeq === 0 && !slot.loadedFull) slot.loadedFull = true;
-      }
-      return false;
-    }
+    if(e && (e.name === 'AbortError' || e.message === 'timeout')) return false;
     throw e;
   } finally {
     if(_msgTimer) clearTimeout(_msgTimer);
@@ -6009,20 +5993,6 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
   }
   return true;
 }
-function waitForChannelPaint(){
-  return new Promise(resolve => {
-    let done = false;
-    const finish = () => {
-      if(done) return;
-      done = true;
-      resolve();
-    };
-    setTimeout(finish, 120);
-    if(typeof requestAnimationFrame === 'function'){
-      requestAnimationFrame(() => requestAnimationFrame(finish));
-    }
-  });
-}
 async function switchChannel(slug){
   // 2026-05-28: abortable switch. If a previous switch is still in flight,
   // abort its fetch and supersede it. The old switchChannel's `finally` only
@@ -6046,7 +6016,6 @@ async function switchChannel(slug){
     closeChannelMenu();
     channelEpoch++;
     channelsCache.active = slug;
-    channelActiveLocalUntil = Date.now() + 10000;
     renderChannels();
 
     const activeOpts = {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})};
@@ -6062,9 +6031,6 @@ async function switchChannel(slug){
       activeOpts.signal = activeCtrl.signal;
     }
     fetchJson('/api/channels/active', activeOpts)
-      .then(() => {
-        if(isCurrent()) channelActiveLocalUntil = Math.max(channelActiveLocalUntil, Date.now() + 1000);
-      })
       .catch(e => {
         // Persisting server active_channel is best-effort. The visible channel
         // is local state, so aborts/timeouts from superseded switches must not
@@ -6082,8 +6048,7 @@ async function switchChannel(slug){
       // missing - left UI showing stale backlog from previous channel).
       status(); pollPlan(); pollMetrics(); pollBacklog();
       // Wait two frames so layout and paint commit before #log becomes visible again.
-      // Headless/hidden tabs may throttle RAF, so keep switch completion bounded.
-      await waitForChannelPaint();
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     }
   }catch(e){
     if(e && e.name === 'AbortError'){
