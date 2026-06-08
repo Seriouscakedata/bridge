@@ -106,6 +106,40 @@ if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) {
   }
 }
 
+Write-Host "`n[GR1] docs-only paths -> empty gate-regression scope"
+$scope = Get-GateRegressionScope -ChangedPaths @('docs/README.md','docs/architecture.md','CHANGELOG.md')
+Assert 'GR1 docs-only scope empty' ($scope.Count -eq 0)
+
+Write-Host "`n[GR2] HTML/CSS-only paths -> empty gate-regression scope"
+$scope = Get-GateRegressionScope -ChangedPaths @('web/index.html','web/app.css','web/logo.svg')
+Assert 'GR2 html-only scope empty' ($scope.Count -eq 0)
+
+Write-Host "`n[GR3] config/json/jsonl-only paths -> empty gate-regression scope"
+$scope = Get-GateRegressionScope -ChangedPaths @('config.json','.claude/settings.json','backlog.jsonl')
+Assert 'GR3 config-only scope empty' ($scope.Count -eq 0)
+
+Write-Host "`n[GR4] driver/lib/tools .ps1 paths -> non-empty gate-regression scope"
+$scope = Get-GateRegressionScope -ChangedPaths @('driver.ps1','lib/verify-selftest.ps1','lib/backlog.ps1','tools/test-project-memory.ps1')
+Assert 'GR4 scope non-empty' ($scope.Count -gt 0)
+Assert 'GR4 scope contains driver.ps1' ($scope -contains 'driver.ps1')
+Assert 'GR4 scope contains lib path' ($scope -contains 'lib/verify-selftest.ps1')
+Assert 'GR4 scope contains tools/test path' ($scope -contains 'tools/test-project-memory.ps1')
+
+Write-Host "`n[GR5] Invoke-GateRegressionSuite docs-only -> skips, Ok=true (no blocking)"
+$grResult = Invoke-GateRegressionSuite -BridgeRoot $root -ChangedPaths @('docs/README.md','web/index.html')
+Assert 'GR5 skip ok=true' ($grResult.Ok -eq $true)
+Assert 'GR5 skipped=true' ($grResult.Skipped -eq $true)
+Assert 'GR5 reason empty_scope' ($grResult.Reason -eq 'empty_scope')
+
+Write-Host "`n[GR6] Invoke-GateRegressionSuite non-empty scope + failing suite -> fail-closed"
+$grSandbox = Join-Path $env:TEMP ('gr-sandbox-' + ([guid]::NewGuid().ToString('N').Substring(0,8)))
+New-Item -ItemType Directory -Path (Join-Path $grSandbox 'tools') -Force | Out-Null
+Write-Utf8File -Path (Join-Path $grSandbox 'tools\run-tests.ps1') -Content "exit 1`n"
+$grResult = Invoke-GateRegressionSuite -BridgeRoot $grSandbox -ChangedPaths @('lib/common.ps1') -TimeoutSec 10
+Assert 'GR6 fail-closed ok=false' ($grResult.Ok -eq $false)
+Assert 'GR6 fail-closed not-skipped' ($grResult.Skipped -eq $false)
+Remove-Item -LiteralPath $grSandbox -Recurse -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fails -eq 0) { Write-Host 'VERIFY-SELFTEST: PASS' }
