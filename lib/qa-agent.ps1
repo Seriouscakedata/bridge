@@ -94,7 +94,8 @@ function Get-QAAgentConfig {
   try {
     $configPath = Join-Path $BridgeRoot 'config.json'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return [pscustomobject]$cfg }
-    $json = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $jsonText = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)
+    $json = $jsonText | ConvertFrom-Json
     if ($json -and $json.PSObject.Properties.Name -contains 'qaRunner' -and $json.qaRunner) {
       if ($json.qaRunner.PSObject.Properties.Name -contains 'runUnsafeScenarios') { $cfg.RunUnsafeScenarios = [bool]$json.qaRunner.runUnsafeScenarios }
       if ($json.qaRunner.PSObject.Properties.Name -contains 'scenarioTimeoutSec') { $cfg.ScenarioTimeoutSec = [int]$json.qaRunner.scenarioTimeoutSec }
@@ -119,7 +120,10 @@ function Invoke-ProjectBuildGate {
   $pr = ''
   try {
     $chJson = Join-Path (Join-Path (Join-Path $BridgeRoot 'channels') $Channel) 'channel.json'
-    if (Test-Path -LiteralPath $chJson) { $pr = [string]((Get-Content $chJson -Raw -Encoding UTF8 | ConvertFrom-Json).project_root) }
+    if (Test-Path -LiteralPath $chJson) {
+      $chRaw = [System.IO.File]::ReadAllText($chJson, [System.Text.Encoding]::UTF8)
+      $pr = [string](($chRaw | ConvertFrom-Json).project_root)
+    }
   } catch {}
   if ([string]::IsNullOrWhiteSpace($pr) -or -not (Test-Path -LiteralPath (Join-Path $pr 'package.json'))) { return $res }
 

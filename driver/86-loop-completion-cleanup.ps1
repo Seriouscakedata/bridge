@@ -286,13 +286,33 @@ $script:DriverLoopCompletionCleanupBlock = {
       try {
         $conversationSummary = [string](Read-Summary)
       } catch {
-        try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  summary-read-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+        try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('summary-read-error: ' + $_.Exception.Message) } catch {}
       }
       $cpSummary = if ($conversationSummary) { $conversationSummary.Substring(0, [Math]::Min(500, $conversationSummary.Length)) } else { '' }
       Save-TaskCheckpointFromState -State $stCp -TaskTitle $task -Channel $Channel -Reason 'continue' -Prompt '' -Context $cpSummary | Out-Null
       Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
     } catch {
-      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  checkpoint-write-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+      try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('checkpoint-write-error: ' + $_.Exception.Message) } catch {}
+    }
+  }
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {
+    $qaDoneBlocked = $false
+    $qaDoneBlockText = ''
+    try {
+      $stQaDoneGuard = Read-State
+      if ($stQaDoneGuard -and $stQaDoneGuard.PSObject.Properties.Name -contains 'task_last_failure' -and $null -ne $stQaDoneGuard.task_last_failure) {
+        $lastFailureKind = ''
+        try { $lastFailureKind = [string]$stQaDoneGuard.task_last_failure.kind } catch { $lastFailureKind = '' }
+        if ($lastFailureKind -eq 'qa_failed') {
+          $qaDoneBlocked = $true
+          try { $qaDoneBlockText = [string]$stQaDoneGuard.task_last_failure.text } catch { $qaDoneBlockText = '' }
+        }
+      }
+    } catch {}
+    if ($qaDoneBlocked) {
+      if ([string]::IsNullOrWhiteSpace($qaDoneBlockText)) { $qaDoneBlockText = 'qa_failed' }
+      Add-Message -From system -Text ("🔴 QA guard: блокирую переход задачи в done из-за последнего qa_failed: " + $qaDoneBlockText) -Kind event | Out-Null
+      $plannerStatus = 'CONTINUE'
     }
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {

@@ -945,7 +945,21 @@ function Add-TaskCheckpoint {
 
 function Set-TaskLastFailure {
   param(
-    [Parameter(Mandatory)][ValidateSet('preflight_blocked','smoke_failed','test_failed','critic_rejected')][string]$Kind,
+    [Parameter(Mandatory)]
+    [ValidateSet(
+      'action_evidence_error',
+      'bridge_guard',
+      'critic_rejected',
+      'doctor_timeout',
+      'gate_regression_failed',
+      'gate_regression_runtime_error',
+      'no_action_evidence',
+      'preflight_blocked',
+      'qa_failed',
+      'smoke_failed',
+      'test_failed'
+    )]
+    [string]$Kind,
     [Parameter(Mandatory)][string]$Text
   )
 
@@ -960,6 +974,23 @@ function Set-TaskLastFailure {
       text = $cleanText
       ts   = $ts
     }) -Force
+  }.GetNewClosure()) | Out-Null
+}
+
+function Clear-TaskLastFailureKind {
+  param([string]$Kind = '')
+  Update-State ({
+    param($s)
+    if (-not ($s.PSObject.Properties.Name -contains 'task_last_failure') -or $null -eq $s.task_last_failure) { return }
+    if ([string]::IsNullOrWhiteSpace($Kind)) {
+      $s | Add-Member -NotePropertyName task_last_failure -NotePropertyValue $null -Force
+      return
+    }
+    $curKind = ''
+    try { $curKind = [string]$s.task_last_failure.kind } catch { $curKind = '' }
+    if ($curKind -eq [string]$Kind) {
+      $s | Add-Member -NotePropertyName task_last_failure -NotePropertyValue $null -Force
+    }
   }.GetNewClosure()) | Out-Null
 }
 

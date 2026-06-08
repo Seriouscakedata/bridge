@@ -531,14 +531,19 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = 'task-' + [string]$stQa.task_start_seq }
         $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
         if ($qaResult.Verdict -eq 'FAIL') {
+          try { Set-TaskLastFailure -Kind qa_failed -Text ([string]$qaResult.Summary) } catch {}
           Add-Message -From system -Text "🔴 QA-агент: FAIL`n$($qaResult.Summary)`nВозвращаю задачу на доработку." -Kind event | Out-Null
           $plannerStatus = 'CONTINUE'
         } else {
+          try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
           Add-Message -From system -Text "✅ QA-агент: PASS — $($qaResult.Summary)" -Kind event | Out-Null
         }
       }
     } catch {
-      Add-Message -From system -Text "⚠ QA-агент: ошибка запуска ($($_.Exception.Message)), пропускаю." -Kind event | Out-Null
+      $qaGateError = ($_.Exception.Message -replace '\s+', ' ').Trim()
+      try { Set-TaskLastFailure -Kind qa_failed -Text ('QA agent runtime error: ' + $qaGateError) } catch {}
+      Add-Message -From system -Text "🔴 QA-агент: ошибка запуска ($qaGateError). Задача НЕ закрывается; возвращаю на доработку." -Kind event | Out-Null
+      $plannerStatus = 'CONTINUE'
     }
   }
 }

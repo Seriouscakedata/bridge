@@ -192,13 +192,19 @@
                 $postCommitQa = Invoke-QAAgentPostCommit -BridgeRoot $bridgeRoot -CommitSha $acNewHead -TaskId $postCommitQaTaskId -TaskTitle $task -Channel $Channel
                 if ($postCommitQa.Verdict -eq 'FAIL') {
                   try { Set-TaskLastFailure -Kind qa_failed -Text ([string]$postCommitQa.Summary) } catch {}
-                  Add-Message -From system -Text ("🔴 QA Runner post-commit: FAIL`n" + [string]$postCommitQa.Summary + "`nВозвращаю задачу на доработку.") -Kind event | Out-Null
-                  Update-State { param($s) $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force; $s.task_did_actions=$true } | Out-Null
+                  Add-Message -From system -Text ("🔴 QA Runner post-commit: FAIL после commit " + $acNewHead.Substring(0,7) + "`n" + [string]$postCommitQa.Summary + "`nЗадача НЕ может перейти в done; возвращаю Codex на доработку.") -Kind event | Out-Null
+                  Update-State { param($s) $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force; $s.task_did_actions=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+                  continue mainDriverLoop
                 } else {
+                  try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
                   Add-Message -From system -Text ("✅ QA Runner post-commit: PASS — " + [string]$postCommitQa.Summary) -Kind event | Out-Null
                 }
               } catch {
-                Add-Message -From system -Text ("⚠ QA Runner post-commit skipped: " + $_.Exception.Message) -Kind event | Out-Null
+                $qaErr = ($_.Exception.Message -replace '\s+', ' ').Trim()
+                try { Set-TaskLastFailure -Kind qa_failed -Text ('QA Runner post-commit error: ' + $qaErr) } catch {}
+                Add-Message -From system -Text ("🔴 QA Runner post-commit: ERROR после commit " + $acNewHead.Substring(0,7) + "`n" + $qaErr + "`nЗадача НЕ может перейти в done; возвращаю Codex на доработку.") -Kind event | Out-Null
+                Update-State { param($s) $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force; $s.task_did_actions=$true; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+                continue mainDriverLoop
               }
               Add-Message -From system -Text ("💾 Драйвер зафиксировал правки Codex (coder в sandbox не имеет доступа к .git): " + $acNewHead.Substring(0,7)) -Kind event | Out-Null
             }
@@ -334,7 +340,7 @@
       Save-TaskCheckpointFromState -State $stTimeoutCp -TaskTitle $task -Channel $Channel -Reason ("timeout:" + [string]$turnResult.errorType) -Prompt $prompt -Context ("agent timeout after " + [string]$dur + "s") | Out-Null
       Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
     } catch {
-      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  timeout-checkpoint-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+      try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('timeout-checkpoint-error: ' + $_.Exception.Message) } catch {}
     }
     # 🩺 Long timeouts (>= ~60% of cap) almost never come back via retry — same prompt would
     # just timeout again, wasting another 500+s. Heuristic threshold 350s catches both planner

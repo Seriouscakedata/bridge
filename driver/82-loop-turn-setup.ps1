@@ -34,7 +34,7 @@
     if (-not [string]::IsNullOrWhiteSpace($checkpointTaskId)) {
       $restoreCheckpoint = Read-TaskCheckpoint -TaskId $checkpointTaskId -Channel $Channel
       $restoreText = Format-TaskCheckpointRestoreText -Checkpoint $restoreCheckpoint
-      if (-not [string]::IsNullOrWhiteSpace($restoreText)) {
+      if (-not [string]::IsNullOrWhiteSpace($restoreText) -and $prompt -notmatch '=== TASK CHECKPOINT/RESTORE ===') {
         $prompt = $prompt + "`n`n" + $restoreText
       }
     }
@@ -46,7 +46,7 @@
       Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
     }
   } catch {
-    try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  before-agent-checkpoint-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+    try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('before-agent-checkpoint-error: ' + $_.Exception.Message) } catch {}
   }
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow

@@ -26,6 +26,69 @@ function Get-TaskCheckpointPath {
   return (Join-Path $dir ([string]$TaskId + '.jsonl'))
 }
 
+function Protect-TaskCheckpointText {
+  param(
+    [AllowNull()][string]$Text,
+    [int]$MaxLength = 4000
+  )
+  if ($null -eq $Text) { return '' }
+  if ($MaxLength -le 0) { $MaxLength = 4000 }
+  $out = [string]$Text
+  $out = $out -replace '(?im)(Authorization\s*:\s*(?:Basic|Bearer)\s+)[A-Za-z0-9+/=._-]+', '$1<redacted>'
+  $out = $out -replace '(?i)(password|passwd|pwd|token|secret|api[-_ ]?key|apikey|bearer)(["''\s:=]+)([^"''\s,;]+)', '$1$2<redacted>'
+  $out = $out -replace '(?i)\b(sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}|gh[pousr]_[0-9A-Za-z_]{20,})\b', '<redacted-secret>'
+  $out = $out -replace '(?i)(secrets\.json|auth\.json)[^\r\n]*', '$1 <redacted-path-context>'
+  if ($out.Length -gt $MaxLength) { $out = $out.Substring(0, $MaxLength) }
+  return $out
+}
+
+function Write-TaskCheckpointLog {
+  param(
+    [string]$BridgeRoot = '',
+    [string]$Message = ''
+  )
+  try {
+    $root = [string]$BridgeRoot
+    if ([string]::IsNullOrWhiteSpace($root)) { $root = Get-TaskCheckpointBridgeRoot }
+    if ([string]::IsNullOrWhiteSpace($root)) { return }
+    $path = Join-Path $root 'checkpoint.log'
+    $safeMessage = Protect-TaskCheckpointText -Text $Message -MaxLength 800
+    $line = (Get-Date).ToString('s') + '  ' + $safeMessage + "`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText($path, $line, $utf8NoBom)
+  } catch {}
+}
+
+function Limit-TaskCheckpointFile {
+  param(
+    [string]$Path,
+    [int]$MaxRecords = 20
+  )
+  if ([string]::IsNullOrWhiteSpace($Path) -or $MaxRecords -le 0) { return }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+  try {
+    $lines = @([System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($lines.Count -le $MaxRecords) { return }
+    $tail = @($lines | Select-Object -Last $MaxRecords)
+    $content = ($tail -join "`n") + "`n"
+    [System.IO.File]::WriteAllText($Path, $content, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
+
+function Get-TaskCheckpointRestoreKey {
+  param([object]$Checkpoint)
+  if ($null -eq $Checkpoint) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @('ts','reason','step','head')) {
+    try {
+      if ($Checkpoint.PSObject.Properties.Name -contains $name -and $null -ne $Checkpoint.PSObject.Properties[$name].Value) {
+        [void]$parts.Add([string]$Checkpoint.PSObject.Properties[$name].Value)
+      }
+    } catch {}
+  }
+  return [string]::Join('|', $parts.ToArray())
+}
+
 function Write-TaskCheckpoint {
   param(
     [string]$TaskId,
@@ -47,18 +110,15 @@ function Write-TaskCheckpoint {
   if (-not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
-  $summary = [string]$LastSummary
-  if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) }
-  $promptText = [string]$Prompt
-  if ($promptText.Length -gt 4000) { $promptText = $promptText.Substring(0, 4000) }
-  $contextText = [string]$Context
-  if ($contextText.Length -gt 3000) { $contextText = $contextText.Substring(0, 3000) }
+  $summary = Protect-TaskCheckpointText -Text ([string]$LastSummary) -MaxLength 500
+  $promptText = Protect-TaskCheckpointText -Text ([string]$Prompt) -MaxLength 4000
+  $contextText = Protect-TaskCheckpointText -Text ([string]$Context) -MaxLength 3000
   $artifactSnapshot = $Artifacts
   if ($null -eq $artifactSnapshot) { $artifactSnapshot = @{} }
   $row = [pscustomobject]@{
     ts          = (Get-Date).ToString('o')
     taskId      = [string]$TaskId
-    taskTitle   = [string]$TaskTitle
+    taskTitle   = Protect-TaskCheckpointText -Text ([string]$TaskTitle) -MaxLength 500
     step        = [int]$Step
     lastSummary = $summary
     reason      = [string]$Reason
@@ -70,6 +130,7 @@ function Write-TaskCheckpoint {
   $line = ($row | ConvertTo-Json -Compress -Depth 8)
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::AppendAllText($path, $line + "`n", $utf8NoBom)
+  Limit-TaskCheckpointFile -Path $path -MaxRecords 20
   return $row
 }
 
@@ -100,6 +161,19 @@ function Clear-TaskCheckpoint {
     [string]$TaskId,
     [string]$Channel = ''
   )
+
+  if ([string]::IsNullOrWhiteSpace($TaskId)) {
+    try {
+      if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+        Update-State {
+          param($s)
+          $s | Add-Member -NotePropertyName task_checkpoints -NotePropertyValue @() -Force
+          $s | Add-Member -NotePropertyName task_last_failure -NotePropertyValue $null -Force
+        } | Out-Null
+      }
+    } catch {}
+    return
+  }
 
   $path = Get-TaskCheckpointPath -TaskId $TaskId -Channel $Channel
   if ([string]::IsNullOrWhiteSpace($path)) { return }

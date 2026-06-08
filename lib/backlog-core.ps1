@@ -336,6 +336,200 @@ function Get-BacklogPrioritizerModel {
   return ''
 }
 
+function ConvertFrom-BacklogJsonDictionary {
+  param([string]$JsonText)
+  if ([string]::IsNullOrWhiteSpace($JsonText)) { return $null }
+  try {
+    Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+    $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $serializer.MaxJsonLength = [int]::MaxValue
+    return $serializer.DeserializeObject([string]$JsonText)
+  } catch {
+    return $null
+  }
+}
+
+function Get-BacklogDictionaryValue {
+  param(
+    [AllowNull()]$Map,
+    [string]$Name,
+    [AllowNull()]$Default = $null
+  )
+  if ($null -eq $Map -or [string]::IsNullOrWhiteSpace($Name)) { return $Default }
+  try {
+    if ($Map.PSObject.Methods.Name -contains 'ContainsKey' -and $Map.ContainsKey($Name)) {
+      return $Map[$Name]
+    }
+  } catch {}
+  try {
+    if ($Map -is [System.Collections.IDictionary] -and $Map.Contains($Name)) {
+      return $Map[$Name]
+    }
+  } catch {}
+  return $Default
+}
+
+function Get-BacklogPrioritizerSettings {
+  param(
+    [string]$Channel = $env:BRIDGE_CHANNEL,
+    [int]$IntervalMinutes = 60,
+    [int]$MaxItems = 20
+  )
+
+  $settings = [ordered]@{
+    Enabled = $false
+    UseLLMPriority = $false
+    IdleEnabled = $false
+    IntervalMinutes = [int]$(if ($IntervalMinutes -gt 0) { $IntervalMinutes } else { 60 })
+    MaxItems = [int]$(if ($MaxItems -gt 0) { $MaxItems } else { 20 })
+    Channel = $(if ([string]::IsNullOrWhiteSpace($Channel)) { 'main' } else { [string]$Channel })
+  }
+  try {
+    $cfgPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'
+    if (-not (Test-Path -LiteralPath $cfgPath -PathType Leaf)) { return [pscustomobject]$settings }
+    $raw = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return [pscustomobject]$settings }
+    $cfg = ConvertFrom-BacklogJsonDictionary -JsonText $raw
+    $backlogCfg = Get-BacklogDictionaryValue -Map $cfg -Name 'backlog' -Default $null
+    if ($backlogCfg -is [System.Collections.IDictionary]) {
+      $idleEnabled = Get-BacklogDictionaryValue -Map $backlogCfg -Name 'enableLLMPrioritizerOnIdle' -Default $null
+      if ($null -ne $idleEnabled) { $settings.IdleEnabled = [bool]$idleEnabled }
+      $usePriority = Get-BacklogDictionaryValue -Map $backlogCfg -Name 'useLLMPriority' -Default $null
+      if ($null -ne $usePriority) { $settings.UseLLMPriority = [bool]$usePriority }
+      $intervalValue = Get-BacklogDictionaryValue -Map $backlogCfg -Name 'prioritizerIntervalMinutes' -Default $null
+      if ($null -ne $intervalValue) {
+        $iv = [int]$intervalValue
+        if ($iv -gt 0) { $settings.IntervalMinutes = $iv }
+      }
+      $maxItemsValue = Get-BacklogDictionaryValue -Map $backlogCfg -Name 'prioritizerMaxItems' -Default $null
+      if ($null -ne $maxItemsValue) {
+        $mi = [int]$maxItemsValue
+        if ($mi -gt 0) { $settings.MaxItems = $mi }
+      }
+    }
+  } catch {}
+  $settings.Enabled = ([bool]$settings.IdleEnabled -or [bool]$settings.UseLLMPriority)
+  return [pscustomobject]$settings
+}
+
+function Update-BacklogLLMPriorityOrder {
+  param(
+    [object[]]$AllItems,
+    [object[]]$Ideas,
+    [object[]]$Ranked
+  )
+
+  $items = @($AllItems)
+  $originalItems = @($items)
+  $ideasArr = @($Ideas)
+  $rankedArr = @($Ranked)
+  if ($items.Count -eq 0 -or $ideasArr.Count -eq 0 -or $rankedArr.Count -eq 0) {
+    return [pscustomobject]@{ Items = @($items); Updated = 0; Reordered = $false }
+  }
+
+  $idToIndex = @{}
+  for ($idx = 0; $idx -lt $items.Count; $idx++) {
+    $itemId = ''
+    try { $itemId = [string]$items[$idx].id } catch { $itemId = '' }
+    if (-not [string]::IsNullOrWhiteSpace($itemId)) { $idToIndex[$itemId] = $idx }
+  }
+
+  $ideaIds = @{}
+  $ideaOrder = @{}
+  $eligibleSlots = New-Object 'System.Collections.Generic.List[int]'
+  for ($i = 0; $i -lt $ideasArr.Count; $i++) {
+    $ideaId = ''
+    try { $ideaId = [string]$ideasArr[$i].id } catch { $ideaId = '' }
+    if ([string]::IsNullOrWhiteSpace($ideaId) -or -not $idToIndex.ContainsKey($ideaId)) { continue }
+    if (-not $ideaIds.ContainsKey($ideaId)) {
+      $ideaIds[$ideaId] = $true
+      $ideaOrder[$ideaId] = $i
+      [void]$eligibleSlots.Add([int]$idToIndex[$ideaId])
+    }
+  }
+  if ($eligibleSlots.Count -eq 0) {
+    return [pscustomobject]@{ Items = @($items); Updated = 0; Reordered = $false }
+  }
+
+  $seenRanked = @{}
+  $rankRows = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($rank in $rankedArr) {
+    $id = ''
+    try { $id = [string]$rank.id } catch { $id = '' }
+    if ([string]::IsNullOrWhiteSpace($id) -or -not $ideaIds.ContainsKey($id) -or $seenRanked.ContainsKey($id)) { continue }
+    $score100 = 0.0
+    try { $score100 = [double]$rank.score } catch { continue }
+    if ($score100 -lt 0) { $score100 = 0.0 }
+    if ($score100 -gt 100) { $score100 = 100.0 }
+    $reason = ''
+    try { $reason = ([string]$rank.reason).Trim() } catch { $reason = '' }
+    $seenRanked[$id] = $true
+    [void]$rankRows.Add([pscustomobject]@{
+      id = $id
+      score100 = [double]$score100
+      reason = $reason
+      original_order = [int]$ideaOrder[$id]
+    })
+  }
+
+  if ($rankRows.Count -eq 0) {
+    return [pscustomobject]@{ Items = @($items); Updated = 0; Reordered = $false }
+  }
+
+  $orderedRowsList = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($sortedRow in @($rankRows | Sort-Object @{ Expression = { -[double]$_.score100 } }, @{ Expression = { [int]$_.original_order } })) {
+    [void]$orderedRowsList.Add($sortedRow)
+  }
+  foreach ($idea in $ideasArr) {
+    $id = ''
+    try { $id = [string]$idea.id } catch { $id = '' }
+    if ([string]::IsNullOrWhiteSpace($id) -or -not $ideaIds.ContainsKey($id) -or $seenRanked.ContainsKey($id)) { continue }
+    [void]$orderedRowsList.Add([pscustomobject]@{
+      id = $id
+      score100 = $null
+      reason = ''
+      original_order = [int]$ideaOrder[$id]
+    })
+  }
+  $orderedRows = @($orderedRowsList.ToArray())
+
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $updated = 0
+  $rankNo = 0
+  foreach ($row in @($orderedRows)) {
+    $rankNo++
+    $idx = [int]$idToIndex[[string]$row.id]
+    $target = $items[$idx]
+    if ($null -ne $row.score100) {
+      $target | Add-Member -NotePropertyName score -NotePropertyValue ([Math]::Round([double]$row.score100 / 10.0, 2)) -Force
+      $target | Add-Member -NotePropertyName llm_priority_score -NotePropertyValue ([Math]::Round([double]$row.score100, 2)) -Force
+      $target | Add-Member -NotePropertyName llm_priority_reason -NotePropertyValue ([string]$row.reason) -Force
+      $target | Add-Member -NotePropertyName llm_priority_at -NotePropertyValue $now -Force
+      $updated++
+    }
+    $target | Add-Member -NotePropertyName llm_priority_rank -NotePropertyValue $rankNo -Force
+    $items[$idx] = $target
+  }
+
+  $slots = @($eligibleSlots.ToArray() | Sort-Object)
+  $reordered = $false
+  for ($slotNo = 0; $slotNo -lt $slots.Count -and $slotNo -lt $orderedRows.Count; $slotNo++) {
+    $slotIndex = [int]$slots[$slotNo]
+    $sourceId = [string]$orderedRows[$slotNo].id
+    $sourceIndex = [int]$idToIndex[$sourceId]
+    $currentId = ''
+    try { $currentId = [string]$items[$slotIndex].id } catch { $currentId = '' }
+    if ($currentId -ne $sourceId) { $reordered = $true }
+    $items[$slotIndex] = $originalItems[$sourceIndex]
+  }
+
+  return [pscustomobject]@{
+    Items = @($items)
+    Updated = [int]$updated
+    Reordered = [bool]$reordered
+  }
+}
+
 function Invoke-BacklogLLMPrioritize {
   param(
     [int]$MaxItems = 20,
@@ -401,44 +595,11 @@ function Invoke-BacklogLLMPrioritize {
       return 0
     }
 
-    $ideaIds = @{}
-    foreach ($idea in $ideas) {
-      $ideaId = ''
-      try { $ideaId = [string]$idea.id } catch { $ideaId = '' }
-      if (-not [string]::IsNullOrWhiteSpace($ideaId)) { $ideaIds[$ideaId] = $true }
-    }
-    $idToIndex = @{}
-    for ($idx = 0; $idx -lt $allItems.Count; $idx++) {
-      $itemId = ''
-      try { $itemId = [string]$allItems[$idx].id } catch { $itemId = '' }
-      if (-not [string]::IsNullOrWhiteSpace($itemId)) { $idToIndex[$itemId] = $idx }
-    }
-
-    $updated = 0
-    foreach ($rank in $ranked) {
-      $id = ''
-      try { $id = [string]$rank.id } catch { $id = '' }
-      if ([string]::IsNullOrWhiteSpace($id)) { continue }
-      if (-not $ideaIds.ContainsKey($id)) { continue }
-      if (-not $idToIndex.ContainsKey($id)) { continue }
-
-      $score100 = 0.0
-      try { $score100 = [double]$rank.score } catch { continue }
-      if ($score100 -lt 0) { $score100 = 0.0 }
-      if ($score100 -gt 100) { $score100 = 100.0 }
-      $reason = ''
-      try { $reason = ([string]$rank.reason).Trim() } catch { $reason = '' }
-
-      $targetIndex = [int]$idToIndex[$id]
-      $target = $allItems[$targetIndex]
-      $target | Add-Member -NotePropertyName score -NotePropertyValue ([Math]::Round($score100 / 10.0, 2)) -Force
-      $target | Add-Member -NotePropertyName llm_priority_reason -NotePropertyValue $reason -Force
-      $allItems[$targetIndex] = $target
-      $updated++
-    }
-
-    if ($updated -gt 0) { Save-Backlog $allItems }
-    Write-Host "🧠 LLM-приоритизация: обновлено $($updated) идей из $($ideas.Count)"
+    $priorityUpdate = Update-BacklogLLMPriorityOrder -AllItems $allItems -Ideas $ideas -Ranked $ranked
+    $updated = [int]$priorityUpdate.Updated
+    if ($updated -gt 0) { Save-Backlog @($priorityUpdate.Items) }
+    $reorderText = if ([bool]$priorityUpdate.Reordered) { ', порядок top-N изменён' } else { '' }
+    Write-Host "🧠 LLM-приоритизация: обновлено $($updated) идей из $($ideas.Count)$reorderText"
     return $updated
   }.GetNewClosure()
 
@@ -460,20 +621,10 @@ function Start-BacklogPrioritizerIfDue {
     [int]$MaxItems = 20
   )
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
-  if ($IntervalMinutes -le 0) { $IntervalMinutes = 60 }
-  if ($MaxItems -le 0) { $MaxItems = 20 }
-  $enabled = $false
-  try {
-    $cfgPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'
-    $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($cfg -and $cfg.PSObject.Properties.Name -contains 'backlog' -and $cfg.backlog) {
-      if ($cfg.backlog.PSObject.Properties.Name -contains 'enableLLMPrioritizerOnIdle') { $enabled = [bool]$cfg.backlog.enableLLMPrioritizerOnIdle }
-      elseif ($cfg.backlog.PSObject.Properties.Name -contains 'useLLMPriority') { $enabled = [bool]$cfg.backlog.useLLMPriority }
-      if ($cfg.backlog.PSObject.Properties.Name -contains 'prioritizerIntervalMinutes') { $IntervalMinutes = [int]$cfg.backlog.prioritizerIntervalMinutes }
-      if ($cfg.backlog.PSObject.Properties.Name -contains 'prioritizerMaxItems') { $MaxItems = [int]$cfg.backlog.prioritizerMaxItems }
-    }
-  } catch {}
-  if (-not $enabled) { return 0 }
+  $settings = Get-BacklogPrioritizerSettings -Channel $Channel -IntervalMinutes $IntervalMinutes -MaxItems $MaxItems
+  if (-not [bool]$settings.Enabled) { return 0 }
+  $IntervalMinutes = [int]$settings.IntervalMinutes
+  $MaxItems = [int]$settings.MaxItems
   if ($IntervalMinutes -le 0) { $IntervalMinutes = 60 }
   if ($MaxItems -le 0) { $MaxItems = 20 }
 
@@ -1123,10 +1274,8 @@ function Get-NextRunnableIdea {
   param([bool]$IncludeNew = $false)
   $useLLMPriority = $false
   try {
-    $cfg = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($cfg -and $cfg.PSObject.Properties.Name -contains 'backlog' -and $cfg.backlog) {
-      try { $useLLMPriority = [bool]$cfg.backlog.useLLMPriority } catch {}
-    }
+    $prioritySettings = Get-BacklogPrioritizerSettings -Channel $env:BRIDGE_CHANNEL -IntervalMinutes 60 -MaxItems 15
+    $useLLMPriority = [bool]$prioritySettings.UseLLMPriority
   } catch {}
   if ($useLLMPriority -or $env:BRIDGE_LLM_PRIORITY -eq '1') {
     $priorityChannel = [string]$env:BRIDGE_CHANNEL
