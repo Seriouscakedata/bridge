@@ -816,6 +816,38 @@ function Test-BacklogClaimTextMatch {
   return $false
 }
 
+function Test-BridgeControlPlanePath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $p = $Path.Replace('\','/').Trim().TrimStart('./').ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
+  if ($p -match '(^|/)driver[^/]*\.ps1$') { return $true }
+  if ($p -match '(^|/)driver/[^/]+\.ps1$') { return $true }
+  if ($p -match '(^|/)(server|supervisor|watchdog)\.ps1$') { return $true }
+  if ($p -match '(^|/)lib/backlog[^/]*\.ps1$') { return $true }
+  if ($p -match '(^|/)lib/(parallel|circuit-breaker)\.ps1$') { return $true }
+  return $false
+}
+
+function Test-IdeaTouchesControlPlanePath {
+  param($Idea)
+  if (-not $Idea) { return $false }
+  $paths = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($source in @(
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'files' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'workpack_touch_set' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'touch_set' -Default @())
+    )) {
+    foreach ($path in @(ConvertTo-BacklogClaimStringArray $source)) {
+      if (-not [string]::IsNullOrWhiteSpace($path)) { [void]$paths.Add($path) }
+    }
+  }
+  foreach ($path in @($paths.ToArray())) {
+    if (Test-BridgeControlPlanePath -Path $path) { return $true }
+  }
+  return $false
+}
+
 function Test-BacklogItemHeld {
   param($Item)
   if (-not $Item) { return $false }
@@ -936,18 +968,26 @@ function Test-BacklogApprovedItemClaimable {
     return [pscustomobject]@{ claimable=$false; reason='project-scope-blocked'; admission=$null }
   }
 
-  $isOperator = $false
-  try { $isOperator = (@($Item.tags) -contains 'operator') } catch { $isOperator = $false }
+  $tags = @()
+  try { $tags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $tags = @() }
+  $isOperator = (@($tags) -contains 'operator')
   # 2026-06-06 (operator hotfix): project-autopilot coordinator tasks (scope=project, work-ONLY-in-project-root)
   # are PLANNERS, not control-plane executors. Their text mentions driver.ps1/supervisor/backlog ONLY as
   # instructions teaching the worker how to flag control-plane atoms — the control-plane regex false-matches
   # those words and blocked the coordinator, wedging CHAPTER autopilot. The atoms the coordinator emits are
-  # re-checked by THIS gate at their own claim time, so exempting the coordinator is safe.
+  # re-checked by THIS gate at their own claim time, so exempting ONLY the coordinator is safe.
   $isProjectAutopilot = $false
-  try { $isProjectAutopilot = (($scope -eq 'project') -and (@($Item.tags) -contains 'project-autopilot')) } catch { $isProjectAutopilot = $false }
+  try { $isProjectAutopilot = (@($tags) -contains 'project-autopilot') } catch { $isProjectAutopilot = $false }
+  $isProjectAutopilotAtom = ($isProjectAutopilot -and (@($tags) -contains 'atom'))
   $touchesControl = $false
-  try { $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item) } catch { $touchesControl = $false }
-  if ($touchesControl -and -not $isOperator -and -not $isProjectAutopilot) {
+  try {
+    if ($isProjectAutopilot) {
+      $touchesControl = ($isProjectAutopilotAtom -and [bool](Test-IdeaTouchesControlPlanePath -Idea $Item))
+    } else {
+      $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
+    }
+  } catch { $touchesControl = $false }
+  if ($touchesControl -and -not $isOperator) {
     $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
     if ($admission -and [bool]$admission.ok) {
       return [pscustomobject]@{ claimable=$true; reason='bridge-self-admission'; admission=$admission }
@@ -1694,12 +1734,14 @@ function Test-IdeaTouchesControlPlane {
   # breaker, the driver core loop, restart-limit, script-integrity). Autonomously editing these is
   # what repeatedly deadlocked the bridge on 2026-05-31 (a cascade of conflicting over-protections
   # the bridge generated for itself). Used to (1) classify such ideas as red, and (2) HARD-BLOCK
-  # auto-claim of them unless the OPERATOR explicitly delegated (tag 'operator'). Deterministic.
+  # auto-claim of them unless the OPERATOR explicitly delegated (tag 'operator') or the item carries
+  # a valid bridge_self_admission. Deterministic.
   param($Idea)
+  try { if (Test-IdeaTouchesControlPlanePath -Idea $Idea) { return $true } } catch {}
   $t = ''
   try { $t = ([string]$Idea.text).ToLowerInvariant() } catch {}
   if ([string]::IsNullOrWhiteSpace($t)) { return $false }
-  $cpPat = '(watchdog|supervisor|process[_ -]?supervision|runtime[_ -]?incident|circuit[_ -]?break|restart[_ -]?limit|script[_ -]?integrit|concurrent.{0,4}driver|control[_ -]?plane|driver\.ps1|server\.ps1|supervisor\.ps1|watchdog\.ps1|circuit-breaker\.ps1|kill-bridge|self[_ -]?edit)'
+  $cpPat = '(watchdog|supervisor|process[_ -]?supervision|runtime[_ -]?incident|circuit[_ -]?break|restart[_ -]?limit|script[_ -]?integrit|concurrent.{0,4}driver|control[_ -]?plane|driver[^/\s\\]*\.ps1|driver[\\/][^\s,;:]+\.ps1|server\.ps1|supervisor\.ps1|watchdog\.ps1|lib[\\/]backlog[^/\s\\]*\.ps1|lib[\\/](parallel|circuit-breaker)\.ps1|circuit-breaker\.ps1|kill-bridge|self[_ -]?edit)'
   return [bool]($t -match $cpPat)
 }
 
