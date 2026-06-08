@@ -2481,6 +2481,7 @@ let channelsCache = { active: 'main', items: [], scope: null };
 // background-fetch a diff (since=cachedLastSeq) instead of full reload.
 const channelMessageCache = Object.create(null);
 let channelSwitchAbort = null;  // AbortController for in-flight switch fetch
+let channelActiveLocalUntil = 0; // keep local tab intent ahead of stale channel polls
 let statusInFlight = false;
 let planInFlight = false;
 let codeInFlight = false;
@@ -5805,7 +5806,12 @@ async function pollChannels(){
     const data = await fetchJson('/api/channels');
     if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
-    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
+    const keepLocalActive = Date.now() < channelActiveLocalUntil && channelsCache && channelsCache.active;
+    channelsCache = {
+      active: keepLocalActive ? String(channelsCache.active) : String(data.active || 'main'),
+      items: Array.isArray(data.items) ? data.items : [],
+      scope: keepLocalActive ? null : (data.active_scope || null)
+    };
     renderChannels();
   }catch(e){ /* keep last cache */ }
 }
@@ -6016,6 +6022,7 @@ async function switchChannel(slug){
     closeChannelMenu();
     channelEpoch++;
     channelsCache.active = slug;
+    channelActiveLocalUntil = Date.now() + 10000;
     renderChannels();
 
     const activeOpts = {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slug})};
@@ -6031,6 +6038,9 @@ async function switchChannel(slug){
       activeOpts.signal = activeCtrl.signal;
     }
     fetchJson('/api/channels/active', activeOpts)
+      .then(() => {
+        if(isCurrent()) channelActiveLocalUntil = Math.max(channelActiveLocalUntil, Date.now() + 1000);
+      })
       .catch(e => {
         // Persisting server active_channel is best-effort. The visible channel
         // is local state, so aborts/timeouts from superseded switches must not
