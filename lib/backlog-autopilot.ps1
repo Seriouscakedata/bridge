@@ -1278,7 +1278,7 @@ function Set-ProjectAutopilotIdeaMetadata {
             admitted        = $true
             mode            = 'bridge_self_canary'
             canary_required = $true
-            checks          = @()
+            checks          = @('driver.ps1 -SelfTest', 'smoke.ps1', 'Invoke-CanaryCycle')
             rollback_plan   = 'Revert this atom commit and rerun Parser.ParseFile, tools/run-tests.ps1, driver.ps1 -SelfTest, smoke.ps1, and canary before resuming dependent atoms.'
             auto_synthesized = $true
             reason          = 'autopilot auto-admission: atom touches control-plane (Test-IdeaTouchesControlPlane) but no admission was provided by the planner'
