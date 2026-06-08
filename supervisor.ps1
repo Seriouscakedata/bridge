@@ -7,6 +7,12 @@
 . (Join-Path $PSScriptRoot 'lib\supervisor-restart-limit.ps1')
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 . (Join-Path $PSScriptRoot 'lib\script-integrity.ps1')
+. (Join-Path $PSScriptRoot 'lib\bridge-lock.ps1')
+$script:supervisorLaunchLock = Acquire-SupervisorLaunchLock -TimeoutMs 0
+if (-not $script:supervisorLaunchLock.acquired) {
+  Write-Host ("supervisor: another instance already running ($($script:supervisorLaunchLock.reason)) - exiting")
+  exit 2
+}
 $ErrorActionPreference = 'Continue'
 $enc = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = $enc
 try { [Console]::OutputEncoding = $enc } catch {}
@@ -926,3 +932,4 @@ while ($true) {
   } catch { Log ("ERR " + $_.Exception.Message) }
   Start-Sleep -Seconds 5
 }
+Release-SupervisorLaunchLock -Lock $script:supervisorLaunchLock
