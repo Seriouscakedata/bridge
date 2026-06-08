@@ -1192,6 +1192,10 @@
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
         try { Start-BacklogReaperIfDue } catch {}
         try { Start-LibrarianIfDue } catch {}
+        try {
+          $prioUpdated = Start-BacklogPrioritizerIfDue -Channel $Channel -IntervalMinutes 60 -MaxItems 20
+          if ($prioUpdated -gt 0) { Add-Message -From system -Text ("🧠 LLM-приоритизатор бэклога: обновлено " + $prioUpdated + " задач.") -Kind event | Out-Null }
+        } catch {}
         try { Start-AuditIfDue } catch {}
         try { Start-FeatureVerifierIfDue } catch {}
         try { Update-FeatureActivations | Out-Null } catch {}

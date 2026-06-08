@@ -32,7 +32,12 @@ function Write-TaskCheckpoint {
     [string]$TaskTitle = '',
     [int]$Step = 0,
     [string]$LastSummary = '',
-    [string]$Channel = ''
+    [string]$Channel = '',
+    [string]$Reason = 'continue',
+    [string]$Prompt = '',
+    [string]$Context = '',
+    [object]$Artifacts = $null,
+    [string]$Head = ''
   )
 
   $path = Get-TaskCheckpointPath -TaskId $TaskId -Channel $Channel
@@ -44,16 +49,28 @@ function Write-TaskCheckpoint {
   }
   $summary = [string]$LastSummary
   if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) }
+  $promptText = [string]$Prompt
+  if ($promptText.Length -gt 4000) { $promptText = $promptText.Substring(0, 4000) }
+  $contextText = [string]$Context
+  if ($contextText.Length -gt 3000) { $contextText = $contextText.Substring(0, 3000) }
+  $artifactSnapshot = $Artifacts
+  if ($null -eq $artifactSnapshot) { $artifactSnapshot = @{} }
   $row = [pscustomobject]@{
     ts          = (Get-Date).ToString('o')
     taskId      = [string]$TaskId
     taskTitle   = [string]$TaskTitle
     step        = [int]$Step
     lastSummary = $summary
+    reason      = [string]$Reason
+    prompt      = $promptText
+    context     = $contextText
+    artifacts   = $artifactSnapshot
+    head        = [string]$Head
   }
-  $line = ($row | ConvertTo-Json -Compress -Depth 5)
+  $line = ($row | ConvertTo-Json -Compress -Depth 8)
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::AppendAllText($path, $line + "`n", $utf8NoBom)
+  return $row
 }
 
 function Read-TaskCheckpoint {
@@ -91,4 +108,110 @@ function Clear-TaskCheckpoint {
       Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     }
   } catch {}
+}
+
+function Get-TaskCheckpointIdFromState {
+  param([object]$State)
+  if ($null -eq $State) { return '' }
+  $taskId = ''
+  try { $taskId = [string]$State.current_task_id } catch {}
+  if ([string]::IsNullOrWhiteSpace($taskId)) { try { $taskId = [string]$State.current_backlog_id } catch {} }
+  if ([string]::IsNullOrWhiteSpace($taskId)) {
+    $seq = 0
+    try { $seq = [int]$State.task_start_seq } catch {}
+    if ($seq -gt 0) { $taskId = 'task-' + [string]$seq }
+  }
+  return $taskId
+}
+
+function Test-TaskCheckpointDue {
+  param(
+    [object]$State,
+    [int]$IntervalMinutes = 5,
+    [switch]$Force
+  )
+  if ($Force) { return $true }
+  if ($null -eq $State) { return $false }
+  if ($IntervalMinutes -le 0) { $IntervalMinutes = 5 }
+  $last = ''
+  try { $last = [string]$State.last_task_checkpoint_at } catch {}
+  if ([string]::IsNullOrWhiteSpace($last)) { return $true }
+  try {
+    $lastDt = [datetime]$last
+    return (((Get-Date) - $lastDt).TotalMinutes -ge $IntervalMinutes)
+  } catch {
+    return $true
+  }
+}
+
+function Save-TaskCheckpointFromState {
+  param(
+    [object]$State,
+    [string]$TaskTitle = '',
+    [string]$Channel = '',
+    [string]$Reason = 'periodic',
+    [string]$Prompt = '',
+    [string]$Context = ''
+  )
+  if ($null -eq $State) { return $null }
+  $taskId = Get-TaskCheckpointIdFromState -State $State
+  if ([string]::IsNullOrWhiteSpace($taskId)) { return $null }
+  $step = 0
+  try { $step = [int]$State.task_turn } catch {}
+  $summary = [string]$Context
+  if ([string]::IsNullOrWhiteSpace($summary)) {
+    try {
+      if (Get-Command Read-Summary -ErrorAction SilentlyContinue) { $summary = [string](Read-Summary) }
+    } catch {}
+  }
+  $head = ''
+  try {
+    $root = Get-TaskCheckpointBridgeRoot
+    $head = ((& git -C $root rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
+  } catch {}
+  $artifacts = [ordered]@{
+    current_backlog_id = ''
+    task_mode = ''
+    active_agent = ''
+    status_text = ''
+    workpack_batch_ids = @()
+    progress_fingerprints = @()
+  }
+  try { $artifacts.current_backlog_id = [string]$State.current_backlog_id } catch {}
+  try { $artifacts.task_mode = [string]$State.task_mode } catch {}
+  try { $artifacts.active_agent = [string]$State.active_agent } catch {}
+  try { $artifacts.status_text = [string]$State.status_text } catch {}
+  try { $artifacts.workpack_batch_ids = @($State.workpack_batch_ids | ForEach-Object { [string]$_ }) } catch {}
+  try { $artifacts.progress_fingerprints = @($State.progress_fingerprints | ForEach-Object { [string]$_ }) } catch {}
+
+  return Write-TaskCheckpoint -TaskId $taskId -TaskTitle $TaskTitle -Step $step -LastSummary $summary -Channel $Channel -Reason $Reason -Prompt $Prompt -Context $summary -Artifacts $artifacts -Head $head
+}
+
+function Format-TaskCheckpointRestoreText {
+  param([object]$Checkpoint)
+  if ($null -eq $Checkpoint) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  try { if ($Checkpoint.ts) { [void]$parts.Add('ts=' + [string]$Checkpoint.ts) } } catch {}
+  try { if ($Checkpoint.reason) { [void]$parts.Add('reason=' + [string]$Checkpoint.reason) } } catch {}
+  try { if ($Checkpoint.step -ne $null) { [void]$parts.Add('step=' + [string]$Checkpoint.step) } } catch {}
+  try { if ($Checkpoint.head) { [void]$parts.Add('head=' + [string]$Checkpoint.head) } } catch {}
+  $summary = ''
+  try { $summary = [string]$Checkpoint.lastSummary } catch {}
+  if ([string]::IsNullOrWhiteSpace($summary)) { try { $summary = [string]$Checkpoint.context } catch {} }
+  if ($summary.Length -gt 900) { $summary = $summary.Substring(0, 900) }
+  $artifactText = ''
+  try {
+    if ($Checkpoint.artifacts) {
+      $artifactText = ($Checkpoint.artifacts | ConvertTo-Json -Compress -Depth 5)
+      if ($artifactText.Length -gt 900) { $artifactText = $artifactText.Substring(0, 900) }
+    }
+  } catch {}
+  return @"
+=== TASK CHECKPOINT/RESTORE ===
+Последний чекпоинт: $([string]::Join('; ', $parts.ToArray()))
+Краткий контекст: $summary
+Артефакты: $artifactText
+Продолжай с этого состояния; не начинай задачу заново, если контекст применим.
+=== END TASK CHECKPOINT/RESTORE ===
+"@.Trim()
 }

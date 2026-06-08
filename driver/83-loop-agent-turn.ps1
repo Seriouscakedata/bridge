@@ -179,6 +179,27 @@
             $acNewHead = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
             if ($acNewHead -and $acNewHead -ne $headBeforeTurn) {
               try { Add-TaskCheckpoint -Kind commit -Text (($acNewHead.Substring(0,7) + ' ' + $acMsg).Trim()) } catch {}
+              try {
+                $stCommitCp = Read-State
+                Save-TaskCheckpointFromState -State $stCommitCp -TaskTitle $task -Channel $Channel -Reason 'post-commit' -Prompt $prompt -Context ("driver auto-commit " + $acNewHead.Substring(0,7)) | Out-Null
+                Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
+              } catch {}
+              try {
+                $stPostCommitQa = Read-State
+                $postCommitQaTaskId = [string]$stPostCommitQa.current_task_id
+                if ([string]::IsNullOrWhiteSpace($postCommitQaTaskId)) { $postCommitQaTaskId = [string]$stPostCommitQa.current_backlog_id }
+                if ([string]::IsNullOrWhiteSpace($postCommitQaTaskId)) { $postCommitQaTaskId = 'task-' + [string]$stPostCommitQa.task_start_seq }
+                $postCommitQa = Invoke-QAAgentPostCommit -BridgeRoot $bridgeRoot -CommitSha $acNewHead -TaskId $postCommitQaTaskId -TaskTitle $task -Channel $Channel
+                if ($postCommitQa.Verdict -eq 'FAIL') {
+                  try { Set-TaskLastFailure -Kind qa_failed -Text ([string]$postCommitQa.Summary) } catch {}
+                  Add-Message -From system -Text ("🔴 QA Runner post-commit: FAIL`n" + [string]$postCommitQa.Summary + "`nВозвращаю задачу на доработку.") -Kind event | Out-Null
+                  Update-State { param($s) $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force; $s.task_did_actions=$true } | Out-Null
+                } else {
+                  Add-Message -From system -Text ("✅ QA Runner post-commit: PASS — " + [string]$postCommitQa.Summary) -Kind event | Out-Null
+                }
+              } catch {
+                Add-Message -From system -Text ("⚠ QA Runner post-commit skipped: " + $_.Exception.Message) -Kind event | Out-Null
+              }
               Add-Message -From system -Text ("💾 Драйвер зафиксировал правки Codex (coder в sandbox не имеет доступа к .git): " + $acNewHead.Substring(0,7)) -Kind event | Out-Null
             }
           }
@@ -308,6 +329,13 @@
     $who = if ($turnResult.errorType -eq 'coder_timeout') { 'Codex' } else { 'Claude' }
     $dur = [int]$turnResult.duration
     $trc = [int](Read-State).timeout_retry_count
+    try {
+      $stTimeoutCp = Read-State
+      Save-TaskCheckpointFromState -State $stTimeoutCp -TaskTitle $task -Channel $Channel -Reason ("timeout:" + [string]$turnResult.errorType) -Prompt $prompt -Context ("agent timeout after " + [string]$dur + "s") | Out-Null
+      Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
+    } catch {
+      try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  timeout-checkpoint-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+    }
     # 🩺 Long timeouts (>= ~60% of cap) almost never come back via retry — same prompt would
     # just timeout again, wasting another 500+s. Heuristic threshold 350s catches both planner
     # (cap 600s) and coder (cap 900s after Doctor raised it 4cb5f53). User feedback 2026-05-26:

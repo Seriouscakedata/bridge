@@ -292,8 +292,10 @@ function New-BacklogLLMPriorityPrompt {
   [void]$promptBuilder.AppendLine('Ниже список задач. Оцени каждую по шкале 0-100 с учётом:')
   [void]$promptBuilder.AppendLine('- Практической ценности (насколько улучшит работу моста)')
   [void]$promptBuilder.AppendLine('- Срочности (блокирует ли что-то прямо сейчас)')
-  [void]$promptBuilder.AppendLine('- Сложности реализации (более простые — выше при прочих равных)')
+  [void]$promptBuilder.AppendLine('- Важности и блокирующего эффекта для других задач')
+  [void]$promptBuilder.AppendLine('- Сложности реализации: простые задачи выше только при прочих равных; сложные/избегаемые задачи не занижай автоматически')
   [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
+  [void]$promptBuilder.AppendLine('- Anti-avoidance: поднимай задачи, которые выглядят трудными, но устраняют повторяющиеся отказы, таймауты, broken gates или архитектурный долг')
   [void]$promptBuilder.AppendLine('')
   [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
   [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
@@ -449,6 +451,58 @@ function Invoke-BacklogLLMPrioritize {
     Write-Warning ("Invoke-BacklogLLMPrioritize: failed for channel '" + $Channel + "': " + $_.Exception.Message)
     return 0
   }
+}
+
+function Start-BacklogPrioritizerIfDue {
+  param(
+    [string]$Channel = $env:BRIDGE_CHANNEL,
+    [int]$IntervalMinutes = 60,
+    [int]$MaxItems = 20
+  )
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  if ($IntervalMinutes -le 0) { $IntervalMinutes = 60 }
+  if ($MaxItems -le 0) { $MaxItems = 20 }
+  $enabled = $false
+  try {
+    $cfgPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'
+    $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cfg -and $cfg.PSObject.Properties.Name -contains 'backlog' -and $cfg.backlog) {
+      if ($cfg.backlog.PSObject.Properties.Name -contains 'enableLLMPrioritizerOnIdle') { $enabled = [bool]$cfg.backlog.enableLLMPrioritizerOnIdle }
+      elseif ($cfg.backlog.PSObject.Properties.Name -contains 'useLLMPriority') { $enabled = [bool]$cfg.backlog.useLLMPriority }
+      if ($cfg.backlog.PSObject.Properties.Name -contains 'prioritizerIntervalMinutes') { $IntervalMinutes = [int]$cfg.backlog.prioritizerIntervalMinutes }
+      if ($cfg.backlog.PSObject.Properties.Name -contains 'prioritizerMaxItems') { $MaxItems = [int]$cfg.backlog.prioritizerMaxItems }
+    }
+  } catch {}
+  if (-not $enabled) { return 0 }
+  if ($IntervalMinutes -le 0) { $IntervalMinutes = 60 }
+  if ($MaxItems -le 0) { $MaxItems = 20 }
+
+  $root = Get-BacklogFallbackBridgeRoot
+  $controlDir = Join-Path $root 'control'
+  try { if (-not (Test-Path -LiteralPath $controlDir)) { New-Item -ItemType Directory -Path $controlDir -Force | Out-Null } } catch {}
+  $safeChannel = ([string]$Channel -replace '[^A-Za-z0-9_.-]', '_')
+  $marker = Join-Path $controlDir ('backlog-prioritizer.' + $safeChannel + '.last')
+  $due = $true
+  if (Test-Path -LiteralPath $marker -PathType Leaf) {
+    try {
+      $last = [datetime]((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim())
+      $due = (((Get-Date) - $last).TotalMinutes -ge $IntervalMinutes)
+    } catch { $due = $true }
+  }
+  if (-not $due) { return 0 }
+  [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  $updated = 0
+  try { $updated = [int](Invoke-BacklogLLMPrioritize -MaxItems $MaxItems -Channel $Channel) } catch { $updated = 0 }
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      action = 'llm-prioritize-idle'
+      channel = [string]$Channel
+      max_items = [int]$MaxItems
+      updated = [int]$updated
+    })
+  } catch {}
+  return $updated
 }
 
 function Invoke-BacklogCurator {

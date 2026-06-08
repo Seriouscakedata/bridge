@@ -20,10 +20,12 @@ function Write-QAAgentResult {
     [string]$TaskTitle,
     [string]$Channel,
     [string]$Verdict,
-    [string]$Summary
+    [string]$Summary,
+    [string]$BridgeRoot = ''
   )
   try {
-    $bridge = Get-QAAgentBridgeRoot
+    $bridge = [string]$BridgeRoot
+    if ([string]::IsNullOrWhiteSpace($bridge)) { $bridge = Get-QAAgentBridgeRoot }
     $channelName = Get-QAAgentChannel -Channel $Channel
     $dir = Join-Path (Join-Path $bridge 'channels') $channelName
     if (-not (Test-Path -LiteralPath $dir)) {
@@ -50,9 +52,10 @@ function New-QAAgentResult {
     [string]$Channel,
     [string]$Verdict,
     [string]$Summary,
-    [object[]]$Bugs = @()
+    [object[]]$Bugs = @(),
+    [string]$BridgeRoot = ''
   )
-  Write-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $Channel -Verdict $Verdict -Summary $Summary
+  Write-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $Channel -Verdict $Verdict -Summary $Summary -BridgeRoot $BridgeRoot
   return [PSCustomObject]@{
     Verdict = $Verdict
     Summary = $Summary
@@ -64,6 +67,42 @@ function Quote-QAAgentArgument {
   param([string]$Value)
   if ($null -eq $Value) { return '""' }
   return '"' + ([string]$Value).Replace('"', '\"') + '"'
+}
+
+function Get-QAAgentScenarioSafety {
+  param([string]$Path)
+  $safe = $true
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $safe }
+  try {
+    $head = [string]::Join("`n", @(Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 12))
+    $m = [regex]::Match($head, '(?im)^\s*//\s*@audit-safe\s*:\s*(yes|no|true|false)\b')
+    if ($m.Success) {
+      $v = $m.Groups[1].Value.ToLowerInvariant()
+      $safe = ($v -eq 'yes' -or $v -eq 'true')
+    }
+  } catch {}
+  return $safe
+}
+
+function Get-QAAgentConfig {
+  param([string]$BridgeRoot)
+  $cfg = [ordered]@{
+    RunUnsafeScenarios = $false
+    ScenarioTimeoutSec = 90
+    ScenarioUrl = 'http://localhost:8787'
+  }
+  try {
+    $configPath = Join-Path $BridgeRoot 'config.json'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return [pscustomobject]$cfg }
+    $json = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($json -and $json.PSObject.Properties.Name -contains 'qaRunner' -and $json.qaRunner) {
+      if ($json.qaRunner.PSObject.Properties.Name -contains 'runUnsafeScenarios') { $cfg.RunUnsafeScenarios = [bool]$json.qaRunner.runUnsafeScenarios }
+      if ($json.qaRunner.PSObject.Properties.Name -contains 'scenarioTimeoutSec') { $cfg.ScenarioTimeoutSec = [int]$json.qaRunner.scenarioTimeoutSec }
+      if ($json.qaRunner.PSObject.Properties.Name -contains 'scenarioUrl' -and -not [string]::IsNullOrWhiteSpace([string]$json.qaRunner.scenarioUrl)) { $cfg.ScenarioUrl = [string]$json.qaRunner.scenarioUrl }
+    }
+  } catch {}
+  if ([int]$cfg.ScenarioTimeoutSec -le 0) { $cfg.ScenarioTimeoutSec = 90 }
+  return [pscustomobject]$cfg
 }
 
 function Invoke-ProjectBuildGate {
@@ -114,6 +153,132 @@ function Invoke-ProjectBuildGate {
     $res.Summary = 'project install/typecheck/build PASS'
   }
   return $res
+}
+
+function Invoke-QAAgentScenarioSuite {
+  param(
+    [string]$BridgeRoot,
+    [string]$Url = 'http://localhost:8787',
+    [int]$TimeoutSec = 90,
+    [switch]$IncludeUnsafe
+  )
+  $result = [pscustomobject]@{
+    Ok = $true
+    Ran = $false
+    Passed = 0
+    Failed = 0
+    Skipped = 0
+    SkippedUnsafe = @()
+    Summary = ''
+    Bugs = @()
+  }
+  $runner = Join-Path (Join-Path $BridgeRoot 'tools') 'scenario.ps1'
+  $scenarioDir = Join-Path (Join-Path $BridgeRoot 'tools') 'scenarios'
+  if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+    $result.Summary = 'scenario runner not found'
+    return $result
+  }
+  if (-not (Test-Path -LiteralPath $scenarioDir -PathType Container)) {
+    $result.Summary = 'scenario directory not found'
+    return $result
+  }
+  $scenarioFiles = @(Get-ChildItem -LiteralPath $scenarioDir -Filter '*.js' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+  if ($scenarioFiles.Count -eq 0) {
+    $result.Summary = 'no scenarios found'
+    return $result
+  }
+
+  $runnable = New-Object 'System.Collections.Generic.List[object]'
+  $skippedUnsafe = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($sf in $scenarioFiles) {
+    if (-not $IncludeUnsafe -and -not (Get-QAAgentScenarioSafety -Path $sf.FullName)) {
+      [void]$skippedUnsafe.Add($sf.Name)
+      continue
+    }
+    [void]$runnable.Add($sf)
+  }
+  $result.Skipped = $skippedUnsafe.Count
+  $result.SkippedUnsafe = @($skippedUnsafe.ToArray())
+  if ($runnable.Count -eq 0) {
+    $result.Summary = if ($skippedUnsafe.Count -gt 0) { 'no audit-safe scenarios found; skipped unsafe: ' + [string]::Join(',', @($skippedUnsafe.ToArray())) } else { 'no scenarios found' }
+    return $result
+  }
+
+  $result.Ran = $true
+  $failures = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($sf in @($runnable.ToArray())) {
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($sf.Name)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-QAAgentArgument $runner) + ' -Name ' + (Quote-QAAgentArgument $name) + ' -Url ' + (Quote-QAAgentArgument $Url) + ' -TimeoutSec ' + [string]$TimeoutSec
+    $psi.WorkingDirectory = $BridgeRoot
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    try {
+      [void]$proc.Start()
+      $completed = $proc.WaitForExit(($TimeoutSec + 20) * 1000)
+      if (-not $completed) {
+        try { $proc.Kill() } catch {}
+        $result.Failed++
+        [void]$failures.Add($name + ': timed out')
+        continue
+      }
+      $out = ''
+      try { $out += $proc.StandardOutput.ReadToEnd() } catch {}
+      try {
+        $err = $proc.StandardError.ReadToEnd()
+        if (-not [string]::IsNullOrWhiteSpace($err)) { $out += "`n" + $err }
+      } catch {}
+      if ($proc.ExitCode -eq 0) {
+        $result.Passed++
+      } else {
+        $short = ($out -replace '\s+', ' ').Trim()
+        if ($short.Length -gt 500) { $short = $short.Substring(0, 500) }
+        if ([string]::IsNullOrWhiteSpace($short)) { $short = 'exit ' + [string]$proc.ExitCode }
+        $result.Failed++
+        [void]$failures.Add($name + ': ' + $short)
+      }
+    } catch {
+      $result.Failed++
+      [void]$failures.Add($name + ': ' + $_.Exception.Message)
+    }
+  }
+  if ($result.Failed -gt 0) {
+    $result.Ok = $false
+    $result.Bugs = @($failures.ToArray())
+    $result.Summary = ('scenarios FAIL: ' + [string]::Join(' ; ', @($failures.ToArray())))
+    if ($result.Summary.Length -gt 900) { $result.Summary = $result.Summary.Substring(0, 900) }
+  } else {
+    $skipText = if ($result.Skipped -gt 0) { ('; skipped unsafe: ' + $result.Skipped) } else { '' }
+    $result.Summary = ('scenarios PASS: ' + $result.Passed + '/' + $runnable.Count + $skipText)
+  }
+  return $result
+}
+
+function Invoke-QAAgentPostCommit {
+  param(
+    [string]$BridgeRoot,
+    [string]$CommitSha = '',
+    [string]$TaskId = '',
+    [string]$TaskTitle = '',
+    [string]$Channel = '',
+    [switch]$IncludeUnsafe
+  )
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { $BridgeRoot = Get-QAAgentBridgeRoot }
+  $qaCfg = Get-QAAgentConfig -BridgeRoot $BridgeRoot
+  $runUnsafe = [bool]$IncludeUnsafe -or [bool]$qaCfg.RunUnsafeScenarios
+  $scenarioResult = Invoke-QAAgentScenarioSuite -BridgeRoot $BridgeRoot -Url ([string]$qaCfg.ScenarioUrl) -TimeoutSec ([int]$qaCfg.ScenarioTimeoutSec) -IncludeUnsafe:$runUnsafe
+  $short = [string]$CommitSha
+  if ($short.Length -gt 7) { $short = $short.Substring(0,7) }
+  if ([string]::IsNullOrWhiteSpace($short)) { $short = '<unknown>' }
+  $summary = ('post-commit ' + $short + ': ' + [string]$scenarioResult.Summary)
+  if ($summary.Length -gt 900) { $summary = $summary.Substring(0, 900) }
+  $verdict = if ($scenarioResult.Ran -and -not [bool]$scenarioResult.Ok) { 'FAIL' } else { 'PASS' }
+  return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel (Get-QAAgentChannel -Channel $Channel) -Verdict $verdict -Summary $summary -Bugs @($scenarioResult.Bugs) -BridgeRoot $BridgeRoot
 }
 
 function Invoke-QAAgent {
@@ -169,6 +334,12 @@ function Invoke-QAAgent {
       return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'FAIL' -Summary $summary -Bugs @($summary)
     }
 
+    $qaCfg = Get-QAAgentConfig -BridgeRoot $bridgeRoot
+    $scenarioResult = Invoke-QAAgentScenarioSuite -BridgeRoot $bridgeRoot -Url ([string]$qaCfg.ScenarioUrl) -TimeoutSec ([int]$qaCfg.ScenarioTimeoutSec) -IncludeUnsafe:([bool]$qaCfg.RunUnsafeScenarios)
+    if ($scenarioResult.Ran -and -not $scenarioResult.Ok) {
+      return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'FAIL' -Summary ('E2E SCENARIOS FAILED — ' + $scenarioResult.Summary) -Bugs @($scenarioResult.Bugs)
+    }
+
     # 2026-06-01 ERR-008: bridge smoke passed — now verify the PROJECT actually builds (non-main only).
     # A red build returns FAIL so the driver bounces the task back to CONTINUE instead of closing broken
     # code as done (which is how the inconsistent auth baseline, ERR-005, slipped through).
@@ -178,10 +349,12 @@ function Invoke-QAAgent {
         return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'FAIL' -Summary ('PROJECT BUILD FAILED — ' + $pbg.Summary) -Bugs @($pbg.Summary)
       }
       if ($pbg.Ran) {
-        return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary ('Smoke OK + ' + $pbg.Summary)
+        $scenarioSummary = if ($scenarioResult.Ran) { ' + ' + $scenarioResult.Summary } else { '' }
+        return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary ('Smoke OK' + $scenarioSummary + ' + ' + $pbg.Summary)
       }
     } catch {}
-    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary 'Smoke OK'
+    $scenarioSummary2 = if ($scenarioResult.Ran) { ' + ' + $scenarioResult.Summary } else { '' }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary ('Smoke OK' + $scenarioSummary2)
   } catch {
     $summary = $_.Exception.Message
     if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) }

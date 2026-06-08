@@ -68,7 +68,15 @@
     "antiSkillMaxInjectChars": 600
   },
   "backlog": {
-    "useLLMPriority": false
+    "useLLMPriority": false,
+    "enableLLMPrioritizerOnIdle": true,
+    "prioritizerIntervalMinutes": 60,
+    "prioritizerMaxItems": 20
+  },
+  "qaRunner": {
+    "runUnsafeScenarios": false,
+    "scenarioTimeoutSec": 90,
+    "scenarioUrl": "http://localhost:8787"
   },
   "learningLoop": {
     "autoRevert": false,

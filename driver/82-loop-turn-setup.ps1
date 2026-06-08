@@ -28,6 +28,26 @@
   if (-not $fastLaneTurn) { Update-ContextSummary }   # compress old history if it grew beyond the hot window
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt' -TaskText $task)
   $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode -FastLane:$fastLaneTurn
+  try {
+    $stForCheckpoint = Read-State
+    $checkpointTaskId = Get-TaskCheckpointIdFromState -State $stForCheckpoint
+    if (-not [string]::IsNullOrWhiteSpace($checkpointTaskId)) {
+      $restoreCheckpoint = Read-TaskCheckpoint -TaskId $checkpointTaskId -Channel $Channel
+      $restoreText = Format-TaskCheckpointRestoreText -Checkpoint $restoreCheckpoint
+      if (-not [string]::IsNullOrWhiteSpace($restoreText)) {
+        $prompt = $prompt + "`n`n" + $restoreText
+      }
+    }
+    $checkpointDue = Test-TaskCheckpointDue -State $stForCheckpoint -IntervalMinutes 5 -Force:($tt -eq 0)
+    if ($checkpointDue) {
+      $contextForCheckpoint = ''
+      try { $contextForCheckpoint = [string](Read-Summary) } catch {}
+      Save-TaskCheckpointFromState -State $stForCheckpoint -TaskTitle $task -Channel $Channel -Reason 'before-agent' -Prompt $prompt -Context $contextForCheckpoint | Out-Null
+      Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
+    }
+  } catch {
+    try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'checkpoint.log') -Value ((Get-Date).ToString('s') + '  before-agent-checkpoint-error: ' + $_.Exception.Message) -Encoding UTF8 } catch {}
+  }
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
   $headBeforeTurn = ''
