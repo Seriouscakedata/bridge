@@ -1,0 +1,16 @@
+﻿# wiring-audit-whitelist.txt
+# Intentional exclusions for the wiring audit tool (tools/wiring-audit.ps1).
+#
+# FORMAT (stable; parseable without code changes):
+#   <relative-path>  # <reason>
+#
+# Rules:
+#   - Path is relative to the bridge root, forward slashes (e.g., lib/example.ps1)
+#   - The "# <reason>" comment is REQUIRED; entries without a reason are parse errors
+#   - Lines that start with # (comments) and blank lines are always ignored
+#   - Casing: paths are matched case-insensitively on Windows
+#   - Operator review is required before adding any entry here
+#
+# WHITELIST ENTRIES:
+# (none - intentionally empty; add entries only after operator review)
+#
