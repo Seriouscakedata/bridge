@@ -1,7 +1,8 @@
 ﻿# tools/wiring-audit.ps1 -- Read-only static AST wiring audit for bridge. WA1: load graph.
 param(
   [string]$BridgeRoot = '',
-  [switch]$Json
+  [switch]$Json,
+  [switch]$WarningOnly = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -479,8 +480,80 @@ function Get-WiringLoadedFileClassifications {
   return @($classifications.ToArray())
 }
 
+function Get-WiringVerifyCoversMap {
+  param(
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $map = @{}
+  $toolsDir = Join-Path $Root 'tools'
+  if (-not (Test-Path -LiteralPath $toolsDir)) { return $map }
+
+  $testFiles = @(Get-ChildItem -LiteralPath $toolsDir -Filter 'test-*.ps1' -File -ErrorAction SilentlyContinue |
+    Sort-Object Name)
+
+  foreach ($tf in $testFiles) {
+    $tfRel = ConvertTo-WiringRelative -Path $tf.FullName -Root $Root
+    $lines = [System.IO.File]::ReadAllLines($tf.FullName)
+    foreach ($line in $lines) {
+      if ($line -match '^\s*#\s*VERIFY-COVERS:\s*(.+)$') {
+        $raw = $Matches[1].Trim()
+        $resolved = Resolve-WiringPath -Raw $raw -BaseDir $toolsDir -Root $Root
+        if ([string]::IsNullOrWhiteSpace($resolved)) { $resolved = ($raw -replace '\\', '/') }
+        $key = $resolved.ToLowerInvariant()
+        if (-not $map.ContainsKey($key)) { $map[$key] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $map[$key].Contains($tfRel)) { $map[$key].Add($tfRel) }
+      }
+    }
+  }
+
+  foreach ($k in @($map.Keys)) {
+    $map[$k] = @($map[$k] | Sort-Object)
+  }
+  return $map
+}
+
+function Get-WiringTestNameCoverageMap {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$FunctionNames,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $map = @{}
+  $toolsDir = Join-Path $Root 'tools'
+  if (-not (Test-Path -LiteralPath $toolsDir) -or $FunctionNames.Count -eq 0) { return $map }
+
+  $testFiles = @(Get-ChildItem -LiteralPath $toolsDir -Filter 'test-*.ps1' -File -ErrorAction SilentlyContinue |
+    Sort-Object Name)
+
+  $nameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($n in $FunctionNames) { [void]$nameSet.Add($n) }
+
+  $tokenRegex = [regex]'[A-Za-z_][A-Za-z0-9_-]*'
+  foreach ($tf in $testFiles) {
+    $tfRel = ConvertTo-WiringRelative -Path $tf.FullName -Root $Root
+    $content = [System.IO.File]::ReadAllText($tf.FullName)
+    $seenInFile = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($match in $tokenRegex.Matches($content)) {
+      $token = [string]$match.Value
+      if ($nameSet.Contains($token) -and $seenInFile.Add($token)) {
+        if (-not $map.ContainsKey($token)) { $map[$token] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $map[$token].Contains($tfRel)) { $map[$token].Add($tfRel) }
+      }
+    }
+  }
+
+  foreach ($k in @($map.Keys)) {
+    $map[$k] = @($map[$k] | Sort-Object)
+  }
+  return $map
+}
+
 function Build-WiringAstGraph {
-  param([Parameter(Mandatory = $true)][string]$Root)
+  param(
+    [Parameter(Mandatory = $true)][string]$Root,
+    [switch]$WarningOnly
+  )
 
   $rootFull = [System.IO.Path]::GetFullPath($Root)
   if (-not (Test-Path -LiteralPath $rootFull)) {
@@ -547,6 +620,40 @@ function Build-WiringAstGraph {
     -LoadEdges $orderedEdges `
     -FunctionDefs @($allFnDefs.ToArray()) `
     -StaticCallSites $staticCallSites
+
+  $vcMap = Get-WiringVerifyCoversMap -Root $rootFull
+  $allFnNames = @($allFnDefs.ToArray() | ForEach-Object { $_.name } | Sort-Object -Unique)
+  $tnMap = Get-WiringTestNameCoverageMap -FunctionNames $allFnNames -Root $rootFull
+
+  $enrichedClassifications = New-Object System.Collections.Generic.List[object]
+  foreach ($entry in @($fileClassifications | Sort-Object @{ Expression = { $_.classification } }, @{ Expression = { $_.file } })) {
+    $key = ([string]$entry.file).ToLowerInvariant()
+    $vcTests = if ($vcMap.ContainsKey($key)) { @($vcMap[$key] | Sort-Object) } else { @() }
+
+    $fileFns = @($allFnDefs.ToArray() |
+      Where-Object { $_.file -eq $entry.file } |
+      ForEach-Object { $_.name } |
+      Sort-Object -Unique)
+    $tnTestsSet = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::Ordinal)
+    foreach ($fn in $fileFns) {
+      if ($tnMap.ContainsKey($fn)) {
+        foreach ($t in $tnMap[$fn]) { [void]$tnTestsSet.Add($t) }
+      }
+    }
+    $tnTests = @($tnTestsSet | Sort-Object)
+    $hasCoverage = ($vcTests.Count -gt 0) -or ($tnTests.Count -gt 0)
+
+    $enrichedClassifications.Add([pscustomobject][ordered]@{
+      file = $entry.file
+      classification = $entry.classification
+      coverage_evidence = [pscustomobject][ordered]@{
+        verify_covers_tests = $vcTests
+        test_name_matches = $tnTests
+        has_coverage = $hasCoverage
+      }
+    })
+  }
+
   $orderedErrors = @($scanErrors.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.error } })
 
   return [pscustomobject][ordered]@{
@@ -555,7 +662,7 @@ function Build-WiringAstGraph {
     function_defs = @($allFnDefs.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.name } }, @{ Expression = { $_.line } })
     static_call_sites = @($staticCallSites | Sort-Object @{ Expression = { $_.from } }, @{ Expression = { $_.callee } }, @{ Expression = { $_.line } })
     dynamic_dispatch_sites = @($allDynSites.ToArray() | Sort-Object @{ Expression = { $_.file } }, @{ Expression = { $_.line } })
-    file_classifications = $fileClassifications
+    file_classifications = @($enrichedClassifications.ToArray())
     scan_errors = $orderedErrors
   }
 }
@@ -586,11 +693,32 @@ function Format-WiringAstGraphText {
   $lines.Add('  USED:')
   foreach ($item in $used) {
     $lines.Add(('    {0}' -f $item.file))
+    $ev = $item.coverage_evidence
+    if ($null -ne $ev -and $ev.has_coverage) {
+      if (@($ev.verify_covers_tests).Count -gt 0) {
+        $lines.Add(('      coverage/verify-covers: {0}' -f (@($ev.verify_covers_tests) -join ', ')))
+      }
+      if (@($ev.test_name_matches).Count -gt 0) {
+        $lines.Add(('      coverage/test-name: {0}' -f (@($ev.test_name_matches) -join ', ')))
+      }
+    }
   }
   $lines.Add('')
   $lines.Add('  LOADED_ONLY:')
   foreach ($item in $loadedOnly) {
     $lines.Add(('    {0}' -f $item.file))
+    $ev = $item.coverage_evidence
+    if ($null -ne $ev) {
+      if (@($ev.verify_covers_tests).Count -gt 0) {
+        $lines.Add(('      coverage/verify-covers: {0}' -f (@($ev.verify_covers_tests) -join ', ')))
+      }
+      if (@($ev.test_name_matches).Count -gt 0) {
+        $lines.Add(('      coverage/test-name: {0}' -f (@($ev.test_name_matches) -join ', ')))
+      }
+      if (-not $ev.has_coverage) {
+        $lines.Add('      coverage: NONE')
+      }
+    }
   }
   $lines.Add('')
   $lines.Add(('DYNAMIC DISPATCH EVIDENCE: {0} sites (UNKNOWN_DYNAMIC)' -f @($Graph.dynamic_dispatch_sites).Count))
@@ -645,6 +773,11 @@ function Format-WiringAstGraphJson {
       [pscustomobject][ordered]@{
         file = $_.file
         classification = $_.classification
+        coverage_evidence = [pscustomobject][ordered]@{
+          verify_covers_tests = @($_.coverage_evidence.verify_covers_tests)
+          test_name_matches = @($_.coverage_evidence.test_name_matches)
+          has_coverage = $_.coverage_evidence.has_coverage
+        }
       }
     })
     scan_errors = @($Graph.scan_errors | ForEach-Object {
@@ -665,11 +798,15 @@ if ($MyInvocation.InvocationName -ne '.') {
     [System.IO.Path]::GetFullPath($BridgeRoot)
   }
 
-  $graph = Build-WiringAstGraph -Root $root
+  $graph = Build-WiringAstGraph -Root $root -WarningOnly:$WarningOnly
 
   if ($Json) {
     Format-WiringAstGraphJson -Graph $graph
   } else {
     Format-WiringAstGraphText -Graph $graph
+  }
+
+  if ($WarningOnly) {
+    exit 0
   }
 }
