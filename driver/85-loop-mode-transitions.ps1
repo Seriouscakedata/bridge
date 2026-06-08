@@ -10,6 +10,22 @@
     . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $stJobsBeforeMode = Read-State
+      $jobDrain = Invoke-ModeTransitionBackgroundJobDrain -State $stJobsBeforeMode -Reason 'DONE-mode-transition'
+      if ($jobDrain -and [bool]$jobDrain.had_jobs) {
+        $plannerStatus = 'CONTINUE'
+        $jobDrainText = ("background_jobs_drained_before_mode_switch: completed={0}, cancelled={1}" -f [int]$jobDrain.completed, [int]$jobDrain.cancelled)
+        try { Set-TaskLastFailure -Kind background_jobs_pending -Text $jobDrainText } catch {}
+        Add-Message -From system -Text ("🚫 DONE отложен: перед переключением режима были фоновые задачи; результаты обработаны/задачи отменены. Продолжай с учётом сообщения выше (" + $jobDrainText + ").") -Kind event | Out-Null
+      }
+    } catch {
+      $plannerStatus = 'CONTINUE'
+      try { Set-TaskLastFailure -Kind background_jobs_pending -Text ('background job drain failed: ' + $_.Exception.Message) } catch {}
+      Add-Message -From system -Text ("🚫 DONE отложен: проверка фоновых задач перед переключением режима упала fail-closed: " + $_.Exception.Message) -Kind event | Out-Null
+    }
+  }
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     $noopHasBacklogId = $true
     $noopTask = ''
     $noopHasEvidence = $false

@@ -475,6 +475,31 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
           }
           if (-not $gateOk) {
             $failReason = if ($gateResult) { "exit=$($gateResult.ExitCode), timedOut=$($gateResult.TimedOut)" } else { 'no result' }
+            try {
+              $stReopen = Read-State
+              $reopenIds = @()
+              try {
+                if ($stReopen.PSObject.Properties.Name -contains 'workpack_batch_ids' -and $null -ne $stReopen.workpack_batch_ids) {
+                  $reopenIds = @($stReopen.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                }
+              } catch { $reopenIds = @() }
+              if ($reopenIds.Count -eq 0) {
+                $singleReopenId = [string]$stReopen.current_backlog_id
+                if (-not [string]::IsNullOrWhiteSpace($singleReopenId)) { $reopenIds = @($singleReopenId) }
+              }
+              if ($reopenIds.Count -gt 0 -and (Get-Command Reopen-BacklogDoneAfterRegression -ErrorAction SilentlyContinue)) {
+                $reopenEvidence = [pscustomobject][ordered]@{
+                  reason = 'gate_regression_failed'
+                  detail = $failReason
+                  checks = @('gate-regression')
+                  ts = (Get-Date).ToUniversalTime().ToString('o')
+                }
+                $reopenResult = Reopen-BacklogDoneAfterRegression -Ids $reopenIds -RegressionEvidence $reopenEvidence -Reason 'gate_regression_failed'
+                if ($reopenResult -and @($reopenResult.reopened_ids).Count -gt 0) {
+                  Add-Message -From system -Text ("♻ Queue Governor: reopened DONE backlog item(s) after gate-regression failure: " + ((@($reopenResult.reopened_ids) | ForEach-Object { [string]$_ }) -join ', ')) -Kind event | Out-Null
+                }
+              }
+            } catch {}
             try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
             Add-Message -From system -Text ("🚨 Gate-regression FAILED after retry ({0}). Gate/control-plane scope is fail-closed; возвращаю задачу на CONTINUE." -f $failReason) -Kind event | Out-Null
             $plannerStatus = 'CONTINUE'
@@ -482,7 +507,35 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         }
       }
     } catch {
-      Add-Message -From system -Text ("⚠ Gate-regression: exception before scoped run (" + $_.Exception.Message + "), skipped.") -Kind event | Out-Null
+      $gateException = $_.Exception.Message
+      try {
+        $stReopenEx = Read-State
+        $reopenIdsEx = @()
+        try {
+          if ($stReopenEx.PSObject.Properties.Name -contains 'workpack_batch_ids' -and $null -ne $stReopenEx.workpack_batch_ids) {
+            $reopenIdsEx = @($stReopenEx.workpack_batch_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+        } catch { $reopenIdsEx = @() }
+        if ($reopenIdsEx.Count -eq 0) {
+          $singleReopenIdEx = [string]$stReopenEx.current_backlog_id
+          if (-not [string]::IsNullOrWhiteSpace($singleReopenIdEx)) { $reopenIdsEx = @($singleReopenIdEx) }
+        }
+        if ($reopenIdsEx.Count -gt 0 -and (Get-Command Reopen-BacklogDoneAfterRegression -ErrorAction SilentlyContinue)) {
+          $reopenEvidenceEx = [pscustomobject][ordered]@{
+            reason = 'gate_regression_exception'
+            detail = $gateException
+            checks = @('gate-regression')
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $reopenResultEx = Reopen-BacklogDoneAfterRegression -Ids $reopenIdsEx -RegressionEvidence $reopenEvidenceEx -Reason 'gate_regression_exception'
+          if ($reopenResultEx -and @($reopenResultEx.reopened_ids).Count -gt 0) {
+            Add-Message -From system -Text ("♻ Queue Governor: reopened DONE backlog item(s) after gate-regression exception: " + ((@($reopenResultEx.reopened_ids) | ForEach-Object { [string]$_ }) -join ', ')) -Kind event | Out-Null
+          }
+        }
+      } catch {}
+      try { Set-TaskLastFailure -Kind gate_regression_failed -Text ('exception before scoped run: ' + $gateException) } catch {}
+      Add-Message -From system -Text ("🚨 Gate-regression: exception before scoped run (" + $gateException + "), fail-closed; возвращаю задачу на CONTINUE.") -Kind event | Out-Null
+      $plannerStatus = 'CONTINUE'
     }
   }
   # QA agent gate: after verify/coder-bypass/critic/parse/smoke gates, run runtime QA before accepting DONE.

@@ -136,12 +136,40 @@ try {
     [string]$recoverReviewItem.outcome_recovery_reason -eq 'false_failed_recovery'
   ) ($recoverReviewItem | ConvertTo-Json -Compress -Depth 8)
 
+  $reopenDoneId = Add-Idea -Text 'done item reopened by gate regression case' -Status 'new' -SkipCurator
+  [void](Set-BacklogOutcomeDoneWithLedger -Ids @($reopenDoneId) -OutcomeEvidence (New-QueueCompletionDoneEvidence) -BridgeRoot $repoRoot)
+  $reopenEvidence = [pscustomobject][ordered]@{
+    reason = 'gate_regression_exception'
+    detail = 'Get-GateRegressionScope missing after DONE'
+    checks = @('gate-regression')
+  }
+  $reopenDone = Reopen-BacklogDoneAfterRegression -Ids @($reopenDoneId) -RegressionEvidence $reopenEvidence -Reason 'gate_regression_exception'
+  $reopenDoneItem = Get-TestIdea -Id $reopenDoneId
+  Assert-QueueCompletionHook 'done item reopens to approved after gate-regression exception evidence' (
+    [bool]$reopenDone.ok -and
+    @($reopenDone.reopened_ids) -contains $reopenDoneId -and
+    [string]$reopenDoneItem.status -eq 'approved' -and
+    [string]$reopenDoneItem.reopened_after_done_reason -eq 'gate_regression_exception' -and
+    [string]$reopenDoneItem.reopened_after_done_previous_sha -eq 'abc1234def5678'
+  ) ($reopenDoneItem | ConvertTo-Json -Compress -Depth 8)
+
+  $noReopenId = Add-Idea -Text 'running item not reopened by done regression case' -Status 'new' -SkipCurator
+  $noReopen = Reopen-BacklogDoneAfterRegression -Ids @($noReopenId) -RegressionEvidence $reopenEvidence -Reason 'gate_regression_exception'
+  $noReopenItem = Get-TestIdea -Id $noReopenId
+  Assert-QueueCompletionHook 'non-done item is skipped by done-regression reopen hook' (
+    [bool]$noReopen.ok -and
+    @($noReopen.skipped_ids) -contains $noReopenId -and
+    [string]$noReopenItem.status -ne 'approved'
+  ) ($noReopenItem | ConvertTo-Json -Compress -Depth 8)
+
   $cleanupText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-cleanup.ps1') -Raw -Encoding UTF8
   $checksText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-checks.ps1') -Raw -Encoding UTF8
   $actionsText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-actions.ps1') -Raw -Encoding UTF8
   $modeText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\85-loop-mode-transitions.ps1') -Raw -Encoding UTF8
   $agentTurnText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\83-loop-agent-turn.ps1') -Raw -Encoding UTF8
   $crudText = Get-Content -LiteralPath (Join-Path $repoRoot 'lib\backlog-crud.ps1') -Raw -Encoding UTF8
+  $maintenanceText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\10-maintenance.ps1') -Raw -Encoding UTF8
+  $claimText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\81-loop-idle-claim.ps1') -Raw -Encoding UTF8
 
   Assert-QueueCompletionHook 'completion path uses outcome ledger before Set-Idea done' (
     $cleanupText -match 'Set-BacklogOutcomeDoneWithLedger' -and
@@ -158,6 +186,21 @@ try {
     $crudText -match 'Test-TaskOutcomeLedgerFailed' -and
     $crudText -match 'outcome-ledger-block' -and
     $crudText -match 'FailureEvidence'
+  )
+  Assert-QueueCompletionHook 'duplicate backlog claim guard is wired into driver claim path' (
+    $maintenanceText -match 'Test-BacklogClaimAlreadyActiveInState' -and
+    $claimText -match 'backlog-duplicate-claim-blocked' -and
+    $claimText -match 'Test-BacklogClaimAlreadyActiveInState'
+  )
+  Assert-QueueCompletionHook 'mode transition drains active background jobs before DONE' (
+    $maintenanceText -match 'Invoke-ModeTransitionBackgroundJobDrain' -and
+    $modeText -match 'background_jobs_drained_before_mode_switch' -and
+    $modeText -match 'Invoke-ModeTransitionBackgroundJobDrain'
+  )
+  Assert-QueueCompletionHook 'gate-regression failure can reopen prior DONE backlog items' (
+    $checksText -match 'Reopen-BacklogDoneAfterRegression' -and
+    $checksText -match 'gate_regression_exception' -and
+    $crudText -match 'Reopen-BacklogDoneAfterRegression'
   )
 
 } catch {

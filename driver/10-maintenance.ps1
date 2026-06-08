@@ -899,6 +899,115 @@ function Get-LastUserActivityMinutes {
   try { return ((Get-Date).ToUniversalTime() - $ts).TotalMinutes } catch { return 99999 }
 }
 
+function Test-BacklogClaimAlreadyActiveInState {
+  param(
+    [Parameter(Mandatory=$false)]$State,
+    [Parameter(Mandatory=$false)][string]$ItemId
+  )
+  $id = ([string]$ItemId).Trim()
+  if ([string]::IsNullOrWhiteSpace($id) -or $null -eq $State) {
+    return [pscustomobject][ordered]@{ active = $false; reason = 'no-item-or-state'; evidence = $null }
+  }
+
+  $stateIds = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    $cur = ([string]$State.current_backlog_id).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($cur)) { [void]$stateIds.Add($cur) }
+  } catch {}
+  try {
+    foreach ($batchId in @($State.workpack_batch_ids)) {
+      $bid = ([string]$batchId).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($bid)) { [void]$stateIds.Add($bid) }
+    }
+  } catch {}
+
+  $matched = $false
+  foreach ($sid in @($stateIds.ToArray())) {
+    if ([string]::Equals($sid, $id, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $matched = $true
+      break
+    }
+  }
+  if (-not $matched) {
+    return [pscustomobject][ordered]@{ active = $false; reason = 'different-state-task'; evidence = [pscustomobject][ordered]@{ item_id = $id; state_ids = @($stateIds.ToArray()) } }
+  }
+
+  $stateTask = ''
+  $stateStatus = ''
+  $stateMode = ''
+  $hasActions = $false
+  try { $stateTask = [string]$State.current_task } catch {}
+  try { $stateStatus = ([string]$State.status).Trim().ToLowerInvariant() } catch {}
+  try { $stateMode = ([string]$State.task_mode).Trim().ToLowerInvariant() } catch {}
+  try { $hasActions = [bool]$State.task_did_actions } catch {}
+  $runningStatus = @('working','planning','coding','discuss','study','research') -contains $stateStatus
+  $runningMode = @('normal','discuss','study','research','doctor') -contains $stateMode
+  $active = (-not [string]::IsNullOrWhiteSpace($stateTask)) -or $runningStatus -or ($hasActions -and $runningMode)
+
+  return [pscustomobject][ordered]@{
+    active = [bool]$active
+    reason = $(if ($active) { 'state-evidence-active' } else { 'state-id-present-but-not-active' })
+    evidence = [pscustomobject][ordered]@{
+      item_id = $id
+      state_ids = @($stateIds.ToArray())
+      current_task_present = (-not [string]::IsNullOrWhiteSpace($stateTask))
+      status = $stateStatus
+      task_mode = $stateMode
+      task_did_actions = [bool]$hasActions
+    }
+  }
+}
+
+function Invoke-ModeTransitionBackgroundJobDrain {
+  param(
+    [Parameter(Mandatory=$false)]$State,
+    [Parameter(Mandatory=$false)][string]$Reason = 'mode-transition'
+  )
+
+  $jobs = @()
+  try { if ($State -and $State.active_jobs) { $jobs = @($State.active_jobs) } } catch { $jobs = @() }
+  if ($jobs.Count -eq 0) {
+    return [pscustomobject][ordered]@{ had_jobs = $false; completed = 0; cancelled = 0; remaining = 0; reason = 'no-active-jobs' }
+  }
+
+  $completed = 0
+  $cancelled = 0
+  foreach ($job in @($jobs)) {
+    $done = $false
+    try { $done = [bool](Test-JobDone $job) } catch { $done = $true }
+    if ($done) {
+      $res = $null
+      try { $res = Get-JobResult $job } catch { $res = @{ exitCode = ''; tail = '' } }
+      $tail = [string]$res.tail
+      if ($tail.Length -gt 1500) { $tail = '...(хвост обрезан)...' + "`n" + $tail.Substring($tail.Length - 1500) }
+      try { Add-Message -From system -Text ("✅ Фоновая задача [$($job.id)] завершена перед переключением режима (код выхода: $($res.exitCode)).`nКоманда: $($job.cmd)`n`nВывод (хвост):`n$tail") -Kind event | Out-Null } catch {}
+      $completed++
+      continue
+    }
+    try { Stop-BridgeJob $job } catch {}
+    try { Add-Message -From system -Text ("🛑 Фоновая задача [$($job.id)] отменена перед переключением режима ($Reason).`nКоманда: $($job.cmd)") -Kind event | Out-Null } catch {}
+    $cancelled++
+  }
+
+  try {
+    Update-State {
+      param($s)
+      $s.active_jobs = @()
+      $s.status = 'working'
+      $s.status_text = $null
+      $s.heartbeat = (Get-Date).ToString('o')
+    } | Out-Null
+  } catch {}
+
+  return [pscustomobject][ordered]@{
+    had_jobs = $true
+    completed = [int]$completed
+    cancelled = [int]$cancelled
+    remaining = 0
+    reason = 'drained-before-mode-transition'
+  }
+}
+
 # Detect-StudyMode now lives in lib/study.ps1 (loaded via common.ps1).
 # It requires a BOUNDED study command-verb and accepts -IsAutonomous to skip
 # backlog tasks. Defining it here would shadow the lib version -> do not re-add.

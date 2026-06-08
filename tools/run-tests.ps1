@@ -7,6 +7,8 @@ param(
   [int]$TimeoutSec = 120,
   [string]$Filter = 'test-*.ps1',
   [string[]]$Only = @(),
+  [string]$OnlyLike = '',
+  [string]$OnlyCsv = '',
   [switch]$NoSnapshot,
   [switch]$Quiet
 )
@@ -17,6 +19,33 @@ $bridgeRoot = Split-Path -Parent $toolsDir
 try { $ps = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $ps = '' }
 if ([string]::IsNullOrWhiteSpace($ps) -or -not (Test-Path -LiteralPath $ps)) {
   throw 'Cannot resolve current PowerShell executable for isolated test runner.'
+}
+
+function Get-NormalizedOnlySelection {
+  param(
+    [string[]]$Only,
+    [string]$OnlyLike,
+    [string]$OnlyCsv
+  )
+
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($item in @($Only)) {
+    if (-not [string]::IsNullOrWhiteSpace($item)) {
+      $items.Add($item.Trim())
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($OnlyLike)) {
+    $items.Add($OnlyLike.Trim())
+  }
+  if (-not [string]::IsNullOrWhiteSpace($OnlyCsv)) {
+    foreach ($item in ($OnlyCsv -split ',')) {
+      if (-not [string]::IsNullOrWhiteSpace($item)) {
+        $items.Add($item.Trim())
+      }
+    }
+  }
+
+  return @($items.ToArray() | Select-Object -Unique)
 }
 
 function Join-TestProcessArguments {
@@ -34,6 +63,8 @@ function Join-TestProcessArguments {
   }
   return ($quoted -join ' ')
 }
+
+$normalizedOnly = @(Get-NormalizedOnlySelection -Only $Only -OnlyLike $OnlyLike -OnlyCsv $OnlyCsv)
 
 if (-not $NoSnapshot) {
   $snapshotId = [System.Guid]::NewGuid().ToString('N')
@@ -73,9 +104,9 @@ if (-not $NoSnapshot) {
       '-Filter',
       $Filter
     )
-    if ($Only.Count -gt 0) {
+    if ($normalizedOnly.Count -gt 0) {
       $childArgs += '-Only'
-      foreach ($item in $Only) { $childArgs += [string]$item }
+      foreach ($item in $normalizedOnly) { $childArgs += [string]$item }
     }
     if ($Quiet) { $childArgs += '-Quiet' }
 
@@ -94,10 +125,10 @@ if (-not $NoSnapshot) {
 }
 
 $testFiles = @(Get-ChildItem -LiteralPath $toolsDir -Filter $Filter -File -ErrorAction SilentlyContinue | Sort-Object Name)
-if ($Only.Count -gt 0) {
+if ($normalizedOnly.Count -gt 0) {
   $testFiles = @($testFiles | Where-Object {
     $name = $_.Name
-    @($Only | Where-Object { $name -like ("*" + $_ + "*") }).Count -gt 0
+    @($normalizedOnly | Where-Object { $name -like ("*" + $_ + "*") }).Count -gt 0
   })
 }
 

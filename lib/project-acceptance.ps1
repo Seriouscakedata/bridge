@@ -293,6 +293,26 @@ function Get-ProjectAcceptanceFreePort {
   }
 }
 
+function Set-ProjectAcceptanceProcessEnv {
+  param(
+    [Parameter(Mandatory=$true)][System.Diagnostics.ProcessStartInfo]$ProcessStartInfo,
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$false)][string]$Value = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Name)) { return }
+  try {
+    if ($null -ne $ProcessStartInfo.EnvironmentVariables) {
+      $ProcessStartInfo.EnvironmentVariables[[string]$Name] = [string]$Value
+      return
+    }
+  } catch {}
+  try {
+    if ($null -ne $ProcessStartInfo.Environment) {
+      $ProcessStartInfo.Environment[[string]$Name] = [string]$Value
+    }
+  } catch {}
+}
+
 function Import-ProjectAcceptanceDotEnv {
   param([string]$ProjectRoot, [System.Diagnostics.ProcessStartInfo]$ProcessStartInfo = $null)
   $envFile = Join-Path $ProjectRoot '.env'
@@ -307,7 +327,7 @@ function Import-ProjectAcceptanceDotEnv {
         if ($value.Length -ge 2) { $value = $value.Substring(1, $value.Length - 2) }
       }
       $vars[$name] = $value
-      if ($ProcessStartInfo) { $ProcessStartInfo.EnvironmentVariables[$name] = $value }
+      if ($ProcessStartInfo) { Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $ProcessStartInfo -Name $name -Value $value }
     }
   }
   return $vars
@@ -329,7 +349,7 @@ function Invoke-ProjectAcceptanceProcess {
   $psi.RedirectStandardError = $true
   $psi.CreateNoWindow = $true
   [void](Import-ProjectAcceptanceDotEnv -ProjectRoot $ProjectRoot -ProcessStartInfo $psi)
-  foreach ($k in @($Env.Keys)) { $psi.EnvironmentVariables[[string]$k] = [string]$Env[$k] }
+  foreach ($k in @($Env.Keys)) { Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $psi -Name ([string]$k) -Value ([string]$Env[$k]) }
   $p = New-Object System.Diagnostics.Process
   $p.StartInfo = $psi
   $started = $false
@@ -526,10 +546,10 @@ function Start-ProjectAcceptanceServer {
   $psi.RedirectStandardError = $false
   $psi.CreateNoWindow = $true
   [void](Import-ProjectAcceptanceDotEnv -ProjectRoot $ProjectRoot -ProcessStartInfo $psi)
-  $psi.EnvironmentVariables['PORT'] = [string]$port
-  $psi.EnvironmentVariables['HOST'] = '127.0.0.1'
-  $psi.EnvironmentVariables['HOSTNAME'] = '127.0.0.1'
-  $psi.EnvironmentVariables['NEXT_TELEMETRY_DISABLED'] = '1'
+  Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $psi -Name 'PORT' -Value ([string]$port)
+  Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $psi -Name 'HOST' -Value '127.0.0.1'
+  Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $psi -Name 'HOSTNAME' -Value '127.0.0.1'
+  Set-ProjectAcceptanceProcessEnv -ProcessStartInfo $psi -Name 'NEXT_TELEMETRY_DISABLED' -Value '1'
 
   $proc = New-Object System.Diagnostics.Process
   $proc.StartInfo = $psi
