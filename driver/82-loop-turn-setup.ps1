@@ -50,6 +50,8 @@
   }
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
+  $hopStart = Get-Date
+  $hopId = [Guid]::NewGuid().ToString('N').Substring(0, 12)
   $headBeforeTurn = ''
   try { $headBeforeTurn = (& git -C $bridgeRoot log -1 --format='%H' 2>$null).Trim() } catch {}
   # FIX 2026-05-29: snapshot the dirty set BEFORE the turn so the project-focus guard below can

@@ -26,6 +26,20 @@ param([string]$Channel = $null, [switch]$SelfTest)
 . (Join-Path $PSScriptRoot 'lib\delivery-gate-shadow.ps1')
 . (Join-Path $PSScriptRoot 'lib\task-management.ps1')
 . (Join-Path $PSScriptRoot 'lib\checkpoint.ps1')
+$hopTimingPath = Join-Path $PSScriptRoot 'lib\hop-timing.ps1'
+if (Test-Path $hopTimingPath) {
+  . $hopTimingPath
+}
+elseif (-not (Get-Command Write-HopTiming -ErrorAction SilentlyContinue)) {
+  function Write-HopTiming {
+    param(
+      [string]$HopId,
+      [double]$DurationMs,
+      [string]$Source,
+      [string]$Status
+    )
+  }
+}
 . (Join-Path $PSScriptRoot 'lib\prompt-builder.ps1')
 $ErrorActionPreference = 'Continue'
 
