@@ -82,6 +82,16 @@ $coordinator = [pscustomobject]@{
 $coordinatorClaim = Test-BacklogApprovedItemClaimable -Item $coordinator -ProjectScopeAllowed $true
 Check 'project-autopilot coordinator remains claimable despite instructional control-plane text' ([bool]$coordinatorClaim.claimable) $coordinatorClaim
 
+$nonCoordinatorAutopilot = [pscustomobject]@{
+  id = 'autopilot-non-coordinator'
+  status = 'approved'
+  text = 'Project Autopilot generated item edits driver.ps1 without explicit coordinator/planner role.'
+  tags = @('project-autopilot')
+  scope = 'project'
+}
+$nonCoordinatorClaim = Test-BacklogApprovedItemClaimable -Item $nonCoordinatorAutopilot -ProjectScopeAllowed $true
+Check 'project-autopilot non-coordinator text control-plane mention is blocked' ((-not [bool]$nonCoordinatorClaim.claimable) -and [string]$nonCoordinatorClaim.reason -eq 'control-plane-blocked') $nonCoordinatorClaim
+
 Check 'driver shard path is control-plane' (Test-BridgeControlPlanePath -Path 'driver/81-loop-idle-claim.ps1')
 Check 'backlog path is control-plane' (Test-BridgeControlPlanePath -Path 'lib/backlog-core.ps1')
 Check 'docs path is not control-plane' (-not (Test-BridgeControlPlanePath -Path 'docs/readme.md'))

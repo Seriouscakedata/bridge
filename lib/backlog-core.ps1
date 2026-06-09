@@ -992,18 +992,18 @@ function Test-BacklogApprovedItemClaimable {
   $tags = @()
   try { $tags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $tags = @() }
   $isOperator = (@($tags) -contains 'operator')
-  # 2026-06-06 (operator hotfix): project-autopilot coordinator tasks (scope=project, work-ONLY-in-project-root)
-  # are PLANNERS, not control-plane executors. Their text mentions driver.ps1/supervisor/backlog ONLY as
-  # instructions teaching the worker how to flag control-plane atoms — the control-plane regex false-matches
-  # those words and blocked the coordinator, wedging CHAPTER autopilot. The atoms the coordinator emits are
-  # re-checked by THIS gate at their own claim time, so exempting ONLY the coordinator is safe.
+  # Project-autopilot coordinator/planner tasks are PLANNERS, not control-plane executors. Their
+  # instructional text can mention driver.ps1/supervisor/backlog while teaching the worker how to
+  # flag control-plane atoms. The executor atoms they emit are re-checked by THIS gate at their own
+  # claim time, so the text-only exemption must not apply to atom file/touch_set control-plane hits.
   $isProjectAutopilot = $false
-  try { $isProjectAutopilot = (@($tags) -contains 'project-autopilot') } catch { $isProjectAutopilot = $false }
+  try { $isProjectAutopilot = (($scope -eq 'project') -and (@($tags) -contains 'project-autopilot')) } catch { $isProjectAutopilot = $false }
   $isProjectAutopilotAtom = ($isProjectAutopilot -and (@($tags) -contains 'atom'))
+  $isProjectAutopilotCoordinator = ($isProjectAutopilot -and -not $isProjectAutopilotAtom -and ((@($tags) -contains 'coordinator') -or (@($tags) -contains 'planner')))
   $touchesControl = $false
   try {
-    if ($isProjectAutopilot) {
-      $touchesControl = ($isProjectAutopilotAtom -and [bool](Test-ItemFilesHitControlPlane -Item $Item))
+    if ($isProjectAutopilotAtom -or $isProjectAutopilotCoordinator) {
+      $touchesControl = [bool](Test-ItemFilesHitControlPlane -Item $Item)
     } else {
       $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
     }
