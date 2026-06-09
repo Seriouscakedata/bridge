@@ -445,7 +445,7 @@
         "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Пул воркеров",
-        "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/opus) с complexity-floor и domain-affinity. [[PARALLEL:N]] параллелит на разных воркерах. Включает model usage accounting (cc9f453)."
+        "description":  "7 моделей (codex-medium/high/xhigh/alt/specialist + claude-sonnet/fable) с complexity-floor, domain-affinity и premium-guard для Fable/Opus/Mythos. [[PARALLEL:N]] параллелит на разных воркерах. Включает model usage accounting (cc9f453)."
     },
     {
         "id":  "parallel-chunks",

@@ -24,8 +24,9 @@
   }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "claude_in_$g.txt"; $outF=Join-Path $env:TEMP "claude_out_$g.txt"; $errF=Join-Path $env:TEMP "claude_err_$g.txt"
-  # Opus -> maximum thinking budget ('ultrathink' = top tier in Claude Code). They write code.
-  $effPrompt = if ($Model -match 'opus') { $Prompt + "`n`nultrathink" } else { $Prompt }
+  # Premium Claude models (Opus/Fable/Mythos) get the heavy architecture-thinking hint.
+  $heavyClaudeModel = ($Model -match '(?i)(opus|fable|mythos)')
+  $effPrompt = if ($heavyClaudeModel) { $Prompt + "`n`nultrathink" } else { $Prompt }
   [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   $plannerCwd = Get-ActiveProjectRoot
   if ([string]::IsNullOrWhiteSpace($plannerCwd)) { $plannerCwd = $bridgeRoot }
@@ -37,10 +38,9 @@
   $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
   if ($Model) {
     $claudeArgs += @('--model', $Model)
-    # 2026-05-30: xhigh (extra-high) reasoning on the heavy/architecture model (Opus, any version
-    # incl. 4.8). Operator chose xhigh over max to preserve prepaid budget -- 'max' burns quota much
-    # faster for only a marginal gain. The triage model (Sonnet) keeps the CLI default for speed.
-    if ($Model -match '(?i)opus') { $claudeArgs += @('--effort', 'xhigh') }
+    # 2026-06-09: xhigh on premium architecture models. Fable 5 was verified locally to accept this
+    # flag through Claude Code; Sonnet keeps the CLI default for speed.
+    if ($heavyClaudeModel) { $claudeArgs += @('--effort', 'xhigh') }
   }
   $reply = ''
   $claudeTimedOut = $false
@@ -364,13 +364,13 @@ function Invoke-Coder {
     # busy status instead of simulating the opponent with the same model.
     if ($codexBusyElsewhere -and -not $claudeBusyElsewhere -and $Mode -ne 'discuss') {
       $busyCh = ($others.GetEnumerator() | Where-Object { $_.Value -eq 'codex' } | Select-Object -First 1).Key
-      Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude Opus берёт coder-турн (реальное выполнение).") -Kind event | Out-Null
+      Add-Message -From system -Text ("🔀 Fallback: Codex занят в канале '" + $busyCh + "' → Claude premium берёт coder-турн (реальное выполнение).") -Kind event | Out-Null
       $fallbackPrefix = @"
 ⚠ FALLBACK MODE: Ты сейчас замещаешь Codex-кодера (он занят в канале '$busyCh'). Выполняй задачу реально: можно читать/редактировать файлы и запускать команды доступными инструментами. Соблюдай все правила безопасности из промпта ниже: SAFETY для опасных действий, RUNJOB для долгих команд, UTF-8 BOM для .ps1, ParseFile/smoke/commit/restart.flag по правилам моста. Не вызывай Codex и не жди его освобождения — ты резервный кодер этого хода. Отчитайся кратко по результату.
 
 ЗАДАЧА:
 "@
-      $fallbackModel = 'opus'
+      $fallbackModel = 'claude-fable-5'
       try {
         $fallbackCfg = Get-BridgeConfig
         if ($fallbackCfg.deepModel) { $fallbackModel = [string]$fallbackCfg.deepModel }

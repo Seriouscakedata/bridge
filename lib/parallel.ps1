@@ -248,7 +248,7 @@ function Get-TaskComplexityHeuristic {
   # one-line probe and a full component redesign got the same worker pool — routing never
   # differentiated. Now: trivial one-liners -> 'simple' (cheap/fast gemini/deepseek/codex-medium),
   # rewrites/refactors/integrations -> 'complex' (codex-xhigh), design/schema/migration or many
-  # files -> 'architectural' (unlocks opus via the existing opus-guard at Select-WorkerForStream).
+  # files -> 'architectural' (unlocks premium Claude via Select-WorkerForStream).
   # Returns simple|moderate|complex|architectural. Cyrillic + English keywords (project tasks are RU).
   param([string]$Text, [int]$TouchCount = 1)
   $t = ([string]$Text).ToLowerInvariant()
@@ -271,14 +271,22 @@ function Get-StreamExplicitWorkerId {
   return ''
 }
 
+function Test-ParallelPremiumClaudeWorker {
+  param([object]$Worker)
+  if (-not $Worker) { return $false }
+  if ([string]$Worker.cli -ne 'claude') { return $false }
+  $label = (([string]$Worker.id) + ' ' + ([string]$Worker.model)).ToLowerInvariant()
+  return ($label -match '(opus|fable|mythos)')
+}
+
 function Select-WorkerForStream {
   # Returns the best worker for a stream given an already-used set (no double
   # booking unless pool is exhausted). Algorithm:
   #   1. Explicit `worker: ID` override wins immediately if id exists in pool.
   #   2. Filter pool by strength >= complexityFloor[complexity].
   #   3. Remove already-used buckets (unless pool gets empty).
-  #   4. Protect opus: skip claude+opus unless complexity=architectural OR
-  #      stream has [[OPUS]] marker.
+  #   4. Protect premium Claude models: skip Opus/Fable/Mythos unless complexity=architectural OR
+  #      stream has an explicit premium marker.
   #   5. Prefer workers whose `domains` array contains the detected domain.
   #   6. Sort: cheapest cost asc, then fastest speed desc.
   # Returns $null only if pool is completely empty (caller falls back).
@@ -298,7 +306,7 @@ function Select-WorkerForStream {
   $complexity = Get-StreamComplexity $Stream
   $floor = Get-ParallelComplexityFloor -Complexity $complexity
   $domain = Get-StreamDomain $Stream
-  $opusOk = ($complexity -eq 'architectural') -or ([bool]$Stream.opus)
+  $premiumClaudeOk = ($complexity -eq 'architectural') -or ([bool]$Stream.opus) -or ([bool]$Stream.premium)
 
   # 2. Strength floor
   $candidates = @($pool | Where-Object { [int]$_.strength -ge $floor })
@@ -309,10 +317,10 @@ function Select-WorkerForStream {
     $candidates = @($pool | Where-Object { [int]$_.strength -eq [int]$maxStr })
   }
 
-  # 4. Opus guard
-  if (-not $opusOk) {
-    $woOpus = @($candidates | Where-Object { -not (([string]$_.cli -eq 'claude') -and ([string]$_.model -match 'opus')) })
-    if ($woOpus.Count -gt 0) { $candidates = $woOpus }
+  # 4. Premium Claude guard
+  if (-not $premiumClaudeOk) {
+    $woPremiumClaude = @($candidates | Where-Object { -not (Test-ParallelPremiumClaudeWorker $_) })
+    if ($woPremiumClaude.Count -gt 0) { $candidates = $woPremiumClaude }
   }
 
   # 3. Avoid double-booking
@@ -562,7 +570,8 @@ function Test-CanParallelize {
       id         = $id
       files      = @($files)
       complexity = Get-ParallelComplexityFromBody $body
-      opus       = ([string]$body -match '\[\[OPUS\]\]')
+      opus       = ([string]$body -match '\[\[(OPUS|FABLE|PREMIUM)\]\]')
+      premium    = ([string]$body -match '\[\[(OPUS|FABLE|PREMIUM)\]\]')
       body       = $body
     })
   }

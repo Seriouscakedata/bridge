@@ -1,7 +1,7 @@
 {
   "port": 8787,
   "codexExe": "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
-  "claudeGlob": "C:/Users/rafie/AppData/Roaming/Claude/claude-code/*/claude.exe",
+  "claudeGlob": "C:/Users/rafie/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/claude.exe",
   "loopDelaySeconds": 2,
   "maxTurns": 150,
   "criticMaxRetries": 3,
@@ -21,7 +21,7 @@
   "fullContextCount": 20,
   "summarizeBatch": 15,
   "triageModel": "sonnet",
-  "deepModel": "claude-opus-4-8",
+  "deepModel": "claude-fable-5",
   "sttModel": "gemini-2.5-flash",
   "router": {
     "minSuccess": 0.5,
@@ -248,8 +248,8 @@
       { "id": "claude-sonnet",    "cli": "claude", "model": "sonnet",        "strength": 3, "speed": 3, "cost": 3, "domains": ["frontend","docs","config","any"], "purpose": "UI/markdown coder." },
       { "id": "claude-sonnet-2",  "cli": "claude", "model": "sonnet",        "strength": 3, "speed": 3, "cost": 3, "domains": ["frontend","docs","config","any"], "purpose": "UI coder (dup)." },
       { "id": "claude-sonnet-3",  "cli": "claude", "model": "sonnet",        "strength": 3, "speed": 3, "cost": 3, "domains": ["frontend","docs","config","any"], "purpose": "UI coder (dup)." },
-      { "id": "claude-opus",      "cli": "claude", "model": "claude-opus-4-8", "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs","backend"], "purpose": "Strong coder for complex/architectural/design tasks (operator: opus is a good coder, use it)." },
-      { "id": "claude-opus-2",    "cli": "claude", "model": "claude-opus-4-8", "strength": 5, "speed": 2, "cost": 5, "domains": ["any","frontend","docs","backend"], "purpose": "Strong coder (dup) for complex tasks in parallel." },
+      { "id": "claude-fable",     "cli": "claude", "model": "claude-fable-5", "strength": 5, "speed": 1, "cost": 5, "domains": ["any","frontend","docs","backend"], "purpose": "Premium architecture model for deep-think, study, and architectural/design decisions." },
+      { "id": "claude-fable-2",   "cli": "claude", "model": "claude-fable-5", "strength": 5, "speed": 1, "cost": 5, "domains": ["any","frontend","docs","backend"], "purpose": "Premium architecture model (dup) for complex architectural work in parallel." },
       { "id": "deepseek-pro",     "cli": "deepseek", "model": "deepseek-v4-pro", "strength": 4, "speed": 3, "cost": 2, "domains": ["any","backend","frontend","config","docs"], "purpose": "DeepSeek v4 Pro — strong, cheap; single-file edits via LLM-worker." },
       { "id": "deepseek-pro-2",   "cli": "deepseek", "model": "deepseek-v4-pro", "strength": 4, "speed": 3, "cost": 2, "domains": ["any","backend","frontend","config","docs"], "purpose": "DeepSeek v4 Pro (dup)." },
       { "id": "gemini-flash",     "cli": "gemini", "model": "gemini-2.5-flash", "strength": 3, "speed": 4, "cost": 1, "domains": ["frontend","docs","config","any"], "purpose": "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker." },

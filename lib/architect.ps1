@@ -563,7 +563,7 @@ function Invoke-Architect {
   $draftN = 0; $keptN = 0   # tracked through the cycle for the thinking-journal note at the end
   $prompt = Build-ArchitectPrompt -Mode $Mode -MaxIdeas $MaxIdeas
   # Use deep-reasoning model purpose ('deep' -> deepseek-v4-pro by default;
-  # operator can override to opus via config if desired).
+  # operator can override to a premium model via config if desired).
   $raw = $null
   try { $raw = Invoke-LLM -Purpose 'deep' -Prompt $prompt -TimeoutSec $TimeoutSec -Temperature 0.3 } catch {}
   if ([string]::IsNullOrWhiteSpace($raw)) {

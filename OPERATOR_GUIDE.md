@@ -162,9 +162,9 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
   но больше не блокируют независимые ready-задачи. В чате при claim видно `selected`, `ready/eligible`,
   сколько ждёт deps, сколько упёрлось в barrier/conflicts.
 - **Deterministic dispatch** спавнит по воркеру на поток в отдельных git-worktree.
-- **Воркеры** — пул из config.json (codex разных уровней, claude sonnet/opus, deepseek, gemini).
+- **Воркеры** — пул из config.json (codex разных уровней, claude sonnet/fable, deepseek, gemini).
   Роутинг по сложности задачи (`Get-TaskComplexityHeuristic`): простая → дешёвый/быстрый, сложная →
-  сильный (opus только на architectural).
+  сильный (premium Claude/Fable только на architectural).
 - **collect-then-commit** — после работы хост напрямую забирает изменённые файлы из всех worktree в
   репозиторий (минуя ненадёжный git воркеров). Доставка 100% независимо от поведения CLI.
 - В чате при старте команды виден **план потоков** («🔀 Запускаю команду из N потоков: • поток wp1 …»).
@@ -188,7 +188,7 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 | codex-alt ×2 | codex gpt-5.4/high | 3 | 2 | 3 | дешевле, запас |
 | codex-specialist ×2 | codex gpt-5.3-codex/high | 3 | 3 | 2 | код-специфика |
 | claude-sonnet ×3 | claude sonnet | 3 | 3 | 3 | frontend/docs/config |
-| **claude-opus ×2** | claude opus-4-8 | **5** | **5** | 2 | **только сложное/architectural** |
+| **claude-fable ×2** | claude fable-5 | **5** | **5** | 1 | **только важное architectural/deep-think** |
 | deepseek-pro ×2 | deepseek v4-pro | 4 | **2** | 3 | сильный и дешёвый |
 | gemini-flash ×2 | gemini 2.5-flash | 3 | **1** | 4 | дешёвый, быстрый, простое |
 
@@ -209,7 +209,7 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 ### Роутинг — кто берёт задачу (`Select-WorkerForStream`)
 1. `strength ≥ complexityFloor[сложность]` — порог силы: **simple→2, moderate→3, complex→4, architectural→5**.
 2. Совпадение `domains` с доменом задачи (specialist'ы в приоритете).
-3. **opus-guard:** claude-opus берётся ТОЛЬКО на `architectural` (или явный `[[OPUS]]`) — он дорогой.
+3. **premium-guard:** claude-fable/opus/mythos берётся ТОЛЬКО на `architectural` (или явный `[[FABLE]]`/`[[OPUS]]`) — это дорогой верхний уровень.
 4. Сортировка кандидатов: **дешевле (cost↑), потом быстрее (speed↓)** — экономия по умолчанию.
 5. Без двойного бронирования (один воркер — один поток, пока пул не исчерпан).
 
@@ -224,14 +224,14 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 - ⛔ **НИКОГДА `gemini-2.5-pro`** — слишком дорогой. Удалять из конфига, если случайно вернётся.
 - ⚠️ `gemini-3-flash` — **только резерв** (дорогой), когда основной агент недоступен/вернул пусто.
 - Рутина (curator, intent-classifier, smoke) → `gemini-2.5-flash-lite` / `gemini-2.5-flash` (дёшево).
-- `opus` — отличный кодер, но дорогой → держать на сложных/architectural, не на мелочь (opus-guard это и обеспечивает).
+- `claude-fable-5` — верхний архитектурный уровень: держать на deep-think/study/architectural, не на мелочь (premium-guard это и обеспечивает).
 - Основная масса — codex (по подписке, prepaid) + дешёвый deepseek/gemini.
 
 ### Контроль стоимости
 - `usage.jsonl` логирует каждый вызов: `kind` = **prepaid** (codex/claude по подписке, $0 сверху) или
   **paid** (deepseek/gemini API → `cost_usd`). Цены — `config.usage.prices`.
 - Сводка burn-rate — через API пульта / `Get-UsageSummary` (см. MONITORING_RUNBOOK).
-- Хочешь дешевле — больше gemini-flash/deepseek (cost 1–2) в пуле, меньше opus/codex-xhigh (cost 5).
+- Хочешь дешевле — больше gemini-flash/deepseek (cost 1–2) в пуле, меньше fable/codex-xhigh (cost 5).
 
 ---
 
@@ -427,7 +427,7 @@ cd C:\Users\rafie\aipartners
 | Сбросить ложный cooldown | §9 (restarts.jsonl) |
 | Проверить, собирается ли проект | §9 (tsc + next build) |
 | Больше/меньше потоков команды | правь `config.parallel.workers` + `maxStreams` → restart.flag (§4-bis) |
-| Сделать команду дешевле | больше gemini/deepseek (cost 1–2), меньше opus/codex-xhigh (cost 5) (§4-bis) |
+| Сделать команду дешевле | больше gemini/deepseek (cost 1–2), меньше fable/codex-xhigh (cost 5) (§4-bis) |
 | Форсировать модель на задачу | `worker: <id>` в тексте задачи (§4-bis) |
 | Посмотреть расходы | usage.jsonl / Get-UsageSummary (§4-bis) |
 

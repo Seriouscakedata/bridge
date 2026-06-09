@@ -8,11 +8,11 @@ _Обновлено: 2026-05-26. Поддерживается Архитекто
 ## Ядро движка
 | Capability | Status | Module | Notes |
 |---|---|---|---|
-| планировщик-кодер пайплайн | ✅ | driver.ps1 | Claude (Sonnet/Opus) ↔ Codex |
-| модель-роутер по сложности | ✅ | lib/router.ps1 | Sonnet для триажа, Opus для сложного |
+| планировщик-кодер пайплайн | ✅ | driver.ps1 | Claude (Sonnet/Fable) ↔ Codex |
+| модель-роутер по сложности | ✅ | lib/router.ps1 | Sonnet для триажа, Fable для архитектурного |
 | usage tracking (расход) | ✅ | lib/usage.ps1, usage.jsonl | per-model, burn-rate UI |
 | Codex `xhigh` reasoning | ✅ | driver.ps1 | `model_reasoning_effort="xhigh"` |
-| Opus ultrathink | ✅ | driver.ps1 | через 'ultrathink' в промпте |
+| Premium Claude ultrathink | ✅ | driver.ps1 | Fable/Opus/Mythos через 'ultrathink' + xhigh |
 
 ## Надёжность + откат
 | Capability | Status | Module | Notes |
@@ -86,7 +86,7 @@ _Обновлено: 2026-05-26. Поддерживается Архитекто
 | 🧭 Architect agent | ❌ | lib/architect.ps1 | волна 2 |
 | external-systems list | ❌ | memory/external-systems.md | волна 2 |
 | radar→action гейтом | ❌ | techradar.ps1 / lib/radar.ps1 | волна 3 |
-| deep-think (weekly Opus open) | ❌ | lib/architect.ps1 | волна 3 |
+| deep-think (premium Claude open) | ❌ | lib/architect.ps1 | волна 3 |
 
 ## Из ARCHITECTURE_V2.md ещё не реализовано
 | Capability | Status | Notes |

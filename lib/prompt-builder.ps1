@@ -253,13 +253,13 @@ $AutoScopeLine
   В `config.json -> parallel.workers` лежит список воркеров с метаданными (strength 1-5, speed, cost, domains, model, reasoning). Драйвер для каждого блока подбирает воркера автоматически:
     - `complexity: simple`        → strength ≥ 2 (любой подходит, обычно codex-medium/codex-alt/sonnet)
     - `complexity: moderate`      → strength ≥ 3 (codex-high, codex-medium, codex-alt, codex-specialist, sonnet)
-    - `complexity: complex`       → strength ≥ 4 (codex-xhigh, codex-high, opus)
-    - `complexity: architectural` → strength ≥ 5 (codex-xhigh, opus — opus открыт только здесь или с `[[OPUS]]`)
+    - `complexity: complex`       → strength ≥ 4 (codex-xhigh, codex-high, deepseek-pro)
+    - `complexity: architectural` → strength ≥ 5 (codex-xhigh, premium Claude/Fable — premium Claude открыт только здесь или с `[[FABLE]]`/`[[OPUS]]`)
   Среди подходящих по силе — выбирается аффинный к домену файлов (.html/.css/.js → sonnet; .ps1/.py/.go → codex-варианты) и самый дешёвый.
   Воркеры не дублируются в одной диспетчеризации (один bucket → один поток), что позволяет до 6 параллельных потоков на разных моделях/ризонингах.
 
   Можно перебить выбор: добавь в блок строку `worker: <id>` (например `worker: codex-xhigh`) — драйвер возьмёт именно его. Используй редко (auto-route обычно лучше).
-  Опционально `[[OPUS]]` в теле блока — разблокирует opus для не-architectural задач, ЕСЛИ реально нужен.
+  Опционально `[[FABLE]]`/`[[OPUS]]` в теле блока — разблокирует premium Claude для не-architectural задач, ЕСЛИ реально нужен.
 
   📦 ВНУТРЕННИЙ ЧАНКИНГ ВОРКЕРА:
   Каждый параллельный воркер ВНУТРИ своего потока может разбить работу на этапы через `STATUS: CONTINUE-CHUNK:N/M`. Драйвер автоматически перезапустит того же воркера в том же worktree на следующий чанк с тем же model/reasoning. Используй это знание: если подзадача потока БОЛЬШАЯ (например «сделать рефактор + добавить тесты + обновить доку») — НЕ дроби её на 3 параллельных блока (зависимы). Дай одному воркеру в его теле подсказку: «работа разбивается на 3 этапа — используй CONTINUE-CHUNK». Воркер сам управит. Это сочетает скорость параллели (между потоками) с надёжностью чанкинга (внутри потока).

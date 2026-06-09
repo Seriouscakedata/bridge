@@ -76,8 +76,8 @@ function Get-PlannerModel {
   }
   $text = if ($null -eq $TaskText) { '' } else { [string]$TaskText }
 
-  if ($text -imatch '(^|[^\p{L}\p{N}_])(opus|опус)([^\p{L}\p{N}_]|$)') { return $deepModel }
-  if ($text -match '\[\[DEEP-THINK\]\]') { return $deepModel }
+  if ($text -imatch '(^|[^\p{L}\p{N}_])(opus|опус|fable|фейбл)([^\p{L}\p{N}_]|$)') { return $deepModel }
+  if ($text -match '\[\[(DEEP-THINK|FABLE)\]\]') { return $deepModel }
 
   if ($Mode -eq 'study' -and $opusOnStudy) { return $deepModel }
   if ($Mode -eq 'discuss' -and $opusOnDisc) { return $deepModel }
@@ -92,7 +92,8 @@ function Get-PlannerModel {
   # needs Opus -- it just means it's well-organized. A clear 10-step implementation spec
   # is EASIER for Sonnet, not harder. These triggers were the main reason every "structured"
   # task was getting routed to Opus + discuss-mode + xhigh reasoning, burning prepaid quota.
-  # Use opusKeywords (architectural intent) and explicit [[OPUS]] / [[DEEP-THINK]] markers
+  # Use opusKeywords (architectural intent; legacy name) and explicit [[OPUS]] / [[FABLE]] /
+  # [[DEEP-THINK]] markers for premium-model routing.
   # for routing instead.
 
   foreach ($kw in $complexKeywords) {
