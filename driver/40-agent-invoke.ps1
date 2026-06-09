@@ -46,7 +46,15 @@
   $claudeTimedOut = $false
   $claudeSilentExit = $false
   $claudeZeroOutputTimeout = $false
-  $plannerFirstOutputGraceMs = 150000
+  # First-output grace (cold-start zero-output fast-fail -> Codex). 150s -> 300s (2026-06-09,
+  # operator speed root): Claude reasons SILENTLY (no streamed output during extended thinking),
+  # so a heavy planner turn emitted 0 bytes for >150s and was FALSELY killed as "zero-output",
+  # thrashing to a Codex fallback when Claude was merely still reasoning. The 900s wall cap below
+  # and the adaptive stagnation grace still backstop a genuinely-hung process; a true zero-output
+  # hang now just takes 300s (not 150s) before fallback — a bounded, rare cost. (Sonnet/Haiku emit
+  # first output well under this; only deep Opus reasoning needs the headroom. Could be made
+  # model-aware later if 300s ever proves too generous for a hung process.)
+  $plannerFirstOutputGraceMs = 300000
   $plannerFirstOutputGraceSec = [int]($plannerFirstOutputGraceMs / 1000)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
