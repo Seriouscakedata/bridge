@@ -109,6 +109,7 @@ $goalsSection
 - НЕ повторяй то, что уже есть в открытом бэклоге;
 - избегай источников/тем с высоким drop-rate; если предлагаешь оттуда, нужна сильная evidence;
 - безопасные: не предлагай трогать watchdog/supervisor/.git, не предлагай рискованных необратимых действий;
+- FOUNDATION #2 GENERATOR-BIAS: предпочитай идеи класса ХАРДЕНИНГ / ФИКС / ПОКРЫТИЕ / НАДЁЖНОСТЬ (улучшение существующего поведения) перед идеями класса NET-NEW (новый механизм/подсистема). Для идей NET-NEW-класса обязательно добавь поле operator_justification с обоснованием необходимости — без него идею не предлагай. Для обычных bug-fix / reliability / harden / coverage идей funnel открыт: предлагай их freely.
 - если данных мало или всё хорошо — верни пустой массив [].
 
 ТЕЛЕМЕТРИЯ ХОДОВ:
@@ -129,10 +130,10 @@ $ideaSourceSection
 $learningSection
 
 Верни СТРОГО JSON-массив без markdown, формата:
-[{"text":"идея одной-двумя фразами по-русски","tags":["короткие","теги"],"value":N,"confidence":N,"effort":N}]
+[{"text":"идея одной-двумя фразами по-русски","tags":["короткие","теги"],"category":"harden|fix|coverage|reliability|net-new","value":N,"confidence":N,"effort":N,"operator_justification":"(обязательно для category=net-new, иначе пусто)"}]
 
 Где value (1–5) — польза для моста/пользователя, confidence (1–5) — уверенность, что идея сработает, effort (1–5) — трудозатраты (1=легко, 5=сложно).
-Чем выше value*confidence/effort, тем ценнее идея.
+Чем выше value*confidence/effort, тем ценнее идея. Идеи класса harden/fix/coverage/reliability НЕ штрафуются — scoring применяется одинаково; category влияет только на наличие operator_justification.
 "@
 
 $raw = Invoke-LLM -Purpose 'reflect' -Prompt $prompt -TimeoutSec 120 -Temperature 0.4
