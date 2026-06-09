@@ -7,6 +7,7 @@ $script:BacklogLibraryDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)
 $script:BacklogModuleDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } elseif (-not [string]::IsNullOrWhiteSpace($script:BacklogLibraryDir)) { $script:BacklogLibraryDir } else { Split-Path -Parent $PSCommandPath }
 
 foreach ($script:BacklogModuleName in @(
+  'policy.ps1',
   'backlog-io.ps1',
   'backlog-governor.ps1',
   'backlog-crud.ps1',

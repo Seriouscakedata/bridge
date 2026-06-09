@@ -1551,14 +1551,17 @@ function Test-BacklogWorkpackOperatorTagged {
 }
 
 function Test-BacklogWorkpackTouchesBridgeControlPlane {
+  # 2026-06-09 unified policy: delegates to lib/policy.ps1 (edit-target-keyed; no text probe).
+  # The old body ALSO text-probed the task description, which mislabeled tests/docs that merely
+  # mention a protected component, and scanned the FULL touch set (verify deps included) -- both
+  # were false-positive sources for the admission requirement below. Legacy path fallback kept
+  # for the case where the policy module is unavailable.
   param($Item)
   try {
-    if (Get-Command Test-IdeaTouchesControlPlane -ErrorAction SilentlyContinue) {
-      $probeText = Get-BacklogWorkpackEditableSignalText -Text ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default ''))
-      if ([bool](Test-IdeaTouchesControlPlane -Idea ([pscustomobject]@{ text = $probeText }))) { return $true }
+    if (Get-Command Test-PolicyItemTouchesControlPlane -ErrorAction SilentlyContinue) {
+      return [bool](Test-PolicyItemTouchesControlPlane -Item $Item)
     }
   } catch {}
-
   $paths = New-Object 'System.Collections.Generic.List[string]'
   foreach ($p in @((Get-BacklogWorkpackItemFileList -Item $Item) + (Get-BacklogWorkpackItemTouches -Item $Item))) {
     $v = ([string]$p).Trim().ToLowerInvariant() -replace '\\','/'
@@ -1628,7 +1631,12 @@ function Get-BacklogWorkpackExecEligibility {
   }
 
   $cg = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
-  if ((-not [bool]$Config.includeProtected) -and (-not $AllowProtected) -and ($cg -in @('core','safety'))) {
+  # 2026-06-09: operator-tagged items are NOT excluded as protected-dominant. The exclusion exists
+  # to keep risky core/safety work out of the PARALLEL frontier, but it also starved the serial
+  # path: when ALL approved work was 'protected', selected=0 and nothing claimed (the wedge the
+  # operator kept un-sticking). An operator-authorized item may run -- conflict groups still
+  # serialize same-group items, so it executes alone, never in a risky parallel batch.
+  if ((-not [bool]$Config.includeProtected) -and (-not $AllowProtected) -and ($cg -in @('core','safety')) -and -not (Test-BacklogWorkpackOperatorTagged -Item $Item)) {
     return [pscustomobject]@{ eligible=$false; reason='protected-dominant'; detail='protected core/safety candidate is excluded from parallel workpack frontier'; admission=$null }
   }
 

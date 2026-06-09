@@ -1,5 +1,12 @@
 ﻿# backlog-core.ps1 -- backlog classification, picker, operator batch, and self-execution helpers.
 
+# 2026-06-09 unified policy: control-plane/authorization decisions live in lib/policy.ps1 (single
+# source of truth). Guarded dot-source so direct consumers of this file (tests, jobs) get it too;
+# the lib/backlog.ps1 aggregator already loads policy.ps1 first.
+if (-not (Get-Command Test-PolicyControlPlanePath -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'policy.ps1') } catch {}
+}
+
 #region Backlog prioritization helpers
 
 function Get-IdeaSeverityRank {
@@ -868,7 +875,14 @@ function Test-BacklogClaimTextMatch {
 }
 
 function Test-BridgeControlPlanePath {
+  # Delegates to the unified policy definition (lib/policy.ps1). Legacy inline fallback kept
+  # only for the pathological case where the policy module failed to load.
   param([string]$Path)
+  try {
+    if (Get-Command Test-PolicyControlPlanePath -ErrorAction SilentlyContinue) {
+      return [bool](Test-PolicyControlPlanePath -Path $Path)
+    }
+  } catch {}
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   $p = $Path.Replace('\','/').Trim().TrimStart('./').ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($p)) { return $false }
@@ -1805,19 +1819,26 @@ function Get-NextSelfExecIdea {
 }
 
 function Test-IdeaTouchesControlPlane {
-  # TRUE if the task edits the bridge's own control/safety plane (supervisor, watchdog, circuit-
-  # breaker, the driver core loop, restart-limit, script-integrity). Autonomously editing these is
-  # what repeatedly deadlocked the bridge on 2026-05-31 (a cascade of conflicting over-protections
-  # the bridge generated for itself). Used to (1) classify such ideas as red, and (2) HARD-BLOCK
-  # auto-claim of them unless the OPERATOR explicitly delegated (tag 'operator') or the item carries
-  # a valid bridge_self_admission. Deterministic.
+  # TRUE if the task EDITS the bridge's own control/safety plane. External contract unchanged:
+  # $true => auto-claim requires the operator tag or a valid bridge_self_admission
+  # (Test-BacklogApprovedItemClaimable), and Get-IdeaRiskTier classifies the idea red.
+  #
+  # 2026-06-09 UNIFIED POLICY (operator root-cause fix): the old body ALSO ran a broad TEXT regex
+  # that fired on ANY mention of driver/supervisor/watchdog/control-plane -- so unit tests, docs
+  # tasks and DISCUSS analyses about those components were classified control-plane and wedged
+  # (the false-positive epidemic the operator kept un-sticking by hand). Now delegates to
+  # lib/policy.ps1: keyed on declared EDIT TARGETS (files -> workpack edit touches -> touch sets);
+  # text is consulted only when the item declares no paths at all, and then requires an edit-verb
+  # near a component name (mentioning a component is not editing it).
   param($Idea)
-  try { if (Test-ItemFilesHitControlPlane -Item $Idea) { return $true } } catch {}
-  $t = ''
-  try { $t = ([string]$Idea.text).ToLowerInvariant() } catch {}
-  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
-  $cpPat = '(watchdog|supervisor|process[_ -]?supervision|runtime[_ -]?incident|circuit[_ -]?break|restart[_ -]?limit|script[_ -]?integrit|concurrent.{0,4}driver|control[_ -]?plane|driver[^/\s\\]*\.ps1|driver[\\/][^\s,;:]+\.ps1|server\.ps1|supervisor\.ps1|watchdog\.ps1|lib[\\/]backlog[^/\s\\]*\.ps1|lib[\\/](parallel|circuit-breaker)\.ps1|circuit-breaker\.ps1|kill-bridge|self[_ -]?edit)'
-  return [bool]($t -match $cpPat)
+  try {
+    if (Get-Command Test-PolicyItemTouchesControlPlane -ErrorAction SilentlyContinue) {
+      return [bool](Test-PolicyItemTouchesControlPlane -Item $Idea)
+    }
+  } catch {}
+  # fallback (policy unavailable): conservative path-only check
+  try { return [bool](Test-ItemFilesHitControlPlane -Item $Idea) } catch {}
+  return $false
 }
 
 function Get-IdeaRiskTier {

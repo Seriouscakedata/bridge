@@ -511,19 +511,61 @@
               [string]$wpBatch.serial_reason -eq 'serial-single-fallback'
             )
           } catch { $isSerialSingleFallback = $false }
+          # ── 2026-06-09 SERIAL-CLAIM DISPATCHABILITY GUARDS (FM-1) ──────────────────────────
+          # Live incident: ONE approved item was serial-single "claimed" 3,819 times in 15h and
+          # never started (a scope=bridge task sitting in a PROJECT channel; its text was also
+          # double-encoded mojibake). The claim was logged each idle tick, a downstream guard
+          # silently no-opped dispatch, the item stayed approved, and the channel burned a whole
+          # night doing nothing. Guards: (1) scope-mismatch and (2) mojibake are held immediately;
+          # (3) a 3-strike counter holds ANY item that keeps getting serial-claimed without ever
+          # starting -- the generic backstop for future silent no-op causes.
+          if ($isSerialSingleFallback) {
+            try {
+              $siItem  = @($wpBatch.items)[0]
+              $siId    = [string]$siItem.id
+              $siText  = [string](Get-BacklogPackObjectValue -Obj $siItem -Name 'text' -Default '')
+              $siScope = [string](Get-BacklogPackObjectValue -Obj $siItem -Name 'scope' -Default '')
+              $siBlock = ''
+              if ((([string]$Channel) -ne 'main') -and ($siScope -eq 'bridge')) {
+                $siBlock = 'scope-mismatch: scope=bridge item is not dispatchable in a project channel'
+              } elseif (([regex]::Matches($siText, '[ÐÑ]')).Count -ge 8) {
+                $siBlock = 'mojibake: task text is double-encoded and cannot be dispatched'
+              } else {
+                if (-not $script:wpSerialClaimStrikes) { $script:wpSerialClaimStrikes = @{} }
+                $siPrev = 0
+                if ($script:wpSerialClaimStrikes.ContainsKey($siId)) { $siPrev = [int]$script:wpSerialClaimStrikes[$siId] }
+                $script:wpSerialClaimStrikes[$siId] = $siPrev + 1
+                if (($siPrev + 1) -ge 4) { $siBlock = ('undispatchable: serial-claimed ' + ($siPrev + 1) + 'x without ever starting') }
+              }
+              if (-not [string]::IsNullOrWhiteSpace($siBlock)) {
+                try { Set-Idea -Id $siId -Status 'held' | Out-Null } catch {}
+                $siShort = $siId; if ($siShort.Length -gt 8) { $siShort = $siShort.Substring(0,8) }
+                Add-Message -From system -Text ("⛔ Serial-claim guard: задача " + $siShort + " → held: " + $siBlock) -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='serial-claim-guard-held'; item_id=$siId; reason=$siBlock }) } catch {}
+                $wpBatch = $null
+                $isSerialSingleFallback = $false
+              }
+            } catch {}
+          }
           if ($wpBatch -and ([int]$wpBatch.count -ge 2 -or [bool]$isSerialSingleFallback)) {
             $wpCfg = Get-BacklogWorkpackExecConfig
             $wpClaimMinItems = if ($isSerialSingleFallback) { 1 } else { [int]$wpCfg.minItems }
             $safeItems = New-Object 'System.Collections.Generic.List[object]'
             foreach ($wpItem in @($wpBatch.items)) {
               $wpId = [string]$wpItem.id
-              $wpGate = $null
-              try { $wpGate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpGate = [pscustomobject]@{ safe=$true; risk='unknown'; reason='gate exception fail-open' } }
-              if ($wpGate -and -not [bool]$wpGate.safe) {
+              # 2026-06-09 unified pre-flight verdict (lib/policy.ps1): authorization-aware --
+              # operator-authorized and [[DISCUSS]] items are warned about, not auto-held.
+              $wpVerdict = $null
+              try { $wpVerdict = Test-PolicyAutotaskExecutionBlocked -Item $wpItem -TaskText ('[Автозадача из workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpVerdict = $null }
+              if ($wpVerdict -and [bool]$wpVerdict.blocked) {
                 try { Set-Idea -Id $wpId -Status 'held' | Out-Null } catch {}
-                Add-Message -From system -Text ("🛑 Workpack pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpGate.risk + "): " + [string]$wpGate.reason) -Kind event | Out-Null
-                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-preflight-blocked'; item_id=$wpId; risk=[string]$wpGate.risk; reason=[string]$wpGate.reason }) } catch {}
+                Add-Message -From system -Text ("🛑 Workpack pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpVerdict.risk + "): " + [string]$wpVerdict.reason) -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='workpack-preflight-blocked'; item_id=$wpId; risk=[string]$wpVerdict.risk; reason=[string]$wpVerdict.reason }) } catch {}
                 continue
+              }
+              if ($wpVerdict -and -not [string]::IsNullOrWhiteSpace([string]$wpVerdict.exempt)) {
+                Add-Message -From system -Text ("⚠ Workpack pre-flight: риск=" + [string]$wpVerdict.risk + " (" + [string]$wpVerdict.reason + "), но item " + $wpId + " " + [string]$wpVerdict.exempt + " — авторизация уважается, исполняю.") -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-exempt'; item_id=$wpId; risk=[string]$wpVerdict.risk; reason=[string]$wpVerdict.reason; exempt=[string]$wpVerdict.exempt }) } catch {}
               }
               [void]$safeItems.Add($wpItem)
             }
@@ -626,13 +668,18 @@
             $safeItems = New-Object 'System.Collections.Generic.List[object]'
             foreach ($wpItem in @($serialBatch.items)) {
               $wpId = [string]$wpItem.id
-              $wpGate = $null
-              try { $wpGate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из protected serial workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpGate = [pscustomobject]@{ safe=$true; risk='unknown'; reason='gate exception fail-open' } }
-              if ($wpGate -and -not [bool]$wpGate.safe) {
+              # 2026-06-09 unified pre-flight verdict (lib/policy.ps1): authorization-aware.
+              $wpVerdict = $null
+              try { $wpVerdict = Test-PolicyAutotaskExecutionBlocked -Item $wpItem -TaskText ('[Автозадача из protected serial workpack] ' + [string]$wpItem.text) -BridgeRoot $bridgeRoot } catch { $wpVerdict = $null }
+              if ($wpVerdict -and [bool]$wpVerdict.blocked) {
                 try { Set-Idea -Id $wpId -Status 'held' | Out-Null } catch {}
-                Add-Message -From system -Text ("🛑 Protected serial pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpGate.risk + "): " + [string]$wpGate.reason) -Kind event | Out-Null
-                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='protected-serial-preflight-blocked'; item_id=$wpId; risk=[string]$wpGate.risk; reason=[string]$wpGate.reason }) } catch {}
+                Add-Message -From system -Text ("🛑 Protected serial pre-flight: item " + $wpId + " заблокирован (риск=" + [string]$wpVerdict.risk + "): " + [string]$wpVerdict.reason) -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='protected-serial-preflight-blocked'; item_id=$wpId; risk=[string]$wpVerdict.risk; reason=[string]$wpVerdict.reason }) } catch {}
                 continue
+              }
+              if ($wpVerdict -and -not [string]::IsNullOrWhiteSpace([string]$wpVerdict.exempt)) {
+                Add-Message -From system -Text ("⚠ Protected serial pre-flight: риск=" + [string]$wpVerdict.risk + " (" + [string]$wpVerdict.reason + "), но item " + $wpId + " " + [string]$wpVerdict.exempt + " — авторизация уважается, исполняю.") -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-exempt'; item_id=$wpId; risk=[string]$wpVerdict.risk; reason=[string]$wpVerdict.reason; exempt=[string]$wpVerdict.exempt }) } catch {}
               }
               [void]$safeItems.Add($wpItem)
             }
@@ -1026,34 +1073,21 @@
             if ($claimedIdea -and $currentClaimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$currentClaimedIdea.preflight_checked }
           } catch {}
           if ($claimedIdea -and -not $preflightChecked) {
-            $gate = Test-AutonomousTaskSafe -TaskText ('[Автозадача из бэклога] ' + [string]$currentClaimedIdea.text) -BridgeRoot $bridgeRoot
-            if (-not $gate.safe) {
-              # 2026-06-09: the pre-flight gate catches AUTONOMOUS destructive mistakes by scanning task
-              # TEXT for danger words. Two task classes are false-positives here and must NOT be auto-held
-              # -- this is the gate that kept stopping operator-approved work (the babysitting root):
-              #   * [[DISCUSS]] tasks: analysis-only, produce a plan, execute NOTHING -> cannot be destructive
-              #     (e.g. a DISCUSS about making gates smarter trips "обход защитного механизма" yet does nothing).
-              #   * operator-authored (from=operator / tag 'operator'): explicit human authorization, the SAME
-              #     authority the claim-gate already honors. The autonomous-mistake gate doesn't apply to a
-              #     human-authored task. (The energy-saving sabotage was from=project-autopilot, NOT operator,
-              #     so this does NOT reopen that hole -- self/autopilot tasks still get blocked.)
-              $gExempt = $false; $gExemptWhy = ''
-              try {
-                $gTags = @($currentClaimedIdea.tags | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
-                $gFrom = ([string]$currentClaimedIdea.from).Trim().ToLowerInvariant()
-                if ([string]$currentClaimedIdea.text -match '\[\[DISCUSS\]\]') { $gExempt = $true; $gExemptWhy = 'DISCUSS (анализ, без исполнения)' }
-                elseif ($gFrom -eq 'operator' -or ($gTags -contains 'operator')) { $gExempt = $true; $gExemptWhy = 'операторская (явная авторизация)' }
-              } catch {}
-              if ($gExempt) {
-                Add-Message -From system -Text ("⚠ Pre-flight gate: риск=" + [string]$gate.risk + " (" + [string]$gate.reason + "), но задача " + $gExemptWhy + " — авторизация уважается, исполняю.") -Kind event | Out-Null
-                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-exempt'; item_id=[string]$currentClaimedIdea.id; risk=[string]$gate.risk; reason=[string]$gate.reason; exempt=$gExemptWhy }) } catch {}
-              } else {
-                $gid = [string]$currentClaimedIdea.id
-                try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
-                Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gate.risk + "): " + [string]$gate.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
-                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gate.risk; reason=[string]$gate.reason }) } catch {}
-                $claimedIdea = $null
-              }
+            # 2026-06-09 unified pre-flight verdict (lib/policy.ps1, single source of truth):
+            # the danger scan (Test-AutonomousTaskSafe) catches AUTONOMOUS destructive mistakes;
+            # operator-authorized and [[DISCUSS]] items are warned about, never auto-held.
+            # (The energy-saving sabotage was from=project-autopilot -- still fully gated.)
+            $gv = $null
+            try { $gv = Test-PolicyAutotaskExecutionBlocked -Item $currentClaimedIdea -TaskText ('[Автозадача из бэклога] ' + [string]$currentClaimedIdea.text) -BridgeRoot $bridgeRoot } catch { $gv = $null }
+            if ($gv -and [bool]$gv.blocked) {
+              $gid = [string]$currentClaimedIdea.id
+              try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
+              Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gv.risk + "): " + [string]$gv.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
+              try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gv.risk; reason=[string]$gv.reason }) } catch {}
+              $claimedIdea = $null
+            } elseif ($gv -and -not [string]::IsNullOrWhiteSpace([string]$gv.exempt)) {
+              Add-Message -From system -Text ("⚠ Pre-flight gate: риск=" + [string]$gv.risk + " (" + [string]$gv.reason + "), но задача " + [string]$gv.exempt + " — авторизация уважается, исполняю.") -Kind event | Out-Null
+              try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-exempt'; item_id=[string]$currentClaimedIdea.id; risk=[string]$gv.risk; reason=[string]$gv.reason; exempt=[string]$gv.exempt }) } catch {}
             }
           }
         } catch {}
