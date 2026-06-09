@@ -43,7 +43,7 @@ $blockedAtom = [pscustomobject]@{
   status = 'approved'
   text = '[project-autopilot harden-driver] Harden driver loop.'
   tags = @('project-autopilot','auto-generated','atom','bridge-self')
-  scope = 'bridge'
+  scope = 'project'
   files = @('driver.ps1')
 }
 $blockedClaim = Test-BacklogApprovedItemClaimable -Item $blockedAtom -ProjectScopeAllowed $true
@@ -54,7 +54,7 @@ $admittedAtom = [pscustomobject]@{
   status = 'approved'
   text = '[project-autopilot harden-driver] Harden driver loop.'
   tags = @('project-autopilot','auto-generated','atom','bridge-self')
-  scope = 'bridge'
+  scope = 'project'
   files = @('driver.ps1')
   bridge_self_admission = $validAdmission
 }
@@ -82,9 +82,9 @@ $coordinator = [pscustomobject]@{
 $coordinatorClaim = Test-BacklogApprovedItemClaimable -Item $coordinator -ProjectScopeAllowed $true
 Check 'project-autopilot coordinator remains claimable despite instructional control-plane text' ([bool]$coordinatorClaim.claimable) $coordinatorClaim
 
-Check 'driver shard path is control-plane' (Test-ProjectAutopilotControlPlanePath -Path 'driver/81-loop-idle-claim.ps1')
-Check 'backlog path is control-plane' (Test-ProjectAutopilotControlPlanePath -Path 'lib/backlog-core.ps1')
-Check 'docs path is not control-plane' (-not (Test-ProjectAutopilotControlPlanePath -Path 'docs/readme.md'))
+Check 'driver shard path is control-plane' (Test-BridgeControlPlanePath -Path 'driver/81-loop-idle-claim.ps1')
+Check 'backlog path is control-plane' (Test-BridgeControlPlanePath -Path 'lib/backlog-core.ps1')
+Check 'docs path is not control-plane' (-not (Test-BridgeControlPlanePath -Path 'docs/readme.md'))
 
 Write-Host ''
 Write-Host ("RESULT: " + $script:pass + " passed, " + $script:fail + " failed")

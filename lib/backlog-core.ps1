@@ -848,6 +848,11 @@ function Test-IdeaTouchesControlPlanePath {
   return $false
 }
 
+function Test-ItemFilesHitControlPlane {
+  param($Item)
+  return [bool](Test-IdeaTouchesControlPlanePath -Idea $Item)
+}
+
 function Test-BacklogItemHeld {
   param($Item)
   if (-not $Item) { return $false }
@@ -886,7 +891,23 @@ function Test-IdeaBridgeSelfAdmitted {
   } catch {}
   $scope = [string](Get-BacklogPackObjectValue -Obj $Idea -Name 'scope' -Default 'bridge')
   if (-not [string]::IsNullOrWhiteSpace($scope) -and $scope -ne 'bridge') {
-    return [pscustomobject]@{ ok=$false; reason='not bridge scope'; missing=@('scope_bridge') }
+    $allowLegacyProjectAutopilotAtom = $false
+    try {
+      $tags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Idea -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
+      $eff = Get-EffectiveScope
+      $allowLegacyProjectAutopilotAtom = (
+        $scope -eq 'project' -and
+        (@($tags) -contains 'project-autopilot') -and
+        (@($tags) -contains 'atom') -and
+        $eff -and [bool]$eff.is_bridge -and
+        (Test-ItemFilesHitControlPlane -Item $Idea)
+      )
+    } catch {
+      $allowLegacyProjectAutopilotAtom = $false
+    }
+    if (-not $allowLegacyProjectAutopilotAtom) {
+      return [pscustomobject]@{ ok=$false; reason='not bridge scope'; missing=@('scope_bridge') }
+    }
   }
 
   $admission = Get-IdeaBridgeSelfAdmission -Idea $Idea
@@ -982,7 +1003,7 @@ function Test-BacklogApprovedItemClaimable {
   $touchesControl = $false
   try {
     if ($isProjectAutopilot) {
-      $touchesControl = ($isProjectAutopilotAtom -and [bool](Test-IdeaTouchesControlPlanePath -Idea $Item))
+      $touchesControl = ($isProjectAutopilotAtom -and [bool](Test-ItemFilesHitControlPlane -Item $Item))
     } else {
       $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
     }
@@ -1737,7 +1758,7 @@ function Test-IdeaTouchesControlPlane {
   # auto-claim of them unless the OPERATOR explicitly delegated (tag 'operator') or the item carries
   # a valid bridge_self_admission. Deterministic.
   param($Idea)
-  try { if (Test-IdeaTouchesControlPlanePath -Idea $Idea) { return $true } } catch {}
+  try { if (Test-ItemFilesHitControlPlane -Item $Idea) { return $true } } catch {}
   $t = ''
   try { $t = ([string]$Idea.text).ToLowerInvariant() } catch {}
   if ([string]::IsNullOrWhiteSpace($t)) { return $false }
