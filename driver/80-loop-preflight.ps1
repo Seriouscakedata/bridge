@@ -33,6 +33,7 @@
       $rcDefer   = Join-Path $ctlDir 'restart.deferred'
       $rcMaxDefer = 600
       $rcBusy = $false
+      $rcLiveAgent = $false
       $rcDeepThinkActive = $false
       function Test-RestartCoalescerDeepThinkActive {
         param([object]$ChannelState)
@@ -69,6 +70,13 @@
             $rcCs = [IO.File]::ReadAllText($rcSp, [Text.Encoding]::UTF8) | ConvertFrom-Json
             if (Test-RestartCoalescerDeepThinkActive -ChannelState $rcCs) { $rcDeepThinkActive = $true }
             if (([string]$rcCs.status -in @('working','planning','coding','discuss','study','research')) -or (-not [string]::IsNullOrWhiteSpace([string]$rcCs.current_task)) -or [bool]$rcCs.doctor_active) { $rcBusy = $true }
+            # 2026-06-09 speed/stability: a LIVE agent_pid mid-turn = the channel is genuinely working,
+            # even when SILENT (Claude reasoning produces NO conversation output). The agent-wait owns
+            # that agent's lifecycle (stall-grace + 900s wall kill a truly-hung one), so the failsafe-
+            # quiet/maxDefer branches below must NOT restart over a live agent — that was recycling atoms
+            # mid-turn every 300s of silence (~10 min/atom + zombie risk). Apply the deferred restart only
+            # once no agent is live (the inter-turn gap), which is exactly when a reload is safe anyway.
+            try { $rcAp = 0; if ($rcCs.PSObject.Properties.Name -contains 'agent_pid') { $rcAp = [int]$rcCs.agent_pid }; if ($rcAp -gt 0 -and (Get-Process -Id $rcAp -ErrorAction SilentlyContinue)) { $rcLiveAgent = $true } } catch {}
           } catch {}
         }
       }
@@ -131,9 +139,9 @@
           try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: [[DEEP-THINK]] hold превысил максимум.' -Kind event | Out-Null } catch {}
         } elseif ($rcDeepThinkActive) {
           Write-Host 'recycle: holding deferred restart (active deep-think discuss)'
-        } elseif ($rcBusy -and $rcQuietSec -ge $rcFailsafeQuiet) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — канал ещё busy, но мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
-        } elseif ($rcBusy -and $rcAge -ge $rcMaxDefer) {
+        } elseif ($rcBusy -and (-not $rcLiveAgent) -and $rcQuietSec -ge $rcFailsafeQuiet) {
+          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — канал ещё busy, но агент не жив и мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
+        } elseif ($rcBusy -and (-not $rcLiveAgent) -and $rcAge -ge $rcMaxDefer) {
           try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: busy-hold превысил максимум.' -Kind event | Out-Null } catch {}
         } elseif ($rcBusy) {
           Write-Host 'recycle: holding deferred restart (a channel is busy)'
