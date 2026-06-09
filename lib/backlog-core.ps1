@@ -1338,8 +1338,13 @@ function Get-NextApprovedIdea {
     try { $projectScopeAllowedForClaim = [bool](Test-ProjectScopedApprovedBacklogAllowed) } catch { $projectScopeAllowedForClaim = $false }
     $allItems = @(Get-Backlog)
     $governorFiltered = Invoke-BacklogGovernorFilterApprovedItems -Items $allItems -ProjectScopeAllowed $projectScopeAllowedForClaim -Phase 'single-claim'
+    # 2026-06-09: operator-authorized tasks claim FIRST (matches Get-NextRunnableIdea:1427). Without
+    # this, an autonomous control-plane item could win the sort, get pre-flight-held, and the tick
+    # ended idle before reaching operator-approved work -- so my own gate/policy/speed tasks sat
+    # approved-but-unclaimed. The operator is the highest-intent author; their work runs first.
     $items = @($governorFiltered.items |
-      Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+      Sort-Object @{Expression={ if ((@($_.tags) -contains 'operator') -or ([string]$_.from -eq 'operator')) {0} else {1} }},
+                  @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
                   @{Expression={ Get-IdeaNetNewPenaltyRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
