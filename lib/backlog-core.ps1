@@ -24,6 +24,56 @@ function Get-IdeaSeverityRank {
   }
 }
 
+function Get-IdeaNetNewPenaltyRank {
+  # Foundation #2 generator-bias penalty (2026-06-09).
+  # Unjustified net-new top-level mechanism/subsystem/module proposals rank BELOW
+  # harden/fix/coverage/reliability ideas. Returns 0 = no penalty, 1 = penalised.
+  # Lower value = higher priority (same convention as Get-IdeaSeverityRank).
+  # Safe classes (harden/fix/coverage/reliability) are never penalised.
+  # Net-new with explicit operator_justification is not penalised.
+  # Ambiguous / missing category = conservative = no penalty.
+  param([AllowNull()]$Idea)
+  if ($null -eq $Idea) { return 0 }
+
+  # --- Explicit category field (set by reflect/architect generators after Foundation #2) ---
+  $cat = ''
+  try {
+    if ($Idea.PSObject.Properties.Name -contains 'category' -and $null -ne $Idea.category) {
+      $cat = ([string]$Idea.category).Trim().ToLowerInvariant()
+    }
+  } catch { $cat = '' }
+
+  if ($cat -eq 'harden' -or $cat -eq 'fix' -or $cat -eq 'coverage' -or $cat -eq 'reliability') {
+    return 0   # explicitly safe class - no penalty
+  }
+
+  # --- operator_justification present -> not penalised, regardless of category ---
+  $just = ''
+  try {
+    if ($Idea.PSObject.Properties.Name -contains 'operator_justification' -and $null -ne $Idea.operator_justification) {
+      $just = ([string]$Idea.operator_justification).Trim()
+    }
+  } catch { $just = '' }
+  if (-not [string]::IsNullOrWhiteSpace($just)) { return 0 }
+
+  # --- Explicit net-new category without justification -> penalty ---
+  if ($cat -eq 'net-new') { return 1 }
+
+  # --- Text heuristic fallback for ideas without a category field ---
+  # Conservative: only penalise on STRONG net-new signal AND absence of safe-class signal.
+  $text = ''
+  try { $text = ([string]$Idea.text).ToLowerInvariant() } catch {}
+  if ([string]::IsNullOrWhiteSpace($text)) { return 0 }
+
+  $safePat = '(фикс|fix\b|harden|харден|reliabilit|надёжн|coverage|покрыти|bug\b|баг\b|регресс|regression|audit\b|аудит|patch\b|патч|repair|исправ|улучши)'
+  if ($text -match $safePat) { return 0 }   # looks like harden/fix - safe
+
+  $netNewPat = '(новый механизм|новая подсистема|новый модуль|новую систему|реализовать новый|ввести новый|добавить систему|new mechanism|new subsystem|new module|new system\b|introduce new|new top.level)'
+  if ($text -match $netNewPat) { return 1 }  # strong net-new signal without justification
+
+  return 0   # ambiguous - no penalty (conservative)
+}
+
 #endregion Backlog prioritization helpers
 
 #region Backlog failure classes, curator, and picker API
@@ -296,6 +346,7 @@ function New-BacklogLLMPriorityPrompt {
   [void]$promptBuilder.AppendLine('- Сложности реализации: простые задачи выше только при прочих равных; сложные/избегаемые задачи не занижай автоматически')
   [void]$promptBuilder.AppendLine('- Безопасности (задачи, снижающие риски — приоритет)')
   [void]$promptBuilder.AppendLine('- Anti-avoidance: поднимай задачи, которые выглядят трудными, но устраняют повторяющиеся отказы, таймауты, broken gates или архитектурный долг')
+  [void]$promptBuilder.AppendLine('- Foundation #2 bias: идеи класса harden/fix/coverage/reliability предпочтительнее идей-NET-NEW; net-new без явного operator_justification оценивай ниже')
   [void]$promptBuilder.AppendLine('')
   [void]$promptBuilder.AppendLine('Формат ответа: только JSON-массив объектов:')
   [void]$promptBuilder.AppendLine('[{"id":"<идентификатор>","score":<число 0-100>,"reason":"<одна фраза>"},...]')
@@ -1275,6 +1326,7 @@ function Get-NextApprovedIdea {
     $governorFiltered = Invoke-BacklogGovernorFilterApprovedItems -Items $allItems -ProjectScopeAllowed $projectScopeAllowedForClaim -Phase 'single-claim'
     $items = @($governorFiltered.items |
       Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                  @{Expression={ Get-IdeaNetNewPenaltyRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
     if ($items.Count -eq 0) { return $null }
@@ -1361,6 +1413,7 @@ function Get-NextRunnableIdea {
     Sort-Object @{Expression={ if (@($_.tags) -contains 'operator') {0} else {1} }},
                 @{Expression={ if ([string]$_.status -eq 'approved') {0} else {1} }},
                 @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ Get-IdeaNetNewPenaltyRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}})
   if ($items.Count -gt 0) { return $items[0] }
@@ -1734,6 +1787,7 @@ function Get-NextSelfExecIdea {
       ([string]$_.status -eq 'new') -and -not (Test-IdeaExternal $_)
     } |
     Sort-Object @{Expression={ Get-IdeaSeverityRank -Idea $_ }},
+                @{Expression={ Get-IdeaNetNewPenaltyRank -Idea $_ }},
                 @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                 @{Expression={[string]$_.ts}})
   try {
