@@ -14,6 +14,20 @@
 #   4) 'stable' advances on SUSTAINED health (healthy-since marker), not on commit age, so
 #      rapid healthy commits get promoted instead of being rolled back to an old ref.
 $ErrorActionPreference = 'Continue'
+# 2026-06-09 SINGLETON: TWO concurrent watchdog loops were observed (duplicate "watchdog loop
+# started" lines in the same minute, doubled restart/rollback authority = race risk). The second
+# instance exits quietly. Global\ needs elevation (scheduled-task runs have it); fall back to
+# Local\; fail-OPEN if both unavailable -- a lone watchdog must never die here.
+$script:wdSingletonMutex = $null
+foreach ($wdNs in @('Global\','Local\')) {
+  try {
+    $wdCreated = $false
+    $wdM = New-Object System.Threading.Mutex($true, ($wdNs + 'ClaudeCodexBridgeWatchdogSingleton'), [ref]$wdCreated)
+    if ($wdCreated) { $script:wdSingletonMutex = $wdM; break }
+    try { $wdM.Dispose() } catch {}
+    exit 0
+  } catch { continue }
+}
 $b   = if ($env:BRIDGE_ROOT) { $env:BRIDGE_ROOT } else { 'C:\Users\rafie\OneDrive\Documents\bridge' }
 $git = if ($env:BRIDGE_GIT) { $env:BRIDGE_GIT } else { 'C:\Program Files\Git\cmd\git.exe' }
 # Ф0.3: the PAUSE kill-switch lives OUTSIDE the bridge root (so outside a coder turn's
