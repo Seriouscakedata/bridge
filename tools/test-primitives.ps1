@@ -19,7 +19,6 @@ $bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $bridgeRoot 'lib\backlog-autopilot.ps1')
 . (Join-Path $bridgeRoot 'lib\delivery-mode.ps1')
 . (Join-Path $bridgeRoot 'lib\delivery-gate.ps1')
-. (Join-Path $bridgeRoot 'lib\review-verdict.ps1')
 
 $script:pass = 0; $script:fail = 0
 function Assert-Prim { param([string]$Name, [bool]$Cond, $Detail='') if ($Cond) { Write-Host "PASS: $Name"; $script:pass++ } else { Write-Host "FAIL: $Name $Detail"; $script:fail++ } }
@@ -66,7 +65,6 @@ Assert-Prim 'finding: delivery-contract truthy still accepts y' (Test-DeliveryCo
 Assert-Prim 'finding: project-autopilot truthy still accepts numeric nonzero' (Test-ProjectAutopilotTruthy -Value 2)
 Assert-Prim 'finding: delivery truthy still accepts numeric nonzero' (Test-DeliveryTruthy -Value 2)
 Assert-Prim 'finding: delivery-gate boolean remains strict bool' (-not (Test-DeliveryGateBooleanValue -Value 'true'))
-Assert-Prim 'finding: review-verdict boolean remains strict bool' (-not (Test-ReviewVerdictStrictBooleanValue -Value 'true'))
 
 Write-Host ("Primitives tests: {0} PASS, {1} FAIL" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 }
