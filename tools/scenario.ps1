@@ -403,9 +403,9 @@ function Invoke-BacklogAddHttpScenario {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
-$marker = 'backlog-flow-5a5ada5adc33'
+  $marker = 'backlog-flow-0ad0b19c8e5f'
   $uniqueToken = $marker + '-' + [Guid]::NewGuid().ToString('N')
-  $taskText = 'temporary browser verifier token ' + $uniqueToken + ' cobalt quartz'
+  $taskText = 'backlog CRUD proof marker ' + $marker + ' unique nonce ' + $uniqueToken + ' atlas lagoon copper matrix endpoint cleanup'
   $addId = ''
 
   try {

@@ -25,9 +25,9 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-5a5ada5adc33';
+  const marker = 'backlog-flow-0ad0b19c8e5f';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
-  const taskText = 'temporary browser verifier token ' + uniqueToken + ' cobalt quartz';
+  const taskText = 'backlog CRUD proof marker ' + marker + ' unique nonce ' + uniqueToken + ' atlas lagoon copper matrix endpoint cleanup';
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;
