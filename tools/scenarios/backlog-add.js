@@ -25,7 +25,8 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-0ad0b19c8e5f';
+  const marker = 'backlog-flow-e8061e8f51a0';
+  const markerText = 'bridge backlog add list delete verification';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const saltPool = [
     'atlas', 'lagoon', 'copper', 'matrix', 'harbor', 'violet', 'lantern', 'orchard',
@@ -33,7 +34,7 @@ async function scenario(s) {
     'pixel', 'garden', 'anchor', 'velvet', 'summit', 'cobalt', 'quartz', 'ember'
   ];
   const saltWords = saltPool.sort(() => Math.random() - 0.5).slice(0, 8).join(' ');
-  const taskText = marker + ' ' + uniqueToken + ' ' + saltWords;
+  const taskText = marker + ' ' + markerText + ' ' + uniqueToken + ' ' + saltWords;
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;

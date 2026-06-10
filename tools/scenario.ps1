@@ -403,14 +403,15 @@ function Invoke-BacklogAddHttpScenario {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
-  $marker = 'backlog-flow-0ad0b19c8e5f'
+  $marker = 'backlog-flow-e8061e8f51a0'
+  $markerText = 'bridge backlog add list delete verification'
   $uniqueToken = $marker + '-' + [Guid]::NewGuid().ToString('N')
   $saltWords = @(
     'atlas','lagoon','copper','matrix','harbor','violet','lantern','orchard',
     'signal','meadow','canyon','silver','comet','ribbon','marble','cedar',
     'pixel','garden','anchor','velvet','summit','cobalt','quartz','ember'
   ) | Get-Random -Count 8
-  $taskText = $marker + ' ' + $uniqueToken + ' ' + ($saltWords -join ' ')
+  $taskText = $marker + ' ' + $markerText + ' ' + $uniqueToken + ' ' + ($saltWords -join ' ')
   $addId = ''
 
   try {
