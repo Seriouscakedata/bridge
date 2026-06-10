@@ -200,6 +200,11 @@ function Add-Idea {
   $backlogPathForAppend = Resolve-BacklogPathValue
   $appendId = [string]$rec.id
   $writeBacklogJsonLineFn = ${function:Write-BacklogJsonLine}
+  $afterAppendHook = $null
+  try {
+    $hookVar = Get-Variable -Name BacklogAddIdeaAfterAppendHook -Scope Script -ErrorAction SilentlyContinue
+    if ($hookVar -and $hookVar.Value -is [scriptblock]) { $afterAppendHook = $hookVar.Value }
+  } catch {}
   $testBacklogJsonlContainsIdFn = {
     param([string]$Path, [string]$Id)
     if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Id) -or -not (Test-Path -LiteralPath $Path)) { return $false }
@@ -218,8 +223,8 @@ function Add-Idea {
     for ($attempt = 1; $attempt -le 2; $attempt++) {
       [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA)
       try {
-        if ($script:BacklogAddIdeaAfterAppendHook -is [scriptblock]) {
-          & $script:BacklogAddIdeaAfterAppendHook -Path $backlogPathForAppend -Id $appendId -Attempt ($attempt - 1)
+        if ($afterAppendHook -is [scriptblock]) {
+          & $afterAppendHook -Path $backlogPathForAppend -Id $appendId -Attempt ($attempt - 1)
         }
       } catch {}
       if (& $testBacklogJsonlContainsIdFn -Path $backlogPathForAppend -Id $appendId) { return $true }
@@ -274,8 +279,29 @@ function Get-Backlog {
     $iid = ''
     try { $iid = [string]$i.id } catch { $iid = '' }
     if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($i); continue }
-    # last line for this id wins; keep first-seen ORDER so the picker's ordering is stable
-    if ($byId.Contains($iid)) { $byId[$iid] = $i } else { $byId.Add($iid, $i) }
+    # Last line for this id wins, but terminal evidence is sticky: concurrent or
+    # compacted rewrites can preserve the newest status while omitting its trail.
+    if ($byId.Contains($iid)) {
+      $prev = $byId[$iid]
+      foreach ($prop in @('reason','done_sha','done_by')) {
+        $newValue = $null
+        $oldValue = $null
+        try {
+          $newProp = $i.PSObject.Properties[$prop]
+          if ($null -ne $newProp) { $newValue = $newProp.Value }
+        } catch {}
+        try {
+          $oldProp = $prev.PSObject.Properties[$prop]
+          if ($null -ne $oldProp) { $oldValue = $oldProp.Value }
+        } catch {}
+        if ([string]::IsNullOrWhiteSpace([string]$newValue) -and -not [string]::IsNullOrWhiteSpace([string]$oldValue)) {
+          $i | Add-Member -NotePropertyName $prop -NotePropertyValue $oldValue -Force
+        }
+      }
+      $byId[$iid] = $i
+    } else {
+      $byId.Add($iid, $i)
+    }
   }
   $out = New-Object 'System.Collections.Generic.List[object]'
   foreach ($k in $byId.Keys) { [void]$out.Add($byId[$k]) }
@@ -334,6 +360,15 @@ function Set-Idea {
     }
     if ($null -ne $Status) {
       $statusText = [string]$Status
+      $currentStatus = ''
+      try { $currentStatus = ([string]$i.status).Trim().ToLowerInvariant() } catch { $currentStatus = '' }
+      $requestedStatusLower = $statusText.Trim().ToLowerInvariant()
+      $isTerminalStatus = @('done','rejected') -contains $currentStatus
+      $downgradesTerminal = $isTerminalStatus -and -not (@('done','rejected') -contains $requestedStatusLower)
+      $hasExplicitTerminalActor = (-not [string]::IsNullOrWhiteSpace($Reason)) -and ([string]$Reason -match '^(?i)(operator|reaper):')
+      if ($downgradesTerminal -and -not $hasExplicitTerminalActor) {
+        return $false
+      }
       if ($statusText.Trim().ToLowerInvariant() -eq 'failed') {
         if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { return $false }
         $failedCandidate = [pscustomobject][ordered]@{}

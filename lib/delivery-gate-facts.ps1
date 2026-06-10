@@ -194,6 +194,34 @@ function Test-DeliveryGateForbiddenPath {
   return $false
 }
 
+function Test-DeliveryGateProtectedProjectSpecPath {
+  param([string]$Path)
+
+  $p = Normalize-DeliveryPath -Path $Path
+  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
+
+  if ($p -eq 'project_plan.md') { return $true }
+  if ($p -eq 'project_plan/plan.md') { return $true }
+  if ($p -match '(^|/)project_plan/plan\.md$') { return $true }
+  if ($p -match '(^|/)(project_)?contract(s)?\.(json|ya?ml|md)$') { return $true }
+  if ($p -match '(^|/)(acceptance|acceptance_specs|acceptance-specs)(/|$)') { return $true }
+  if ($p -match '(^|/).*acceptance.*spec.*\.(json|ya?ml|md|ps1|sh)$') { return $true }
+
+  return $false
+}
+
+function Get-DeliveryGateProtectedProjectSpecChangeFiles {
+  param([string[]]$TouchedFiles = @())
+
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($file in @($TouchedFiles)) {
+    if (Test-DeliveryGateProtectedProjectSpecPath -Path $file) {
+      Add-DeliveryGateListItem -List $files -Value (Normalize-DeliveryPath -Path $file)
+    }
+  }
+  return [string[]]@($files.ToArray())
+}
+
 function Test-DeliveryGateBridgeSelfEvidence {
   param([string]$TaskText)
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
@@ -386,6 +414,7 @@ function New-DeliveryGateInputFacts {
   $repoClean = Test-DeliveryGateRepoClean -BridgeRoot $root
   $critical = (@($touched.ToArray()) | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ }).Count -gt 0
   $forbiddenChangeFiles = @(Get-DeliveryGateForbiddenChangeFiles -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel)
+  $protectedProjectSpecChangeFiles = @(Get-DeliveryGateProtectedProjectSpecChangeFiles -TouchedFiles @($touched.ToArray()))
   $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel
   $destructive = Test-DeliveryGateDestructivePatternsText -Text $scanText
   $qualityBypass = Test-DeliveryGateQualityBypassText -Text $scanText
@@ -404,7 +433,7 @@ function New-DeliveryGateInputFacts {
     repo_clean              = [bool]$repoClean
     forbidden_changes       = [bool]$forbidden
     forbidden_changes_files = [string[]]@($forbiddenChangeFiles)
-    protected_project_spec_changes = [string[]]@($forbiddenChangeFiles)
+    protected_project_spec_changes = [string[]]@($protectedProjectSpecChangeFiles)
     destructive_patterns    = [bool]$destructive
     parse_ok                = [bool]$ParsePassed
     tests_ok                = [bool]$QaPassed
