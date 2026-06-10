@@ -52,9 +52,13 @@
   # thrashing to a Codex fallback when Claude was merely still reasoning. The 900s wall cap below
   # and the adaptive stagnation grace still backstop a genuinely-hung process; a true zero-output
   # hang now just takes 300s (not 150s) before fallback — a bounded, rare cost. (Sonnet/Haiku emit
-  # first output well under this; only deep Opus reasoning needs the headroom. Could be made
-  # model-aware later if 300s ever proves too generous for a hung process.)
-  $plannerFirstOutputGraceMs = 300000
+  # first output well under this; only deep Opus reasoning needs the headroom.)
+  # 2026-06-11 (speed audit): MADE MODEL-AWARE. Measured: 31% of sonnet planner turns emitted 0 bytes
+  # for the full 300s then fell back to Codex — sonnet's first token normally lands in seconds, so a
+  # 90s+ silence is a HUNG claude.exe, not thinking. Heavy reasoning models (opus/fable/mythos) keep
+  # the 300s headroom (they really do reason silently); sonnet/haiku fast-fail at 90s -> ~150s saved
+  # per affected atom. The 900s wall cap + adaptive stagnation grace still backstop genuine hangs.
+  $plannerFirstOutputGraceMs = if ($heavyClaudeModel) { 300000 } else { 90000 }
   $plannerFirstOutputGraceSec = [int]($plannerFirstOutputGraceMs / 1000)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
