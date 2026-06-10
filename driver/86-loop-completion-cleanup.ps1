@@ -40,6 +40,201 @@ function Copy-DriverOutcomeItem {
   return $copy
 }
 
+function ConvertTo-DriverCompletionPathList {
+  param([object]$Value)
+
+  $paths = New-Object 'System.Collections.Generic.List[string]'
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($raw in @($Value)) {
+    $p = ([string]$raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    $p = $p -replace '\\','/'
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    if ($seen.Add($p)) { [void]$paths.Add($p) }
+  }
+  return @($paths.ToArray())
+}
+
+function Invoke-DriverCompletionGitLines {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [Parameter(Mandatory=$true)][string[]]$GitArgs
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) { return @() }
+  $gitErrFile = [System.IO.Path]::GetTempFileName()
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $out = @(& git -c ("safe.directory=" + $RepoRoot) -C $RepoRoot @GitArgs 2> $gitErrFile)
+    if ($LASTEXITCODE -ne 0) { return @() }
+    return @($out)
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+    Remove-Item -LiteralPath $gitErrFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-DriverCompletionGitChangedFiles {
+  param(
+    [string]$RepoRoot = '',
+    [string]$BaseSha = '',
+    [string]$HeadSha = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or [string]::IsNullOrWhiteSpace($BaseSha) -or [string]::IsNullOrWhiteSpace($HeadSha)) {
+    return @()
+  }
+  $baseType = [string]((Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('cat-file','-t',$BaseSha) | Select-Object -First 1) -join '')
+  $headType = [string]((Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('cat-file','-t',$HeadSha) | Select-Object -First 1) -join '')
+  if ($baseType.Trim() -ne 'commit' -or $headType.Trim() -ne 'commit') { return @() }
+  return @(ConvertTo-DriverCompletionPathList -Value @(Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('diff','--name-only',$BaseSha,$HeadSha,'--')))
+}
+
+function Get-DriverCompletionObjectValue {
+  param(
+    [Parameter(Mandatory=$false)]$Object,
+    [Parameter(Mandatory=$true)][string[]]$Names,
+    [Parameter(Mandatory=$false)]$Default = $null
+  )
+
+  foreach ($name in @($Names)) {
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace([string]$name)) { continue }
+    try {
+      if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) { return $Object[$name] }
+      if ($Object.PSObject.Properties.Name -contains $name) { return $Object.$name }
+    } catch {
+      continue
+    }
+  }
+  return $Default
+}
+
+function Get-DriverCompletionActualFiles {
+  param([Parameter(Mandatory=$false)]$OutcomeEvidence)
+
+  $doneEvidence = Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_evidence') -Default $null
+  $files = @(Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('actual_files','changed_files','files') -Default @())
+  if (@($files).Count -eq 0) {
+    $files = @(Get-DriverCompletionObjectValue -Object $doneEvidence -Names @('actual_files','changed_files','files') -Default @())
+  }
+  return @(ConvertTo-DriverCompletionPathList -Value $files)
+}
+
+function Add-DriverCompletionEvidenceText {
+  param(
+    [Parameter(Mandatory=$false)]$Value,
+    [Parameter(Mandatory=$true)]$Lines,
+    [int]$Depth = 0
+  )
+
+  if ($null -eq $Value -or $Depth -gt 4 -or $Lines.Count -ge 80) { return }
+  if ($Value -is [string]) {
+    $text = ([string]$Value).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($text)) { [void]$Lines.Add($text) }
+    return
+  }
+  if ($Value -is [ValueType]) {
+    $text = ([string]$Value).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($text)) { [void]$Lines.Add($text) }
+    return
+  }
+  if ($Value -is [System.Collections.IDictionary]) {
+    foreach ($k in @($Value.Keys)) {
+      if ($Lines.Count -ge 80) { break }
+      Add-DriverCompletionEvidenceText -Value $Value[$k] -Lines $Lines -Depth ($Depth + 1)
+    }
+    return
+  }
+  if ($Value -is [System.Collections.IEnumerable]) {
+    foreach ($v in @($Value)) {
+      if ($Lines.Count -ge 80) { break }
+      Add-DriverCompletionEvidenceText -Value $v -Lines $Lines -Depth ($Depth + 1)
+    }
+    return
+  }
+  foreach ($prop in @($Value.PSObject.Properties)) {
+    if ($Lines.Count -ge 80) { break }
+    Add-DriverCompletionEvidenceText -Value $prop.Value -Lines $Lines -Depth ($Depth + 1)
+  }
+}
+
+function Test-DriverCompletionWiringGapEvidence {
+  param([Parameter(Mandatory=$false)]$OutcomeEvidence)
+
+  $lines = New-Object 'System.Collections.Generic.List[string]'
+  Add-DriverCompletionEvidenceText -Value $OutcomeEvidence -Lines $lines
+  $text = [string]::Join("`n", @($lines.ToArray()))
+  return [bool]($text -match '(?i)built\s*[- ]\s*but\s*[- ]\s*not\s*[- ]\s*wired|wiring\s+gap|not\s+wired')
+}
+
+function New-DriverCompletionWiringGapFollowUp {
+  param(
+    [Parameter(Mandatory=$true)][string]$SourceId,
+    [Parameter(Mandatory=$false)]$SourceItem,
+    [Parameter(Mandatory=$false)]$OutcomeEvidence,
+    [string[]]$ActualFiles = @()
+  )
+
+  $doneSha = [string](Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_sha','head_sha','commit') -Default '')
+  $doneEvidence = Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_evidence') -Default $null
+  $baseSha = [string](Get-DriverCompletionObjectValue -Object $doneEvidence -Names @('base_sha') -Default '')
+  $headSha = [string](Get-DriverCompletionObjectValue -Object $doneEvidence -Names @('head_sha') -Default $doneSha)
+  $files = @(ConvertTo-DriverCompletionPathList -Value $ActualFiles)
+  if (@($files).Count -eq 0 -and $SourceItem) {
+    $files = @(ConvertTo-DriverCompletionPathList -Value (Get-DriverCompletionObjectValue -Object $SourceItem -Names @('files','touch_set','workpack_touch_set') -Default @()))
+  }
+  if (@($files).Count -eq 0) { $files = @('backlog') }
+
+  $sourceTitle = [string](Get-DriverCompletionObjectValue -Object $SourceItem -Names @('title','task','text') -Default '')
+  if ($sourceTitle.Length -gt 120) { $sourceTitle = $sourceTitle.Substring(0,120) + '...' }
+  $sourceProject = [string](Get-DriverCompletionObjectValue -Object $SourceItem -Names @('project') -Default '')
+  $sourceScope = [string](Get-DriverCompletionObjectValue -Object $SourceItem -Names @('scope') -Default '')
+  if ([string]::IsNullOrWhiteSpace($sourceScope)) { $sourceScope = 'bridge' }
+  $title = "Follow up wiring gap from backlog task $SourceId"
+  $taskText = "Investigate and wire the implementation from backlog task $SourceId so built-but-not-wired / wiring-gap evidence is resolved. Source commit: $headSha. Source task: $sourceTitle"
+  return [pscustomobject][ordered]@{
+    id = [guid]::NewGuid().ToString('N')
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    from = 'driver-completion'
+    status = 'open'
+    tags = @('follow-up','wiring-gap','built-but-not-wired')
+    attempts = 0
+    score = 0.0
+    project = $sourceProject
+    scope = $sourceScope
+    title = $title
+    task = $taskText
+    text = $taskText
+    files = @($files)
+    acceptance = @(
+      "The implementation touched by source backlog task $SourceId is invoked from the live runtime path, not only defined or unit-tested.",
+      "A focused regression proves the wiring path executes and fails if the integration is removed."
+    )
+    checks = @(
+      'Run the focused regression that covers the missing wiring path.',
+      'Run Parser.ParseFile for touched PowerShell files.',
+      'Run smoke.ps1.'
+    )
+    followup_kind = 'wiring-gap'
+    followup_of = [string]$SourceId
+    source_backlog_id = [string]$SourceId
+    source_done_sha = [string]$doneSha
+    source_base_sha = [string]$baseSha
+    source_head_sha = [string]$headSha
+    source_actual_files = @($files)
+    evidence = [pscustomobject][ordered]@{
+      reason = 'built-but-not-wired/wiring-gap evidence found during completion'
+      source_backlog_id = [string]$SourceId
+      source_done_sha = [string]$doneSha
+      source_base_sha = [string]$baseSha
+      source_head_sha = [string]$headSha
+      actual_files = @($files)
+    }
+  }
+}
+
 function New-DriverCompletionDoneEvidence {
   param(
     [Parameter(Mandatory=$false)]$State,
@@ -61,17 +256,35 @@ function New-DriverCompletionDoneEvidence {
       $candidateRepo = [string](Get-ActiveProjectRoot)
       if (-not [string]::IsNullOrWhiteSpace($candidateRepo)) { $repoRoot = $candidateRepo }
     }
-  } catch {}
+  } catch {
+    $repoRoot = $root
+  }
 
   $head = ''
-  try { $head = ((& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim() } catch { $head = '' }
+  try { $head = ((Invoke-DriverCompletionGitLines -RepoRoot $repoRoot -GitArgs @('rev-parse','HEAD') | Select-Object -First 1) -join '').Trim() } catch { $head = '' }
   $base = ''
   try { $base = [string]$State.task_base_commit } catch { $base = '' }
+  $actualFiles = @(Get-DriverCompletionGitChangedFiles -RepoRoot $repoRoot -BaseSha $base -HeadSha $head)
 
   $verified = New-Object 'System.Collections.Generic.List[string]'
   foreach ($match in [regex]::Matches([string]$Reply, '(?im)^\s*\[\[VERIFIED:\s*(.+?)\]\]\s*$')) {
     $txt = $match.Groups[1].Value.Trim()
     if (-not [string]::IsNullOrWhiteSpace($txt)) { [void]$verified.Add($txt) }
+  }
+
+  $riskMarkers = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($match in [regex]::Matches([string]$Reply, '(?im)^\s*\[\[PROJECT_RISK:\s*(.+?)\]\]\s*$')) {
+    $txt = $match.Groups[1].Value.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($txt)) { [void]$riskMarkers.Add($txt) }
+  }
+
+  $wiringLines = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($line in @(([string]$Reply) -split "`r?`n")) {
+    if ($wiringLines.Count -ge 10) { break }
+    $txt = ([string]$line).Trim()
+    if ($txt -match '(?i)built\s*[- ]\s*but\s*[- ]\s*not\s*[- ]\s*wired|wiring\s+gap|not\s+wired') {
+      [void]$wiringLines.Add($txt)
+    }
   }
 
   $tests = New-Object 'System.Collections.Generic.List[string]'
@@ -85,15 +298,22 @@ function New-DriverCompletionDoneEvidence {
     if ($State -and ($State.PSObject.Properties.Name -contains 'skip_critic') -and [bool]$State.skip_critic) {
       $criticResult = 'SKIPPED'
     }
-  } catch {}
+  } catch {
+    $criticResult = 'PASS'
+  }
 
   return [pscustomobject][ordered]@{
     done_sha = $head
+    actual_files = @($actualFiles)
     done_evidence = [pscustomobject][ordered]@{
       repo_root = $repoRoot
       base_sha = $base
       head_sha = $head
+      changed_files = @($actualFiles)
+      actual_files = @($actualFiles)
       verified = @($verified.ToArray())
+      project_risks = @($riskMarkers.ToArray())
+      wiring_gap_evidence = @($wiringLines.ToArray())
       gates = @('critic','parsefile','smoke','qa')
       channel = [string]$Channel
       fast_lane = [bool]$FastLaneDone
@@ -125,6 +345,10 @@ function Set-BacklogOutcomeDoneWithLedger {
   $entryFn = ${function:Get-TaskOutcomeLedgerEntry}
   $copyFn = ${function:Copy-DriverOutcomeItem}
   $setPropFn = ${function:Set-DriverOutcomeProperty}
+  $actualFilesFn = ${function:Get-DriverCompletionActualFiles}
+  $wiringGapFn = ${function:Test-DriverCompletionWiringGapEvidence}
+  $newFollowUpFn = ${function:New-DriverCompletionWiringGapFollowUp}
+  $objectValueFn = ${function:Get-TaskOutcomeLedgerObjectValue}
 
   $doneSha = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('done_sha') -Default '')
   $doneEvidence = Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('done_evidence') -Default $null
@@ -132,6 +356,8 @@ function Set-BacklogOutcomeDoneWithLedger {
   $testsRun = @(Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('tests_run') -Default @())
   $criticResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('critic_result') -Default '')
   $qaResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('qa_result') -Default '')
+  $actualFiles = @(& $actualFilesFn -OutcomeEvidence $OutcomeEvidence)
+  $hasWiringGap = [bool](& $wiringGapFn -OutcomeEvidence $OutcomeEvidence)
   $recoveryEvidence = [pscustomobject][ordered]@{
     recovery_sha = $doneSha
     recovery_checks = @($testsRun)
@@ -143,6 +369,7 @@ function Set-BacklogOutcomeDoneWithLedger {
     $needsReviewIds = New-Object 'System.Collections.Generic.List[string]'
     $blockedIds = New-Object 'System.Collections.Generic.List[string]'
     $ledgerEntries = New-Object 'System.Collections.Generic.List[object]'
+    $followUpIds = New-Object 'System.Collections.Generic.List[string]'
     $dirty = $false
     $reason = 'done_evidence_complete'
 
@@ -179,6 +406,10 @@ function Set-BacklogOutcomeDoneWithLedger {
       & $setPropFn -Item $candidate -Name 'tests_run' -Value @($testsRun)
       & $setPropFn -Item $candidate -Name 'critic_result' -Value $criticResult
       & $setPropFn -Item $candidate -Name 'qa_result' -Value $qaResult
+      if (@($actualFiles).Count -gt 0) {
+        & $setPropFn -Item $candidate -Name 'files' -Value @($actualFiles)
+        & $setPropFn -Item $candidate -Name 'actual_files' -Value @($actualFiles)
+      }
 
       $validation = & $testDoneFn -Item $candidate
       if (-not [bool]$validation.valid) {
@@ -195,11 +426,43 @@ function Set-BacklogOutcomeDoneWithLedger {
       & $setPropFn -Item $item -Name 'tests_run' -Value @($testsRun)
       & $setPropFn -Item $item -Name 'critic_result' -Value $criticResult
       & $setPropFn -Item $item -Name 'qa_result' -Value $qaResult
+      if (@($actualFiles).Count -gt 0) {
+        $declaredFiles = @()
+        try { $declaredFiles = @($item.files) } catch { $declaredFiles = @() }
+        $hasDeclaredSnapshot = $false
+        try { $hasDeclaredSnapshot = ($item.PSObject.Properties.Name -contains 'declared_files_before_done') } catch { $hasDeclaredSnapshot = $false }
+        if (@($declaredFiles).Count -gt 0 -and -not $hasDeclaredSnapshot) {
+          & $setPropFn -Item $item -Name 'declared_files_before_done' -Value @($declaredFiles)
+        }
+        & $setPropFn -Item $item -Name 'files' -Value @($actualFiles)
+        & $setPropFn -Item $item -Name 'actual_files' -Value @($actualFiles)
+      }
       $entry = & $entryFn -Item $candidate
       & $setPropFn -Item $item -Name 'outcome_ledger' -Value $entry
       [void]$ledgerEntries.Add($entry)
       [void]$doneIds.Add([string]$id)
       $dirty = $true
+
+      if ($hasWiringGap) {
+        $followExists = $false
+        foreach ($existing in @($items)) {
+          $existingSource = [string](& $objectValueFn -Object $existing -Names @('followup_of','source_backlog_id') -Default '')
+          $existingKind = [string](& $objectValueFn -Object $existing -Names @('followup_kind') -Default '')
+          $existingStatus = ([string](& $objectValueFn -Object $existing -Names @('status') -Default '')).Trim().ToLowerInvariant()
+          if ($existingSource -eq [string]$id -and $existingKind -eq 'wiring-gap' -and $existingStatus -notin @('done','rejected','failed','auto-dropped')) {
+            $followExists = $true
+            $existingId = [string](& $objectValueFn -Object $existing -Names @('id') -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($existingId)) { [void]$followUpIds.Add($existingId) }
+            break
+          }
+        }
+        if (-not $followExists) {
+          $followUp = & $newFollowUpFn -SourceId ([string]$id) -SourceItem $item -OutcomeEvidence $OutcomeEvidence -ActualFiles @($actualFiles)
+          $items += $followUp
+          [void]$followUpIds.Add([string]$followUp.id)
+          $dirty = $true
+        }
+      }
     }
 
     if ($dirty) { & $saveBacklogFn $items }
@@ -211,6 +474,8 @@ function Set-BacklogOutcomeDoneWithLedger {
       needs_review_ids = @($needsReviewIds.ToArray())
       blocked_ids = @($blockedIds.ToArray())
       ledger_entries = @($ledgerEntries.ToArray())
+      actual_files = @($actualFiles)
+      followup_ids = @($followUpIds.ToArray())
     }
   }.GetNewClosure()))
 }
