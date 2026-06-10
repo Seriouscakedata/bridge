@@ -29,8 +29,22 @@
       $detStreams = $null; try { $detStreams = Test-CanParallelize -PlanText $task } catch {}
       if ($detStreams -and @($detStreams).Count -ge 2) {
         try {
-          Add-Message -From system -Text ("🔀 Детерминированный parallel dispatch: " + @($detStreams).Count + " потоков из workpack-batch (без планировщика)") -Kind event | Out-Null
-          $detRes = Invoke-ParallelDispatch -Streams $detStreams -TimeoutMin 25 -PollSec 10
+          $detTimeoutMin = 25
+          try {
+            $stDetTimeout = Read-State
+            $stateParallelTimeoutMin = 0
+            $statePerTaskTimeoutSec = 0
+            try { $stateParallelTimeoutMin = [int](Get-BacklogPackObjectValue -Obj $stDetTimeout -Name 'workpack_batch_parallel_timeout_min' -Default 0) } catch {}
+            try { $statePerTaskTimeoutSec = [int](Get-BacklogPackObjectValue -Obj $stDetTimeout -Name 'workpack_batch_per_task_timeout_sec' -Default 0) } catch {}
+            if ($stateParallelTimeoutMin -gt 0) {
+              $detTimeoutMin = $stateParallelTimeoutMin
+            } elseif ($statePerTaskTimeoutSec -gt 0) {
+              $detTimeoutMin = [int][Math]::Ceiling($statePerTaskTimeoutSec / 60.0)
+            }
+          } catch {}
+          if ($detTimeoutMin -lt 1) { $detTimeoutMin = 25 }
+          Add-Message -From system -Text ("🔀 Детерминированный parallel dispatch: " + @($detStreams).Count + " потоков из workpack-batch (timeout=" + $detTimeoutMin + " min, без планировщика)") -Kind event | Out-Null
+          $detRes = Invoke-ParallelDispatch -Streams $detStreams -TimeoutMin $detTimeoutMin -PollSec 10
           # Mark dispatched REGARDLESS of ok, so a fully-failed batch goes to the planner for diagnosis
           # rather than re-dispatching the same broken streams over and over (the ERR-006 loop).
           Update-State { param($s) $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $true -Force } | Out-Null

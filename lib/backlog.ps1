@@ -41,11 +41,13 @@ function Get-BacklogWorkpackPerTaskTimeoutSec {
 function Get-BacklogWorkpackDispatchTimeoutMin {
   param(
     [int]$TaskCount = 1,
-    [int]$PerTaskTimeoutSec = 600
+    [int]$PerTaskTimeoutSec = 600,
+    [bool]$Parallel = $true
   )
 
   $safeTaskCount = [Math]::Max(1, [int]$TaskCount)
   $safePerTaskTimeoutSec = [Math]::Max(1, [int]$PerTaskTimeoutSec)
+  if ($Parallel) { return [int][Math]::Ceiling($safePerTaskTimeoutSec / 60.0) }
   return [int][Math]::Ceiling(($safeTaskCount * $safePerTaskTimeoutSec) / 60.0)
 }
 
@@ -99,14 +101,17 @@ function Add-BacklogWorkpackBatchExecutionMetadata {
   }
 
   $perTaskTimeoutSec = Get-BacklogWorkpackPerTaskTimeoutSec
-  $timeoutMin = Get-BacklogWorkpackDispatchTimeoutMin -TaskCount $count -PerTaskTimeoutSec $perTaskTimeoutSec
   $autoParallel = (($mode -eq 'parallel') -and (-not $serialRequired) -and ($count -gt 1))
+  $parallelTimeoutMin = Get-BacklogWorkpackDispatchTimeoutMin -TaskCount $count -PerTaskTimeoutSec $perTaskTimeoutSec -Parallel $true
+  $serialTimeoutMin = Get-BacklogWorkpackDispatchTimeoutMin -TaskCount $count -PerTaskTimeoutSec $perTaskTimeoutSec -Parallel $false
+  $timeoutMin = if ($autoParallel) { $parallelTimeoutMin } else { $serialTimeoutMin }
 
   foreach ($metaTarget in @($Target, $frontierReport)) {
     if ($null -eq $metaTarget) { continue }
     Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'per_task_timeout_sec' -Value $perTaskTimeoutSec
     Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'timeout_min' -Value $timeoutMin
-    Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'parallel_timeout_min' -Value $timeoutMin
+    Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'parallel_timeout_min' -Value $parallelTimeoutMin
+    Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'serial_timeout_min' -Value $serialTimeoutMin
     Set-BacklogWorkpackMetadataValue -Target $metaTarget -Name 'auto_parallel' -Value $autoParallel
   }
 
@@ -134,8 +139,8 @@ function New-BacklogWorkpackBatchTaskText {
   $taskText = & $script:BacklogOriginalNewBacklogWorkpackBatchTaskText -Items $Items
   $itemsArr = @($Items | Where-Object { $_ })
   $perTaskTimeoutSec = Get-BacklogWorkpackPerTaskTimeoutSec
-  $timeoutMin = Get-BacklogWorkpackDispatchTimeoutMin -TaskCount $itemsArr.Count -PerTaskTimeoutSec $perTaskTimeoutSec
   $autoParallel = ($itemsArr.Count -gt 1)
+  $timeoutMin = Get-BacklogWorkpackDispatchTimeoutMin -TaskCount $itemsArr.Count -PerTaskTimeoutSec $perTaskTimeoutSec -Parallel $autoParallel
 
   $lines = @($taskText -split "\r?\n")
   $header = @(

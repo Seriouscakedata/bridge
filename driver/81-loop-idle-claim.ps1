@@ -609,6 +609,12 @@
               } else {
                 $batchText = New-BacklogWorkpackBatchTaskText -Items $safeArr
               }
+              $batchPerTaskTimeoutSec = 600
+              try { $batchPerTaskTimeoutSec = [int](Get-BacklogPackObjectValue -Obj $wpBatch -Name 'per_task_timeout_sec' -Default $batchPerTaskTimeoutSec) } catch {}
+              if ($batchPerTaskTimeoutSec -lt 1) { $batchPerTaskTimeoutSec = 600 }
+              $batchParallelTimeoutMin = [int][Math]::Ceiling($batchPerTaskTimeoutSec / 60.0)
+              try { $batchParallelTimeoutMin = [int](Get-BacklogPackObjectValue -Obj $wpBatch -Name 'parallel_timeout_min' -Default $batchParallelTimeoutMin) } catch {}
+              if ($batchParallelTimeoutMin -lt 1) { $batchParallelTimeoutMin = [int][Math]::Ceiling($batchPerTaskTimeoutSec / 60.0) }
               $batchIds = @($safeArr | ForEach-Object { [string]$_.id })
               $claimedIdea = [pscustomobject]@{
                 id = [string]$batchIds[0]
@@ -618,6 +624,8 @@
                 serial_reason = [string]$claimSerialReason
                 workpack_batch_ids = @($batchIds)
                 workpack_batch_count = $safeArr.Count
+                workpack_batch_per_task_timeout_sec = $batchPerTaskTimeoutSec
+                workpack_batch_parallel_timeout_min = $batchParallelTimeoutMin
                 preflight_checked = $true
                 workpack_frontier = [pscustomobject]@{
                   eligible = [int]$wpBatch.eligible_count
@@ -630,6 +638,8 @@
                   serial_required = [bool]$wpBatch.serial_required
                   serial_reason = [string]$wpBatch.serial_reason
                   workpack_batch_mode = [string]$claimMode
+                  per_task_timeout_sec = $batchPerTaskTimeoutSec
+                  parallel_timeout_min = $batchParallelTimeoutMin
                   approved = if ($workpackFrontierReport) { [int]$workpackFrontierReport.approved_count } else { 0 }
                   with_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.with_workpack_count } else { 0 }
                   without_workpack = if ($workpackFrontierReport) { [int]$workpackFrontierReport.without_workpack_count } else { 0 }
@@ -650,6 +660,8 @@
                   item_ids=@($batchIds)
                   count=$safeArr.Count
                   workpack_batch_mode=[string]$claimMode
+                  per_task_timeout_sec=$batchPerTaskTimeoutSec
+                  parallel_timeout_min=$batchParallelTimeoutMin
                   serial_reason=[string]$claimSerialReason
                   workpacks=@($safeArr | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
                   conflict_groups=@($safeArr | ForEach-Object { [string]$_.workpack_conflict_group } | Sort-Object -Unique)
@@ -1251,6 +1263,12 @@
           $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $isWorkpackBatch -Force
           $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force  # ERR-006: fresh batch, not yet dispatched
           $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue $workpackBatchMode -Force
+          $statePerTaskTimeoutSec = 0
+          $stateParallelTimeoutMin = 0
+          try { $statePerTaskTimeoutSec = [int](Get-BacklogPackObjectValue -Obj $claimedIdea -Name 'workpack_batch_per_task_timeout_sec' -Default 0) } catch {}
+          try { $stateParallelTimeoutMin = [int](Get-BacklogPackObjectValue -Obj $claimedIdea -Name 'workpack_batch_parallel_timeout_min' -Default 0) } catch {}
+          if ($statePerTaskTimeoutSec -gt 0) { $s | Add-Member -NotePropertyName workpack_batch_per_task_timeout_sec -NotePropertyValue $statePerTaskTimeoutSec -Force }
+          if ($stateParallelTimeoutMin -gt 0) { $s | Add-Member -NotePropertyName workpack_batch_parallel_timeout_min -NotePropertyValue $stateParallelTimeoutMin -Force }
           $s | Add-Member -NotePropertyName task_management_snapshot -NotePropertyValue $taskManagementSnapshot -Force
           $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue '' -Force

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-commit-lock-resilience.ps1 -- focused coverage for stale index.lock commit retry.
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +40,18 @@ function New-TestRepoWithLock {
   [System.IO.File]::WriteAllText($lockPath, 'stale', [System.Text.Encoding]::ASCII)
   (Get-Item -LiteralPath $lockPath).LastWriteTime = (Get-Date).AddSeconds(-45)
   return [pscustomobject]@{ Repo = $repo; Lock = $lockPath }
+}
+
+function New-TestWorktreeStyleRepoWithLock {
+  $repo = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-index-lock-wt-' + [guid]::NewGuid().ToString('N'))
+  $gitDir = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-index-lock-gitdir-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $repo -Force | Out-Null
+  New-Item -ItemType Directory -Path $gitDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $repo '.git'), ('gitdir: ' + $gitDir + "`n"), [System.Text.Encoding]::ASCII)
+  $lockPath = Join-Path $gitDir 'index.lock'
+  [System.IO.File]::WriteAllText($lockPath, 'stale', [System.Text.Encoding]::ASCII)
+  (Get-Item -LiteralPath $lockPath).LastWriteTime = (Get-Date).AddSeconds(-45)
+  return [pscustomobject]@{ Repo = $repo; GitDir = $gitDir; Lock = $lockPath }
 }
 
 function Wait-NoGitProcess {
@@ -89,6 +101,31 @@ try {
   } catch {}
   try { if ($gitProc) { $gitProc.Dispose() } } catch {}
   if (Test-Path -LiteralPath $case2.Repo) { Remove-Item -LiteralPath $case2.Repo -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+$caseWorktree = New-TestWorktreeStyleRepoWithLock
+try {
+  $noGit = Wait-NoGitProcess
+  $removed = Remove-StaleIndexLock -RepoRoot $caseWorktree.Repo
+  Check 'stale lock is removed from resolved worktree gitdir' ($noGit -and $removed -and -not (Test-Path -LiteralPath $caseWorktree.Lock)) @{ noGit = $noGit; removed = $removed; exists = (Test-Path -LiteralPath $caseWorktree.Lock) }
+} finally {
+  if (Test-Path -LiteralPath $caseWorktree.Repo) { Remove-Item -LiteralPath $caseWorktree.Repo -Recurse -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $caseWorktree.GitDir) { Remove-Item -LiteralPath $caseWorktree.GitDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+$casePreflight = New-TestRepoWithLock
+try {
+  $script:preflightAttempts = 0
+  $preflightResult = Invoke-ParallelDispatchGitCommitWithRetry -RepoRoot $casePreflight.Repo -BackoffSeconds 0 -Operation {
+    $script:preflightAttempts++
+    if (Test-Path -LiteralPath $casePreflight.Lock) {
+      return [pscustomobject]@{ ExitCode = 1; Output = @("fatal: Unable to create '.git/index.lock': File exists") }
+    }
+    return [pscustomobject]@{ ExitCode = 0; Output = @('commit ok') }
+  }
+  Check 'commit preflight clears stale index.lock before first attempt' (([int]$preflightResult.ExitCode -eq 0) -and $script:preflightAttempts -eq 1 -and [bool]$preflightResult.PreRemovedLock -and -not (Test-Path -LiteralPath $casePreflight.Lock)) @{ exit = $preflightResult.ExitCode; attempts = $script:preflightAttempts; preRemoved = $preflightResult.PreRemovedLock; exists = (Test-Path -LiteralPath $casePreflight.Lock) }
+} finally {
+  if (Test-Path -LiteralPath $casePreflight.Repo) { Remove-Item -LiteralPath $casePreflight.Repo -Recurse -Force }
 }
 
 $case3 = New-TestRepoWithLock

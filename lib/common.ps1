@@ -27,9 +27,19 @@ function Invoke-GitNative {
     }
   }
 
-  $output = @(& git @nativeArgs 2>&1)
-  $exitCode = 0
-  try { $exitCode = [int]$LASTEXITCODE } catch { $exitCode = 1 }
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $output = @()
+  $exitCode = 1
+  try {
+    $output = @(& git @nativeArgs 2>&1)
+    try { $exitCode = [int]$LASTEXITCODE } catch { $exitCode = 1 }
+  } catch {
+    $output = @($_.Exception.Message)
+    $exitCode = 1
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
   return [pscustomobject]@{
     ExitCode = $exitCode
     Output   = @($output | ForEach-Object { [string]$_ })

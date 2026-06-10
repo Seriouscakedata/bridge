@@ -91,6 +91,31 @@ try {
   if (Test-Path -LiteralPath $case3.Repo) { Remove-Item -LiteralPath $case3.Repo -Recurse -Force }
 }
 
+$case4 = New-TouchSetTestRepo
+try {
+  [System.IO.File]::WriteAllText((Join-Path $case4.Repo 'STATE.JSON'), "{`"case`":true}`n", [System.Text.Encoding]::ASCII)
+  $res = Invoke-SequentialTouchSetCheck -RepoRoot $case4.Repo -DeclaredFiles @('state.json') -BaseCommit $case4.Base -IsOperatorAuthorized:$false
+  Check 'declared path matching is case-insensitive on Windows' ([bool]$res.ok) $res
+} finally {
+  if (Test-Path -LiteralPath $case4.Repo) { Remove-Item -LiteralPath $case4.Repo -Recurse -Force }
+}
+
+$case5 = New-TouchSetTestRepo
+try {
+  $res = Invoke-SequentialTouchSetCheck -RepoRoot $case5.Repo -DeclaredFiles @('state.json') -BaseCommit 'not-a-real-base-commit' -IsOperatorAuthorized:$false
+  Check 'changed-file enumeration failure is fail-closed' ((-not [bool]$res.ok) -and [string]$res.reason -eq 'changed-files-unavailable') $res
+} finally {
+  if (Test-Path -LiteralPath $case5.Repo) { Remove-Item -LiteralPath $case5.Repo -Recurse -Force }
+}
+
+$case6 = New-TouchSetTestRepo
+try {
+  $res = Invoke-SequentialTouchSetCheck -RepoRoot $case6.Repo -DeclaredFiles @('state.json') -BaseCommit 'not-a-real-base-commit' -IsOperatorAuthorized:$false -ChangedFiles @('state.json')
+  Check 'changed-file enumeration failure is fail-closed even with caller-provided changed files' ((-not [bool]$res.ok) -and [string]$res.reason -eq 'changed-files-unavailable') $res
+} finally {
+  if (Test-Path -LiteralPath $case6.Repo) { Remove-Item -LiteralPath $case6.Repo -Recurse -Force }
+}
+
 if ($script:fail -gt 0) {
   Write-Host ("RESULT: " + $script:pass + " passed, " + $script:fail + " failed") -ForegroundColor Red
   exit 1

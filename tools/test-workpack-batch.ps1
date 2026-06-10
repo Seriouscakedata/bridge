@@ -149,6 +149,10 @@ try {
   Assert-True ([bool]$report.claim_available) 'expected frontier report claim_available=true'
   Assert-True ([bool]$report.parallel_required) 'expected frontier report parallel_required=true'
   Assert-True (-not [bool]$report.serial_required) 'expected independent frontier serial_required=false'
+  Assert-True ([bool]$report.auto_parallel) 'expected frontier report auto_parallel=true'
+  Assert-True ([int]$report.per_task_timeout_sec -eq 600) ("expected frontier per_task_timeout_sec=600, got {0}" -f [int]$report.per_task_timeout_sec)
+  Assert-True ([int]$report.parallel_timeout_min -eq 10) ("expected frontier parallel_timeout_min=10, got {0}" -f [int]$report.parallel_timeout_min)
+  Assert-True ([int]$report.timeout_min -eq 10) ("expected frontier timeout_min=10 for parallel batch, got {0}" -f [int]$report.timeout_min)
   Assert-True ([string]$report.workpack_batch_mode -ne 'serial') 'expected independent frontier not to use serial mode'
   Assert-True ([int]$report.selected_count -ge 2) 'expected frontier report selected_count>=2'
   Assert-True ([string]$report.reason -eq 'batch-available') ("expected batch-available frontier reason, got {0}" -f [string]$report.reason)
@@ -159,6 +163,10 @@ try {
   $taskText = New-BacklogWorkpackBatchTaskText -Items @($batch.items)
   Assert-True ($taskText -match '\[\[PARALLEL:wp1\]\]') 'expected parallel template wp1'
   Assert-True ($taskText -match '\[\[PARALLEL:wp2\]\]') 'expected parallel template wp2'
+  Assert-True ($taskText -match 'auto_parallel:\s*true') 'expected task text auto_parallel=true metadata'
+  Assert-True ($taskText -match 'per_task_timeout_sec:\s*600') 'expected task text per_task_timeout_sec=600 metadata'
+  Assert-True ($taskText -match 'timeout_min:\s*10') 'expected task text timeout_min=10 metadata'
+  Assert-True ($taskText -match 'timeout_sec:\s*600') 'expected each parallel block to carry timeout_sec=600'
   Assert-True ($taskText -match 'STATUS:\s*CONTINUE') 'expected planner status hint'
 
   $items = @(Get-Backlog)

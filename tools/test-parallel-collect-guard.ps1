@@ -134,6 +134,10 @@ Assert ($llmWorkerSource -match 'denied FILE path') "LLM worker fails stream on 
 Assert ($llmWorkerSource -notmatch 'allowedFiles\.Count -gt 0 -and -not') "LLM worker does not silently skip denied paths"
 Assert ($llmWorkerSource -notmatch '2>\$null') "LLM worker does not hide native git stderr with PowerShell redirection"
 
+$parallelSource = Get-Content -LiteralPath (Join-Path $root 'lib\parallel.ps1') -Raw -Encoding UTF8
+Assert ($parallelSource -match [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $wtPath -OutsideFiles @($deniedPaths)')) "collector cleans denied paths in worker worktree"
+Assert ($parallelSource -notmatch [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($deniedPaths)')) "collector does not clean denied paths in bridge root before merge"
+
 # 25-28. Outside touch-set cleanup runs checkout before quarantine and never checks out declared files.
 $script:checkoutEvents = New-Object 'System.Collections.Generic.List[string]'
 $cleanup = Invoke-ParallelOutsideFilesCheckout -RepoRoot $root -OutsideFiles @('lib/outside.ps1', 'lib/allowed.ps1', '../bad.ps1', '.git/config') -DeclaredFiles @('lib/allowed.ps1') -GitExe 'git' -GitRunner {

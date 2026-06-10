@@ -774,8 +774,8 @@ function Test-ParallelCollectedPathAllowed {
     $dn = _NormalizeRelPath $d
     if ($null -eq $dn) { continue }
     if ($dn -eq '.git' -or $dn.StartsWith('.git/')) { continue }
-    if ($rel -eq $dn) { return $true }
-    if ($rel.StartsWith($dn + '/')) { return $true }
+    if ([string]::Equals($rel, $dn, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($rel.StartsWith($dn + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
   }
   return $false
 }
@@ -1677,7 +1677,7 @@ function Collect-ParallelDispatchWorkerOutput {
         $violatingFile = ''
         try { $violatingFile = [string]$seqCheck.violatingFile } catch {}
         if (-not [string]::IsNullOrWhiteSpace($violatingFile)) {
-          [void](Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($violatingFile) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe)
+          [void](Invoke-ParallelOutsideFilesCheckout -RepoRoot $wtPath -OutsideFiles @($violatingFile) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe)
         }
         Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
         try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": " + [string]$seqCheck.reason + $(if ($violatingFile) { " (" + $violatingFile + ")" } else { "" })) -Kind event | Out-Null } catch {}
@@ -1697,7 +1697,7 @@ function Collect-ParallelDispatchWorkerOutput {
     }
 
     if ($deniedPaths.Count -gt 0) {
-      $checkoutResult = Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($deniedPaths) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe
+      $checkoutResult = Invoke-ParallelOutsideFilesCheckout -RepoRoot $wtPath -OutsideFiles @($deniedPaths) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe
       if (-not [bool]$checkoutResult.ok) {
         $tail = ''
         try { $tail = (@($checkoutResult.output) | Select-Object -Last 3) -join ' | ' } catch {}
@@ -1772,14 +1772,63 @@ function Quarantine-ParallelDispatchCollectedWorkers {
   }
 }
 
-function Remove-StaleIndexLock {
-  param([string]$RepoRoot)
+function Get-ParallelDispatchGitDir {
+  param(
+    [string]$RepoRoot,
+    [string]$GitExe = ''
+  )
 
-  $lockPath = Join-Path $RepoRoot '.git\index.lock'
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) { return '' }
+
+  $dotGit = Join-Path $RepoRoot '.git'
+  if (Test-Path -LiteralPath $dotGit -PathType Container) { return $dotGit }
+  if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
+    try {
+      $text = [System.IO.File]::ReadAllText($dotGit)
+      if ($text -match '(?im)^\s*gitdir:\s*(.+?)\s*$') {
+        $gitDir = [string]$Matches[1]
+        if ([System.IO.Path]::IsPathRooted($gitDir)) { return $gitDir }
+        return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $gitDir))
+      }
+    } catch {}
+  }
+
+  if ([string]::IsNullOrWhiteSpace($GitExe)) {
+    try { $GitExe = Get-GitExe } catch { $GitExe = 'git' }
+  }
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $out = @(& $GitExe -C $RepoRoot rev-parse --git-dir 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0) {
+      $gitDir = ([string]($out | Select-Object -First 1)).Trim()
+      if ([string]::IsNullOrWhiteSpace($gitDir)) { return '' }
+      if ([System.IO.Path]::IsPathRooted($gitDir)) { return $gitDir }
+      return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $gitDir))
+    }
+  } catch {
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
+  return ''
+}
+
+function Remove-StaleIndexLock {
+  param(
+    [string]$RepoRoot,
+    [string]$GitExe = ''
+  )
+
+  $gitDir = Get-ParallelDispatchGitDir -RepoRoot $RepoRoot -GitExe $GitExe
+  if ([string]::IsNullOrWhiteSpace($gitDir)) { return $false }
+  $lockPath = Join-Path $gitDir 'index.lock'
   if (-not (Test-Path -LiteralPath $lockPath)) { return $false }
   $gitProcs = @(Get-Process -Name 'git' -ErrorAction SilentlyContinue | Where-Object { $_ })
   if ($gitProcs.Count -gt 0) { return $false }
-  $lockAge = ((Get-Date) - (Get-Item -LiteralPath $lockPath).LastWriteTime).TotalSeconds
+  $lockItem = $null
+  try { $lockItem = Get-Item -LiteralPath $lockPath -ErrorAction Stop } catch { return $false }
+  $lockAge = ((Get-Date) - $lockItem.LastWriteTime).TotalSeconds
   if ($lockAge -lt 30) { return $false }
   try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop; return $true } catch { return $false }
 }
@@ -1813,28 +1862,42 @@ function Invoke-SequentialTouchSetCheck {
     if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
   }
 
-  if ($changed.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($RepoRoot) -and (Test-Path -LiteralPath $RepoRoot)) {
+  if (-not [string]::IsNullOrWhiteSpace($RepoRoot) -and (Test-Path -LiteralPath $RepoRoot)) {
     if ([string]::IsNullOrWhiteSpace($GitExe)) {
       try { $GitExe = Get-GitExe } catch { $GitExe = 'git' }
     }
-    if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
+    $gitListFailed = $false
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
+        try {
+          $diffLines = @(& $GitExe -C $RepoRoot diff --name-only $BaseCommit -- 2>$null)
+          if ($LASTEXITCODE -ne 0) { $gitListFailed = $true }
+          foreach ($line in $diffLines) {
+            $rel = _NormalizeRelPath ([string]$line)
+            if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
+          }
+        } catch { $gitListFailed = $true }
+      }
       try {
-        foreach ($line in @(& $GitExe -C $RepoRoot diff --name-only $BaseCommit -- 2>$null)) {
-          $rel = _NormalizeRelPath ([string]$line)
+        $statusLines = @(& $GitExe -C $RepoRoot status --porcelain -uall 2>$null)
+        if ($LASTEXITCODE -ne 0) { $gitListFailed = $true }
+        foreach ($line in $statusLines) {
+          $txt = [string]$line
+          if ([string]::IsNullOrWhiteSpace($txt)) { continue }
+          $pathText = if ($txt.Length -gt 3) { $txt.Substring(3).Trim() } else { $txt.Trim() }
+          if ($pathText -match '\s+->\s+') { $pathText = (($pathText -split '\s+->\s+') | Select-Object -Last 1) }
+          $rel = _NormalizeRelPath ($pathText.Trim('"'))
           if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
         }
-      } catch {}
+      } catch { $gitListFailed = $true }
+    } finally {
+      $ErrorActionPreference = $oldErrorActionPreference
     }
-    try {
-      foreach ($line in @(& $GitExe -C $RepoRoot status --porcelain -uall 2>$null)) {
-        $txt = [string]$line
-        if ([string]::IsNullOrWhiteSpace($txt)) { continue }
-        $pathText = if ($txt.Length -gt 3) { $txt.Substring(3).Trim() } else { $txt.Trim() }
-        if ($pathText -match '\s+->\s+') { $pathText = (($pathText -split '\s+->\s+') | Select-Object -Last 1) }
-        $rel = _NormalizeRelPath ($pathText.Trim('"'))
-        if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
-      }
-    } catch {}
+    if ($gitListFailed) {
+      return @{ ok = $false; violatingFile = ''; reason = 'changed-files-unavailable'; changedFiles = @($changed) }
+    }
   }
 
   foreach ($file in @($changed)) {
@@ -1905,6 +1968,9 @@ function Invoke-ParallelDispatchGitCommitWithRetry {
 
   $attempt = 0
   $last = $null
+  $preRemovedLock = $false
+  try { $preRemovedLock = Remove-StaleIndexLock -RepoRoot $RepoRoot } catch {}
+  if ($preRemovedLock) { Invoke-ParallelDispatchCommitHeartbeat }
   while ($attempt -le $MaxRetries) {
     $attempt++
     try {
@@ -1921,11 +1987,13 @@ function Invoke-ParallelDispatchGitCommitWithRetry {
     try { $exitCode = [int]$last.ExitCode } catch {}
     if ($exitCode -eq 0) {
       try { $last | Add-Member -NotePropertyName Attempts -NotePropertyValue $attempt -Force } catch {}
+      try { $last | Add-Member -NotePropertyName PreRemovedLock -NotePropertyValue $preRemovedLock -Force } catch {}
       return $last
     }
 
     if ($attempt -gt $MaxRetries -or -not (Test-ParallelDispatchGitLockContention -Output $last.Output)) {
       try { $last | Add-Member -NotePropertyName Attempts -NotePropertyValue $attempt -Force } catch {}
+      try { $last | Add-Member -NotePropertyName PreRemovedLock -NotePropertyValue $preRemovedLock -Force } catch {}
       return $last
     }
 
