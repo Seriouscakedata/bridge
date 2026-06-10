@@ -75,6 +75,18 @@ try {
   Check 'compaction preserves done_sha' ([string]$folded.done_sha -eq 'abc123') $folded
   Check 'compaction preserves done_by' ([string]$folded.done_by -eq 'codex') $folded
 
+  Write-TestBacklogLines -Items @(
+    [pscustomobject][ordered]@{ id='reopen-a'; status='done'; text='terminal with evidence'; reason='operator: completed'; done_sha='abc123'; done_by='codex' },
+    [pscustomobject][ordered]@{ id='reopen-a'; status='approved'; text='explicit reopen without terminal evidence' }
+  )
+  $reopened = @(Get-Backlog | Where-Object { [string]$_.id -eq 'reopen-a' } | Select-Object -First 1)[0]
+  $reopenHasTerminalEvidence = (
+    -not [string]::IsNullOrWhiteSpace([string]$reopened.reason) -or
+    -not [string]::IsNullOrWhiteSpace([string]$reopened.done_sha) -or
+    -not [string]::IsNullOrWhiteSpace([string]$reopened.done_by)
+  )
+  Check 'compaction does not attach terminal evidence to reopened item' (-not $reopenHasTerminalEvidence) $reopened
+
   Write-TestBacklogLines -Items @()
   $script:BacklogAddIdeaAfterAppendHook = {
     param([string]$Path, [string]$Id, [int]$Attempt)
@@ -88,6 +100,21 @@ try {
   $logPath = Join-Path (Get-BacklogControlDir) 'curator-decisions.jsonl'
   $logRaw = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Raw -Encoding UTF8 } else { '' }
   Check 'Add-Idea verify-after-append retries lost write' ($savedNew.Count -eq 1 -and $logRaw -match 'add-idea-append-verify-retry') @{ id=$newId; log=$logRaw }
+
+  Write-TestBacklogLines -Items @()
+  $script:BacklogAddIdeaAfterAppendHook = {
+    param([string]$Path, [string]$Id, [int]$Attempt)
+    [System.IO.File]::WriteAllText($Path, '', (New-Object System.Text.UTF8Encoding($false)))
+    'hook-noise'
+  }
+  $threwOnLostWrite = $false
+  try {
+    Add-Idea -Text 'verify-after-append fails when every write is lost' -From 'test' -Tags @('unit') -Status 'new' -SkipCurator | Out-Null
+  } catch {
+    $threwOnLostWrite = ([string]$_.Exception.Message -match 'append verification failed')
+  }
+  $script:BacklogAddIdeaAfterAppendHook = $null
+  Check 'Add-Idea append verification ignores hook output and fails absent id' $threwOnLostWrite
 
   Write-TestBacklogLines -Items @(
     [pscustomobject][ordered]@{ id='terminal-a'; status='done'; text='already done'; reason='operator: complete'; done_sha='def456'; done_by='codex' }

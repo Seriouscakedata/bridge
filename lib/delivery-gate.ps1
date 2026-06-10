@@ -71,6 +71,8 @@ function Get-DeliveryGateSchema {
         quality_bypass_detected = 'bool'
         rollback_required      = 'bool'
         evidence               = 'string?'
+        forbidden_changes_files = 'string[]?'
+        protected_project_spec_changes = 'string[]?'
       }
     }
     output = [ordered]@{

@@ -137,7 +137,10 @@ function Test-DeliveryCriticalBridgePath {
 }
 
 function Test-DeliveryGateForbiddenPath {
-  param([string]$Path)
+  param(
+    [string]$Path,
+    [switch]$IncludeProtectedProjectSpec
+  )
 
   $p = Normalize-DeliveryPath -Path $Path
   if ([string]::IsNullOrWhiteSpace($p)) { return $false }
@@ -149,6 +152,14 @@ function Test-DeliveryGateForbiddenPath {
   if ($p -match '(^|/)(secrets?(\.|/)|.*secret.*\.(json|yaml|yml|toml|env)$|\.env($|\.))') { return $true }
   if ($p -match '(^|/)(runtime|state|memory|backlog).*\.(db|sqlite|sqlite3)$') { return $true }
   if ($p -match '(^|/).*\.(db|sqlite|sqlite3)$' -and $p -match '(runtime|state|memory|backlog)') { return $true }
+  if ($IncludeProtectedProjectSpec) {
+    if ($p -eq 'project_plan.md') { return $true }
+    if ($p -eq 'project_plan/plan.md') { return $true }
+    if ($p -match '(^|/)project_plan/plan\.md$') { return $true }
+    if ($p -match '(^|/)(project_)?contract(s)?\.(json|ya?ml|md)$') { return $true }
+    if ($p -match '(^|/)(acceptance|acceptance[_-]?specs?)(/|$)') { return $true }
+    if ($p -match '(^|/)acceptance[_-]?specs?\.(json|ya?ml|md|ps1|sh)$') { return $true }
+  }
 
   return $false
 }
@@ -159,14 +170,7 @@ function Test-DeliveryGateProtectedProjectSpecPath {
   $p = Normalize-DeliveryPath -Path $Path
   if ([string]::IsNullOrWhiteSpace($p)) { return $false }
 
-  if ($p -eq 'project_plan.md') { return $true }
-  if ($p -eq 'project_plan/plan.md') { return $true }
-  if ($p -match '(^|/)project_plan/plan\.md$') { return $true }
-  if ($p -match '(^|/)(project_)?contract(s)?\.(json|ya?ml|md)$') { return $true }
-  if ($p -match '(^|/)(acceptance|acceptance[_-]?specs?)(/|$)') { return $true }
-  if ($p -match '(^|/)acceptance[_-]?specs?\.(json|ya?ml|md|ps1|sh)$') { return $true }
-
-  return $false
+  return (Test-DeliveryGateForbiddenPath -Path $p -IncludeProtectedProjectSpec)
 }
 
 function Test-DeliveryExternalProject {

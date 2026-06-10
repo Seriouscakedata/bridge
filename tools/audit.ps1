@@ -183,17 +183,46 @@ function Invoke-AuditBridgeLocked {
   }
 }
 
+function Invoke-AuditLogRotation {
+  param(
+    [string]$Path,
+    [int]$MaxKB = 200,
+    [int]$Keep = 3
+  )
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    if (Get-Command Rotate-LogIfBig -ErrorAction SilentlyContinue) {
+      return [bool](Rotate-LogIfBig -Path $Path -MaxKB $MaxKB -Keep $Keep)
+    }
+  } catch {}
+  try {
+    $size = (Get-Item -LiteralPath $Path).Length
+    if ($size -lt ($MaxKB * 1024)) { return $false }
+    for ($i = $Keep; $i -ge 1; $i--) {
+      $src = "$Path.$i"
+      $dst = "$Path.$($i + 1)"
+      if ($i -eq $Keep -and (Test-Path -LiteralPath $src)) {
+        Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (Test-Path -LiteralPath $src) {
+        Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction SilentlyContinue
+      }
+    }
+    Move-Item -LiteralPath $Path -Destination "$Path.1" -Force -ErrorAction Stop
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Write-AuditLog {
   param([string]$BridgePath, [string]$Message)
   try {
     $dir = Get-AuditDir -BridgePath $BridgePath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $log = Join-Path $dir 'audit.log'
-    try {
-      if (Get-Command Rotate-LogIfBig -ErrorAction SilentlyContinue) {
-        Rotate-LogIfBig -Path $log -MaxKB 200
-      }
-    } catch {}
+    try { Invoke-AuditLogRotation -Path $log -MaxKB 200 | Out-Null } catch {}
     $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), ([string]$Message)
     [System.IO.File]::AppendAllText($log, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   } catch {}

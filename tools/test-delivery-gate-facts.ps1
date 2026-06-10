@@ -111,6 +111,15 @@ try {
     Check 'protected project spec diff fact lists PROJECT_PLAN.md' (
       @($protectedSpecFacts.protected_project_spec_changes) -contains 'project_plan.md'
     ) $protectedSpecFacts
+    Check 'protected project spec count is recorded in evidence' (
+      [string]$protectedSpecFacts.evidence -match 'protected_project_spec_changes=1'
+    ) $protectedSpecFacts
+    Check 'protected project spec uses central matcher when requested' (
+      Test-DeliveryGateForbiddenPath -Path 'PROJECT_PLAN/PLAN.md' -IncludeProtectedProjectSpec
+    )
+    Check 'protected project spec is not forbidden by default' (
+      -not (Test-DeliveryGateForbiddenPath -Path 'PROJECT_PLAN/PLAN.md')
+    )
 
     $cleanProtectedSpecFacts = New-DeliveryGateInputFacts `
       -BridgeRoot $repo `

@@ -4,6 +4,44 @@ if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue
   . $script:BacklogCrudOutcomeLedgerPath
 }
 
+function Get-BacklogCrudPropertyValue {
+  param($Item, [string]$Name)
+  if ($null -eq $Item -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
+  try {
+    $prop = $Item.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+  } catch {}
+  return $null
+}
+
+function Get-BacklogCrudStatus {
+  param($Item)
+  $status = Get-BacklogCrudPropertyValue -Item $Item -Name 'status'
+  if ($null -eq $status) { return '' }
+  return ([string]$status).Trim().ToLowerInvariant()
+}
+
+function Test-BacklogCrudTerminalStatus {
+  param([string]$Status)
+  return (@('done','rejected') -contains ([string]$Status).Trim().ToLowerInvariant())
+}
+
+function Copy-BacklogCrudStickyTerminalEvidence {
+  param($Current, $Previous)
+
+  $currentStatus = Get-BacklogCrudStatus -Item $Current
+  if (-not (Test-BacklogCrudTerminalStatus -Status $currentStatus)) { return }
+
+  foreach ($prop in @('reason','done_sha','done_by')) {
+    if ($prop -in @('done_sha','done_by') -and $currentStatus -ne 'done') { continue }
+    $newValue = Get-BacklogCrudPropertyValue -Item $Current -Name $prop
+    $oldValue = Get-BacklogCrudPropertyValue -Item $Previous -Name $prop
+    if ([string]::IsNullOrWhiteSpace([string]$newValue) -and -not [string]::IsNullOrWhiteSpace([string]$oldValue)) {
+      $Current | Add-Member -NotePropertyName $prop -NotePropertyValue $oldValue -Force
+    }
+  }
+}
+
 #region Public backlog CRUD API
 function Add-Idea {
   # Append a backlog idea. Returns a string id. On dedup returns the matched existing id.
@@ -224,7 +262,7 @@ function Add-Idea {
       [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA)
       try {
         if ($afterAppendHook -is [scriptblock]) {
-          & $afterAppendHook -Path $backlogPathForAppend -Id $appendId -Attempt ($attempt - 1)
+          & $afterAppendHook -Path $backlogPathForAppend -Id $appendId -Attempt ($attempt - 1) | Out-Null
         }
       } catch {}
       if (& $testBacklogJsonlContainsIdFn -Path $backlogPathForAppend -Id $appendId) { return $true }
@@ -235,7 +273,7 @@ function Add-Idea {
             action = 'add-idea-append-verify-retry'
             item_id = $appendId
             attempt = $attempt
-          })
+          }) | Out-Null
         } catch {}
       }
     }
@@ -279,25 +317,11 @@ function Get-Backlog {
     $iid = ''
     try { $iid = [string]$i.id } catch { $iid = '' }
     if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($i); continue }
-    # Last line for this id wins, but terminal evidence is sticky: concurrent or
-    # compacted rewrites can preserve the newest status while omitting its trail.
+    # Last line for this id wins. Terminal survivor evidence is sticky, but a
+    # reopened/non-terminal survivor must not inherit stale done/rejected trail.
     if ($byId.Contains($iid)) {
       $prev = $byId[$iid]
-      foreach ($prop in @('reason','done_sha','done_by')) {
-        $newValue = $null
-        $oldValue = $null
-        try {
-          $newProp = $i.PSObject.Properties[$prop]
-          if ($null -ne $newProp) { $newValue = $newProp.Value }
-        } catch {}
-        try {
-          $oldProp = $prev.PSObject.Properties[$prop]
-          if ($null -ne $oldProp) { $oldValue = $oldProp.Value }
-        } catch {}
-        if ([string]::IsNullOrWhiteSpace([string]$newValue) -and -not [string]::IsNullOrWhiteSpace([string]$oldValue)) {
-          $i | Add-Member -NotePropertyName $prop -NotePropertyValue $oldValue -Force
-        }
-      }
+      Copy-BacklogCrudStickyTerminalEvidence -Current $i -Previous $prev
       $byId[$iid] = $i
     } else {
       $byId.Add($iid, $i)
@@ -365,11 +389,11 @@ function Set-Idea {
       $requestedStatusLower = $statusText.Trim().ToLowerInvariant()
       $isTerminalStatus = @('done','rejected') -contains $currentStatus
       $downgradesTerminal = $isTerminalStatus -and -not (@('done','rejected') -contains $requestedStatusLower)
-      $hasExplicitTerminalActor = (-not [string]::IsNullOrWhiteSpace($Reason)) -and ([string]$Reason -match '^(?i)(operator|reaper):')
+      $hasExplicitTerminalActor = (-not [string]::IsNullOrWhiteSpace($Reason)) -and ([string]$Reason -match '(?i)^(operator|reaper):')
       if ($downgradesTerminal -and -not $hasExplicitTerminalActor) {
         return $false
       }
-      if ($statusText.Trim().ToLowerInvariant() -eq 'failed') {
+      if ($requestedStatusLower -eq 'failed') {
         if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { return $false }
         $failedCandidate = [pscustomobject][ordered]@{}
         foreach ($prop in @($i.PSObject.Properties)) {
@@ -397,10 +421,10 @@ function Set-Idea {
       if (-not [string]::IsNullOrWhiteSpace($Reason)) {
         $i | Add-Member -NotePropertyName reason -NotePropertyValue ([string]$Reason) -Force
       }
-      if ($statusText -eq 'approved') {
+      if ($requestedStatusLower -eq 'approved') {
         $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
         $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (& $currentShaFn) -Force
-      } elseif ($statusText -eq 'auto-dropped' -and -not [string]::IsNullOrWhiteSpace($Reason)) {
+      } elseif ($requestedStatusLower -eq 'auto-dropped' -and -not [string]::IsNullOrWhiteSpace($Reason)) {
         $manual = [ordered]@{
           verdict = 'drop'
           confidence = 1.0

@@ -385,6 +385,7 @@ function New-DeliveryGateInputFacts {
   $evidence = @(
     ('channel=' + $(if ([string]::IsNullOrWhiteSpace($Channel)) { 'unknown' } else { $Channel })),
     ('touched=' + @($touched.ToArray()).Count),
+    ('protected_project_spec_changes=' + @($protectedProjectSpecChangeFiles).Count),
     ('critical=' + [string][bool]$critical),
     ('repo_clean=' + [string][bool]$repoClean),
     ('qa=' + [string][bool]$QaPassed + ' critic=' + [string][bool]$CriticPassed + ' parse=' + [string][bool]$ParsePassed + ' smoke=' + [string][bool]$SmokePassed + ' acceptance=' + [string][bool]$AcceptancePassed + ' canary=' + [string][bool]$CanaryPassed)
