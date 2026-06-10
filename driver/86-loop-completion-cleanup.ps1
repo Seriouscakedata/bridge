@@ -442,6 +442,7 @@ function Set-BacklogOutcomeDoneWithLedger {
     $doneIds = New-Object 'System.Collections.Generic.List[string]'
     $needsReviewIds = New-Object 'System.Collections.Generic.List[string]'
     $blockedIds = New-Object 'System.Collections.Generic.List[string]'
+    $missingIds = New-Object 'System.Collections.Generic.List[string]'
     $ledgerEntries = New-Object 'System.Collections.Generic.List[object]'
     $followUpIds = New-Object 'System.Collections.Generic.List[string]'
     $dirty = $false
@@ -453,7 +454,10 @@ function Set-BacklogOutcomeDoneWithLedger {
         if ([string]$candidateItem.id -eq [string]$id) { $item = $candidateItem; break }
       }
       if ($null -eq $item) {
-        [void]$blockedIds.Add([string]$id)
+        # 2026-06-10: a MISSING id (vetoed/archived/compacted mid-batch) can never be cured by
+        # retrying the close — counting it as blocking wedged the whole batch close forever
+        # while the FOUND members were already marked done. Skip it with a note instead.
+        [void]$missingIds.Add([string]$id)
         $reason = 'backlog_item_not_found'
         continue
       }
@@ -541,13 +545,18 @@ function Set-BacklogOutcomeDoneWithLedger {
     }
 
     if ($dirty) { & $saveBacklogFn $items }
-    $ok = ($blockedIds.Count -eq 0 -and $needsReviewIds.Count -eq 0)
+    # ok semantics (2026-06-10): only a REAL validation block should force the caller to retry
+    # the close. A missing backlog id can never be cured by retrying, and a successful
+    # failed->needs-review transition is a success — both used to flip ok=false and re-run the
+    # whole DONE gauntlet every turn (close-wedge).
+    $ok = ($blockedIds.Count -eq 0)
     return [pscustomobject][ordered]@{
       ok = [bool]$ok
       reason = $reason
       done_ids = @($doneIds.ToArray())
       needs_review_ids = @($needsReviewIds.ToArray())
       blocked_ids = @($blockedIds.ToArray())
+      skipped_missing_ids = @($missingIds.ToArray())
       ledger_entries = @($ledgerEntries.ToArray())
       actual_files = @($actualFiles)
       followup_ids = @($followUpIds.ToArray())
