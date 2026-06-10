@@ -27,7 +27,13 @@ async function scenario(s) {
   const channel = getScenarioChannel();
   const marker = 'backlog-flow-0ad0b19c8e5f';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
-  const taskText = 'backlog CRUD proof marker ' + marker + ' unique nonce ' + uniqueToken + ' atlas lagoon copper matrix endpoint cleanup';
+  const saltPool = [
+    'atlas', 'lagoon', 'copper', 'matrix', 'harbor', 'violet', 'lantern', 'orchard',
+    'signal', 'meadow', 'canyon', 'silver', 'comet', 'ribbon', 'marble', 'cedar',
+    'pixel', 'garden', 'anchor', 'velvet', 'summit', 'cobalt', 'quartz', 'ember'
+  ];
+  const saltWords = saltPool.sort(() => Math.random() - 0.5).slice(0, 8).join(' ');
+  const taskText = marker + ' ' + uniqueToken + ' ' + saltWords;
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;
@@ -81,14 +87,26 @@ async function scenario(s) {
   // 3. Clean up — drop the scenario item so it doesn't pollute the queue.
   if (addResp && addResp.id) {
     try {
-      await scenarioFetch('/api/backlog/delete', {
+      const deleteRespRaw = await scenarioFetch('/api/backlog/delete', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id: addResp.id, channel: channel})
       });
+      const deleteResp = await deleteRespRaw.json();
+      s.assert(deleteResp && deleteResp.ok === true, 'DELETE returned ok=true');
+      const afterDeleteRaw = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(channel) + '&include=all');
+      const afterDeleteResp = await afterDeleteRaw.json();
+      const afterDeleteItems = (afterDeleteResp && Array.isArray(afterDeleteResp.items)) ? afterDeleteResp.items : [];
+      const archivedItem = afterDeleteItems.find(i => i && i.id === addResp.id);
+      s.assert(archivedItem && archivedItem.status === 'rejected', 'deleted item archived as rejected');
+      const visibleAfterRaw = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(channel));
+      const visibleAfterResp = await visibleAfterRaw.json();
+      const visibleAfterItems = (visibleAfterResp && Array.isArray(visibleAfterResp.items)) ? visibleAfterResp.items : [];
+      const stillVisible = visibleAfterItems.some(i => i && i.id === addResp.id);
+      s.assert(!stillVisible, 'deleted item absent from active backlog');
       s.log('cleanup: deleted scenario item ' + addResp.id);
-    } catch (e) { s.log('cleanup-warn: ' + e.message); /* non-fatal */ }
+    } catch (e) { s.fail('DELETE verification failed: ' + e.message); }
   }
 
   s.log('scenario complete');

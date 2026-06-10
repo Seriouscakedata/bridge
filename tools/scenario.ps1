@@ -405,7 +405,12 @@ function Invoke-BacklogAddHttpScenario {
   $log = New-Object 'System.Collections.Generic.List[string]'
   $marker = 'backlog-flow-0ad0b19c8e5f'
   $uniqueToken = $marker + '-' + [Guid]::NewGuid().ToString('N')
-  $taskText = 'backlog CRUD proof marker ' + $marker + ' unique nonce ' + $uniqueToken + ' atlas lagoon copper matrix endpoint cleanup'
+  $saltWords = @(
+    'atlas','lagoon','copper','matrix','harbor','violet','lantern','orchard',
+    'signal','meadow','canyon','silver','comet','ribbon','marble','cedar',
+    'pixel','garden','anchor','velvet','summit','cobalt','quartz','ember'
+  ) | Get-Random -Count 8
+  $taskText = $marker + ' ' + $uniqueToken + ' ' + ($saltWords -join ' ')
   $addId = ''
 
   try {
@@ -460,10 +465,27 @@ function Invoke-BacklogAddHttpScenario {
   if (-not [string]::IsNullOrWhiteSpace($addId)) {
     try {
       $deleteBody = @{ id = $addId; channel = $Channel } | ConvertTo-Json -Compress
-      Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10 | Out-Null
+      $deleteResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10
+      if ($deleteResp.ok -eq $true) { [void]$log.Add('OK: DELETE returned ok=true') } else { [void]$errors.Add('DELETE /api/backlog/delete returned ok != true') }
+      $afterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel) + '&include=all') -Headers $Headers -TimeoutSec 15
+      $afterItems = @()
+      if ($afterResp.items) { $afterItems = @($afterResp.items) }
+      $archivedItem = $null
+      foreach ($item in $afterItems) {
+        if ($item -and [string]$item.id -eq $addId) { $archivedItem = $item; break }
+      }
+      if ($archivedItem -and [string]$archivedItem.status -eq 'rejected') { [void]$log.Add('OK: deleted item archived as rejected') } else { [void]$errors.Add('deleted item was not archived as rejected') }
+      $visibleAfterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel)) -Headers $Headers -TimeoutSec 15
+      $visibleAfterItems = @()
+      if ($visibleAfterResp.items) { $visibleAfterItems = @($visibleAfterResp.items) }
+      $stillVisible = $false
+      foreach ($item in $visibleAfterItems) {
+        if ($item -and [string]$item.id -eq $addId) { $stillVisible = $true; break }
+      }
+      if (-not $stillVisible) { [void]$log.Add('OK: deleted item absent from active backlog') } else { [void]$errors.Add('deleted item still visible in active backlog') }
       [void]$log.Add('cleanup: deleted scenario item ' + $addId)
     } catch {
-      [void]$log.Add('cleanup-warn: ' + $_.Exception.Message)
+      [void]$errors.Add('DELETE verification failed: ' + $_.Exception.Message)
     }
   }
 
