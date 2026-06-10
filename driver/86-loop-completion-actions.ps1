@@ -373,7 +373,15 @@ $diff
 {"verdict":"OK","severity":"none","issues":[],"summary":"одна фраза по-русски"}
 Где severity = "serious" ТОЛЬКО если есть баг/уязвимость/регрессия, которую обязательно исправить до закрытия; иначе "minor" или "none".
 "@
-            $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+            $criticEmptyMaxAttempts = 2
+            $rawC = ''
+            for ($criticEmptyAttempt = 1; $criticEmptyAttempt -le $criticEmptyMaxAttempts; $criticEmptyAttempt++) {
+              $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+              if (-not [string]::IsNullOrWhiteSpace($rawC)) { break }
+              if ($criticEmptyAttempt -lt $criticEmptyMaxAttempts) {
+                Add-Message -From system -Text ("🔁 Критик вернул пустой ответ (empty " + $criticEmptyAttempt + "/" + $criticEmptyMaxAttempts + ") — повторяю только critic gate.") -Kind event | Out-Null
+              }
+            }
             $verdict='OK'; $severity='none'; $summary=''; $issuesText=''
             if (-not [string]::IsNullOrWhiteSpace($rawC)) {
               $cleanC = ($rawC -replace '```json','' -replace '```','').Trim()
@@ -409,6 +417,17 @@ $diff
                   }
                 } catch {}
               }
+            } else {
+              $verdict = 'SKIPPED_EMPTY'
+              $severity = 'none'
+              $summary = "critic returned empty after $criticEmptyMaxAttempts attempts; recorded as skipped-empty"
+              try {
+                Update-State ({ param($s)
+                  $s | Add-Member -NotePropertyName completion_critic_result -NotePropertyValue 'skipped-empty' -Force
+                  $s | Add-Member -NotePropertyName completion_critic_empty_attempts -NotePropertyValue $criticEmptyMaxAttempts -Force
+                }.GetNewClosure()) | Out-Null
+              } catch {}
+              Add-Message -From system -Text ("🔎 Критик вернул пустой ответ " + $criticEmptyMaxAttempts + " раза подряд — фиксирую critic_result=skipped-empty и продолжаю close; deterministic gates остаются обязательными.") -Kind event | Out-Null
             }
             if ([string]::IsNullOrWhiteSpace($issuesText) -and -not [string]::IsNullOrWhiteSpace($summary)) { $issuesText = $summary }
 
@@ -445,6 +464,14 @@ $diff
               $plannerStatus = 'CONTINUE'
               Update-State { param($s) $s.task_mode='normal' } | Out-Null
             } else {
+              if ($verdict -ne 'SKIPPED_EMPTY') {
+                try {
+                  Update-State { param($s)
+                    $s | Add-Member -NotePropertyName completion_critic_result -NotePropertyValue 'PASS' -Force
+                    $s | Add-Member -NotePropertyName completion_critic_empty_attempts -NotePropertyValue 0 -Force
+                  } | Out-Null
+                } catch {}
+              }
               Add-Message -From system -Text "🔎 Критик ($criticModelName): $verdict / $severity — $summary" -Kind event | Out-Null
             }
           }

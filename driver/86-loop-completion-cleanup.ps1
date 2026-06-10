@@ -365,10 +365,27 @@ function New-DriverCompletionDoneEvidence {
   try {
     if ($State -and ($State.PSObject.Properties.Name -contains 'skip_critic') -and [bool]$State.skip_critic) {
       $criticResult = 'SKIPPED'
+    } elseif ($State -and ($State.PSObject.Properties.Name -contains 'completion_critic_result') -and
+        (Test-TaskOutcomeLedgerSkippedEmptyResult -Value $State.completion_critic_result)) {
+      $criticResult = 'skipped-empty'
     }
   } catch {
     $criticResult = 'PASS'
   }
+  $coderResult = ''
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'completion_coder_result') -and
+        (Test-TaskOutcomeLedgerSkippedEmptyResult -Value $State.completion_coder_result)) {
+      $coderResult = 'skipped-empty'
+    }
+  } catch {
+    $coderResult = ''
+  }
+  $llmGateResults = [ordered]@{
+    critic_result = $criticResult
+    qa_result = 'PASS'
+  }
+  if (-not [string]::IsNullOrWhiteSpace($coderResult)) { $llmGateResults.coder_result = $coderResult }
 
   return [pscustomobject][ordered]@{
     done_sha = $head
@@ -389,6 +406,7 @@ function New-DriverCompletionDoneEvidence {
       project_risks = @($riskMarkers.ToArray())
       wiring_gap_evidence = @($wiringLines.ToArray())
       gates = @('critic','parsefile','smoke','qa')
+      llm_gate_results = [pscustomobject]$llmGateResults
       channel = [string]$Channel
       fast_lane = [bool]$FastLaneDone
     }
@@ -396,6 +414,7 @@ function New-DriverCompletionDoneEvidence {
     tests_run = @($tests.ToArray())
     critic_result = $criticResult
     qa_result = 'PASS'
+    llm_gate_results = [pscustomobject]$llmGateResults
   }
 }
 
@@ -430,6 +449,18 @@ function Set-BacklogOutcomeDoneWithLedger {
   $testsRun = @(Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('tests_run') -Default @())
   $criticResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('critic_result') -Default '')
   $qaResult = [string](Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('qa_result') -Default '')
+  $llmGateResults = Get-TaskOutcomeLedgerObjectValue -Object $OutcomeEvidence -Names @('llm_gate_results','llm_gate_evidence','empty_llm_results') -Default $null
+  if ($null -eq $llmGateResults) {
+    $llmGateResults = Get-TaskOutcomeLedgerObjectValue -Object $doneEvidence -Names @('llm_gate_results','llm_gate_evidence','empty_llm_results') -Default $null
+  }
+  if ([string]::IsNullOrWhiteSpace($criticResult) -and
+      (Test-TaskOutcomeLedgerSkippedEmptyResult -Value (Get-TaskOutcomeLedgerObjectValue -Object $llmGateResults -Names @('critic_result') -Default $null))) {
+    $criticResult = 'skipped-empty'
+  }
+  if ([string]::IsNullOrWhiteSpace($qaResult) -and
+      (Test-TaskOutcomeLedgerSkippedEmptyResult -Value (Get-TaskOutcomeLedgerObjectValue -Object $llmGateResults -Names @('qa_result') -Default $null))) {
+    $qaResult = 'skipped-empty'
+  }
   $actualFiles = @(& $actualFilesFn -OutcomeEvidence $OutcomeEvidence)
   $hasWiringGap = [bool](& $wiringGapFn -OutcomeEvidence $OutcomeEvidence)
   $recoveryEvidence = [pscustomobject][ordered]@{
@@ -868,7 +899,7 @@ $script:DriverLoopCompletionCleanupBlock = {
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_critic_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_critic_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_coder_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
 }

@@ -418,5 +418,49 @@
   }
 
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'post' -TaskText $task)
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and
+      ([string]$turnResult.status -eq 'ok') -and
+      [string]::IsNullOrWhiteSpace($reply) -and
+      $mode -eq 'normal') {
+    try {
+      $stEmptyCoder = Read-State
+      $emptyCoderBacklogId = [string]$stEmptyCoder.current_backlog_id
+      if (-not [string]::IsNullOrWhiteSpace($emptyCoderBacklogId) -and [bool]$stEmptyCoder.task_did_actions) {
+        $emptyCoderMaxAttempts = 2
+        $emptyCoderAttempt = 0
+        try { $emptyCoderAttempt = [int]$stEmptyCoder.completion_coder_empty_attempts } catch { $emptyCoderAttempt = 0 }
+        $emptyCoderAttempt++
+        if ($emptyCoderAttempt -lt $emptyCoderMaxAttempts) {
+          Add-Message -From system -Text ("🔁 Codex вернул пустой ответ после action evidence (empty " + $emptyCoderAttempt + "/" + $emptyCoderMaxAttempts + ") — повторяю только coder close-turn.") -Kind event | Out-Null
+          Update-State ({
+            param($s)
+            $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue $emptyCoderAttempt -Force
+            $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+            $s.force_planner = $false
+            $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+          }.GetNewClosure()) | Out-Null
+          continue mainDriverLoop
+        }
+        Update-State ({
+          param($s)
+          $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue $emptyCoderAttempt -Force
+          $s | Add-Member -NotePropertyName completion_coder_result -NotePropertyValue 'skipped-empty' -Force
+          $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+        }.GetNewClosure()) | Out-Null
+        Add-Message -From system -Text ("⚠ Codex close-turn пустой " + $emptyCoderMaxAttempts + " раза подряд после action evidence — фиксирую coder_result=skipped-empty; close продолжит deterministic gates.") -Kind event | Out-Null
+      }
+    } catch {}
+  }
+  if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and
+      ([string]$turnResult.status -eq 'ok') -and
+      -not [string]::IsNullOrWhiteSpace($reply) -and
+      $mode -eq 'normal') {
+    try {
+      Update-State { param($s)
+        $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName completion_coder_result -NotePropertyValue '' -Force
+      } | Out-Null
+    } catch {}
+  }
   if ([string]::IsNullOrWhiteSpace($reply)) { $reply = "(нет ответа от $speaker)" }
 }

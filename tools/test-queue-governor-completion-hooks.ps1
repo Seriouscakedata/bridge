@@ -44,22 +44,38 @@ function Add-Message {
 function New-QueueCompletionDoneEvidence {
   param(
     [switch]$OmitSha,
-    [switch]$OmitChecks
+    [switch]$OmitChecks,
+    [switch]$OmitCritic,
+    [switch]$SkippedEmptyCritic,
+    [switch]$OmitTopLevelLlmGateResults
   )
   $sha = if ($OmitSha) { '' } else { 'abc1234def5678' }
   $checks = if ($OmitChecks) { @() } else { @('driver.ps1 -SelfTest','smoke.ps1','tools/test-queue-governor-completion-hooks.ps1') }
-  return [pscustomobject][ordered]@{
+  $evidence = [pscustomobject][ordered]@{
     done_sha = $sha
     done_evidence = [pscustomobject][ordered]@{
       commit = $sha
       checks = @($checks)
       smoke = 'SMOKE OK'
+      llm_gate_results = [pscustomobject][ordered]@{
+        critic_result = if ($SkippedEmptyCritic) { 'skipped-empty' } else { 'OK' }
+        qa_result = 'PASS'
+      }
     }
     done_by = 'codex'
     tests_run = @($checks)
-    critic_result = 'OK'
     qa_result = 'PASS'
   }
+  if (-not $OmitTopLevelLlmGateResults) {
+    $evidence | Add-Member -NotePropertyName llm_gate_results -NotePropertyValue ([pscustomobject][ordered]@{
+      critic_result = if ($SkippedEmptyCritic) { 'skipped-empty' } else { 'OK' }
+      qa_result = 'PASS'
+    }) -Force
+  }
+  if (-not $OmitCritic) {
+    $evidence | Add-Member -NotePropertyName critic_result -NotePropertyValue $(if ($SkippedEmptyCritic) { 'skipped-empty' } else { 'OK' }) -Force
+  }
+  return $evidence
 }
 
 function Get-TestIdea {
@@ -98,6 +114,38 @@ try {
     [bool]$validDoneItem.outcome_ledger.valid
   ) ($validDoneItem | ConvertTo-Json -Compress -Depth 8)
 
+  $emptyCriticDoneId = Add-Idea -Text 'completion ledger empty critic skipped evidence case' -Status 'new' -SkipCurator
+  $emptyCriticDone = Set-BacklogOutcomeDoneWithLedger -Ids @($emptyCriticDoneId) -OutcomeEvidence (New-QueueCompletionDoneEvidence -OmitCritic -SkippedEmptyCritic) -BridgeRoot $repoRoot
+  $emptyCriticDoneItem = Get-TestIdea -Id $emptyCriticDoneId
+  Assert-QueueCompletionHook 'empty critic after cap closes with skipped-empty critic_result' (
+    [bool]$emptyCriticDone.ok -and
+    @($emptyCriticDone.done_ids) -contains $emptyCriticDoneId -and
+    [string]$emptyCriticDoneItem.status -eq 'done' -and
+    [string]$emptyCriticDoneItem.critic_result -eq 'skipped-empty' -and
+    [bool]$emptyCriticDoneItem.outcome_ledger.valid
+  ) ($emptyCriticDoneItem | ConvertTo-Json -Compress -Depth 8)
+
+  $nestedEmptyCriticDoneId = Add-Idea -Text 'completion ledger nested empty critic skipped evidence case' -Status 'new' -SkipCurator
+  $nestedEmptyCriticDone = Set-BacklogOutcomeDoneWithLedger -Ids @($nestedEmptyCriticDoneId) -OutcomeEvidence (New-QueueCompletionDoneEvidence -OmitCritic -SkippedEmptyCritic -OmitTopLevelLlmGateResults) -BridgeRoot $repoRoot
+  $nestedEmptyCriticDoneItem = Get-TestIdea -Id $nestedEmptyCriticDoneId
+  Assert-QueueCompletionHook 'nested skipped-empty LLM evidence is copied into critic_result' (
+    [bool]$nestedEmptyCriticDone.ok -and
+    @($nestedEmptyCriticDone.done_ids) -contains $nestedEmptyCriticDoneId -and
+    [string]$nestedEmptyCriticDoneItem.status -eq 'done' -and
+    [string]$nestedEmptyCriticDoneItem.critic_result -eq 'skipped-empty' -and
+    [bool]$nestedEmptyCriticDoneItem.outcome_ledger.valid
+  ) ($nestedEmptyCriticDoneItem | ConvertTo-Json -Compress -Depth 8)
+
+  $missingCriticDoneId = Add-Idea -Text 'completion ledger missing critic without skipped evidence case' -Status 'new' -SkipCurator
+  $missingCriticDone = Set-BacklogOutcomeDoneWithLedger -Ids @($missingCriticDoneId) -OutcomeEvidence (New-QueueCompletionDoneEvidence -OmitCritic) -BridgeRoot $repoRoot
+  $missingCriticDoneItem = Get-TestIdea -Id $missingCriticDoneId
+  Assert-QueueCompletionHook 'missing critic without skipped-empty evidence still blocks' (
+    -not [bool]$missingCriticDone.ok -and
+    @($missingCriticDone.blocked_ids) -contains $missingCriticDoneId -and
+    [string]$missingCriticDoneItem.status -ne 'done' -and
+    [string]$missingCriticDone.reason -match 'critic_result'
+  ) ($missingCriticDone | ConvertTo-Json -Compress -Depth 8)
+
   $failedNoEvidenceId = Add-Idea -Text 'failed transition without evidence case' -Status 'new' -SkipCurator
   $failedNoEvidence = Set-Idea -Id $failedNoEvidenceId -Status 'failed'
   $failedNoEvidenceItem = Get-TestIdea -Id $failedNoEvidenceId
@@ -130,15 +178,16 @@ try {
   $recoverReview = Set-BacklogOutcomeDoneWithLedger -Ids @($recoverReviewId) -OutcomeEvidence (New-QueueCompletionDoneEvidence -OmitSha) -BridgeRoot $repoRoot
   $recoverReviewItem = Get-TestIdea -Id $recoverReviewId
   Assert-QueueCompletionHook 'false failed with checks but no sha moves to needs-review with reason' (
-    -not [bool]$recoverReview.ok -and
+    [bool]$recoverReview.ok -and
     @($recoverReview.needs_review_ids) -contains $recoverReviewId -and
     [string]$recoverReviewItem.status -eq 'needs-review' -and
     [string]$recoverReviewItem.outcome_recovery_reason -eq 'false_failed_recovery'
-  ) ($recoverReviewItem | ConvertTo-Json -Compress -Depth 8)
+  ) (($recoverReview | ConvertTo-Json -Compress -Depth 8) + ' :: ' + ($recoverReviewItem | ConvertTo-Json -Compress -Depth 8))
 
   $cleanupText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-cleanup.ps1') -Raw -Encoding UTF8
   $checksText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-checks.ps1') -Raw -Encoding UTF8
   $actionsText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\86-loop-completion-actions.ps1') -Raw -Encoding UTF8
+  $agentTurnText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\83-loop-agent-turn.ps1') -Raw -Encoding UTF8
   $modeText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\85-loop-mode-transitions.ps1') -Raw -Encoding UTF8
   $agentTurnText = Get-Content -LiteralPath (Join-Path $repoRoot 'driver\83-loop-agent-turn.ps1') -Raw -Encoding UTF8
   $crudText = Get-Content -LiteralPath (Join-Path $repoRoot 'lib\backlog-crud.ps1') -Raw -Encoding UTF8
@@ -149,6 +198,14 @@ try {
   )
   Assert-QueueCompletionHook 'critic QA smoke and action evidence guards remain enabled' (
     $actionsText -match 'Invoke-LLM' -and
+    $actionsText -match 'SKIPPED_EMPTY' -and
+    $actionsText -match 'completion_critic_result' -and
+    $actionsText -match '\$severity -eq ''serious''' -and
+    $actionsText -match 'Set-TaskLastFailure -Kind critic_rejected' -and
+    $actionsText -match '\$plannerStatus = ''CONTINUE''' -and
+    $agentTurnText -match 'completion_coder_empty_attempts' -and
+    $agentTurnText -match 'completion_coder_result' -and
+    $agentTurnText -match 'continue mainDriverLoop' -and
     $checksText -match 'Invoke-QAAgent' -and
     $checksText -match 'smoke\.ps1' -and
     $modeText -match 'missing_action_evidence' -and

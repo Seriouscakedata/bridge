@@ -31,6 +31,26 @@ function Test-TaskOutcomeLedgerValuePresent {
   return $true
 }
 
+function Test-TaskOutcomeLedgerSkippedEmptyResult {
+  param([Parameter(Mandatory=$false)]$Value)
+  return ([string]$Value).Trim().ToLowerInvariant() -eq 'skipped-empty'
+}
+
+function Get-TaskOutcomeLedgerLlmGateEvidenceResult {
+  param(
+    [Parameter(Mandatory=$false)]$Item,
+    [Parameter(Mandatory=$true)][string]$Field
+  )
+  $doneEvidence = Get-TaskOutcomeLedgerObjectValue -Object $Item -Names @('done_evidence') -Default $null
+  foreach ($containerName in @('llm_gate_results','llm_gate_evidence','empty_llm_results')) {
+    $container = Get-TaskOutcomeLedgerObjectValue -Object $doneEvidence -Names @($containerName) -Default $null
+    if ($null -eq $container) { continue }
+    $value = Get-TaskOutcomeLedgerObjectValue -Object $container -Names @($Field) -Default $null
+    if (Test-TaskOutcomeLedgerValuePresent -Value $value) { return $value }
+  }
+  return $null
+}
+
 function Get-TaskOutcomeLedgerStatus {
   param([Parameter(Mandatory=$false)]$Item)
   return ([string](Get-TaskOutcomeLedgerObjectValue -Object $Item -Names @('status') -Default '')).Trim().ToLowerInvariant()
@@ -59,7 +79,13 @@ function Test-TaskOutcomeLedgerDone {
   $missing = @()
   foreach ($field in $requiredFields) {
     $value = Get-TaskOutcomeLedgerObjectValue -Object $Item -Names @($field)
-    if (-not (Test-TaskOutcomeLedgerValuePresent -Value $value)) { $missing += $field }
+    if (-not (Test-TaskOutcomeLedgerValuePresent -Value $value)) {
+      if (($field -eq 'critic_result' -or $field -eq 'qa_result') -and
+          (Test-TaskOutcomeLedgerSkippedEmptyResult -Value (Get-TaskOutcomeLedgerLlmGateEvidenceResult -Item $Item -Field $field))) {
+        continue
+      }
+      $missing += $field
+    }
   }
   if (@($missing).Count -gt 0) {
     return [pscustomobject][ordered]@{

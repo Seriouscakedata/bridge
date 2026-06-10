@@ -68,6 +68,27 @@ try {
     [bool]$validDone.valid -and [string]$validDone.reason -eq 'done_evidence_complete' -and @($validDone.missing).Count -eq 0
   ) ($validDone | ConvertTo-Json -Compress -Depth 8)
 
+  $criticSkippedViaEvidence = New-LedgerDoneItem -Omit @('critic_result')
+  $criticSkippedViaEvidence.done_evidence | Add-Member -NotePropertyName llm_gate_results -NotePropertyValue ([pscustomobject][ordered]@{ critic_result = 'skipped-empty'; qa_result = 'PASS' }) -Force
+  $criticSkippedResult = Test-TaskOutcomeLedgerDone -Item $criticSkippedViaEvidence
+  Assert-TaskOutcomeLedger 'done without critic_result is valid only with skipped-empty LLM evidence' (
+    [bool]$criticSkippedResult.valid -and [string]$criticSkippedResult.reason -eq 'done_evidence_complete'
+  ) ($criticSkippedResult | ConvertTo-Json -Compress -Depth 8)
+
+  $qaSkippedViaEvidence = New-LedgerDoneItem -Omit @('qa_result')
+  $qaSkippedViaEvidence.done_evidence | Add-Member -NotePropertyName llm_gate_results -NotePropertyValue ([pscustomobject][ordered]@{ critic_result = 'PASS'; qa_result = 'skipped-empty' }) -Force
+  $qaSkippedResult = Test-TaskOutcomeLedgerDone -Item $qaSkippedViaEvidence
+  Assert-TaskOutcomeLedger 'done without qa_result is valid only with skipped-empty LLM evidence' (
+    [bool]$qaSkippedResult.valid -and [string]$qaSkippedResult.reason -eq 'done_evidence_complete'
+  ) ($qaSkippedResult | ConvertTo-Json -Compress -Depth 8)
+
+  $missingNonLlmWithSkipped = New-LedgerDoneItem -Omit @('tests_run')
+  $missingNonLlmWithSkipped.done_evidence | Add-Member -NotePropertyName llm_gate_results -NotePropertyValue ([pscustomobject][ordered]@{ critic_result = 'skipped-empty'; qa_result = 'PASS' }) -Force
+  $missingNonLlmResult = Test-TaskOutcomeLedgerDone -Item $missingNonLlmWithSkipped
+  Assert-TaskOutcomeLedger 'skipped-empty LLM evidence does not satisfy missing deterministic fields' (
+    -not [bool]$missingNonLlmResult.valid -and @($missingNonLlmResult.missing) -contains 'tests_run'
+  ) ($missingNonLlmResult | ConvertTo-Json -Compress -Depth 8)
+
   $failedWithoutEvidence = Test-TaskOutcomeLedgerFailed -Item (New-LedgerFailedItem)
   Assert-TaskOutcomeLedger 'failed without failure_evidence is rejected' (
     -not [bool]$failedWithoutEvidence.valid -and [string]$failedWithoutEvidence.reason -eq 'missing_failure_evidence'
