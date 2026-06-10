@@ -25,7 +25,7 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-e8061e8f51a0';
+  const marker = 'backlog-flow-0ad0b19c8e5f';
   const markerText = 'bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const saltPool = [
