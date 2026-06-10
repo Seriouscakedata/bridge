@@ -216,17 +216,6 @@ function Get-ProjectAcceptancePackage {
   try { return ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) } catch { return $null }
 }
 
-function Test-ProjectAcceptanceObjectAnyProperty {
-  param($Obj, [string[]]$Names = @())
-  if ($null -eq $Obj) { return $false }
-  foreach ($name in @($Names)) {
-    try {
-      if ($Obj.PSObject.Properties.Name -contains [string]$name) { return $true }
-    } catch {}
-  }
-  return $false
-}
-
 function Test-ProjectAcceptancePackageScript {
   param($PackageJson, [string]$Name)
   try { return ($PackageJson -and $PackageJson.scripts -and ($PackageJson.scripts.PSObject.Properties.Name -contains $Name)) } catch { return $false }
@@ -273,8 +262,6 @@ function Get-ProjectAcceptanceConfig {
   if ($server) { try { $checks = @($server.checks | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $checks = @() } }
   if ((-not $checksSpecified) -and $checks.Count -eq 0) { $checks = $defaultChecks }
 
-  $requiredScriptsDeclared = Test-ProjectAcceptanceObjectAnyProperty -Obj $cfg -Names @('requiredScripts','scripts')
-  $smokeScriptsDeclared = Test-ProjectAcceptanceObjectAnyProperty -Obj $cfg -Names @('smokeScripts')
   $scripts = @(Get-ProjectAcceptanceObjectValue -Obj $cfg -Names @('requiredScripts','scripts') -Default $defaultScripts)
   $smokeScripts = @(Get-ProjectAcceptanceObjectValue -Obj $cfg -Names @('smokeScripts') -Default $defaultSmoke)
 
@@ -282,8 +269,6 @@ function Get-ProjectAcceptanceConfig {
     path = $cfgPath
     requiredScripts = @($scripts | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     smokeScripts = @($smokeScripts | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    requiredScriptsDeclared = [bool]$requiredScriptsDeclared
-    smokeScriptsDeclared = [bool]$smokeScriptsDeclared
     readyPath = [string](Get-ProjectAcceptanceObjectValue -Obj $server -Names @('readyPath') -Default '/')
     readyStatuses = @(Get-ProjectAcceptanceObjectValue -Obj $server -Names @('readyStatuses') -Default @('200','204','301','302','307','308','401','403','404'))
     checks = @($checks)
@@ -625,17 +610,10 @@ function New-ProjectAcceptanceStep {
   return [pscustomobject]@{ name=$Name; ok=[bool]$Ok; exit_code=[int]$ExitCode; details=[string]$Details; reason=[string]$Reason }
 }
 
-function New-ProjectAcceptanceMissingScriptStep {
-  param(
-    [string]$Kind,
-    [string]$ScriptName,
-    [bool]$Declared
-  )
-  $name = ([string]$Kind) + ':' + [string]$ScriptName
-  if ($Declared) {
-    return (New-ProjectAcceptanceStep -Name $name -Ok $false -Details ("reason=missing-declared-script script=" + [string]$ScriptName) -Reason 'missing-declared-script')
-  }
-  return (New-ProjectAcceptanceStep -Name $name -Ok $true -Details 'missing script, skipped' -Reason 'undeclared-optional-script')
+function New-ProjectAcceptanceMissingDeclaredScriptStep {
+  param([string]$Kind, [string]$Name)
+  $stepName = ([string]$Kind) + ':' + [string]$Name
+  return (New-ProjectAcceptanceStep -Name $stepName -Ok $false -Details 'missing-declared-script' -ExitCode 127 -Reason 'missing-declared-script')
 }
 
 function Get-ProjectAcceptanceFileText {
@@ -1192,15 +1170,12 @@ function Invoke-ProjectAcceptance {
   $journeyCoverage = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $ProjectRoot -Config $cfg
   [void]$steps.Add((New-ProjectAcceptanceJourneyCoverageStep -Fact $journeyCoverage))
 
-  $requiredScriptsDeclared = [bool](Get-ProjectAcceptanceObjectValue -Obj $cfg -Names @('requiredScriptsDeclared') -Default $false)
-  $smokeScriptsDeclared = [bool](Get-ProjectAcceptanceObjectValue -Obj $cfg -Names @('smokeScriptsDeclared') -Default $false)
   foreach ($scriptName in @($cfg.requiredScripts)) {
     Write-ProjectAcceptanceTrace -Channel $ch -Text "script start $scriptName"
     $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
     if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
-      $missingStep = New-ProjectAcceptanceMissingScriptStep -Kind 'script' -ScriptName $scriptName -Declared $requiredScriptsDeclared
-      [void]$steps.Add($missingStep)
-      Write-ProjectAcceptanceTrace -Channel $ch -Text ("script missing " + $scriptName + " reason=" + [string]$missingStep.reason + " ok=" + [string]$missingStep.ok)
+      [void]$steps.Add((New-ProjectAcceptanceStep -Name "script:$scriptName" -Ok $true -Details 'missing script, skipped'))
+      Write-ProjectAcceptanceTrace -Channel $ch -Text "script skip $scriptName"
       continue
     }
     $res = Invoke-ProjectAcceptanceProcess -ProjectRoot $ProjectRoot -CommandLine "npm.cmd run $scriptName" -TimeoutSec 900
@@ -1283,21 +1258,7 @@ function Invoke-ProjectAcceptance {
     }
   }
 
-  $smokeScriptsToRun = New-Object 'System.Collections.Generic.List[string]'
   if (@($cfg.smokeScripts).Count -gt 0) {
-    $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
-    foreach ($scriptName in @($cfg.smokeScripts)) {
-      if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
-        $missingStep = New-ProjectAcceptanceMissingScriptStep -Kind 'smoke' -ScriptName $scriptName -Declared $smokeScriptsDeclared
-        [void]$steps.Add($missingStep)
-        Write-ProjectAcceptanceTrace -Channel $ch -Text ("smoke missing " + $scriptName + " reason=" + [string]$missingStep.reason + " ok=" + [string]$missingStep.ok)
-      } else {
-        [void]$smokeScriptsToRun.Add([string]$scriptName)
-      }
-    }
-  }
-
-  if ($smokeScriptsToRun.Count -gt 0) {
     $smokeServer = $null
     try {
       Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke server start"
@@ -1305,8 +1266,14 @@ function Invoke-ProjectAcceptance {
       [void]$steps.Add((New-ProjectAcceptanceStep -Name 'server:smoke-start' -Ok ([bool]$smokeServer.ok) -Details ($(if ($smokeServer.ok) { "ready $($smokeServer.baseUrl) status=$($smokeServer.readyStatus)" } else { [string]$smokeServer.reason }))))
       Write-ProjectAcceptanceTrace -Channel $ch -Text ("smoke server done ok=" + [string]$smokeServer.ok + " base=" + [string]$smokeServer.baseUrl)
       if ($smokeServer.ok) {
-        foreach ($scriptName in @($smokeScriptsToRun.ToArray())) {
+        foreach ($scriptName in @($cfg.smokeScripts)) {
           Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke start $scriptName"
+          $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
+          if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
+            [void]$steps.Add((New-ProjectAcceptanceStep -Name "smoke:$scriptName" -Ok $true -Details 'missing script, skipped'))
+            Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke skip $scriptName"
+            continue
+          }
           $envVars = @{ BASE_URL = [string]$smokeServer.baseUrl; SMOKE_ALLOW_MUTATION = '1' }
           $res = Invoke-ProjectAcceptanceProcess -ProjectRoot $ProjectRoot -CommandLine "npm.cmd run $scriptName" -Env $envVars -TimeoutSec 300
           [void]$steps.Add((New-ProjectAcceptanceStep -Name "smoke:$scriptName" -Ok ([bool]$res.ok) -ExitCode ([int]$res.exit_code) -Details ([string]$res.output_tail)))

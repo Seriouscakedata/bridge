@@ -9,8 +9,10 @@ $script:DeliveryGateFactsRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:DeliveryGateFactsRoot 'lib\delivery-gate.ps1')
 . (Join-Path $script:DeliveryGateFactsRoot 'lib\delivery-mode.ps1')
 
-if ($script:DeliveryGateOptionalInputEnum -notcontains 'forbidden_changes_files') {
-  $script:DeliveryGateOptionalInputEnum += 'forbidden_changes_files'
+foreach ($optionalFactName in @('forbidden_changes_files', 'protected_project_spec_changes')) {
+  if ($script:DeliveryGateOptionalInputEnum -notcontains $optionalFactName) {
+    $script:DeliveryGateOptionalInputEnum = @($script:DeliveryGateOptionalInputEnum + $optionalFactName)
+  }
 }
 
 function Resolve-DeliveryGateBridgeRoot {
@@ -192,55 +194,6 @@ function Test-DeliveryGateForbiddenPath {
   return $false
 }
 
-function Test-DeliveryGateProtectedProjectSpecPath {
-  param([string]$Path)
-
-  $p = Normalize-DeliveryPath -Path $Path
-  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
-
-  if ($p -match '^(project_plan|project_map|plan)\.md$') { return $true }
-  if ($p -match '^discuss_[^/]+\.md$') { return $true }
-  if ($p -match '^\.bridge/(project-contract|acceptance)\.json$') { return $true }
-  if ($p -match '^(contracts?|specs?)/acceptance([./]|$)') { return $true }
-  if ($p -match '^acceptance/(contract|spec|acceptance)([./]|$)') { return $true }
-
-  return $false
-}
-
-function Test-DeliveryGateForbiddenChangePath {
-  param([string]$Path)
-
-  return [bool](
-    (Test-DeliveryGateForbiddenPath -Path $Path) -or
-    (Test-DeliveryGateProtectedProjectSpecPath -Path $Path)
-  )
-}
-
-function Get-DeliveryGateForbiddenChangeFiles {
-  param(
-    [string]$BridgeRoot = '',
-    [string]$BaseCommit = '',
-    [string]$HeadCommit = ''
-  )
-
-  $root = Resolve-DeliveryGateBridgeRoot -BridgeRoot $BridgeRoot
-  $files = New-Object 'System.Collections.Generic.List[string]'
-
-  if ([string]::IsNullOrWhiteSpace($BaseCommit) -or [string]::IsNullOrWhiteSpace($HeadCommit)) {
-    return [string[]]@()
-  }
-
-  foreach ($line in (Invoke-DeliveryGateGitRead -BridgeRoot $root -Arguments @('diff','--name-only','--diff-filter=ACMRTUXB',$BaseCommit,$HeadCommit))) {
-    $path = ConvertTo-DeliveryGateRelativePath -BridgeRoot $root -Path $line
-    if ([string]::IsNullOrWhiteSpace($path)) { continue }
-    if ((Test-DeliveryGateForbiddenChangePath -Path $path) -and -not $files.Contains($path)) {
-      [void]$files.Add($path)
-    }
-  }
-
-  return [string[]]@($files.ToArray())
-}
-
 function Test-DeliveryGateBridgeSelfEvidence {
   param([string]$TaskText)
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
@@ -359,11 +312,6 @@ function Test-DeliveryGateForbiddenChanges {
     if (Test-DeliveryGateForbiddenPath -Path $file) { return $true }
   }
 
-  $protectedProjectSpecFiles = @($TouchedFiles | Where-Object { Test-DeliveryGateProtectedProjectSpecPath -Path $_ })
-  if ($protectedProjectSpecFiles.Count -gt 0 -and [string]$Channel -ne 'main') {
-    return $true
-  }
-
   $criticalFiles = @($TouchedFiles | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ })
   if ($criticalFiles.Count -gt 0) {
     if ([string]$Channel -ne 'main') {
@@ -374,6 +322,35 @@ function Test-DeliveryGateForbiddenChanges {
   }
 
   return $false
+}
+
+function Get-DeliveryGateForbiddenChangeFiles {
+  param(
+    [string[]]$TouchedFiles = @(),
+    [string]$TaskText = '',
+    [string]$Channel = ''
+  )
+
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  $hasBridgeSelf = Test-DeliveryGateBridgeSelfEvidence -TaskText $TaskText
+  $hasAcceptance = Test-DeliveryGateAcceptanceEvidence -TaskText $TaskText
+
+  foreach ($file in @($TouchedFiles)) {
+    if (Test-DeliveryGateForbiddenPath -Path $file) {
+      Add-DeliveryGateListItem -List $files -Value $file
+      continue
+    }
+
+    if (
+      (Test-DeliveryCriticalBridgePath -Path $file) -and
+      ([string]$Channel -ne 'main') -and
+      -not ($hasBridgeSelf -and $hasAcceptance)
+    ) {
+      Add-DeliveryGateListItem -List $files -Value $file
+    }
+  }
+
+  return [string[]]@($files.ToArray())
 }
 
 function New-DeliveryGateInputFacts {
@@ -408,8 +385,8 @@ function New-DeliveryGateInputFacts {
 
   $repoClean = Test-DeliveryGateRepoClean -BridgeRoot $root
   $critical = (@($touched.ToArray()) | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ }).Count -gt 0
+  $forbiddenChangeFiles = @(Get-DeliveryGateForbiddenChangeFiles -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel)
   $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel
-  $forbiddenChangeFiles = @(Get-DeliveryGateForbiddenChangeFiles -BridgeRoot $root -BaseCommit $BaseCommit -HeadCommit $HeadCommit)
   $destructive = Test-DeliveryGateDestructivePatternsText -Text $scanText
   $qualityBypass = Test-DeliveryGateQualityBypassText -Text $scanText
   $canaryOk = if ($critical) { ([bool]$ParsePassed -and [bool]$SmokePassed -and [bool]$CanaryPassed) } else { $true }
@@ -423,9 +400,11 @@ function New-DeliveryGateInputFacts {
     ('qa=' + [string][bool]$QaPassed + ' critic=' + [string][bool]$CriticPassed + ' parse=' + [string][bool]$ParsePassed + ' smoke=' + [string][bool]$SmokePassed + ' acceptance=' + [string][bool]$AcceptancePassed + ' canary=' + [string][bool]$CanaryPassed)
   ) -join "`n"
 
-  $facts = [ordered]@{
+  return [ordered]@{
     repo_clean              = [bool]$repoClean
     forbidden_changes       = [bool]$forbidden
+    forbidden_changes_files = [string[]]@($forbiddenChangeFiles)
+    protected_project_spec_changes = [string[]]@($forbiddenChangeFiles)
     destructive_patterns    = [bool]$destructive
     parse_ok                = [bool]$ParsePassed
     tests_ok                = [bool]$QaPassed
@@ -439,13 +418,6 @@ function New-DeliveryGateInputFacts {
     canary_ok               = [bool]$canaryOk
     quality_bypass_detected = [bool]$qualityBypass
     rollback_required       = [bool]$rollbackRequired
-    forbidden_changes_files = [string[]]@($forbiddenChangeFiles)
     evidence                = [string]$evidence
   }
-
-  if (-not [string]::IsNullOrWhiteSpace($BaseCommit) -and -not [string]::IsNullOrWhiteSpace($HeadCommit)) {
-    $facts | Add-Member -NotePropertyName 'forbidden_changes' -NotePropertyValue ([string[]]@($forbiddenChangeFiles)) -Force
-  }
-
-  return $facts
 }

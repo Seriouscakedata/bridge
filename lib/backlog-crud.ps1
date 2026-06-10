@@ -199,25 +199,44 @@ function Add-Idea {
   # Resolving up-front captures the path as a value and sidesteps the lookup.
   $backlogPathForAppend = Resolve-BacklogPathValue
   $appendId = [string]$rec.id
-  $testBacklogJsonlContainsIdFn = ${function:Test-BacklogJsonlContainsId}
+  $writeBacklogJsonLineFn = ${function:Write-BacklogJsonLine}
+  $testBacklogJsonlContainsIdFn = {
+    param([string]$Path, [string]$Id)
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Id) -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+      foreach ($jsonLine in [System.IO.File]::ReadAllLines($Path)) {
+        if ([string]::IsNullOrWhiteSpace($jsonLine)) { continue }
+        try {
+          $obj = $jsonLine | ConvertFrom-Json -ErrorAction Stop
+          if ($obj -and [string]$obj.id -eq $Id) { return $true }
+        } catch {}
+      }
+    } catch {}
+    return $false
+  }
   $appendVerified = Invoke-BacklogLocked ({
     for ($attempt = 1; $attempt -le 2; $attempt++) {
       [System.IO.File]::AppendAllText($backlogPathForAppend, ($line + "`n"), $u8NoBomA)
+      try {
+        if ($script:BacklogAddIdeaAfterAppendHook -is [scriptblock]) {
+          & $script:BacklogAddIdeaAfterAppendHook -Path $backlogPathForAppend -Id $appendId -Attempt ($attempt - 1)
+        }
+      } catch {}
       if (& $testBacklogJsonlContainsIdFn -Path $backlogPathForAppend -Id $appendId) { return $true }
+      if ($attempt -lt 2) {
+        try {
+          & $writeBacklogJsonLineFn ([ordered]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            action = 'add-idea-append-verify-retry'
+            item_id = $appendId
+            attempt = $attempt
+          })
+        } catch {}
+      }
     }
     return $false
   }.GetNewClosure())
-  if (-not [bool]$appendVerified) {
-    try {
-      Write-BacklogJsonLine ([ordered]@{
-        ts = (Get-Date).ToUniversalTime().ToString('o')
-        action = 'append-verify-failed'
-        item_id = $appendId
-        path = $backlogPathForAppend
-      })
-    } catch {}
-    throw ("Add-Idea append verification failed for id {0}" -f $appendId)
-  }
+  if (-not $appendVerified) { throw "Add-Idea append verification failed for id $appendId" }
 
   $curatorStarted = $false
   $intakeStopsCurator = ($intakeGateApplies -and [string]$intakeGate.action -in @('hold','drop'))
@@ -255,10 +274,8 @@ function Get-Backlog {
     $iid = ''
     try { $iid = [string]$i.id } catch { $iid = '' }
     if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($i); continue }
-    # Last line for this id wins, with two integrity guards:
-    # - terminal done/rejected records are sticky unless the later line carries an explicit operator/reaper reason
-    # - terminal evidence/reasons survive compacted follow-up lines that omit them
-    if ($byId.Contains($iid)) { $byId[$iid] = Merge-BacklogCompactedRecord -Existing $byId[$iid] -Incoming $i } else { $byId.Add($iid, $i) }
+    # last line for this id wins; keep first-seen ORDER so the picker's ordering is stable
+    if ($byId.Contains($iid)) { $byId[$iid] = $i } else { $byId.Add($iid, $i) }
   }
   $out = New-Object 'System.Collections.Generic.List[object]'
   foreach ($k in $byId.Keys) { [void]$out.Add($byId[$k]) }
@@ -281,111 +298,6 @@ function Save-Backlog {
   # GetNewClosure(); capture the function explicitly like the RMW helpers below.
   $writeBacklogAtomicFileFn = ${function:Write-BacklogAtomicFile}
   Invoke-BacklogLocked ({ & $writeBacklogAtomicFileFn -Path $backlogPathForSave -Content $content }.GetNewClosure()) | Out-Null
-}
-
-function Get-BacklogCrudObjectValue {
-  param(
-    [Parameter(Mandatory=$false)]$Obj,
-    [Parameter(Mandatory=$true)][string]$Name,
-    [Parameter(Mandatory=$false)]$Default = $null
-  )
-  if ($null -eq $Obj -or [string]::IsNullOrWhiteSpace($Name)) { return $Default }
-  try {
-    if ($Obj -is [System.Collections.IDictionary] -and $Obj.Contains($Name)) { return $Obj[$Name] }
-    if ($Obj.PSObject.Properties.Name -contains $Name) { return $Obj.$Name }
-  } catch {}
-  return $Default
-}
-
-function Test-BacklogCrudNonEmptyValue {
-  param([AllowNull()]$Value)
-  if ($null -eq $Value) { return $false }
-  if ($Value -is [string]) { return -not [string]::IsNullOrWhiteSpace($Value) }
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-    foreach ($v in @($Value)) {
-      if (Test-BacklogCrudNonEmptyValue -Value $v) { return $true }
-    }
-    return $false
-  }
-  return -not [string]::IsNullOrWhiteSpace([string]$Value)
-}
-
-function Test-BacklogStickyTerminalStatus {
-  param([string]$Status)
-  return (([string]$Status).Trim().ToLowerInvariant() -in @('done','rejected'))
-}
-
-function Get-BacklogTerminalReasonSignal {
-  param([Parameter(Mandatory=$false)]$Item)
-  $parts = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($name in @('terminal_override_reason','override_reason','reason','resolved_reason','rejected_reason','failure_reason','held_reason','governor_drop_reason','outcome_recovery_reason')) {
-    $value = Get-BacklogCrudObjectValue -Obj $Item -Name $name -Default $null
-    if (Test-BacklogCrudNonEmptyValue -Value $value) { [void]$parts.Add([string]$value) }
-  }
-  return ([string]::Join("`n", @($parts.ToArray())))
-}
-
-function Test-BacklogTerminalOverrideReason {
-  param([AllowNull()]$Reason)
-  if (-not (Test-BacklogCrudNonEmptyValue -Value $Reason)) { return $false }
-  return ([string]$Reason -match '(?i)\b(operator|reaper)\b')
-}
-
-function Copy-BacklogCrudObjectProperty {
-  param(
-    [Parameter(Mandatory=$true)]$Target,
-    [Parameter(Mandatory=$true)]$Source,
-    [Parameter(Mandatory=$true)][string]$Name
-  )
-  $value = Get-BacklogCrudObjectValue -Obj $Source -Name $Name -Default $null
-  if (-not (Test-BacklogCrudNonEmptyValue -Value $value)) { return }
-  Set-BacklogObjectProperty -Item $Target -Name $Name -Value $value
-}
-
-function Merge-BacklogCompactedRecord {
-  param(
-    [Parameter(Mandatory=$true)]$Existing,
-    [Parameter(Mandatory=$true)]$Incoming
-  )
-
-  $existingStatus = ([string](Get-BacklogCrudObjectValue -Obj $Existing -Name 'status' -Default '')).Trim().ToLowerInvariant()
-  $incomingStatus = ([string](Get-BacklogCrudObjectValue -Obj $Incoming -Name 'status' -Default '')).Trim().ToLowerInvariant()
-  $incomingReason = Get-BacklogTerminalReasonSignal -Item $Incoming
-  $blockedTerminalDowngrade = (
-    (Test-BacklogStickyTerminalStatus -Status $existingStatus) -and
-    $incomingStatus -ne $existingStatus -and
-    -not (Test-BacklogStickyTerminalStatus -Status $incomingStatus) -and
-    -not (Test-BacklogTerminalOverrideReason -Reason $incomingReason)
-  )
-
-  $merged = if ($blockedTerminalDowngrade) { $Existing } else { $Incoming }
-  foreach ($name in @('reason','done_sha','done_by')) {
-    $mergedValue = Get-BacklogCrudObjectValue -Obj $merged -Name $name -Default $null
-    if (Test-BacklogCrudNonEmptyValue -Value $mergedValue) { continue }
-    Copy-BacklogCrudObjectProperty -Target $merged -Source $Existing -Name $name
-    if (-not $blockedTerminalDowngrade) {
-      Copy-BacklogCrudObjectProperty -Target $merged -Source $Incoming -Name $name
-    }
-  }
-  return $merged
-}
-
-function Test-BacklogJsonlContainsId {
-  param(
-    [Parameter(Mandatory=$true)][string]$Path,
-    [Parameter(Mandatory=$true)][string]$Id
-  )
-  if ([string]::IsNullOrWhiteSpace($Id) -or -not (Test-Path -LiteralPath $Path)) { return $false }
-  try {
-    foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
-      if ([string]::IsNullOrWhiteSpace($line)) { continue }
-      try {
-        $obj = $line | ConvertFrom-Json
-        if ($obj.PSObject.Properties.Name -contains 'id' -and [string]$obj.id -eq $Id) { return $true }
-      } catch {}
-    }
-  } catch { return $false }
-  return $false
 }
 
 function Set-Idea {
@@ -422,21 +334,6 @@ function Set-Idea {
     }
     if ($null -ne $Status) {
       $statusText = [string]$Status
-      $statusKey = $statusText.Trim().ToLowerInvariant()
-      $currentStatus = ([string](Get-BacklogCrudObjectValue -Obj $i -Name 'status' -Default '')).Trim().ToLowerInvariant()
-      if ((Test-BacklogStickyTerminalStatus -Status $currentStatus) -and $statusKey -ne $currentStatus -and -not (Test-BacklogTerminalOverrideReason -Reason $Reason)) {
-        try {
-          Write-BacklogJsonLine ([ordered]@{
-            ts = (Get-Date).ToUniversalTime().ToString('o')
-            action = 'terminal-downgrade-block'
-            item_id = [string]$Id
-            from_status = $currentStatus
-            requested_status = $statusKey
-            reason = [string]$Reason
-          })
-        } catch {}
-        return $false
-      }
       if ($statusText.Trim().ToLowerInvariant() -eq 'failed') {
         if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { return $false }
         $failedCandidate = [pscustomobject][ordered]@{}
@@ -462,6 +359,9 @@ function Set-Idea {
         $i | Add-Member -NotePropertyName failure_evidence -NotePropertyValue $FailureEvidence -Force
       }
       $i | Add-Member -NotePropertyName status -NotePropertyValue $statusText -Force
+      if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        $i | Add-Member -NotePropertyName reason -NotePropertyValue ([string]$Reason) -Force
+      }
       if ($statusText -eq 'approved') {
         $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
         $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (& $currentShaFn) -Force
@@ -491,30 +391,13 @@ function Set-Idea {
 }
 
 function Remove-Idea {
-  param([string]$Id, [string]$Reason = $null)
+  param([string]$Id)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
   $items = @(Get-Backlog)
   $found = $false
   foreach ($i in $items) {
     if ([string]$i.id -ne $Id) { continue }
-    $currentStatus = ([string](Get-BacklogCrudObjectValue -Obj $i -Name 'status' -Default '')).Trim().ToLowerInvariant()
-    if ((Test-BacklogStickyTerminalStatus -Status $currentStatus) -and $currentStatus -ne 'rejected' -and -not (Test-BacklogTerminalOverrideReason -Reason $Reason)) {
-      try {
-        Write-BacklogJsonLine ([ordered]@{
-          ts = (Get-Date).ToUniversalTime().ToString('o')
-          action = 'terminal-downgrade-block'
-          item_id = [string]$Id
-          from_status = $currentStatus
-          requested_status = 'rejected'
-          reason = [string]$Reason
-        })
-      } catch {}
-      return $false
-    }
     $i | Add-Member -NotePropertyName status -NotePropertyValue 'rejected' -Force
-    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
-      $i | Add-Member -NotePropertyName reason -NotePropertyValue ([string]$Reason) -Force
-    }
     $i | Add-Member -NotePropertyName rejected_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
     $found = $true
     break
