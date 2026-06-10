@@ -168,6 +168,18 @@ if (Test-Path $driverScript) {
     $failed += "DRIVER-SELFTEST: driver.ps1 not found"
 }
 
+# 10. Audit launch guard -- canary for the control-plane audit admission path.
+# Prevents repeated due-audit ticks from emitting runaway "Запущен аудит" launches:
+# admission must cap attempts per window and clear stale locks by TTL/PID.
+$auditGuardScript = Join-Path $b 'tools\test-audit-launch-guard.ps1'
+if (Test-Path $auditGuardScript) {
+    $agRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $auditGuardScript 2>&1
+    $agCode = $LASTEXITCODE
+    if ($agCode -ne 0) { $failed += ("AUDIT-LAUNCH-GUARD (exit=$agCode): " + (($agRaw -join '; ') -replace '\s+',' ').Trim()) }
+} else {
+    $failed += "AUDIT-LAUNCH-GUARD: tools\test-audit-launch-guard.ps1 not found"
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"
