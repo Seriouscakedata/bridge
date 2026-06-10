@@ -63,6 +63,34 @@ function Get-CodexEvidenceRetryPlan {
   }
 }
 
+function Test-TaskCoveredVerifiedDoneEvidence {
+  param([AllowNull()][string]$Reply)
+
+  if ([string]::IsNullOrWhiteSpace($Reply)) { return $false }
+
+  if ($Reply -notmatch '(?im)^\s*STATUS:\s*DONE\b') { return $false }
+
+  $coveredMatches = [regex]::Matches($Reply, '(?im)^\s*COVERED:\s*(.+?)\s*$')
+  if ($coveredMatches.Count -eq 0) { return $false }
+
+  $verifiedMatches = [regex]::Matches($Reply, '(?is)\[\[VERIFIED:\s*(.*?)\]\]')
+  if ($verifiedMatches.Count -eq 0) { return $false }
+
+  $coveredText = (($coveredMatches | ForEach-Object { [string]$_.Groups[1].Value }) -join "`n")
+  $verifiedText = (($verifiedMatches | ForEach-Object { [string]$_.Groups[1].Value }) -join "`n")
+  $allEvidence = ($coveredText + "`n" + $verifiedText)
+
+  $hasCommitSha = ($allEvidence -imatch '\b(commit|HEAD|sha)\b.{0,80}\b[0-9a-f]{7,40}\b') -or
+                  ($allEvidence -imatch '\b[0-9a-f]{7,40}\b.{0,80}\b(commit|HEAD|sha)\b')
+  if (-not $hasCommitSha) { return $false }
+
+  $hasVerification = ($verifiedText -imatch '\b(smoke(\.ps1)?|selftest|test|verify|verification|провер\w*)\b') -and
+                     ($verifiedText -imatch '\b(PASS|OK|passed|success|успеш|прош[её]л|пройден)\b')
+  if (-not $hasVerification) { return $false }
+
+  return $true
+}
+
 function Get-TaskActionEvidenceBacklogTextById {
   param(
     [string]$BridgeRoot = '',

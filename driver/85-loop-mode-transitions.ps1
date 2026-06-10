@@ -13,6 +13,7 @@
     $noopHasBacklogId = $true
     $noopTask = ''
     $noopHasEvidence = $false
+    $noopHasCoveredVerifiedEvidence = $false
     $noopEvidenceChecked = $false
     $noopGuardError = ''
     try {
@@ -32,9 +33,11 @@
           $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
         } | Out-Null
       }
+      $noopHasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
     } catch {
       $noopGuardError = $_.Exception.Message
       $noopHasEvidence = $false
+      $noopHasCoveredVerifiedEvidence = $false
       $noopEvidenceChecked = $false
     }
     try {
@@ -55,6 +58,9 @@
       } elseif ($noopHasEvidence) {
         $noopAllowDone = $true
         $noopRejectReason = 'action_evidence'
+      } elseif ($noopHasCoveredVerifiedEvidence) {
+        $noopAllowDone = $true
+        $noopRejectReason = 'covered_verified_evidence'
       }
 
       if (-not $noopAllowDone) {
@@ -155,12 +161,18 @@
     }
     $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
     $hasActionEvidence = ($attachmentMetas.Count -gt 0)
+    $hasCoveredVerifiedEvidence = $false
     try {
       $stEvidence = Read-State
       $repoEvidenceRoot = Get-TaskRepoRoot
       $evidenceContext = Get-TaskActionEvidenceContext -State $stEvidence -DefaultRepoRoot $repoEvidenceRoot -BridgeRoot $bridgeRoot
       $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$evidenceContext.repo_root) -BaseCommit ([string]$evidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($evidenceContext.base_dirty_paths)
       if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
+        $hasActionEvidence = $true
+        $hasChanges = $true
+      }
+      $hasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
+      if ($hasCoveredVerifiedEvidence) {
         $hasActionEvidence = $true
         $hasChanges = $true
       }

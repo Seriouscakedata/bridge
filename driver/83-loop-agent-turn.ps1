@@ -273,6 +273,8 @@
       $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$actionEvidenceContext.repo_root) -BaseCommit ([string]$actionEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($actionEvidenceContext.base_dirty_paths)
       if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
         Update-State { param($s) $s.task_did_actions = $true; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
+      } elseif (Test-TaskCoveredVerifiedDoneEvidence -Reply $reply) {
+        Update-State { param($s) $s.task_did_actions = $true; $s.no_progress_count = 0; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force } | Out-Null
       } else {
         $retryBacklogId = ''
         try { $retryBacklogId = [string]$stAction.current_backlog_id } catch {}
