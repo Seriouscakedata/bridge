@@ -349,7 +349,7 @@
         }
       } catch {}
       try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
-      try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
+      try { Clear-TaskLastFailureKind } catch { Add-Message -From system -Text ("⚠ Не удалось сбросить task_last_failure: " + $_.Exception.Message) -Kind event | Out-Null }
       Add-Message -From system -Text "📥 Новая задача принята в работу." -Kind event | Out-Null
       if ($fastLaneReason -eq 'marker') { Add-Message -From system -Text "🚀 Fast-lane активирован ([[FAST]])" -Kind event | Out-Null }
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
@@ -1275,7 +1275,7 @@
           }.GetNewClosure()) | Out-Null
         } catch {}
         try { [void](Archive-Plan) } catch { Add-Message -From system -Text ("⚠ Не удалось архивировать plan.jsonl: " + $_.Exception.Message) -Kind event | Out-Null }
-        try { Clear-TaskCheckpoint } catch { Add-Message -From system -Text ("⚠ Не удалось очистить task checkpoint: " + $_.Exception.Message) -Kind event | Out-Null }
+        try { Clear-TaskLastFailureKind } catch { Add-Message -From system -Text ("⚠ Не удалось сбросить task_last_failure: " + $_.Exception.Message) -Kind event | Out-Null }
         try {
           if ($isWorkpackBatch) {
             foreach ($batchId in $batchIdsForState) { Set-Idea -Id $batchId -Status 'running' -IncrementAttempts $true | Out-Null }
