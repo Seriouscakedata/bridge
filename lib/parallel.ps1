@@ -1591,6 +1591,7 @@ function New-ParallelDispatchAggregationContext {
     collected = 0
     collectedStreams = 0
     quarantined = (New-Object 'System.Collections.Generic.List[string]')
+    mergedStreams = (New-Object 'System.Collections.Generic.List[string]')
     baseCommit = Get-ParallelTaskBaseCommit
     gitExe = Get-GitExe
     deliveredPaths = (New-Object 'System.Collections.Generic.List[string]')
@@ -2042,6 +2043,13 @@ function Commit-ParallelDispatchCollectedOutputs {
     } catch {}
     if ($commitExitCode -eq 0) {
       $Context.merged += $Context.collectedStreams
+      foreach ($cw in $Context.workers) {
+        if (-not $Context.completed.ContainsKey($cw.id)) { continue }
+        $cres = $Context.completed[$cw.id]
+        if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
+          [void]$Context.mergedStreams.Add([string]$cw.id)
+        }
+      }
       try { Add-Message -From system -Text ("📦 Collect-commit: " + $actualFiles + " реально изменённых файлов из " + $Context.collectedStreams + " потоков (только staged actual diff, не git add -A)") -Kind event | Out-Null } catch {}
       return
     }
@@ -2140,17 +2148,20 @@ function Merge-ParallelDispatchWorkerOutput {
     $mergeOut = & git -C $Context.bridgeRoot merge --ff-only $Worker.branch 2>&1
     if ($LASTEXITCODE -eq 0) {
       $Context.merged++
+      [void]$Context.mergedStreams.Add([string]$Worker.id)
       Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (" + $res.commits.Count + " commits, branch " + $Worker.branch + ")") -Kind event | Out-Null
     } else {
       $mergeOut2 = & git -C $Context.bridgeRoot merge --no-ff -m ("merge parallel stream " + $Worker.id) $Worker.branch 2>&1
       if ($LASTEXITCODE -eq 0) {
         $Context.merged++
+        [void]$Context.mergedStreams.Add([string]$Worker.id)
         Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (non-ff fallback)") -Kind event | Out-Null
       } else {
         try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
         $mergeOut3 = & git -C $Context.bridgeRoot merge --no-ff -X ours -m ("merge parallel stream " + $Worker.id + " (auto-resolve: ours)") $Worker.branch 2>&1
         if ($LASTEXITCODE -eq 0) {
           $Context.merged++
+          [void]$Context.mergedStreams.Add([string]$Worker.id)
           Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $Worker.branch + ")") -Kind event | Out-Null
         } else {
           try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
@@ -2190,12 +2201,20 @@ function Complete-ParallelDispatchResult {
 
   $qCount = 0; try { $qCount = @($quarantinedStreams).Count } catch {}
   $totalStreams = 0; try { $totalStreams = @($Context.workers).Count } catch {}
+  $mergedStreamIds = @()
+  try {
+    if ($Context.ContainsKey('mergedStreams') -and $null -ne $Context.mergedStreams) {
+      $mergedStreamIds = @($Context.mergedStreams.ToArray())
+    }
+  } catch { $mergedStreamIds = @() }
   $cleanComplete = ($Context.merged -eq $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
   $anyDelivered = ($Context.merged -ge 1)
   return @{
     ok          = $anyDelivered
     merged      = $Context.merged
+    merged_ids  = @($mergedStreamIds)
     quarantined = $qCount
+    quarantined_ids = @($quarantinedStreams)
     total       = $totalStreams
     clean       = $cleanComplete
     reason      = $(if ($cleanComplete) { 'all_delivered' } elseif ($anyDelivered) { 'partial' } else { 'all_failed' })
@@ -2214,6 +2233,313 @@ function Complete-ParallelDispatchOutputs {
   Commit-ParallelDispatchCollectedOutputs -Context $context
   Invoke-ParallelDispatchMergePhase -Context $context
   return Complete-ParallelDispatchResult -Context $context
+}
+
+function Get-ParallelDispatchMapValue {
+  param([object]$Map, [string]$Name, [object]$Default = $null)
+  if ($null -eq $Map -or [string]::IsNullOrWhiteSpace($Name)) { return $Default }
+  if ($Map -is [hashtable] -or $Map -is [System.Collections.IDictionary]) {
+    if ($Map.Contains($Name)) { return $Map[$Name] }
+    return $Default
+  }
+  try {
+    if ($Map.PSObject -and ($Map.PSObject.Properties.Name -contains $Name)) { return $Map.$Name }
+  } catch {}
+  return $Default
+}
+
+function ConvertTo-ParallelDispatchStringArray {
+  param([object]$Value)
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($v in @($Value)) {
+    $s = ([string]$v).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($s) -and -not $out.Contains($s)) { [void]$out.Add($s) }
+  }
+  return @($out.ToArray())
+}
+
+function ConvertTo-ParallelDispatchCountMap {
+  param([object]$Counts)
+  $map = @{}
+  if ($null -eq $Counts) { return $map }
+  if ($Counts -is [hashtable] -or $Counts -is [System.Collections.IDictionary]) {
+    foreach ($key in $Counts.Keys) {
+      $v = 0
+      if ([int]::TryParse([string]$Counts[$key], [ref]$v)) { $map[[string]$key] = [int]$v }
+    }
+    return $map
+  }
+  try {
+    foreach ($prop in $Counts.PSObject.Properties) {
+      $v = 0
+      if ([int]::TryParse([string]$prop.Value, [ref]$v)) { $map[[string]$prop.Name] = [int]$v }
+    }
+  } catch {}
+  return $map
+}
+
+function Update-ParallelDispatchQuarantineCountsSnapshot {
+  param(
+    [object]$Counts,
+    [object]$GiveupIds,
+    [object[]]$Streams,
+    [string[]]$QuarantinedIds,
+    [int]$Limit = 3
+  )
+
+  if ($Limit -lt 1) { $Limit = 3 }
+  $countsMap = ConvertTo-ParallelDispatchCountMap -Counts $Counts
+  $giveup = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($gid in @(ConvertTo-ParallelDispatchStringArray -Value $GiveupIds)) {
+    if (-not $giveup.Contains($gid)) { [void]$giveup.Add($gid) }
+  }
+
+  $qSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($qid in @(ConvertTo-ParallelDispatchStringArray -Value $QuarantinedIds)) { [void]$qSet.Add($qid) }
+
+  $newGiveup = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($stream in @($Streams)) {
+    $sid = ''
+    try { $sid = ([string]$stream.id).Trim() } catch {}
+    if ([string]::IsNullOrWhiteSpace($sid)) { continue }
+
+    if ($qSet.Contains($sid)) {
+      $prev = 0
+      if ($countsMap.ContainsKey($sid)) { $prev = [int]$countsMap[$sid] }
+      $next = $prev + 1
+      $countsMap[$sid] = $next
+      if ($next -ge $Limit -and -not $giveup.Contains($sid)) {
+        [void]$giveup.Add($sid)
+        [void]$newGiveup.Add($sid)
+      }
+    } else {
+      if ($countsMap.ContainsKey($sid)) { $countsMap.Remove($sid) }
+    }
+  }
+
+  return [pscustomobject]@{
+    counts = $countsMap
+    giveup_ids = @($giveup.ToArray())
+    new_giveup_ids = @($newGiveup.ToArray())
+  }
+}
+
+function Get-ParallelDispatchQuarantineLimit {
+  $limit = 3
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and $cfg.parallel -and ($cfg.parallel.PSObject.Properties.Name -contains 'batchQuarantineGiveup')) {
+      $candidate = [int]$cfg.parallel.batchQuarantineGiveup
+      if ($candidate -gt 0) { $limit = $candidate }
+    }
+  } catch {}
+  return $limit
+}
+
+function Get-ParallelDispatchGiveupIds {
+  param([string]$TaskHash = '')
+  $st = $null
+  try { $st = Read-State } catch {}
+  if (-not $st) { return @() }
+  if (-not [string]::IsNullOrWhiteSpace($TaskHash)) {
+    $stateTaskHash = [string](Get-ParallelDispatchMapValue -Map $st -Name 'workpack_batch_quarantine_task_hash' -Default '')
+    if ($stateTaskHash -and $stateTaskHash -ne $TaskHash) { return @() }
+  }
+  return @(ConvertTo-ParallelDispatchStringArray -Value (Get-ParallelDispatchMapValue -Map $st -Name 'workpack_batch_quarantine_giveup_ids' -Default @()))
+}
+
+function Get-ParallelDispatchBatchIdByStream {
+  param([object[]]$Streams)
+  $map = @{}
+  $st = $null
+  try { $st = Read-State } catch {}
+  $batchIds = @()
+  if ($st) { $batchIds = @(ConvertTo-ParallelDispatchStringArray -Value (Get-ParallelDispatchMapValue -Map $st -Name 'workpack_batch_ids' -Default @())) }
+  $i = 0
+  foreach ($stream in @($Streams)) {
+    $sid = ''
+    try { $sid = ([string]$stream.id).Trim() } catch {}
+    if ([string]::IsNullOrWhiteSpace($sid)) { $i++; continue }
+    if ($i -lt $batchIds.Count) { $map[$sid] = [string]$batchIds[$i] }
+    $i++
+  }
+  return $map
+}
+
+function Set-ParallelDispatchGiveupBacklogItemsHeld {
+  param(
+    [string[]]$StreamIds,
+    [hashtable]$StreamToBacklogId
+  )
+
+  if (-not $StreamIds -or @($StreamIds).Count -eq 0) { return @() }
+  $held = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($sid in @(ConvertTo-ParallelDispatchStringArray -Value $StreamIds)) {
+    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
+    $bid = [string]$StreamToBacklogId[$sid]
+    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
+    try {
+      if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+        Set-Idea -Id $bid -Status 'held' -Reason 'batch-quarantine-giveup' | Out-Null
+        Set-ParallelDispatchBacklogHeldReason -Id $bid -Reason 'batch-quarantine-giveup' | Out-Null
+        [void]$held.Add($bid)
+      }
+    } catch {}
+  }
+  return @($held.ToArray())
+}
+
+function Set-ParallelDispatchBacklogHeldReason {
+  param([string]$Id, [string]$Reason)
+
+  if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($Reason)) { return $false }
+  if (-not (Get-Command Get-Backlog -ErrorAction SilentlyContinue) -or -not (Get-Command Save-Backlog -ErrorAction SilentlyContinue)) { return $false }
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  $update = {
+    $items = @(& $getBacklogFn)
+    $found = $false
+    foreach ($item in $items) {
+      if ([string]$item.id -ne $Id) { continue }
+      $item | Add-Member -NotePropertyName held_reason -NotePropertyValue $Reason -Force
+      $found = $true
+      break
+    }
+    if ($found) { & $saveBacklogFn $items | Out-Null }
+    return $found
+  }.GetNewClosure()
+  try {
+    if (Get-Command Invoke-BacklogLocked -ErrorAction SilentlyContinue) {
+      return [bool](Invoke-BacklogLocked $update)
+    }
+    return [bool](& $update)
+  } catch {
+    return $false
+  }
+}
+
+function Get-ParallelDispatchBatchFinalizePlan {
+  param(
+    [object]$Result,
+    [hashtable]$StreamToBacklogId,
+    [string[]]$GiveupStreamIds
+  )
+
+  $giveupSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($sid in @(ConvertTo-ParallelDispatchStringArray -Value $GiveupStreamIds)) { [void]$giveupSet.Add($sid) }
+
+  $doneIds = New-Object 'System.Collections.Generic.List[string]'
+  $mergedIds = @()
+  try { $mergedIds = @(ConvertTo-ParallelDispatchStringArray -Value $Result.merged_ids) } catch {}
+  foreach ($sid in $mergedIds) {
+    if ($giveupSet.Contains($sid)) { continue }
+    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
+    $bid = ([string]$StreamToBacklogId[$sid]).Trim()
+    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
+    if (-not $doneIds.Contains($bid)) { [void]$doneIds.Add($bid) }
+  }
+
+  return [pscustomobject]@{
+    done_backlog_ids = @($doneIds.ToArray())
+    held_stream_ids = @(ConvertTo-ParallelDispatchStringArray -Value $GiveupStreamIds)
+    close_batch = ($giveupSet.Count -gt 0)
+  }
+}
+
+function Update-ParallelDispatchBatchQuarantineState {
+  param(
+    [object[]]$Streams,
+    [object]$Result,
+    [hashtable]$StreamToBacklogId,
+    [string]$TaskHash = ''
+  )
+
+  $quarantinedIds = @()
+  try { $quarantinedIds = @(ConvertTo-ParallelDispatchStringArray -Value $Result.quarantined_ids) } catch {}
+  $limit = Get-ParallelDispatchQuarantineLimit
+  $snapshot = $null
+  $heldIds = @()
+  $finalizePlan = [pscustomobject]@{ done_backlog_ids = @(); held_stream_ids = @(); close_batch = $false }
+  try {
+    Update-State ({
+      param($s)
+      $stateTaskHash = [string](Get-ParallelDispatchMapValue -Map $s -Name 'workpack_batch_quarantine_task_hash' -Default '')
+      if ($stateTaskHash -and $stateTaskHash -ne $TaskHash) {
+        $s | Add-Member -NotePropertyName workpack_batch_quarantine_counts -NotePropertyValue @{} -Force
+        $s | Add-Member -NotePropertyName workpack_batch_quarantine_giveup_ids -NotePropertyValue @() -Force
+      }
+      $counts = Get-ParallelDispatchMapValue -Map $s -Name 'workpack_batch_quarantine_counts' -Default @{}
+      $giveup = Get-ParallelDispatchMapValue -Map $s -Name 'workpack_batch_quarantine_giveup_ids' -Default @()
+      $script:ParallelDispatchLastQuarantineSnapshot = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $counts -GiveupIds $giveup -Streams $Streams -QuarantinedIds $quarantinedIds -Limit $limit
+      $s | Add-Member -NotePropertyName workpack_batch_quarantine_counts -NotePropertyValue $script:ParallelDispatchLastQuarantineSnapshot.counts -Force
+      $s | Add-Member -NotePropertyName workpack_batch_quarantine_giveup_ids -NotePropertyValue @($script:ParallelDispatchLastQuarantineSnapshot.giveup_ids) -Force
+      $s | Add-Member -NotePropertyName workpack_batch_quarantine_limit -NotePropertyValue $limit -Force
+      $s | Add-Member -NotePropertyName workpack_batch_quarantine_task_hash -NotePropertyValue $TaskHash -Force
+    }.GetNewClosure()) | Out-Null
+    $snapshot = $script:ParallelDispatchLastQuarantineSnapshot
+  } catch {}
+
+  $newGiveupIds = @()
+  try { $newGiveupIds = @(ConvertTo-ParallelDispatchStringArray -Value $snapshot.new_giveup_ids) } catch {}
+  if ($newGiveupIds.Count -gt 0) {
+    $finalizePlan = Get-ParallelDispatchBatchFinalizePlan -Result $Result -StreamToBacklogId $StreamToBacklogId -GiveupStreamIds $newGiveupIds
+    $heldIds = @(Set-ParallelDispatchGiveupBacklogItemsHeld -StreamIds $newGiveupIds -StreamToBacklogId $StreamToBacklogId)
+    try {
+      Update-State ({
+        param($s)
+        $doneBacklogIds = @($finalizePlan.done_backlog_ids)
+        try { Complete-TaskAgentDuration $s } catch {}
+        try { Close-ReplayForStateTask -State $s -Status 'partial' } catch {}
+        $s.current_task = $null
+        $s.current_task_id = $null
+        $s.current_backlog_id = $null
+        $s.task_turn = 0
+        $s.task_mode = 'normal'
+        $s.no_progress_count = 0
+        $s.timeout_retry_count = 0
+        $s.task_did_actions = $true
+        $s.coder_fired = $true
+        $s.force_planner = $false
+        $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force
+        $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force
+        $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force
+        $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($doneBacklogIds) -Force
+        $s | Add-Member -NotePropertyName workpack_batch_quarantine_counts -NotePropertyValue @{} -Force
+        $s | Add-Member -NotePropertyName workpack_batch_quarantine_giveup_ids -NotePropertyValue @() -Force
+        $s | Add-Member -NotePropertyName workpack_batch_quarantine_task_hash -NotePropertyValue '' -Force
+        $s.active_agent = $null
+        $s.active_model = $null
+        $s.status_text = $null
+        $s.status = 'idle'
+      }.GetNewClosure()) | Out-Null
+    } catch {}
+    try { Add-Message -From system -Text ("🛑 Parallel batch partial finalized: streams gave up after " + $limit + " consecutive quarantines: " + ($newGiveupIds -join ', ') + $(if ($heldIds.Count -gt 0) { "; held backlog ids: " + ($heldIds -join ', ') } else { "" })) -Kind event | Out-Null } catch {}
+  }
+
+  return [pscustomobject]@{
+    limit = $limit
+    quarantined_ids = @($quarantinedIds)
+    giveup_ids = @($snapshot.giveup_ids)
+    new_giveup_ids = @($newGiveupIds)
+    held_backlog_ids = @($heldIds)
+    done_backlog_ids = @($finalizePlan.done_backlog_ids)
+  }
+}
+
+function Test-ParallelDispatchQuarantineGiveupSelfCheck {
+  $streams = @(
+    [pscustomobject]@{ id='good' },
+    [pscustomobject]@{ id='bad' }
+  )
+  $first = Update-ParallelDispatchQuarantineCountsSnapshot -Counts @{} -GiveupIds @() -Streams $streams -QuarantinedIds @('bad') -Limit 3
+  if ([int]$first.counts['bad'] -ne 1 -or @($first.new_giveup_ids).Count -ne 0) { throw 'quarantine giveup self-check failed: first strike' }
+  $second = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $first.counts -GiveupIds $first.giveup_ids -Streams $streams -QuarantinedIds @('bad') -Limit 3
+  if ([int]$second.counts['bad'] -ne 2 -or @($second.new_giveup_ids).Count -ne 0) { throw 'quarantine giveup self-check failed: second strike' }
+  $third = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $second.counts -GiveupIds $second.giveup_ids -Streams $streams -QuarantinedIds @('bad') -Limit 3
+  if ([int]$third.counts['bad'] -ne 3 -or @($third.new_giveup_ids).Count -ne 1 -or @($third.new_giveup_ids)[0] -ne 'bad') { throw 'quarantine giveup self-check failed: giveup threshold' }
+  $reset = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $third.counts -GiveupIds $third.giveup_ids -Streams $streams -QuarantinedIds @() -Limit 3
+  if ($reset.counts.ContainsKey('bad')) { throw 'quarantine giveup self-check failed: success reset' }
+  return $true
 }
 
 function Invoke-ParallelDispatch {
@@ -2236,7 +2562,22 @@ function Invoke-ParallelDispatch {
     return @{ ok=$false; merged=0; reason='no task_base_commit' }
   }
 
+  $allStreams = @($Streams)
   $taskHash = Get-ParallelDispatchTaskHash
+  $giveupBefore = @(Get-ParallelDispatchGiveupIds -TaskHash $taskHash)
+  if ($giveupBefore.Count -gt 0) {
+    $blocked = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($gid in $giveupBefore) { [void]$blocked.Add($gid) }
+    $Streams = @($allStreams | Where-Object { -not $blocked.Contains([string]$_.id) })
+    if ($Streams.Count -lt $allStreams.Count) {
+      try { Add-Message -From system -Text ("⏭ Parallel batch: пропускаю persistently-quarantined stream(s): " + ($giveupBefore -join ', ')) -Kind event | Out-Null } catch {}
+    }
+    if ($Streams.Count -eq 0) {
+      return @{ ok=$false; merged=0; quarantined=0; quarantined_ids=@(); total=@($allStreams).Count; clean=$false; reason='all_streams_quarantine_giveup' }
+    }
+  }
+
+  $streamToBacklogId = Get-ParallelDispatchBatchIdByStream -Streams @($allStreams)
 
   # 2026-05-27 refactor: route each stream through Select-WorkerForStream
   # (strength-floor + domain affinity + no double-booking). Falls back to
@@ -2248,5 +2589,20 @@ function Invoke-ParallelDispatch {
 
   $workers = @($startup.workers)
   $completed = Wait-ParallelDispatchResults -Workers $workers -TaskHash $taskHash -TimeoutMin $TimeoutMin -PollSec $PollSec
-  return Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash
+  $result = Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash
+  $qState = Update-ParallelDispatchBatchQuarantineState -Streams @($allStreams) -Result $result -StreamToBacklogId $streamToBacklogId -TaskHash $taskHash
+  try {
+    $newGiveupCount = @($qState.new_giveup_ids).Count
+    if ($newGiveupCount -gt 0) {
+      $result.reason = 'partial_quarantine_giveup'
+      $result.ok = $true
+      $result.clean = $false
+      $result.quarantined = 0
+      $result.quarantined_ids = @()
+      $result | Add-Member -NotePropertyName quarantine_giveup_ids -NotePropertyValue @($qState.new_giveup_ids) -Force
+      $result | Add-Member -NotePropertyName held_backlog_ids -NotePropertyValue @($qState.held_backlog_ids) -Force
+      $result | Add-Member -NotePropertyName done_backlog_ids -NotePropertyValue @($qState.done_backlog_ids) -Force
+    }
+  } catch {}
+  return $result
 }

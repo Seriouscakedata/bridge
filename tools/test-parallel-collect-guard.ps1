@@ -127,7 +127,25 @@ $failedCtx = @{
 $failedResult = Complete-ParallelDispatchResult -Context $failedCtx
 Assert ((-not [bool]$failedResult.ok) -and $failedResult.reason -eq 'all_failed') "all quarantined streams produce all_failed"
 
-# 21-24. LLM worker mirrors strict path semantics instead of silently skipping denied FILE blocks.
+# 21-25. Persistent quarantine giveup tracks strikes, preserves good backlog ids, and holds the stuck stream.
+$streamsForGiveup = @(
+  [pscustomobject]@{ id = 'good' },
+  [pscustomobject]@{ id = 'bad' }
+)
+$strike1 = Update-ParallelDispatchQuarantineCountsSnapshot -Counts @{} -GiveupIds @() -Streams $streamsForGiveup -QuarantinedIds @('bad') -Limit 3
+$strike2 = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $strike1.counts -GiveupIds $strike1.giveup_ids -Streams $streamsForGiveup -QuarantinedIds @('bad') -Limit 3
+$strike3 = Update-ParallelDispatchQuarantineCountsSnapshot -Counts $strike2.counts -GiveupIds $strike2.giveup_ids -Streams $streamsForGiveup -QuarantinedIds @('bad') -Limit 3
+$plan = Get-ParallelDispatchBatchFinalizePlan `
+  -Result ([pscustomobject]@{ merged_ids = @('good'); quarantined_ids = @('bad') }) `
+  -StreamToBacklogId @{ good = 'backlog-good'; bad = 'backlog-bad' } `
+  -GiveupStreamIds @($strike3.new_giveup_ids)
+Assert ([int]$strike1.counts['bad'] -eq 1 -and @($strike1.new_giveup_ids).Count -eq 0) "quarantine giveup first strike does not close stream"
+Assert ([int]$strike2.counts['bad'] -eq 2 -and @($strike2.new_giveup_ids).Count -eq 0) "quarantine giveup second strike does not close stream"
+Assert ([int]$strike3.counts['bad'] -eq 3 -and @($strike3.new_giveup_ids).Count -eq 1 -and @($strike3.new_giveup_ids)[0] -eq 'bad') "quarantine giveup threshold marks stuck stream"
+Assert (@($plan.done_backlog_ids).Count -eq 1 -and @($plan.done_backlog_ids)[0] -eq 'backlog-good') "quarantine giveup keeps successful backlog member for done-ledger"
+Assert (@($plan.held_stream_ids).Count -eq 1 -and @($plan.held_stream_ids)[0] -eq 'bad' -and [bool]$plan.close_batch) "quarantine giveup finalizes partial batch"
+
+# 26-29. LLM worker mirrors strict path semantics instead of silently skipping denied FILE blocks.
 $llmWorkerSource = Get-Content -LiteralPath (Join-Path $root 'tools\parallel-llm-worker.ps1') -Raw -Encoding UTF8
 Assert ($llmWorkerSource -match 'function Test-WorkerRelAllowed') "LLM worker has explicit allowed-path helper"
 Assert ($llmWorkerSource -match 'denied FILE path') "LLM worker fails stream on denied FILE paths"
@@ -137,8 +155,9 @@ Assert ($llmWorkerSource -notmatch '2>\$null') "LLM worker does not hide native 
 $parallelSource = Get-Content -LiteralPath (Join-Path $root 'lib\parallel.ps1') -Raw -Encoding UTF8
 Assert ($parallelSource -match [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $wtPath -OutsideFiles @($deniedPaths)')) "collector cleans denied paths in worker worktree"
 Assert ($parallelSource -notmatch [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($deniedPaths)')) "collector does not clean denied paths in bridge root before merge"
+Assert ($parallelSource -match 'held_reason' -and $parallelSource -match 'batch-quarantine-giveup') "quarantine giveup writes durable held_reason"
 
-# 25-28. Outside touch-set cleanup runs checkout before quarantine and never checks out declared files.
+# 31-34. Outside touch-set cleanup runs checkout before quarantine and never checks out declared files.
 $script:checkoutEvents = New-Object 'System.Collections.Generic.List[string]'
 $cleanup = Invoke-ParallelOutsideFilesCheckout -RepoRoot $root -OutsideFiles @('lib/outside.ps1', 'lib/allowed.ps1', '../bad.ps1', '.git/config') -DeclaredFiles @('lib/allowed.ps1') -GitExe 'git' -GitRunner {
   param([string]$GitExe, [string]$RepoRoot, [object]$GitArgs)
@@ -161,7 +180,7 @@ $checkoutIndex = [array]::IndexOf(@($script:checkoutEvents), 'checkout -- lib/ou
 $quarantineIndex = [array]::IndexOf(@($script:checkoutEvents), 'quarantine stream')
 Assert ($checkoutIndex -ge 0 -and $quarantineIndex -gt $checkoutIndex) "outside checkout happens before quarantine"
 
-# 29-30. Real temp repo: staged tracked outside path is reset+checked out; declared path is untouched.
+# 35-36. Real temp repo: staged tracked outside path is reset+checked out; declared path is untouched.
 $gitExe = Get-GitExe
 $tmpParent = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-parallel-guard-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmpParent -Force | Out-Null
