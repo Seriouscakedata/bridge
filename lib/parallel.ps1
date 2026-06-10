@@ -1530,6 +1530,15 @@ function Wait-ParallelDispatchResults {
       Stop-ParallelDispatchTimedOutWorkers -Workers $workers -Completed $completed -TimeoutMin $TimeoutMin
       break
     }
+    # Operator veto (2026-06-10): this poll used to be blind for the whole TimeoutMin window —
+    # an abort/stop set mid-dispatch was invisible until the deadline. Honor it per tick.
+    $pollAbort = $false
+    try { $pollAbort = [bool](Read-State).abort } catch {}
+    if ($pollAbort) {
+      try { Add-Message -From system -Text "🛑 Parallel dispatch: получен abort — останавливаю незавершённые потоки и выхожу из ожидания." -Kind event | Out-Null } catch {}
+      Stop-ParallelDispatchTimedOutWorkers -Workers $workers -Completed $completed -TimeoutMin $TimeoutMin
+      break
+    }
     Start-Sleep -Seconds $PollSec
     Update-ParallelDispatchHeartbeat
     foreach ($w in $workers) {
@@ -1661,6 +1670,28 @@ function Collect-ParallelDispatchWorkerOutput {
     $streamCommits = 0
     try { $streamCommits = @($Context.completed[$Worker.id].commits).Count } catch {}
     if ($changed.Count -eq 0 -and $streamCommits -eq 0) {
+      # Covered-credit (2026-06-10): a no-change stream whose DECLARED files already changed
+      # in the MAIN repo since the batch base means the work was merged by an earlier pass or
+      # session — the stream is DONE, not broken. Quarantining it sent genuinely-finished
+      # backlog ids to held at giveup (the batch-wedge incident). Credit it as merged.
+      $coveredHit = $false
+      if (-not [string]::IsNullOrWhiteSpace($Context.baseCommit)) {
+        try {
+          $mainChanged = @(& $Context.gitExe -C $Context.bridgeRoot diff --name-only $Context.baseCommit 2>$null | Where-Object { $_ } | ForEach-Object { (([string]$_).Trim() -replace '"','' -replace '\\','/').TrimStart('/') })
+          foreach ($df in $declaredFiles) {
+            $dfn = (([string]$df).Trim() -replace '\\','/').TrimStart('/')
+            if ([string]::IsNullOrWhiteSpace($dfn)) { continue }
+            if (@($mainChanged) -icontains $dfn) { $coveredHit = $true; break }
+          }
+        } catch {}
+      }
+      if ($coveredHit) {
+        $Context.merged++
+        [void]$Context.mergedStreams.Add([string]$Worker.id)
+        try { $Context.completed[$Worker.id] | Add-Member -NotePropertyName _covered -NotePropertyValue $true -Force } catch {}
+        try { Add-Message -From system -Text ("✅ Поток " + $Worker.id + ": нового diff нет, но объявленные файлы уже изменены в репо с базы батча — работа покрыта ранее, кредитую как merged (covered).") -Kind event | Out-Null } catch {}
+        return
+      }
       Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
       try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": нет изменённых файлов и нет коммитов (no-change stream)") -Kind event | Out-Null } catch {}
       return
@@ -2199,6 +2230,12 @@ function Merge-ParallelDispatchWorkerOutput {
 
   $res = $Context.completed[$Worker.id]
   if (($res.PSObject.Properties.Name -contains '_collected') -and $res._collected) {
+    try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
+    return
+  }
+  # Covered streams were credited as merged at collect time (work already in HEAD from an
+  # earlier pass/session) — nothing to merge, and merging the empty branch would double-count.
+  if (($res.PSObject.Properties.Name -contains '_covered') -and $res._covered) {
     try { Cleanup-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash } catch {}
     return
   }
