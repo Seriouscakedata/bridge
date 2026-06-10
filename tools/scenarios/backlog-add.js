@@ -25,6 +25,12 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
+  s.assert(/^feature-verifier-backlog-flow-[a-f0-9]+$/i.test(channel), 'scenario uses feature-verifier sandbox channel');
+  if (!/^feature-verifier-backlog-flow-[a-f0-9]+$/i.test(channel)) {
+    s.fail('Refusing backlog-add outside feature-verifier sandbox channel: ' + channel);
+    return;
+  }
+  s.log('scenario channel: ' + channel);
   const marker = 'backlog-flow-0ad0b19c8e5f';
   const markerText = 'bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);

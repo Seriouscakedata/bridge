@@ -68,6 +68,18 @@ Check 'mixed control ids include cp1' (@($report.control_plane_ids) -contains 'c
 Check 'mixed control ids include external despite admission' (@($report.control_plane_ids) -contains 'ext1') $report
 Check 'mixed project ids include pr1' (@($report.project_scope_ids) -contains 'pr1') $report
 
+$incidentItems = @(
+  [pscustomobject]@{ id='1f4053fe'; status='approved'; text='backlog-flow-e8061e8f51a0 bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard'; tags=@('scenario'); scope='bridge' },
+  [pscustomobject]@{ id='2a67959e'; status='approved'; text='Functional verifier backlog add flow marker backlog-flow-2a67959e bridge backlog add list delete verification'; tags=@('scenario'); scope='bridge' },
+  [pscustomobject]@{ id='677931e9'; status='approved'; text='Temporary browser verifier token backlog-flow-677931e9 bridge backlog add list delete verification'; tags=@('scenario'); scope='bridge' },
+  [pscustomobject]@{ id='e492b629'; status='approved'; text='backlog crud proof marker backlog-flow-e492b629 bridge backlog add list delete verification'; tags=@('scenario'); scope='bridge' }
+)
+$incidentReport = Get-ApprovedBacklogClaimabilityReport -Items $incidentItems
+Check 'incident marker approved count' ([int]$incidentReport.approved_count -eq 4) $incidentReport
+Check 'incident marker runnable zero' ([int]$incidentReport.runnable_count -eq 0) $incidentReport
+Check 'incident marker governor dropped count' ([int]$incidentReport.governor_dropped_count -eq 4) $incidentReport
+Check 'incident marker ids all dropped' (@($incidentItems | Where-Object { [string]$_.status -eq 'auto-dropped' -and [string]$_.governor_drop_reason -eq 'queue-governor:scenario-marker' }).Count -eq 4) $incidentItems
+
 $admit = Test-IdeaBridgeSelfAdmitted -Idea $items[2]
 Check 'valid admission ok' ([bool]$admit.ok) $admit
 $externalAdmit = Test-IdeaBridgeSelfAdmitted -Idea $items[3]

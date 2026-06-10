@@ -135,7 +135,7 @@ function Test-BacklogGovernorScenarioMarker {
     'backlog crud proof marker backlog-flow-*',
     'bridge backlog add list delete verification'
   )
-  $matches = @()
+  $scenarioMatches = New-Object 'System.Collections.Generic.List[object]'
 
   foreach ($field in @('title','text','task')) {
     $value = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @($field) -Default '')
@@ -161,28 +161,28 @@ function Test-BacklogGovernorScenarioMarker {
     }
 
     foreach ($signature in @($fieldMatches | Select-Object -Unique)) {
-      $matches += [pscustomobject][ordered]@{
+      [void]$scenarioMatches.Add([pscustomobject]([ordered]@{
         field = $field
         signature = $signature
-      }
+      }))
     }
   }
 
   $tags = @(ConvertTo-BacklogGovernorStringArray -Value (Get-BacklogGovernorObjectValue -Object $Item -Names @('tags') -Default @()))
   $from = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @('from') -Default '')
-  $matched = ($matches.Count -gt 0)
-  return [pscustomobject][ordered]@{
+  $matched = ($scenarioMatches.Count -gt 0)
+  return [pscustomobject]([ordered]@{
     match = $matched
     reason = $(if ($matched) { 'scenario-marker' } else { 'no-scenario-marker' })
-    detail = $(if ($matched) { 'matched scenario marker in ' + (@($matches | ForEach-Object { ([string]$_.field) + ':' + ([string]$_.signature) }) -join ', ') } else { '' })
-    evidence = [pscustomobject][ordered]@{
+    detail = $(if ($matched) { 'matched scenario marker in ' + (@($scenarioMatches.ToArray()) | ForEach-Object { ([string]$_.field) + ':' + ([string]$_.signature) }) -join ', ' } else { '' })
+    evidence = [pscustomobject]([ordered]@{
       checked_fields = @('title','text','task')
       signatures = @($signatures)
-      matches = @($matches)
+      matches = @($scenarioMatches.ToArray())
       tags = @($tags)
       from = $from
-    }
-  }
+    })
+  })
 }
 
 function Test-BacklogGovernorItemShape {

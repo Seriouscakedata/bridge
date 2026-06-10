@@ -310,8 +310,26 @@ function Add-ScenarioChannelQueryParam {
     [string]$Channel
   )
   if ([string]::IsNullOrWhiteSpace($Channel)) { return $Original }
-  $sep = if ($Original.Contains('?')) { '&' } else { '?' }
-  return ($Original + $sep + 'channel=' + [Uri]::EscapeDataString($Channel))
+  try {
+    $builder = [UriBuilder]$Original
+    $query = [string]$builder.Query
+    if ($query.StartsWith('?')) { $query = $query.Substring(1) }
+    $parts = @()
+    foreach ($part in @($query -split '&')) {
+      if ([string]::IsNullOrWhiteSpace($part)) { continue }
+      $name = @($part -split '=', 2)[0]
+      try { $name = [Uri]::UnescapeDataString($name) } catch {}
+      if (-not [string]::Equals([string]$name, 'channel', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $parts += $part
+      }
+    }
+    $parts += ('channel=' + [Uri]::EscapeDataString($Channel))
+    $builder.Query = ($parts -join '&')
+    return $builder.Uri.AbsoluteUri
+  } catch {
+    $sep = if ($Original.Contains('?')) { '&' } else { '?' }
+    return ($Original + $sep + 'channel=' + [Uri]::EscapeDataString($Channel))
+  }
 }
 
 function Get-ScenarioChannel {
@@ -625,6 +643,7 @@ $browserPaths = @(Get-BrowserPaths)
 $loadUrl = Get-LocalAuthUrl -Original $Url
 $scenarioChannel = Get-ScenarioChannel # This will be 'main' by default or from env var
 
+$headers = Get-AuthHeaders
 $scenarioChannelOverride = $null
 $cleanupChannelSlug = $null # Use a distinct variable for the channel to be cleaned up
 
@@ -632,7 +651,6 @@ if ($Name -eq 'backlog-add') {
   $sandboxChannelSlug = 'feature-verifier-backlog-flow-' + [Guid]::NewGuid().ToString('N')
   Write-Host "[scenario] Creating sandbox channel: $sandboxChannelSlug"
   try {
-    $headers = Get-AuthHeaders # Ensure headers are available for API calls
     $createChannelBody = @{ slug = $sandboxChannelSlug; name = "Feature Verifier Backlog Flow Sandbox ($sandboxChannelSlug)" } | ConvertTo-Json -Compress
     $createResp = Invoke-RestMethod -Uri (($Url.TrimEnd('/')) + '/api/channels') -Method POST -Body $createChannelBody -ContentType 'application/json; charset=utf-8' -Headers $headers -TimeoutSec 10
     if ($createResp.ok -eq $true) {
@@ -652,6 +670,11 @@ if ($Name -eq 'backlog-add') {
 }
 
 $effectiveScenarioChannel = if ($scenarioChannelOverride) { $scenarioChannelOverride } else { $scenarioChannel }
+if ($Name -eq 'backlog-add' -and -not ([string]$effectiveScenarioChannel).StartsWith('feature-verifier-backlog-flow-', [System.StringComparison]::OrdinalIgnoreCase)) {
+  Write-Error "[scenario] Refusing to run backlog-add outside feature-verifier sandbox channel: $effectiveScenarioChannel"
+  Invoke-ScenarioSandboxArchive -BaseUrl $Url -Headers $headers -ChannelSlug $cleanupChannelSlug
+  exit 1
+}
 
 $baseLoadUrl = $loadUrl
 $loadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $Name
@@ -695,7 +718,6 @@ $diag = @{
   http_checks = @()
 }
 
-$headers = Get-AuthHeaders
 $diag.http_checks += (Test-ScenarioHttpEndpoint -CheckUrl $loadUrl -Headers $headers)
 $diag.http_checks += (Test-ScenarioHttpEndpoint -CheckUrl (($Url.TrimEnd('/')) + '/tools/scenarios/' + [Uri]::EscapeDataString($Name) + '.js') -Headers $headers)
 Write-ScenarioDiagnostics -Path $diagPath -Data $diag

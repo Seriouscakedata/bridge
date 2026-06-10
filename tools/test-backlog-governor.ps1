@@ -87,6 +87,17 @@ try {
   Assert-BacklogGovernor 'scenario marker reason' ([string]$markerVerdict.reason -eq 'scenario-marker') $markerVerdict.reason
   Assert-BacklogGovernor 'scenario marker checked before lease conflict' ([string]$markerVerdict.evidence.conflict -eq '' -and @($markerVerdict.evidence.scenario_marker.matches).Count -gt 0) ($markerVerdict | ConvertTo-Json -Compress -Depth 8)
 
+  $incidentSamples = @(
+    (New-GovernorItem -Id '1f4053fe' -Text 'backlog-flow-e8061e8f51a0 bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard' -TouchSet @('backlog') -RootCauseKey 'queue-governor:incident-marker'),
+    (New-GovernorItem -Id '2a67959e' -Text 'Functional verifier backlog add flow marker backlog-flow-2a67959e bridge backlog add list delete verification' -TouchSet @('backlog') -RootCauseKey 'queue-governor:incident-marker'),
+    (New-GovernorItem -Id '677931e9' -Text 'Temporary browser verifier token backlog-flow-677931e9 bridge backlog add list delete verification' -TouchSet @('backlog') -RootCauseKey 'queue-governor:incident-marker'),
+    (New-GovernorItem -Id 'e492b629' -Text 'backlog crud proof marker backlog-flow-e492b629 bridge backlog add list delete verification' -TouchSet @('backlog') -RootCauseKey 'queue-governor:incident-marker')
+  )
+  foreach ($incidentSample in $incidentSamples) {
+    $incidentVerdict = Test-BacklogGovernorClaimable -Item $incidentSample
+    Assert-BacklogGovernor ('incident marker ' + [string]$incidentSample.id + ' is not claimable') (-not [bool]$incidentVerdict.claimable -and [string]$incidentVerdict.action -eq 'drop' -and [string]$incidentVerdict.reason -eq 'scenario-marker') ($incidentVerdict | ConvertTo-Json -Compress -Depth 8)
+  }
+
   $hardeningTaskText = 'HARDEN backlog hygiene: feature-verifier scenario markers must NOT enter claimable backlog. Incident evidence mentions backlog-flow-123 and bridge backlog add list delete verification, but this is the real remediation task with deliverables and tests.'
   $hardeningTask = New-GovernorItem -Id 'scenario-hardening-task' -Text $hardeningTaskText -TouchSet @('lib/backlog-governor.ps1') -RootCauseKey 'queue-governor:scenario-hardening'
   $hardeningVerdict = Test-BacklogGovernorClaimable -Item $hardeningTask
