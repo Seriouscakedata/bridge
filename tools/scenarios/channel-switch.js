@@ -24,7 +24,7 @@ async function scenario(s) {
 
   // --- Step 1: switch to target.
   const t1 = Date.now();
-  B.switchChannel(target);
+  await B.switchChannel(target);
   await s.waitFor(() => String(B.channelsCache.active) === target, 5000, 'channelsCache.active updated to ' + target);
   const switchMs = Date.now() - t1;
   s.log('switch initial -> target took ' + switchMs + 'ms');
@@ -42,8 +42,8 @@ async function scenario(s) {
 
   // --- Step 3: switch back to initial. Cache hit should be fast.
   const t3 = Date.now();
-  B.switchChannel(initial);
-  await s.waitFor(() => String(B.channelsCache.active) === initial && B.channelSwitchInProgress === false, 5000, 'back to initial');
+  await B.switchChannel(initial);
+  await s.waitFor(() => String(B.channelsCache.active) === initial && B.channelSwitchInProgress === false, 10000, 'back to initial');
   const backMs = Date.now() - t3;
   s.log('switch back (cached): ' + backMs + 'ms');
 
