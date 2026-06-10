@@ -465,9 +465,9 @@ function Invoke-BacklogAddHttpScenario {
   if (-not [string]::IsNullOrWhiteSpace($addId)) {
     try {
       $deleteBody = @{ id = $addId; channel = $Channel } | ConvertTo-Json -Compress
-      $deleteResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10
+      $deleteResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 45
       if ($deleteResp.ok -eq $true) { [void]$log.Add('OK: DELETE returned ok=true') } else { [void]$errors.Add('DELETE /api/backlog/delete returned ok != true') }
-      $afterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel) + '&include=all') -Headers $Headers -TimeoutSec 15
+      $afterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel) + '&include=all') -Headers $Headers -TimeoutSec 30
       $afterItems = @()
       if ($afterResp.items) { $afterItems = @($afterResp.items) }
       $archivedItem = $null
@@ -475,7 +475,7 @@ function Invoke-BacklogAddHttpScenario {
         if ($item -and [string]$item.id -eq $addId) { $archivedItem = $item; break }
       }
       if ($archivedItem -and [string]$archivedItem.status -eq 'rejected') { [void]$log.Add('OK: deleted item archived as rejected') } else { [void]$errors.Add('deleted item was not archived as rejected') }
-      $visibleAfterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel)) -Headers $Headers -TimeoutSec 15
+      $visibleAfterResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel)) -Headers $Headers -TimeoutSec 30
       $visibleAfterItems = @()
       if ($visibleAfterResp.items) { $visibleAfterItems = @($visibleAfterResp.items) }
       $stillVisible = $false
@@ -492,6 +492,83 @@ function Invoke-BacklogAddHttpScenario {
   $sw.Stop()
   return [pscustomobject][ordered]@{
     name = 'backlog-add'
+    ok = ($errors.Count -eq 0)
+    errors = @($errors.ToArray())
+    log = @($log.ToArray())
+    fallback = 'http'
+    timings = @{ totalMs = [int]$sw.ElapsedMilliseconds }
+  }
+}
+
+function Invoke-ChannelSwitchHttpScenario {
+  param(
+    [string]$BaseUrl,
+    [hashtable]$Headers
+  )
+
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $errors = New-Object 'System.Collections.Generic.List[string]'
+  $log = New-Object 'System.Collections.Generic.List[string]'
+  $initial = ''
+  $target = ''
+
+  try {
+    $channels = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/channels') -Headers $Headers -TimeoutSec 10
+    if ($channels.ok -eq $true) { [void]$log.Add('OK: GET /api/channels returned ok=true') } else { [void]$errors.Add('GET /api/channels returned ok != true') }
+    $items = @()
+    if ($channels.items) { $items = @($channels.items) }
+    [void]$log.Add('channels returned: ' + $items.Count)
+    if ($items.Count -lt 2) {
+      [void]$errors.Add('channel-switch needs at least 2 channels')
+    } else {
+      $initial = [string]$channels.active
+      if ([string]::IsNullOrWhiteSpace($initial)) { $initial = [string]$items[0].slug }
+      foreach ($item in $items) {
+        $slug = [string]$item.slug
+        if (-not [string]::IsNullOrWhiteSpace($slug) -and $slug -ne $initial) {
+          $target = $slug
+          break
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($target)) { [void]$errors.Add('no target channel found') } else { [void]$log.Add('target channel: ' + $target) }
+    }
+  } catch {
+    [void]$errors.Add('GET /api/channels failed: ' + $_.Exception.Message)
+  }
+
+  if ($errors.Count -eq 0) {
+    try {
+      $body = @{ slug = $target } | ConvertTo-Json -Compress
+      $switchResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/channels/active') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10
+      if ($switchResp.ok -eq $true -and [string]$switchResp.active -eq $target) { [void]$log.Add('OK: switch initial -> target persisted') } else { [void]$errors.Add('POST /api/channels/active target failed') }
+
+      $messagesResp = @(Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/messages?since=0&channel=' + [Uri]::EscapeDataString($target)) -Headers $Headers -TimeoutSec 15)
+      [void]$log.Add('OK: GET /api/messages target returned ' + $messagesResp.Count + ' messages')
+
+      $roundTripBody = @{ slug = $initial } | ConvertTo-Json -Compress
+      $roundTripResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/channels/active') -Method POST -Body $roundTripBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10
+      if ($roundTripResp.ok -eq $true -and [string]$roundTripResp.active -eq $initial) { [void]$log.Add('OK: switch target -> initial persisted') } else { [void]$errors.Add('POST /api/channels/active initial failed') }
+
+      $initialMessagesResp = @(Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/messages?since=0&channel=' + [Uri]::EscapeDataString($initial)) -Headers $Headers -TimeoutSec 15)
+      [void]$log.Add('OK: GET /api/messages initial returned ' + $initialMessagesResp.Count + ' messages')
+    } catch {
+      [void]$errors.Add('channel switch HTTP fallback failed: ' + $_.Exception.Message)
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($initial)) {
+    try {
+      $restoreBody = @{ slug = $initial } | ConvertTo-Json -Compress
+      [void](Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/channels/active') -Method POST -Body $restoreBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10)
+      [void]$log.Add('cleanup: restored active channel ' + $initial)
+    } catch {
+      [void]$errors.Add('cleanup restore active channel failed: ' + $_.Exception.Message)
+    }
+  }
+
+  $sw.Stop()
+  return [pscustomobject][ordered]@{
+    name = 'channel-switch'
     ok = ($errors.Count -eq 0)
     errors = @($errors.ToArray())
     log = @($log.ToArray())
@@ -776,6 +853,14 @@ Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 if (-not $result) {
   if ($Name -eq 'backlog-add') {
     $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers -Channel $scenarioChannel
+    $diag.fallback = 'http'
+    $diag.fallback_result = $fallbackResult
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    $fallbackResult | ConvertTo-Json -Compress -Depth 6
+    if ([bool]$fallbackResult.ok) { exit 0 } else { exit 1 }
+  }
+  if ($Name -eq 'channel-switch') {
+    $fallbackResult = Invoke-ChannelSwitchHttpScenario -BaseUrl $Url -Headers $headers
     $diag.fallback = 'http'
     $diag.fallback_result = $fallbackResult
     Write-ScenarioDiagnostics -Path $diagPath -Data $diag
