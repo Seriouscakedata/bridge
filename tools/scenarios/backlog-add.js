@@ -25,7 +25,7 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-faa25559aeaf';
+  const marker = 'backlog-flow-5a5ada5adc33';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const taskText = 'temporary browser verifier token ' + uniqueToken + ' cobalt quartz';
 
