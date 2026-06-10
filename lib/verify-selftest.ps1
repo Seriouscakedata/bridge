@@ -330,8 +330,15 @@ function Get-GateRegressionScope {
 
     $normalizedPath = (([string]$path).Trim() -replace '\\','/').TrimStart('./')
     if ([string]::IsNullOrWhiteSpace($normalizedPath)) { continue }
-    $extension = [System.IO.Path]::GetExtension($normalizedPath)
-    if ($extension -eq '.ps1') {
+    $isControlPlaneOrGatePath =
+      $normalizedPath -match '^(?i:driver/)' -or
+      $normalizedPath -match '^(?i:lib/)' -or
+      $normalizedPath -match '^(?i:control/)' -or
+      $normalizedPath -match '^(?i:tools/run-tests\.ps1)$' -or
+      $normalizedPath -match '^(?i:tools/test-[^/]+\.ps1)$' -or
+      $normalizedPath -match '^(?i:tools/diag/[^/]+\.ps1)$' -or
+      $normalizedPath -match '^(?i:(driver|supervisor|server|smoke)\.ps1)$'
+    if ($isControlPlaneOrGatePath) {
       [void]$matchingPaths.Add($normalizedPath)
     }
   }
