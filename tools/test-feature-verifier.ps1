@@ -61,6 +61,8 @@ exit 1
   $summary = $jsonLine | ConvertFrom-Json
   $state = Get-Content -LiteralPath (Join-Path $tmp 'features\state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   $digest = Get-Content -LiteralPath ([string]$summary.digest) -Raw -Encoding UTF8
+  $backlogAddScenario = Get-Content -LiteralPath (Join-Path $bridgeRoot 'tools\scenarios\backlog-add.js') -Raw -Encoding UTF8
+  $scenarioRunner = Get-Content -LiteralPath (Join-Path $bridgeRoot 'tools\scenario.ps1') -Raw -Encoding UTF8
 
   Assert-FeatureVerifier 'successful scenario assert-log is passing' ($state.'good-feature'.last_health -eq 'passing') ("health=$($state.'good-feature'.last_health)")
   Assert-FeatureVerifier 'successful scenario assert-log is not copied into error' ([string]$state.'good-feature'.scenario_results[0].error -eq '') ("error=$($state.'good-feature'.scenario_results[0].error)")
@@ -68,6 +70,7 @@ exit 1
   Assert-FeatureVerifier 'browser infrastructure failure is inconclusive' ($state.'infra-feature'.last_health -eq 'inconclusive') ("health=$($state.'infra-feature'.last_health)")
   Assert-FeatureVerifier 'inconclusive run does not exit as broken' ($exitCode -eq 0) ("exit=$exitCode stdout=$stdout")
   Assert-FeatureVerifier 'digest includes inconclusive section' ($digest -match 'Inconclusive features') ''
+  Assert-FeatureVerifier 'backlog-add fixture avoids stale dedup trigger wording' (($backlogAddScenario -match 'Functional verifier backlog add flow marker') -and ($scenarioRunner -match 'Functional verifier backlog add flow marker') -and ($backlogAddScenario -notmatch '\[scenario test\] please ignore') -and ($scenarioRunner -notmatch '\[scenario test\] please ignore')) ''
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

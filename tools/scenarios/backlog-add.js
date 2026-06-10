@@ -18,8 +18,8 @@ async function scenario(s) {
     return fetch(cleanScenarioUrl(path), Object.assign({credentials: 'same-origin'}, opts || {}));
   }
 
-  const marker = 'scenario-backlog-' + Date.now().toString(36);
-  const taskText = '[scenario test] please ignore — verifying backlog add flow with marker ' + marker;
+  const marker = 'backlog-flow-' + Date.now().toString(36);
+  const taskText = 'Functional verifier backlog add flow marker ' + marker;
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;

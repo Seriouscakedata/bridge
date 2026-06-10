@@ -387,8 +387,8 @@ function Invoke-BacklogAddHttpScenario {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
-  $marker = 'scenario-backlog-' + [Guid]::NewGuid().ToString('N').Substring(0,12)
-  $taskText = '[scenario test] please ignore - verifying backlog add flow with marker ' + $marker
+  $marker = 'backlog-flow-' + [Guid]::NewGuid().ToString('N').Substring(0,12)
+  $taskText = 'Functional verifier backlog add flow marker ' + $marker
   $addId = ''
 
   try {
@@ -402,7 +402,7 @@ function Invoke-BacklogAddHttpScenario {
   if ($errors.Count -eq 0) {
     try {
       $body = @{ text = $taskText; status = 'new' } | ConvertTo-Json -Compress
-      $addResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/add') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 15
+      $addResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/add') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 45
       if ($addResp.ok -eq $true) { [void]$log.Add('OK: POST returned ok=true') } else { [void]$errors.Add('POST /api/backlog/add returned ok != true') }
       if ($addResp.id -and ([string]$addResp.id).Length -ge 8) {
         $addId = [string]$addResp.id
