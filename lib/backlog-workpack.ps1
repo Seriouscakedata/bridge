@@ -852,7 +852,7 @@ function Get-BacklogWorkpackModule {
   if ($all -match '(^|\s)control/') { return 'safety' }
   if ($all -match 'supervisor\.ps1|start-srv|start-drv|reap-bloated|process[_ -]?supervision|private memory|tracked processes|bloated pid') { return 'supervisor' }
   if ($all -match 'watchdog|circuit|sandbox|security|preflight|permission|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
-  if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|snapshot|checkpoint|restart|resume') { return 'state' }
+  if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|snapshot|restart|resume') { return 'state' }
   if ($all -match 'audit|deep-audit|finding|scenario|doctor|аудит') { return 'audit' }
   if ($all -match 'backlog|curator|idea|approve|approval|held|workpack|беклог|бэклог') { return 'backlog' }
   if ($all -match 'memory|librarian|embedding|recall|памят') { return 'memory' }
@@ -902,7 +902,7 @@ function Get-BacklogWorkpackConflictGroup {
   if ($all -match '(^|/)(driver|server)\.ps1|lib/common\.ps1|lib/channels\.ps1') { return 'core' }
   if ($all -match '(^|\s)control/') { return 'safety' }
   if ($all -match 'supervisor\.ps1|lib/circuit-breaker\.ps1|watchdog|supervisor|start-srv|start-drv|reap-bloated|orphan[- ]restart|restart attribution|circuit|sandbox|security|preflight|permissions|command[_ -]?injection|hardcoded[_ -]?secrets?|unsafe[_ -]?dynamic[_ -]?execution|dynamic execution|invoke-expression|taskkill|shelling out|sanitize|sanitise|allowlist|защит') { return 'safety' }
-  if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|checkpoint|restart') { return 'state' }
+  if ($all -match 'features/state\.(js|json)|features/registry|feature states|feature id|scenario_results|state|restart') { return 'state' }
   if ($all -match 'audit|doctor|scenario') { return 'audit' }
   if ($all -match 'backlog|curator|workpack') { return 'backlog' }
   if ($all -match 'memory|librarian|embedding') { return 'memory' }
