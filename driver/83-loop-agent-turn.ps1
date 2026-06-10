@@ -78,14 +78,12 @@
     }
   } catch {
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error' -FastLane:$fastLaneTurn
-    try { $hopDurMs = [Math]::Round(([DateTime]::UtcNow - $turnStart).TotalMilliseconds, 1); Write-HopTiming -HopId $hopId -DurationMs $hopDurMs -Source $speaker -Status 'error' } catch {}
     throw
   }
   $reply = [string]$turnResult.text
   $replySafetyGatePattern = '(?m)^\s*\[\[SAFETY:\s*(.+?)\s*\]\]\s*$'
   $replySafetyGateMatch = [regex]::Match([string]$reply, $replySafetyGatePattern)
   Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $reply -Status ([string]$turnResult.status) -FastLane:$fastLaneTurn
-  try { $hopDurMs = [Math]::Round(([DateTime]::UtcNow - $turnStart).TotalMilliseconds, 1); Write-HopTiming -HopId $hopId -DurationMs $hopDurMs -Source $speaker -Status ([string]$turnResult.status) } catch {}
   $guardChannelSlug = [string]$Channel
   try { $guardChannelSlug = Normalize-ChannelSlug $guardChannelSlug } catch {}
   if (($speaker -eq 'codex' -or [string]$turnResult.fallback -eq 'claude_as_coder') -and $guardChannelSlug -ne 'main') {
