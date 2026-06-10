@@ -79,6 +79,14 @@ try {
   $identityVerdict = Test-BacklogGovernorClaimable -Item $identityOnly
   Assert-BacklogGovernor 'identity-only item stays claimable (workpack fields optional)' ([bool]$identityVerdict.claimable) ($identityVerdict | ConvertTo-Json -Compress -Depth 8)
 
+  $scenarioMarker = New-GovernorItem -Id 'scenario-marker' -Text 'Run backlog-flow-123 bridge backlog add list delete verification scenario.' -TouchSet @('lib/foo/bar.ps1') -RootCauseKey 'queue-governor:scenario-marker'
+  $markerActive = New-GovernorItem -Id 'scenario-active' -Status 'working' -TouchSet @('LIB\foo') -RootCauseKey 'queue-governor:scenario-other'
+  $markerVerdict = Test-BacklogGovernorClaimable -Item $scenarioMarker -ActiveItems @($markerActive)
+  Assert-BacklogGovernor 'scenario marker is not claimable' (-not [bool]$markerVerdict.claimable) ($markerVerdict | ConvertTo-Json -Compress -Depth 8)
+  Assert-BacklogGovernor 'scenario marker action drop' ([string]$markerVerdict.action -eq 'drop') $markerVerdict.action
+  Assert-BacklogGovernor 'scenario marker reason' ([string]$markerVerdict.reason -eq 'scenario-marker') $markerVerdict.reason
+  Assert-BacklogGovernor 'scenario marker checked before lease conflict' ([string]$markerVerdict.evidence.conflict -eq '' -and @($markerVerdict.evidence.scenario_marker.matches).Count -gt 0) ($markerVerdict | ConvertTo-Json -Compress -Depth 8)
+
   $candidateTouch = New-GovernorItem -Id 'candidate-touch' -TouchSet @('lib/foo/bar.ps1') -RootCauseKey 'queue-governor:touch'
   $activeTouch = New-GovernorItem -Id 'active-touch' -Status 'working' -TouchSet @('LIB\foo') -RootCauseKey 'queue-governor:other'
   $leaseTouchVerdict = Test-BacklogGovernorClaimable -Item $candidateTouch -ActiveItems @($activeTouch)

@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$Name,
   [string]$Url = 'http://localhost:8787',
@@ -600,13 +600,40 @@ $browserPaths = @(Get-BrowserPaths)
 
 # Append ?scenario=$Name (preserving auth in URL for headless basic-auth).
 $loadUrl = Get-LocalAuthUrl -Original $Url
-$scenarioChannel = Get-ScenarioChannel
+$scenarioChannel = Get-ScenarioChannel # This will be 'main' by default or from env var
+
+$scenarioChannelOverride = $null
+$cleanupChannelSlug = $null # Use a distinct variable for the channel to be cleaned up
+
+if ($Name -eq 'backlog-add') {
+  $sandboxChannelSlug = 'feature-verifier-backlog-flow-' + [Guid]::NewGuid().ToString('N')
+  Write-Host "[scenario] Creating sandbox channel: $sandboxChannelSlug"
+  try {
+    $headers = Get-AuthHeaders # Ensure headers are available for API calls
+    $createChannelBody = @{ slug = $sandboxChannelSlug; name = "Feature Verifier Backlog Flow Sandbox ($sandboxChannelSlug)" } | ConvertTo-Json -Compress
+    $createResp = Invoke-RestMethod -Uri (($Url.TrimEnd('/')) + '/api/channels') -Method POST -Body $createChannelBody -ContentType 'application/json; charset=utf-8' -Headers $headers -TimeoutSec 10
+    if ($createResp.ok -eq $true) {
+      Write-Host "[scenario] Successfully created channel $sandboxChannelSlug"
+      $scenarioChannelOverride = $sandboxChannelSlug
+      $cleanupChannelSlug = $sandboxChannelSlug # Mark for cleanup later
+    } else {
+      Write-Warning "[scenario] Failed to create sandbox channel $sandboxChannelSlug: $($createResp.error)"
+      # If channel creation fails, the scenario will likely fail anyway.
+      # We proceed with the default channel, but expect the scenario to report failure.
+    }
+  } catch {
+    Write-Warning "[scenario] Exception creating sandbox channel $sandboxChannelSlug: $($_.Exception.Message)"
+  }
+}
+
+$effectiveScenarioChannel = if ($scenarioChannelOverride) { $scenarioChannelOverride } else { $scenarioChannel }
+
 $baseLoadUrl = $loadUrl
 $loadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $Name
-$loadUrl = Add-ScenarioChannelQueryParam -Original $loadUrl -Channel $scenarioChannel
+$loadUrl = Add-ScenarioChannelQueryParam -Original $loadUrl -Channel $effectiveScenarioChannel
 $probeName = $Name + '-probe'
 $probeLoadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $probeName
-$probeLoadUrl = Add-ScenarioChannelQueryParam -Original $probeLoadUrl -Channel $scenarioChannel
+$probeLoadUrl = Add-ScenarioChannelQueryParam -Original $probeLoadUrl -Channel $effectiveScenarioChannel
 
 # Mark start time so we can ignore older results in the JSONL log.
 $startTs = (Get-Date).ToUniversalTime().ToString('o')
@@ -715,7 +742,7 @@ foreach ($mode in $modes) {
   $probeProc = $probeHandle.Process
   $probeDeadline = (Get-Date).AddSeconds([Math]::Min(8, [Math]::Max(1, [int](($deadline - (Get-Date)).TotalSeconds))))
   $exitSeenAt = $null
-  $exitGraceUntil = $null
+  $exitGraceUntil = $exitSeenAt.AddSeconds(2)
   while ((Get-Date) -lt $probeDeadline) {
     try {
       $dresp = Invoke-RestMethod -Uri $probeDebugUrl -Headers $headers -TimeoutSec 3
@@ -849,11 +876,28 @@ try {
 if ($result -and $lastProfileDir) {
   try { Remove-Item -LiteralPath $lastProfileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
+
+# Archive the sandbox channel if it was created
+if ($cleanupChannelSlug) {
+  Write-Host "[scenario] Archiving sandbox channel: $cleanupChannelSlug"
+  try {
+    $archiveChannelBody = @{ slug = $cleanupChannelSlug } | ConvertTo-Json -Compress
+    $archiveResp = Invoke-RestMethod -Uri (($Url.TrimEnd('/')) + '/api/channels/archive') -Method POST -Body $archiveChannelBody -ContentType 'application/json; charset=utf-8' -Headers $headers -TimeoutSec 10
+    if ($archiveResp.ok -eq $true) {
+      Write-Host "[scenario] Successfully archived channel $cleanupChannelSlug"
+    } else {
+      Write-Warning "[scenario] Failed to archive sandbox channel $cleanupChannelSlug: $($archiveResp.error)"
+    }
+  } catch {
+    Write-Warning "[scenario] Exception archiving sandbox channel $cleanupChannelSlug: $($_.Exception.Message)"
+  }
+}
+
 Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
   if ($Name -eq 'backlog-add') {
-    $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers -Channel $scenarioChannel
+    $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers -Channel $effectiveScenarioChannel
     $diag.fallback = 'http'
     $diag.fallback_result = $fallbackResult
     Write-ScenarioDiagnostics -Path $diagPath -Data $diag

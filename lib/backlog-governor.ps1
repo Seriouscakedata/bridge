@@ -126,6 +126,42 @@ function Get-BacklogGovernorRootCauseKey {
   return $root.Trim().ToLowerInvariant()
 }
 
+function Test-BacklogGovernorScenarioMarker {
+  param([Parameter(Mandatory=$false)]$Item)
+  $signatures = @('backlog-flow-','bridge backlog add list delete verification')
+  $matches = @()
+
+  foreach ($field in @('title','text','task')) {
+    $value = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @($field) -Default '')
+    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    $lower = $value.ToLowerInvariant()
+    foreach ($signature in $signatures) {
+      if ($lower.Contains($signature)) {
+        $matches += [pscustomobject][ordered]@{
+          field = $field
+          signature = $signature
+        }
+      }
+    }
+  }
+
+  $tags = @(ConvertTo-BacklogGovernorStringArray -Value (Get-BacklogGovernorObjectValue -Object $Item -Names @('tags') -Default @()))
+  $from = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @('from') -Default '')
+  $matched = ($matches.Count -gt 0)
+  return [pscustomobject][ordered]@{
+    match = $matched
+    reason = $(if ($matched) { 'scenario-marker' } else { 'no-scenario-marker' })
+    detail = $(if ($matched) { 'matched scenario marker in ' + (@($matches | ForEach-Object { ([string]$_.field) + ':' + ([string]$_.signature) }) -join ', ') } else { '' })
+    evidence = [pscustomobject][ordered]@{
+      checked_fields = @('title','text','task')
+      signatures = @($signatures)
+      matches = @($matches)
+      tags = @($tags)
+      from = $from
+    }
+  }
+}
+
 function Test-BacklogGovernorItemShape {
   param([Parameter(Mandatory=$false)]$Item)
   $status = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @('status') -Default '')
@@ -322,6 +358,24 @@ function Test-BacklogGovernorClaimable {
         touch_set = @($normalizedTouch)
         root_cause_key = $rootKey
         shape = $shape.evidence
+        conflict = $null
+      }
+    }
+  }
+
+  $scenarioMarker = Test-BacklogGovernorScenarioMarker -Item $Item
+  if ([bool]$scenarioMarker.match) {
+    return [pscustomobject][ordered]@{
+      claimable = $false
+      reason = 'scenario-marker'
+      detail = [string]$scenarioMarker.detail
+      action = 'drop'
+      evidence = [pscustomobject][ordered]@{
+        item_id = $itemId
+        touch_set = @($normalizedTouch)
+        root_cause_key = $rootKey
+        shape = $shape.evidence
+        scenario_marker = $scenarioMarker.evidence
         conflict = $null
       }
     }

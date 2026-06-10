@@ -1,4 +1,4 @@
-﻿# test-feature-verifier.ps1 -- contract tests for tools/feature-verifier.ps1.
+# test-feature-verifier.ps1 -- contract tests for tools/feature-verifier.ps1.
 
 $ErrorActionPreference = 'Stop'
 $bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -82,8 +82,22 @@ exit 1
   Assert-FeatureVerifier 'browser infrastructure failure is inconclusive' ($state.'infra-feature'.last_health -eq 'inconclusive') ("health=$($state.'infra-feature'.last_health)")
   Assert-FeatureVerifier 'inconclusive run does not exit as broken' ($exitCode -eq 0) ("exit=$exitCode stdout=$stdout")
   Assert-FeatureVerifier 'digest includes inconclusive section' ($digest -match 'Inconclusive features') ''
-  Assert-FeatureVerifier 'backlog-add fixture uses deterministic safe marker wording' (($backlogAddScenario -match 'backlog-flow-e8061e8f51a0') -and ($scenarioRunner -match 'backlog-flow-e8061e8f51a0') -and ($backlogAddScenario -match 'bridge backlog add list delete verification') -and ($scenarioRunner -match 'bridge backlog add list delete verification') -and ($backlogAddScenario -notmatch 'Functional verifier backlog add flow marker') -and ($scenarioRunner -notmatch 'Functional verifier backlog add flow marker') -and ($backlogAddScenario -notmatch '\[scenario test\] please ignore') -and ($scenarioRunner -notmatch '\[scenario test\] please ignore')) ''
-  Assert-FeatureVerifier 'backlog-add uses one explicit channel for add/list/delete' (($backlogAddScenario -match 'channel: channel') -and ($backlogAddScenario -match 'channel=') -and ($scenarioRunner -match 'Get-ScenarioChannel') -and ($scenarioRunner -notmatch 'channel=main&include=all') -and ($server -match 'Set-PinnedChannel \$chParam')) ''
+  Assert-FeatureVerifier 'backlog-add fixture uses deterministic safe marker wording' (($backlogAddScenario -match 'backlog-flow-0ad0b19c8e5f') -and ($scenarioRunner -match 'backlog-flow-0ad0b19c8e5f') -and ($backlogAddScenario -match 'bridge backlog add list delete verification') -and ($scenarioRunner -match 'bridge backlog add list delete verification') -and ($backlogAddScenario -notmatch 'Functional verifier backlog add flow marker') -and ($scenarioRunner -notmatch 'Functional verifier backlog add flow marker') -and ($backlogAddScenario -notmatch '\[scenario test\] please ignore') -and ($scenarioRunner -notmatch '\[scenario test\] please ignore')) ''
+  
+  # New/updated channel usage assertion
+  $scenarioChannelLogicCheck = (
+    ($scenarioRunner -match '\$Name -eq ''backlog-add''') -and
+    ($scenarioRunner -match '\$sandboxChannelSlug = ''feature-verifier-backlog-flow-'' \+ \[Guid\]::NewGuid\(\)\.ToString\(''N''\)') -and
+    ($scenarioRunner -match 'Invoke-RestMethod -Uri \(\(\$Url\.TrimEnd\(''\/'')\) \+ ''/api/channels''\) -Method POST') -and
+    ($scenarioRunner -match 'Add-ScenarioChannelQueryParam -Original \$loadUrl -Channel \$effectiveScenarioChannel') -and
+    ($scenarioRunner -match 'Invoke-BacklogAddHttpScenario -BaseUrl \$Url -Headers \$headers -Channel \$effectiveScenarioChannel') -and
+    ($scenarioRunner -match 'Invoke-RestMethod -Uri \(\(\$Url\.TrimEnd\(''\/'')\) \+ ''/api/channels/archive''\) -Method POST') -and
+    ($backlogAddScenario -match 'const channel = getScenarioChannel\(\);') -and
+    ($backlogAddScenario -match 'channel: channel') -and
+    ($backlogAddScenario -match 'channel=' \+ 'encodeURIComponent\(channel\)')
+  )
+  Assert-FeatureVerifier 'backlog-add uses sandbox channel creation/archiving logic' $scenarioChannelLogicCheck ''
+
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

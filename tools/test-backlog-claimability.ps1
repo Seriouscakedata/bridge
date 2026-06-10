@@ -46,19 +46,24 @@ $items = @(
   [pscustomobject]@{ id='doc1'; status='approved'; text='Update docs page'; tags=@(); scope='bridge' },
   [pscustomobject]@{ id='tries1'; status='approved'; text='Exhausted retry item'; tags=@(); scope='bridge'; attempts=5 },
   [pscustomobject]@{ id='pr1'; status='approved'; text='Project task'; tags=@(); scope='project' },
-  [pscustomobject]@{ id='done1'; status='done'; text='Done task'; tags=@(); scope='bridge' }
+  [pscustomobject]@{ id='done1'; status='done'; text='Done task'; tags=@(); scope='bridge' },
+  [pscustomobject]@{ id='scn1'; status='approved'; text='Run backlog-flow-claimability bridge backlog add list delete verification scenario'; tags=@('operator','scenario'); scope='bridge' }
 )
 
 $report = Get-ApprovedBacklogClaimabilityReport -Items $items
-Check 'mixed approved count' ([int]$report.approved_count -eq 7) $report
+Check 'mixed approved count' ([int]$report.approved_count -eq 8) $report
 Check 'mixed runnable count' ([int]$report.runnable_count -eq 3) $report
 Check 'mixed control plane blocked' ([int]$report.control_plane_blocked -eq 2) $report
 Check 'mixed admitted control count' ([int]$report.admitted_control_plane -eq 1) $report
 Check 'mixed project scope blocked' ([int]$report.project_scope_blocked -eq 1) $report
+Check 'mixed governor dropped count' ([int]$report.governor_dropped_count -eq 1) $report
 Check 'attempts exhausted moved to needs-review' ([string]$items[5].status -eq 'needs-review' -and [string]$items[5].needs_review_reason -eq 'attempts-exhausted') $items[5]
 Check 'mixed runnable ids include operator' (@($report.runnable_ids) -contains 'op1') $report
 Check 'mixed runnable ids include admitted bridge self' (@($report.runnable_ids) -contains 'adm1') $report
 Check 'mixed runnable ids include docs' (@($report.runnable_ids) -contains 'doc1') $report
+Check 'scenario marker auto-dropped' ([string]$items[8].status -eq 'auto-dropped' -and [string]$items[8].governor_drop_reason -eq 'queue-governor:scenario-marker') $items[8]
+Check 'scenario marker not runnable' (-not (@($report.runnable_ids) -contains 'scn1')) $report
+Check 'scenario marker listed as governor drop' (@($report.governor_dropped | Where-Object { [string]$_.id -eq 'scn1' -and [string]$_.reason -eq 'scenario-marker' }).Count -eq 1) $report
 Check 'mixed control ids include cp1' (@($report.control_plane_ids) -contains 'cp1') $report
 Check 'mixed control ids include external despite admission' (@($report.control_plane_ids) -contains 'ext1') $report
 Check 'mixed project ids include pr1' (@($report.project_scope_ids) -contains 'pr1') $report
