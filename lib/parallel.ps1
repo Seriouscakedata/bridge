@@ -2051,16 +2051,16 @@ function Commit-ParallelDispatchCollectedOutputs {
       try {
         $out = New-Object 'System.Collections.Generic.List[object]'
         foreach ($p in $Context.deliveredPaths) {
-          $addOut = @(& $Context.gitExe -C $Context.bridgeRoot add -- $p 2>&1)
-          foreach ($line in $addOut) { [void]$out.Add($line) }
-          if ($LASTEXITCODE -ne 0) {
-            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+          $addResult = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('add','--',[string]$p)
+          foreach ($line in @($addResult.Output)) { [void]$out.Add($line) }
+          if ([int]$addResult.ExitCode -ne 0) {
+            return [pscustomobject]@{ ExitCode = ([int]$addResult.ExitCode); Output = @($out.ToArray()) }
           }
         }
         $actualFiles = $Context.deliveredPaths.Count
-        $commitOut = @(& $Context.gitExe -C $Context.bridgeRoot commit -m ("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>&1)
-        foreach ($line in $commitOut) { [void]$out.Add($line) }
-        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+        $commitResult = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('commit','-m',("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files"))
+        foreach ($line in @($commitResult.Output)) { [void]$out.Add($line) }
+        return [pscustomobject]@{ ExitCode = ([int]$commitResult.ExitCode); Output = @($out.ToArray()) }
       } finally {
         $ErrorActionPreference = $oldErrorActionPreference
       }
@@ -2112,14 +2112,14 @@ function Resolve-ParallelDispatchWorkerResult {
           $ErrorActionPreference = 'Continue'
           try {
             $out = New-Object 'System.Collections.Generic.List[object]'
-            $addOut = @(& $Context.gitExe -C $wtPath add -A 2>&1)
-            foreach ($line in $addOut) { [void]$out.Add($line) }
-            if ($LASTEXITCODE -ne 0) {
-              return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+            $addResult = Invoke-ParallelDispatchGitProcess -RepoRoot $wtPath -GitExe $Context.gitExe -GitArgs @('add','-A')
+            foreach ($line in @($addResult.Output)) { [void]$out.Add($line) }
+            if ([int]$addResult.ExitCode -ne 0) {
+              return [pscustomobject]@{ ExitCode = ([int]$addResult.ExitCode); Output = @($out.ToArray()) }
             }
-            $commitOut = @(& $Context.gitExe -C $wtPath commit -m ("host-commit parallel stream " + $Worker.id) 2>&1)
-            foreach ($line in $commitOut) { [void]$out.Add($line) }
-            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+            $commitResult = Invoke-ParallelDispatchGitProcess -RepoRoot $wtPath -GitExe $Context.gitExe -GitArgs @('commit','-m',("host-commit parallel stream " + $Worker.id))
+            foreach ($line in @($commitResult.Output)) { [void]$out.Add($line) }
+            return [pscustomobject]@{ ExitCode = ([int]$commitResult.ExitCode); Output = @($out.ToArray()) }
           } finally {
             $ErrorActionPreference = $oldErrorActionPreference
           }

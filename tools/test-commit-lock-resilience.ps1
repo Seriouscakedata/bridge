@@ -169,6 +169,34 @@ exit /b 0
   if (Test-Path -LiteralPath $case3.Repo) { Remove-Item -LiteralPath $case3.Repo -Recurse -Force }
 }
 
+$caseArgs = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge git args ' + [guid]::NewGuid().ToString('N'))
+try {
+  New-Item -ItemType Directory -Path $caseArgs -Force | Out-Null
+  $gitExe = Get-GitExe
+  $initResult = Invoke-ParallelDispatchGitProcess -RepoRoot $caseArgs -GitExe $gitExe -GitArgs @('init','-q')
+  $configEmail = Invoke-ParallelDispatchGitProcess -RepoRoot $caseArgs -GitExe $gitExe -GitArgs @('config','user.email','bridge-test@example.invalid')
+  $configName = Invoke-ParallelDispatchGitProcess -RepoRoot $caseArgs -GitExe $gitExe -GitArgs @('config','user.name','Bridge Test')
+  $relDir = 'dir with space'
+  $relFile = 'file (1) & ok.txt'
+  $relPath = ($relDir + '/' + $relFile)
+  $absDir = Join-Path $caseArgs $relDir
+  New-Item -ItemType Directory -Path $absDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $absDir $relFile), 'content', [System.Text.Encoding]::ASCII)
+  $addResult = Invoke-ParallelDispatchGitProcess -RepoRoot $caseArgs -GitExe $gitExe -GitArgs @('add','--',$relPath)
+  $stagedResult = Invoke-ParallelDispatchGitProcess -RepoRoot $caseArgs -GitExe $gitExe -GitArgs @('diff','--cached','--name-only')
+  $stagedText = (@($stagedResult.Output) -join "`n")
+  Check 'git process runner stages path with spaces and shell metacharacters' (
+    ([int]$initResult.ExitCode -eq 0) -and
+    ([int]$configEmail.ExitCode -eq 0) -and
+    ([int]$configName.ExitCode -eq 0) -and
+    ([int]$addResult.ExitCode -eq 0) -and
+    ([int]$stagedResult.ExitCode -eq 0) -and
+    ($stagedText -match [regex]::Escape($relPath))
+  ) @{ init = $initResult.ExitCode; add = $addResult.ExitCode; staged = $stagedText; addArgs = $addResult.Args }
+} finally {
+  if (Test-Path -LiteralPath $caseArgs) { Remove-Item -LiteralPath $caseArgs -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 if ($script:fail -gt 0) {
   Write-Host ("RESULT: " + $script:pass + " passed, " + $script:fail + " failed") -ForegroundColor Red
   exit 1
