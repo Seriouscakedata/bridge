@@ -83,12 +83,34 @@
     return ($parts -join '; ')
   }
 
+  function Invoke-DriverInterruptibleIdleSleep {
+    param(
+      [int]$Seconds,
+      [int]$CheckSeconds = 3
+    )
+    if ($Seconds -le 0) { return }
+    if ($CheckSeconds -lt 1) { $CheckSeconds = 1 }
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+      $remaining = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
+      if ($remaining -le 0) { break }
+      Start-Sleep -Seconds ([Math]::Min($CheckSeconds, $remaining))
+      try {
+        $sleepState = Read-State
+        if ($sleepState.current_task) { break }
+        $sleepMaxUser = Get-MaxUserSeq
+        if ($sleepMaxUser -gt [int]$sleepState.last_user_seq) { break }
+      } catch {}
+    }
+  }
+
   if (-not $state.current_task) {
     if ($maxUser -gt [int]$state.last_user_seq) {
       $script:idleStreak = 0   # user activity -> restore snappy idle cadence
       # 🤖 Autonomy metric (Foundation #3): operator stepped in -> the "no-intervention" streak ends.
       # Best is already captured at done-time; just reset the running counter.
       try { Update-State { param($s) $s | Add-Member -NotePropertyName autonomy_streak -NotePropertyValue 0 -Force } | Out-Null } catch {}
+      try { Update-BacklogClaimabilityIdleState -Claimability $null -Channel $Channel | Out-Null } catch {}
       $taskMsg = (Get-Messages -Since 0 | Where-Object { $_.from -eq 'user' })[-1].text
       $projectBindingForTask = Get-ActiveProjectBinding
       if ($projectBindingForTask -and ([string]$projectBindingForTask.slug -ne 'main') -and -not [bool]$projectBindingForTask.ok) {
@@ -455,6 +477,7 @@
       $claimedIdeaSelection = $null
       $claimedWorkpackBatch = $false
       $workpackFrontierReport = $null
+      $idleClaimabilityBackoffSeconds = 0
       $auditBusyForAutonomy = $false
       try { $auditBusyForAutonomy = Test-AuditMaintenanceBusy } catch {}
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
@@ -839,13 +862,49 @@
           if (Get-Command Get-ApprovedBacklogClaimabilityReport -ErrorAction SilentlyContinue) {
             $claimability = Get-ApprovedBacklogClaimabilityReport
             if ($claimability -and [int]$claimability.approved_count -gt 0 -and [int]$claimability.runnable_count -eq 0) {
-              $ids = @()
-              try { $ids += @($claimability.control_plane_ids | ForEach-Object { [string]$_ }) } catch {}
-              try { $ids += @($claimability.project_scope_ids | ForEach-Object { [string]$_ }) } catch {}
               $governorDeferredItems = @()
               try { $governorDeferredItems = @($claimability.governor_deferred) } catch { $governorDeferredItems = @() }
-              $governorIds = @($governorDeferredItems | ForEach-Object { [string](Get-DriverWorkpackReportValue -Obj $_ -Name 'id' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-              $sig = ([string]$Channel + ':' + [int]$claimability.approved_count + ':' + [int]$claimability.control_plane_blocked + ':' + [int]$claimability.project_scope_blocked + ':' + [int]$claimability.governor_deferred_count + ':' + ([string]::Join(',', @((@($ids) + @($governorIds)) | Select-Object -First 8))))
+              $sig = Get-BacklogClaimabilitySignature -Claimability $claimability -Channel $Channel
+              if ([int]$claimability.control_plane_blocked -gt 0) {
+                $idleTransition = $null
+                $canaryGate = $null
+                try { $idleTransition = Update-BacklogClaimabilityIdleState -Claimability $claimability -Channel $Channel -Signature $sig -BackoffSeconds 300 -ForceReflectAfter 3 } catch { $idleTransition = $null }
+                try {
+                  $canaryGate = Ensure-BridgeSelfCanaryGateTasks -ParentIds @($claimability.control_plane_ids) -Channel $Channel
+                  if ($canaryGate -and [int]$canaryGate.created_count -gt 0) {
+                    Write-BacklogJsonLine ([ordered]@{
+                      ts = (Get-Date).ToUniversalTime().ToString('o')
+                      action = 'bridge-self-canary-gate-created'
+                      channel = [string]$Channel
+                      parent_ids = @($claimability.control_plane_ids)
+                      child_ids = @($canaryGate.created_ids)
+                    })
+                    Add-Message -From system -Text ("🧪 Bridge-self canary gate: создано operator-задач для control-plane parents: " + ((@($canaryGate.created_ids) | Select-Object -First 4) -join ',')) -Kind event | Out-Null
+                  }
+                } catch {}
+                if ($idleTransition -and [bool]$idleTransition.blocked -and (-not $canaryGate -or [int]$canaryGate.created_count -eq 0)) {
+                  $idleClaimabilityBackoffSeconds = [int]$idleTransition.backoff_seconds
+                }
+                if ($idleTransition -and [bool]$idleTransition.forced_reflect_due) {
+                  $reflectStarted = $false
+                  try { $reflectStarted = [bool](Start-ReflectIfDue -Force) } catch { $reflectStarted = $false }
+                  try {
+                    Write-BacklogJsonLine ([ordered]@{
+                      ts = (Get-Date).ToUniversalTime().ToString('o')
+                      action = 'idle-claimability-forced-reflect'
+                      channel = [string]$Channel
+                      signature = [string]$sig
+                      streak = [int]$idleTransition.streak
+                      started = [bool]$reflectStarted
+                    })
+                  } catch {}
+                  if ($reflectStarted) {
+                    Add-Message -From system -Text ("🧠 Idle claimability: streak=" + [int]$idleTransition.streak + ", runnable=0; forced reflect запущен для свежих идей.") -Kind event | Out-Null
+                  }
+                }
+              } else {
+                try { Update-BacklogClaimabilityIdleState -Claimability $claimability -Channel $Channel -Signature $sig | Out-Null } catch {}
+              }
               $nowClaimability = [DateTime]::UtcNow
               $dueClaimability = $false
               if ([string]$script:LastBacklogClaimabilitySignature -ne $sig) {
@@ -880,6 +939,9 @@
                   Add-Message -From system -Text ("🧭 Backlog claimability: approved=" + [int]$claimability.approved_count + ", runnable=0; control-plane blocked=" + [int]$claimability.control_plane_blocked + ", project-scope blocked=" + [int]$claimability.project_scope_blocked + ". Обычная автономия не исполняет эти задачи без operator tag / bridge-self canary gate.") -Kind event | Out-Null
                 }
               }
+            }
+            elseif ($claimability) {
+              try { Update-BacklogClaimabilityIdleState -Claimability $claimability -Channel $Channel | Out-Null } catch {}
             }
           }
         } catch {}
@@ -1094,6 +1156,7 @@
       }
       if ($claimedIdea) {
         $script:idleStreak = 0   # autonomous task claimed -> snappy idle again once it finishes
+        try { Update-BacklogClaimabilityIdleState -Claimability $null -Channel $Channel | Out-Null } catch {}
         $bid = [string]$claimedIdea.id
         $batchIdsForState = @()
         try {
@@ -1189,6 +1252,9 @@
           $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force  # ERR-006: fresh batch, not yet dispatched
           $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue $workpackBatchMode -Force
           $s | Add-Member -NotePropertyName task_management_snapshot -NotePropertyValue $taskManagementSnapshot -Force
+          $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue '' -Force
+          $s | Add-Member -NotePropertyName idleClaimabilityBackoffUntil -NotePropertyValue '' -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -1323,7 +1389,13 @@
         $script:idleStreak = [int]$script:idleStreak + 1
         $sleepSec = $idlePoll
         if ($script:idleStreak -gt $idleFastTicks) { $sleepSec = [Math]::Min($idleMaxPoll, $idlePoll + ($script:idleStreak - $idleFastTicks)) }
-        Start-Sleep -Seconds $sleepSec; continue
+        if ($idleClaimabilityBackoffSeconds -gt $sleepSec) { $sleepSec = $idleClaimabilityBackoffSeconds }
+        if ($sleepSec -gt [Math]::Max($idleMaxPoll, 10)) {
+          Invoke-DriverInterruptibleIdleSleep -Seconds $sleepSec -CheckSeconds $idlePoll
+        } else {
+          Start-Sleep -Seconds $sleepSec
+        }
+        continue
       }
     }
   } else {

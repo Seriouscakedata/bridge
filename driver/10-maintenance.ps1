@@ -736,6 +736,7 @@ function Start-FeatureVerifierIfDue {
 }
 
 function Start-ReflectIfDue {
+  param([switch]$Force)
   # Launch idle self-reflection at most once per autonomy.reflectEveryHours, detached.
   $marker = Join-Path $bridgeRoot 'reflect.last'
   try {
@@ -753,13 +754,13 @@ function Start-ReflectIfDue {
   $enabled = if ($auto -and $null -ne $auto.enabled) { [bool]$auto.enabled } else { $true }
   if (-not $enabled) { return }
   $everyH = if ($auto -and $auto.reflectEveryHours) { [double]$auto.reflectEveryHours } else { 6 }
-  if (Test-Path $marker) {
+  if ((-not $Force) -and (Test-Path $marker)) {
     try {
       $last = [datetime]((Get-Content $marker -Raw -Encoding UTF8).Trim())
       if (((Get-Date) - $last) -lt [TimeSpan]::FromHours($everyH)) { return }
     } catch {}
   }
-  try {
+  if (-not $Force) { try {
     $cfgReflect = Get-BridgeConfig
     $minSec = 60
     if ($cfgReflect -and ($cfgReflect.PSObject.Properties.Name -contains 'reflect') -and $cfgReflect.reflect) {
@@ -774,7 +775,7 @@ function Start-ReflectIfDue {
       try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
       return
     }
-  } catch {}
+  } catch {} }
   $rf = Join-Path $bridgeRoot 'reflect.ps1'
   if (-not (Test-Path $rf)) { return }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
@@ -787,8 +788,10 @@ function Start-ReflectIfDue {
     if ($rfProc) {
       $rfTicks = 0L; try { $rfTicks = (Get-Process -Id $rfProc.Id -ErrorAction Stop).StartTime.Ticks } catch {}
       try { Register-ChildProcess -Label 'reflect' -ProcessId $rfProc.Id -Ticks $rfTicks } catch {}
+      return $true
     }
   } catch {}
+  return $false
 }
 
 function Start-TechRadarIfDue {

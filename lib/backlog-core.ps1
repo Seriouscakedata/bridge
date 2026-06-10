@@ -1325,6 +1325,182 @@ function Get-ApprovedBacklogClaimabilityReport {
   }
 }
 
+function Get-BacklogClaimabilitySignature {
+  param(
+    [Parameter(Mandatory=$false)]$Claimability,
+    [Parameter(Mandatory=$false)][string]$Channel = ''
+  )
+  if (-not $Claimability) { return '' }
+  $ids = @()
+  try { $ids += @($Claimability.control_plane_ids | ForEach-Object { [string]$_ }) } catch {}
+  try { $ids += @($Claimability.project_scope_ids | ForEach-Object { [string]$_ }) } catch {}
+  $governorDeferredItems = @()
+  try { $governorDeferredItems = @($Claimability.governor_deferred) } catch { $governorDeferredItems = @() }
+  $governorIds = @($governorDeferredItems | ForEach-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  return ([string]$Channel + ':' + [int]$Claimability.approved_count + ':' + [int]$Claimability.control_plane_blocked + ':' + [int]$Claimability.project_scope_blocked + ':' + [int]$Claimability.governor_deferred_count + ':' + ([string]::Join(',', @((@($ids) + @($governorIds)) | Select-Object -First 8))))
+}
+
+function Update-BacklogClaimabilityIdleState {
+  param(
+    [Parameter(Mandatory=$false)]$Claimability,
+    [Parameter(Mandatory=$false)][string]$Channel = '',
+    [Parameter(Mandatory=$false)][string]$Signature = '',
+    [Parameter(Mandatory=$false)][int]$BackoffSeconds = 300,
+    [Parameter(Mandatory=$false)][int]$ForceReflectAfter = 3,
+    [Parameter(Mandatory=$false)][int]$ReflectCooldownMinutes = 60
+  )
+  $now = [DateTime]::UtcNow
+  $nowIso = $now.ToString('o')
+  if ($BackoffSeconds -lt 60) { $BackoffSeconds = 60 }
+  if ($ForceReflectAfter -lt 1) { $ForceReflectAfter = 3 }
+  if ($ReflectCooldownMinutes -lt 1) { $ReflectCooldownMinutes = 60 }
+  $blocked = $false
+  try {
+    $blocked = ($Claimability -and [int]$Claimability.approved_count -gt 0 -and [int]$Claimability.runnable_count -eq 0 -and [int]$Claimability.control_plane_blocked -gt 0)
+  } catch { $blocked = $false }
+  if ([string]::IsNullOrWhiteSpace($Signature) -and $Claimability) {
+    $Signature = Get-BacklogClaimabilitySignature -Claimability $Claimability -Channel $Channel
+  }
+  $newStreak = 0
+  $forcedReflect = $false
+  $backoffUntil = ''
+  if (-not $blocked) {
+    try {
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName lastIdleCheck -NotePropertyValue $nowIso -Force
+        $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue '' -Force
+        $s | Add-Member -NotePropertyName idleClaimabilityBackoffUntil -NotePropertyValue '' -Force
+      }.GetNewClosure()) | Out-Null
+    } catch {}
+    return [pscustomobject][ordered]@{
+      blocked = $false
+      streak = 0
+      forced_reflect_due = $false
+      backoff_seconds = 0
+      backoff_until = ''
+      signature = [string]$Signature
+    }
+  }
+  $backoffUntil = $now.AddSeconds($BackoffSeconds).ToString('o')
+  $resultBox = @{ newStreak = 0; forcedReflect = $false }
+  try {
+    Update-State ({ param($s)
+      $prevSig = ''
+      try { $prevSig = [string]$s.idleClaimabilitySignature } catch { $prevSig = '' }
+      $prevStreak = 0
+      try { $prevStreak = [int]$s.idleClaimabilityStreak } catch { $prevStreak = 0 }
+      if (-not [string]::IsNullOrWhiteSpace($prevSig) -and [string]$prevSig -eq [string]$Signature) {
+        $resultBox.newStreak = $prevStreak + 1
+      } else {
+        $resultBox.newStreak = 1
+      }
+      if ([int]$resultBox.newStreak -gt $ForceReflectAfter) {
+        $lastForceSig = ''
+        $lastForceAtRaw = ''
+        try { $lastForceSig = [string]$s.lastIdleForcedReflectSignature } catch { $lastForceSig = '' }
+        try { $lastForceAtRaw = [string]$s.lastIdleForcedReflectAt } catch { $lastForceAtRaw = '' }
+        $recent = $false
+        if ([string]$lastForceSig -eq [string]$Signature -and -not [string]::IsNullOrWhiteSpace($lastForceAtRaw)) {
+          try { $recent = (($now - [DateTime]$lastForceAtRaw).TotalMinutes -lt $ReflectCooldownMinutes) } catch { $recent = $false }
+        }
+        if (-not $recent) {
+          $resultBox.forcedReflect = $true
+          $s | Add-Member -NotePropertyName lastIdleForcedReflectAt -NotePropertyValue $nowIso -Force
+          $s | Add-Member -NotePropertyName lastIdleForcedReflectSignature -NotePropertyValue ([string]$Signature) -Force
+        }
+      }
+      $s | Add-Member -NotePropertyName lastIdleCheck -NotePropertyValue $nowIso -Force
+      $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue ([int]$resultBox.newStreak) -Force
+      $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue ([string]$Signature) -Force
+      $s | Add-Member -NotePropertyName idleClaimabilityBackoffUntil -NotePropertyValue $backoffUntil -Force
+      $s | Add-Member -NotePropertyName idleClaimabilityApprovedCount -NotePropertyValue ([int]$Claimability.approved_count) -Force
+      $s | Add-Member -NotePropertyName idleClaimabilityControlPlaneBlocked -NotePropertyValue ([int]$Claimability.control_plane_blocked) -Force
+    }.GetNewClosure()) | Out-Null
+  } catch {}
+  try { $newStreak = [int]$resultBox.newStreak } catch { $newStreak = 0 }
+  try { $forcedReflect = [bool]$resultBox.forcedReflect } catch { $forcedReflect = $false }
+  return [pscustomobject][ordered]@{
+    blocked = $true
+    streak = [int]$newStreak
+    forced_reflect_due = [bool]$forcedReflect
+    backoff_seconds = [int]$BackoffSeconds
+    backoff_until = [string]$backoffUntil
+    signature = [string]$Signature
+  }
+}
+
+function Ensure-BridgeSelfCanaryGateTasks {
+  param(
+    [Parameter(Mandatory=$false)][object[]]$Items = $null,
+    [Parameter(Mandatory=$false)][string[]]$ParentIds = @(),
+    [Parameter(Mandatory=$false)][string]$Channel = ''
+  )
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+  $created = New-Object 'System.Collections.Generic.List[string]'
+  $existing = New-Object 'System.Collections.Generic.List[string]'
+  $seenParents = @{}
+  foreach ($rawParentId in @($ParentIds)) {
+    $parentId = ([string]$rawParentId).Trim()
+    if ([string]::IsNullOrWhiteSpace($parentId)) { continue }
+    if ($seenParents.ContainsKey($parentId)) { continue }
+    $seenParents[$parentId] = $true
+    $parent = $null
+    foreach ($item in @($Items)) {
+      if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '') -eq $parentId) { $parent = $item; break }
+    }
+    if (-not $parent) { continue }
+    if ([string](Get-BacklogPackObjectValue -Obj $parent -Name 'status' -Default '') -ne 'approved') { continue }
+    $claim = $null
+    try { $claim = Test-BacklogApprovedItemClaimable -Item $parent -ProjectScopeAllowed ([bool](Test-ProjectScopedApprovedBacklogAllowed)) } catch { $claim = $null }
+    if (-not ($claim -and [string]$claim.reason -eq 'control-plane-blocked')) { continue }
+
+    $foundChild = $null
+    foreach ($candidate in @($Items)) {
+      $candidateTags = @()
+      try { $candidateTags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $candidate -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $candidateTags = @() }
+      if (-not (@($candidateTags) -contains 'bridge-self-canary-gate')) { continue }
+      $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'parent_id' -Default '')
+      if ([string]::IsNullOrWhiteSpace($candidateParent)) { $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'canary_gate_parent_id' -Default '') }
+      $candidateText = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'text' -Default '')
+      if ([string]$candidateParent -eq $parentId -or $candidateText -match [regex]::Escape('[parent:' + $parentId + ']')) {
+        $foundChild = $candidate
+        break
+      }
+    }
+    if ($foundChild) {
+      $existingId = [string](Get-BacklogPackObjectValue -Obj $foundChild -Name 'id' -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($existingId)) { [void]$existing.Add($existingId) }
+      continue
+    }
+
+    $parentText = [string](Get-BacklogPackObjectValue -Obj $parent -Name 'text' -Default '')
+    if ($parentText.Length -gt 500) { $parentText = $parentText.Substring(0, 500) + '...' }
+    $childText = "Bridge-self canary gate/admission for approved control-plane backlog task [parent:$parentId]. Operator-authorized child task: run the parent only with canary evidence, driver.ps1 -SelfTest, smoke.ps1, and rollback notes. Parent task: $parentText"
+    $childId = Add-Idea -Text $childText -From 'bridge-self-canary-gate' -Tags @('operator','bridge-self-canary-gate','canary-gate',('parent:' + $parentId)) -Status 'approved' -Severity 'critical' -Project $Channel -Scope 'bridge' -SkipCurator
+    if ([string]::IsNullOrWhiteSpace([string]$childId)) { continue }
+    $latest = @(Get-Backlog)
+    foreach ($candidate in @($latest)) {
+      if ([string](Get-BacklogPackObjectValue -Obj $candidate -Name 'id' -Default '') -eq [string]$childId) {
+        Set-BacklogObjectProperty -Item $candidate -Name 'parent_id' -Value $parentId
+        Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_parent_id' -Value $parentId
+        Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_for' -Value 'bridge-self-control-plane'
+        Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_created_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+        Save-Backlog $latest
+        break
+      }
+    }
+    [void]$created.Add([string]$childId)
+    $Items = @(Get-Backlog)
+  }
+  return [pscustomobject][ordered]@{
+    created_ids = @($created.ToArray())
+    existing_ids = @($existing.ToArray())
+    created_count = [int]$created.Count
+    existing_count = [int]$existing.Count
+  }
+}
+
 function Get-NextApprovedIdea {
   # Next approved item, checking whether recent commits already resolved stale work.
   # 2026-05-28: sort key chain is severity rank (critical=0 / warning=1 / info=2 / none=3)
