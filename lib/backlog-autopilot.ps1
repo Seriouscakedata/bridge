@@ -768,9 +768,10 @@ Rules:
 - If the contract does not explicitly authorize the next chapter/wave, do not create atoms for it; emit [[PROJECT_OPEN_QUESTION: release scope needs approval before new chapter]] and finish without PROJECT_BACKLOG.
 - Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
+- Order infra-first: shared modules, contracts, schemas, adapters, migrations, and test harnesses must be emitted before feature atoms that consume them. Feature atoms that depend on shared infra must list the infra atom slug in depends_on.
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
 - Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
-- Use chapter, wave, parallel_group, files, depends_on, acceptance, checks, risk/severity, and serial_reason so the scheduler can run the team safely.
+- Use chapter, wave, kind, parallel_group, files, depends_on, acceptance, checks, risk/severity, and serial_reason so the scheduler can run the team safely. Optional kind values are infra, feature, consolidation, and planning; omit kind only for default feature atoms.
 - Project atoms operate ONLY inside the project root and never modify the bridge engine, so they require no special admission. Keep every files entry within the project tree.
 - Every atom acceptance must trace back to a project-contract requirement, journey, surface, or acceptance scenario. Do not use generic "looks good" UX checks.
 - Before PROJECT_BACKLOG, emit durable project memory markers when useful:
@@ -793,6 +794,7 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "task": "Full task text for the worker. Include project path, dependencies, acceptance checks, and commit requirement.",
     "chapter": "approved chapter / project area",
     "wave": "wave-1",
+    "kind": "infra|feature|consolidation|planning",
     "parallel_group": "auth|gallery|chat|admin|docs|tests|...",
     "files": ["relative/path/or/directory"],
     "depends_on": ["slug-of-prerequisite-if-any"],
@@ -807,7 +809,7 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
 ]
 [[/PROJECT_BACKLOG]]
 
-depends_on may be []; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate.
+depends_on may be []; kind may be omitted and then defaults to feature; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate.
 
 The driver will add those atoms to approved project backlog automatically. Do not use operator-delegate and do not edit backlog.jsonl manually.
 
@@ -1140,6 +1142,19 @@ function Get-ProjectAutopilotTaskRisk {
   }
 }
 
+function Normalize-ProjectAutopilotAtomKind {
+  param([string]$Kind)
+  $normalized = ([string]$Kind).Trim().ToLowerInvariant()
+  switch ($normalized) {
+    'infra' { return 'infra' }
+    'infrastructure' { return 'infra' }
+    'feature' { return 'feature' }
+    'consolidation' { return 'consolidation' }
+    'planning' { return 'planning' }
+    default { return 'feature' }
+  }
+}
+
 function Normalize-ProjectAutopilotLane {
   param([string]$Lane)
   if ([string]::IsNullOrWhiteSpace($Lane)) { return '' }
@@ -1233,6 +1248,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()))
       $chapter = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('chapter','phase','area')
       $wave = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('wave','milestone')
+      $kind = Normalize-ProjectAutopilotAtomKind (Get-ProjectAutopilotTaskStringField -Task $Task -Names @('kind','atom_kind'))
       $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('parallel_group','workstream')
       $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('acceptance','acceptance_checks','criteria'))
       $checks = @(Get-ProjectAutopilotTaskStringArray -Task $Task -Names @('checks','verify','verification'))
@@ -1252,6 +1268,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       $i | Add-Member -NotePropertyName files -NotePropertyValue ([object[]]@($files)) -Force
       $i | Add-Member -NotePropertyName depends_on -NotePropertyValue ([object[]]@($deps)) -Force
       $i | Add-Member -NotePropertyName risk -NotePropertyValue $risk -Force
+      $i | Add-Member -NotePropertyName kind -NotePropertyValue $kind -Force
       $i | Add-Member -NotePropertyName serial_reason -NotePropertyValue $serialReason -Force
       $i | Add-Member -NotePropertyName lane -NotePropertyValue $lane -Force
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $i | Add-Member -NotePropertyName chapter -NotePropertyValue $chapter -Force }
@@ -1271,6 +1288,7 @@ function Set-ProjectAutopilotIdeaMetadata {
       $meta = [ordered]@{}
       if (-not [string]::IsNullOrWhiteSpace($chapter)) { $meta.chapter = $chapter }
       if (-not [string]::IsNullOrWhiteSpace($wave)) { $meta.wave = $wave }
+      $meta.kind = $kind
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $meta.parallel_group = $parallelGroup }
       $meta.lane = $lane
       $meta.depends_on = @($deps)
@@ -1338,6 +1356,7 @@ function Add-ProjectBacklogFromMarker {
     $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-ProjectAutopilotTaskStringArray -Task $t -Names @('depends_on','dependencies')))
     $chapter = Get-ProjectAutopilotTaskStringField -Task $t -Names @('chapter','phase','area')
     $wave = Get-ProjectAutopilotTaskStringField -Task $t -Names @('wave','milestone')
+    $kind = Normalize-ProjectAutopilotAtomKind (Get-ProjectAutopilotTaskStringField -Task $t -Names @('kind','atom_kind'))
     $parallelGroup = Get-ProjectAutopilotTaskStringField -Task $t -Names @('parallel_group','workstream')
     $lane = Get-ProjectAutopilotTaskLane -Task $t -Channel $Channel -Files @($files) -TouchSet @()
     $acceptance = @(Get-ProjectAutopilotTaskStringArray -Task $t -Names @('acceptance','acceptance_checks','criteria'))
@@ -1345,6 +1364,7 @@ function Add-ProjectBacklogFromMarker {
     $detailLines = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($chapter)) { [void]$detailLines.Add("Chapter: $chapter") }
     if (-not [string]::IsNullOrWhiteSpace($wave)) { [void]$detailLines.Add("Wave: $wave") }
+    if (-not [string]::IsNullOrWhiteSpace($kind)) { [void]$detailLines.Add("Kind: $kind") }
     if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { [void]$detailLines.Add("Parallel group: $parallelGroup") }
     if (-not [string]::IsNullOrWhiteSpace($lane)) { [void]$detailLines.Add("Lane: $lane") }
     if ($deps.Count -gt 0) { [void]$detailLines.Add("Depends on: " + (($deps | Select-Object -First 12) -join ', ')) }
