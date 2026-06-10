@@ -1048,6 +1048,12 @@ function Test-BacklogApprovedItemClaimable {
   }
   $id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
   if ([string]::IsNullOrWhiteSpace($id)) { return [pscustomobject]@{ claimable=$false; reason='missing-id'; admission=$null } }
+  $attempts = 0
+  try { $attempts = [int](Get-BacklogPackObjectValue -Obj $Item -Name 'attempts' -Default 0) } catch { $attempts = 0 }
+  if ($attempts -ge 5) {
+    try { Set-BacklogAttemptsExhausted -Item $Item -Attempts $attempts -Phase 'claim' } catch {}
+    return [pscustomobject]@{ claimable=$false; reason='attempts-exhausted'; admission=$null }
+  }
 
   $scope = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'scope' -Default '')
   if ((-not $ProjectScopeAllowed) -and $scope -eq 'project') {
@@ -1162,6 +1168,35 @@ function Set-BacklogGovernorDrop {
   } catch {}
 }
 
+function Set-BacklogAttemptsExhausted {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [int]$Attempts = 0,
+    [string]$Phase = 'claim'
+  )
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  Set-BacklogObjectProperty -Item $Item -Name 'status' -Value 'needs-review'
+  Set-BacklogObjectProperty -Item $Item -Name 'needs_review_reason' -Value 'attempts-exhausted'
+  Set-BacklogObjectProperty -Item $Item -Name 'attempts_exhausted_at' -Value $now
+  Set-BacklogObjectProperty -Item $Item -Name 'attempts_exhausted_count' -Value ([int]$Attempts)
+  Set-BacklogObjectProperty -Item $Item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+    action = 'block'
+    reason = 'attempts-exhausted'
+    detail = 'attempts=' + [string]$Attempts
+    ts = $now
+    evidence = [pscustomobject][ordered]@{ attempts = [int]$Attempts }
+  })
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'attempts-exhausted'
+      item_id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+      attempts = [int]$Attempts
+      phase = [string]$Phase
+    })
+  } catch {}
+}
+
 function Set-BacklogGovernorDeferred {
   param(
     [Parameter(Mandatory=$true)]$Item,
@@ -1210,10 +1245,11 @@ function Invoke-BacklogGovernorFilterApprovedItems {
     if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '') -ne 'approved') { continue }
     $base = Test-BacklogApprovedItemClaimable -Item $item -ProjectScopeAllowed $ProjectScopeAllowed
     if (-not ($base -and [bool]$base.claimable)) {
+      if ($base -and [string]$base.reason -eq 'attempts-exhausted') { $dirty = $true }
       [void]$blocked.Add([pscustomobject][ordered]@{
         id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
         reason = [string]$base.reason
-        detail = ''
+        detail = $(if ($base -and [string]$base.reason -eq 'attempts-exhausted') { 'attempts=' + [string](Get-BacklogPackObjectValue -Obj $item -Name 'attempts' -Default 0) } else { '' })
       })
       continue
     }

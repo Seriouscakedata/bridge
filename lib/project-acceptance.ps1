@@ -776,6 +776,87 @@ function Get-ProjectAcceptancePlanContractSteps {
   return @($steps.ToArray())
 }
 
+function Resolve-ProjectAcceptanceEntryPath {
+  param([string]$ProjectRoot, [string]$Entry)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or [string]::IsNullOrWhiteSpace($Entry)) { return '' }
+  try {
+    $rootFull = [System.IO.Path]::GetFullPath($ProjectRoot)
+    $candidate = [string]$Entry
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path $rootFull $candidate }
+    $full = [System.IO.Path]::GetFullPath($candidate)
+    if (-not $full.StartsWith($rootFull.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase) -and -not $full.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return ''
+    }
+    return $full
+  } catch {
+    return ''
+  }
+}
+
+function Test-ProjectAcceptanceStubBindingLine {
+  param([string]$Line, [string]$Symbol)
+  if ([string]::IsNullOrWhiteSpace($Line) -or [string]::IsNullOrWhiteSpace($Symbol)) { return $false }
+  $trimmed = $Line.Trim()
+  if ($trimmed.StartsWith('//') -or $trimmed.StartsWith('#') -or $trimmed.StartsWith('*') -or $trimmed.StartsWith('<!--')) { return $false }
+  $symbolPattern = '(?<![A-Za-z0-9_$])' + [regex]::Escape($Symbol) + '(?![A-Za-z0-9_$])'
+  if ($trimmed -notmatch $symbolPattern) { return $false }
+  return ($trimmed -match '\b(import|require|from|new|provider|providers|binding|bindings|bind|container|useFactory|factory|const|let|var)\b|[=:]')
+}
+
+function Get-ProjectAcceptanceProductionEntryPointFact {
+  param([string]$ProjectRoot)
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  if (-not $info.contract) {
+    return [pscustomobject]@{ required=$false; ok=$true; entry_count=0; symbol_count=0; violations=@(); reason='contract missing' }
+  }
+  $entries = @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('production_entrypoints','productionEntryPoints'))
+  $symbols = @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('forbidden_stub_symbols','forbiddenStubSymbols'))
+  $entries = @($entries | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $symbols = @($symbols | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $required = ($entries.Count -gt 0 -and $symbols.Count -gt 0)
+  $violations = New-Object 'System.Collections.Generic.List[object]'
+  if (-not $required) {
+    return [pscustomobject]@{ required=$false; ok=$true; entry_count=[int]$entries.Count; symbol_count=[int]$symbols.Count; violations=@(); reason='not configured' }
+  }
+  foreach ($entry in @($entries)) {
+    $fullPath = Resolve-ProjectAcceptanceEntryPath -ProjectRoot $ProjectRoot -Entry $entry
+    if ([string]::IsNullOrWhiteSpace($fullPath) -or -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+      [void]$violations.Add([pscustomobject][ordered]@{ entry=$entry; symbol=''; line=0; reason='entrypoint-missing' })
+      continue
+    }
+    $lines = @()
+    try { $lines = [System.IO.File]::ReadAllLines($fullPath, [System.Text.Encoding]::UTF8) } catch { $lines = @() }
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+      foreach ($symbol in @($symbols)) {
+        if (Test-ProjectAcceptanceStubBindingLine -Line ([string]$lines[$i]) -Symbol ([string]$symbol)) {
+          [void]$violations.Add([pscustomobject][ordered]@{ entry=$entry; symbol=[string]$symbol; line=($i + 1); reason='forbidden-stub-binding' })
+        }
+      }
+    }
+  }
+  return [pscustomobject]@{
+    required = $true
+    ok = ($violations.Count -eq 0)
+    entry_count = [int]$entries.Count
+    symbol_count = [int]$symbols.Count
+    violations = @($violations.ToArray())
+    reason = $(if ($violations.Count -eq 0) { 'no forbidden stub bindings' } else { 'forbidden stub binding found' })
+  }
+}
+
+function New-ProjectAcceptanceProductionEntryPointStep {
+  param($Fact)
+  $details = 'required=' + [string]$Fact.required +
+    ' entry_count=' + [string]$Fact.entry_count +
+    ' symbol_count=' + [string]$Fact.symbol_count +
+    ' reason=' + [string]$Fact.reason
+  $sample = @($Fact.violations | Select-Object -First 5 | ForEach-Object {
+    [string]$_.entry + ':' + [string]$_.line + ':' + [string]$_.symbol + ':' + [string]$_.reason
+  })
+  if ($sample.Count -gt 0) { $details += ' sample=' + ($sample -join ' | ') }
+  return (New-ProjectAcceptanceStep -Name 'plan-contract:production-entrypoints-no-stubs' -Ok ([bool]$Fact.ok) -Details $details)
+}
+
 function Get-ProjectAcceptancePlanContractWebSpecs {
   param([string]$ProjectRoot)
   $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
@@ -1072,6 +1153,7 @@ function Invoke-ProjectAcceptance {
   foreach ($planStep in @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $ProjectRoot)) {
     [void]$steps.Add($planStep)
   }
+  [void]$steps.Add((New-ProjectAcceptanceProductionEntryPointStep -Fact (Get-ProjectAcceptanceProductionEntryPointFact -ProjectRoot $ProjectRoot)))
   $trackedGeneratedArtifacts = @(Get-ProjectTrackedGeneratedArtifactPaths -ProjectRoot $ProjectRoot -ExcludeVerificationArtifacts)
   $artifactDetails = if ($trackedGeneratedArtifacts.Count -eq 0) {
     'none'

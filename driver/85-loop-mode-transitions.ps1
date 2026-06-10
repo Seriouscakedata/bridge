@@ -172,7 +172,11 @@
       Update-State $mutNpc | Out-Null
       if ($newNpc -ge 4) {
         Add-Message -From system -Text "⚠ Нет изменений файлов $newNpc ходов подряд. Codex — объясни, что блокирует выполнение, или предложи иной подход." -Kind event | Out-Null
-        Update-State { param($s) $s.no_progress_count=0 } | Out-Null
+        try {
+          Activate-Doctor -Reason 'no_progress_loop' -Detail ("no_progress_count=" + [string]$newNpc) | Out-Null
+        } catch {
+          Add-Message -From system -Text ("⚠ Activate-Doctor failed in no-progress detector: " + $_.Exception.Message) -Kind event | Out-Null
+        }
       }
     }
   }

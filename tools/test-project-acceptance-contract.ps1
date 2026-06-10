@@ -101,6 +101,23 @@ try {
   $fails = @($steps | Where-Object { -not [bool]$_.ok })
   Assert-True ($fails.Count -eq 0) ('expected valid contract, failed: ' + (($fails | ForEach-Object { [string]$_.name }) -join ', '))
 
+  $entryPath = Join-Path $project 'src\app-entry.ts'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $entryPath) -Force | Out-Null
+  [System.IO.File]::WriteAllText($entryPath, "import { RealImageProvider } from './real'`nconst provider = RealImageProvider`n", (New-Object System.Text.UTF8Encoding($false)))
+  $contract.production_entrypoints = @('src/app-entry.ts')
+  $contract.forbidden_stub_symbols = @('StubImageProvider')
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $stubFactPass = Get-ProjectAcceptanceProductionEntryPointFact -ProjectRoot $project
+  $stubStepPass = New-ProjectAcceptanceProductionEntryPointStep -Fact $stubFactPass
+  Assert-True ([bool]$stubFactPass.required -and [bool]$stubFactPass.ok -and [bool]$stubStepPass.ok) 'expected production entrypoint without stub binding to pass'
+  [System.IO.File]::WriteAllText($entryPath, "import { StubImageProvider } from './stub'`nconst provider = StubImageProvider`n", (New-Object System.Text.UTF8Encoding($false)))
+  $stubFactFail = Get-ProjectAcceptanceProductionEntryPointFact -ProjectRoot $project
+  $stubStepFail = New-ProjectAcceptanceProductionEntryPointStep -Fact $stubFactFail
+  Assert-True (-not [bool]$stubFactFail.ok -and -not [bool]$stubStepFail.ok -and @($stubFactFail.violations).Count -ge 1) 'expected production entrypoint stub binding to fail'
+  $contract.Remove('production_entrypoints')
+  $contract.Remove('forbidden_stub_symbols')
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
   $webSpecs = @(Get-ProjectAcceptancePlanContractWebSpecs -ProjectRoot $project)
   Assert-True ($webSpecs.Count -eq 2) ('expected two web specs, got ' + [string]$webSpecs.Count)
   Assert-True (@($webSpecs[0].must_contain).Count -ge 1) 'expected must_contain to be preserved'
