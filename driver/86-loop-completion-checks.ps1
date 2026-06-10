@@ -147,10 +147,11 @@ function New-DriverDoneGatePlan {
 }
 
 $script:DriverDoneGateParseJob = {
-  param([string]$BridgeRoot, [string[]]$ParseFiles)
-  $result = [ordered]@{ Name='parse'; Skipped=$false; Ok=$true; Files=@($ParseFiles); FailedFile=''; ErrorLine=0; ErrorMessage=''; RuntimeError='' }
+  param([string]$BridgeRoot, [object]$ParseFiles)
+  $parseFileList = @($ParseFiles | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $result = [ordered]@{ Name='parse'; Skipped=$false; Ok=$true; Files=@($parseFileList); FailedFile=''; ErrorLine=0; ErrorMessage=''; RuntimeError='' }
   try {
-    foreach ($psf in @($ParseFiles)) {
+    foreach ($psf in @($parseFileList)) {
       $fullPath = Join-Path $BridgeRoot $psf
       if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
       $pfErrors = $null; $pfTokens = $null
@@ -178,7 +179,7 @@ $script:DriverDoneGateSmokeJob = {
     $smokeOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $SmokeFile 2>&1 | Out-String
     $result.Output = [string]$smokeOut
     $result.ExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
-    $result.Ok = ($result.Output -imatch 'SMOKE OK')
+    $result.Ok = ([int]$result.ExitCode -eq 0 -and $result.Output -imatch 'SMOKE OK')
   } catch {
     $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
@@ -186,7 +187,8 @@ $script:DriverDoneGateSmokeJob = {
 }
 
 $script:DriverDoneGateRegressionJob = {
-  param([string]$BridgeRoot, [string[]]$ChangedPaths, [bool]$UseChangedPathScope)
+  param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
+  $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope }
   try {
     $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
@@ -202,9 +204,9 @@ $script:DriverDoneGateRegressionJob = {
       $result.Attempts = $gateAttempt
       if ($UseChangedPathScope) {
         if ($inProcessSuite) {
-          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($ChangedPaths)
+          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($changedPathList)
         } else {
-          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($ChangedPaths)
+          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($changedPathList)
         }
       } else {
         if ($inProcessSuite) {
@@ -227,6 +229,55 @@ $script:DriverDoneGateRegressionJob = {
     $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
   [pscustomobject]$result
+}
+
+function New-DriverDoneGateMissingResult {
+  param([Parameter(Mandatory=$true)][string]$Name)
+
+  switch ($Name) {
+    'parse' {
+      return [pscustomobject][ordered]@{
+        Name = 'parse'
+        Skipped = $false
+        Ok = $false
+        Files = @()
+        FailedFile = ''
+        ErrorLine = 0
+        ErrorMessage = ''
+        RuntimeError = 'background job completed without a parse result'
+      }
+    }
+    'smoke' {
+      return [pscustomobject][ordered]@{
+        Name = 'smoke'
+        Skipped = $false
+        Ok = $false
+        Output = ''
+        ExitCode = 1
+        RuntimeError = 'background job completed without a smoke result'
+      }
+    }
+    'gate-regression' {
+      return [pscustomobject][ordered]@{
+        Name = 'gate-regression'
+        Skipped = $false
+        Ok = $false
+        ExitCode = 1
+        TimedOut = $false
+        Attempts = 0
+        RuntimeError = 'background job completed without a gate-regression result'
+        Scope = @()
+        ScopeApplied = $false
+      }
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    Name = $Name
+    Skipped = $false
+    Ok = $false
+    RuntimeError = 'background job completed without a result'
+  }
 }
 
 function Invoke-DriverDoneGateChecksSequential {
@@ -345,11 +396,21 @@ function Invoke-DriverDoneGateChecks {
 
     $results = @{}
     foreach ($key in @($startedJobs.Keys)) {
-      $received = @(Receive-Job -Job $startedJobs[$key] -ErrorAction SilentlyContinue)
+      $job = $startedJobs[$key]
+      $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
       if ($received.Count -gt 0) {
         $results[$key] = $received[$received.Count - 1]
+      } else {
+        $missing = New-DriverDoneGateMissingResult -Name $key
+        try {
+          $jobState = [string]$job.State
+          if (-not [string]::IsNullOrWhiteSpace($jobState)) {
+            $missing.RuntimeError = ("background job returned no result (state={0})" -f $jobState)
+          }
+        } catch {}
+        $results[$key] = $missing
       }
-      Remove-Job -Job $startedJobs[$key] -Force -ErrorAction SilentlyContinue
+      Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     }
 
     return [pscustomobject][ordered]@{

@@ -53,6 +53,8 @@ function Invoke-FastpathCase {
     Check 'Class TRIVIAL: Get-GateRegressionScope returns empty for docs/test' ($scope.Count -eq 0) $scope
     Check 'Class TRIVIAL: snapshot suite is not scheduled' (-not [bool]$plan.GateSuiteNeeded) $plan
     Check 'Class TRIVIAL: job count <= 1' ($jobCount -le 1) $plan.JobNames
+    $runtime = Invoke-DriverDoneGateChecks -BridgeRoot $root -TaskBaseCommit '' -Channel 'test' -Reply 'STATUS: DONE' -ChangedPathsOverride @($Case.ChangedPaths)
+    Check 'Class TRIVIAL: runtime starts no DONE-gate jobs' ([int]$runtime.JobsStarted -eq 0 -and $runtime.Mode -eq 'none') $runtime
     return
   }
 
@@ -66,6 +68,19 @@ function Invoke-FastpathCase {
   Check ("Class {0}: known test class" -f $Case.Name) $false $Case
 }
 
+function Invoke-AdditionalFastpathChecks {
+  $verifiedReply = @'
+[[VERIFIED: powershell -NoProfile -ExecutionPolicy Bypass -File smoke.ps1 | SMOKE OK]]
+STATUS: DONE
+'@
+  $verifiedPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply $verifiedReply -ChangedPathsOverride @('driver/86-loop-completion-checks.ps1')
+  Check 'Smoke evidence: auto-smoke is skipped for this turn' ([bool]$verifiedPlan.SmokeSkippedByVerified -and -not [bool]$verifiedPlan.SmokeNeeded) $verifiedPlan
+  Check 'Smoke evidence: gate-regression remains scheduled for control-plane diff' (@($verifiedPlan.JobNames) -contains 'gate-regression') $verifiedPlan.JobNames
+
+  $parseResult = & $script:DriverDoneGateParseJob $root @('driver/86-loop-completion-checks.ps1','lib/verify-selftest.ps1')
+  Check 'ParseFile: touched PS1 files parse cleanly' ([bool]$parseResult.Ok) $parseResult
+}
+
 $cases = @(
   [FastpathCase]::new('TRIVIAL', [string[]]@('docs/test'), $false),
   [FastpathCase]::new('CONTROL_PLANE', [string[]]@('driver.ps1'), $true)
@@ -74,6 +89,7 @@ $cases = @(
 foreach ($case in $cases) {
   Invoke-FastpathCase -Case $case
 }
+Invoke-AdditionalFastpathChecks
 
 Write-Host ("{0} passed, {1} failed" -f $script:PassCount, $script:FailCount)
 if ($script:FailCount -gt 0) { exit 1 }
