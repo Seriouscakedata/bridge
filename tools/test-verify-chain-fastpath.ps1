@@ -79,6 +79,13 @@ STATUS: DONE
 
   $parseResult = & $script:DriverDoneGateParseJob $root @('driver/86-loop-completion-checks.ps1','lib/verify-selftest.ps1')
   Check 'ParseFile: touched PS1 files parse cleanly' ([bool]$parseResult.Ok) $parseResult
+
+  $primitiveSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/backlog-dedup.ps1','tools/test-primitives.ps1'))
+  Check 'Gate regression scope: direct changed tests are selected' ($primitiveSelection -contains 'test-primitives.ps1') $primitiveSelection
+  Check 'Gate regression scope: lib-name tests are selected' ($primitiveSelection -contains 'test-backlog-dedup.ps1') $primitiveSelection
+
+  $gateSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/verify-selftest.ps1'))
+  Check 'Gate regression scope: verify-selftest changes select sentinel tests' ($gateSelection -contains 'test-gate-regression-sentinel.ps1' -and $gateSelection -contains 'test-verify-chain-fastpath.ps1') $gateSelection
 }
 
 $cases = @(

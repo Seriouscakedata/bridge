@@ -346,6 +346,56 @@ function Get-GateRegressionScope {
   return @($matchingPaths | ForEach-Object { [string]$_ })
 }
 
+function Get-GateRegressionTestSelection {
+  param(
+    [string]$BridgeRoot = (Get-VerifySelftestRoot),
+    [string[]]$Scope = @()
+  )
+
+  $root = [System.IO.Path]::GetFullPath($BridgeRoot).TrimEnd('\','/')
+  $toolsDir = Join-Path $root 'tools'
+  $knownTests = @{}
+  if (Test-Path -LiteralPath $toolsDir -PathType Container) {
+    foreach ($testFile in @(Get-ChildItem -LiteralPath $toolsDir -Filter 'test-*.ps1' -File -ErrorAction SilentlyContinue)) {
+      $knownTests[$testFile.Name.ToLowerInvariant()] = $testFile.Name
+    }
+  }
+
+  $selected = New-Object System.Collections.Generic.SortedSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($path in @($Scope)) {
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    $normalizedPath = (([string]$path).Trim() -replace '\\','/').TrimStart('./')
+    if ([string]::IsNullOrWhiteSpace($normalizedPath)) { continue }
+
+    $leaf = [System.IO.Path]::GetFileName($normalizedPath)
+    $leafKey = $leaf.ToLowerInvariant()
+    if ($knownTests.ContainsKey($leafKey)) {
+      [void]$selected.Add($knownTests[$leafKey])
+      continue
+    }
+
+    if ($normalizedPath -imatch '^(driver/86-loop-completion-checks\.ps1|lib/verify-selftest\.ps1|tools/run-tests\.ps1|tools/diag/.+)$') {
+      foreach ($name in @('test-gate-regression-sentinel.ps1','test-verify-chain-fastpath.ps1')) {
+        $key = $name.ToLowerInvariant()
+        if ($knownTests.ContainsKey($key)) { [void]$selected.Add($knownTests[$key]) }
+      }
+      continue
+    }
+
+    if ($normalizedPath -imatch '^lib/([^/]+)\.ps1$') {
+      $base = $Matches[1].ToLowerInvariant()
+      foreach ($testName in @($knownTests.Values)) {
+        $testKey = $testName.ToLowerInvariant()
+        if ($testKey -eq ("test-{0}.ps1" -f $base) -or $testKey.StartsWith(("test-{0}-" -f $base))) {
+          [void]$selected.Add($testName)
+        }
+      }
+    }
+  }
+
+  return @($selected | ForEach-Object { [string]$_ })
+}
+
 function Invoke-GateRegressionSuite {
   param(
     [string]$BridgeRoot = (Get-VerifySelftestRoot),
@@ -378,17 +428,29 @@ function Invoke-GateRegressionSuite {
     if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) { $powerShellExe = 'powershell.exe' }
   }
 
+  $selectedTests = @()
+  if ($scopeWasExplicit) {
+    $selectedTests = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @($scope))
+  }
+
+  $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$TimeoutSec))
+  if ($selectedTests.Count -gt 0) {
+    $runArgs += '-Only'
+    foreach ($testName in @($selectedTests)) { $runArgs += [string]$testName }
+  }
+
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
   $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
-    -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$TimeoutSec)) `
+    -Arguments $runArgs `
     -WorkingDirectory $root -TimeoutSec ([Math]::Max(1, [int]$TimeoutSec) + 30)
   $stopwatch.Stop()
 
   return [pscustomobject][ordered]@{
     Ok = ([int]$run.ExitCode -eq 0 -and -not [bool]$run.TimedOut)
     Skipped = $false
-    Reason = 'snapshot_suite'
+    Reason = $(if ($selectedTests.Count -gt 0) { 'snapshot_suite_scoped' } else { 'snapshot_suite' })
     Scope = @($scope)
+    SelectedTests = @($selectedTests)
     ExitCode = [int]$run.ExitCode
     Elapsed = $stopwatch.Elapsed
     TimedOut = [bool]$run.TimedOut
