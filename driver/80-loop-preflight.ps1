@@ -14,6 +14,8 @@
     }
   }
 
+  try { Invoke-ConversationAutoArchiveIfDue | Out-Null } catch {}
+
   # ───────── self-dev recycle COALESCER — root-cause fix for restart-storms (2026-05-29) ─────────
   # PROBLEM: a self-dev task that edited several .ps1 set restart.flag per edit; the supervisor then
   # recycled MID-TURN, the coder resumed, edited again, set the flag again -> 18 recycles/30min ->

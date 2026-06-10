@@ -187,6 +187,7 @@
   "reflect": {
     "minTaskDurationSec": 60
   },
+  "conversationAutoArchiveLines": 1500,
   "librarian": {
     "deltaTriggerCount": 10,
     "ceilingHours": 6

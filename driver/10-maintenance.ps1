@@ -884,6 +884,73 @@ function Start-CanaryIfDue {
   } catch {}
 }
 
+function Invoke-ConversationAutoArchiveIfDue {
+  # Busy-safe live feed hygiene. The archive function is bridge-locked and keeps
+  # agent context via summary.txt + hot tail, so this can run from the regular
+  # driver tick instead of waiting for idle housekeeping.
+  param(
+    [int]$Keep = 200,
+    [int]$DefaultThreshold = 1500,
+    [double]$ThrottleHours = 6.0
+  )
+
+  if (-not (Get-Command Invoke-ConversationArchive -ErrorAction SilentlyContinue)) { return [pscustomobject]@{ ok=$false; action='missing_archive_function'; lineCount=0; threshold=$DefaultThreshold; archived=0; kept=0 } }
+
+  $threshold = [int]$DefaultThreshold
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'conversationAutoArchiveLines') -and $null -ne $cfg.conversationAutoArchiveLines) {
+      $candidate = [int]$cfg.conversationAutoArchiveLines
+      if ($candidate -gt 0) { $threshold = $candidate }
+    }
+  } catch {}
+  if ($threshold -lt $Keep) { $threshold = $Keep }
+  if ($ThrottleHours -le 0) { $ThrottleHours = 6.0 }
+
+  $convPath = ''
+  try { $convPath = Get-ConversationPath } catch { return [pscustomobject]@{ ok=$false; action='no_conversation_path'; lineCount=0; threshold=$threshold; archived=0; kept=0 } }
+  if ([string]::IsNullOrWhiteSpace($convPath) -or -not (Test-Path -LiteralPath $convPath)) {
+    return [pscustomobject]@{ ok=$true; action='missing_feed'; lineCount=0; threshold=$threshold; archived=0; kept=0 }
+  }
+
+  $marker = Join-Path (Split-Path -Parent $convPath) 'conversation-auto-archive.last'
+  if (Test-Path -LiteralPath $marker) {
+    try {
+      $last = [datetime]::Parse((Get-Content -LiteralPath $marker -Raw -Encoding UTF8).Trim(), $null, [Globalization.DateTimeStyles]::RoundtripKind)
+      if (((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalHours -lt $ThrottleHours) {
+        return [pscustomobject]@{ ok=$true; action='throttled'; lineCount=0; threshold=$threshold; archived=0; kept=0 }
+      }
+    } catch {}
+  }
+
+  $count = 0
+  try {
+    foreach ($line in [System.IO.File]::ReadLines($convPath, [System.Text.Encoding]::UTF8)) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$line)) { $count++ }
+      if ($count -gt $threshold) { break }
+    }
+  } catch {
+    return [pscustomobject]@{ ok=$false; action='count_failed'; lineCount=$count; threshold=$threshold; archived=0; kept=0 }
+  }
+  if ($count -le $threshold) {
+    return [pscustomobject]@{ ok=$true; action='under_threshold'; lineCount=$count; threshold=$threshold; archived=0; kept=0 }
+  }
+
+  $result = $null
+  try { $result = Invoke-ConversationArchive -Keep $Keep } catch { return [pscustomobject]@{ ok=$false; action='archive_failed'; lineCount=$count; threshold=$threshold; archived=0; kept=0 } }
+  try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try {
+    $archived = [int]$result.archived
+    $kept = [int]$result.kept
+    if ($archived -gt 0) {
+      Add-Message -From system -Kind event -Text ("🗄 Live feed auto-archive: moved " + $archived + " old messages; kept hot tail " + $kept + " (threshold " + $threshold + ").") | Out-Null
+    }
+    return [pscustomobject]@{ ok=[bool]$result.ok; action='archived'; lineCount=$count; threshold=$threshold; archived=$archived; kept=$kept }
+  } catch {
+    return [pscustomobject]@{ ok=$true; action='archived'; lineCount=$count; threshold=$threshold; archived=0; kept=0 }
+  }
+}
+
 function Get-AutonomyRequireApproval {
   try { return [bool](Get-AutonomySettings).requireApproval } catch { return $false }
 }
