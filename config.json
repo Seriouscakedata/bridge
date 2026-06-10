@@ -266,7 +266,6 @@
       "stateKb": { "weight": 120, "capMs": 180000 },
       "locks": { "weight": 15000, "capMs": 120000 },
       "jobs": { "weight": 5000, "capMs": 180000 },
-      "checkpoints": { "weight": 8000, "capMs": 180000 },
       "restartsHour": { "weight": 45000, "capMs": 270000 }
     }
   },
