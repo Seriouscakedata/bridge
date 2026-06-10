@@ -767,7 +767,7 @@ foreach ($mode in $modes) {
   $probeProc = $probeHandle.Process
   $probeDeadline = (Get-Date).AddSeconds([Math]::Min(8, [Math]::Max(1, [int](($deadline - (Get-Date)).TotalSeconds))))
   $exitSeenAt = $null
-  $exitGraceUntil = $exitSeenAt.AddSeconds(2)
+  $exitGraceUntil = $null
   while ((Get-Date) -lt $probeDeadline) {
     try {
       $dresp = Invoke-RestMethod -Uri $probeDebugUrl -Headers $headers -TimeoutSec 3
