@@ -188,6 +188,39 @@ function Test-DeliveryGateForbiddenPath {
   return $false
 }
 
+function Test-DeliveryGateProtectedProjectSpecPath {
+  param([string]$Path)
+
+  $p = Normalize-DeliveryPath -Path $Path
+  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
+
+  # Keep hard-forbidden runtime/secret paths on the existing blocking fact.
+  if (Test-DeliveryGateForbiddenPath -Path $p) { return $false }
+
+  if ($p -match '(^|/)project_plan\.md$') { return $true }
+  if ($p -match '(^|/)plan\.md$') { return $true }
+  if ($p -match '(^|/)\.bridge/project-contract\.json$') { return $true }
+  if ($p -match '(^|/)\.bridge/acceptance\.json$') { return $true }
+  if ($p -match '(^|/)acceptance(/|$)') { return $true }
+  if ($p -match '(^|/)(acceptance|acceptance-spec|acceptance_specs?)[^/]*\.(md|json|yaml|yml)$') { return $true }
+
+  return $false
+}
+
+function Get-DeliveryGateProtectedProjectSpecChanges {
+  param([string[]]$TouchedFiles = @())
+
+  $changes = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($file in @($TouchedFiles)) {
+    $p = Normalize-DeliveryPath -Path $file
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    if ((Test-DeliveryGateProtectedProjectSpecPath -Path $p) -and -not $changes.Contains($p)) {
+      [void]$changes.Add($p)
+    }
+  }
+  return [string[]]@($changes.ToArray())
+}
+
 function Test-DeliveryGateBridgeSelfEvidence {
   param([string]$TaskText)
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
@@ -351,6 +384,7 @@ function New-DeliveryGateInputFacts {
   $repoClean = Test-DeliveryGateRepoClean -BridgeRoot $root
   $critical = (@($touched.ToArray()) | Where-Object { Test-DeliveryCriticalBridgePath -Path $_ }).Count -gt 0
   $forbidden = Test-DeliveryGateForbiddenChanges -TouchedFiles @($touched.ToArray()) -TaskText $TaskText -Channel $Channel
+  $protectedProjectSpecChanges = @(Get-DeliveryGateProtectedProjectSpecChanges -TouchedFiles @($touched.ToArray()))
   $destructive = Test-DeliveryGateDestructivePatternsText -Text $scanText
   $qualityBypass = Test-DeliveryGateQualityBypassText -Text $scanText
   $canaryOk = if ($critical) { ([bool]$ParsePassed -and [bool]$SmokePassed -and [bool]$CanaryPassed) } else { $true }
@@ -359,6 +393,7 @@ function New-DeliveryGateInputFacts {
   $evidence = @(
     ('channel=' + $(if ([string]::IsNullOrWhiteSpace($Channel)) { 'unknown' } else { $Channel })),
     ('touched=' + @($touched.ToArray()).Count),
+    ('protected_project_spec_changes=' + ($protectedProjectSpecChanges -join ',')),
     ('critical=' + [string][bool]$critical),
     ('repo_clean=' + [string][bool]$repoClean),
     ('qa=' + [string][bool]$QaPassed + ' critic=' + [string][bool]$CriticPassed + ' parse=' + [string][bool]$ParsePassed + ' smoke=' + [string][bool]$SmokePassed + ' acceptance=' + [string][bool]$AcceptancePassed + ' canary=' + [string][bool]$CanaryPassed)
@@ -366,6 +401,7 @@ function New-DeliveryGateInputFacts {
 
   return [ordered]@{
     repo_clean              = [bool]$repoClean
+    protected_project_spec_changes = @($protectedProjectSpecChanges)
     forbidden_changes       = [bool]$forbidden
     destructive_patterns    = [bool]$destructive
     parse_ok                = [bool]$ParsePassed

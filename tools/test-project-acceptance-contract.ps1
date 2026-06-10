@@ -172,14 +172,20 @@ try {
   [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'acceptance.json'), $explicitAcc, (New-Object System.Text.UTF8Encoding($false)))
   $cfgExplicit = Get-ProjectAcceptanceConfig -ProjectRoot $project
   Assert-True ($cfgExplicit.smokeScripts.Count -eq 1 -and [string]$cfgExplicit.smokeScripts[0] -eq 'custom:smoke') 'expected explicit smokeScripts preserved, no auto-add'
+  $missingDeclared = New-ProjectAcceptanceMissingDeclaredScriptStep -Kind 'smoke' -Name ([string]$cfgExplicit.smokeScripts[0])
+  Assert-True (-not [bool]$missingDeclared.ok -and [string]$missingDeclared.details -eq 'missing-declared-script' -and [int]$missingDeclared.exit_code -eq 127) 'expected declared missing smoke script to fail closed'
   Remove-Item -LiteralPath (Join-Path (Join-Path $project '.bridge') 'acceptance.json') -Force
 
   $cfgAuto = Get-ProjectAcceptanceConfig -ProjectRoot $project
   Assert-True ($cfgAuto.smokeScripts.Count -eq 2 -and [string]$cfgAuto.smokeScripts[0] -eq 'smoke:browser' -and [string]$cfgAuto.smokeScripts[1] -eq 'smoke:ux') 'expected auto-discovered smoke scripts in config'
+  $presentMarker = Join-Path $project 'present-script-ran.txt'
+  $presentRun = Invoke-ProjectAcceptanceProcess -ProjectRoot $project -CommandLine ('cmd.exe /d /c echo ran>"' + $presentMarker + '"') -TimeoutSec 10
+  Assert-True ([bool]$presentRun.ok -and (Test-Path -LiteralPath $presentMarker -PathType Leaf)) 'expected declared present script command path to run'
   Remove-Item -LiteralPath (Join-Path $project 'package.json') -Force
 
   $cfgEmpty = Get-ProjectAcceptanceConfig -ProjectRoot $project
   Assert-True ($cfgEmpty.smokeScripts.Count -eq 0) 'expected empty smokeScripts when no package.json'
+  Assert-True ($cfgEmpty.requiredScripts.Count -eq 0) 'expected undeclared optional scripts to keep skipping'
 
   $routeLikeDir = Join-Path $project 'app\login'
   New-Item -ItemType Directory -Path $routeLikeDir -Force | Out-Null

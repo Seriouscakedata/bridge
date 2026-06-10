@@ -36,6 +36,8 @@ function New-TestRepo {
   New-Item -ItemType Directory -Path $path -Force | Out-Null
   & git -C $path init | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+  & git -C $path config user.email 'bridge-test@example.invalid' | Out-Null
+  & git -C $path config user.name 'Bridge Test' | Out-Null
   return $path
 }
 
@@ -91,6 +93,34 @@ try {
     Check 'green facts accepted by gate' ([bool]$gate.ok -and [bool]$gate.merge_allowed -and [bool]$gate.release_allowed) $gate
 
     Check 'repo clean helper true in clean temp repo' (Test-DeliveryGateRepoClean -BridgeRoot $repo) $repo
+
+    [System.IO.File]::WriteAllText((Join-Path $repo 'README.md'), "base`n", (New-Object System.Text.UTF8Encoding($false)))
+    & git -C $repo add README.md | Out-Null
+    & git -C $repo commit -m 'base' | Out-Null
+    $baseCommit = ([string](& git -C $repo rev-parse HEAD)).Trim()
+    [System.IO.File]::WriteAllText((Join-Path $repo 'PROJECT_PLAN.md'), "changed plan`n", (New-Object System.Text.UTF8Encoding($false)))
+    & git -C $repo add PROJECT_PLAN.md | Out-Null
+    & git -C $repo commit -m 'touch protected project plan' | Out-Null
+    $headCommit = ([string](& git -C $repo rev-parse HEAD)).Trim()
+    $protectedSpecFacts = New-DeliveryGateInputFacts `
+      -BridgeRoot $repo `
+      -TaskText 'external project delivery with acceptance pending' `
+      -Channel 'client-app' `
+      -BaseCommit $baseCommit `
+      -HeadCommit $headCommit
+    Check 'protected project spec diff fact lists PROJECT_PLAN.md' (
+      @($protectedSpecFacts.protected_project_spec_changes) -contains 'project_plan.md'
+    ) $protectedSpecFacts
+
+    $cleanProtectedSpecFacts = New-DeliveryGateInputFacts `
+      -BridgeRoot $repo `
+      -TaskText 'external project delivery with no protected spec diff' `
+      -Channel 'client-app' `
+      -BaseCommit $headCommit `
+      -HeadCommit $headCommit
+    Check 'protected project spec diff fact empty for clean diff' (
+      @($cleanProtectedSpecFacts.protected_project_spec_changes).Count -eq 0
+    ) $cleanProtectedSpecFacts
 
     $coveredAcceptance = Get-DeliveryGateAcceptanceFact `
       -BridgeRoot $repo `

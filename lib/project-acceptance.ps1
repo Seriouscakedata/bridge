@@ -610,6 +610,12 @@ function New-ProjectAcceptanceStep {
   return [pscustomobject]@{ name=$Name; ok=[bool]$Ok; exit_code=[int]$ExitCode; details=[string]$Details }
 }
 
+function New-ProjectAcceptanceMissingDeclaredScriptStep {
+  param([string]$Kind, [string]$Name)
+  $prefix = if ([string]::IsNullOrWhiteSpace($Kind)) { 'script' } else { [string]$Kind }
+  return (New-ProjectAcceptanceStep -Name ($prefix + ':' + [string]$Name) -Ok $false -ExitCode 127 -Details 'missing-declared-script')
+}
+
 function Get-ProjectAcceptanceFileText {
   param([string]$Path)
   if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -1168,8 +1174,8 @@ function Invoke-ProjectAcceptance {
     Write-ProjectAcceptanceTrace -Channel $ch -Text "script start $scriptName"
     $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
     if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
-      [void]$steps.Add((New-ProjectAcceptanceStep -Name "script:$scriptName" -Ok $true -Details 'missing script, skipped'))
-      Write-ProjectAcceptanceTrace -Channel $ch -Text "script skip $scriptName"
+      [void]$steps.Add((New-ProjectAcceptanceMissingDeclaredScriptStep -Kind 'script' -Name $scriptName))
+      Write-ProjectAcceptanceTrace -Channel $ch -Text "script fail missing-declared-script $scriptName"
       continue
     }
     $res = Invoke-ProjectAcceptanceProcess -ProjectRoot $ProjectRoot -CommandLine "npm.cmd run $scriptName" -TimeoutSec 900
@@ -1264,8 +1270,8 @@ function Invoke-ProjectAcceptance {
           Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke start $scriptName"
           $pkg = Get-ProjectAcceptancePackage -ProjectRoot $ProjectRoot
           if (-not (Test-ProjectAcceptancePackageScript -PackageJson $pkg -Name $scriptName)) {
-            [void]$steps.Add((New-ProjectAcceptanceStep -Name "smoke:$scriptName" -Ok $true -Details 'missing script, skipped'))
-            Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke skip $scriptName"
+            [void]$steps.Add((New-ProjectAcceptanceMissingDeclaredScriptStep -Kind 'smoke' -Name $scriptName))
+            Write-ProjectAcceptanceTrace -Channel $ch -Text "smoke fail missing-declared-script $scriptName"
             continue
           }
           $envVars = @{ BASE_URL = [string]$smokeServer.baseUrl; SMOKE_ALLOW_MUTATION = '1' }
