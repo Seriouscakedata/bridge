@@ -1416,8 +1416,28 @@ function Get-PreflightBlockers {
     [void]$soft.Add("не удалось определить .git каталог: $($_.Exception.Message)")
   }
 
-  foreach ($m in @('MERGE_HEAD','CHERRY_PICK_HEAD','REBASE_HEAD','index.lock')) {
+  foreach ($m in @('MERGE_HEAD','CHERRY_PICK_HEAD','REBASE_HEAD')) {
     if (Test-Path -LiteralPath (Join-Path $gitDir $m)) { [void]$hard.Add("git mid-op: .git/$m") }
+  }
+  # 2026-06-10: index.lock handled specially. A STALE lock (no live git process, age > 20s) is
+  # AUTO-REMOVED instead of hard-blocking. Root: a coder/sandbox git op (CodexSandboxUsers has write
+  # on the gitdir) dies leaving index.lock; Get-PreflightBlockers then treated it as a hard blocker,
+  # so the driver could not proceed, hung 5 min, the sentinel force-restarted it, it resumed, was
+  # still blocked -> a hang/restart loop (observed 5 restarts, 0 throughput). The driver owns the
+  # gitdir (FullControl) so it can clear the foreign lock. A FRESH lock (<20s) or one held by a LIVE
+  # git process still blocks (a real in-flight commit must not be stomped).
+  $idxLock = Join-Path $gitDir 'index.lock'
+  if (Test-Path -LiteralPath $idxLock) {
+    $idxLiveGit = $false
+    try { $idxLiveGit = (@(Get-Process git -ErrorAction SilentlyContinue)).Count -gt 0 } catch { $idxLiveGit = $false }
+    $idxAgeSec = 999
+    try { $idxAgeSec = ((Get-Date) - (Get-Item -LiteralPath $idxLock -Force).LastWriteTime).TotalSeconds } catch {}
+    if ($idxLiveGit -or $idxAgeSec -lt 20) {
+      [void]$hard.Add("git mid-op: .git/index.lock")
+    } else {
+      try { Remove-Item -LiteralPath $idxLock -Force -ErrorAction Stop; [void]$soft.Add("auto-cleared stale .git/index.lock (age $([int]$idxAgeSec)s, no live git)") }
+      catch { [void]$hard.Add("git mid-op: .git/index.lock (stale, remove failed: $($_.Exception.Message))") }
+    }
   }
   foreach ($d in @('rebase-merge','rebase-apply')) {
     if (Test-Path -LiteralPath (Join-Path $gitDir $d) -PathType Container) { [void]$hard.Add("git mid-op: .git/$d/") }
