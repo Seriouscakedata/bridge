@@ -24,10 +24,7 @@
     }
     $fileMarkerPaths += $sourcePath
     $meta = Register-AttachmentPath -SourcePath $sourcePath
-    if ($meta) {
-      $attachmentMetas += $meta
-      try { Add-TaskCheckpoint -Kind file -Text $sourcePath } catch {}
-    }
+    if ($meta) { $attachmentMetas += $meta }
     else { $failedAttachmentPaths += $sourcePath }
   }
   # Auto-detect image file paths from markdown links: [name](</C:/path.png>)
@@ -76,7 +73,6 @@
   foreach ($m in [regex]::Matches($reply, $verifiedPattern)) {
     $vtext = $m.Groups[1].Value.Trim()
     if (-not [string]::IsNullOrWhiteSpace($vtext)) {
-      try { Add-TaskCheckpoint -Kind verified -Text $vtext } catch {}
       try { Add-SessionDecisionEvent -EventType 'verified_commit' -Meta @{ what=$vtext.Substring(0,[Math]::Min(100,$vtext.Length)) } -Channel $Channel } catch {}
     }
   }
@@ -427,8 +423,6 @@
     $stepId = $m.Groups[1].Value.Trim()
     $stepResult = if ($m.Groups.Count -gt 2) { $m.Groups[2].Value.Trim() } else { '' }
     if ([string]::IsNullOrWhiteSpace($stepId)) { continue }
-    $stepCheckpoint = if ([string]::IsNullOrWhiteSpace($stepResult)) { $stepId } else { "$stepId | $stepResult" }
-    try { Add-TaskCheckpoint -Kind step_done -Text $stepCheckpoint } catch {}
     try {
       $okStep = Set-PlanStepStatus -Id $stepId -Status done -Result $stepResult
       if ($okStep) { $planStepUpdates += "$stepId → done" }
