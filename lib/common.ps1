@@ -680,14 +680,6 @@ function Get-RuntimeStateMetrics {
     }
   } catch { $jobs = 0 }
 
-  $checkpoints = 0
-  $checkpointsDir = Join-Path $runtime 'checkpoints'
-  try {
-    if (Test-Path -LiteralPath $checkpointsDir) {
-      $checkpoints = @((Get-ChildItem -LiteralPath $checkpointsDir -Recurse -File -ErrorAction SilentlyContinue)).Count
-    }
-  } catch { $checkpoints = 0 }
-
   $restartsHour = 0
   $restartsPath = Join-Path $runtime 'restarts.jsonl'
   if (Test-Path -LiteralPath $restartsPath) {
@@ -712,7 +704,6 @@ function Get-RuntimeStateMetrics {
     stateKb      = [int][Math]::Ceiling([double]$stateBytes / 1024.0)
     locks        = [int]$locks
     jobs         = [int]$jobs
-    checkpoints  = [int]$checkpoints
     restartsHour = [int]$restartsHour
   }
 }
@@ -727,7 +718,6 @@ function Get-ProbeTimeoutDefaults {
       stateKb      = [pscustomobject]@{ weight = 120;   capMs = 180000 }
       locks        = [pscustomobject]@{ weight = 15000; capMs = 120000 }
       jobs         = [pscustomobject]@{ weight = 5000;  capMs = 180000 }
-      checkpoints  = [pscustomobject]@{ weight = 8000;  capMs = 180000 }
       restartsHour = [pscustomobject]@{ weight = 45000; capMs = 270000 }
     }
   }
@@ -770,7 +760,7 @@ function Get-AdaptiveProbeTimeoutMs {
   $score = [double]$baseMs
   $metricCfg = $null
   if ($pt -and ($pt.PSObject.Properties.Name -contains 'metrics')) { $metricCfg = $pt.metrics }
-  foreach ($name in @('channels','stateKb','locks','jobs','checkpoints','restartsHour')) {
+  foreach ($name in @('channels','stateKb','locks','jobs','restartsHour')) {
     $def = $defaults.metrics.$name
     $mc = $null
     if ($metricCfg -and ($metricCfg.PSObject.Properties.Name -contains $name)) { $mc = $metricCfg.$name }
@@ -892,57 +882,6 @@ function Clear-AuditorSuppressedHashes {
   } catch {}
 }
 
-function Get-CheckpointKey {
-  param([string]$Kind, [string]$Text)
-
-  $norm = ([string]$Text -replace '\s+', ' ').Trim().ToLowerInvariant()
-  if ($norm.Length -gt 200) { $norm = $norm.Substring(0, 200) }
-  return (([string]$Kind).ToLowerInvariant() + '|' + $norm)
-}
-
-function Add-TaskCheckpoint {
-  param(
-    [Parameter(Mandatory)][ValidateSet('verified','step_done','file','commit')][string]$Kind,
-    [Parameter(Mandatory)][string]$Text
-  )
-
-  $cleanText = ([string]$Text -replace '\s+', ' ').Trim()
-  if ([string]::IsNullOrWhiteSpace($cleanText)) { return }
-  if ($cleanText.Length -gt 240) { $cleanText = $cleanText.Substring(0, 240) + '...' }
-  $key = Get-CheckpointKey -Kind $Kind -Text $cleanText
-  $ts = (Get-Date).ToString('o')
-
-  Update-State ({
-    param($s)
-    if (-not ($s.PSObject.Properties.Name -contains 'task_checkpoints')) {
-      $s | Add-Member -NotePropertyName task_checkpoints -NotePropertyValue @() -Force
-    }
-    $cur = @()
-    if ($null -ne $s.task_checkpoints) {
-      $cur = @($s.task_checkpoints | Where-Object { $null -ne $_ })
-    }
-    foreach ($cp in $cur) {
-      try {
-        if ([string]$cp.key -eq $key) { return }
-      } catch {}
-    }
-    $seq = 0
-    try { $seq = [int]$s.lastSeq } catch { $seq = 0 }
-    $entry = [pscustomobject]@{
-      kind = $Kind
-      text = $cleanText
-      key  = $key
-      seq  = $seq
-      ts   = $ts
-    }
-    $arr = @($cur + @($entry))
-    if ($arr.Count -gt 5) {
-      $arr = @($arr | Select-Object -Last 5)
-    }
-    $s.task_checkpoints = @($arr)
-  }.GetNewClosure()) | Out-Null
-}
-
 function Set-TaskLastFailure {
   param(
     [Parameter(Mandatory)]
@@ -992,14 +931,6 @@ function Clear-TaskLastFailureKind {
       $s | Add-Member -NotePropertyName task_last_failure -NotePropertyValue $null -Force
     }
   }.GetNewClosure()) | Out-Null
-}
-
-function Clear-TaskCheckpoint {
-  Update-State {
-    param($s)
-    $s | Add-Member -NotePropertyName task_checkpoints -NotePropertyValue @() -Force
-    $s | Add-Member -NotePropertyName task_last_failure -NotePropertyValue $null -Force
-  } | Out-Null
 }
 
 function Add-SessionDecisionEvent {
@@ -1132,42 +1063,6 @@ function Get-LastSnapshot {
   } catch { return $null }
 }
 
-function Get-TaskCheckpointBlock {
-  $st = Read-State
-  if ($null -eq $st) { return '' }
-
-  $cps = @()
-  if ($st.PSObject.Properties.Name -contains 'task_checkpoints' -and $null -ne $st.task_checkpoints) {
-    $cps = @($st.task_checkpoints | Where-Object { $null -ne $_ })
-  }
-  $lf = $null
-  if ($st.PSObject.Properties.Name -contains 'task_last_failure') { $lf = $st.task_last_failure }
-  if ($cps.Count -eq 0 -and $null -eq $lf) { return '' }
-
-  $lines = New-Object 'System.Collections.Generic.List[string]'
-  if ($cps.Count -gt 0) {
-    [void]$lines.Add('=== TASK CHECKPOINTS (последние факты, FIFO-5) ===')
-    foreach ($c in $cps) {
-      $tag = switch ([string]$c.kind) {
-        'verified'  { 'VERIFIED' }
-        'step_done' { 'STEP-DONE' }
-        'file'      { 'FILE' }
-        'commit'    { 'COMMIT' }
-        default     { ([string]$c.kind).ToUpperInvariant() }
-      }
-      [void]$lines.Add(("- [{0}] {1}" -f $tag, [string]$c.text))
-    }
-  }
-  if ($null -ne $lf) {
-    if ($lines.Count -gt 0) { [void]$lines.Add('') }
-    [void]$lines.Add('=== LAST FAILURE ===')
-    [void]$lines.Add(("[{0}] {1}" -f [string]$lf.kind, [string]$lf.text))
-  }
-  $block = [string]::Join("`n", [string[]]@($lines.ToArray()))
-  if ($block.Length -gt 600) { $block = $block.Substring(0, 600) + '...' }
-  return $block
-}
-
 function Get-CoderRuntimeContextBlock {
   [CmdletBinding()]
   param([string]$RepoRoot = '')
@@ -1241,23 +1136,6 @@ function Get-CoderRuntimeContextBlock {
     }
   } catch {
     [void]$lines.Add('agent_lock: n/a')
-  }
-
-  try {
-    if (Get-Command Get-TaskCheckpointBlock -ErrorAction SilentlyContinue) {
-      $cp = Get-TaskCheckpointBlock
-      if ($cp) {
-        $cpTrim = ($cp -replace '\s+', ' ').Trim()
-        if ($cpTrim.Length -gt 120) { $cpTrim = $cpTrim.Substring(0, 120) + '…' }
-        [void]$lines.Add("last_checkpoint: $cpTrim")
-      } else {
-        [void]$lines.Add('last_checkpoint: none')
-      }
-    } else {
-      [void]$lines.Add('last_checkpoint: n/a')
-    }
-  } catch {
-    [void]$lines.Add('last_checkpoint: n/a')
   }
 
   try {
@@ -1951,7 +1829,6 @@ function Initialize-Bridge {
       doctor_reason      = ''
       doctor_started_at  = $null
       auditor            = @{ suppressed_hashes = @() }
-      task_checkpoints   = @()
       task_last_failure  = $null
       agent_telemetry    = $null
       session_mission    = $null
@@ -1973,7 +1850,7 @@ function Initialize-Bridge {
       coder_fired=$false; coder_bypass_retry_count=0
       held_task=$null; doctor_active=$false; doctor_attempts=0; doctor_repair_attempts=0; doctor_restart_count=0; doctor_reason=''; doctor_started_at=$null
       auditor=@{ suppressed_hashes=@() }
-      task_checkpoints=@(); task_last_failure=$null
+      task_last_failure=$null
       agent_telemetry=$null
       session_mission=$null
     }
