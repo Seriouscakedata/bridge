@@ -403,7 +403,7 @@ function Invoke-BacklogAddHttpScenario {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
-  $marker = 'backlog-flow-' + [Guid]::NewGuid().ToString('N').Substring(0,12)
+  $marker = 'backlog-flow-e8061e8f51a0'
   $taskText = $marker + ' bridge backlog add list delete verification ' + [Guid]::NewGuid().ToString('N')
   $addId = ''
 

@@ -25,7 +25,7 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-' + Date.now().toString(36);
+  const marker = 'backlog-flow-e8061e8f51a0';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const taskText = uniqueToken + ' bridge backlog add list delete verification';
 
