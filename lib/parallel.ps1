@@ -1665,6 +1665,26 @@ function Collect-ParallelDispatchWorkerOutput {
       return
     }
 
+    if (@($Context.workers).Count -eq 1) {
+      $seqCheck = Invoke-SequentialTouchSetCheck `
+        -RepoRoot $wtPath `
+        -DeclaredFiles $declaredFiles `
+        -BaseCommit ([string]$Context.baseCommit) `
+        -IsOperatorAuthorized (Test-SequentialTouchSetOperatorAuthorized -Worker $Worker) `
+        -GitExe ([string]$Context.gitExe) `
+        -ChangedFiles @($changed)
+      if (-not [bool]$seqCheck.ok) {
+        $violatingFile = ''
+        try { $violatingFile = [string]$seqCheck.violatingFile } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($violatingFile)) {
+          [void](Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($violatingFile) -DeclaredFiles $declaredFiles -GitExe $Context.gitExe)
+        }
+        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+        try { Add-Message -From system -Text ("⚠️ Карантин поток " + $Worker.id + ": " + [string]$seqCheck.reason + $(if ($violatingFile) { " (" + $violatingFile + ")" } else { "" })) -Kind event | Out-Null } catch {}
+        return
+      }
+    }
+
     $allowedPaths = New-Object 'System.Collections.Generic.List[string]'
     $deniedPaths = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rel in $changed) {
@@ -1762,6 +1782,95 @@ function Remove-StaleIndexLock {
   $lockAge = ((Get-Date) - (Get-Item -LiteralPath $lockPath).LastWriteTime).TotalSeconds
   if ($lockAge -lt 30) { return $false }
   try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop; return $true } catch { return $false }
+}
+
+function Invoke-SequentialTouchSetCheck {
+  param(
+    [string]$RepoRoot,
+    [string[]]$DeclaredFiles = @(),
+    [string]$BaseCommit = '',
+    [bool]$IsOperatorAuthorized = $false,
+    [string]$GitExe = '',
+    [string[]]$ChangedFiles = @()
+  )
+
+  if ($IsOperatorAuthorized) { return @{ ok = $true; reason = 'operator-authorized' } }
+
+  if (-not (Get-Command Test-PolicyControlPlanePath -ErrorAction SilentlyContinue)) {
+    try {
+      $policyPath = Join-Path $PSScriptRoot 'policy.ps1'
+      if (Test-Path -LiteralPath $policyPath) { . $policyPath }
+    } catch {}
+  }
+
+  if (-not (Get-Command Test-PolicyControlPlanePath -ErrorAction SilentlyContinue)) {
+    return @{ ok = $false; reason = 'policy-helper-missing'; violatingFile = '' }
+  }
+
+  $changed = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($p in @($ChangedFiles)) {
+    $rel = _NormalizeRelPath ([string]$p)
+    if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
+  }
+
+  if ($changed.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($RepoRoot) -and (Test-Path -LiteralPath $RepoRoot)) {
+    if ([string]::IsNullOrWhiteSpace($GitExe)) {
+      try { $GitExe = Get-GitExe } catch { $GitExe = 'git' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
+      try {
+        foreach ($line in @(& $GitExe -C $RepoRoot diff --name-only $BaseCommit -- 2>$null)) {
+          $rel = _NormalizeRelPath ([string]$line)
+          if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
+        }
+      } catch {}
+    }
+    try {
+      foreach ($line in @(& $GitExe -C $RepoRoot status --porcelain -uall 2>$null)) {
+        $txt = [string]$line
+        if ([string]::IsNullOrWhiteSpace($txt)) { continue }
+        $pathText = if ($txt.Length -gt 3) { $txt.Substring(3).Trim() } else { $txt.Trim() }
+        if ($pathText -match '\s+->\s+') { $pathText = (($pathText -split '\s+->\s+') | Select-Object -Last 1) }
+        $rel = _NormalizeRelPath ($pathText.Trim('"'))
+        if ($null -ne $rel -and -not $changed.Contains($rel)) { [void]$changed.Add($rel) }
+      }
+    } catch {}
+  }
+
+  foreach ($file in @($changed)) {
+    if (Test-ParallelCollectedPathAllowed -RelativePath $file -DeclaredFiles $DeclaredFiles) { continue }
+    if (Test-PolicyControlPlanePath -Path $file) {
+      return @{ ok = $false; violatingFile = $file; reason = 'undeclared-control-plane-edit'; changedFiles = @($changed) }
+    }
+  }
+
+  return @{ ok = $true; changedFiles = @($changed) }
+}
+
+function Test-SequentialTouchSetOperatorAuthorized {
+  param([object]$Worker)
+
+  if (-not $Worker) { return $false }
+  foreach ($name in @('operator_authorized','is_operator_authorized','operatorAuthorized')) {
+    try {
+      if ($Worker.PSObject -and ($Worker.PSObject.Properties.Name -contains $name) -and [bool]$Worker.$name) { return $true }
+    } catch {}
+  }
+  try {
+    if (Get-Command Get-PolicyItemAuthorization -ErrorAction SilentlyContinue) {
+      return ([string](Get-PolicyItemAuthorization -Item $Worker) -eq 'operator')
+    }
+  } catch {}
+  try {
+    foreach ($tag in @($Worker.tags)) {
+      if ([string]$tag -and ([string]$tag).Trim().ToLowerInvariant() -eq 'operator') { return $true }
+    }
+  } catch {}
+  try {
+    $from = ([string]$Worker.from).Trim().ToLowerInvariant()
+    if ($from -eq 'operator') { return $true }
+  } catch {}
+  return $false
 }
 
 function Test-ParallelDispatchGitLockContention {
