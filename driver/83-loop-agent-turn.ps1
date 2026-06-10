@@ -143,9 +143,6 @@
           $parts = @(([string]$cl) -split "`t", 2)
           if ($parts.Count -lt 1 -or [string]::IsNullOrWhiteSpace($parts[0])) { continue }
           $sha = [string]$parts[0]
-          $subj = if ($parts.Count -ge 2) { [string]$parts[1] } else { '' }
-          $shortSha = if ($sha.Length -gt 7) { $sha.Substring(0, 7) } else { $sha }
-          Add-TaskCheckpoint -Kind commit -Text (($shortSha + ' ' + $subj).Trim())
           try {
             $pmState = Read-State
             if ($pmState -and ($pmState.PSObject.Properties.Name -contains 'task_last_failure') -and $null -ne $pmState.task_last_failure) {
@@ -180,12 +177,6 @@
             & git -C $bridgeRoot commit -m $acMsg 2>$null | Out-Null
             $acNewHead = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
             if ($acNewHead -and $acNewHead -ne $headBeforeTurn) {
-              try { Add-TaskCheckpoint -Kind commit -Text (($acNewHead.Substring(0,7) + ' ' + $acMsg).Trim()) } catch {}
-              try {
-                $stCommitCp = Read-State
-                Save-TaskCheckpointFromState -State $stCommitCp -TaskTitle $task -Channel $Channel -Reason 'post-commit' -Prompt $prompt -Context ("driver auto-commit " + $acNewHead.Substring(0,7)) | Out-Null
-                Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
-              } catch {}
               try {
                 $stPostCommitQa = Read-State
                 $postCommitQaTaskId = [string]$stPostCommitQa.current_task_id
@@ -337,13 +328,6 @@
     $who = if ($turnResult.errorType -eq 'coder_timeout') { 'Codex' } else { 'Claude' }
     $dur = [int]$turnResult.duration
     $trc = [int](Read-State).timeout_retry_count
-    try {
-      $stTimeoutCp = Read-State
-      Save-TaskCheckpointFromState -State $stTimeoutCp -TaskTitle $task -Channel $Channel -Reason ("timeout:" + [string]$turnResult.errorType) -Prompt $prompt -Context ("agent timeout after " + [string]$dur + "s") | Out-Null
-      Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
-    } catch {
-      try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('timeout-checkpoint-error: ' + $_.Exception.Message) } catch {}
-    }
     # 🩺 Long timeouts (>= ~60% of cap) almost never come back via retry — same prompt would
     # just timeout again, wasting another 500+s. Heuristic threshold 350s catches both planner
     # (cap 600s) and coder (cap 900s after Doctor raised it 4cb5f53). User feedback 2026-05-26:
