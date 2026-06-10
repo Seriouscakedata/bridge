@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$Name,
   [string]$Url = 'http://localhost:8787',
@@ -617,12 +617,12 @@ if ($Name -eq 'backlog-add') {
       $scenarioChannelOverride = $sandboxChannelSlug
       $cleanupChannelSlug = $sandboxChannelSlug # Mark for cleanup later
     } else {
-      Write-Warning "[scenario] Failed to create sandbox channel $sandboxChannelSlug: $($createResp.error)"
+      Write-Warning "[scenario] Failed to create sandbox channel $($sandboxChannelSlug): $($createResp.error)"
       # If channel creation fails, the scenario will likely fail anyway.
       # We proceed with the default channel, but expect the scenario to report failure.
     }
   } catch {
-    Write-Warning "[scenario] Exception creating sandbox channel $sandboxChannelSlug: $($_.Exception.Message)"
+    Write-Warning "[scenario] Exception creating sandbox channel $($sandboxChannelSlug): $($_.Exception.Message)"
   }
 }
 
@@ -886,10 +886,10 @@ if ($cleanupChannelSlug) {
     if ($archiveResp.ok -eq $true) {
       Write-Host "[scenario] Successfully archived channel $cleanupChannelSlug"
     } else {
-      Write-Warning "[scenario] Failed to archive sandbox channel $cleanupChannelSlug: $($archiveResp.error)"
+      Write-Warning "[scenario] Failed to archive sandbox channel $($cleanupChannelSlug): $($archiveResp.error)"
     }
   } catch {
-    Write-Warning "[scenario] Exception archiving sandbox channel $cleanupChannelSlug: $($_.Exception.Message)"
+    Write-Warning "[scenario] Exception archiving sandbox channel $($cleanupChannelSlug): $($_.Exception.Message)"
   }
 }
 

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$BridgePath = $null,
   [int]$ScenarioTimeoutSec = 60,
