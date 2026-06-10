@@ -2,50 +2,26 @@
 
 $script:BacklogGovernorBridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
+# 2026-06-09 shared primitives (lib/primitives.ps1, single source of truth). Guarded dot-source
+# so standalone consumers (tests/jobs) get it too; the lib/backlog.ps1 aggregator loads it first.
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
+
 function Get-BacklogGovernorObjectValue {
+  # Delegates to the canonical Get-BridgeObjectValue. Governor semantics = present-but-null is
+  # RETURNED (no -NullAsMissing), preserving the original behavior exactly.
   param(
     [Parameter(Mandatory=$false)]$Object,
     [Parameter(Mandatory=$true)][string[]]$Names,
     [Parameter(Mandatory=$false)]$Default = $null
   )
-  if ($null -eq $Object) { return $Default }
-
-  if ($Object -is [System.Collections.IDictionary]) {
-    foreach ($name in $Names) {
-      foreach ($key in @($Object.Keys)) {
-        if ([string]::Equals([string]$key, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
-          return $Object[$key]
-        }
-      }
-    }
-    return $Default
-  }
-
-  foreach ($name in $Names) {
-    $prop = @($Object.PSObject.Properties | Where-Object {
-      [string]::Equals([string]$_.Name, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)
-    } | Select-Object -First 1)
-    if ($prop.Count -gt 0) { return $prop[0].Value }
-  }
-  return $Default
+  return Get-BridgeObjectValue -Object $Object -Names $Names -Default $Default
 }
 
 function ConvertTo-BacklogGovernorStringArray {
   param([Parameter(Mandatory=$false)]$Value)
-  if ($null -eq $Value) { return @() }
-
-  $items = @()
-  if ($Value -is [string]) {
-    $items = @($Value)
-  } elseif ($Value -is [System.Collections.IEnumerable]) {
-    $items = @($Value)
-  } else {
-    $items = @($Value)
-  }
-
-  return @($items | ForEach-Object { [string]$_ } | Where-Object {
-    -not [string]::IsNullOrWhiteSpace([string]$_)
-  })
+  return ConvertTo-BridgeStringArray -Value $Value
 }
 
 function Normalize-BacklogGovernorPath {

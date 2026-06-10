@@ -2,25 +2,22 @@
 
 #region Backlog workpack packing and batching
 
+# 2026-06-09 shared primitives (lib/primitives.ps1, single source of truth). Guarded dot-source
+# so standalone consumers get it too; the lib/backlog.ps1 aggregator loads it first.
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
+
 function Get-BacklogPackObjectValue {
+  # Delegates to the canonical Get-BridgeObjectValue. Workpack semantics = present-but-null is
+  # treated as MISSING (-NullAsMissing), preserving the original behavior exactly.
   param($Obj, [string]$Name, $Default = $null)
-  try {
-    if ($Obj -and ($Obj.PSObject.Properties.Name -contains $Name) -and $null -ne $Obj.PSObject.Properties[$Name].Value) {
-      return $Obj.PSObject.Properties[$Name].Value
-    }
-  } catch {}
-  return $Default
+  return Get-BridgeObjectValue -Object $Obj -Names @($Name) -Default $Default -NullAsMissing
 }
 
 function ConvertTo-BacklogPackBool {
   param($Value, [bool]$Default = $true)
-  try {
-    if ($Value -is [bool]) { return [bool]$Value }
-    $s = ([string]$Value).Trim().ToLowerInvariant()
-    if (@('true','1','yes','on','enabled') -contains $s) { return $true }
-    if (@('false','0','no','off','disabled') -contains $s) { return $false }
-  } catch {}
-  return $Default
+  return Test-BridgeTruthy -Value $Value -Default $Default
 }
 
 function ConvertTo-BacklogPackInt {
