@@ -31,10 +31,10 @@ if (-not (Test-Path $OutDir)) {
 
 function Get-BrowserPath {
   $candidates = @(
-    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
     'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Microsoft\Edge\Application\msedge.exe'
   )
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) { return $candidate }

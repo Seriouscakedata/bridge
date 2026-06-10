@@ -125,24 +125,47 @@ if ($MaxHeaderButtons -gt 0) {
 }
 
 if ($Screenshot) {
-  $edge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-  if (-not (Test-Path $edge)) { $edge = 'C:\Program Files\Microsoft\Edge\Application\msedge.exe' }
-  if (-not (Test-Path $edge)) {
-    foreach ($p in 'C:\Program Files\Google\Chrome\Application\chrome.exe','C:\Program Files (x86)\Google\Chrome\Application\chrome.exe') {
-      if (Test-Path $p) { $edge = $p; break }
-    }
+  $browser = ''
+  foreach ($p in 'C:\Program Files\Google\Chrome\Application\chrome.exe','C:\Program Files (x86)\Google\Chrome\Application\chrome.exe','C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe','C:\Program Files\Microsoft\Edge\Application\msedge.exe') {
+    if (Test-Path $p) { $browser = $p; break }
   }
-  if (Test-Path $edge) {
+  if (Test-Path $browser) {
     $outPath = if ([System.IO.Path]::IsPathRooted($Screenshot)) { $Screenshot } else { Join-Path $root $Screenshot }
     $outDir = Split-Path $outPath -Parent
     if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+    $auditRuntimeDir = Join-Path $root 'runtime\ui-audit'
+    $profileDir = Join-Path $auditRuntimeDir ('profile_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+    $crashDir = Join-Path $profileDir 'crash'
+    try {
+      [void](New-Item -ItemType Directory -Path $profileDir -Force)
+      [void](New-Item -ItemType Directory -Path $crashDir -Force)
+    } catch {
+      $problems += "screenshot skipped: could not create browser temp profile"
+    }
     $shotUrl = $url
     if ($auth.Count -gt 0) {
       $authUserPass = ($a.user + ':' + $a.password)
       $shotUrl = "http://${authUserPass}@localhost:${Port}${Path}"
     }
-    $shotArgs = @('--headless=new', "--window-size=${Width},${Height}", '--hide-scrollbars', "--screenshot=$outPath", '--disable-gpu', '--no-sandbox', $shotUrl)
-    & $edge @shotArgs 2>$null | Out-Null
+    $shotArgs = @(
+      '--headless=new',
+      "--window-size=${Width},${Height}",
+      '--hide-scrollbars',
+      "--screenshot=$outPath",
+      '--disable-gpu',
+      '--no-sandbox',
+      '--noerrdialogs',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-breakpad',
+      '--disable-crash-reporter',
+      '--disable-crashpad',
+      "--crash-dumps-dir=$crashDir",
+      "--user-data-dir=$profileDir",
+      $shotUrl
+    )
+    try { & $browser @shotArgs 2>$null | Out-Null }
+    finally { try { Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
     if (Test-Path $outPath) { Write-Output ("screenshot: " + $outPath + " (" + [int]((Get-Item $outPath).Length/1KB) + "KB)") }
     else { $problems += "screenshot failed (Edge/Chrome ran but no file)" }
   } else { $problems += "screenshot skipped: no Edge/Chrome found" }
