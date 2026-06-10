@@ -86,6 +86,11 @@ STATUS: DONE
 
   $gateSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/verify-selftest.ps1'))
   Check 'Gate regression scope: verify-selftest changes select sentinel tests' ($gateSelection -contains 'test-gate-regression-sentinel.ps1' -and $gateSelection -contains 'test-verify-chain-fastpath.ps1') $gateSelection
+
+  $runner = Invoke-VerifySelftestProcess -FilePath ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
+    -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'tools\run-tests.ps1'),'-NoSnapshot','-TimeoutSec','20','-OnlyCsv','test-project-acceptance-contract.ps1','-Quiet') `
+    -WorkingDirectory $root -TimeoutSec 45
+  Check 'Gate regression runner: selected test with server grandchildren completes' ([int]$runner.ExitCode -eq 0 -and -not [bool]$runner.TimedOut) $runner
 }
 
 $cases = @(

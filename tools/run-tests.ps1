@@ -152,11 +152,20 @@ foreach ($t in $testFiles) {
     $outTask = $proc.StandardOutput.ReadToEndAsync()
     $errTask = $proc.StandardError.ReadToEndAsync()
     if ($proc.WaitForExit($TimeoutSec * 1000)) {
-      $proc.WaitForExit()
       $code = [int]$proc.ExitCode
       $ok = ($code -eq 0)
-      try { [System.IO.File]::WriteAllText($tmpOut, [string]$outTask.Result, (New-Object System.Text.UTF8Encoding($false))) } catch {}
-      try { [System.IO.File]::WriteAllText($tmpErr, [string]$errTask.Result, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      try { $outTask.Wait(3000) | Out-Null } catch {}
+      try { $errTask.Wait(3000) | Out-Null } catch {}
+      if ($outTask.IsCompleted) {
+        try { [System.IO.File]::WriteAllText($tmpOut, [string]$outTask.Result, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      } else {
+        $tail = 'stdout pipe did not close after process exit'
+      }
+      if ($errTask.IsCompleted) {
+        try { [System.IO.File]::WriteAllText($tmpErr, [string]$errTask.Result, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      } elseif ([string]::IsNullOrWhiteSpace($tail)) {
+        $tail = 'stderr pipe did not close after process exit'
+      }
     } else {
       try { $proc.Kill() } catch {}
       $code = 124

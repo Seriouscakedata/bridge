@@ -435,8 +435,8 @@ function Invoke-GateRegressionSuite {
 
   $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$TimeoutSec))
   if ($selectedTests.Count -gt 0) {
-    $runArgs += '-Only'
-    foreach ($testName in @($selectedTests)) { $runArgs += [string]$testName }
+    $runArgs += '-OnlyCsv'
+    $runArgs += (($selectedTests | ForEach-Object { [string]$_ }) -join ',')
   }
 
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
