@@ -404,7 +404,7 @@ function Invoke-BacklogAddHttpScenario {
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
   $marker = 'backlog-flow-e8061e8f51a0'
-  $markerText = 'bridge backlog add list delete verification c350bcc7614c4d749cbb5985c3486163'
+$markerText = 'bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard'
   $uniqueToken = $marker + '-' + [Guid]::NewGuid().ToString('N')
   $saltWords = @(
     'atlas','lagoon','copper','matrix','harbor','violet','lantern','orchard',

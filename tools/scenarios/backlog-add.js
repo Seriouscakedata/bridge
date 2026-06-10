@@ -26,7 +26,7 @@ async function scenario(s) {
 
   const channel = getScenarioChannel();
   const marker = 'backlog-flow-e8061e8f51a0';
-  const markerText = 'bridge backlog add list delete verification c350bcc7614c4d749cbb5985c3486163';
+  const markerText = 'bridge backlog add list delete verification violet signal quartz canyon lantern ember ribbon orchard';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const saltPool = [
     'atlas', 'lagoon', 'copper', 'matrix', 'harbor', 'violet', 'lantern', 'orchard',
