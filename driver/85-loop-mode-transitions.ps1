@@ -160,7 +160,10 @@
       $repoEvidenceRoot = Get-TaskRepoRoot
       $evidenceContext = Get-TaskActionEvidenceContext -State $stEvidence -DefaultRepoRoot $repoEvidenceRoot -BridgeRoot $bridgeRoot
       $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$evidenceContext.repo_root) -BaseCommit ([string]$evidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($evidenceContext.base_dirty_paths)
-      if ($actionEvidence -and [bool]$actionEvidence.has_actions) { $hasActionEvidence = $true }
+      if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
+        $hasActionEvidence = $true
+        $hasChanges = $true
+      }
     } catch {}
     if ($mode -eq 'normal' -and $hasActionEvidence) { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $npc = [int](Read-State).no_progress_count

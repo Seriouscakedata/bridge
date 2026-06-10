@@ -14,5 +14,6 @@ function Assert-True {
 
 Assert-True ($source -match "Activate-Doctor\s+-Reason\s+'no_progress_loop'") 'no-progress threshold must activate Doctor with reason no_progress_loop'
 Assert-True ($source -notmatch 'if\s*\(\$newNpc\s+-ge\s+4\)\s*\{(?s).*?no_progress_count\s*=\s*0') 'no-progress threshold must not self-reset before escalation'
+Assert-True ($source -match '\$actionEvidence\s+-and\s+\[bool\]\$actionEvidence\.has_actions(?s).*?\$hasActionEvidence\s*=\s*\$true(?s).*?\$hasChanges\s*=\s*\$true') 'committed action evidence must reset no-progress counter even when HEAD is clean'
 
 Write-Output 'NO PROGRESS DOCTOR ESCALATION TEST OK'
