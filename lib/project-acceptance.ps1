@@ -7,6 +7,9 @@
 if (-not (Get-Command Get-ProjectTrackedGeneratedArtifactPaths -ErrorAction SilentlyContinue)) {
   . (Join-Path $PSScriptRoot 'project-artifact-policy.ps1')
 }
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
 
 function Get-ProjectAcceptanceBridgeRoot {
   try { return (Get-BridgeRoot) } catch {}
@@ -52,17 +55,9 @@ function Get-ProjectAcceptanceBinding {
 }
 
 function Get-ProjectAcceptanceObjectValue {
+  # Delegate preserves original acceptance semantics: present-but-null is treated as missing.
   param($Obj, [string[]]$Names, $Default = $null)
-  if ($null -eq $Obj) { return $Default }
-  foreach ($name in @($Names)) {
-    try {
-      if ($Obj.PSObject.Properties.Name -contains $name) {
-        $v = $Obj.$name
-        if ($null -ne $v) { return $v }
-      }
-    } catch {}
-  }
-  return $Default
+  return Get-BridgeObjectValue -Object $Obj -Names $Names -Default $Default -NullAsMissing
 }
 
 function Read-ProjectAcceptanceJson {

@@ -6,34 +6,18 @@ if (-not (Get-Command Get-BacklogGovernorObjectValue -ErrorAction SilentlyContin
     . $script:TaskOutcomeLedgerGovernorPath
   }
 }
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
 
 function Get-TaskOutcomeLedgerObjectValue {
+  # Delegate preserves original ledger semantics: present-but-null is returned.
   param(
     [Parameter(Mandatory=$false)]$Object,
     [Parameter(Mandatory=$true)][string[]]$Names,
     [Parameter(Mandatory=$false)]$Default = $null
   )
-  if (Get-Command Get-BacklogGovernorObjectValue -ErrorAction SilentlyContinue) {
-    return (Get-BacklogGovernorObjectValue -Object $Object -Names $Names -Default $Default)
-  }
-  if ($null -eq $Object) { return $Default }
-  if ($Object -is [System.Collections.IDictionary]) {
-    foreach ($name in $Names) {
-      foreach ($key in @($Object.Keys)) {
-        if ([string]::Equals([string]$key, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
-          return $Object[$key]
-        }
-      }
-    }
-    return $Default
-  }
-  foreach ($name in $Names) {
-    $prop = @($Object.PSObject.Properties | Where-Object {
-      [string]::Equals([string]$_.Name, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)
-    } | Select-Object -First 1)
-    if ($prop.Count -gt 0) { return $prop[0].Value }
-  }
-  return $Default
+  return Get-BridgeObjectValue -Object $Object -Names $Names -Default $Default
 }
 
 function Test-TaskOutcomeLedgerValuePresent {

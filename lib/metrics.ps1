@@ -1,5 +1,9 @@
 ﻿# metrics.ps1 -- Learning Loop pt1: health metrics, hypotheses, reflection.
 
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+  try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
+
 function Get-TurnsStats {
   param([object[]]$Entries)
 
@@ -168,13 +172,10 @@ function Get-MetricsForApi {
 }
 
 function Get-MetricsObjectValue {
+  # Delegate preserves original metrics semantics: present-but-null is returned.
   param($Obj, [string]$Name)
   if ($null -eq $Obj -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
-  try {
-    if ($Obj -is [hashtable] -and $Obj.ContainsKey($Name)) { return $Obj[$Name] }
-    if ($Obj.PSObject.Properties.Name -contains $Name) { return $Obj.PSObject.Properties[$Name].Value }
-  } catch { return $null }
-  return $null
+  try { return Get-BridgeObjectValue -Object $Obj -Names @($Name) -Default $null } catch { return $null }
 }
 
 function ConvertTo-MetricsUtcDateTime {

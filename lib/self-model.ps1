@@ -2,6 +2,10 @@
 
 $ErrorActionPreference = 'Stop'
 
+if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
+    try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
+}
+
 function Get-SelfModelBridgeRoot {
     if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
         return (Split-Path -Parent $PSScriptRoot)
@@ -223,32 +227,14 @@ function Format-SelfModelModuleList {
 }
 
 function Get-SelfModelObjectValue {
+    # Delegate preserves original self-model semantics: present-but-null is returned.
     param(
         $Object,
         [string[]]$Names,
         $Default = $null
     )
 
-    if ($null -eq $Object) { return $Default }
-    if ($Object -is [System.Collections.IDictionary]) {
-        foreach ($name in $Names) {
-            foreach ($key in @($Object.Keys)) {
-                if ([string]::Equals([string]$key, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    return $Object[$key]
-                }
-            }
-        }
-        return $Default
-    }
-
-    foreach ($name in $Names) {
-        try {
-            if ($Object.PSObject.Properties[$name]) {
-                return $Object.$name
-            }
-        } catch {}
-    }
-    return $Default
+    return Get-BridgeObjectValue -Object $Object -Names $Names -Default $Default
 }
 
 function Get-SelfModelCurrentChannel {
