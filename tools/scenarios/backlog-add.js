@@ -25,9 +25,9 @@ async function scenario(s) {
   }
 
   const channel = getScenarioChannel();
-  const marker = 'backlog-flow-e8061e8f51a0';
+  const marker = 'backlog-flow-faa25559aeaf';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
-  const taskText = uniqueToken + ' bridge backlog add list delete verification';
+  const taskText = 'temporary browser verifier token ' + uniqueToken + ' cobalt quartz';
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;
