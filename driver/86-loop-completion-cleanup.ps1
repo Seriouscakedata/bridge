@@ -4,6 +4,7 @@
 $script:DriverLoopCompletionCleanupRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $script:DriverLoopCompletionCleanupBridgeRoot = Split-Path -Parent $script:DriverLoopCompletionCleanupRoot
 $script:DriverLoopCompletionLedgerPath = Join-Path $script:DriverLoopCompletionCleanupBridgeRoot 'lib\task-outcome-ledger.ps1'
+$script:DriverCompletionLastGitError = ''
 if (-not (Get-Command Test-TaskOutcomeLedgerDone -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $script:DriverLoopCompletionLedgerPath)) {
   . $script:DriverLoopCompletionLedgerPath
 }
@@ -62,14 +63,38 @@ function Invoke-DriverCompletionGitLines {
     [Parameter(Mandatory=$true)][string[]]$GitArgs
   )
 
-  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) { return @() }
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) {
+    $script:DriverCompletionLastGitError = 'missing or invalid repo root for git evidence'
+    Write-Warning ("Driver completion git evidence failed: " + $script:DriverCompletionLastGitError)
+    return @()
+  }
   $gitErrFile = [System.IO.Path]::GetTempFileName()
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
     $out = @(& git -c ("safe.directory=" + $RepoRoot) -C $RepoRoot @GitArgs 2> $gitErrFile)
-    if ($LASTEXITCODE -ne 0) { return @() }
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    if ($exitCode -ne 0) {
+      $errText = ''
+      try {
+        if (Test-Path -LiteralPath $gitErrFile) {
+          $errText = [System.IO.File]::ReadAllText($gitErrFile, [System.Text.Encoding]::UTF8)
+        }
+      } catch {
+        $errText = ''
+      }
+      $detail = ((@($out) + @($errText)) -join ' ').Trim()
+      if ([string]::IsNullOrWhiteSpace($detail)) { $detail = "exit $exitCode" }
+      $script:DriverCompletionLastGitError = ("git {0} failed: {1}" -f (@($GitArgs) -join ' '), ($detail -replace '\s+', ' '))
+      Write-Warning ("Driver completion git evidence failed: " + $script:DriverCompletionLastGitError)
+      return @()
+    }
+    $script:DriverCompletionLastGitError = ''
     return @($out)
+  } catch {
+    $script:DriverCompletionLastGitError = ("git {0} failed: {1}" -f (@($GitArgs) -join ' '), $_.Exception.Message)
+    Write-Warning ("Driver completion git evidence failed: " + $script:DriverCompletionLastGitError)
+    return @()
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
     Remove-Item -LiteralPath $gitErrFile -Force -ErrorAction SilentlyContinue
@@ -84,12 +109,27 @@ function Get-DriverCompletionGitChangedFiles {
   )
 
   if ([string]::IsNullOrWhiteSpace($RepoRoot) -or [string]::IsNullOrWhiteSpace($BaseSha) -or [string]::IsNullOrWhiteSpace($HeadSha)) {
+    $script:DriverCompletionLastGitError = 'missing repo root, base sha, or head sha for git changed-files evidence'
     return @()
   }
+  $script:DriverCompletionLastGitError = ''
   $baseType = [string]((Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('cat-file','-t',$BaseSha) | Select-Object -First 1) -join '')
+  $baseError = [string]$script:DriverCompletionLastGitError
   $headType = [string]((Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('cat-file','-t',$HeadSha) | Select-Object -First 1) -join '')
-  if ($baseType.Trim() -ne 'commit' -or $headType.Trim() -ne 'commit') { return @() }
-  return @(ConvertTo-DriverCompletionPathList -Value @(Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('diff','--name-only',$BaseSha,$HeadSha,'--')))
+  $headError = [string]$script:DriverCompletionLastGitError
+  if ($baseType.Trim() -ne 'commit') {
+    if ([string]::IsNullOrWhiteSpace($baseError)) { $baseError = "base sha is not a commit: $BaseSha" }
+    $script:DriverCompletionLastGitError = $baseError
+    return @()
+  }
+  if ($headType.Trim() -ne 'commit') {
+    if ([string]::IsNullOrWhiteSpace($headError)) { $headError = "head sha is not a commit: $HeadSha" }
+    $script:DriverCompletionLastGitError = $headError
+    return @()
+  }
+  $diffLines = @(Invoke-DriverCompletionGitLines -RepoRoot $RepoRoot -GitArgs @('diff','--name-only',$BaseSha,$HeadSha,'--'))
+  if (-not [string]::IsNullOrWhiteSpace([string]$script:DriverCompletionLastGitError)) { return @() }
+  return @(ConvertTo-DriverCompletionPathList -Value $diffLines)
 }
 
 function Get-DriverCompletionObjectValue {
@@ -126,10 +166,12 @@ function Add-DriverCompletionEvidenceText {
   param(
     [Parameter(Mandatory=$false)]$Value,
     [Parameter(Mandatory=$true)]$Lines,
-    [int]$Depth = 0
+    [int]$Depth = 0,
+    [Parameter(Mandatory=$false)]$Visited = $null
   )
 
   if ($null -eq $Value -or $Depth -gt 4 -or $Lines.Count -ge 80) { return }
+  if ($null -eq $Visited) { $Visited = New-Object 'System.Collections.Generic.HashSet[int]' }
   if ($Value -is [string]) {
     $text = ([string]$Value).Trim()
     if (-not [string]::IsNullOrWhiteSpace($text)) { [void]$Lines.Add($text) }
@@ -140,23 +182,25 @@ function Add-DriverCompletionEvidenceText {
     if (-not [string]::IsNullOrWhiteSpace($text)) { [void]$Lines.Add($text) }
     return
   }
+  $visitKey = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Value)
+  if (-not $Visited.Add($visitKey)) { return }
   if ($Value -is [System.Collections.IDictionary]) {
     foreach ($k in @($Value.Keys)) {
       if ($Lines.Count -ge 80) { break }
-      Add-DriverCompletionEvidenceText -Value $Value[$k] -Lines $Lines -Depth ($Depth + 1)
+      Add-DriverCompletionEvidenceText -Value $Value[$k] -Lines $Lines -Depth ($Depth + 1) -Visited $Visited
     }
     return
   }
   if ($Value -is [System.Collections.IEnumerable]) {
     foreach ($v in @($Value)) {
       if ($Lines.Count -ge 80) { break }
-      Add-DriverCompletionEvidenceText -Value $v -Lines $Lines -Depth ($Depth + 1)
+      Add-DriverCompletionEvidenceText -Value $v -Lines $Lines -Depth ($Depth + 1) -Visited $Visited
     }
     return
   }
   foreach ($prop in @($Value.PSObject.Properties)) {
     if ($Lines.Count -ge 80) { break }
-    Add-DriverCompletionEvidenceText -Value $prop.Value -Lines $Lines -Depth ($Depth + 1)
+    Add-DriverCompletionEvidenceText -Value $prop.Value -Lines $Lines -Depth ($Depth + 1) -Visited $Visited
   }
 }
 
@@ -177,10 +221,16 @@ function New-DriverCompletionWiringGapFollowUp {
     [string[]]$ActualFiles = @()
   )
 
-  $doneSha = [string](Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_sha','head_sha','commit') -Default '')
   $doneEvidence = Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_evidence') -Default $null
+  $doneSha = [string](Get-DriverCompletionObjectValue -Object $OutcomeEvidence -Names @('done_sha','head_sha','commit') -Default '')
   $baseSha = [string](Get-DriverCompletionObjectValue -Object $doneEvidence -Names @('base_sha') -Default '')
   $headSha = [string](Get-DriverCompletionObjectValue -Object $doneEvidence -Names @('head_sha') -Default $doneSha)
+  if ([string]::IsNullOrWhiteSpace($doneSha)) { $doneSha = $headSha }
+  if ([string]::IsNullOrWhiteSpace($doneSha) -and $SourceItem) {
+    $doneSha = [string](Get-DriverCompletionObjectValue -Object $SourceItem -Names @('done_sha','source_done_sha','source_head_sha') -Default '')
+  }
+  if ([string]::IsNullOrWhiteSpace($headSha)) { $headSha = $doneSha }
+  if ([string]::IsNullOrWhiteSpace($doneSha)) { return $null }
   $files = @(ConvertTo-DriverCompletionPathList -Value $ActualFiles)
   if (@($files).Count -eq 0 -and $SourceItem) {
     $files = @(ConvertTo-DriverCompletionPathList -Value (Get-DriverCompletionObjectValue -Object $SourceItem -Names @('files','touch_set','workpack_touch_set') -Default @()))
@@ -261,10 +311,28 @@ function New-DriverCompletionDoneEvidence {
   }
 
   $head = ''
+  $gitDiffError = ''
   try { $head = ((Invoke-DriverCompletionGitLines -RepoRoot $repoRoot -GitArgs @('rev-parse','HEAD') | Select-Object -First 1) -join '').Trim() } catch { $head = '' }
+  $headError = [string]$script:DriverCompletionLastGitError
   $base = ''
   try { $base = [string]$State.task_base_commit } catch { $base = '' }
-  $actualFiles = @(Get-DriverCompletionGitChangedFiles -RepoRoot $repoRoot -BaseSha $base -HeadSha $head)
+  $actualFiles = @()
+  if ([string]::IsNullOrWhiteSpace($head)) {
+    $gitDiffError = if ([string]::IsNullOrWhiteSpace($headError)) { 'missing head sha for git changed-files evidence' } else { $headError }
+  } elseif ([string]::IsNullOrWhiteSpace($base)) {
+    $gitDiffError = 'missing base sha for git changed-files evidence'
+  } else {
+    $actualFiles = @(Get-DriverCompletionGitChangedFiles -RepoRoot $repoRoot -BaseSha $base -HeadSha $head)
+    $gitDiffError = [string]$script:DriverCompletionLastGitError
+  }
+  $actualFilesComplete = (@($actualFiles).Count -gt 0 -and [string]::IsNullOrWhiteSpace($gitDiffError))
+  $actualFilesStatus = if ($actualFilesComplete) {
+    'ok'
+  } elseif (-not [string]::IsNullOrWhiteSpace($gitDiffError)) {
+    'error'
+  } else {
+    'empty'
+  }
 
   $verified = New-Object 'System.Collections.Generic.List[string]'
   foreach ($match in [regex]::Matches([string]$Reply, '(?im)^\s*\[\[VERIFIED:\s*(.+?)\]\]\s*$')) {
@@ -305,12 +373,18 @@ function New-DriverCompletionDoneEvidence {
   return [pscustomobject][ordered]@{
     done_sha = $head
     actual_files = @($actualFiles)
+    actual_files_complete = [bool]$actualFilesComplete
+    actual_files_status = $actualFilesStatus
+    git_diff_error = $gitDiffError
     done_evidence = [pscustomobject][ordered]@{
       repo_root = $repoRoot
       base_sha = $base
       head_sha = $head
       changed_files = @($actualFiles)
       actual_files = @($actualFiles)
+      actual_files_complete = [bool]$actualFilesComplete
+      actual_files_status = $actualFilesStatus
+      git_diff_error = $gitDiffError
       verified = @($verified.ToArray())
       project_risks = @($riskMarkers.ToArray())
       wiring_gap_evidence = @($wiringLines.ToArray())
@@ -448,8 +522,7 @@ function Set-BacklogOutcomeDoneWithLedger {
         foreach ($existing in @($items)) {
           $existingSource = [string](& $objectValueFn -Object $existing -Names @('followup_of','source_backlog_id') -Default '')
           $existingKind = [string](& $objectValueFn -Object $existing -Names @('followup_kind') -Default '')
-          $existingStatus = ([string](& $objectValueFn -Object $existing -Names @('status') -Default '')).Trim().ToLowerInvariant()
-          if ($existingSource -eq [string]$id -and $existingKind -eq 'wiring-gap' -and $existingStatus -notin @('done','rejected','failed','auto-dropped')) {
+          if ($existingSource -eq [string]$id -and $existingKind -eq 'wiring-gap') {
             $followExists = $true
             $existingId = [string](& $objectValueFn -Object $existing -Names @('id') -Default '')
             if (-not [string]::IsNullOrWhiteSpace($existingId)) { [void]$followUpIds.Add($existingId) }
@@ -458,9 +531,11 @@ function Set-BacklogOutcomeDoneWithLedger {
         }
         if (-not $followExists) {
           $followUp = & $newFollowUpFn -SourceId ([string]$id) -SourceItem $item -OutcomeEvidence $OutcomeEvidence -ActualFiles @($actualFiles)
-          $items += $followUp
-          [void]$followUpIds.Add([string]$followUp.id)
-          $dirty = $true
+          if ($null -ne $followUp) {
+            $items += $followUp
+            [void]$followUpIds.Add([string]$followUp.id)
+            $dirty = $true
+          }
         }
       }
     }

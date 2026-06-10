@@ -106,8 +106,26 @@ try {
 [[VERIFIED: focused regression PASS]]
 '@
   $evidence = New-DriverCompletionDoneEvidence -State $state -Reply $reply -Speaker 'codex' -BridgeRoot $case.Repo -Channel 'main'
+  $badEvidence = $null
+  $oldWarningPreference = $WarningPreference
+  try {
+    $WarningPreference = 'SilentlyContinue'
+    $badEvidence = New-DriverCompletionDoneEvidence -State ([pscustomobject][ordered]@{ task_base_commit = 'bad-sha-for-regression' }) -Reply '' -Speaker 'codex' -BridgeRoot $case.Repo -Channel 'main'
+  } finally {
+    $WarningPreference = $oldWarningPreference
+  }
+  $cyclicEvidence = [pscustomobject][ordered]@{ message = 'wiring gap evidence in cyclic object'; child = $null }
+  $cyclicEvidence.child = $cyclicEvidence
+  $cycleDetected = Test-DriverCompletionWiringGapEvidence -OutcomeEvidence $cyclicEvidence
+  $missingShaFollowUp = New-DriverCompletionWiringGapFollowUp -SourceId 'seq-item' -SourceItem $script:testBacklog[0] -OutcomeEvidence ([pscustomobject][ordered]@{ message = 'wiring gap but no source commit' }) -ActualFiles @('lib/wiring.ps1')
+
   $result1 = Set-BacklogOutcomeDoneWithLedger -Ids @('seq-item') -OutcomeEvidence $evidence -BridgeRoot $bridgeRoot
   $result2 = Set-BacklogOutcomeDoneWithLedger -Ids @('seq-item') -OutcomeEvidence $evidence -BridgeRoot $bridgeRoot
+  $followupsAfterSecond = @($script:testBacklog | Where-Object { [string]$_.followup_of -eq 'seq-item' -and [string]$_.followup_kind -eq 'wiring-gap' })
+  $firstFollowUpId = if ($followupsAfterSecond.Count -gt 0) { [string]$followupsAfterSecond[0].id } else { '' }
+  $openFollowUpCreated = ($followupsAfterSecond.Count -eq 1 -and [string]$followupsAfterSecond[0].status -eq 'open')
+  if ($followupsAfterSecond.Count -gt 0) { $followupsAfterSecond[0].status = 'done' }
+  $result3 = Set-BacklogOutcomeDoneWithLedger -Ids @('seq-item') -OutcomeEvidence $evidence -BridgeRoot $bridgeRoot
 
   $source = $script:testBacklog | Where-Object { [string]$_.id -eq 'seq-item' } | Select-Object -First 1
   $followups = @($script:testBacklog | Where-Object { [string]$_.followup_of -eq 'seq-item' -and [string]$_.followup_kind -eq 'wiring-gap' })
@@ -116,13 +134,19 @@ try {
   $evFiles = @($source.done_evidence.actual_files | ForEach-Object { [string]$_ })
 
   Check-SequentialEvidenceFollowup 'git evidence records actual changed file' (@($evidence.actual_files) -contains 'lib/wiring.ps1') ($evidence | ConvertTo-Json -Compress -Depth 8)
+  Check-SequentialEvidenceFollowup 'git evidence marks actual files complete only when diff succeeds' ([bool]$evidence.actual_files_complete -and [string]$evidence.actual_files_status -eq 'ok') ($evidence | ConvertTo-Json -Compress -Depth 8)
+  Check-SequentialEvidenceFollowup 'bad git evidence is explicit and incomplete' ((-not [bool]$badEvidence.actual_files_complete) -and [string]$badEvidence.actual_files_status -eq 'error' -and -not [string]::IsNullOrWhiteSpace([string]$badEvidence.git_diff_error)) ($badEvidence | ConvertTo-Json -Compress -Depth 8)
+  Check-SequentialEvidenceFollowup 'cyclic evidence text scan terminates and detects wiring gap' ([bool]$cycleDetected) 'cycle scan returned false'
+  Check-SequentialEvidenceFollowup 'missing source commit does not create invalid follow-up' ($null -eq $missingShaFollowUp) ($missingShaFollowUp | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'backlog item is marked done' ([string]$source.status -eq 'done') ($source | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'backlog item files are replaced with actual git diff files' ($sourceFiles.Count -eq 1 -and $sourceFiles[0] -eq 'lib/wiring.ps1') ($source | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'done evidence stores actual files' ($evFiles.Count -eq 1 -and $evFiles[0] -eq 'lib/wiring.ps1') ($source.done_evidence | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'declared files are preserved for audit' (@($source.declared_files_before_done) -contains 'declared-only.md') ($source | ConvertTo-Json -Compress -Depth 8)
-  Check-SequentialEvidenceFollowup 'wiring gap creates one open follow-up' ($followups.Count -eq 1 -and [string]$followups[0].status -eq 'open') ($followups | ConvertTo-Json -Compress -Depth 8)
+  Check-SequentialEvidenceFollowup 'wiring gap creates one open follow-up' ([bool]$openFollowUpCreated) ($followupsAfterSecond | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'follow-up carries concrete actual files' (@($followups[0].files) -contains 'lib/wiring.ps1') ($followups[0] | ConvertTo-Json -Compress -Depth 8)
+  Check-SequentialEvidenceFollowup 'follow-up carries source commit evidence' ((-not [string]::IsNullOrWhiteSpace([string]$followups[0].source_done_sha)) -and [string]$followups[0].source_head_sha -eq [string]$case.Head) ($followups[0] | ConvertTo-Json -Compress -Depth 8)
   Check-SequentialEvidenceFollowup 'second run does not duplicate follow-up' (@($result1.followup_ids).Count -eq 1 -and @($result2.followup_ids).Count -eq 1 -and $followups.Count -eq 1) (($result1 | ConvertTo-Json -Compress -Depth 8) + ' :: ' + ($result2 | ConvertTo-Json -Compress -Depth 8))
+  Check-SequentialEvidenceFollowup 'closed existing follow-up still deduplicates retry' (@($result3.followup_ids) -contains $firstFollowUpId -and $followups.Count -eq 1) (($result3 | ConvertTo-Json -Compress -Depth 8) + ' :: ' + ($followups | ConvertTo-Json -Compress -Depth 8))
 } finally {
   if (Test-Path -LiteralPath $case.Repo) {
     Remove-Item -LiteralPath $case.Repo -Recurse -Force
