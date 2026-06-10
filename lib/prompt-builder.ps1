@@ -179,22 +179,15 @@ function Get-PromptProgressBlocks {
   param([string]$Role)
 
   $planPromptBlock = ''
-  $taskCheckpointPromptBlock = ''
   try {
     $planPromptText = Format-PlanForPrompt
     if (-not [string]::IsNullOrWhiteSpace($planPromptText)) {
       $planPromptBlock = "`n`nПЛАН-ДОСКА (веди работу по ней):`n$planPromptText"
-    } elseif ($Role -eq 'codex') {
-      $cpBlock = Get-TaskCheckpointBlock
-      if (-not [string]::IsNullOrWhiteSpace($cpBlock)) {
-        $taskCheckpointPromptBlock = "`n`n$cpBlock"
-      }
     }
   } catch {}
 
   [pscustomobject]@{
     PlanPromptBlock = $planPromptBlock
-    TaskCheckpointPromptBlock = $taskCheckpointPromptBlock
   }
 }
 
@@ -214,7 +207,6 @@ function New-SharedPromptBlock {
   $activeProjectRootForSmoke = [string]$Context.ActiveProjectRoot
   $autoToolsLine = [string]$Context.AutoToolsLine
   $bridgeScopeRules = [string]$Context.BridgeScopeRules
-  $taskCheckpointPromptBlock = [string]$ProgressBlocks.TaskCheckpointPromptBlock
   $planPromptBlock = [string]$ProgressBlocks.PlanPromptBlock
 
 @"
@@ -297,7 +289,7 @@ $AutoScopeLine
 $bridgeScopeRules
 
 ДИАЛОГ:
-$Transcript$taskCheckpointPromptBlock$planPromptBlock
+$Transcript$planPromptBlock
 "@
 }
 
