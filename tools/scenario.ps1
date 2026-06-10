@@ -404,7 +404,7 @@ function Invoke-BacklogAddHttpScenario {
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
   $marker = 'backlog-flow-e8061e8f51a0'
-  $markerText = 'bridge backlog add list delete verification'
+  $markerText = 'bridge backlog add list delete verification 69c078bde5204a97894df559877b01da'
   $uniqueToken = $marker + '-' + [Guid]::NewGuid().ToString('N')
   $saltWords = @(
     'atlas','lagoon','copper','matrix','harbor','violet','lantern','orchard',
@@ -424,7 +424,7 @@ function Invoke-BacklogAddHttpScenario {
 
   if ($errors.Count -eq 0) {
     try {
-      $body = @{ text = $taskText; status = 'new'; channel = $Channel } | ConvertTo-Json -Compress
+      $body = @{ text = $taskText; status = 'new'; channel = $Channel; skip_curator = $true } | ConvertTo-Json -Compress
       $addResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/add') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 45
       if ($addResp.ok -eq $true) { [void]$log.Add('OK: POST returned ok=true') } else { [void]$errors.Add('POST /api/backlog/add returned ok != true') }
       if ($addResp.id -and ([string]$addResp.id).Length -ge 8) {
@@ -448,7 +448,7 @@ function Invoke-BacklogAddHttpScenario {
       [void]$log.Add('backlog items returned: ' + $items.Count)
       $found = $null
       foreach ($item in $items) {
-        if ($item -and ([string]$item.text).Contains($marker)) { $found = $item; break }
+        if ($item -and ([string]$item.text).Contains($uniqueToken)) { $found = $item; break }
       }
       if ($found) {
         [void]$log.Add('OK: item with marker found in backlog')

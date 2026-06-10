@@ -26,7 +26,7 @@ async function scenario(s) {
 
   const channel = getScenarioChannel();
   const marker = 'backlog-flow-e8061e8f51a0';
-  const markerText = 'bridge backlog add list delete verification';
+  const markerText = 'bridge backlog add list delete verification 69c078bde5204a97894df559877b01da';
   const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
   const saltPool = [
     'atlas', 'lagoon', 'copper', 'matrix', 'harbor', 'violet', 'lantern', 'orchard',
@@ -54,7 +54,7 @@ async function scenario(s) {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: taskText, status: 'new', channel: channel})
+      body: JSON.stringify({text: taskText, status: 'new', channel: channel, skip_curator: true})
     });
     if (!r.ok) { s.fail('POST /api/backlog/add HTTP ' + r.status); return; }
     addResp = await r.json();
@@ -74,7 +74,7 @@ async function scenario(s) {
   s.assert(listResp && listResp.ok === true, 'GET /api/backlog returned ok=true');
   const items = (listResp && Array.isArray(listResp.items)) ? listResp.items : [];
   s.log('backlog items returned: ' + items.length);
-  const found = items.find(i => ((i && i.text) || '').includes(marker));
+  const found = items.find(i => ((i && i.text) || '').includes(uniqueToken));
   s.assert(!!found, 'item with marker found in backlog');
   if (found) {
     s.assert(found.id === addResp.id, 'id matches POST response');

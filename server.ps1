@@ -954,18 +954,25 @@ try {
           if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
           $allItems = @(Get-Backlog | Sort-Object { [string]$_.ts } -Descending)
         } finally { Set-PinnedChannel $prevPin }
+        $activeHiddenStatuses = @{
+          done = $true
+          'auto-resolved' = $true
+          'auto-dropped' = $true
+          rejected = $true
+          deleted = $true
+          archived = $true
+          archive = $true
+        }
         $archivedCount = 0
         $itemsFiltered = New-Object 'System.Collections.Generic.List[object]'
         foreach ($item in $allItems) {
           if (-not ($item.PSObject.Properties.Name -contains 'auto_curator')) { $item | Add-Member -NotePropertyName auto_curator -NotePropertyValue $null -Force }
           if (-not ($item.PSObject.Properties.Name -contains 'similar_to')) { $item | Add-Member -NotePropertyName similar_to -NotePropertyValue @() -Force }
           if (-not ($item.PSObject.Properties.Name -contains 'seen_again_count')) { $item | Add-Member -NotePropertyName seen_again_count -NotePropertyValue 0 -Force }
-          $st = [string]$item.status
-          # 2026-05-28: also hide auto-dropped and rejected by default. These
-          # are terminal closed statuses (curator/operator decided NOT to do)
-          # and they were accumulating in the visible list — 186 dropped items
-          # cluttering the UI even though no work remains on them.
-          if (-not $includeArchived -and ($st -eq 'done' -or $st -eq 'auto-resolved' -or $st -eq 'auto-dropped' -or $st -eq 'rejected')) {
+          $st = ([string]$item.status).ToLowerInvariant()
+          # Default active backlog excludes terminal/archive statuses. Use
+          # ?include=all when the caller explicitly needs closed items.
+          if (-not $includeArchived -and $activeHiddenStatuses.ContainsKey($st)) {
             $archivedCount++
             continue
           }
@@ -1271,9 +1278,17 @@ try {
           $chParam = Get-QueryParamUtf8 $ctx 'channel'
           if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body.channel) { $chParam = [string]$body.channel }
           $prevPin = Get-PinnedChannel
+          $skipCurator = $false
+          if ($null -ne $body.skip_curator) {
+            try { $skipCurator = [bool]$body.skip_curator } catch { $skipCurator = $false }
+          }
           try {
             if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
-            $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+            if ($skipCurator) {
+              $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st -SkipCurator
+            } else {
+              $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+            }
           } finally { Set-PinnedChannel $prevPin }
           Send-Text $ctx ('{"ok":' + (([bool]$id).ToString().ToLower()) + ',"id":"' + [string]$id + '"}') 'application/json; charset=utf-8'
         }
