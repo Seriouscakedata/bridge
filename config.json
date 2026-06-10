@@ -69,7 +69,7 @@
   },
   "backlog": {
     "useLLMPriority": false,
-    "enableLLMPrioritizerOnIdle": true,
+    "enableLLMPrioritizerOnIdle": false,
     "prioritizerIntervalMinutes": 60,
     "prioritizerMaxItems": 20
   },
@@ -180,8 +180,9 @@
     "idleQuietMinutes": 1,
     "maxAutonomousTasksPerDay": 150,
     "autonomyDisabledChannels": [],
-    "reflectEveryHours": 6,
-    "maxIdeasPerReflect": 3,
+    "reflectEveryHours": 720,
+    "maxIdeasPerReflect": 1,
+    "maxOpenIdeas": 3,
     "stablePromoteMinutes": 30
   },
   "reflect": {
@@ -193,7 +194,7 @@
     "ceilingHours": 6
   },
   "audit": {
-    "enabled": true,
+    "enabled": false,
     "windowStartHour": 1,
     "windowEndHour": 6,
     "floorHours": 20,
@@ -270,5 +271,5 @@
       "restartsHour": { "weight": 45000, "capMs": 270000 }
     }
   },
-  "radarEveryHours": 168
+  "radarEveryHours": 720
 }

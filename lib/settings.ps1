@@ -45,7 +45,7 @@ function Get-AutonomySettings {
     #                      deep-audit (real bugs) is NOT gated.
     #   ideaStaleDays    = an unclaimed 'new' idea older than this is auto-archived ('auto-stale').
     #   dedupDroppedDays = window for refusing to re-propose ideas the curator recently rejected.
-    maxOpenIdeas             = 12
+    maxOpenIdeas             = 3
     ideaStaleDays            = 14
     dedupDroppedDays         = 30
     # Backlog packer: when many ideas arrive quickly, group them into workpacks

@@ -707,6 +707,11 @@ function Should-RunDeepThink {
   # automatic: this gate is polled from the driver's IDLE-maintenance block, so if the bridge is mid-task
   # at 01:00 the dialog fires the moment it goes idle within the 01:00-09:00 window. A ~23h floor keeps it
   # ~daily even if the PC was off all night (then it runs by day).
+  # 2026-06-11 (Plan C — stop mechanism proliferation): deep-think now respects the WIP cap like
+  # architect/reflect. While the backlog has >= maxOpenIdeas open ideas, the nightly idea-generating
+  # dialog stays silent so the queue drains (subtraction phase) instead of piling on more structural
+  # proposals. Reversible: raise maxOpenIdeas (settings/config) to re-enable.
+  if ((Get-Command Test-BacklogHasCapacity -ErrorAction SilentlyContinue) -and -not (Test-BacklogHasCapacity)) { return $false }
   $now = Get-Date
   $marker = Get-DeepThinkMarkerPath
   $last = $null
