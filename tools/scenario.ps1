@@ -304,6 +304,21 @@ function Add-ScenarioQueryParam {
   return ($Original + $sep + 'scenario=' + [Uri]::EscapeDataString($ScenarioName))
 }
 
+function Add-ScenarioChannelQueryParam {
+  param(
+    [string]$Original,
+    [string]$Channel
+  )
+  if ([string]::IsNullOrWhiteSpace($Channel)) { return $Original }
+  $sep = if ($Original.Contains('?')) { '&' } else { '?' }
+  return ($Original + $sep + 'channel=' + [Uri]::EscapeDataString($Channel))
+}
+
+function Get-ScenarioChannel {
+  if (-not [string]::IsNullOrWhiteSpace([string]$env:BRIDGE_CHANNEL)) { return [string]$env:BRIDGE_CHANNEL }
+  return 'main'
+}
+
 function New-BrowserArguments {
   param(
     [string]$Mode,
@@ -381,14 +396,15 @@ function Test-ScenarioHttpEndpoint {
 function Invoke-BacklogAddHttpScenario {
   param(
     [string]$BaseUrl,
-    [hashtable]$Headers
+    [hashtable]$Headers,
+    [string]$Channel = 'main'
   )
 
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $log = New-Object 'System.Collections.Generic.List[string]'
   $marker = 'backlog-flow-' + [Guid]::NewGuid().ToString('N').Substring(0,12)
-  $taskText = 'Functional verifier backlog add flow marker ' + $marker
+  $taskText = $marker + ' bridge backlog add list delete verification ' + [Guid]::NewGuid().ToString('N')
   $addId = ''
 
   try {
@@ -401,7 +417,7 @@ function Invoke-BacklogAddHttpScenario {
 
   if ($errors.Count -eq 0) {
     try {
-      $body = @{ text = $taskText; status = 'new' } | ConvertTo-Json -Compress
+      $body = @{ text = $taskText; status = 'new'; channel = $Channel } | ConvertTo-Json -Compress
       $addResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/add') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 45
       if ($addResp.ok -eq $true) { [void]$log.Add('OK: POST returned ok=true') } else { [void]$errors.Add('POST /api/backlog/add returned ok != true') }
       if ($addResp.id -and ([string]$addResp.id).Length -ge 8) {
@@ -418,7 +434,7 @@ function Invoke-BacklogAddHttpScenario {
 
   if ($errors.Count -eq 0) {
     try {
-      $listResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=main&include=all') -Headers $Headers -TimeoutSec 15
+      $listResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=' + [Uri]::EscapeDataString($Channel) + '&include=all') -Headers $Headers -TimeoutSec 15
       if ($listResp.ok -eq $true) { [void]$log.Add('OK: GET /api/backlog returned ok=true') } else { [void]$errors.Add('GET /api/backlog returned ok != true') }
       $items = @()
       if ($listResp.items) { $items = @($listResp.items) }
@@ -442,7 +458,7 @@ function Invoke-BacklogAddHttpScenario {
 
   if (-not [string]::IsNullOrWhiteSpace($addId)) {
     try {
-      $deleteBody = @{ id = $addId } | ConvertTo-Json -Compress
+      $deleteBody = @{ id = $addId; channel = $Channel } | ConvertTo-Json -Compress
       Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10 | Out-Null
       [void]$log.Add('cleanup: deleted scenario item ' + $addId)
     } catch {
@@ -483,10 +499,13 @@ $browserPaths = @(Get-BrowserPaths)
 
 # Append ?scenario=$Name (preserving auth in URL for headless basic-auth).
 $loadUrl = Get-LocalAuthUrl -Original $Url
+$scenarioChannel = Get-ScenarioChannel
 $baseLoadUrl = $loadUrl
 $loadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $Name
+$loadUrl = Add-ScenarioChannelQueryParam -Original $loadUrl -Channel $scenarioChannel
 $probeName = $Name + '-probe'
 $probeLoadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $probeName
+$probeLoadUrl = Add-ScenarioChannelQueryParam -Original $probeLoadUrl -Channel $scenarioChannel
 
 # Mark start time so we can ignore older results in the JSONL log.
 $startTs = (Get-Date).ToUniversalTime().ToString('o')
@@ -733,7 +752,7 @@ Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
   if ($Name -eq 'backlog-add') {
-    $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers
+    $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers -Channel $scenarioChannel
     $diag.fallback = 'http'
     $diag.fallback_result = $fallbackResult
     Write-ScenarioDiagnostics -Path $diagPath -Data $diag

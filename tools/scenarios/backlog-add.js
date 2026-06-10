@@ -18,8 +18,16 @@ async function scenario(s) {
     return fetch(cleanScenarioUrl(path), Object.assign({credentials: 'same-origin'}, opts || {}));
   }
 
+  function getScenarioChannel() {
+    const fromUrl = new URL(window.location.href).searchParams.get('channel');
+    if (fromUrl) { return fromUrl; }
+    return (window.__bridge && window.__bridge.channelsCache && window.__bridge.channelsCache.active) || 'main';
+  }
+
+  const channel = getScenarioChannel();
   const marker = 'backlog-flow-' + Date.now().toString(36);
-  const taskText = 'Functional verifier backlog add flow marker ' + marker;
+  const uniqueToken = marker + '-' + Math.random().toString(36).slice(2);
+  const taskText = uniqueToken + ' bridge backlog add list delete verification';
 
   // 0. Verify function dependencies are loaded in the server process
   let healthResp = null;
@@ -39,7 +47,7 @@ async function scenario(s) {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: taskText, status: 'new'})
+      body: JSON.stringify({text: taskText, status: 'new', channel: channel})
     });
     if (!r.ok) { s.fail('POST /api/backlog/add HTTP ' + r.status); return; }
     addResp = await r.json();
@@ -52,8 +60,7 @@ async function scenario(s) {
   // 2. GET backlog, find marker
   let listResp = null;
   try {
-    const ch = (window.__bridge && window.__bridge.channelsCache && window.__bridge.channelsCache.active) || 'main';
-    const r = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(ch) + '&include=all');
+    const r = await scenarioFetch('/api/backlog?channel=' + encodeURIComponent(channel) + '&include=all');
     listResp = await r.json();
   } catch (e) { s.fail('GET /api/backlog failed: ' + e.message); return; }
 
@@ -78,7 +85,7 @@ async function scenario(s) {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: addResp.id})
+        body: JSON.stringify({id: addResp.id, channel: channel})
       });
       s.log('cleanup: deleted scenario item ' + addResp.id);
     } catch (e) { s.log('cleanup-warn: ' + e.message); /* non-fatal */ }

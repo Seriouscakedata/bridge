@@ -1268,7 +1268,13 @@ try {
         if ([string]::IsNullOrWhiteSpace($text)) { Send-Text $ctx '{"ok":false,"error":"empty"}' 'application/json; charset=utf-8' 400 }
         else {
           $st = if ($body.status) { [string]$body.status } else { 'new' }
-          $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+          $chParam = Get-QueryParamUtf8 $ctx 'channel'
+          if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body.channel) { $chParam = [string]$body.channel }
+          $prevPin = Get-PinnedChannel
+          try {
+            if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+            $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+          } finally { Set-PinnedChannel $prevPin }
           Send-Text $ctx ('{"ok":' + (([bool]$id).ToString().ToLower()) + ',"id":"' + [string]$id + '"}') 'application/json; charset=utf-8'
         }
       }
@@ -1283,7 +1289,13 @@ try {
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/delete') {
         $body = Read-Body $ctx | ConvertFrom-Json
-        $ok = Remove-Idea -Id ([string]$body.id)
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body.channel) { $chParam = [string]$body.channel }
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $ok = Remove-Idea -Id ([string]$body.id)
+        } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx ('{"ok":' + ($ok.ToString().ToLower()) + '}') 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/reflect') {

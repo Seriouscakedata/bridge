@@ -24,6 +24,7 @@ try {
 
   $registry = @(
     [ordered]@{ id = 'good-feature'; name = 'Good Feature'; scenarios = @('good-assert-log') },
+    [ordered]@{ id = 'backlog-curator'; name = 'Backlog Curator'; scenarios = @('backlog-add') },
     [ordered]@{ id = 'infra-feature'; name = 'Infra Feature'; scenarios = @('browser-fail') }
   )
   [System.IO.File]::WriteAllText(
@@ -38,6 +39,14 @@ param([string]$Name, [int]$TimeoutSec = 60)
 if ($Name -eq 'good-assert-log') {
   Write-Host 'PASS: POST returned ok=true'
   Write-Host 'PASS: POST returned an id'
+  Write-Host 'PASS: item with marker found in backlog'
+  [ordered]@{ ok = $true; name = $Name; errors = @(); log = @('OK: POST returned ok=true', 'OK: item with marker found in backlog') } | ConvertTo-Json -Compress
+  exit 0
+}
+if ($Name -eq 'backlog-add') {
+  Write-Host 'PASS: POST returned ok=true'
+  Write-Host 'PASS: POST returned an id'
+  Write-Host 'PASS: GET /api/backlog returned ok=true'
   Write-Host 'PASS: item with marker found in backlog'
   [ordered]@{ ok = $true; name = $Name; errors = @(); log = @('OK: POST returned ok=true', 'OK: item with marker found in backlog') } | ConvertTo-Json -Compress
   exit 0
@@ -63,14 +72,18 @@ exit 1
   $digest = Get-Content -LiteralPath ([string]$summary.digest) -Raw -Encoding UTF8
   $backlogAddScenario = Get-Content -LiteralPath (Join-Path $bridgeRoot 'tools\scenarios\backlog-add.js') -Raw -Encoding UTF8
   $scenarioRunner = Get-Content -LiteralPath (Join-Path $bridgeRoot 'tools\scenario.ps1') -Raw -Encoding UTF8
+  $server = Get-Content -LiteralPath (Join-Path $bridgeRoot 'server.ps1') -Raw -Encoding UTF8
 
   Assert-FeatureVerifier 'successful scenario assert-log is passing' ($state.'good-feature'.last_health -eq 'passing') ("health=$($state.'good-feature'.last_health)")
+  Assert-FeatureVerifier 'backlog-add scenario is passing when standalone result is passing' ($state.'backlog-curator'.last_health -eq 'passing') ("health=$($state.'backlog-curator'.last_health)")
+  Assert-FeatureVerifier 'backlog-add result has no copied assert-log error' ([string]$state.'backlog-curator'.scenario_results[0].error -eq '') ("error=$($state.'backlog-curator'.scenario_results[0].error)")
   Assert-FeatureVerifier 'successful scenario assert-log is not copied into error' ([string]$state.'good-feature'.scenario_results[0].error -eq '') ("error=$($state.'good-feature'.scenario_results[0].error)")
   Assert-FeatureVerifier 'single error field is preserved' ([string]$state.'infra-feature'.scenario_results[0].error -match 'browser failed before DOM/debug marker') ("error=$($state.'infra-feature'.scenario_results[0].error)")
   Assert-FeatureVerifier 'browser infrastructure failure is inconclusive' ($state.'infra-feature'.last_health -eq 'inconclusive') ("health=$($state.'infra-feature'.last_health)")
   Assert-FeatureVerifier 'inconclusive run does not exit as broken' ($exitCode -eq 0) ("exit=$exitCode stdout=$stdout")
   Assert-FeatureVerifier 'digest includes inconclusive section' ($digest -match 'Inconclusive features') ''
-  Assert-FeatureVerifier 'backlog-add fixture avoids stale dedup trigger wording' (($backlogAddScenario -match 'Functional verifier backlog add flow marker') -and ($scenarioRunner -match 'Functional verifier backlog add flow marker') -and ($backlogAddScenario -notmatch '\[scenario test\] please ignore') -and ($scenarioRunner -notmatch '\[scenario test\] please ignore')) ''
+  Assert-FeatureVerifier 'backlog-add fixture avoids stale dedup trigger wording' (($backlogAddScenario -match 'bridge backlog add list delete verification') -and ($scenarioRunner -match 'bridge backlog add list delete verification') -and ($backlogAddScenario -notmatch 'Functional verifier backlog add flow marker') -and ($scenarioRunner -notmatch 'Functional verifier backlog add flow marker') -and ($backlogAddScenario -notmatch '\[scenario test\] please ignore') -and ($scenarioRunner -notmatch '\[scenario test\] please ignore')) ''
+  Assert-FeatureVerifier 'backlog-add uses one explicit channel for add/list/delete' (($backlogAddScenario -match 'channel: channel') -and ($backlogAddScenario -match 'channel=') -and ($scenarioRunner -match 'Get-ScenarioChannel') -and ($scenarioRunner -notmatch 'channel=main&include=all') -and ($server -match 'Set-PinnedChannel \$chParam')) ''
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
