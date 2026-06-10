@@ -34,9 +34,11 @@
       $rcFlag    = Join-Path $ctlDir 'restart.flag'
       $rcDefer   = Join-Path $ctlDir 'restart.deferred'
       $rcMaxDefer = 600
+      $rcCompletionBackstop = 1800
       $rcBusy = $false
       $rcLiveAgent = $false
       $rcDeepThinkActive = $false
+      $rcCompletionFinalizing = $false
       function Test-RestartCoalescerDeepThinkActive {
         param([object]$ChannelState)
         if ($null -eq $ChannelState) { return $false }
@@ -71,6 +73,7 @@
           try {
             $rcCs = [IO.File]::ReadAllText($rcSp, [Text.Encoding]::UTF8) | ConvertFrom-Json
             if (Test-RestartCoalescerDeepThinkActive -ChannelState $rcCs) { $rcDeepThinkActive = $true }
+            if (Test-RestartCoalescerCompletionFinalizing -ChannelState $rcCs) { $rcCompletionFinalizing = $true; $rcBusy = $true }
             if (([string]$rcCs.status -in @('working','planning','coding','discuss','study','research')) -or (-not [string]::IsNullOrWhiteSpace([string]$rcCs.current_task)) -or [bool]$rcCs.doctor_active) { $rcBusy = $true }
             # 2026-06-09 speed/stability: a LIVE agent_pid mid-turn = the channel is genuinely working,
             # even when SILENT (Claude reasoning produces NO conversation output). The agent-wait owns
@@ -82,7 +85,7 @@
           } catch {}
         }
       }
-      if ((Test-Path -LiteralPath $rcFlag) -and ($rcBusy -or $rcDeepThinkActive)) {
+      if ((Test-Path -LiteralPath $rcFlag) -and ($rcBusy -or $rcDeepThinkActive -or $rcCompletionFinalizing)) {
         # 2026-05-30 v3: stamp the FIRST-defer time into restart.deferred content and do
         # NOT reset it on re-defer. Otherwise continuous self-dev work re-defers every
         # tick, bumping the file mtime, so the maxDefer cap (age) never fires and the
@@ -135,24 +138,14 @@
         $rcQuietSec = 0
         try { $rcCp = Get-ConversationPath; $rcQuietSec = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $rcCp).LastWriteTimeUtc).TotalSeconds } catch {}
         $rcFailsafeQuiet = 300
-        if ($rcDeepThinkActive -and $rcQuietSec -ge $rcFailsafeQuiet) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — [[DEEP-THINK]] ещё активен, но мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
-        } elseif ($rcDeepThinkActive -and $rcAge -ge $rcMaxDefer) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: [[DEEP-THINK]] hold превысил максимум.' -Kind event | Out-Null } catch {}
-        } elseif ($rcDeepThinkActive) {
+        $rcMessageSink = { param([string]$Text) Add-Message -From system -Text $Text -Kind event | Out-Null }
+        $rcDecision = Invoke-RestartCoalescerDeferredApply -DeferredPath $rcDefer -FlagPath $rcFlag -AgeSec $rcAge -QuietSec $rcQuietSec -DeepThinkActive:$rcDeepThinkActive -Busy:$rcBusy -LiveAgent:$rcLiveAgent -PlanHasWork:$rcPlanHasWork -CompletionFinalizing:$rcCompletionFinalizing -MaxDeferSec $rcMaxDefer -CompletionBackstopSec $rcCompletionBackstop -FailsafeQuietSec $rcFailsafeQuiet -MessageSink $rcMessageSink
+        if ($rcDecision.reason -eq 'deepthink_active') {
           Write-Host 'recycle: holding deferred restart (active deep-think discuss)'
-        } elseif ($rcBusy -and (-not $rcLiveAgent) -and $rcQuietSec -ge $rcFailsafeQuiet) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — канал ещё busy, но агент не жив и мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
-        } elseif ($rcBusy -and (-not $rcLiveAgent) -and $rcAge -ge $rcMaxDefer) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту: busy-hold превысил максимум.' -Kind event | Out-Null } catch {}
-        } elseif ($rcBusy) {
+        } elseif ($rcDecision.reason -eq 'completion_finalizing') {
+          Write-Host 'recycle: holding deferred restart (DONE-finalization boundary)'
+        } elseif ($rcDecision.reason -eq 'busy') {
           Write-Host 'recycle: holding deferred restart (a channel is busy)'
-        } elseif (-not $rcPlanHasWork) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Применяю отложенный перезапуск — план пуст, пачка self-dev правок завершена (один recycle).' -Kind event | Out-Null } catch {}
-        } elseif ($rcQuietSec -ge $rcFailsafeQuiet) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text ('♻ Применяю отложенный перезапуск — мост тих ' + [int]$rcQuietSec + 'с (failsafe).') -Kind event | Out-Null } catch {}
-        } elseif ($rcAge -ge $rcMaxDefer) {
-          try { Move-Item -LiteralPath $rcDefer -Destination $rcFlag -Force; Add-Message -From system -Text '♻ Отложенный перезапуск применён по таймауту (макс. отсрочка).' -Kind event | Out-Null } catch {}
         }
         # else: plan still has queued work, not failsafe-quiet, under cap -> keep holding
       }
@@ -364,4 +357,101 @@
   }
 
   $maxUser = Get-MaxUserSeq
+}
+
+function Test-RestartCoalescerCompletionFinalizing {
+  param([object]$ChannelState)
+  if ($null -eq $ChannelState) { return $false }
+  try {
+    if (($ChannelState.PSObject.Properties.Name -contains 'completion_finalizing') -and [bool]$ChannelState.completion_finalizing) { return $true }
+    if (($ChannelState.PSObject.Properties.Name -contains 'done_finalizing') -and [bool]$ChannelState.done_finalizing) { return $true }
+  } catch {}
+  return $false
+}
+
+function Invoke-RestartCoalescerDeferredApply {
+  param(
+    [Parameter(Mandatory=$true)][string]$DeferredPath,
+    [Parameter(Mandatory=$true)][string]$FlagPath,
+    [double]$AgeSec = 0,
+    [double]$QuietSec = 0,
+    [bool]$DeepThinkActive = $false,
+    [bool]$Busy = $false,
+    [bool]$LiveAgent = $false,
+    [bool]$PlanHasWork = $false,
+    [bool]$CompletionFinalizing = $false,
+    [int]$MaxDeferSec = 600,
+    [int]$CompletionBackstopSec = 1800,
+    [int]$FailsafeQuietSec = 300,
+    [scriptblock]$MessageSink = $null
+  )
+
+  $result = [ordered]@{ action = 'hold'; reason = 'under_cap'; applied = $false }
+  if (-not (Test-Path -LiteralPath $DeferredPath)) {
+    $result.action = 'none'
+    $result.reason = 'no_deferred_restart'
+    return [pscustomobject]$result
+  }
+
+  $apply = {
+    param([string]$Reason, [string]$Message)
+    try {
+      Move-Item -LiteralPath $DeferredPath -Destination $FlagPath -Force
+      if ($MessageSink -and -not [string]::IsNullOrWhiteSpace($Message)) { & $MessageSink $Message }
+      $result.action = 'apply'
+      $result.reason = $Reason
+      $result.applied = $true
+    } catch {
+      $result.action = 'error'
+      $result.reason = ($Reason + ': ' + $_.Exception.Message)
+      $result.applied = $false
+    }
+  }
+
+  if ($CompletionFinalizing -and $AgeSec -lt $CompletionBackstopSec) {
+    $result.reason = 'completion_finalizing'
+    return [pscustomobject]$result
+  }
+  if ($CompletionFinalizing -and $AgeSec -ge $CompletionBackstopSec) {
+    & $apply 'completion_backstop' '♻ Отложенный перезапуск применён по runaway-backstop: DONE-finalization hold превысил 1800с.'
+    return [pscustomobject]$result
+  }
+  if ($DeepThinkActive -and $QuietSec -ge $FailsafeQuietSec) {
+    & $apply 'deepthink_quiet_failsafe' ('♻ Применяю отложенный перезапуск — [[DEEP-THINK]] ещё активен, но мост тих ' + [int]$QuietSec + 'с (failsafe).')
+    return [pscustomobject]$result
+  }
+  if ($DeepThinkActive -and $AgeSec -ge $MaxDeferSec) {
+    & $apply 'deepthink_max_defer' '♻ Отложенный перезапуск применён по таймауту: [[DEEP-THINK]] hold превысил максимум.'
+    return [pscustomobject]$result
+  }
+  if ($DeepThinkActive) {
+    $result.reason = 'deepthink_active'
+    return [pscustomobject]$result
+  }
+  if ($Busy -and (-not $LiveAgent) -and $QuietSec -ge $FailsafeQuietSec) {
+    & $apply 'busy_quiet_failsafe' ('♻ Применяю отложенный перезапуск — канал ещё busy, но агент не жив и мост тих ' + [int]$QuietSec + 'с (failsafe).')
+    return [pscustomobject]$result
+  }
+  if ($Busy -and (-not $LiveAgent) -and $AgeSec -ge $MaxDeferSec) {
+    & $apply 'busy_max_defer' '♻ Отложенный перезапуск применён по таймауту: busy-hold превысил максимум.'
+    return [pscustomobject]$result
+  }
+  if ($Busy) {
+    $result.reason = 'busy'
+    return [pscustomobject]$result
+  }
+  if (-not $PlanHasWork) {
+    & $apply 'plan_empty' '♻ Применяю отложенный перезапуск — план пуст, пачка self-dev правок завершена (один recycle).'
+    return [pscustomobject]$result
+  }
+  if ($QuietSec -ge $FailsafeQuietSec) {
+    & $apply 'quiet_failsafe' ('♻ Применяю отложенный перезапуск — мост тих ' + [int]$QuietSec + 'с (failsafe).')
+    return [pscustomobject]$result
+  }
+  if ($AgeSec -ge $MaxDeferSec) {
+    & $apply 'max_defer' '♻ Отложенный перезапуск применён по таймауту (макс. отсрочка).'
+    return [pscustomobject]$result
+  }
+
+  return [pscustomobject]$result
 }
