@@ -13,6 +13,62 @@ function Get-BridgeRoot {
   Split-Path -Parent $PSScriptRoot
 }
 
+function Invoke-GitNative {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [Parameter(Mandatory=$true)][object[]]$GitArgs
+  )
+
+  $nativeArgs = @('-C', [string]$RepoRoot)
+  if ($GitArgs) {
+    foreach ($arg in $GitArgs) {
+      if ($null -eq $arg) { continue }
+      $nativeArgs += [string]$arg
+    }
+  }
+
+  $output = @(& git @nativeArgs 2>&1)
+  $exitCode = 0
+  try { $exitCode = [int]$LASTEXITCODE } catch { $exitCode = 1 }
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output   = @($output | ForEach-Object { [string]$_ })
+    Args     = @($nativeArgs)
+  }
+}
+
+function Invoke-GitAddPaths {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [string[]]$Paths = @()
+  )
+
+  $cleanPaths = @(
+    $Paths |
+      ForEach-Object { [string]$_ } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  )
+  if ($cleanPaths.Count -eq 0) {
+    return [pscustomobject]@{
+      ExitCode = 0
+      Output   = @()
+      Args     = @('add', '--')
+      Skipped  = $true
+    }
+  }
+
+  return Invoke-GitNative -RepoRoot $RepoRoot -GitArgs (@('add', '--') + $cleanPaths)
+}
+
+function Invoke-GitCommitMessage {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [Parameter(Mandatory=$true)][string]$Message
+  )
+
+  return Invoke-GitNative -RepoRoot $RepoRoot -GitArgs @('commit', '-m', [string]$Message)
+}
+
 
 function Get-BridgeConfig {
   # Loads config.json then overlays settings.json (gitignored, survives rollbacks).

@@ -1752,18 +1752,118 @@ function Quarantine-ParallelDispatchCollectedWorkers {
   }
 }
 
+function Remove-StaleIndexLock {
+  param([string]$RepoRoot)
+
+  $lockPath = Join-Path $RepoRoot '.git\index.lock'
+  if (-not (Test-Path -LiteralPath $lockPath)) { return $false }
+  $gitProcs = @(Get-Process -Name 'git' -ErrorAction SilentlyContinue | Where-Object { $_ })
+  if ($gitProcs.Count -gt 0) { return $false }
+  $lockAge = ((Get-Date) - (Get-Item -LiteralPath $lockPath).LastWriteTime).TotalSeconds
+  if ($lockAge -lt 30) { return $false }
+  try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop; return $true } catch { return $false }
+}
+
+function Test-ParallelDispatchGitLockContention {
+  param([object]$Output)
+
+  $text = (@($Output) | ForEach-Object { [string]$_ }) -join "`n"
+  return ($text -match '(?i)(index\.lock|Permission|unable to create|Access is denied)')
+}
+
+function Invoke-ParallelDispatchCommitHeartbeat {
+  try {
+    $cmd = Get-Command Update-ChannelHeartbeat -ErrorAction SilentlyContinue
+    if ($cmd) {
+      try {
+        if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+          Update-ChannelHeartbeat -Slug (Get-EffectiveChannel) | Out-Null
+          return
+        }
+      } catch {}
+      try { Update-ChannelHeartbeat | Out-Null } catch {}
+    }
+  } catch {}
+}
+
+function Invoke-ParallelDispatchGitCommitWithRetry {
+  param(
+    [string]$RepoRoot,
+    [scriptblock]$Operation,
+    [int]$MaxRetries = 2,
+    [int]$BackoffSeconds = 5
+  )
+
+  $attempt = 0
+  $last = $null
+  while ($attempt -le $MaxRetries) {
+    $attempt++
+    try {
+      $raw = @(& $Operation)
+      $last = @($raw | Where-Object { $_ -and ($_.PSObject.Properties.Name -contains 'ExitCode') } | Select-Object -Last 1)[0]
+      if ($null -eq $last) {
+        $last = [pscustomobject]@{ ExitCode = 1; Output = @($raw); Attempts = $attempt; RemovedLock = $false }
+      }
+    } catch {
+      $last = [pscustomobject]@{ ExitCode = 1; Output = @($_.Exception.Message); Attempts = $attempt; RemovedLock = $false }
+    }
+
+    $exitCode = 1
+    try { $exitCode = [int]$last.ExitCode } catch {}
+    if ($exitCode -eq 0) {
+      try { $last | Add-Member -NotePropertyName Attempts -NotePropertyValue $attempt -Force } catch {}
+      return $last
+    }
+
+    if ($attempt -gt $MaxRetries -or -not (Test-ParallelDispatchGitLockContention -Output $last.Output)) {
+      try { $last | Add-Member -NotePropertyName Attempts -NotePropertyValue $attempt -Force } catch {}
+      return $last
+    }
+
+    $removed = $false
+    try { $removed = Remove-StaleIndexLock -RepoRoot $RepoRoot } catch {}
+    try { $last | Add-Member -NotePropertyName RemovedLock -NotePropertyValue $removed -Force } catch {}
+    Invoke-ParallelDispatchCommitHeartbeat
+    Start-Sleep -Seconds $BackoffSeconds
+  }
+
+  return $last
+}
+
 function Commit-ParallelDispatchCollectedOutputs {
   param([hashtable]$Context)
 
   if ($Context.collectedStreams -le 0 -or $Context.deliveredPaths.Count -le 0) { return }
 
   try {
-    foreach ($p in $Context.deliveredPaths) {
-      & $Context.gitExe -C $Context.bridgeRoot add -- $p 2>$null | Out-Null
+    $commitResult = Invoke-ParallelDispatchGitCommitWithRetry -RepoRoot $Context.bridgeRoot -Operation {
+      $oldErrorActionPreference = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        $out = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($p in $Context.deliveredPaths) {
+          $addOut = @(& $Context.gitExe -C $Context.bridgeRoot add -- $p 2>&1)
+          foreach ($line in $addOut) { [void]$out.Add($line) }
+          if ($LASTEXITCODE -ne 0) {
+            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+          }
+        }
+        $actualFiles = $Context.deliveredPaths.Count
+        $commitOut = @(& $Context.gitExe -C $Context.bridgeRoot commit -m ("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>&1)
+        foreach ($line in $commitOut) { [void]$out.Add($line) }
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+      } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+      }
     }
+
     $actualFiles = $Context.deliveredPaths.Count
-    & $Context.gitExe -C $Context.bridgeRoot commit -m ("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files") 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    $commitExitCode = 1
+    try {
+      $commitResultObj = @($commitResult | Where-Object { $_ -and ($_.PSObject.Properties.Name -contains 'ExitCode') } | Select-Object -Last 1)[0]
+      $commitExitCode = [int]$commitResultObj.ExitCode
+    } catch {}
+    if ($commitExitCode -eq 0) {
       $Context.merged += $Context.collectedStreams
       try { Add-Message -From system -Text ("📦 Collect-commit: " + $actualFiles + " реально изменённых файлов из " + $Context.collectedStreams + " потоков (только staged actual diff, не git add -A)") -Kind event | Out-Null } catch {}
       return
@@ -1791,8 +1891,23 @@ function Resolve-ParallelDispatchWorkerResult {
       $wtPath = Get-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash
       $dirtyWt = @(& $Context.gitExe -C $wtPath status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
       if (@($dirtyWt).Count -gt 0) {
-        & $Context.gitExe -C $wtPath add -A 2>$null | Out-Null
-        & $Context.gitExe -C $wtPath commit -m ("host-commit parallel stream " + $Worker.id) 2>$null | Out-Null
+        [void](Invoke-ParallelDispatchGitCommitWithRetry -RepoRoot $wtPath -Operation {
+          $oldErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $out = New-Object 'System.Collections.Generic.List[object]'
+            $addOut = @(& $Context.gitExe -C $wtPath add -A 2>&1)
+            foreach ($line in $addOut) { [void]$out.Add($line) }
+            if ($LASTEXITCODE -ne 0) {
+              return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+            }
+            $commitOut = @(& $Context.gitExe -C $wtPath commit -m ("host-commit parallel stream " + $Worker.id) 2>&1)
+            foreach ($line in $commitOut) { [void]$out.Add($line) }
+            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out.ToArray()) }
+          } finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+          }
+        })
         $hc = @(Get-WorkerCommits -Worker $Worker)
         if (@($hc).Count -gt 0) {
           $res = [pscustomobject]@{ status = 'done'; reply = $res.reply; commits = $hc }

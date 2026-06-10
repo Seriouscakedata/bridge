@@ -171,8 +171,15 @@
           if ($acFiles.Count -gt 0 -and $commitWorthyFiles.Count -gt 0) {
             $acMsg = 'auto-commit (driver; coder sandbox cannot reach .git): ' + (($task -replace '\s+',' ').Trim())
             if ($acMsg.Length -gt 180) { $acMsg = $acMsg.Substring(0,180) }
-            & git -C $bridgeRoot add -- @($commitWorthyFiles) 2>$null | Out-Null
-            & git -C $bridgeRoot commit -m $acMsg 2>$null | Out-Null
+            $acAdd = Invoke-GitAddPaths -RepoRoot $bridgeRoot -Paths @($commitWorthyFiles)
+            if ($acAdd.ExitCode -ne 0) {
+              Add-Message -From system -Text ("⚠ Driver auto-commit: git add failed (bridgeRoot): " + (($acAdd.Output -join ' ') -replace '\s+', ' ').Trim()) -Kind event | Out-Null
+            } else {
+              $acCommit = Invoke-GitCommitMessage -RepoRoot $bridgeRoot -Message $acMsg
+              if ($acCommit.ExitCode -ne 0) {
+                Add-Message -From system -Text ("⚠ Driver auto-commit: git commit failed (bridgeRoot): " + (($acCommit.Output -join ' ') -replace '\s+', ' ').Trim()) -Kind event | Out-Null
+              }
+            }
             $acNewHead = (& git -C $bridgeRoot rev-parse HEAD 2>$null).Trim()
             if ($acNewHead -and $acNewHead -ne $headBeforeTurn) {
               try {
@@ -219,8 +226,15 @@
       if (@($pDirty).Count -gt 0) {
         $pMsg = 'auto-commit (driver): ' + (($task -replace '\s+', ' ').Trim())
         if ($pMsg.Length -gt 160) { $pMsg = $pMsg.Substring(0, 160) }
-        & git -C $projRoot add -A 2>$null | Out-Null
-        & git -C $projRoot commit -m $pMsg 2>$null | Out-Null
+        $pAdd = Invoke-GitNative -RepoRoot $projRoot -GitArgs @('add', '-A')
+        if ($pAdd.ExitCode -ne 0) {
+          Add-Message -From system -Text ("⚠ Driver auto-commit: git add failed (projectRoot): " + (($pAdd.Output -join ' ') -replace '\s+', ' ').Trim()) -Kind event | Out-Null
+        } else {
+          $pCommit = Invoke-GitCommitMessage -RepoRoot $projRoot -Message $pMsg
+          if ($pCommit.ExitCode -ne 0) {
+            Add-Message -From system -Text ("⚠ Driver auto-commit: git commit failed (projectRoot): " + (($pCommit.Output -join ' ') -replace '\s+', ' ').Trim()) -Kind event | Out-Null
+          }
+        }
         $pHead = ((& git -C $projRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
         if ($pHead) { Add-Message -From system -Text ("💾 Драйвер зафиксировал правки проекта: " + $(if ($pHead.Length -ge 7) { $pHead.Substring(0,7) } else { $pHead })) -Kind event | Out-Null }
         try { Invoke-AutoPush -Root $projRoot } catch {}
