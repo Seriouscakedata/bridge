@@ -319,6 +319,29 @@ function Get-ScenarioChannel {
   return 'main'
 }
 
+function Invoke-ScenarioSandboxArchive {
+  param(
+    [string]$BaseUrl,
+    [hashtable]$Headers,
+    [string]$ChannelSlug
+  )
+
+  if ([string]::IsNullOrWhiteSpace($ChannelSlug)) { return }
+
+  Write-Host "[scenario] Archiving sandbox channel: $ChannelSlug"
+  try {
+    $archiveChannelBody = @{ slug = $ChannelSlug } | ConvertTo-Json -Compress
+    $archiveResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/channels/archive') -Method POST -Body $archiveChannelBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10
+    if ($archiveResp.ok -eq $true) {
+      Write-Host "[scenario] Successfully archived channel $ChannelSlug"
+    } else {
+      Write-Warning "[scenario] Failed to archive sandbox channel $($ChannelSlug): $($archiveResp.error)"
+    }
+  } catch {
+    Write-Warning "[scenario] Exception archiving sandbox channel $($ChannelSlug): $($_.Exception.Message)"
+  }
+}
+
 function New-BrowserArguments {
   param(
     [string]$Mode,
@@ -618,11 +641,13 @@ if ($Name -eq 'backlog-add') {
       $cleanupChannelSlug = $sandboxChannelSlug # Mark for cleanup later
     } else {
       Write-Warning "[scenario] Failed to create sandbox channel $($sandboxChannelSlug): $($createResp.error)"
-      # If channel creation fails, the scenario will likely fail anyway.
-      # We proceed with the default channel, but expect the scenario to report failure.
+      Write-Error "[scenario] Refusing to run backlog-add without a sandbox channel"
+      exit 1
     }
   } catch {
     Write-Warning "[scenario] Exception creating sandbox channel $($sandboxChannelSlug): $($_.Exception.Message)"
+    Write-Error "[scenario] Refusing to run backlog-add without a sandbox channel"
+    exit 1
   }
 }
 
@@ -877,22 +902,6 @@ if ($result -and $lastProfileDir) {
   try { Remove-Item -LiteralPath $lastProfileDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
 
-# Archive the sandbox channel if it was created
-if ($cleanupChannelSlug) {
-  Write-Host "[scenario] Archiving sandbox channel: $cleanupChannelSlug"
-  try {
-    $archiveChannelBody = @{ slug = $cleanupChannelSlug } | ConvertTo-Json -Compress
-    $archiveResp = Invoke-RestMethod -Uri (($Url.TrimEnd('/')) + '/api/channels/archive') -Method POST -Body $archiveChannelBody -ContentType 'application/json; charset=utf-8' -Headers $headers -TimeoutSec 10
-    if ($archiveResp.ok -eq $true) {
-      Write-Host "[scenario] Successfully archived channel $cleanupChannelSlug"
-    } else {
-      Write-Warning "[scenario] Failed to archive sandbox channel $($cleanupChannelSlug): $($archiveResp.error)"
-    }
-  } catch {
-    Write-Warning "[scenario] Exception archiving sandbox channel $($cleanupChannelSlug): $($_.Exception.Message)"
-  }
-}
-
 Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
@@ -901,6 +910,7 @@ if (-not $result) {
     $diag.fallback = 'http'
     $diag.fallback_result = $fallbackResult
     Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    Invoke-ScenarioSandboxArchive -BaseUrl $Url -Headers $headers -ChannelSlug $cleanupChannelSlug
     $fallbackResult | ConvertTo-Json -Compress -Depth 6
     if ([bool]$fallbackResult.ok) { exit 0 } else { exit 1 }
   }
@@ -932,9 +942,11 @@ if (-not $result) {
     diagnostics = $diagPath
   }
   $err | ConvertTo-Json -Compress -Depth 4
+  Invoke-ScenarioSandboxArchive -BaseUrl $Url -Headers $headers -ChannelSlug $cleanupChannelSlug
   exit 1
 }
 
 # Print result as JSON to stdout, exit with code that reflects ok.
+Invoke-ScenarioSandboxArchive -BaseUrl $Url -Headers $headers -ChannelSlug $cleanupChannelSlug
 $result | ConvertTo-Json -Compress -Depth 6
 if ([bool]$result.ok) { exit 0 } else { exit 1 }

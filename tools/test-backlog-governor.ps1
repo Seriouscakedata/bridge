@@ -87,6 +87,11 @@ try {
   Assert-BacklogGovernor 'scenario marker reason' ([string]$markerVerdict.reason -eq 'scenario-marker') $markerVerdict.reason
   Assert-BacklogGovernor 'scenario marker checked before lease conflict' ([string]$markerVerdict.evidence.conflict -eq '' -and @($markerVerdict.evidence.scenario_marker.matches).Count -gt 0) ($markerVerdict | ConvertTo-Json -Compress -Depth 8)
 
+  $hardeningTaskText = 'HARDEN backlog hygiene: feature-verifier scenario markers must NOT enter claimable backlog. Incident evidence mentions backlog-flow-123 and bridge backlog add list delete verification, but this is the real remediation task with deliverables and tests.'
+  $hardeningTask = New-GovernorItem -Id 'scenario-hardening-task' -Text $hardeningTaskText -TouchSet @('lib/backlog-governor.ps1') -RootCauseKey 'queue-governor:scenario-hardening'
+  $hardeningVerdict = Test-BacklogGovernorClaimable -Item $hardeningTask
+  Assert-BacklogGovernor 'hardening task mentioning marker stays claimable' ([bool]$hardeningVerdict.claimable) ($hardeningVerdict | ConvertTo-Json -Compress -Depth 8)
+
   $candidateTouch = New-GovernorItem -Id 'candidate-touch' -TouchSet @('lib/foo/bar.ps1') -RootCauseKey 'queue-governor:touch'
   $activeTouch = New-GovernorItem -Id 'active-touch' -Status 'working' -TouchSet @('LIB\foo') -RootCauseKey 'queue-governor:other'
   $leaseTouchVerdict = Test-BacklogGovernorClaimable -Item $candidateTouch -ActiveItems @($activeTouch)

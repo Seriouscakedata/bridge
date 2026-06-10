@@ -128,19 +128,42 @@ function Get-BacklogGovernorRootCauseKey {
 
 function Test-BacklogGovernorScenarioMarker {
   param([Parameter(Mandatory=$false)]$Item)
-  $signatures = @('backlog-flow-','bridge backlog add list delete verification')
+  $signatures = @(
+    'backlog-flow-*',
+    'functional verifier backlog add flow marker backlog-flow-*',
+    'temporary browser verifier token backlog-flow-*',
+    'backlog crud proof marker backlog-flow-*',
+    'bridge backlog add list delete verification'
+  )
   $matches = @()
 
   foreach ($field in @('title','text','task')) {
     $value = [string](Get-BacklogGovernorObjectValue -Object $Item -Names @($field) -Default '')
     if ([string]::IsNullOrWhiteSpace($value)) { continue }
-    $lower = $value.ToLowerInvariant()
-    foreach ($signature in $signatures) {
-      if ($lower.Contains($signature)) {
-        $matches += [pscustomobject][ordered]@{
-          field = $field
-          signature = $signature
-        }
+    $normalized = (($value.ToLowerInvariant() -replace '\s+', ' ').Trim())
+    $wordCount = if ([string]::IsNullOrWhiteSpace($normalized)) { 0 } else { @($normalized -split '\s+').Count }
+    $fieldMatches = @()
+
+    if ($normalized -match '^backlog-flow-[a-z0-9-]+(\s|$)') {
+      $fieldMatches += 'backlog-flow-*'
+    }
+    if ($normalized -match '^functional verifier backlog add flow marker\s+backlog-flow-[a-z0-9-]+(\s|$)') {
+      $fieldMatches += 'functional verifier backlog add flow marker backlog-flow-*'
+    }
+    if ($normalized -match '^temporary browser verifier token\s+backlog-flow-[a-z0-9-]+(\s|$)') {
+      $fieldMatches += 'temporary browser verifier token backlog-flow-*'
+    }
+    if ($normalized -match '^backlog crud proof marker\s+backlog-flow-[a-z0-9-]+(\s|$)') {
+      $fieldMatches += 'backlog crud proof marker backlog-flow-*'
+    }
+    if ($normalized.Contains('bridge backlog add list delete verification') -and $wordCount -le 24) {
+      $fieldMatches += 'bridge backlog add list delete verification'
+    }
+
+    foreach ($signature in @($fieldMatches | Select-Object -Unique)) {
+      $matches += [pscustomobject][ordered]@{
+        field = $field
+        signature = $signature
       }
     }
   }
