@@ -191,7 +191,7 @@ function Write-AuditLog {
     $log = Join-Path $dir 'audit.log'
     try {
       if (Get-Command Rotate-LogIfBig -ErrorAction SilentlyContinue) {
-        Rotate-LogIfBig -Path $log -MaxBytes 200KB
+        Rotate-LogIfBig -Path $log -MaxKB 200
       }
     } catch {}
     $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), ([string]$Message)

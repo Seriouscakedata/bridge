@@ -63,3 +63,4 @@ channels/*/delivery-gate-shadow.jsonl
 channels/*/task-management-shadow.jsonl
 channels/*/cost.json
 tools/tmp-*.ps1
+/backlog.jsonl
