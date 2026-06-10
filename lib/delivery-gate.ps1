@@ -23,7 +23,9 @@ $script:DeliveryGateBoolInputEnum = @(
 )
 
 $script:DeliveryGateOptionalInputEnum = @(
-  'evidence'
+  'evidence',
+  'forbidden_changes_files',
+  'protected_project_spec_changes'
 )
 
 $script:DeliveryGateOutputFieldEnum = @(

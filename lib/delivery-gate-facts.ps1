@@ -9,12 +9,6 @@ $script:DeliveryGateFactsRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:DeliveryGateFactsRoot 'lib\delivery-gate.ps1')
 . (Join-Path $script:DeliveryGateFactsRoot 'lib\delivery-mode.ps1')
 
-foreach ($optionalFactName in @('forbidden_changes_files', 'protected_project_spec_changes')) {
-  if ($script:DeliveryGateOptionalInputEnum -notcontains $optionalFactName) {
-    $script:DeliveryGateOptionalInputEnum = @($script:DeliveryGateOptionalInputEnum + $optionalFactName)
-  }
-}
-
 function Resolve-DeliveryGateBridgeRoot {
   param([string]$BridgeRoot)
   if (-not [string]::IsNullOrWhiteSpace($BridgeRoot)) { return $BridgeRoot }
@@ -173,39 +167,6 @@ function Test-DeliveryGateDestructivePatternsText {
     if (-not $hasSafeMigration -and $line -match '(?i)\b(delete|deleting|remove|removing|rm|erase|purge|удали|удалить)\b.*\b(state|backlog|memory)\b') { return $true }
     if ($line -match '(?i)\b(disable|turn\s+off|remove|bypass)\b.*\b(watchdog|safety|verify|verification)\b') { return $true }
   }
-
-  return $false
-}
-
-function Test-DeliveryGateForbiddenPath {
-  param([string]$Path)
-
-  $p = Normalize-DeliveryPath -Path $Path
-  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
-
-  if ($p -match '(^|/)\.git(/|$)') { return $true }
-  if ($p -match '(^|/)\.bridge-runtime(/|$)') { return $true }
-  if ($p -match '(^|/)node_modules(/|$)') { return $true }
-  if ($p -match '(^|/)uploads?(/|$)') { return $true }
-  if ($p -match '(^|/)(secrets?(\.|/)|.*secret.*\.(json|yaml|yml|toml|env)$|\.env($|\.))') { return $true }
-  if ($p -match '(^|/)(runtime|state|memory|backlog).*\.(db|sqlite|sqlite3)$') { return $true }
-  if ($p -match '(^|/).*\.(db|sqlite|sqlite3)$' -and $p -match '(runtime|state|memory|backlog)') { return $true }
-
-  return $false
-}
-
-function Test-DeliveryGateProtectedProjectSpecPath {
-  param([string]$Path)
-
-  $p = Normalize-DeliveryPath -Path $Path
-  if ([string]::IsNullOrWhiteSpace($p)) { return $false }
-
-  if ($p -eq 'project_plan.md') { return $true }
-  if ($p -eq 'project_plan/plan.md') { return $true }
-  if ($p -match '(^|/)project_plan/plan\.md$') { return $true }
-  if ($p -match '(^|/)(project_)?contract(s)?\.(json|ya?ml|md)$') { return $true }
-  if ($p -match '(^|/)(acceptance|acceptance_specs|acceptance-specs)(/|$)') { return $true }
-  if ($p -match '(^|/).*acceptance.*spec.*\.(json|ya?ml|md|ps1|sh)$') { return $true }
 
   return $false
 }
