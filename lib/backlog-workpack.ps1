@@ -1475,6 +1475,18 @@ function Get-BacklogWorkpackItemEditTouches {
     if ($touches.Count -gt 0) { break }
   }
   if ($touches.Count -eq 0) {
+    foreach ($prop in @('touch_set','workpack_touch_set')) {
+      foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @())) {
+        $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
+        if ([string]::IsNullOrWhiteSpace($v)) { continue }
+        if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
+            (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
+        if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
+      }
+      if ($touches.Count -gt 0) { break }
+    }
+  }
+  if ($touches.Count -eq 0) {
     foreach ($t in @(Get-BacklogWorkpackItemTouches -Item $Item)) {
       $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
       if (-not [string]::IsNullOrWhiteSpace($v) -and -not $touches.Contains($v)) { [void]$touches.Add($v) }

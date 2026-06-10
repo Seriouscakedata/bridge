@@ -589,6 +589,42 @@ try {
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
   Save-Backlog $items
 
+  $idDeclaredOverlapA = Add-Idea -Text 'stage atom updates delivery facts helper in lib/delivery-gate-facts-a.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idDeclaredOverlapB = Add-Idea -Text 'stage atom updates delivery facts helper in lib/delivery-gate-facts-b.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $idDeclaredIndependent = Add-Idea -Text 'stage atom updates delivery mode helper in lib/delivery-mode.ps1' -From 'test' -Status 'approved' -SkipCurator
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    if ([string]$item.id -eq [string]$idDeclaredOverlapA) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-declared-overlap-a' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:lib/delivery-gate-facts-a.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('lib/delivery-gate-facts.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idDeclaredOverlapB) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-declared-overlap-b' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:lib/delivery-gate-facts-b.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('lib/delivery-gate-facts.ps1') -Force
+    } elseif ([string]$item.id -eq [string]$idDeclaredIndependent) {
+      $item | Add-Member -NotePropertyName workpack_id -NotePropertyValue 'wp-declared-independent' -Force
+      $item | Add-Member -NotePropertyName workpack_conflict_group -NotePropertyValue 'file:lib/delivery-mode.ps1' -Force
+      $item | Add-Member -NotePropertyName workpack_touch_set -NotePropertyValue @('lib/delivery-mode.ps1') -Force
+    }
+  }
+  Save-Backlog $items
+  $declaredOverlapBatch = Get-NextBacklogWorkpackBatch
+  Assert-True ($declaredOverlapBatch -ne $null) 'expected declared-overlap fixture to produce a batch'
+  Assert-FrontierReportShape -Report $declaredOverlapBatch.frontier_report -Name 'declared-overlap'
+  Assert-True ([int]$declaredOverlapBatch.count -eq 2) ("expected declared-overlap batch count=2, got {0}" -f [int]$declaredOverlapBatch.count)
+  Assert-True (@($declaredOverlapBatch.ids) -contains [string]$idDeclaredIndependent) 'expected declared independent selected'
+  Assert-True ((@($declaredOverlapBatch.ids) -contains [string]$idDeclaredOverlapA) -xor (@($declaredOverlapBatch.ids) -contains [string]$idDeclaredOverlapB)) 'expected exactly one declared-overlap item selected'
+  Assert-True (-not ((@($declaredOverlapBatch.ids) -contains [string]$idDeclaredOverlapA) -and (@($declaredOverlapBatch.ids) -contains [string]$idDeclaredOverlapB))) 'declared-overlap items must not share a parallel batch'
+  $declaredBlockedId = if (@($declaredOverlapBatch.ids) -contains [string]$idDeclaredOverlapA) { [string]$idDeclaredOverlapB } else { [string]$idDeclaredOverlapA }
+  $declaredBlocked = Get-FrontierCandidateById -Report $declaredOverlapBatch.frontier_report -Id $declaredBlockedId
+  Assert-True ($declaredBlocked -and [string]$declaredBlocked.block_reason -eq 'conflicts-or-touch-overlap') 'expected declared-overlap skipped by touch conflict'
+  Assert-True (@($declaredBlocked.conflict_with_touches) -contains 'lib/delivery-gate-facts.ps1') 'expected declared overlap touch path detail'
+
+  $items = @(Get-Backlog)
+  foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }
+  Save-Backlog $items
+
   $idLegacyFilesA = Add-Idea -Text 'update legacy files alpha in app/legacy-a.tsx' -From 'test' -Status 'approved' -SkipCurator
   $idLegacyFilesB = Add-Idea -Text 'update legacy files beta in app/legacy-b.tsx' -From 'test' -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
