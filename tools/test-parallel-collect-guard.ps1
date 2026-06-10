@@ -139,11 +139,19 @@ $plan = Get-ParallelDispatchBatchFinalizePlan `
   -Result ([pscustomobject]@{ merged_ids = @('good'); quarantined_ids = @('bad') }) `
   -StreamToBacklogId @{ good = 'backlog-good'; bad = 'backlog-bad' } `
   -GiveupStreamIds @($strike3.new_giveup_ids)
+$script:mockBacklog = @([pscustomobject]@{ id = 'backlog-bad'; status = 'approved' })
+function Get-Backlog { return @($script:mockBacklog) }
+function Save-Backlog { param($Items) $script:mockBacklog = @($Items) }
+function Invoke-BacklogLocked { param([scriptblock]$Action) return (& $Action) }
+$heldWrite = Set-ParallelDispatchBacklogHeldReason -Id 'backlog-bad' -Reason 'batch-quarantine-giveup'
+$heldIds = Set-ParallelDispatchGiveupBacklogItemsHeld -StreamIds @('bad') -StreamToBacklogId @{ bad = 'backlog-bad' }
 Assert ([int]$strike1.counts['bad'] -eq 1 -and @($strike1.new_giveup_ids).Count -eq 0) "quarantine giveup first strike does not close stream"
 Assert ([int]$strike2.counts['bad'] -eq 2 -and @($strike2.new_giveup_ids).Count -eq 0) "quarantine giveup second strike does not close stream"
 Assert ([int]$strike3.counts['bad'] -eq 3 -and @($strike3.new_giveup_ids).Count -eq 1 -and @($strike3.new_giveup_ids)[0] -eq 'bad') "quarantine giveup threshold marks stuck stream"
 Assert (@($plan.done_backlog_ids).Count -eq 1 -and @($plan.done_backlog_ids)[0] -eq 'backlog-good') "quarantine giveup keeps successful backlog member for done-ledger"
 Assert (@($plan.held_stream_ids).Count -eq 1 -and @($plan.held_stream_ids)[0] -eq 'bad' -and [bool]$plan.close_batch) "quarantine giveup finalizes partial batch"
+Assert ([bool]$heldWrite -and [string]$script:mockBacklog[0].status -eq 'held' -and [string]$script:mockBacklog[0].held_reason -eq 'batch-quarantine-giveup') "quarantine giveup writes held status and reason through backlog RMW"
+Assert (@($heldIds).Count -eq 1 -and @($heldIds)[0] -eq 'backlog-bad') "quarantine giveup stream-to-backlog holder returns held backlog id"
 
 # 26-29. LLM worker mirrors strict path semantics instead of silently skipping denied FILE blocks.
 $llmWorkerSource = Get-Content -LiteralPath (Join-Path $root 'tools\parallel-llm-worker.ps1') -Raw -Encoding UTF8
@@ -156,6 +164,9 @@ $parallelSource = Get-Content -LiteralPath (Join-Path $root 'lib\parallel.ps1') 
 Assert ($parallelSource -match [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $wtPath -OutsideFiles @($deniedPaths)')) "collector cleans denied paths in worker worktree"
 Assert ($parallelSource -notmatch [regex]::Escape('Invoke-ParallelOutsideFilesCheckout -RepoRoot $Context.bridgeRoot -OutsideFiles @($deniedPaths)')) "collector does not clean denied paths in bridge root before merge"
 Assert ($parallelSource -match 'held_reason' -and $parallelSource -match 'batch-quarantine-giveup') "quarantine giveup writes durable held_reason"
+Assert ($parallelSource -match 'function Invoke-ParallelDispatchGitProcess' -and $parallelSource -notmatch 'merge --ff-only[^\r\n]*2>&1' -and $parallelSource -notmatch 'merge --no-ff[^\r\n]*2>&1') "merge phase uses process runner instead of PowerShell native stderr merge"
+$gitProcess = Invoke-ParallelDispatchGitProcess -RepoRoot $root -GitArgs @('--version') -GitExe (Get-GitExe)
+Assert ([int]$gitProcess.ExitCode -eq 0 -and (($gitProcess.Output -join "`n") -match 'git version')) "git process runner captures native stdout"
 
 # 31-34. Outside touch-set cleanup runs checkout before quarantine and never checks out declared files.
 $script:checkoutEvents = New-Object 'System.Collections.Generic.List[string]'

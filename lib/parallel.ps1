@@ -2123,6 +2123,68 @@ function Resolve-ParallelDispatchWorkerResult {
   return $null
 }
 
+function Join-ParallelDispatchNativeArguments {
+  param([object[]]$Arguments)
+
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($arg in @($Arguments)) {
+    if ($null -eq $arg) { continue }
+    $s = [string]$arg
+    if ($s.Length -eq 0) {
+      [void]$parts.Add('""')
+    } elseif ($s -notmatch '[\s"]') {
+      [void]$parts.Add($s)
+    } else {
+      [void]$parts.Add('"' + ($s -replace '"','\"') + '"')
+    }
+  }
+  return ($parts.ToArray() -join ' ')
+}
+
+function Invoke-ParallelDispatchGitProcess {
+  param(
+    [string]$RepoRoot,
+    [object[]]$GitArgs,
+    [string]$GitExe = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($GitExe)) {
+    try { $GitExe = Get-GitExe } catch { $GitExe = 'git' }
+  }
+  $args = @('-C', [string]$RepoRoot) + @($GitArgs)
+  $exitCode = 1
+  $output = @()
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $GitExe
+    $psi.Arguments = Join-ParallelDispatchNativeArguments -Arguments $args
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    $exitCode = [int]$proc.ExitCode
+    $combined = @($stdout, $stderr) -join "`n"
+    if (-not [string]::IsNullOrWhiteSpace($combined)) {
+      $output = @($combined -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+  } catch {
+    $output = @($_.Exception.Message)
+    $exitCode = 1
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output   = @($output | ForEach-Object { [string]$_ })
+    Args     = @($args)
+  }
+}
+
 function Merge-ParallelDispatchWorkerOutput {
   param(
     [hashtable]$Context,
@@ -2145,33 +2207,33 @@ function Merge-ParallelDispatchWorkerOutput {
   if ($null -eq $res) { return }
 
   try {
-    $mergeOut = & git -C $Context.bridgeRoot merge --ff-only $Worker.branch 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $mergeOut = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--ff-only',[string]$Worker.branch)
+    if ([int]$mergeOut.ExitCode -eq 0) {
       $Context.merged++
       [void]$Context.mergedStreams.Add([string]$Worker.id)
       Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (" + $res.commits.Count + " commits, branch " + $Worker.branch + ")") -Kind event | Out-Null
     } else {
-      $mergeOut2 = & git -C $Context.bridgeRoot merge --no-ff -m ("merge parallel stream " + $Worker.id) $Worker.branch 2>&1
-      if ($LASTEXITCODE -eq 0) {
+      $mergeOut2 = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--no-ff','-m',("merge parallel stream " + $Worker.id),[string]$Worker.branch)
+      if ([int]$mergeOut2.ExitCode -eq 0) {
         $Context.merged++
         [void]$Context.mergedStreams.Add([string]$Worker.id)
         Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (non-ff fallback)") -Kind event | Out-Null
       } else {
-        try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
-        $mergeOut3 = & git -C $Context.bridgeRoot merge --no-ff -X ours -m ("merge parallel stream " + $Worker.id + " (auto-resolve: ours)") $Worker.branch 2>&1
-        if ($LASTEXITCODE -eq 0) {
+        try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
+        $mergeOut3 = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--no-ff','-X','ours','-m',("merge parallel stream " + $Worker.id + " (auto-resolve: ours)"),[string]$Worker.branch)
+        if ([int]$mergeOut3.ExitCode -eq 0) {
           $Context.merged++
           [void]$Context.mergedStreams.Add([string]$Worker.id)
           Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $Worker.branch + ")") -Kind event | Out-Null
         } else {
-          try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+          try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
           Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
           Add-Message -From system -Text ("⚠ Поток " + $Worker.id + " не слит (конфликт не разрешился авто). Дерево очищено — остальные потоки сливаются нормально. Ветка " + $Worker.branch + " сохранена для ручного разбора.") -Kind event | Out-Null
         }
       }
     }
   } catch {
-    try { & git -C $Context.bridgeRoot merge --abort 2>&1 | Out-Null } catch {}
+    try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
     Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
     Add-Message -From system -Text ("❌ Merge exception for stream " + $Worker.id + " (дерево очищено): " + $_.Exception.Message) -Kind event | Out-Null
   }
@@ -2366,41 +2428,21 @@ function Get-ParallelDispatchBatchIdByStream {
   return $map
 }
 
-function Set-ParallelDispatchGiveupBacklogItemsHeld {
-  param(
-    [string[]]$StreamIds,
-    [hashtable]$StreamToBacklogId
-  )
-
-  if (-not $StreamIds -or @($StreamIds).Count -eq 0) { return @() }
-  $held = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($sid in @(ConvertTo-ParallelDispatchStringArray -Value $StreamIds)) {
-    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
-    $bid = [string]$StreamToBacklogId[$sid]
-    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
-    try {
-      if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
-        Set-Idea -Id $bid -Status 'held' -Reason 'batch-quarantine-giveup' | Out-Null
-        Set-ParallelDispatchBacklogHeldReason -Id $bid -Reason 'batch-quarantine-giveup' | Out-Null
-        [void]$held.Add($bid)
-      }
-    } catch {}
-  }
-  return @($held.ToArray())
-}
-
 function Set-ParallelDispatchBacklogHeldReason {
   param([string]$Id, [string]$Reason)
 
   if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($Reason)) { return $false }
-  if (-not (Get-Command Get-Backlog -ErrorAction SilentlyContinue) -or -not (Get-Command Save-Backlog -ErrorAction SilentlyContinue)) { return $false }
-  $getBacklogFn = ${function:Get-Backlog}
-  $saveBacklogFn = ${function:Save-Backlog}
+  $getBacklogCmd = Get-Command Get-Backlog -CommandType Function -ErrorAction SilentlyContinue
+  $saveBacklogCmd = Get-Command Save-Backlog -CommandType Function -ErrorAction SilentlyContinue
+  if (-not $getBacklogCmd -or -not $saveBacklogCmd) { return $false }
+  $getBacklogFn = $getBacklogCmd.ScriptBlock
+  $saveBacklogFn = $saveBacklogCmd.ScriptBlock
   $update = {
     $items = @(& $getBacklogFn)
     $found = $false
     foreach ($item in $items) {
       if ([string]$item.id -ne $Id) { continue }
+      $item | Add-Member -NotePropertyName status -NotePropertyValue 'held' -Force
       $item | Add-Member -NotePropertyName held_reason -NotePropertyValue $Reason -Force
       $found = $true
       break
@@ -2416,6 +2458,25 @@ function Set-ParallelDispatchBacklogHeldReason {
   } catch {
     return $false
   }
+}
+
+function Set-ParallelDispatchGiveupBacklogItemsHeld {
+  param(
+    [string[]]$StreamIds,
+    [hashtable]$StreamToBacklogId
+  )
+
+  if (-not $StreamIds -or @($StreamIds).Count -eq 0) { return @() }
+  $held = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($sid in @(ConvertTo-ParallelDispatchStringArray -Value $StreamIds)) {
+    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
+    $bid = [string]$StreamToBacklogId[$sid]
+    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
+    if (Set-ParallelDispatchBacklogHeldReason -Id $bid -Reason 'batch-quarantine-giveup') {
+      [void]$held.Add($bid)
+    }
+  }
+  return @($held.ToArray())
 }
 
 function Get-ParallelDispatchBatchFinalizePlan {
