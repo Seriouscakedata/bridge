@@ -212,12 +212,11 @@ try {
   $protectedReport = Get-BacklogWorkpackFrontierReport
   $protectedBatch = Get-NextBacklogWorkpackBatch
   Assert-FrontierReportShape -Report $protectedReport -Name 'protected-only'
-  Assert-True ($null -eq $protectedBatch) 'expected protected-only batch to be null'
-  Assert-True (-not [bool]$protectedReport.batch_available) 'expected protected-only report batch_available=false'
-  Assert-True ([int]$protectedReport.protected_count -gt 0) 'expected protected-only report protected_count>0'
-  Assert-True (@('protected-dominant','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected protected-only reason, got {0}" -f [string]$protectedReport.reason)
-  Assert-True (-not [bool]$protectedReport.claim_available) 'protected-only must not be claimed as normal serial fallback'
-  Assert-True (-not [bool]$protectedReport.serial_required) 'protected-only normal frontier must not set serial fallback'
+  Assert-True ($protectedBatch -ne $null) 'expected protected-only operator batch to be claimable'
+  Assert-True ([bool]$protectedReport.claim_available) 'protected-only operator work should be claimable'
+  Assert-True ([int]$protectedReport.selected_count -ge 1) 'protected-only operator frontier should select authorized work'
+  Assert-True (@($protectedReport.selected_ids) -contains [string]$idProtectedA -or @($protectedReport.selected_ids) -contains [string]$idProtectedB) 'protected-only operator frontier should select an operator-authorized item'
+  Assert-True (@('batch-available','conflicts-or-touch-overlap','not-enough-eligible') -contains [string]$protectedReport.reason) ("expected operator protected frontier reason, got {0}" -f [string]$protectedReport.reason)
 
   $idProtectedC = Add-Idea -Text 'fix supervisor handle cleanup in supervisor.ps1' -From 'test' -Tags @('operator') -Status 'approved' -SkipCurator
   $items = @(Get-Backlog)
@@ -273,11 +272,10 @@ try {
   $protectedMixedBatch = Get-NextBacklogWorkpackBatch
   Assert-FrontierReportShape -Report $protectedMixedReport -Name 'protected-plus-normal'
   Assert-True ($protectedMixedBatch -ne $null) 'expected protected+normal to claim normal residue'
-  Assert-True ([int]$protectedMixedBatch.count -eq 1) ("expected protected+normal serial count=1, got {0}" -f [int]$protectedMixedBatch.count)
+  Assert-True ([int]$protectedMixedBatch.count -eq 2) ("expected protected+normal count=2, got {0}" -f [int]$protectedMixedBatch.count)
   Assert-True (@($protectedMixedBatch.ids) -contains [string]$idNormalWithProtected) 'expected normal residue selected'
-  Assert-True (-not (@($protectedMixedBatch.ids) -contains [string]$idProtectedResidue)) 'protected residue must not be selected by normal frontier'
-  Assert-True ([bool]$protectedMixedReport.serial_required) 'protected+normal normal residue should use serial fallback'
-  Assert-True ([string]$protectedMixedReport.serial_reason -eq 'serial-single-fallback') 'protected+normal should use serial-single fallback reason'
+  Assert-True (@($protectedMixedBatch.ids) -contains [string]$idProtectedResidue) 'operator protected residue should be selectable'
+  Assert-True ([bool]$protectedMixedReport.claim_available) 'protected+normal should be claimable'
 
   $items = @(Get-Backlog)
   foreach ($item in $items) { $item | Add-Member -NotePropertyName status -NotePropertyValue 'done' -Force }

@@ -41,6 +41,14 @@ function Get-PolicyStringArray {
   return @($out.ToArray())
 }
 
+function Test-PolicyConcreteEditTarget {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $p = ([string]$Path).Trim()
+  if ($p -match '^(?i:general|misc|unknown|other|none)$') { return $false }
+  return $true
+}
+
 function Test-PolicyControlPlanePath {
   # ONE definition of the protected (control-plane) path set. Union of every prior list:
   # driver entry + driver modules, server, supervisor, watchdog, canary, the backlog libs,
@@ -69,11 +77,11 @@ function Get-PolicyItemDeclaredEditTargets {
   param($Item)
   if (-not $Item) { return @() }
   $files = @()
-  try { $files = @(Get-PolicyStringArray ($Item.files)) } catch { $files = @() }
+  try { $files = @(Get-PolicyStringArray ($Item.files) | Where-Object { Test-PolicyConcreteEditTarget -Path ([string]$_) }) } catch { $files = @() }
   if ($files.Count -gt 0) { return $files }
   try {
     if (Get-Command Get-BacklogWorkpackItemEditTouches -ErrorAction SilentlyContinue) {
-      $edits = @(Get-PolicyStringArray (Get-BacklogWorkpackItemEditTouches -Item $Item))
+      $edits = @(Get-PolicyStringArray (Get-BacklogWorkpackItemEditTouches -Item $Item) | Where-Object { Test-PolicyConcreteEditTarget -Path ([string]$_) })
       if ($edits.Count -gt 0) { return $edits }
     }
   } catch {}
@@ -82,7 +90,9 @@ function Get-PolicyItemDeclaredEditTargets {
     try {
       $val = $null
       if ($Item.PSObject -and ($Item.PSObject.Properties.Name -contains $name)) { $val = $Item.$name }
-      foreach ($t in @(Get-PolicyStringArray $val)) { if (-not $touches.Contains($t)) { [void]$touches.Add($t) } }
+      foreach ($t in @(Get-PolicyStringArray $val)) {
+        if ((Test-PolicyConcreteEditTarget -Path $t) -and -not $touches.Contains($t)) { [void]$touches.Add($t) }
+      }
     } catch {}
   }
   return @($touches.ToArray())

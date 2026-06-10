@@ -37,7 +37,7 @@ function Get-BacklogAggregatorClosure {
   $moduleNames = New-Object System.Collections.Generic.List[string]
   [void]$moduleNames.Add('backlog.ps1')
   $aggregatorText = [System.IO.File]::ReadAllText($aggregatorPath, [System.Text.Encoding]::UTF8)
-  foreach ($match in [regex]::Matches($aggregatorText, "'(backlog-[^']+\.ps1)'")) {
+  foreach ($match in [regex]::Matches($aggregatorText, "'([^']+\.ps1)'")) {
     $name = [string]$match.Groups[1].Value
     if (-not $moduleNames.Contains($name)) { [void]$moduleNames.Add($name) }
   }

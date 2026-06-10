@@ -1,4 +1,4 @@
-﻿# Loop-completion cleanup: checkpoints, DONE bookkeeping, delivery-gate shadow, and final state reset.
+﻿# Loop-completion cleanup: DONE bookkeeping, delivery-gate shadow, and final state reset.
 # Dot invocation preserves existing `continue` behavior for doctor resume and loop close.
 
 $script:DriverLoopCompletionCleanupRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -274,27 +274,6 @@ function Set-BacklogOutcomeFailedWithLedger {
   }.GetNewClosure()))
 }
 $script:DriverLoopCompletionCleanupBlock = {
-  if ($plannerStatus -eq 'CONTINUE') {
-    try {
-      $stCp = Read-State
-      $cpTaskId = [string]$stCp.current_task_id
-      if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = [string]$stCp.current_backlog_id }
-      if ([string]::IsNullOrWhiteSpace($cpTaskId)) { $cpTaskId = 'task-' + [string]$stCp.task_start_seq }
-      $cpStep = 0
-      try { $cpStep = [int]$stCp.task_turn } catch { $cpStep = 0 }
-      $conversationSummary = ''
-      try {
-        $conversationSummary = [string](Read-Summary)
-      } catch {
-        try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('summary-read-error: ' + $_.Exception.Message) } catch {}
-      }
-      $cpSummary = if ($conversationSummary) { $conversationSummary.Substring(0, [Math]::Min(500, $conversationSummary.Length)) } else { '' }
-      Save-TaskCheckpointFromState -State $stCp -TaskTitle $task -Channel $Channel -Reason 'continue' -Prompt '' -Context $cpSummary | Out-Null
-      Update-State { param($s) $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue (Get-Date).ToString('o') -Force } | Out-Null
-    } catch {
-      try { Write-TaskCheckpointLog -BridgeRoot $bridgeRoot -Message ('checkpoint-write-error: ' + $_.Exception.Message) } catch {}
-    }
-  }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE') {
     $qaDoneBlocked = $false
     $qaDoneBlockText = ''
@@ -540,14 +519,7 @@ $script:DriverLoopCompletionCleanupBlock = {
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    try {
-      $stDoneCp = Read-State
-      $doneCpTaskId = [string]$stDoneCp.current_task_id
-      if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = [string]$stDoneCp.current_backlog_id }
-      if ([string]::IsNullOrWhiteSpace($doneCpTaskId)) { $doneCpTaskId = 'task-' + [string]$stDoneCp.task_start_seq }
-      Clear-TaskCheckpoint -TaskId $doneCpTaskId -Channel $Channel
-    } catch {}
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName last_task_checkpoint_at -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
 }

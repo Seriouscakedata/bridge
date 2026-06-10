@@ -1,12 +1,19 @@
 ﻿# lib/bridge-lock.ps1 -- singleton launch guard for supervisor.ps1.
 # Uses a named mutex so Windows releases the lock automatically on process death.
 
+function Get-SupervisorLaunchLockName {
+  $override = ''
+  try { $override = [string]$env:BRIDGE_SUPERVISOR_LOCK_NAME } catch { $override = '' }
+  if (-not [string]::IsNullOrWhiteSpace($override)) { return $override }
+  return 'Global\ClaudeCodexBridgeSupervisorInstance'
+}
+
 function Acquire-SupervisorLaunchLock {
   param([int]$TimeoutMs = 0)
 
   $mutex = $null
   try {
-    $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeCodexBridgeSupervisorInstance')
+    $mutex = New-Object System.Threading.Mutex($false, (Get-SupervisorLaunchLockName))
     try {
       $got = $mutex.WaitOne($TimeoutMs)
     } catch [System.Threading.AbandonedMutexException] {

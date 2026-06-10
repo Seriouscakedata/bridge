@@ -6,6 +6,9 @@ $ErrorActionPreference = 'Stop'
 $bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $bridgeRoot 'lib\bridge-lock.ps1')
 
+$script:OldSupervisorLockName = [string]$env:BRIDGE_SUPERVISOR_LOCK_NAME
+$env:BRIDGE_SUPERVISOR_LOCK_NAME = 'Global\ClaudeCodexBridgeSupervisorInstanceTest-' + [guid]::NewGuid().ToString('N')
+
 $script:pass = 0
 $script:fail = 0
 
@@ -151,5 +154,10 @@ $afterCleanupProbe = Invoke-RelaunchProtectionProbe -BridgeRoot $bridgeRoot
 Assert-RelaunchProtection 'released relaunch lock allows the next child launch again' ($afterCleanupProbe.ExitCode -eq 0 -and $afterCleanupProbe.Combined -match 'LOCK_ACQUIRED' -and $afterCleanupProbe.Combined -match 'LOCK_RELEASED') ("exit={0}; output={1}" -f $afterCleanupProbe.ExitCode, $afterCleanupProbe.Combined.Trim())
 
 Write-Host ("relaunch protection tests: {0} PASS, {1} FAIL" -f $script:pass, $script:fail)
+if ([string]::IsNullOrWhiteSpace($script:OldSupervisorLockName)) {
+  Remove-Item Env:\BRIDGE_SUPERVISOR_LOCK_NAME -ErrorAction SilentlyContinue
+} else {
+  $env:BRIDGE_SUPERVISOR_LOCK_NAME = $script:OldSupervisorLockName
+}
 if ($script:fail -gt 0) { exit 1 }
 exit 0
