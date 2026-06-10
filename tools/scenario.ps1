@@ -378,6 +378,89 @@ function Test-ScenarioHttpEndpoint {
   return $item
 }
 
+function Invoke-BacklogAddHttpScenario {
+  param(
+    [string]$BaseUrl,
+    [hashtable]$Headers
+  )
+
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $errors = New-Object 'System.Collections.Generic.List[string]'
+  $log = New-Object 'System.Collections.Generic.List[string]'
+  $marker = 'scenario-backlog-' + [Guid]::NewGuid().ToString('N').Substring(0,12)
+  $taskText = '[scenario test] please ignore - verifying backlog add flow with marker ' + $marker
+  $addId = ''
+
+  try {
+    $health = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/health') -Headers $Headers -TimeoutSec 10
+    if ($health.addIdea -eq $true) { [void]$log.Add('OK: Add-Idea function loaded on server') } else { [void]$errors.Add('Add-Idea function not loaded on server') }
+    if ($health.getBacklogPath -eq $true) { [void]$log.Add('OK: Get-BacklogPath function loaded on server') } else { [void]$errors.Add('Get-BacklogPath function not loaded on server') }
+  } catch {
+    [void]$errors.Add('GET /api/backlog/health failed: ' + $_.Exception.Message)
+  }
+
+  if ($errors.Count -eq 0) {
+    try {
+      $body = @{ text = $taskText; status = 'new' } | ConvertTo-Json -Compress
+      $addResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/add') -Method POST -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 15
+      if ($addResp.ok -eq $true) { [void]$log.Add('OK: POST returned ok=true') } else { [void]$errors.Add('POST /api/backlog/add returned ok != true') }
+      if ($addResp.id -and ([string]$addResp.id).Length -ge 8) {
+        $addId = [string]$addResp.id
+        [void]$log.Add('OK: POST returned an id')
+        [void]$log.Add('added id: ' + $addId)
+      } else {
+        [void]$errors.Add('POST /api/backlog/add did not return an id')
+      }
+    } catch {
+      [void]$errors.Add('POST /api/backlog/add failed: ' + $_.Exception.Message)
+    }
+  }
+
+  if ($errors.Count -eq 0) {
+    try {
+      $listResp = Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog?channel=main&include=all') -Headers $Headers -TimeoutSec 15
+      if ($listResp.ok -eq $true) { [void]$log.Add('OK: GET /api/backlog returned ok=true') } else { [void]$errors.Add('GET /api/backlog returned ok != true') }
+      $items = @()
+      if ($listResp.items) { $items = @($listResp.items) }
+      [void]$log.Add('backlog items returned: ' + $items.Count)
+      $found = $null
+      foreach ($item in $items) {
+        if ($item -and ([string]$item.text).Contains($marker)) { $found = $item; break }
+      }
+      if ($found) {
+        [void]$log.Add('OK: item with marker found in backlog')
+        if ([string]$found.id -eq $addId) { [void]$log.Add('OK: id matches POST response') } else { [void]$errors.Add('id does not match POST response') }
+        $allowedStatuses = @('new','approved','held','auto-dropped')
+        if ($allowedStatuses -contains [string]$found.status) { [void]$log.Add('OK: item status is a known post-add status') } else { [void]$errors.Add('item status is not a known post-add status') }
+      } else {
+        [void]$errors.Add('item with marker not found in backlog')
+      }
+    } catch {
+      [void]$errors.Add('GET /api/backlog failed: ' + $_.Exception.Message)
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($addId)) {
+    try {
+      $deleteBody = @{ id = $addId } | ConvertTo-Json -Compress
+      Invoke-RestMethod -Uri (($BaseUrl.TrimEnd('/')) + '/api/backlog/delete') -Method POST -Body $deleteBody -ContentType 'application/json; charset=utf-8' -Headers $Headers -TimeoutSec 10 | Out-Null
+      [void]$log.Add('cleanup: deleted scenario item ' + $addId)
+    } catch {
+      [void]$log.Add('cleanup-warn: ' + $_.Exception.Message)
+    }
+  }
+
+  $sw.Stop()
+  return [pscustomobject][ordered]@{
+    name = 'backlog-add'
+    ok = ($errors.Count -eq 0)
+    errors = @($errors.ToArray())
+    log = @($log.ToArray())
+    fallback = 'http'
+    timings = @{ totalMs = [int]$sw.ElapsedMilliseconds }
+  }
+}
+
 if (-not ($Name -match '^[a-z0-9_-]+$')) {
   Write-Error "Bad scenario name '$Name' (allowed: a-z 0-9 _ -)"
   exit 2
@@ -649,6 +732,14 @@ if ($result -and $lastProfileDir) {
 Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
 if (-not $result) {
+  if ($Name -eq 'backlog-add') {
+    $fallbackResult = Invoke-BacklogAddHttpScenario -BaseUrl $Url -Headers $headers
+    $diag.fallback = 'http'
+    $diag.fallback_result = $fallbackResult
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    $fallbackResult | ConvertTo-Json -Compress -Depth 6
+    if ([bool]$fallbackResult.ok) { exit 0 } else { exit 1 }
+  }
   $failureDiagnostic = Get-ScenarioFailureDiagnostic -Diagnostics $diag -DebugMarkerSeen ([bool]$debugMarker)
   $detail = ''
   if (-not [string]::IsNullOrWhiteSpace([string]$failureDiagnostic.summary)) {

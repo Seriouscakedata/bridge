@@ -63,6 +63,55 @@ function Send-VerifierChatAlert {
   } catch {}
 }
 
+function Test-FeatureVerifierInconclusiveScenarioError {
+  param([string]$ErrorText)
+  if ([string]::IsNullOrWhiteSpace($ErrorText)) { return $false }
+  return ($ErrorText -match '(?i)\btimeout\b|exit=|browser failed before DOM/debug marker|browser exited before scenario result|no scenario result|chrome\.exe|msedge\.exe|crashpad|access is denied|отказано в доступе')
+}
+
+function Get-FeatureVerifierScenarioOutcome {
+  param(
+    [string]$Stdout,
+    [int]$ExitCode
+  )
+
+  $resultJson = $null
+  foreach ($ln in (([string]$Stdout) -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+    $trimmed = $ln.Trim()
+    if ($trimmed.StartsWith('{') -and $trimmed.EndsWith('}')) { $resultJson = $trimmed }
+  }
+
+  $okResult = $false
+  $err = ''
+  if ($resultJson) {
+    try {
+      $parsed = $resultJson | ConvertFrom-Json
+      if ($null -ne $parsed.ok) { $okResult = [bool]$parsed.ok }
+      $errParts = New-Object 'System.Collections.Generic.List[string]'
+      if ($parsed.errors) {
+        foreach ($e in @($parsed.errors)) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$e)) { [void]$errParts.Add([string]$e) }
+        }
+      }
+      if ($parsed.PSObject -and $parsed.PSObject.Properties['error'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.error)) {
+        [void]$errParts.Add([string]$parsed.error)
+      }
+      $err = ([string]::Join('; ', @($errParts.ToArray())))
+    } catch {
+      $err = 'unparseable result json'
+    }
+  } elseif ($ExitCode -ne 0) {
+    $err = "exit=$ExitCode, no JSON in stdout"
+  }
+  if (-not $okResult -and -not $err) { $err = 'scenario reported not-ok without errors' }
+
+  return [pscustomobject]@{
+    ok = $okResult
+    error = $err
+    inconclusive = ((-not $okResult) -and (Test-FeatureVerifierInconclusiveScenarioError -ErrorText $err))
+  }
+}
+
 function ConvertTo-FeatureVerifierRegistryList {
   param($Value)
   $items = New-Object 'System.Collections.Generic.List[object]'
@@ -200,6 +249,7 @@ $now = (Get-Date).ToString('o')
 $results = New-Object 'System.Collections.Generic.List[object]'
 $brokenCount = 0
 $passingCount = 0
+$inconclusiveCount = 0
 $untestedCount = 0
 
 foreach ($f in $registry) {
@@ -245,31 +295,17 @@ foreach ($f in $registry) {
       $stdout = $_.Exception.Message
       $exitCode = 99
     }
-    $resultJson = $null
-    foreach ($ln in (([string]$stdout) -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-      $trimmed = $ln.Trim()
-      if ($trimmed.StartsWith('{') -and $trimmed.EndsWith('}')) { $resultJson = $trimmed }
-    }
-    $okResult = $false; $err = ''
-    if ($resultJson) {
-      try {
-        $parsed = $resultJson | ConvertFrom-Json
-        if ($null -ne $parsed.ok) { $okResult = [bool]$parsed.ok }
-        if ($parsed.errors) { $err = ([string]::Join('; ', @($parsed.errors))) }
-      } catch { $err = 'unparseable result json' }
-    } elseif ($exitCode -ne 0) {
-      $err = "exit=$exitCode, no JSON in stdout"
-    }
-    if (-not $okResult -and -not $err) { $err = 'scenario reported not-ok without errors' }
-    [void]$scenarioResults.Add([pscustomobject]@{ scenario = $scenarioName; ok = $okResult; error = $err })
-    if (-not $okResult) {
-      if ($err -match 'timeout|exit=') { $anyInconclusive = $true } else { $anyFailed = $true }
+    $outcome = Get-FeatureVerifierScenarioOutcome -Stdout ([string]$stdout) -ExitCode ([int]$exitCode)
+    [void]$scenarioResults.Add([pscustomobject]@{ scenario = $scenarioName; ok = $outcome.ok; error = $outcome.error })
+    if (-not $outcome.ok) {
+      if ($outcome.inconclusive) { $anyInconclusive = $true } else { $anyFailed = $true }
     }
   }
 
   $health = if ($anyFailed) { 'broken' } elseif ($anyInconclusive) { 'inconclusive' } else { 'passing' }
   if ($health -eq 'broken') { $brokenCount++ }
   elseif ($health -eq 'passing') { $passingCount++ }
+  elseif ($health -eq 'inconclusive') { $inconclusiveCount++ }
   [void]$results.Add([pscustomobject]@{
     id = $id; name = [string]$f.name; health = $health
     scenario_results = @($scenarioResults.ToArray()); verified_at = $now
@@ -301,6 +337,7 @@ $header = "# Feature Verifier -- " + (Get-Date -Format 'yyyy-MM-dd HH:mm')
 [void]$md.AppendLine("## Summary")
 [void]$md.AppendLine("- Passing: $passingCount")
 [void]$md.AppendLine("- Broken: $brokenCount")
+[void]$md.AppendLine("- Inconclusive: $inconclusiveCount")
 [void]$md.AppendLine("- Untested: $untestedCount")
 [void]$md.AppendLine("- Total: $($results.Count)")
 [void]$md.AppendLine('')
@@ -316,6 +353,17 @@ if ($brokenCount -gt 0) {
     }
     [void]$md.AppendLine('')
   }
+}
+
+[void]$md.AppendLine("## Inconclusive features (scenario infrastructure failed)")
+foreach ($r in ($results | Where-Object { $_.health -eq 'inconclusive' })) {
+  [void]$md.AppendLine("### " + $r.id + " -- " + $r.name)
+  foreach ($sr in $r.scenario_results) {
+    $mark = if ($sr.ok) { 'OK' } else { 'INCONCLUSIVE' }
+    $errStr = if ($sr.error) { " -- " + $sr.error } else { '' }
+    [void]$md.AppendLine("- [$mark] " + $sr.scenario + $errStr)
+  }
+  [void]$md.AppendLine('')
 }
 
 [void]$md.AppendLine("## Passing features")
@@ -342,7 +390,7 @@ if ($brokenCount -gt 0) {
 }
 
 $summary = [ordered]@{
-  ts = $now; channel = [string]$scope.slug; total = $results.Count; passing = $passingCount; broken = $brokenCount; untested = $untestedCount; digest = $digestPath
+  ts = $now; channel = [string]$scope.slug; total = $results.Count; passing = $passingCount; broken = $brokenCount; inconclusive = $inconclusiveCount; untested = $untestedCount; digest = $digestPath
 }
 $summary | ConvertTo-Json -Depth 10 -Compress
 if ($brokenCount -gt 0) { exit 1 } else { exit 0 }
