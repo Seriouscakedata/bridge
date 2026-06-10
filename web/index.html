@@ -5937,10 +5937,11 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     renderMessageBatch(initialMsgs, {beforeBottom:true, finishFirstLoadWhenEmpty:true});
   }
   // Background fetch. AbortController lets a subsequent switchChannel cancel us.
-  // Always bound the fetch with a 8s timeout: requestOk skips its built-in timer
+  // Always bound the fetch with a short timeout: requestOk skips its built-in timer
   // when opts.signal is already set, so without this guard the fetch hangs
   // indefinitely if the server is unresponsive (e.g. mid-restart), keeping
   // channelSwitchInProgress=true and stalling the UI forever.
+  // Keep this below the channel-switch scenario's 5s SLA.
   const ctrl = opts.signal || null;
   const chQs = targetSlug ? ('&channel=' + encodeURIComponent(targetSlug)) : '';
   let data;
@@ -5950,7 +5951,7 @@ async function reloadMessagesForChannel(expectedEpoch, slug, opts){
     let fetchOpts;
     if(typeof AbortController !== 'undefined'){
       _msgCtrl = new AbortController();
-      _msgTimer = setTimeout(() => _msgCtrl.abort(), 8000);
+      _msgTimer = setTimeout(() => _msgCtrl.abort(), 3000);
       if(ctrl && !ctrl.aborted) ctrl.addEventListener('abort', () => { clearTimeout(_msgTimer); _msgCtrl.abort(); });
       fetchOpts = {signal: _msgCtrl.signal};
     } else if(ctrl){
