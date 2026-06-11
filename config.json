@@ -5,6 +5,11 @@
   "loopDelaySeconds": 2,
   "maxTurns": 150,
   "criticMaxRetries": 3,
+  "taskRestartCaps": {
+    "apply": 6,
+    "hard": 3,
+    "total": 8
+  },
   "mode": "interactive",
   "planner": "claude",
   "coder": {

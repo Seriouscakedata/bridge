@@ -475,6 +475,131 @@ function Write-Summary {
   Write-AtomicFile -Path (Get-SummaryPath) -Content ([string]$Text)
 }
 
+function Get-ApplyRestartStampPath {
+  param([string]$Root = $null)
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  return (Join-Path (Join-Path $Root 'control') 'apply-stamp.json')
+}
+
+function New-ApplyRestartStamp {
+  param(
+    [Parameter(Mandatory=$true)][string]$TaskId,
+    [string]$Reason = 'verified-ps1-diff',
+    [string[]]$Touched = @(),
+    [string]$Root = $null,
+    [int]$TtlMinutes = 90,
+    [DateTimeOffset]$CreatedAtUtc = [DateTimeOffset]::UtcNow
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  if ([string]::IsNullOrWhiteSpace($TaskId)) { throw 'New-ApplyRestartStamp: TaskId is required' }
+  if ($TtlMinutes -le 0) { $TtlMinutes = 90 }
+
+  $cleanTouched = @(
+    $Touched |
+      ForEach-Object { [string]$_ } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      ForEach-Object { $_.Trim() }
+  )
+  $ps1Touched = @($cleanTouched | Where-Object { $_ -match '(?i)\.ps1$' })
+  if ($ps1Touched.Count -lt 1) { throw 'New-ApplyRestartStamp: evidence.touched must include at least one .ps1 path' }
+
+  $controlDir = Join-Path $Root 'control'
+  if (-not (Test-Path -LiteralPath $controlDir)) { New-Item -ItemType Directory -Path $controlDir -Force | Out-Null }
+  $stampPath = Get-ApplyRestartStampPath -Root $Root
+  $stamp = [ordered]@{
+    task_id        = [string]$TaskId
+    created_at_utc = $CreatedAtUtc.UtcDateTime.ToString('o')
+    ttl_minutes    = [int]$TtlMinutes
+    reason         = [string]$Reason
+    evidence       = [ordered]@{
+      touched = @($cleanTouched)
+    }
+  }
+  $json = $stamp | ConvertTo-Json -Depth 8
+  Write-AtomicFile -Path $stampPath -Content $json -NoCopyFallback
+  return [pscustomobject][ordered]@{
+    ok         = $true
+    path       = $stampPath
+    task_id    = [string]$TaskId
+    ttl_minutes = [int]$TtlMinutes
+  }
+}
+
+function Consume-ApplyRestartStamp {
+  param(
+    [Parameter(Mandatory=$true)][string]$TaskId,
+    [string]$Root = $null,
+    [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  if ([string]::IsNullOrWhiteSpace($TaskId)) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'missing-task-id'; path = ''; consumed_path = '' }
+  }
+
+  $stampPath = Get-ApplyRestartStampPath -Root $Root
+  if (-not (Test-Path -LiteralPath $stampPath)) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'missing-stamp'; path = $stampPath; consumed_path = '' }
+  }
+
+  $controlDir = Split-Path -Parent $stampPath
+  $consumedPath = Join-Path $controlDir ('apply-stamp.consumed.' + [guid]::NewGuid().ToString('N') + '.json')
+  try {
+    [System.IO.File]::Move($stampPath, $consumedPath)
+  } catch {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'consume-rename-failed'; path = $stampPath; consumed_path = $consumedPath; error = $_.Exception.Message }
+  }
+
+  $stamp = $null
+  try {
+    $raw = [System.IO.File]::ReadAllText($consumedPath, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw 'empty stamp' }
+    $stamp = $raw | ConvertFrom-Json
+  } catch {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'corrupt-json'; path = $stampPath; consumed_path = $consumedPath; error = $_.Exception.Message }
+  }
+
+  $stampTaskId = ''
+  try { if ($stamp.PSObject.Properties.Name -contains 'task_id') { $stampTaskId = [string]$stamp.task_id } } catch {}
+  if ($stampTaskId -ne [string]$TaskId) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'task-id-mismatch'; path = $stampPath; consumed_path = $consumedPath; expected = [string]$TaskId; actual = $stampTaskId }
+  }
+
+  $created = [DateTimeOffset]::MinValue
+  $createdText = ''
+  try { if ($stamp.PSObject.Properties.Name -contains 'created_at_utc') { $createdText = [string]$stamp.created_at_utc } } catch {}
+  if (-not [DateTimeOffset]::TryParse($createdText, [ref]$created)) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'bad-created-at'; path = $stampPath; consumed_path = $consumedPath }
+  }
+
+  $ttl = 90
+  try { if ($stamp.PSObject.Properties.Name -contains 'ttl_minutes') { $ttl = [int]$stamp.ttl_minutes } } catch { $ttl = 90 }
+  if ($ttl -le 0) { $ttl = 90 }
+  if ($created.ToUniversalTime().AddMinutes($ttl) -lt $NowUtc.ToUniversalTime()) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'expired'; path = $stampPath; consumed_path = $consumedPath; created_at_utc = $created.ToUniversalTime().ToString('o'); ttl_minutes = $ttl }
+  }
+
+  $touched = @()
+  try {
+    if ($stamp.PSObject.Properties.Name -contains 'evidence' -and $stamp.evidence -and ($stamp.evidence.PSObject.Properties.Name -contains 'touched')) {
+      $touched = @($stamp.evidence.touched | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+  } catch { $touched = @() }
+  if (@($touched | Where-Object { $_ -match '(?i)\.ps1$' }).Count -lt 1) {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'missing-ps1-evidence'; path = $stampPath; consumed_path = $consumedPath; touched = @($touched) }
+  }
+
+  return [pscustomobject][ordered]@{
+    ok            = $true
+    reason        = 'consumed'
+    path          = $stampPath
+    consumed_path = $consumedPath
+    task_id       = $stampTaskId
+    touched       = @($touched)
+  }
+}
+
 
 function Save-Decision {
   # Durable, uncompressed record of a conclusion/decision. Returns the file path.

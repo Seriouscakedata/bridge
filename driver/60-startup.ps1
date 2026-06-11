@@ -63,6 +63,41 @@ function Test-DriverStartupVerifiedRepairAfterTaskStart {
   return $false
 }
 
+function Get-DriverStartupResumeTaskId {
+  param($State, [string]$TaskText = '')
+  foreach ($name in @('current_backlog_id','current_task_id')) {
+    try {
+      if ($State -and ($State.PSObject.Properties.Name -contains $name) -and -not [string]::IsNullOrWhiteSpace([string]$State.$name)) {
+        return [string]$State.$name
+      }
+    } catch {}
+  }
+  return [string]$TaskText
+}
+
+function Get-DriverStartupRestartCaps {
+  $caps = [ordered]@{ apply = 6; hard = 3; total = 8 }
+  try {
+    $cfgRC = Get-BridgeConfig
+    if ($cfgRC -and ($cfgRC.PSObject.Properties.Name -contains 'taskRestartCaps') -and $cfgRC.taskRestartCaps) {
+      foreach ($name in @('apply','hard','total')) {
+        try {
+          if ($cfgRC.taskRestartCaps.PSObject.Properties.Name -contains $name) { $caps[$name] = [int]$cfgRC.taskRestartCaps.$name }
+        } catch {}
+      }
+    } elseif ($cfgRC -and $cfgRC.PSObject.Properties.Name -contains 'taskRestartCap' -and $cfgRC.taskRestartCap) {
+      $caps['hard'] = [int]$cfgRC.taskRestartCap
+    }
+  } catch {}
+  if ([int]$caps['apply'] -lt 1) { $caps['apply'] = 1 }
+  if ([int]$caps['hard'] -lt 1) { $caps['hard'] = 1 }
+  if ([int]$caps['total'] -lt 1) { $caps['total'] = 1 }
+  if ([int]$caps['apply'] -gt 20) { $caps['apply'] = 20 }
+  if ([int]$caps['hard'] -gt 10) { $caps['hard'] = 10 }
+  if ([int]$caps['total'] -gt 30) { $caps['total'] = 30 }
+  return [pscustomobject]$caps
+}
+
 Sweep-AgentOrphans
 
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
@@ -78,28 +113,46 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   # triggering supervisor recycles. Auditor flagged "Supervisor restarts exceed
   # limit (7/5)" but bridge kept re-resuming with no escape valve.
   $prevRestartCount = 0
+  $prevApplyRestartCount = 0
+  $prevHardRestartCount = 0
+  $prevTotalRestartCount = 0
   try { if ($boot.PSObject.Properties.Name -contains 'task_restart_count') { $prevRestartCount = [int]$boot.task_restart_count } } catch {}
-  $maxRestarts = 3
-  try {
-    $cfgRC = Get-BridgeConfig
-    if ($cfgRC -and $cfgRC.PSObject.Properties.Name -contains 'taskRestartCap' -and $cfgRC.taskRestartCap) { $maxRestarts = [int]$cfgRC.taskRestartCap }
-  } catch {}
-  if ($maxRestarts -lt 2) { $maxRestarts = 2 }
-  if ($maxRestarts -gt 10) { $maxRestarts = 10 }
+  try { if ($boot.PSObject.Properties.Name -contains 'task_apply_restart_count') { $prevApplyRestartCount = [int]$boot.task_apply_restart_count } } catch {}
+  try { if ($boot.PSObject.Properties.Name -contains 'task_hard_restart_count') { $prevHardRestartCount = [int]$boot.task_hard_restart_count } } catch {}
+  try { if ($boot.PSObject.Properties.Name -contains 'task_restart_total_count') { $prevTotalRestartCount = [int]$boot.task_restart_total_count } } catch {}
+  if ($prevTotalRestartCount -lt $prevRestartCount) { $prevTotalRestartCount = $prevRestartCount }
+  if ($prevHardRestartCount -eq 0 -and $prevApplyRestartCount -eq 0 -and $prevRestartCount -gt 0) { $prevHardRestartCount = $prevRestartCount }
+  $restartCaps = Get-DriverStartupRestartCaps
+  $maxApplyRestarts = [int]$restartCaps.apply
+  $maxHardRestarts = [int]$restartCaps.hard
+  $maxTotalRestarts = [int]$restartCaps.total
+
+  $resumeTaskId = Get-DriverStartupResumeTaskId -State $boot -TaskText $resumeTask
+  $applyStamp = $null
+  try { $applyStamp = Consume-ApplyRestartStamp -TaskId $resumeTaskId } catch { $applyStamp = [pscustomobject]@{ ok = $false; reason = 'consume-error'; error = $_.Exception.Message } }
+  $isTrustedApplyRestart = ($applyStamp -and [bool]$applyStamp.ok)
 
   $restartBudgetResetByVerifiedRepair = $false
-  if ($prevRestartCount -ge $maxRestarts -and (Test-DriverStartupVerifiedRepairAfterTaskStart -State $boot -TaskText $resumeTask -Channel $Channel)) {
-    $prevRestartCount = 0
+  if ($isTrustedApplyRestart -and $prevApplyRestartCount -ge $maxApplyRestarts -and (Test-DriverStartupVerifiedRepairAfterTaskStart -State $boot -TaskText $resumeTask -Channel $Channel)) {
+    $prevApplyRestartCount = 0
     $restartBudgetResetByVerifiedRepair = $true
   }
 
-  if ($prevRestartCount -ge $maxRestarts) {
+  $newApplyRestartCount = $prevApplyRestartCount + $(if ($isTrustedApplyRestart) { 1 } else { 0 })
+  $newHardRestartCount = $prevHardRestartCount + $(if ($isTrustedApplyRestart) { 0 } else { 1 })
+  $newTotalRestartCount = $prevTotalRestartCount + 1
+  $restartCapHit = ''
+  if ($newTotalRestartCount -gt $maxTotalRestarts) { $restartCapHit = 'total' }
+  elseif ($newHardRestartCount -gt $maxHardRestarts) { $restartCapHit = 'hard' }
+  elseif ($newApplyRestartCount -gt $maxApplyRestarts) { $restartCapHit = 'apply' }
+
+  if (-not [string]::IsNullOrWhiteSpace($restartCapHit)) {
     # Stuck task: bail out. Mark backlog failed if linked, clear state, post msg.
     $stuckTaskShort = $resumeTask
     if ($stuckTaskShort.Length -gt 100) { $stuckTaskShort = $stuckTaskShort.Substring(0, 100) + '…' }
     $stuckBacklogId = if ($boot.current_backlog_id) { [string]$boot.current_backlog_id } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($stuckBacklogId)) {
-      try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $prevRestartCount) | Out-Null } catch {}
+      try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $restartCapHit + "_" + $newTotalRestartCount) | Out-Null } catch {}
     }
     Update-State {
       param($s)
@@ -121,9 +174,12 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       $s.driver_started = (Get-Date).ToString('o')
       $s.heartbeat = (Get-Date).ToString('o')
       $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName task_apply_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName task_hard_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName task_restart_total_count -NotePropertyValue 0 -Force
       $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
     } | Out-Null
-    Add-Message -From system -Text ("⚠ Задача пережила " + $prevRestartCount + " рестартов без закрытия — помечаю как failed и перехожу к следующей. Текст: «" + $stuckTaskShort + "»") -Kind event | Out-Null
+    Add-Message -From system -Text ("⚠ Задача превысила restart cap (" + $restartCapHit + ": apply=" + $newApplyRestartCount + "/" + $maxApplyRestarts + ", hard=" + $newHardRestartCount + "/" + $maxHardRestarts + ", total=" + $newTotalRestartCount + "/" + $maxTotalRestarts + ") — помечаю как failed и перехожу к следующей. Текст: «" + $stuckTaskShort + "»") -Kind event | Out-Null
     # Pick up the tail: a failed task often leaves a VALID uncommitted fix behind (the bridge
     # crashed on orchestration, not on the code). Auto-commit it if it parses (tree clean again,
     # autonomy unblocked) or reversibly stash it if broken — so no operator has to do it by hand.
@@ -135,15 +191,22 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       $s.status='working'; $s.stop=$false; $s.abort=$false
       $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
       $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
-      $newCount = $prevRestartCount + 1
-      $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue $newCount -Force
+      $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue $newTotalRestartCount -Force
+      $s | Add-Member -NotePropertyName task_apply_restart_count -NotePropertyValue $newApplyRestartCount -Force
+      $s | Add-Member -NotePropertyName task_hard_restart_count -NotePropertyValue $newHardRestartCount -Force
+      $s | Add-Member -NotePropertyName task_restart_total_count -NotePropertyValue $newTotalRestartCount -Force
+      $s | Add-Member -NotePropertyName task_last_restart_kind -NotePropertyValue $(if ($isTrustedApplyRestart) { 'apply' } else { 'hard' }) -Force
+      $s | Add-Member -NotePropertyName task_last_restart_stamp_reason -NotePropertyValue $(if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { '' }) -Force
     } | Out-Null
-    $remaining = $maxRestarts - $prevRestartCount - 1
+    $remainingByKind = if ($isTrustedApplyRestart) { $maxApplyRestarts - $newApplyRestartCount } else { $maxHardRestarts - $newHardRestartCount }
+    $remainingByTotal = $maxTotalRestarts - $newTotalRestartCount
+    $remaining = [Math]::Min($remainingByKind, $remainingByTotal)
     $tail = if ($remaining -le 0) { '' } else { " (осталось $remaining попыток до auto-fail)" }
     if ($restartBudgetResetByVerifiedRepair) {
-      Add-Message -From system -Text "🩺 Restart-budget сброшен: найден verified repair marker после task_start; задача не помечается failed после stale-heartbeat restart." -Kind event | Out-Null
+      Add-Message -From system -Text "🩺 Apply restart-budget сброшен: найден verified repair marker после task_start; hard/total safety caps не сброшены." -Kind event | Out-Null
     }
-    Add-Message -From system -Text ("♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." + $tail) -Kind event | Out-Null
+    $restartKindText = if ($isTrustedApplyRestart) { 'trusted apply-stamp' } else { 'hard/untrusted restart: ' + $(if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { 'missing-stamp' }) }
+    Add-Message -From system -Text ("♻ Мост перезапущен — возобновляю прерванную задачу (" + $restartKindText + "; apply=" + $newApplyRestartCount + "/" + $maxApplyRestarts + ", hard=" + $newHardRestartCount + "/" + $maxHardRestarts + ", total=" + $newTotalRestartCount + "/" + $maxTotalRestarts + ")." + $tail) -Kind event | Out-Null
   }
 } else {
   Update-State {
@@ -152,6 +215,9 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.current_agent=$null; $s.current_agent_pid=0; $s.current_agent_ticks=0; $s.current_agent_since=$null; $s.agent_telemetry=$null
     $s.current_task=$null; $s.current_task_id=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Reset-TaskAgentDuration $s; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s
     $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName task_apply_restart_count -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName task_hard_restart_count -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName task_restart_total_count -NotePropertyValue 0 -Force
     $s.driver_started=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o')
   } | Out-Null
   Add-Message -From system -Text "Интерактивный режим запущен. Полный доступ к ПК. Жду задачу от тебя в чате…" -Kind event | Out-Null
