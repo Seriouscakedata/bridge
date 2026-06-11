@@ -453,7 +453,14 @@ function Invoke-GateRegressionSuite {
     $selectedTests = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @($scope))
   }
 
-  $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$TimeoutSec))
+  # 2026-06-11 A5b: per-test timeout and the wrapper kill-budget used to be flattened from the
+  # single $TimeoutSec (180 per test; wrapper = 180+30 TOTAL) — a scoped run of 10+ tests plus
+  # the git-archive snapshot could not mathematically fit the wrapper and was killed at exit=124
+  # even when every test was healthy. Scoped runs now get a sane per-test cap and a wrapper
+  # budget derived from the selection size; the no-scope full-suite path keeps old behavior.
+  $perTestTimeout = if ($selectedTests.Count -gt 0) { 60 } else { [int]$TimeoutSec }
+  $wrapperTimeout = if ($selectedTests.Count -gt 0) { [Math]::Max(150, ($selectedTests.Count * 30) + 90) } else { [Math]::Max(1, [int]$TimeoutSec) + 30 }
+  $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$perTestTimeout))
   if ($selectedTests.Count -gt 0) {
     $runArgs += '-OnlyCsv'
     $runArgs += (($selectedTests | ForEach-Object { [string]$_ }) -join ',')
@@ -462,7 +469,7 @@ function Invoke-GateRegressionSuite {
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
   $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
     -Arguments $runArgs `
-    -WorkingDirectory $root -TimeoutSec ([Math]::Max(1, [int]$TimeoutSec) + 30)
+    -WorkingDirectory $root -TimeoutSec $wrapperTimeout
   $stopwatch.Stop()
 
   return [pscustomobject][ordered]@{

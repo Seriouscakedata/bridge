@@ -105,8 +105,12 @@ if (-not $NoSnapshot) {
       $Filter
     )
     if ($normalizedOnly.Count -gt 0) {
-      $childArgs += '-Only'
-      foreach ($item in $normalizedOnly) { $childArgs += [string]$item }
+      # powershell.exe -File does NOT collect multiple tokens into a [string[]] parameter:
+      # "-Only a b c" binds a to -Only and spills b/c into the NEXT positional params
+      # (-OnlyLike/-OnlyCsv), silently dropping the rest — the snapshot child ran only the
+      # first 3 of N selected tests (observed live: 12 passed in -> 3 ran). Pass one CSV string.
+      $childArgs += '-OnlyCsv'
+      $childArgs += (($normalizedOnly | ForEach-Object { [string]$_ }) -join ',')
     }
     if ($Quiet) { $childArgs += '-Quiet' }
 
