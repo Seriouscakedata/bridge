@@ -172,6 +172,10 @@ function Get-ScenarioFailureDiagnostic {
 
   $primary = $null
   foreach ($failure in $failures) {
+    if (($null -ne $failure.exit_code) -and ([string]$failure.exit_code -eq '-1073741819') -and ([string]$failure.mode -like '*single-process')) {
+      $primary = $failure
+      break
+    }
     if ($failure.stderr_reason -match '(?i)access is denied|отказано в доступе|crashpad|mojo|sandbox access|fatal') {
       $primary = $failure
       break
@@ -622,6 +626,9 @@ function Test-ScenarioBrowserInfraFailure {
   $failures = @($FailureDiagnostic.failures)
   if ($failures.Count -eq 0) { return $false }
   foreach ($failure in $failures) {
+    if (($null -ne $failure.exit_code) -and ([string]$failure.exit_code -eq '-1073741819') -and ([string]$failure.mode -like '*single-process')) {
+      return $true
+    }
     $reason = [string]$failure.stderr_reason
     if ($reason -match '(?i)access is denied|отказано в доступе|crashpad|mojo\\public\\cpp\\platform\\platform_channel|certificate error assistant|cannot use v8 proxy resolver|oneauth|instrumentationerror') {
       return $true
@@ -961,11 +968,15 @@ if ($result) { break }
 # extra headless attempt with a generous probe window so a transient crash does
 # not produce a false QA FAIL.
 $infraFlakeCode = -1073741819
+$infraFlakeRetryGraceSec = 18
 if (-not $result -and $browserPaths.Count -gt 0) {
   $hadInfraFlakeCrash = @($diag.attempts | Where-Object {
     $_ -and ($_.exit_code -eq $infraFlakeCode) -and ([string]$_.mode -like '*single-process')
   })
   if ($hadInfraFlakeCrash.Count -gt 0) {
+    # QA waits TimeoutSec+20s for scenario.ps1. Keep the retry inside that grace
+    # so the script can still return diagnostics or the HTTP fallback result.
+    $ifRetryDeadline = $deadline.AddSeconds($infraFlakeRetryGraceSec)
     $ifBrowser = $browserPaths[0]
     $ifBrowserTag = ([IO.Path]::GetFileNameWithoutExtension($ifBrowser) -replace '[^a-zA-Z0-9_-]', '_')
     $ifId = $runId + '_' + $ifBrowserTag + '_headless_infraflake_retry'
@@ -977,7 +988,8 @@ if (-not $result -and $browserPaths.Count -gt 0) {
     [void](New-Item -ItemType Directory -Path $ifCacheDir -Force)
 
     # Probe with increased marker-timeout (20 s instead of normal 8 s cap).
-    $ifProbeSec = 20
+    $ifProbeRemainingSec = [int][Math]::Floor(($ifRetryDeadline - (Get-Date)).TotalSeconds)
+    $ifProbeSec = [Math]::Min(20, [Math]::Max(0, $ifProbeRemainingSec))
     $ifProbeDeadline = (Get-Date).AddSeconds($ifProbeSec)
     $ifProbeSout = Join-Path $logDir ($ifId + '.probe.browser.stdout.log')
     $ifProbeSerr = Join-Path $logDir ($ifId + '.probe.browser.stderr.log')
@@ -1004,6 +1016,8 @@ if (-not $result -and $browserPaths.Count -gt 0) {
     }
     $diag.attempts += $ifProbeAttempt
     $diag.infra_flake_retry = $true
+    $diag.infra_flake_retry_grace_sec = $infraFlakeRetryGraceSec
+    $diag.infra_flake_retry_deadline = $ifRetryDeadline.ToUniversalTime().ToString('o')
     Write-ScenarioDiagnostics -Path $diagPath -Data $diag
 
     $ifProbeHandle = $null
@@ -1047,9 +1061,11 @@ if (-not $result -and $browserPaths.Count -gt 0) {
       Write-ScenarioDiagnostics -Path $diagPath -Data $diag
     }
 
-    if ($ifProbeMarker) {
-      # Probe passed: run the actual scenario with a fresh full timeout.
-      $ifDeadline = (Get-Date).AddSeconds($TimeoutSec)
+    $ifScenarioRemainingSec = [int][Math]::Floor(($ifRetryDeadline - (Get-Date)).TotalSeconds)
+    if ($ifProbeMarker -and $ifScenarioRemainingSec -gt 0) {
+      # Probe passed: run the actual scenario, bounded by QA runner grace.
+      $ifScenarioSec = [Math]::Min($TimeoutSec, [Math]::Max(1, $ifScenarioRemainingSec))
+      $ifDeadline = (Get-Date).AddSeconds($ifScenarioSec)
       $ifSout = Join-Path $logDir ($ifId + '.browser.stdout.log')
       $ifSerr = Join-Path $logDir ($ifId + '.browser.stderr.log')
       $ifArgs = @(New-BrowserArguments -Mode 'headless' -LoadUrl $loadUrl -ProfileDir $ifProfileDir -CrashDir $ifCrashDir -CacheDir $ifCacheDir)
@@ -1072,6 +1088,7 @@ if (-not $result -and $browserPaths.Count -gt 0) {
         debug_marker_seen = $false
         result_seen       = $false
         infra_flake_retry = $true
+        timeout_sec       = $ifScenarioSec
       }
       $diag.attempts += $ifAttempt
       Write-ScenarioDiagnostics -Path $diagPath -Data $diag
