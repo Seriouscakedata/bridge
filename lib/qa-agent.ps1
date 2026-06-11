@@ -273,6 +273,17 @@ function Invoke-QAAgentPostCommit {
     [switch]$IncludeUnsafe
   )
   if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { $BridgeRoot = Get-QAAgentBridgeRoot }
+  # 2026-06-11 W2b: post-commit QA runs the BRIDGE scenario suite (smoke + HTTP scenarios against
+  # the bridge server). On a PROJECT channel the commit changed the project app, NOT the bridge,
+  # so these scenarios are irrelevant AND fail (sandbox/HTTP) -> qa_failed -> the same close-lag
+  # loop W2 fixed for gate-regression (the second onion layer the slopvid benchmark exposed).
+  # Skip bridge scenarios off main; project acceptance is owned by the project-contract flow.
+  $qaPostChannel = Get-QAAgentChannel -Channel $Channel
+  if (-not [string]::IsNullOrWhiteSpace($qaPostChannel) -and $qaPostChannel -ne 'main') {
+    $short = [string]$CommitSha; if ($short.Length -gt 7) { $short = $short.Substring(0,7) }
+    if ([string]::IsNullOrWhiteSpace($short)) { $short = '<unknown>' }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'PASS' -Summary ('post-commit ' + $short + ': bridge QA scenarios skipped (project channel ' + $qaPostChannel + ' — bridge smoke is not relevant to project changes)') -Bugs @() -BridgeRoot $BridgeRoot
+  }
   $qaCfg = Get-QAAgentConfig -BridgeRoot $BridgeRoot
   $runUnsafe = [bool]$IncludeUnsafe -or [bool]$qaCfg.RunUnsafeScenarios
   $scenarioResult = Invoke-QAAgentScenarioSuite -BridgeRoot $BridgeRoot -Url ([string]$qaCfg.ScenarioUrl) -TimeoutSec ([int]$qaCfg.ScenarioTimeoutSec) -IncludeUnsafe:$runUnsafe
