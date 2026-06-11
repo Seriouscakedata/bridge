@@ -52,12 +52,22 @@ function Get-DriverDoneGateChangedPaths {
   }
 
   if (-not [string]::IsNullOrWhiteSpace($TaskBaseCommit)) {
-    $baseType = [string]((Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('cat-file','-t',$TaskBaseCommit) -Description 'cat-file task_base_commit' | Select-Object -First 1) -join '')
-    if ($baseType.Trim() -ne 'commit') {
-      throw ("git task_base_commit is not a commit: {0}" -f $TaskBaseCommit)
-    }
-    foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only',$TaskBaseCommit,'HEAD') -Description 'diff task_base_commit..HEAD')) {
-      & $addPath $p
+    # 2026-06-11 W2 (close-lag root): a PROJECT-channel task commits in the project repo, so
+    # task_base_commit does NOT resolve in the bridge repo -> cat-file exits 128. This used to
+    # THROW, failing the entire DONE-gate (parse+smoke+gate-regression) closed -> uncapped
+    # CONTINUE -> the COVERED loop that left slopvid atoms running 60+ min after a green commit.
+    # Fail SOFT: if the base commit isn't an object in THIS repo, skip the base-diff. The bridge
+    # changed-paths still come from the working/staged/untracked scan below (empty on a clean
+    # tree -> gate-regression scope empty -> skipped), so bridge integrity is unaffected.
+    $baseResolvedHere = $false
+    try {
+      $baseType = [string]((Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('cat-file','-t',$TaskBaseCommit) -Description 'cat-file task_base_commit' | Select-Object -First 1) -join '')
+      if ($baseType.Trim() -eq 'commit') { $baseResolvedHere = $true }
+    } catch { $baseResolvedHere = $false }
+    if ($baseResolvedHere) {
+      foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only',$TaskBaseCommit,'HEAD') -Description 'diff task_base_commit..HEAD')) {
+        & $addPath $p
+      }
     }
   }
 
