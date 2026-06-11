@@ -1,4 +1,44 @@
-﻿$script:DriverLoopIdleClaimBlock = {
+﻿# 2026-06-11 freeze-audit wave1 atom3: claim-guard escape counters used to live in $script:
+# variables — every driver restart reset them to 0, so the escape mechanisms (orphaned-dirty
+# auto-stash at >=6 defers, serial-claim hold at >=4 strikes) could NEVER fire under frequent
+# restarts and the original wedge returned in slow motion. Both decisions now read previous
+# counts from persisted state (state.json fields written by the caller). Pure functions.
+function Get-DriverDirtyDeferDecision {
+  param([AllowNull()]$State, [string]$IdeaId = '', [int]$Threshold = 6)
+  $prevId = ''
+  $prevStreak = 0
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'dirty_defer_id') { $prevId = [string]$State.dirty_defer_id }
+  } catch { $prevId = '' }
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'dirty_defer_streak') { $prevStreak = [int]$State.dirty_defer_streak }
+  } catch { $prevStreak = 0 }
+  $streak = if ($prevId -eq $IdeaId) { $prevStreak + 1 } else { 1 }
+  return [pscustomobject][ordered]@{
+    streak    = [int]$streak
+    autostash = ($streak -ge $Threshold)
+    idea_id   = [string]$IdeaId
+  }
+}
+
+function Get-DriverSerialClaimStrikeDecision {
+  param([AllowNull()]$State, [string]$ItemId = '', [int]$Threshold = 4)
+  $prev = 0
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'serial_claim_strikes' -and $null -ne $State.serial_claim_strikes) {
+      $map = $State.serial_claim_strikes
+      if ($map.PSObject.Properties.Name -contains $ItemId) { $prev = [int]$map.$ItemId }
+    }
+  } catch { $prev = 0 }
+  $strikes = $prev + 1
+  return [pscustomobject][ordered]@{
+    strikes = [int]$strikes
+    hold    = ($strikes -ge $Threshold)
+    item_id = [string]$ItemId
+  }
+}
+
+$script:DriverLoopIdleClaimBlock = {
   function Get-DriverWorkpackReportValue {
     param($Obj, [string]$Name, $Default = $null)
     try {
@@ -554,11 +594,25 @@
               } elseif (([regex]::Matches($siText, '[ÐÑ]')).Count -ge 8) {
                 $siBlock = 'mojibake: task text is double-encoded and cannot be dispatched'
               } else {
-                if (-not $script:wpSerialClaimStrikes) { $script:wpSerialClaimStrikes = @{} }
-                $siPrev = 0
-                if ($script:wpSerialClaimStrikes.ContainsKey($siId)) { $siPrev = [int]$script:wpSerialClaimStrikes[$siId] }
-                $script:wpSerialClaimStrikes[$siId] = $siPrev + 1
-                if (($siPrev + 1) -ge 4) { $siBlock = ('undispatchable: serial-claimed ' + ($siPrev + 1) + 'x without ever starting') }
+                # wave1 atom3: strike count persisted in state (in-memory reset on every restart
+                # meant the 4-strike hold could never fire under frequent restarts).
+                $siState = $null
+                try { $siState = Read-State } catch {}
+                $siDecision = Get-DriverSerialClaimStrikeDecision -State $siState -ItemId $siId
+                try {
+                  Update-State ({ param($s)
+                    $m = $null
+                    try { if ($s.PSObject.Properties.Name -contains 'serial_claim_strikes' -and $null -ne $s.serial_claim_strikes) { $m = $s.serial_claim_strikes } } catch {}
+                    if ($null -eq $m -or (@($m.PSObject.Properties).Count -gt 50)) { $m = [pscustomobject]@{} }
+                    if ([bool]$siDecision.hold) {
+                      try { $m.PSObject.Properties.Remove([string]$siDecision.item_id) } catch {}
+                    } else {
+                      $m | Add-Member -NotePropertyName ([string]$siDecision.item_id) -NotePropertyValue ([int]$siDecision.strikes) -Force
+                    }
+                    $s | Add-Member -NotePropertyName serial_claim_strikes -NotePropertyValue $m -Force
+                  }.GetNewClosure()) | Out-Null
+                } catch {}
+                if ([bool]$siDecision.hold) { $siBlock = ('undispatchable: serial-claimed ' + $siDecision.strikes + 'x without ever starting') }
               }
               if (-not [string]::IsNullOrWhiteSpace($siBlock)) {
                 try { Set-Idea -Id $siId -Status 'held' | Out-Null } catch {}
@@ -1079,13 +1133,20 @@
             # 'approved' (this silently wedged self-/backlog tasks whenever a stray file sat in the
             # tree). Leave the idea in the queue and just skip this tick; it gets re-picked once the
             # tree is clean. Dedupe the notice by idea id so idle ticks don't spam while it stays dirty.
-            if ([string]$claimedIdea.id -ne [string]$script:lastDirtyDeferId) {
-              $script:lastDirtyDeferId = [string]$claimedIdea.id
-              $script:dirtyDeferStreak = 1
+            # wave1 atom3: defer streak persisted in state (in-memory reset on every restart meant
+            # the >=6 auto-stash could never fire under frequent restarts).
+            $dirtyState = $null
+            try { $dirtyState = Read-State } catch {}
+            $dirtyDecision = Get-DriverDirtyDeferDecision -State $dirtyState -IdeaId ([string]$claimedIdea.id)
+            try {
+              Update-State ({ param($s)
+                $s | Add-Member -NotePropertyName dirty_defer_id     -NotePropertyValue ([string]$dirtyDecision.idea_id) -Force
+                $s | Add-Member -NotePropertyName dirty_defer_streak -NotePropertyValue ([int]$dirtyDecision.streak) -Force
+              }.GetNewClosure()) | Out-Null
+            } catch {}
+            if ([int]$dirtyDecision.streak -eq 1) {
               $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
               Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу как только дерево станет чистым (идея остаётся в очереди). Превью: $preview") -Kind event | Out-Null
-            } else {
-              $script:dirtyDeferStreak = [int]$script:dirtyDeferStreak + 1
             }
             # 2026-06-11: ORPHANED-dirty auto-stash. A dirty tree left by a prior held/aborted task
             # (its work never committed) is NOT transient -- no operator will commit it, so dispatch
@@ -1093,18 +1154,24 @@
             # the whole approved queue blocked behind 2 orphaned files). After several consecutive
             # defers on the SAME idea (an operator editing live would have committed by now), stash
             # the orphaned changes to unwedge the queue. Fully recoverable via `git stash list`/`pop`.
-            # Bridge channel only (project repos self-manage their own tree).
-            if ((-not $isProjectChannel) -and ([int]$script:dirtyDeferStreak -ge 6)) {
+            # wave1 atom3: now ALSO for project channels — an orphaned dirty project repo wedges its
+            # queue identically ($guardRoot already points at the project repo there), and the same
+            # >=6-defer gate (~10+ min of refusals) keeps a live operator edit safe from stashing.
+            if ([bool]$dirtyDecision.autostash) {
               try {
-                $stashMsg = ("bridge auto-stash: orphaned dirty wedged dispatch ({0} files, {1} defers)" -f $dirty.Count, [int]$script:dirtyDeferStreak)
+                $stashMsg = ("bridge auto-stash: orphaned dirty wedged dispatch ({0} files, {1} defers)" -f $dirty.Count, [int]$dirtyDecision.streak)
                 & git -C $guardRoot stash push -u -m $stashMsg 2>$null | Out-Null
                 if ($LASTEXITCODE -eq 0) {
                   Add-Message -From system -Text ("🧹 Авто-stash: осиротевший dirty ($($dirty.Count) файлов) убран в stash — очередь разблокирована (восстановить: git stash list / pop).") -Kind event | Out-Null
-                  try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-autostash'; files=$dirty.Count; defers=[int]$script:dirtyDeferStreak }) } catch {}
+                  try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-autostash'; files=$dirty.Count; defers=[int]$dirtyDecision.streak; root=$guardRoot }) } catch {}
                 }
               } catch {}
-              $script:dirtyDeferStreak = 0
-              $script:lastDirtyDeferId = ''
+              try {
+                Update-State ({ param($s)
+                  $s | Add-Member -NotePropertyName dirty_defer_id     -NotePropertyValue '' -Force
+                  $s | Add-Member -NotePropertyName dirty_defer_streak -NotePropertyValue 0  -Force
+                }) | Out-Null
+              } catch {}
             }
             $claimedIdea = $null
           }
