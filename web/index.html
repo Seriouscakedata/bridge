@@ -185,6 +185,19 @@
     flex:1 1 auto;
     opacity:.85;
   }
+  .pipeline-strip{display:flex;gap:3px;align-items:center;margin-left:6px;flex:none}
+  .pipeline-strip .ps{
+    font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;
+    color:var(--muted);background:rgba(255,255,255,.05);border:1px solid transparent;
+    transition:color .15s,background .15s,border-color .15s;white-space:nowrap;
+  }
+  .pipeline-strip .ps.active{
+    color:#e8e8e8;background:rgba(255,255,255,.13);border-color:rgba(255,255,255,.18);
+  }
+  .pipeline-strip .ps.ps-plan.active{color:var(--claude,#a78bfa)}
+  .pipeline-strip .ps.ps-code.active{color:var(--codex,#4ade80)}
+  .pipeline-strip .ps.ps-critic.active{color:var(--model,#facc15)}
+  .pipeline-strip .ps.ps-final.active{color:#60a5fa}
   /* Legacy dead selectors retained for older browsers/JS to no-op */
   .meta,.meta-line,.chips{display:none}
   .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
@@ -2129,6 +2142,12 @@
     <div class="status-pill" id="statusPill" title="Текущая активность моста">
       <b id="st">ожидание</b>
       <span class="status-task" id="task">нет активной задачи</span>
+      <div class="pipeline-strip" id="pipelineStrip" hidden>
+        <span class="ps ps-plan" id="ps-plan">Plan</span>
+        <span class="ps ps-code" id="ps-code">Code</span>
+        <span class="ps ps-critic" id="ps-critic">Critic</span>
+        <span class="ps ps-final" id="ps-final">Final</span>
+      </div>
     </div>
     <div id="auditBadge" class="audit-badge" title="Last audit — click for full report">
       <span id="auditIcon">🔍</span>
@@ -4535,6 +4554,12 @@ async function status(){
     const taskText = s.current_task ? String(s.current_task) : 'нет активной задачи';
     taskEl.textContent = taskText.length > 62 ? taskText.slice(0, 62) + '...' : taskText;
     taskEl.title = taskText;
+    const pillEl = document.getElementById('statusPill');
+    if(pillEl){
+      const turnNum = s.task_turn || s.turn || 0;
+      const modeStr = s.task_mode || 'normal';
+      pillEl.title = [statusText, turnNum ? 'turn=' + turnNum : '', modeStr !== 'normal' ? 'mode=' + modeStr : ''].filter(Boolean).join(' · ');
+    }
 
     // 2026-05-27v3: agent-pill shows active agent + model only when there IS an active agent.
     // No more 3 separate chips. Hidden in idle.
@@ -4562,6 +4587,27 @@ async function status(){
       sessionEl.title = sessionEl.textContent;
     }
     document.body.classList.toggle('agents-idle', !act);
+    const strip = document.getElementById('pipelineStrip');
+    if(strip){
+      const psIds = ['ps-plan','ps-code','ps-critic','ps-final'];
+      psIds.forEach(id => { const el = document.getElementById(id); if(el) el.classList.remove('active'); });
+      let activePs = null;
+      if(s.completion_finalizing || (s.verify_retry_count > 0)){
+        activePs = 'ps-final';
+      } else if(s.critic_retry_count > 0 || /critic/i.test(s.status_text || '')){
+        activePs = 'ps-critic';
+      } else if(act === 'codex'){
+        activePs = 'ps-code';
+      } else if(act === 'claude'){
+        activePs = 'ps-plan';
+      }
+      const hasTask = Boolean(s.current_task) || act === 'claude' || act === 'codex' || Boolean(s.completion_finalizing);
+      strip.hidden = !(hasTask && activePs);
+      if(!strip.hidden){
+        const activeEl = document.getElementById(activePs);
+        if(activeEl) activeEl.classList.add('active');
+      }
+    }
 
     if(act === 'claude' || act === 'codex'){
       const text = statusText;
