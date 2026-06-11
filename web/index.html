@@ -463,6 +463,10 @@
   .wave-chip.parallel{border-color:rgba(104,211,145,.5);color:#68d391;background:#0c1c10}
   .wave-chip.serial{border-color:rgba(255,193,7,.4);color:#d4a017;background:#1a1400}
   .wave-chip .wc-jobs{font-size:11px;color:var(--muted);margin-left:4px}
+  .last-event-ticker{display:flex;align-items:center;width:100%;padding:3px 14px;background:var(--head-bg);border-bottom:1px solid var(--border-soft);font-size:11.5px;color:var(--muted);cursor:pointer;user-select:none;line-height:1.6;overflow:hidden;transition:color .15s}
+  .last-event-ticker:hover{color:var(--soft)}
+  .last-event-ticker .let-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+  .last-event-ticker .let-time{flex-shrink:0;margin-left:8px;font-size:11px;color:var(--dimmer,var(--muted))}
   #auditModal{
     display:none;
     position:fixed;
@@ -2205,7 +2209,7 @@
   </div>
   <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
 </header>
-
+<div id="lastEventTicker" class="last-event-ticker" hidden></div>
 <div id="filterBar" class="filterbar" aria-label="Фильтр ленты">
   <span class="label">показать:</span>
   <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">Все <span class="count">0</span></button>
@@ -2490,6 +2494,7 @@
 
 <script>
 let lastSeq = 0;
+let _lastSysEvent = {seq:0, ts:'', text:''};
 let firstLoad = true;
 let stickToBottom = true;
 let unseenCount = 0;
@@ -3503,6 +3508,18 @@ function updateWaveChip(){
     chip.title = 'background jobs x' + jobsK;
   }
 }
+function updateLastEventTicker(){
+  const el = document.getElementById('lastEventTicker');
+  if(!el) return;
+  if(!_lastSysEvent.seq){ el.hidden = true; return; }
+  el.hidden = false;
+  const t = _lastSysEvent.text.replace(/\s+/g,' ').slice(0,100);
+  el.innerHTML = '<span class="let-text">' + esc(t) + '</span><span class="let-time">' + esc(relativeTime(_lastSysEvent.ts)) + '</span>';
+  el.onclick = function(){
+    location.hash = '#m-' + _lastSysEvent.seq;
+    focusHashTarget(true);
+  };
+}
 async function backlogUpdate(id, status, clearAuto, reason){
   const body = {id, status};
   if(clearAuto) body.clear_auto_curator = true;
@@ -4480,6 +4497,12 @@ function addMsg(m){
       renderAttachments(m) +
     '</div>';
   log.insertBefore(div, working);
+  if(m.from === 'system' && seq){
+    if(seq >= (_lastSysEvent.seq||0)){
+      _lastSysEvent = {seq: seq, ts: m.ts||'', text: String(m.text||'')};
+      updateLastEventTicker();
+    }
+  }
   return div;
 }
 function refreshTimes(){
@@ -4488,6 +4511,7 @@ function refreshTimes(){
     t.title = fullTime(t.getAttribute('datetime'));
   });
   updateOverview();
+  updateLastEventTicker();
 }
 
 function renderMessageBatch(data, options){
