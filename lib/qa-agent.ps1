@@ -305,6 +305,11 @@ function Invoke-QAAgent {
 
   $channelName = Get-QAAgentChannel -Channel $Channel
   $bridgeRoot = Get-QAAgentBridgeRoot
+  # W2c: mirror Invoke-QAAgentPostCommit:282 — bridge smoke is irrelevant on project channels;
+  # running it there FAILs/times out on project-only diffs and loops closed tasks back to rework.
+  if (-not [string]::IsNullOrWhiteSpace($channelName) -and $channelName -ne 'main') {
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $channelName -Verdict 'PASS' -Summary ('QA bridge smoke skipped (project channel ' + $channelName + ' — bridge smoke is not relevant to project changes)')
+  }
   $smokePath = Join-Path (Join-Path $bridgeRoot 'tools') 'smoke.ps1'
   if (-not (Test-Path -LiteralPath $smokePath)) {
     $smokePath = Join-Path $bridgeRoot 'smoke.ps1'
