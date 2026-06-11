@@ -2038,14 +2038,25 @@ function Resolve-BacklogWorkpackFrontier {
         $governorDirty = $true
         continue
       } else {
-        Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
-          action = 'allow'
-          reason = [string]$governorVerdict.reason
-          detail = [string]$governorVerdict.detail
-          ts = (Get-Date).ToUniversalTime().ToString('o')
-          evidence = $governorVerdict.evidence
-        })
-        $governorDirty = $true
+        # 2026-06-11 S5: an unchanged 'allow' restamp used to mark the backlog dirty on EVERY
+        # frontier poll (several per minute) -> full backlog.jsonl rewrite under lock each tick
+        # (OneDrive sync storm + lock contention). Stamp/save only when the verdict CHANGES;
+        # readers of governor_claim see the same data either way.
+        $prevGovernorAction = ''
+        try {
+          $prevGovernorClaim = Get-BacklogPackObjectValue -Obj $item -Name 'governor_claim' -Default $null
+          if ($prevGovernorClaim) { $prevGovernorAction = [string]$prevGovernorClaim.action }
+        } catch { $prevGovernorAction = '' }
+        if ($prevGovernorAction -ne 'allow') {
+          Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+            action = 'allow'
+            reason = [string]$governorVerdict.reason
+            detail = [string]$governorVerdict.detail
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            evidence = $governorVerdict.evidence
+          })
+          $governorDirty = $true
+        }
       }
     }
     $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -ProjectScopeAllowed $projectScopeAllowed
@@ -2406,14 +2417,25 @@ function Resolve-BacklogProtectedSerialFrontier {
         $governorDirty = $true
         continue
       } else {
-        Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
-          action = 'allow'
-          reason = [string]$governorVerdict.reason
-          detail = [string]$governorVerdict.detail
-          ts = (Get-Date).ToUniversalTime().ToString('o')
-          evidence = $governorVerdict.evidence
-        })
-        $governorDirty = $true
+        # 2026-06-11 S5: an unchanged 'allow' restamp used to mark the backlog dirty on EVERY
+        # frontier poll (several per minute) -> full backlog.jsonl rewrite under lock each tick
+        # (OneDrive sync storm + lock contention). Stamp/save only when the verdict CHANGES;
+        # readers of governor_claim see the same data either way.
+        $prevGovernorAction = ''
+        try {
+          $prevGovernorClaim = Get-BacklogPackObjectValue -Obj $item -Name 'governor_claim' -Default $null
+          if ($prevGovernorClaim) { $prevGovernorAction = [string]$prevGovernorClaim.action }
+        } catch { $prevGovernorAction = '' }
+        if ($prevGovernorAction -ne 'allow') {
+          Set-BacklogObjectProperty -Item $item -Name 'governor_claim' -Value ([pscustomobject][ordered]@{
+            action = 'allow'
+            reason = [string]$governorVerdict.reason
+            detail = [string]$governorVerdict.detail
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            evidence = $governorVerdict.evidence
+          })
+          $governorDirty = $true
+        }
       }
     }
     $eligibility = Get-BacklogWorkpackExecEligibility -Item $item -Config $Config -AllowProtected -ProjectScopeAllowed $projectScopeAllowed
