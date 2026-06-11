@@ -32,6 +32,35 @@ function Set-DriverOutcomeProperty {
   }
 }
 
+function Get-DriverOutcomeLedgerBlockDecision {
+  # 2026-06-11 freeze-audit wave1 atom1. An outcome-ledger validation block used to force
+  # CONTINUE on EVERY close attempt with no cap. A structural evidence gap (stale base sha,
+  # HEAD==base zero-diff, project-vs-bridge sha mismatch) can never be cured by retrying, so
+  # one task wedged the whole conveyor forever. This decides: retry once (strike 1) or degrade
+  # the items to needs-review and close (strike >= threshold). The count is PERSISTED in
+  # state.json by the caller (in-memory counters reset on driver restart and never fire).
+  param(
+    [AllowNull()]$State,
+    [string]$TaskId = '',
+    [int]$Threshold = 2
+  )
+  $prevCount = 0
+  $prevTask = ''
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'outcome_ledger_block_count') { $prevCount = [int]$State.outcome_ledger_block_count }
+  } catch { $prevCount = 0 }
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'outcome_ledger_block_task') { $prevTask = [string]$State.outcome_ledger_block_task }
+  } catch { $prevTask = '' }
+  if ($prevTask -ne $TaskId) { $prevCount = 0 }
+  $newCount = $prevCount + 1
+  return [pscustomobject][ordered]@{
+    strike  = [int]$newCount
+    degrade = ($newCount -ge $Threshold)
+    task_id = [string]$TaskId
+  }
+}
+
 function Copy-DriverOutcomeItem {
   param([Parameter(Mandatory=$true)]$Item)
   $copy = [pscustomobject][ordered]@{}
@@ -754,10 +783,30 @@ $script:DriverLoopCompletionCleanupBlock = {
         if (-not [bool]$doneLedgerResult.ok) {
           $ledgerReason = [string]$doneLedgerResult.reason
           if ([string]::IsNullOrWhiteSpace($ledgerReason)) { $ledgerReason = 'outcome_ledger_invalid' }
-          try { Set-TaskLastFailure -Kind test_failed -Text ('outcome_ledger_invalid: ' + $ledgerReason) } catch {}
-          Add-Message -From system -Text ("🚫 Outcome ledger blocked backlog completion (reason=" + $ledgerReason + "). Done/failed terminal statuses require reproducible evidence; continuing instead of closing.") -Kind event | Out-Null
-          $plannerStatus = 'CONTINUE'
-          continue
+          # 2026-06-11 freeze-audit wave1 atom1: this block used to force CONTINUE on every close
+          # attempt with NO cap — a structural evidence gap can never be cured by retrying, so one
+          # task wedged the conveyor forever. Two strikes (persisted in state, survives restarts)
+          # -> degrade the items to needs-review (terminal, frees the queue) and close the task.
+          $ledgerBlockTaskId = [string]$stDoneBacklog.current_task_id
+          if ([string]::IsNullOrWhiteSpace($ledgerBlockTaskId)) { $ledgerBlockTaskId = [string]$stDoneBacklog.current_backlog_id }
+          $ledgerBlockDecision = Get-DriverOutcomeLedgerBlockDecision -State $stDoneBacklog -TaskId $ledgerBlockTaskId
+          try {
+            Update-State ({ param($s)
+              $s | Add-Member -NotePropertyName outcome_ledger_block_count -NotePropertyValue ([int]$ledgerBlockDecision.strike) -Force
+              $s | Add-Member -NotePropertyName outcome_ledger_block_task  -NotePropertyValue ([string]$ledgerBlockDecision.task_id) -Force
+            }.GetNewClosure()) | Out-Null
+          } catch {}
+          if (-not [bool]$ledgerBlockDecision.degrade) {
+            try { Set-TaskLastFailure -Kind test_failed -Text ('outcome_ledger_invalid: ' + $ledgerReason) } catch {}
+            Add-Message -From system -Text ("🚫 Outcome ledger blocked backlog completion (reason=" + $ledgerReason + ", strike " + $ledgerBlockDecision.strike + "/2). Done/failed terminal statuses require reproducible evidence; continuing instead of closing.") -Kind event | Out-Null
+            $plannerStatus = 'CONTINUE'
+            continue
+          }
+          foreach ($degradeId in @($doneIds)) {
+            try { Set-Idea -Id ([string]$degradeId) -Status 'needs-review' -Reason ('outcome_ledger_degraded: ' + $ledgerReason) | Out-Null } catch {}
+          }
+          try { Clear-TaskLastFailureKind -Kind 'test_failed' } catch {}
+          Add-Message -From system -Text ("⚠ Outcome ledger blocked twice (reason=" + $ledgerReason + ") — перевожу " + (@($doneIds).Count) + " задач(и) в needs-review и закрываю задачу, чтобы освободить конвейер (freeze-audit wave1).") -Kind event | Out-Null
         }
         # 🤖 Autonomy metric (Foundation #3): the honest self-sufficiency number — autonomous backlog
         # tasks closed IN A ROW with zero operator messages between them. Increment on each autonomous
