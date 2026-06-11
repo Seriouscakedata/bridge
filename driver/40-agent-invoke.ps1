@@ -35,7 +35,13 @@
                   elseif ($Mode -eq 'research') { @('Read','Grep','Glob','WebSearch','WebFetch') }
                   elseif ($Mode -eq 'study') { @('Read','Grep','Glob','WebSearch','WebFetch','Bash') }
                   else { @('Read','Grep','Glob','Bash') }
-  $claudeArgs = @('-p','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
+  # 2026-06-11 A1 (speed program): plain `-p` does NOT stream stdout — the only bytes arrive
+  # with the final answer, so byte-growth liveness was blind for the whole turn and healthy
+  # agentic turns >grace were killed as "zero-output" (large share of the measured 31%
+  # sonnet zero-byte fallbacks were false kills). stream-json emits the init event in <1s and
+  # ticks thinking_tokens/tool events throughout — byte growth now means real liveness.
+  # Measured locally (CLI 2.1.170): first bytes at 839ms, thinking streams, result line last.
+  $claudeArgs = @('-p','--output-format','stream-json','--verbose','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
   if ($Model) {
     $claudeArgs += @('--model', $Model)
     # 2026-06-09: xhigh on premium architecture models. Fable 5 was verified locally to accept this
@@ -58,7 +64,10 @@
   # 90s+ silence is a HUNG claude.exe, not thinking. Heavy reasoning models (opus/fable/mythos) keep
   # the 300s headroom (they really do reason silently); sonnet/haiku fast-fail at 90s -> ~150s saved
   # per affected atom. The 900s wall cap + adaptive stagnation grace still backstop genuine hangs.
-  $plannerFirstOutputGraceMs = if ($heavyClaudeModel) { 300000 } else { 90000 }
+  # 2026-06-11 A1: with stream-json the init event lands in <1s and thinking ticks bytes throughout,
+  # so 60s of TRUE silence now means a genuinely hung claude.exe for ANY model (auth prompt, node
+  # crash, network). One flat fast grace replaces the 90s/300s split — real hangs detected 5x faster.
+  $plannerFirstOutputGraceMs = 60000
   $plannerFirstOutputGraceSec = [int]($plannerFirstOutputGraceMs / 1000)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   try {
@@ -101,7 +110,23 @@
       # try alternates first.
       $claudeTimedOut = $true
     } elseif (Test-Path $outF) {
-      $reply = Get-Content $outF -Raw -Encoding UTF8
+      $rawPlannerOut = Get-Content $outF -Raw -Encoding UTF8
+      $reply = $rawPlannerOut
+      # A1: stream-json output — the answer text lives in the LAST {"type":"result"} line's
+      # .result field. Fall back to the raw text if no result line parses (older CLI / plain
+      # text), so this stays backward-compatible.
+      try {
+        $resultLine = $null
+        foreach ($streamLine in ($rawPlannerOut -split "`n")) {
+          if ($streamLine -match '"type"\s*:\s*"result"') { $resultLine = $streamLine }
+        }
+        if ($resultLine) {
+          $resultObj = $resultLine | ConvertFrom-Json
+          if ($resultObj -and $resultObj.PSObject.Properties.Name -contains 'result' -and -not [string]::IsNullOrWhiteSpace([string]$resultObj.result)) {
+            $reply = [string]$resultObj.result
+          }
+        }
+      } catch {}
     }
   } finally {
     Set-CurrentAgent $null
