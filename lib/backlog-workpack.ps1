@@ -1487,6 +1487,28 @@ function Get-BacklogWorkpackItemEditTouches {
     }
   }
   if ($touches.Count -eq 0) {
+    # 2026-06-11 W1 (width precondition): many atoms declare their files only as a "Files: a, b"
+    # line INSIDE the task text, not in an edit_touches/files metadata field. Without this the
+    # touch-set was empty and EVERY such atom fell through to the coarse conflict_group fallback
+    # -> all got group 'general' -> the frontier serialized them (the benchmark's width=2-not-6).
+    # This MUST run before Get-BacklogWorkpackItemTouches below, which returns the coarse group as
+    # a touch and would otherwise pre-empt this. Parse path-like tokens from the Files: segment so
+    # A3/A4 (touch-overlap as the parallelism authority) actually have a real touch-set to compare.
+    $itemText = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($itemText)) {
+      $filesMatch = [regex]::Match($itemText, '(?is)\bFiles?\s*:\s*(.+?)(?:\bAcceptance\b|\bChecks?\b|[\r\n]|$)')
+      if ($filesMatch.Success) {
+        foreach ($pathMatch in [regex]::Matches([string]$filesMatch.Groups[1].Value, '[A-Za-z0-9_/\\-]+\.[A-Za-z][A-Za-z0-9]{0,5}')) {
+          $v = ([string]$pathMatch.Value).Trim().ToLowerInvariant() -replace '\\','/'
+          if ([string]::IsNullOrWhiteSpace($v)) { continue }
+          if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
+              (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
+          if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
+        }
+      }
+    }
+  }
+  if ($touches.Count -eq 0) {
     foreach ($t in @(Get-BacklogWorkpackItemTouches -Item $Item)) {
       $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
       if (-not [string]::IsNullOrWhiteSpace($v) -and -not $touches.Contains($v)) { [void]$touches.Add($v) }
