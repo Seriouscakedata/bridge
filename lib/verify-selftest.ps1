@@ -384,12 +384,32 @@ function Get-GateRegressionTestSelection {
 
     if ($normalizedPath -imatch '^lib/([^/]+)\.ps1$') {
       $base = $Matches[1].ToLowerInvariant()
+      # Match the file's own test (test-<base>.ps1 / test-<base>-*.ps1) AND, for hyphenated
+      # module families (e.g. backlog-core -> backlog), the family-prefix tests. This keeps
+      # coverage relevant for modules that have no exact-name test without falling through to
+      # the full 79-test suite (which overruns the timeout budget -> exit 124, zero signal).
+      $prefixes = New-Object System.Collections.Generic.List[string]
+      $prefixes.Add($base)
+      if ($base.Contains('-')) { $prefixes.Add($base.Substring(0, $base.IndexOf('-'))) }
       foreach ($testName in @($knownTests.Values)) {
         $testKey = $testName.ToLowerInvariant()
-        if ($testKey -eq ("test-{0}.ps1" -f $base) -or $testKey.StartsWith(("test-{0}-" -f $base))) {
-          [void]$selected.Add($testName)
+        foreach ($pfx in $prefixes) {
+          if ($testKey -eq ("test-{0}.ps1" -f $pfx) -or $testKey.StartsWith(("test-{0}-" -f $pfx))) {
+            [void]$selected.Add($testName)
+            break
+          }
         }
       }
+    }
+  }
+
+  # A control-plane change that maps to no specific test must NOT fall through to the full
+  # 79-test suite — that overruns the timeout budget (exit 124) and yields zero signal. Run the
+  # fast sentinel gates instead: a passing scoped check beats a killed full suite.
+  if ($selected.Count -eq 0 -and @($Scope).Count -gt 0) {
+    foreach ($name in @('test-gate-regression-sentinel.ps1','test-verify-chain-fastpath.ps1')) {
+      $key = $name.ToLowerInvariant()
+      if ($knownTests.ContainsKey($key)) { [void]$selected.Add($knownTests[$key]) }
     }
   }
 

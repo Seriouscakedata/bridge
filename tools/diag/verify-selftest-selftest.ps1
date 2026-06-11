@@ -140,6 +140,28 @@ Assert 'GR6 fail-closed ok=false' ($grResult.Ok -eq $false)
 Assert 'GR6 fail-closed not-skipped' ($grResult.Skipped -eq $false)
 Remove-Item -LiteralPath $grSandbox -Recurse -Force -ErrorAction SilentlyContinue
 
+Write-Host "`n[GR7] hyphenated lib module -> family-prefix scoped tests (not full suite)"
+$selSandbox = Join-Path $env:TEMP ('gr-sel-' + ([guid]::NewGuid().ToString('N').Substring(0,8)))
+New-Item -ItemType Directory -Path (Join-Path $selSandbox 'tools') -Force | Out-Null
+foreach ($tn in @('test-backlog-foo.ps1','test-backlog-bar.ps1','test-zeta.ps1','test-gate-regression-sentinel.ps1','test-verify-chain-fastpath.ps1')) {
+  Write-Utf8File -Path (Join-Path $selSandbox "tools\$tn") -Content "exit 0`n"
+}
+$sel = @(Get-GateRegressionTestSelection -BridgeRoot $selSandbox -Scope @('lib/backlog-core.ps1'))
+Assert 'GR7 backlog-core picks family tests' (($sel -contains 'test-backlog-foo.ps1') -and ($sel -contains 'test-backlog-bar.ps1'))
+Assert 'GR7 does not pick unrelated test' (-not ($sel -contains 'test-zeta.ps1'))
+Assert 'GR7 not full suite' ($sel.Count -lt 5)
+
+Write-Host "`n[GR8] uncovered lib module -> sentinel fallback (never empty, never full)"
+$sel = @(Get-GateRegressionTestSelection -BridgeRoot $selSandbox -Scope @('lib/architect.ps1'))
+Assert 'GR8 sentinel selected' (($sel -contains 'test-gate-regression-sentinel.ps1') -and ($sel -contains 'test-verify-chain-fastpath.ps1'))
+Assert 'GR8 only sentinel set' ($sel.Count -eq 2)
+
+Write-Host "`n[GR9] control-plane driver path with no exact test -> sentinel fallback (never full suite)"
+$sel = @(Get-GateRegressionTestSelection -BridgeRoot $selSandbox -Scope @('driver/40-agent-invoke.ps1'))
+Assert 'GR9 never empty on non-empty scope' ($sel.Count -gt 0)
+Assert 'GR9 falls back to sentinel not full' ($sel.Count -le 2)
+Remove-Item -LiteralPath $selSandbox -Recurse -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fails -eq 0) { Write-Host 'VERIFY-SELFTEST: PASS' }
