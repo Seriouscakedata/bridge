@@ -459,6 +459,10 @@
   .queue-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;background:#1a1f29;border:1px solid var(--border-soft);font-size:12px;color:var(--soft);cursor:pointer;white-space:nowrap;flex:none;user-select:none;transition:background .2s,border-color .2s;}
   .queue-chip:hover{opacity:.85}
   .queue-chip.warn{background:#2a2000;border-color:rgba(255,193,7,.5);color:#ffc107}
+  .wave-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:#151b24;border:1px solid var(--border-soft);font-size:12px;color:var(--soft);white-space:nowrap;flex:none;user-select:none}
+  .wave-chip.parallel{border-color:rgba(104,211,145,.5);color:#68d391;background:#0c1c10}
+  .wave-chip.serial{border-color:rgba(255,193,7,.4);color:#d4a017;background:#1a1400}
+  .wave-chip .wc-jobs{font-size:11px;color:var(--muted);margin-left:4px}
   #auditModal{
     display:none;
     position:fixed;
@@ -2142,6 +2146,7 @@
       <span class="agent-name" id="agentName">—</span>
       <span class="agent-model" id="agentModel"></span>
     </div>
+    <div id="waveChip" class="wave-chip" hidden></div>
     <div class="status-pill" id="statusPill" title="Текущая активность моста">
       <b id="st">ожидание</b>
       <span class="status-task" id="task">нет активной задачи</span>
@@ -3444,6 +3449,60 @@ function updateQueueChip(){
     ? ('Queue blocked: idleClaimabilityControlPlaneBlocked=' + blocked + '; approved control-plane task(s) need operator tag or bridge_self_admission canary. Click to open backlog.')
     : 'Queue approved/running/held - click to open backlog';
 }
+function updateWaveChip(){
+  const chip = document.getElementById('waveChip');
+  if(!chip) return;
+  const s = _lastStatus || {};
+  const batchActive = Boolean(s.workpack_batch_active);
+  const batchMode = String(s.workpack_batch_mode || '');
+  const batchIds = Array.isArray(s.workpack_batch_ids) ? s.workpack_batch_ids : [];
+  const streams = Array.isArray(s.parallel_streams) ? s.parallel_streams : [];
+  const jobs = Array.isArray(s.active_jobs) ? s.active_jobs : [];
+  const snap = s.task_management_snapshot || {};
+  const frontier = snap.frontier || null;
+  const serialReason = String(snap.serial_reason || s.serial_reason || (frontier && frontier.reason) || '');
+  const streamN = Math.max(streams.length, batchIds.length);
+  const isParallel = batchActive && batchMode !== 'serial' && streamN > 1;
+  const isSerial = batchActive && (batchMode === 'serial' || !!serialReason);
+  const jobsK = jobs.length;
+
+  if(!isParallel && !isSerial && jobsK === 0){
+    chip.hidden = true;
+    chip.className = 'wave-chip';
+    chip.innerHTML = '';
+    chip.title = '';
+    return;
+  }
+
+  chip.hidden = false;
+  chip.className = 'wave-chip' + (isParallel ? ' parallel' : (isSerial ? ' serial' : ''));
+  const waveN = isParallel ? streamN : (isSerial ? 1 : 0);
+  const parts = [];
+  if(waveN > 0) parts.push('x' + waveN);
+  if(jobsK > 0) parts.push('<span class="wc-jobs">&#9203; x' + jobsK + '</span>');
+  chip.innerHTML = parts.join('');
+
+  if(isSerial && !isParallel){
+    const tip = [];
+    if(frontier){
+      ['approved','eligible','ready','selected'].forEach(function(k){
+        if(Object.prototype.hasOwnProperty.call(frontier, k)) tip.push(k + '=' + Number(frontier[k] || 0));
+      });
+      let skips = 0;
+      if(Array.isArray(frontier.skips)) skips = frontier.skips.length;
+      else if(frontier.skips != null) skips = Number(frontier.skips || 0);
+      else skips = Number(frontier.conflict_skips || 0) + Number(frontier.touch_skips || 0);
+      tip.push('skips=' + skips);
+      if(frontier.reason) tip.push('reason=' + String(frontier.reason));
+    }
+    if(serialReason) tip.push('serial_reason=' + serialReason);
+    chip.title = tip.length ? tip.join(' | ') : 'serial x1';
+  } else if(isParallel){
+    chip.title = 'parallel x' + waveN + (jobsK ? ' | jobs x' + jobsK : '');
+  } else {
+    chip.title = 'background jobs x' + jobsK;
+  }
+}
 async function backlogUpdate(id, status, clearAuto, reason){
   const body = {id, status};
   if(clearAuto) body.clear_auto_curator = true;
@@ -4673,6 +4732,7 @@ async function status(){
     updateOverview();
     updateBottomButton();
     updateQueueChip();
+    updateWaveChip();
   }catch(e){
     showConnectionProblem('status', e);
   }finally{
