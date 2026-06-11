@@ -361,6 +361,243 @@ function Test-DoctorSignal {
   return $reason
 }
 
+function Normalize-DoctorTaskWindowText {
+  param([AllowNull()][string]$Text)
+  return ((([string]$Text) -replace '\s+', ' ').Trim().ToLowerInvariant())
+}
+
+function Test-DoctorTextContains {
+  param([AllowNull()][string]$Text, [AllowNull()][string]$Needle)
+  $n = Normalize-DoctorTaskWindowText $Needle
+  if ([string]::IsNullOrWhiteSpace($n)) { return $false }
+  return ((Normalize-DoctorTaskWindowText $Text).Contains($n))
+}
+
+function Get-DoctorConversationPath {
+  param([string]$Root)
+  $channel = ''
+  try {
+    if (Get-Command Get-EffectiveChannel -ErrorAction SilentlyContinue) {
+      $channel = [string](Get-EffectiveChannel)
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($channel)) { $channel = [string]$env:BRIDGE_CHANNEL }
+  if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'main' }
+
+  $candidates = New-Object 'System.Collections.Generic.List[string]'
+  if (-not [string]::IsNullOrWhiteSpace($channel)) {
+    [void]$candidates.Add((Join-Path $Root ("channels\" + $channel + "\conversation.jsonl")))
+  }
+  [void]$candidates.Add((Join-Path $Root 'channels\main\conversation.jsonl'))
+  [void]$candidates.Add((Join-Path $Root 'conversation.jsonl'))
+  foreach ($p in @($candidates.ToArray())) {
+    if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+  }
+  return $null
+}
+
+function Read-DoctorConversationRecords {
+  param([string]$Path)
+  $records = New-Object 'System.Collections.Generic.List[object]'
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return @()
+  }
+  $idx = 0
+  foreach ($line in [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF8)) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try {
+      $obj = $line | ConvertFrom-Json
+      $text = ''
+      $from = ''
+      $kind = ''
+      try { $text = [string]$obj.text } catch {}
+      try { $from = [string]$obj.from } catch {}
+      try { $kind = [string]$obj.kind } catch {}
+      [void]$records.Add([pscustomobject][ordered]@{
+        index = $idx
+        from = $from
+        kind = $kind
+        text = $text
+        raw = $obj
+      })
+      $idx++
+    } catch {
+      $idx++
+    }
+  }
+  return @($records.ToArray())
+}
+
+function Test-DoctorFailedTaskMarker {
+  param([AllowNull()][string]$Text)
+  $t = Normalize-DoctorTaskWindowText $Text
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  return ($t -match '(помечаю как failed|помечен[оа]? failed|failed-задач|restart cap|превысила restart|не завершилась успешно|marked failed|task failed)')
+}
+
+function Test-DoctorTaskStartMarker {
+  param([AllowNull()][string]$Text)
+  $t = Normalize-DoctorTaskWindowText $Text
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  return ($t -match '(беру .*ids=|task management:|task_start|task start|текущая задача|begin task|current_task|selected=)')
+}
+
+function Get-DoctorFailedTaskWindowRecords {
+  param(
+    [object[]]$Records,
+    [string]$TaskText = '',
+    [string]$BacklogId = ''
+  )
+  $records = @($Records)
+  if ($records.Count -eq 0) { return @() }
+
+  $taskNeedle = Normalize-DoctorTaskWindowText $TaskText
+  if ($taskNeedle.Length -gt 80) { $taskNeedle = $taskNeedle.Substring(0, 80) }
+  $fail = -1
+  if (-not [string]::IsNullOrWhiteSpace($BacklogId)) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      $txt = [string]$records[$i].text
+      if ((Test-DoctorFailedTaskMarker $txt) -and (Test-DoctorTextContains $txt $BacklogId)) {
+        $fail = $i
+        break
+      }
+    }
+  }
+  if ($fail -lt 0 -and -not [string]::IsNullOrWhiteSpace($taskNeedle)) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      $txt = [string]$records[$i].text
+      if ((Test-DoctorFailedTaskMarker $txt) -and (Test-DoctorTextContains $txt $taskNeedle)) {
+        $fail = $i
+        break
+      }
+    }
+  }
+  if ($fail -lt 0) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      if (Test-DoctorFailedTaskMarker ([string]$records[$i].text)) {
+        $fail = $i
+        break
+      }
+    }
+  }
+
+  $start = -1
+  if ($fail -ge 0) {
+    if (-not [string]::IsNullOrWhiteSpace($BacklogId)) {
+      for ($i = $fail; $i -ge 0; $i--) {
+        $txt = [string]$records[$i].text
+        if ((Test-DoctorTaskStartMarker $txt) -and (Test-DoctorTextContains $txt $BacklogId)) {
+          $start = $i
+          break
+        }
+      }
+    }
+    if ($start -lt 0 -and -not [string]::IsNullOrWhiteSpace($taskNeedle)) {
+      for ($i = $fail; $i -ge 0; $i--) {
+        $txt = [string]$records[$i].text
+        if ((Test-DoctorTaskStartMarker $txt) -and (Test-DoctorTextContains $txt $taskNeedle)) {
+          $start = $i
+          break
+        }
+      }
+    }
+    if ($start -lt 0) {
+      for ($i = $fail; $i -ge 0; $i--) {
+        if (Test-DoctorTaskStartMarker ([string]$records[$i].text)) {
+          $start = $i
+          break
+        }
+      }
+    }
+    if ($start -lt 0) { return @() }
+    return @($records[$start..$fail])
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($BacklogId)) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      $txt = [string]$records[$i].text
+      if ((Test-DoctorTaskStartMarker $txt) -and (Test-DoctorTextContains $txt $BacklogId)) {
+        $start = $i
+        break
+      }
+    }
+  }
+  if ($start -lt 0 -and -not [string]::IsNullOrWhiteSpace($taskNeedle)) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      $txt = [string]$records[$i].text
+      if ((Test-DoctorTaskStartMarker $txt) -and (Test-DoctorTextContains $txt $taskNeedle)) {
+        $start = $i
+        break
+      }
+    }
+  }
+  if ($start -lt 0) {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      if (Test-DoctorTaskStartMarker ([string]$records[$i].text)) {
+        $start = $i
+        break
+      }
+    }
+  }
+  if ($start -lt 0) { return @() }
+
+  $end = $records.Count - 1
+  for ($i = $start + 1; $i -lt $records.Count; $i++) {
+    $txt = [string]$records[$i].text
+    if (Test-DoctorFailedTaskMarker $txt) {
+      $end = $i
+      break
+    }
+    if ((Test-DoctorTaskStartMarker $txt) -and (-not [string]::IsNullOrWhiteSpace($BacklogId)) -and -not (Test-DoctorTextContains $txt $BacklogId)) {
+      $end = $i - 1
+      break
+    }
+  }
+  if ($end -lt $start) { return @() }
+  return @($records[$start..$end])
+}
+
+function Test-DoctorCriticRecord {
+  param([AllowNull()]$Record)
+  if ($null -eq $Record) { return $false }
+  $from = Normalize-DoctorTaskWindowText ([string]$Record.from)
+  $kind = Normalize-DoctorTaskWindowText ([string]$Record.kind)
+  $text = Normalize-DoctorTaskWindowText ([string]$Record.text)
+  return ($from -match 'critic|критик' -or $kind -match 'critic|критик' -or $text -match 'critic|критик')
+}
+
+function Get-DoctorCriticVerdictFromWindow {
+  param([object[]]$WindowRecords)
+  $critics = @(@($WindowRecords) | Where-Object { Test-DoctorCriticRecord $_ })
+  if ($critics.Count -eq 0) { return $null }
+  $last = $critics[$critics.Count - 1]
+  $text = [string]$last.text
+  $norm = Normalize-DoctorTaskWindowText $text
+  $serious = ($norm -match '(серь[её]зн|serious|severity\s*[:=]\s*(critical|high|serious)|critical|критическ|blocker)')
+  if ($norm -match '(ok\s*/\s*none|no serious|не обнаружено|без serious)') { $serious = $false }
+  return [pscustomobject][ordered]@{
+    serious = [bool]$serious
+    findings = $text
+    index = [int]$last.index
+  }
+}
+
+function Get-FailedTaskCriticVerdict {
+  param(
+    [string]$Root,
+    [string]$TaskText = '',
+    [string]$BacklogId = ''
+  )
+  $path = Get-DoctorConversationPath -Root $Root
+  $records = @(Read-DoctorConversationRecords -Path $path)
+  $window = @(Get-DoctorFailedTaskWindowRecords -Records $records -TaskText $TaskText -BacklogId $BacklogId)
+  $verdict = Get-DoctorCriticVerdictFromWindow -WindowRecords $window
+  if ($null -eq $verdict) { return $null }
+  $verdict | Add-Member -NotePropertyName conversation_path -NotePropertyValue $path -Force
+  $verdict | Add-Member -NotePropertyName window_count -NotePropertyValue $window.Count -Force
+  return $verdict
+}
+
 function Invoke-FailedTaskSalvage {
   # Called right after a task is marked FAILED (restart-loop bail-out). The bridge often leaves a
   # VALID working tail behind — the task died on process/orchestration, not on the code. Real case:
@@ -408,7 +645,11 @@ function Invoke-FailedTaskSalvage {
 
   # 2b) Advisory smoke (signal only — not a gate).
   $smokeOk = $true; $smokeTail = '(skipped)'
-  if ($parseBad.Count -eq 0) {
+  $criticVerdict = $null
+  try { $criticVerdict = Get-FailedTaskCriticVerdict -Root $root -TaskText $TaskText -BacklogId $BacklogId } catch { $criticVerdict = $null }
+  $criticSerious = ($criticVerdict -and [bool]$criticVerdict.serious)
+
+  if ($parseBad.Count -eq 0 -and -not $criticSerious) {
     try {
       $smokeScript = Join-Path $root 'smoke.ps1'
       if (Test-Path $smokeScript) {
@@ -419,7 +660,7 @@ function Invoke-FailedTaskSalvage {
     } catch { $smokeOk = $false; $smokeTail = $_.Exception.Message }
   }
 
-  if ($parseBad.Count -eq 0) {
+  if ($parseBad.Count -eq 0 -and -not $criticSerious) {
     # 3a) VALID tail -> commit it.
     try {
       $msg = '[salvage] спасён хвост failed-задачи: ' + $taskShort + $(if ($smokeOk) { ' (parse+smoke OK)' } else { ' (parse OK; smoke red — see note)' })
@@ -435,16 +676,29 @@ function Invoke-FailedTaskSalvage {
       $result = @{ action='committed'; head=$head; files=$files.Count; smokeOk=$smokeOk }
     } catch { try { Write-DoctorLog ('salvage commit error: ' + $_.Exception.Message) } catch {} }
   } else {
-    # 3b) BROKEN tail -> reversibly stash ONLY those files; page operator.
-    $why = 'parse: ' + (($parseBad | Select-Object -First 3) -join ', ')
+    # 3b) BROKEN or critic-rejected tail -> reversibly stash ONLY those files; page operator.
+    $whyParts = New-Object 'System.Collections.Generic.List[string]'
+    if ($parseBad.Count -gt 0) { [void]$whyParts.Add(('parse: ' + (($parseBad | Select-Object -First 3) -join ', '))) }
+    if ($criticSerious) { [void]$whyParts.Add(('critic-debt: serious verdict at conversation index ' + [string]$criticVerdict.index)) }
+    $why = (@($whyParts.ToArray()) -join '; ')
+    if ([string]::IsNullOrWhiteSpace($why)) { $why = 'unknown salvage quarantine reason' }
     try {
       $stashMsg = 'salvage-invalid: ' + $taskShort + ' | ' + $why
       if ($stashMsg.Length -gt 160) { $stashMsg = $stashMsg.Substring(0,160) }
       & git -C $root stash push -u -m $stashMsg -- @($files) 2>$null | Out-Null
+      $stashSha = ''
+      try { $stashSha = ([string](& git -C $root rev-parse --verify refs/stash 2>$null)).Trim() } catch { $stashSha = '' }
+      $stashRef = 'stash@{0}'
+      $followUpId = ''
+      if ($criticSerious -and (Get-Command Add-BacklogCriticDebtFollowUp -ErrorAction SilentlyContinue)) {
+        try {
+          $followUpId = [string](Add-BacklogCriticDebtFollowUp -TaskId $BacklogId -TaskText $TaskText -Findings ([string]$criticVerdict.findings) -StashRef $stashRef -StashSha $stashSha -Files $files)
+        } catch { try { Write-DoctorLog ('critic-debt follow-up error: ' + $_.Exception.Message) } catch {} }
+      }
       try { Write-DoctorLog ('salvage STASH invalid tail (' + $why + '): ' + $taskShort) } catch {}
       try { Add-Message -From system -Text ('📦 Хвост failed-задачи не парсится (' + $why + ') — спрятал эти файлы в git stash (обратимо: `git stash pop`), дерево очищено. Нужен ты для разбора.') -Kind event | Out-Null } catch {}
       try { Send-PushEvent -Kind need_you -Text ('salvage: invalid tail stashed — ' + $why) } catch {}
-      $result = @{ action='stashed'; why=$why }
+      $result = @{ action='stashed'; why=$why; stash_ref=$stashRef; stash_sha=$stashSha; critic_debt_followup_id=$followUpId }
     } catch { try { Write-DoctorLog ('salvage stash error: ' + $_.Exception.Message) } catch {} }
   }
   return $result

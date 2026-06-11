@@ -85,6 +85,82 @@ function Get-IdeaNetNewPenaltyRank {
 
 #region Backlog failure classes, curator, and picker API
 
+function Add-BacklogCriticDebtFollowUp {
+  param(
+    [string]$TaskId = '',
+    [string]$TaskText = '',
+    [string]$Findings = '',
+    [string]$StashRef = '',
+    [string]$StashSha = '',
+    [string[]]$Files = @()
+  )
+  Ensure-BacklogPathFunction
+  $taskKey = ([string]$TaskId).Trim()
+  if ([string]::IsNullOrWhiteSpace($taskKey)) {
+    $taskKeyText = ([string]$TaskText).Trim().ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+      $hashBytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($taskKeyText))
+      $taskKey = 'task-text:' + ([System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant())
+    } finally {
+      if ($sha) { $sha.Dispose() }
+    }
+  }
+  $items = @(Get-Backlog)
+  foreach ($item in $items) {
+    $kind = ''
+    $of = ''
+    try { $kind = [string]$item.followup_kind } catch {}
+    try { $of = [string]$item.followup_of } catch {}
+    if ($kind -eq 'critic-debt' -and $of -eq $taskKey) {
+      return [string]$item.id
+    }
+  }
+
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $id = 'critic-debt-' + ([guid]::NewGuid().ToString('N').Substring(0, 12))
+  $taskShort = ([string]$TaskText -replace '\s+', ' ').Trim()
+  if ($taskShort.Length -gt 140) { $taskShort = $taskShort.Substring(0, 140) + '...' }
+  $findingsShort = ([string]$Findings -replace '\s+', ' ').Trim()
+  if ($findingsShort.Length -gt 260) { $findingsShort = $findingsShort.Substring(0, 260) + '...' }
+  $text = "Critic-debt salvage follow-up: failed task $taskKey was quarantined in $StashRef"
+  if (-not [string]::IsNullOrWhiteSpace($taskShort)) { $text += ". Task: $taskShort" }
+  if (-not [string]::IsNullOrWhiteSpace($findingsShort)) { $text += ". Critic: $findingsShort" }
+
+  $fileList = @($Files | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $item = [pscustomobject][ordered]@{
+    id = $id
+    ts = $now
+    text = $text
+    from = 'doctor'
+    status = 'open'
+    tags = @('critic-debt','doctor','salvage')
+    severity = 'critical'
+    scope = 'bridge'
+    files = @($fileList)
+    followup_kind = 'critic-debt'
+    followup_of = $taskKey
+    source_task_text = [string]$TaskText
+    critic_findings = [string]$Findings
+    stash_ref = [string]$StashRef
+    stash_sha = [string]$StashSha
+  }
+  $items += $item
+  Save-Backlog $items
+  try {
+    Write-BacklogJsonLine ([ordered]@{
+      ts = $now
+      action = 'critic-debt-followup'
+      item_id = $id
+      followup_of = $taskKey
+      stash_ref = [string]$StashRef
+      stash_sha = [string]$StashSha
+      files = @($fileList)
+    })
+  } catch {}
+  return $id
+}
+
 function Get-BacklogFailureClassValues {
   return @('flaky', 'spec-unclear', 'blocked', 'real-bug')
 }
