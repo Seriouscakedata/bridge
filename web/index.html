@@ -456,6 +456,9 @@
     transition:background .2s,border-color .2s;
   }
   .audit-badge:hover{opacity:.85}
+  .queue-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;background:#1a1f29;border:1px solid var(--border-soft);font-size:12px;color:var(--soft);cursor:pointer;white-space:nowrap;flex:none;user-select:none;transition:background .2s,border-color .2s;}
+  .queue-chip:hover{opacity:.85}
+  .queue-chip.warn{background:#2a2000;border-color:rgba(255,193,7,.5);color:#ffc107}
   #auditModal{
     display:none;
     position:fixed;
@@ -2153,6 +2156,9 @@
       <span id="auditIcon">🔍</span>
       <span id="auditStatus">—</span>
     </div>
+    <div id="queueChip" class="queue-chip" hidden title="Queue tasks - click to open backlog">
+      <span id="queueChipText"></span>
+    </div>
     <!-- Hidden back-compat for JS that still references old IDs: -->
     <span id="chipClaude" hidden><span class="dot"></span><span class="lbl">Claude</span></span>
     <span id="chipCodex" hidden><span class="dot"></span><span class="lbl">Codex</span></span>
@@ -2697,6 +2703,7 @@ if(settingsOpen && (overviewOpen || planOpen || codeOpen || dashOpen || usageOpe
   backlogOpen = false;
 }
 let _backlogFilter = 'all';
+let _lastStatus = null;
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
@@ -3290,6 +3297,7 @@ async function pollBacklog(){
     const tglEl = document.getElementById('backlogArchiveToggle');
     if(tglEl) tglEl.classList.toggle('active', _backlogShowArchived);
     renderBacklog(_backlogItems, _backlogFilter);
+    updateQueueChip();
   }catch(e){
     if(myEpoch !== channelEpoch) return;
     if(backlogList) backlogList.innerHTML = '<div class="backlog-empty">Backlog недоступен: ' + esc(e.message || e) + '</div>';
@@ -3393,6 +3401,48 @@ function renderBacklog(items, filter){
     return;
   }
   backlogList.innerHTML = filtered.map(backlogItemHtml).join('');
+}
+function updateQueueChip(){
+  const chip = document.getElementById('queueChip');
+  if(!chip) return;
+  const items = Array.isArray(_backlogItems) ? _backlogItems : [];
+  const counts = {approved:0, running:0, held:0};
+  const bCounts = {all:items.length, new:0, approved:0, held:0, done:0};
+  items.forEach(function(i){
+    const st = String(i.status || 'new');
+    if(Object.prototype.hasOwnProperty.call(counts, st)) counts[st]++;
+    if(Object.prototype.hasOwnProperty.call(bCounts, st)) bCounts[st]++;
+  });
+  document.querySelectorAll('[data-bfilter]').forEach(function(btn){
+    const f = btn.getAttribute('data-bfilter');
+    if(!Object.prototype.hasOwnProperty.call(bCounts, f)) return;
+    if(!btn.dataset.baseLabel) btn.dataset.baseLabel = (btn.textContent || '').replace(/\s+\(\d+\)\s*$/, '').trim();
+    const label = btn.dataset.baseLabel || f;
+    const n = Object.prototype.hasOwnProperty.call(bCounts, f) ? bCounts[f] : 0;
+    btn.textContent = n > 0 ? (label + ' (' + n + ')') : label;
+  });
+  const total = counts.approved + counts.running + counts.held;
+  if(total === 0){
+    chip.hidden = true;
+    chip.classList.remove('warn');
+    chip.title = 'Queue tasks - click to open backlog';
+    return;
+  }
+  chip.hidden = false;
+  const parts = [];
+  if(counts.approved > 0) parts.push('A ' + counts.approved);
+  if(counts.running > 0) parts.push('R ' + counts.running);
+  if(counts.held > 0) parts.push('H ' + counts.held);
+  const textEl = document.getElementById('queueChipText');
+  if(textEl) textEl.textContent = parts.join('  ');
+  const st = _lastStatus || {};
+  const isIdle = !st.active_agent || st.status === 'idle';
+  const blocked = Number(st.idleClaimabilityControlPlaneBlocked || 0);
+  const isWarn = isIdle && counts.approved > 0 && blocked > 0;
+  chip.classList.toggle('warn', isWarn);
+  chip.title = isWarn
+    ? ('Queue blocked: ' + blocked + ' approved control-plane task(s) need operator tag or bridge_self_admission canary. Click to open backlog.')
+    : 'Queue tasks - click to open backlog';
 }
 async function backlogUpdate(id, status, clearAuto, reason){
   const body = {id, status};
@@ -4619,8 +4669,10 @@ async function status(){
     } else {
       working.style.display = 'none';
     }
+    _lastStatus = s;
     updateOverview();
     updateBottomButton();
+    updateQueueChip();
   }catch(e){
     showConnectionProblem('status', e);
   }finally{
@@ -5463,6 +5515,8 @@ if(pauseToggleMobileBtn){
 }
 if(panelsToggleBtn) panelsToggleBtn.addEventListener('click', togglePanels);
 if(panelsToggleMobileBtn) panelsToggleMobileBtn.addEventListener('click', togglePanels);
+const queueChip = document.getElementById('queueChip');
+if(queueChip) queueChip.addEventListener('click', function(){ openPanels('backlog'); });
 panelTabs.forEach(tab => {
   tab.addEventListener('click', () => selectTab(tab.dataset.panel));
 });
@@ -5731,12 +5785,14 @@ pollPlan();
 pollMetrics();
 pollUsage();
 pollChannels();
+pollBacklog();
 setInterval(poll, 1500);
 setInterval(status, 1200);
 setInterval(pollPlan, 3000);
 setInterval(pollMetrics, 5000);
 setInterval(pollUsage, 5000);
 setInterval(pollChannels, 15000);
+setInterval(pollBacklog, 15000);
 setInterval(refreshTimes, 30000);
 pollAudit();
 setInterval(pollAudit, 600000);
