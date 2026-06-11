@@ -553,18 +553,32 @@ function Test-CanParallelize {
     [System.Text.RegularExpressions.RegexOptions]::Singleline)
   if ($matches.Count -lt 2) { return $null }
 
+  # 2026-06-11 A3 (speed program): this used to be ALL-OR-NOTHING — one block without Files:
+  # or one file shared by two streams returned $null and collapsed the ENTIRE wave to serial
+  # (N -> 0 from a single malformed block). Now the offending stream is DROPPED and the rest
+  # still parallelize (>=2 survivors); dropped blocks stay in the plan text, so the planner
+  # sees their results missing after the wave and finishes them via the normal mixed path.
   $streams = New-Object System.Collections.Generic.List[object]
   $owners = @{}
+  $droppedStreams = New-Object System.Collections.Generic.List[string]
   foreach ($m in $matches) {
     $id = Normalize-ParallelId $m.Groups['id'].Value
     $body = ([string]$m.Groups['body'].Value).Trim()
     $files = @(Get-ParallelFilesFromBody $body)
-    if ($files.Count -eq 0) { return $null }
-
-    foreach ($f in $files) {
-      if ($owners.ContainsKey($f) -and [string]$owners[$f] -ne $id) { return $null }
-      $owners[$f] = $id
+    if ($files.Count -eq 0) {
+      [void]$droppedStreams.Add($id + ' (no Files: declared)')
+      continue
     }
+
+    $conflictFile = ''
+    foreach ($f in $files) {
+      if ($owners.ContainsKey($f) -and [string]$owners[$f] -ne $id) { $conflictFile = [string]$f; break }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($conflictFile)) {
+      [void]$droppedStreams.Add($id + " (file '" + $conflictFile + "' already owned by " + [string]$owners[$conflictFile] + ')')
+      continue
+    }
+    foreach ($f in $files) { $owners[$f] = $id }
 
     [void]$streams.Add([pscustomobject]@{
       id         = $id
@@ -576,6 +590,9 @@ function Test-CanParallelize {
     })
   }
 
+  if ($droppedStreams.Count -gt 0 -and $streams.Count -ge 2 -and (Get-Command Add-Message -ErrorAction SilentlyContinue)) {
+    try { Add-Message -From system -Text ("⚠ Parallel: исключены стримы (" + ($droppedStreams -join '; ') + ") — остальные " + $streams.Count + " идут параллельно; выпавшие доделает планировщик после волны.") -Kind event | Out-Null } catch {}
+  }
   if ($streams.Count -lt 2) { return $null }
   return @($streams.ToArray())
 }
