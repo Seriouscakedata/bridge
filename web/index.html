@@ -2156,7 +2156,7 @@
       <span id="auditIcon">🔍</span>
       <span id="auditStatus">—</span>
     </div>
-    <div id="queueChip" class="queue-chip" hidden title="Queue tasks - click to open backlog">
+    <div id="queueChip" class="queue-chip" hidden title="Queue approved/running/held - click to open backlog">
       <span id="queueChipText"></span>
     </div>
     <!-- Hidden back-compat for JS that still references old IDs: -->
@@ -3425,14 +3425,14 @@ function updateQueueChip(){
   if(total === 0){
     chip.hidden = true;
     chip.classList.remove('warn');
-    chip.title = 'Queue tasks - click to open backlog';
+    chip.title = 'Queue approved/running/held - click to open backlog';
     return;
   }
   chip.hidden = false;
   const parts = [];
-  if(counts.approved > 0) parts.push('A ' + counts.approved);
-  if(counts.running > 0) parts.push('R ' + counts.running);
-  if(counts.held > 0) parts.push('H ' + counts.held);
+  if(counts.approved > 0) parts.push('approved ' + counts.approved);
+  if(counts.running > 0) parts.push('running ' + counts.running);
+  if(counts.held > 0) parts.push('held ' + counts.held);
   const textEl = document.getElementById('queueChipText');
   if(textEl) textEl.textContent = parts.join('  ');
   const st = _lastStatus || {};
@@ -3441,8 +3441,8 @@ function updateQueueChip(){
   const isWarn = isIdle && counts.approved > 0 && blocked > 0;
   chip.classList.toggle('warn', isWarn);
   chip.title = isWarn
-    ? ('Queue blocked: ' + blocked + ' approved control-plane task(s) need operator tag or bridge_self_admission canary. Click to open backlog.')
-    : 'Queue tasks - click to open backlog';
+    ? ('Queue blocked: idleClaimabilityControlPlaneBlocked=' + blocked + '; approved control-plane task(s) need operator tag or bridge_self_admission canary. Click to open backlog.')
+    : 'Queue approved/running/held - click to open backlog';
 }
 async function backlogUpdate(id, status, clearAuto, reason){
   const body = {id, status};
