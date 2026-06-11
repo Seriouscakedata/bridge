@@ -80,6 +80,18 @@ STATUS: DONE
   $parseResult = & $script:DriverDoneGateParseJob $root @('driver/86-loop-completion-checks.ps1','lib/verify-selftest.ps1')
   Check 'ParseFile: touched PS1 files parse cleanly' ([bool]$parseResult.Ok) $parseResult
 
+  $missingBaseChangedPaths = $null
+  $missingBaseError = ''
+  try {
+    foreach ($i in 1..4) {
+      $missingBaseChangedPaths = @(Get-DriverDoneGateChangedPaths -BridgeRoot $root -TaskBaseCommit '0000000000000000000000000000000000000000')
+    }
+  } catch {
+    $missingBaseError = ($_.Exception.Message -replace '\s+',' ').Trim()
+  }
+  Check 'Missing task_base_commit: repeated changed-path scans stay fail-soft' ([string]::IsNullOrWhiteSpace($missingBaseError)) $missingBaseError
+  Check 'Missing task_base_commit: changed paths still return an array' ($null -ne $missingBaseChangedPaths) $missingBaseChangedPaths
+
   $primitiveSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/backlog-dedup.ps1','tools/test-primitives.ps1'))
   Check 'Gate regression scope: direct changed tests are selected' ($primitiveSelection -contains 'test-primitives.ps1') $primitiveSelection
   Check 'Gate regression scope: lib-name tests are selected' ($primitiveSelection -contains 'test-backlog-dedup.ps1') $primitiveSelection
