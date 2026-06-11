@@ -259,8 +259,8 @@
       { "id": "claude-fable-2",   "cli": "claude", "model": "claude-fable-5", "strength": 5, "speed": 1, "cost": 5, "domains": ["any","frontend","docs","backend"], "purpose": "Premium architecture model (dup) for complex architectural work in parallel." },
       { "id": "deepseek-pro",     "cli": "deepseek", "model": "deepseek-v4-pro", "strength": 4, "speed": 3, "cost": 2, "domains": ["any","backend","frontend","config","docs"], "purpose": "DeepSeek v4 Pro — strong, cheap; single-file edits via LLM-worker." },
       { "id": "deepseek-pro-2",   "cli": "deepseek", "model": "deepseek-v4-pro", "strength": 4, "speed": 3, "cost": 2, "domains": ["any","backend","frontend","config","docs"], "purpose": "DeepSeek v4 Pro (dup)." },
-      { "id": "gemini-flash",     "cli": "gemini", "model": "gemini-2.5-flash", "strength": 3, "speed": 4, "cost": 1, "domains": ["frontend","docs","config","any"], "purpose": "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker." },
-      { "id": "gemini-flash-2",   "cli": "gemini", "model": "gemini-2.5-flash", "strength": 3, "speed": 4, "cost": 1, "domains": ["frontend","docs","config","any"], "purpose": "Gemini 2.5 Flash (dup)." }
+      { "id": "gemini-flash",     "cli": "gemini", "model": "gemini-2.5-flash", "strength": 2, "speed": 4, "cost": 1, "domains": ["frontend","docs","config","any"], "purpose": "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker." },
+      { "id": "gemini-flash-2",   "cli": "gemini", "model": "gemini-2.5-flash", "strength": 2, "speed": 4, "cost": 1, "domains": ["frontend","docs","config","any"], "purpose": "Gemini 2.5 Flash (dup)." }
     ]
   },
   "coderTimeoutMs": 1500000,
