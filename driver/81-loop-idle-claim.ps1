@@ -1081,8 +1081,30 @@
             # tree is clean. Dedupe the notice by idea id so idle ticks don't spam while it stays dirty.
             if ([string]$claimedIdea.id -ne [string]$script:lastDirtyDeferId) {
               $script:lastDirtyDeferId = [string]$claimedIdea.id
+              $script:dirtyDeferStreak = 1
               $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
               Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу как только дерево станет чистым (идея остаётся в очереди). Превью: $preview") -Kind event | Out-Null
+            } else {
+              $script:dirtyDeferStreak = [int]$script:dirtyDeferStreak + 1
+            }
+            # 2026-06-11: ORPHANED-dirty auto-stash. A dirty tree left by a prior held/aborted task
+            # (its work never committed) is NOT transient -- no operator will commit it, so dispatch
+            # wedges FOREVER (live incident: serial-claim held loop every ~3min for 20min straight,
+            # the whole approved queue blocked behind 2 orphaned files). After several consecutive
+            # defers on the SAME idea (an operator editing live would have committed by now), stash
+            # the orphaned changes to unwedge the queue. Fully recoverable via `git stash list`/`pop`.
+            # Bridge channel only (project repos self-manage their own tree).
+            if ((-not $isProjectChannel) -and ([int]$script:dirtyDeferStreak -ge 6)) {
+              try {
+                $stashMsg = ("bridge auto-stash: orphaned dirty wedged dispatch ({0} files, {1} defers)" -f $dirty.Count, [int]$script:dirtyDeferStreak)
+                & git -C $guardRoot stash push -u -m $stashMsg 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                  Add-Message -From system -Text ("🧹 Авто-stash: осиротевший dirty ($($dirty.Count) файлов) убран в stash — очередь разблокирована (восстановить: git stash list / pop).") -Kind event | Out-Null
+                  try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-autostash'; files=$dirty.Count; defers=[int]$script:dirtyDeferStreak }) } catch {}
+                }
+              } catch {}
+              $script:dirtyDeferStreak = 0
+              $script:lastDirtyDeferId = ''
             }
             $claimedIdea = $null
           }
