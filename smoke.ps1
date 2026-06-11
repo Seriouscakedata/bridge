@@ -183,6 +183,52 @@ if (Test-Path $auditGuardScript) {
     $failed += "AUDIT-LAUNCH-GUARD: tools\test-audit-launch-guard.ps1 not found"
 }
 
+# 11. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
+$backlogLib = Join-Path $b 'lib\backlog.ps1'
+if (Test-Path $backlogLib) {
+    $blArg = $backlogLib -replace "'","''"
+    $rootArg = $b -replace "'","''"
+    $fvRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+        `$ErrorActionPreference = 'Stop'
+        . '$blArg'
+        `$validAdmission = [pscustomobject]@{
+            admitted = `$true
+            mode = 'bridge_self_canary'
+            canary_required = `$true
+            checks = @('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1','canary evidence: Invoke-CanaryCycle PASS')
+            rollback_plan = 'rollback to previous verified commit if canary/selftest/smoke fails'
+        }
+        `$okItem = [pscustomobject]@{ id='smoke-admit-ok'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=`$validAdmission }
+        `$admit = Test-IdeaBridgeSelfAdmitted -Idea `$okItem
+        if (-not (`$admit -and [bool]`$admit.ok -and [bool]`$admit.canary_evidence)) { throw 'valid bridge_self_admission rejected' }
+        `$badItem = [pscustomobject]@{ id='smoke-admit-bad'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=[pscustomobject]@{ admitted=`$true; mode='bridge_self_canary'; canary_required=`$true; checks=@('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1'); rollback_plan='rollback' } }
+        `$bad = Test-IdeaBridgeSelfAdmitted -Idea `$badItem
+        if (`$bad -and [bool]`$bad.ok) { throw 'admission without canary evidence accepted' }
+        `$statePath = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-fv-smoke-' + [guid]::NewGuid().ToString('N') + '.json')
+        `$stateObj = [ordered]@{
+            'backlog-curator' = [ordered]@{
+                last_health = 'broken'
+                last_verified_at = '2026-06-11T00:00:00Z'
+                scenario_results = @([ordered]@{ scenario='backlog-add'; ok=`$false; error='BROKEN behavior' })
+            }
+        }
+        `$json = `$stateObj | ConvertTo-Json -Compress -Depth 6
+        [System.IO.File]::WriteAllText(`$statePath, `$json, (New-Object System.Text.UTF8Encoding(`$false)))
+        `$dry = Add-FeatureVerifierBrokenBugfixBacklogItems -BridgeRoot '$rootArg' -StatePath `$statePath -DigestPath (Join-Path '$rootArg' 'audit\feature-verifier-smoke.md') -ExistingItems @() -DryRun
+        Remove-Item -LiteralPath `$statePath -Force -ErrorAction SilentlyContinue
+        `$dryJson = `$dry | ConvertTo-Json -Compress -Depth 8
+        if (-not (`$dryJson -match 'would_create_count.:1' -and `$dryJson -match 'type.:.bugfix' -and `$dryJson -match 'bugfix' -and `$dryJson -match 'Report:')) { throw 'BROKEN verifier dry-run did not produce bugfix with report link' }
+        'FEATURE-VERIFIER-CANARY OK'
+    " 2>&1
+    $fvCode = $LASTEXITCODE
+    $fvText = ($fvRaw | ForEach-Object { [string]$_ }) -join "`n"
+    if ($fvCode -ne 0 -or $fvText -notmatch 'FEATURE-VERIFIER-CANARY OK') {
+        $failed += ("FEATURE-VERIFIER-CANARY (exit=$fvCode): " + (($fvText -replace '\s+',' ').Trim()))
+    }
+} else {
+    $failed += "FEATURE-VERIFIER-CANARY: lib\backlog.ps1 not found"
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"

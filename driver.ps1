@@ -125,6 +125,98 @@ $studyMaxTurns     = if ($cfg.studyMaxTurns)     { [int]$cfg.studyMaxTurns }    
 . (Join-Path $PSScriptRoot 'driver\87-loop-final-guard.ps1')
 . (Join-Path $PSScriptRoot 'driver\90-main-loop.ps1')
 
+if (-not $script:DriverOriginalTestTaskIntent) {
+  try { $script:DriverOriginalTestTaskIntent = (Get-Command Test-TaskIntent -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+
+function Test-DriverBugfixIntentFallbackMatch {
+  param([string]$TaskText)
+  if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
+  return ([string]$TaskText -match '(?i)\bBROKEN\b|broken\s+behavior|\berror\b|\bcrash(?:es|ed|ing)?\b')
+}
+
+function New-DriverBugfixIntentFallback {
+  param(
+    [string]$TaskText,
+    $PreviousIntent = $null
+  )
+  $raw = $null
+  try { if ($PreviousIntent -and ($PreviousIntent.PSObject.Properties.Name -contains 'raw')) { $raw = $PreviousIntent.raw } } catch {}
+  return [pscustomobject]@{
+    primary_mode = 'normal'
+    confidence = 0.72
+    reasoning = 'keyword fallback: BROKEN/error/crash means bugfix/repair even when classifier was skipped or low-confidence'
+    subtasks = @(@{ action = 'fix'; object = 'reported broken behavior' })
+    user_wants_dialogue = $false
+    complexity = 'simple'
+    estimated_turns = 2
+    raw = $raw
+    source = 'keyword-bugfix-fallback'
+    fallback_intent = 'bugfix'
+    tags = @('bugfix','repair')
+  }
+}
+
+function Test-TaskIntent {
+  param(
+    [string]$TaskText,
+    [int]$TimeoutSec = 25,
+    [string]$Model = ''
+  )
+
+  $intent = $null
+  if ($script:DriverOriginalTestTaskIntent) {
+    try {
+      if ([string]::IsNullOrWhiteSpace($Model)) {
+        $intent = & $script:DriverOriginalTestTaskIntent -TaskText $TaskText -TimeoutSec $TimeoutSec
+      } else {
+        $intent = & $script:DriverOriginalTestTaskIntent -TaskText $TaskText -TimeoutSec $TimeoutSec -Model $Model
+      }
+    } catch {
+      $intent = $null
+    }
+  }
+
+  if (Test-DriverBugfixIntentFallbackMatch -TaskText $TaskText) {
+    $confidence = 0.0
+    try { if ($intent -and ($intent.PSObject.Properties.Name -contains 'confidence')) { $confidence = [double]$intent.confidence } } catch { $confidence = 0.0 }
+    if ((-not $intent) -or $confidence -lt 0.70) {
+      return (New-DriverBugfixIntentFallback -TaskText $TaskText -PreviousIntent $intent)
+    }
+    try {
+      $intent | Add-Member -NotePropertyName fallback_intent -NotePropertyValue 'bugfix' -Force
+      $intent | Add-Member -NotePropertyName tags -NotePropertyValue @('bugfix','repair') -Force
+    } catch {}
+  }
+
+  return $intent
+}
+
+if (-not $script:DriverOriginalStartFeatureVerifierIfDue) {
+  try { $script:DriverOriginalStartFeatureVerifierIfDue = (Get-Command Start-FeatureVerifierIfDue -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+
+function Invoke-DriverFeatureVerifierBrokenFiling {
+  param([string]$Reason = 'idle')
+  if (-not (Get-Command Add-FeatureVerifierBrokenBugfixBacklogItems -ErrorAction SilentlyContinue)) { return $null }
+  $result = $null
+  try { $result = Add-FeatureVerifierBrokenBugfixBacklogItems -BridgeRoot $bridgeRoot } catch { return $null }
+  if ($result -and [int]$result.created_count -gt 0) {
+    try {
+      Add-Message -From system -Kind event -Text ("🩻 Feature Verifier BROKEN → создано bugfix задач: " + [int]$result.created_count + " (" + $Reason + ").") | Out-Null
+    } catch {}
+  }
+  return $result
+}
+
+function Start-FeatureVerifierIfDue {
+  try { Invoke-DriverFeatureVerifierBrokenFiling -Reason 'pre-verifier-check' | Out-Null } catch {}
+  if ($script:DriverOriginalStartFeatureVerifierIfDue) {
+    try { & $script:DriverOriginalStartFeatureVerifierIfDue } catch {}
+  }
+  try { Invoke-DriverFeatureVerifierBrokenFiling -Reason 'post-verifier-check' | Out-Null } catch {}
+}
+
 # ---------- driver self-test (pre-promote runtime gate) ----------
 # smoke.ps1 PARSES every .ps1 and runs common.ps1 at runtime (Get-PreflightBlockers), but it never
 # EXECUTES driver.ps1 -- so a parse-OK-but-runtime-broken edit here (the PS5.1 `(if...)` expression
@@ -159,6 +251,38 @@ if ($SelfTest) {
     if ($qbProbe.Count -lt 1) { [void]$stFail.Add('quality-bypass detector missed ignoreBuildErrors') }
   } catch {
     [void]$stFail.Add('quality-bypass detector threw: ' + $_.Exception.Message)
+  }
+  try {
+    $intentProbe = Test-TaskIntent -TaskText 'BROKEN crash'
+    $intentTags = @()
+    try { $intentTags = @($intentProbe.tags | ForEach-Object { ([string]$_).ToLowerInvariant() }) } catch { $intentTags = @() }
+    if (-not $intentProbe -or [string]$intentProbe.fallback_intent -ne 'bugfix' -or (@($intentTags) -notcontains 'bugfix')) {
+      [void]$stFail.Add('bugfix intent fallback missed BROKEN/crash short task')
+    }
+  } catch {
+    [void]$stFail.Add('bugfix intent fallback threw: ' + $_.Exception.Message)
+  }
+  try {
+    $validAdmissionProbe = [pscustomobject]@{
+      admitted = $true
+      mode = 'bridge_self_canary'
+      canary_required = $true
+      checks = @('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1','canary evidence: Invoke-CanaryCycle PASS')
+      rollback_plan = 'rollback to previous verified commit if canary/selftest/smoke fails'
+    }
+    $admitProbe = Test-IdeaBridgeSelfAdmitted -Idea ([pscustomobject]@{ id='selftest-admit'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=$validAdmissionProbe })
+    if (-not ($admitProbe -and [bool]$admitProbe.ok -and [bool]$admitProbe.canary_evidence)) { [void]$stFail.Add('bridge_self_admission canary evidence probe rejected') }
+    $brokenState = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-feature-verifier-selftest-' + [guid]::NewGuid().ToString('N') + '.json')
+    $brokenJson = '{"backlog-curator":{"last_health":"broken","last_verified_at":"2026-06-11T00:00:00Z","scenario_results":[{"scenario":"backlog-add","ok":false,"error":"BROKEN behavior"}]}}'
+    [System.IO.File]::WriteAllText($brokenState, $brokenJson, (New-Object System.Text.UTF8Encoding($false)))
+    $dry = Add-FeatureVerifierBrokenBugfixBacklogItems -BridgeRoot $bridgeRoot -StatePath $brokenState -DigestPath (Join-Path $bridgeRoot 'audit\feature-verifier-selftest.md') -ExistingItems @() -DryRun
+    try { Remove-Item -LiteralPath $brokenState -Force -ErrorAction SilentlyContinue } catch {}
+    $would = @($dry.would_create)
+    if (-not ($dry -and [int]$dry.would_create_count -eq 1 -and $would.Count -eq 1 -and [string]$would[0].type -eq 'bugfix' -and [string]$would[0].text -match 'Report:')) {
+      [void]$stFail.Add('feature-verifier BROKEN dry-run did not create bugfix report task')
+    }
+  } catch {
+    [void]$stFail.Add('canary/admission or feature-verifier filing probe threw: ' + $_.Exception.Message)
   }
   if ($stFail.Count -gt 0) { foreach ($f in $stFail) { Write-Output ('DRIVER SELFTEST FAIL: ' + $f) }; exit 1 }
   Write-Output 'DRIVER SELFTEST OK'

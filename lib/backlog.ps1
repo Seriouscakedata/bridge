@@ -167,5 +167,236 @@ function New-BacklogWorkpackBatchTaskText {
   return (($rendered.ToArray()) -join [Environment]::NewLine).Trim()
 }
 
+if (-not $script:BacklogOriginalTestIdeaBridgeSelfAdmitted) {
+  try { $script:BacklogOriginalTestIdeaBridgeSelfAdmitted = (Get-Command Test-IdeaBridgeSelfAdmitted -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+
+function Test-BridgeSelfAdmissionEvidence {
+  param(
+    $Idea,
+    $Admission
+  )
+
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  if (-not $Admission) { return [pscustomobject]@{ ok=$false; missing=@('bridge_self_admission') } }
+
+  $mode = ([string](Get-BacklogPackObjectValue -Obj $Admission -Name 'mode' -Default '')).Trim().ToLowerInvariant()
+  if ($mode -ne 'bridge_self_canary') { [void]$missing.Add('mode=bridge_self_canary') }
+
+  $canaryRequired = $false
+  try { $canaryRequired = [bool](Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $Admission -Name 'canary_required' -Default $false)) } catch { $canaryRequired = $false }
+  if (-not $canaryRequired) { [void]$missing.Add('canary_required=true') }
+
+  $checks = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($source in @(
+      (Get-BacklogPackObjectValue -Obj $Admission -Name 'checks' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'checks' -Default @()),
+      (Get-BacklogPackObjectValue -Obj $Idea -Name 'verification_checks' -Default @())
+    )) {
+    foreach ($check in @(ConvertTo-BacklogClaimStringArray $source)) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$check) -and -not $checks.Contains([string]$check)) { [void]$checks.Add([string]$check) }
+    }
+  }
+  $checksArr = @($checks.ToArray())
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)driver\.ps1.*-SelfTest|self[- ]?test')) { [void]$missing.Add('driver_selftest_check') }
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)smoke\.ps1|smoke')) { [void]$missing.Add('smoke_check') }
+  if (-not (Test-BacklogClaimTextMatch -Values $checksArr -Pattern '(?i)canary|Invoke-CanaryCycle')) { [void]$missing.Add('canary_evidence') }
+
+  $rollback = [string](Get-BacklogPackObjectValue -Obj $Admission -Name 'rollback_plan' -Default '')
+  if ([string]::IsNullOrWhiteSpace($rollback)) { $rollback = [string](Get-BacklogPackObjectValue -Obj $Admission -Name 'rollback' -Default '') }
+  if ([string]::IsNullOrWhiteSpace($rollback)) { [void]$missing.Add('rollback_plan') }
+
+  return [pscustomobject]@{
+    ok = ($missing.Count -eq 0)
+    missing = @($missing.ToArray())
+    checks = @($checksArr)
+    rollback_plan = $rollback
+  }
+}
+
+function Test-IdeaBridgeSelfAdmitted {
+  param($Idea)
+
+  if (-not $script:BacklogOriginalTestIdeaBridgeSelfAdmitted) {
+    return [pscustomobject]@{ ok=$false; reason='bridge_self_admission checker unavailable'; missing=@('bridge_self_admission_checker') }
+  }
+  $base = & $script:BacklogOriginalTestIdeaBridgeSelfAdmitted -Idea $Idea
+  if (-not ($base -and [bool]$base.ok)) { return $base }
+
+  $admission = $null
+  try { $admission = Get-IdeaBridgeSelfAdmission -Idea $Idea } catch { $admission = $null }
+  $evidence = Test-BridgeSelfAdmissionEvidence -Idea $Idea -Admission $admission
+  if (-not [bool]$evidence.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      reason = 'bridge_self_admission incomplete: ' + ((@($evidence.missing) | Sort-Object -Unique) -join ', ')
+      missing = @($evidence.missing)
+      checks = @($evidence.checks)
+      rollback_plan = [string]$evidence.rollback_plan
+    }
+  }
+  try {
+    $base | Add-Member -NotePropertyName canary_evidence -NotePropertyValue $true -Force
+    $base | Add-Member -NotePropertyName checks -NotePropertyValue @($evidence.checks) -Force
+    $base | Add-Member -NotePropertyName rollback_plan -NotePropertyValue ([string]$evidence.rollback_plan) -Force
+  } catch {}
+  return $base
+}
+
+function Get-FeatureVerifierLatestDigestPath {
+  param([string]$BridgeRoot = '')
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { $BridgeRoot = Get-BacklogFallbackBridgeRoot }
+  $auditDir = Join-Path $BridgeRoot 'audit'
+  try {
+    $latest = Get-ChildItem -LiteralPath $auditDir -Filter 'feature-verifier-*.md' -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+    if ($latest) { return [string]$latest.FullName }
+  } catch {}
+  return ''
+}
+
+function Get-FeatureVerifierBrokenEntries {
+  param([string]$StatePath)
+
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  if ([string]::IsNullOrWhiteSpace($StatePath) -or -not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return @() }
+  $state = $null
+  try {
+    $raw = [System.IO.File]::ReadAllText($StatePath, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+    $state = $raw | ConvertFrom-Json
+  } catch { return @() }
+
+  foreach ($prop in @($state.PSObject.Properties)) {
+    $entry = $prop.Value
+    $health = ''
+    try { $health = ([string](Get-BacklogPackObjectValue -Obj $entry -Name 'last_health' -Default '')).Trim().ToLowerInvariant() } catch { $health = '' }
+    if ($health -ne 'broken') { continue }
+    $scenarioNames = New-Object 'System.Collections.Generic.List[string]'
+    try {
+      foreach ($sr in @(Get-BacklogPackObjectValue -Obj $entry -Name 'scenario_results' -Default @())) {
+        $name = [string](Get-BacklogPackObjectValue -Obj $sr -Name 'scenario' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$scenarioNames.Add($name) }
+      }
+    } catch {}
+    $verifiedAt = ''
+    try { $verifiedAt = [string](Get-BacklogPackObjectValue -Obj $entry -Name 'last_verified_at' -Default '') } catch { $verifiedAt = '' }
+    [void]$out.Add([pscustomobject]@{
+      id = [string]$prop.Name
+      health = $health
+      last_verified_at = $verifiedAt
+      scenarios = @($scenarioNames.ToArray())
+      raw = $entry
+    })
+  }
+  return @($out.ToArray())
+}
+
+function New-FeatureVerifierBugfixTaskRecord {
+  param(
+    $BrokenEntry,
+    [string]$DigestPath = ''
+  )
+
+  $featureId = [string](Get-BacklogPackObjectValue -Obj $BrokenEntry -Name 'id' -Default '')
+  if ([string]::IsNullOrWhiteSpace($featureId)) { return $null }
+  $scenarioText = ''
+  try { $scenarioText = (@(Get-BacklogPackObjectValue -Obj $BrokenEntry -Name 'scenarios' -Default @()) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ', ' } catch { $scenarioText = '' }
+  if ([string]::IsNullOrWhiteSpace($scenarioText)) { $scenarioText = 'linked scenario' }
+  $signature = 'feature-verifier-broken:' + $featureId.ToLowerInvariant()
+  $reportText = if ([string]::IsNullOrWhiteSpace($DigestPath)) { 'feature verifier digest unavailable' } else { $DigestPath }
+  $text = "BUGFIX: Feature verifier reported BROKEN feature '$featureId' ($scenarioText). Diagnose and fix the broken behavior. Report: $reportText"
+  return [pscustomobject]@{
+    text = $text
+    tags = @('bugfix','feature-verifier','auto-diagnostic')
+    type = 'bugfix'
+    severity = 'critical'
+    status = 'approved'
+    scope = 'bridge'
+    dedupe_signature = $signature
+    root_cause_key = $signature
+    feature_verifier_report = $DigestPath
+    feature_verifier_feature = $featureId
+    feature_verifier_health = 'broken'
+  }
+}
+
+function Test-FeatureVerifierBugfixAlreadyFiled {
+  param(
+    [object[]]$Items,
+    [string]$Signature
+  )
+  if ([string]::IsNullOrWhiteSpace($Signature)) { return $false }
+  foreach ($item in @($Items)) {
+    if (-not $item) { continue }
+    $status = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).Trim().ToLowerInvariant()
+    if ($status -in @('done','auto-resolved','rejected','auto-dropped','deduped')) { continue }
+    foreach ($field in @('dedupe_signature','root_cause_key','feature_verifier_signature')) {
+      $value = [string](Get-BacklogPackObjectValue -Obj $item -Name $field -Default '')
+      if ($value -eq $Signature) { return $true }
+    }
+  }
+  return $false
+}
+
+function Add-FeatureVerifierBrokenBugfixBacklogItems {
+  param(
+    [string]$BridgeRoot = '',
+    [string]$StatePath = '',
+    [string]$DigestPath = '',
+    [object[]]$ExistingItems = $null,
+    [switch]$DryRun
+  )
+
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { $BridgeRoot = Get-BacklogFallbackBridgeRoot }
+  if ([string]::IsNullOrWhiteSpace($StatePath)) { $StatePath = Join-Path $BridgeRoot 'features\state.json' }
+  if ([string]::IsNullOrWhiteSpace($DigestPath)) { $DigestPath = Get-FeatureVerifierLatestDigestPath -BridgeRoot $BridgeRoot }
+
+  $items = @()
+  if ($null -ne $ExistingItems) { $items = @($ExistingItems) }
+  elseif (-not $DryRun) { try { $items = @(Get-Backlog) } catch { $items = @() } }
+
+  $created = New-Object 'System.Collections.Generic.List[string]'
+  $wouldCreate = New-Object 'System.Collections.Generic.List[object]'
+  $existing = New-Object 'System.Collections.Generic.List[string]'
+
+  foreach ($broken in @(Get-FeatureVerifierBrokenEntries -StatePath $StatePath)) {
+    $record = New-FeatureVerifierBugfixTaskRecord -BrokenEntry $broken -DigestPath $DigestPath
+    if (-not $record) { continue }
+    if (Test-FeatureVerifierBugfixAlreadyFiled -Items $items -Signature ([string]$record.dedupe_signature)) {
+      [void]$existing.Add([string]$record.dedupe_signature)
+      continue
+    }
+    if ($DryRun) {
+      [void]$wouldCreate.Add($record)
+      continue
+    }
+    $id = Add-Idea -Text ([string]$record.text) -From 'feature-verifier' -Tags @($record.tags) -Status 'approved' -Scope 'bridge' -Severity 'critical' -SkipCurator
+    if ([string]::IsNullOrWhiteSpace([string]$id)) { continue }
+    $latest = @(Get-Backlog)
+    foreach ($item in $latest) {
+      if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '') -ne [string]$id) { continue }
+      foreach ($name in @('type','dedupe_signature','root_cause_key','feature_verifier_report','feature_verifier_feature','feature_verifier_health')) {
+        $value = Get-BacklogPackObjectValue -Obj $record -Name $name -Default $null
+        Set-BacklogObjectProperty -Item $item -Name $name -Value $value
+      }
+      break
+    }
+    Save-Backlog $latest
+    $items = $latest
+    [void]$created.Add([string]$id)
+  }
+
+  return [pscustomobject]@{
+    created_count = [int]$created.Count
+    created_ids = @($created.ToArray())
+    existing_count = [int]$existing.Count
+    existing_signatures = @($existing.ToArray())
+    would_create_count = [int]$wouldCreate.Count
+    would_create = @($wouldCreate.ToArray())
+  }
+}
+
 Remove-Variable -Name BacklogModuleName -Scope Script -ErrorAction SilentlyContinue
 Remove-Variable -Name BacklogModulePath -Scope Script -ErrorAction SilentlyContinue
