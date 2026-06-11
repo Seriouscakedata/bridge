@@ -2145,14 +2145,23 @@ function Resolve-BacklogWorkpackFrontier {
       # conflict_group + touch overlap below; workpack_id is reporting-only.
       $group = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'workpack_conflict_group' -Default 'general')).ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($group)) { $group = 'general' }
-      if ($usedGroups.ContainsKey($group)) {
+      # 2026-06-11 A4 (speed program): the 1-per-group rule capped wave width at "number of
+      # DISTINCT groups" even when items had explicit non-overlapping touch-sets (10 same-zone
+      # atoms => width 1; the fallback 'general' group glued unrelated atoms together). When BOTH
+      # this item and the wave have real declared touches, the touch-overlap check below is the
+      # authority — skip the coarse group gate. Keep the gate for core/safety (protected zones)
+      # and for items with NO declared touches (nothing else guards their undeclared files).
+      $touches = @(Get-BacklogWorkpackItemEditTouches -Item $item)
+      $groupGateApplies = $usedGroups.ContainsKey($group) -and (
+        (@('core','safety') -contains $group) -or ($touches.Count -eq 0)
+      )
+      if ($groupGateApplies) {
         $conflictSkips++
         $owner = [string]$usedGroups[$group]
         Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'conflicts-or-touch-overlap' -Detail ("conflict_group '" + $group + "' already selected by " + $owner) -ConflictWithIds @($owner)
         continue
       }
 
-      $touches = @(Get-BacklogWorkpackItemEditTouches -Item $item)
       $overlap = @(Get-BacklogWorkpackTouchOverlap -Left @($usedTouches.ToArray()) -Right $touches)
       if ($overlap.Count -gt 0) {
         $touchSkips++
