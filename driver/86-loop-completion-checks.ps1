@@ -63,7 +63,10 @@ function Get-DriverDoneGateChangedPaths {
     try {
       $baseType = [string]((Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('cat-file','-t',$TaskBaseCommit) -Description 'cat-file task_base_commit' | Select-Object -First 1) -join '')
       if ($baseType.Trim() -eq 'commit') { $baseResolvedHere = $true }
-    } catch { $baseResolvedHere = $false }
+    } catch {
+      # Keep this fail-soft: throwing here turns missing project-repo bases into DONE-gate CONTINUE loops.
+      $baseResolvedHere = $false
+    }
     if ($baseResolvedHere) {
       foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only',$TaskBaseCommit,'HEAD') -Description 'diff task_base_commit..HEAD')) {
         & $addPath $p
