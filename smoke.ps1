@@ -72,14 +72,17 @@ if ($pw) {
         $usr, (ConvertTo-SecureString $pw -AsPlainText -Force))
 }
 
-function Probe($url) {
-    try {
-        $p = @{ UseBasicParsing = $true; Uri = $url; TimeoutSec = 8 }
-        if ($cred) { $p.Credential = $cred }
-        return (Invoke-WebRequest @p).StatusCode
-    } catch {
-        return 0
+function Probe($url, [int]$TimeoutSec = 12, [int]$Attempts = 2) {
+    for ($i = 1; $i -le [Math]::Max(1, $Attempts); $i++) {
+        try {
+            $p = @{ UseBasicParsing = $true; Uri = $url; TimeoutSec = $TimeoutSec }
+            if ($cred) { $p.Credential = $cred }
+            return (Invoke-WebRequest @p).StatusCode
+        } catch {
+            if ($i -lt $Attempts) { Start-Sleep -Milliseconds (300 * $i) }
+        }
     }
+    return 0
 }
 
 # 3. /api/status

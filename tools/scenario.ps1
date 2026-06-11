@@ -10,7 +10,7 @@ param(
 )
 
 # tools\scenario.ps1 -- functional verifier runner.
-# Spawns headless Edge against $Url?scenario=$Name. The page-side hook in
+# Spawns headless Chrome against $Url?scenario=$Name. The page-side hook in
 # web/index.html detects the query param, fetches /tools/scenarios/$Name.js,
 # runs it, and POSTs the result to /api/scenario/result. This script then
 # polls /api/scenario/result?name=$Name&since=<startTs> until the result
@@ -32,16 +32,12 @@ function Get-BrowserPath {
 }
 
 function Get-BrowserPaths {
-  # 2026-05-28: prefer Chrome over Edge. Edge's headless mode aggressively
-  # spawns "first-run" / sync-confirmation / extension background pages that
-  # steal focus from our target tab; even with --no-first-run + --disable-sync
-  # the actual page's JS does not execute consistently. Chrome headless is
-  # leaner and runs the page's JS reliably. Edge stays as fallback.
+  # 2026-06-11: use Chrome only. On this host Edge fallback triggers a
+  # system Application Popup under VBS/CodexSandboxOffline when headless
+  # probes fail, so failing fast is safer than waking msedge.exe.
   $candidates = @(
     'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    'C:\Program Files\Microsoft\Edge\Application\msedge.exe'
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
   )
   $found = @()
   foreach ($c in $candidates) { if (Test-Path -LiteralPath $c -PathType Leaf) { $found += $c } }
@@ -619,6 +615,48 @@ function Invoke-ChannelSwitchHttpScenario {
   }
 }
 
+function Test-ScenarioBrowserInfraFailure {
+  param($FailureDiagnostic)
+
+  if (-not $FailureDiagnostic) { return $false }
+  $failures = @($FailureDiagnostic.failures)
+  if ($failures.Count -eq 0) { return $false }
+  foreach ($failure in $failures) {
+    $reason = [string]$failure.stderr_reason
+    if ($reason -match '(?i)access is denied|отказано в доступе|crashpad|mojo\\public\\cpp\\platform\\platform_channel|certificate error assistant|cannot use v8 proxy resolver|oneauth|instrumentationerror') {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Invoke-SmokeHttpFallback {
+  param(
+    [object[]]$HttpChecks,
+    [string]$Reason
+  )
+
+  $checks = @($HttpChecks)
+  $bad = @($checks | Where-Object { -not [bool]$_.ok })
+  $errors = @()
+  if ($bad.Count -gt 0) {
+    foreach ($item in $bad) {
+      $errors += ('HTTP check failed: ' + [string]$item.url + ' status=' + [string]$item.status + ' error=' + [string]$item.error)
+    }
+  }
+  return [pscustomobject][ordered]@{
+    name = 'smoke'
+    ok = ($errors.Count -eq 0)
+    errors = @($errors)
+    log = @(
+      'browser smoke failed before DOM due to local browser infrastructure',
+      'HTTP page and scenario script checks passed'
+    )
+    fallback = 'http-browser-infra'
+    reason = [string]$Reason
+  }
+}
+
 if (-not ($Name -match '^[a-z0-9_-]+$')) {
   Write-Error "Bad scenario name '$Name' (allowed: a-z 0-9 _ -)"
   exit 2
@@ -680,6 +718,13 @@ $baseLoadUrl = $loadUrl
 $loadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $Name
 $loadUrl = Add-ScenarioChannelQueryParam -Original $loadUrl -Channel $effectiveScenarioChannel
 $probeName = $Name + '-probe'
+$probeScenarioPath = Join-Path $root ('tools\scenarios\' + $probeName + '.js')
+if (-not (Test-Path -LiteralPath $probeScenarioPath -PathType Leaf)) {
+  if ($Name -eq 'smoke') {
+    $probeName = $Name
+    $probeScenarioPath = $scenarioPath
+  }
+}
 $probeLoadUrl = Add-ScenarioQueryParam -Original $baseLoadUrl -ScenarioName $probeName
 $probeLoadUrl = Add-ScenarioChannelQueryParam -Original $probeLoadUrl -Channel $effectiveScenarioChannel
 
@@ -945,6 +990,15 @@ if (-not $result) {
     if ([bool]$fallbackResult.ok) { exit 0 } else { exit 1 }
   }
   $failureDiagnostic = Get-ScenarioFailureDiagnostic -Diagnostics $diag -DebugMarkerSeen ([bool]$debugMarker)
+  if ($Name -eq 'smoke' -and -not [bool]$debugMarker -and (Test-ScenarioBrowserInfraFailure -FailureDiagnostic $failureDiagnostic)) {
+    $fallbackResult = Invoke-SmokeHttpFallback -HttpChecks @($diag.http_checks) -Reason ([string]$failureDiagnostic.summary)
+    $diag.fallback = 'http-browser-infra'
+    $diag.fallback_result = $fallbackResult
+    $diag.browser_failures = @($failureDiagnostic.failures)
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    $fallbackResult | ConvertTo-Json -Compress -Depth 6
+    if ([bool]$fallbackResult.ok) { exit 0 } else { exit 1 }
+  }
   $detail = ''
   if (-not [string]::IsNullOrWhiteSpace([string]$failureDiagnostic.summary)) {
     $detail = [string]$failureDiagnostic.summary
