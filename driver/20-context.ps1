@@ -536,6 +536,85 @@ function Add-ProjectWaveMemory {
   } catch { return $null }
 }
 
+function Get-ProjectContractDigest {
+  # 2026-06-11 Q1 (speed-quality program, quality prize). Atom prompts carried only slug/path/
+  # type/description — goal, non_goals and identity rules from .bridge/project-contract.json
+  # never reached the coder. All three documented intent-drifts (hardcode-one-work, generic
+  # humans instead of the cat identity, stub left in prod) trace to exactly this gap: the coder
+  # could not honor an intent it never saw. Renders a compact digest (hard cap ~1.5KB), cached
+  # by file mtime so the per-turn cost is one stat call.
+  param([string]$ContractPath)
+  if ([string]::IsNullOrWhiteSpace($ContractPath) -or -not (Test-Path -LiteralPath $ContractPath -PathType Leaf)) { return '' }
+  $mtime = $null
+  try { $mtime = (Get-Item -LiteralPath $ContractPath).LastWriteTimeUtc.Ticks } catch { return '' }
+  if ($script:projectContractDigestPath -eq $ContractPath -and $script:projectContractDigestMtime -eq $mtime) {
+    return [string]$script:projectContractDigestText
+  }
+  $digest = ''
+  try {
+    $contract = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $parts = New-Object System.Collections.Generic.List[string]
+    $flatten = {
+      param($Value)
+      if ($null -eq $Value) { return '' }
+      if ($Value -is [string]) { return ([string]$Value).Trim() }
+      if ($Value -is [System.Array]) {
+        return (@($Value | ForEach-Object { & $flatten $_ } | Where-Object { $_ }) -join '; ')
+      }
+      if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($k in @('item','text','rule','name','summary','title')) {
+          if ($Value.PSObject.Properties.Name -contains $k -and -not [string]::IsNullOrWhiteSpace([string]$Value.$k)) { return ([string]$Value.$k).Trim() }
+        }
+        try { return ($Value | ConvertTo-Json -Compress -Depth 3) } catch { return [string]$Value }
+      }
+      return ([string]$Value).Trim()
+    }
+    $addPart = {
+      param([string]$Label, $Value, [int]$MaxLen = 350)
+      $txt = (& $flatten $Value)
+      if ([string]::IsNullOrWhiteSpace($txt)) { return }
+      if ($txt.Length -gt $MaxLen) { $txt = $txt.Substring(0,$MaxLen) + '…' }
+      [void]$parts.Add('- ' + $Label + ': ' + $txt)
+    }
+    $names = @($contract.PSObject.Properties.Name)
+    foreach ($key in @('project_goal','goal','цель')) { if ($names -contains $key) { & $addPart 'ЦЕЛЬ' $contract.$key; break } }
+    foreach ($key in @('non_goals','nonGoals','non-goals','out_of_scope')) { if ($names -contains $key) { & $addPart 'НЕ-ЦЕЛИ' $contract.$key 300; break } }
+    # identity/archetype/production rules live at top level OR one level deep (e.g. inside
+    # provider_architecture / ux_contract) — scan both.
+    $ruleScan = {
+      param($Node, [string]$Prefix)
+      foreach ($prop in $Node.PSObject.Properties) {
+        if ($prop.Name -match '(?i)(identity|archetype|style|production)_?rule|_rule$') {
+          & $addPart ('ПРАВИЛО ' + $Prefix + $prop.Name) $prop.Value 250
+        }
+      }
+    }
+    & $ruleScan $contract ''
+    foreach ($prop in $contract.PSObject.Properties) {
+      if ($prop.Value -is [System.Management.Automation.PSCustomObject]) { & $ruleScan $prop.Value ($prop.Name + '.') }
+    }
+    foreach ($key in @('acceptance_scenarios','acceptance','acceptance_gates','acceptance_criteria','video_phase_acceptance')) {
+      if ($names -contains $key) {
+        $accVal = $contract.$key
+        if ($accVal -is [System.Array] -and @($accVal).Count -gt 3) {
+          & $addPart ('ACCEPTANCE (первые 3 из ' + @($accVal).Count + ')') (@($accVal) | Select-Object -First 3) 400
+        } else {
+          & $addPart 'ACCEPTANCE' $accVal 400
+        }
+        break
+      }
+    }
+    if ($parts.Count -gt 0) {
+      $digest = "`nКОНТРАКТ ПРОЕКТА (замысел — соблюдать в КАЖДОМ атоме; нарушение = concept violation):`n" + ($parts -join "`n")
+      if ($digest.Length -gt 1500) { $digest = $digest.Substring(0,1500) + '…' }
+    }
+  } catch { $digest = '' }
+  $script:projectContractDigestPath = $ContractPath
+  $script:projectContractDigestMtime = $mtime
+  $script:projectContractDigestText = $digest
+  return $digest
+}
+
 function Get-ProjectFocusPromptBlock {
   $binding = Get-ActiveProjectBinding
   $slug = if ($binding -and $binding.slug) { [string]$binding.slug } else { [string]$Channel }
@@ -564,11 +643,18 @@ function Get-ProjectFocusPromptBlock {
 "@
   }
 
+  # Q1: contract digest rides the focus block, so EVERY prompt (planner and coder alike)
+  # carries the durable intent — not just the chapter plan that decomposed it.
+  $contractDigest = ''
+  if ($slug -ne 'main' -and $binding -and $binding.project_root) {
+    try { $contractDigest = Get-ProjectContractDigest -ContractPath (Join-Path ([string]$binding.project_root) '.bridge\project-contract.json') } catch { $contractDigest = '' }
+  }
+
   return @"
 ⚠ АКТИВНЫЙ ПРОЕКТ: $slug
 Путь: $root
 Тип: $ptype
 Описание: $pdesc
-Источник привязки: $source$guard
+Источник привязки: $source$guard$contractDigest
 "@
 }
