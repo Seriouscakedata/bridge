@@ -204,6 +204,9 @@ if (Test-Path $backlogLib) {
         `$badItem = [pscustomobject]@{ id='smoke-admit-bad'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=[pscustomobject]@{ admitted=`$true; mode='bridge_self_canary'; canary_required=`$true; checks=@('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1'); rollback_plan='rollback' } }
         `$bad = Test-IdeaBridgeSelfAdmitted -Idea `$badItem
         if (`$bad -and [bool]`$bad.ok) { throw 'admission without canary evidence accepted' }
+        `$deniedItem = [pscustomobject]@{ id='smoke-admit-denied'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=[pscustomobject]@{ admitted=`$false; mode='bridge_self_canary'; canary_required=`$true; checks=@('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1','canary evidence: Invoke-CanaryCycle PASS'); rollback_plan='rollback' } }
+        `$denied = Test-IdeaBridgeSelfAdmitted -Idea `$deniedItem
+        if (`$denied -and [bool]`$denied.ok) { throw 'admission with admitted=false accepted' }
         `$statePath = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-fv-smoke-' + [guid]::NewGuid().ToString('N') + '.json')
         `$stateObj = [ordered]@{
             'backlog-curator' = [ordered]@{

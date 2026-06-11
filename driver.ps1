@@ -239,7 +239,7 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Get-BacklogClaimabilitySignature','Update-BacklogClaimabilityIdleState','Ensure-BridgeSelfCanaryGateTasks','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Get-BacklogClaimabilitySignature','Update-BacklogClaimabilityIdleState','Ensure-BridgeSelfCanaryGateTasks','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue','ConvertTo-BacklogClaimStringArray','Test-BridgeSelfAdmissionEvidence','Add-FeatureVerifierBrokenBugfixBacklogItems')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
   }
   foreach ($sbName in @('DriverLoopPreflightBlock','DriverLoopIdleClaimBlock','DriverLoopTurnSetupBlock','DriverLoopAgentTurnBlock','DriverLoopReplyMarkersBlock','DriverLoopModeTransitionBlock','DriverLoopCompletionBlock','DriverLoopFinalGuardBlock')) {
@@ -272,11 +272,23 @@ if ($SelfTest) {
     }
     $admitProbe = Test-IdeaBridgeSelfAdmitted -Idea ([pscustomobject]@{ id='selftest-admit'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=$validAdmissionProbe })
     if (-not ($admitProbe -and [bool]$admitProbe.ok -and [bool]$admitProbe.canary_evidence)) { [void]$stFail.Add('bridge_self_admission canary evidence probe rejected') }
+    $deniedAdmissionProbe = [pscustomobject]@{
+      admitted = $false
+      mode = 'bridge_self_canary'
+      canary_required = $true
+      checks = @('powershell -NoProfile -ExecutionPolicy Bypass -File .\driver.ps1 -SelfTest','powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke.ps1','canary evidence: Invoke-CanaryCycle PASS')
+      rollback_plan = 'rollback to previous verified commit if canary/selftest/smoke fails'
+    }
+    $deniedProbe = Test-IdeaBridgeSelfAdmitted -Idea ([pscustomobject]@{ id='selftest-deny'; status='approved'; text='Change driver.ps1'; tags=@('bridge-self'); scope='bridge'; files=@('driver.ps1'); bridge_self_admission=$deniedAdmissionProbe })
+    if ($deniedProbe -and [bool]$deniedProbe.ok) { [void]$stFail.Add('bridge_self_admission admitted=false probe accepted') }
     $brokenState = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-feature-verifier-selftest-' + [guid]::NewGuid().ToString('N') + '.json')
     $brokenJson = '{"backlog-curator":{"last_health":"broken","last_verified_at":"2026-06-11T00:00:00Z","scenario_results":[{"scenario":"backlog-add","ok":false,"error":"BROKEN behavior"}]}}'
-    [System.IO.File]::WriteAllText($brokenState, $brokenJson, (New-Object System.Text.UTF8Encoding($false)))
-    $dry = Add-FeatureVerifierBrokenBugfixBacklogItems -BridgeRoot $bridgeRoot -StatePath $brokenState -DigestPath (Join-Path $bridgeRoot 'audit\feature-verifier-selftest.md') -ExistingItems @() -DryRun
-    try { Remove-Item -LiteralPath $brokenState -Force -ErrorAction SilentlyContinue } catch {}
+    try {
+      [System.IO.File]::WriteAllText($brokenState, $brokenJson, (New-Object System.Text.UTF8Encoding($false)))
+      $dry = Add-FeatureVerifierBrokenBugfixBacklogItems -BridgeRoot $bridgeRoot -StatePath $brokenState -DigestPath (Join-Path $bridgeRoot 'audit\feature-verifier-selftest.md') -ExistingItems @() -DryRun
+    } finally {
+      try { Remove-Item -LiteralPath $brokenState -Force -ErrorAction SilentlyContinue } catch {}
+    }
     $would = @($dry.would_create)
     if (-not ($dry -and [int]$dry.would_create_count -eq 1 -and $would.Count -eq 1 -and [string]$would[0].type -eq 'bugfix' -and [string]$would[0].text -match 'Report:')) {
       [void]$stFail.Add('feature-verifier BROKEN dry-run did not create bugfix report task')

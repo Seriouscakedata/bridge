@@ -183,6 +183,13 @@ function Test-BridgeSelfAdmissionEvidence {
   $mode = ([string](Get-BacklogPackObjectValue -Obj $Admission -Name 'mode' -Default '')).Trim().ToLowerInvariant()
   if ($mode -ne 'bridge_self_canary') { [void]$missing.Add('mode=bridge_self_canary') }
 
+  $admitted = $false
+  try { $admitted = [bool](Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $Admission -Name 'admitted' -Default $false)) } catch { $admitted = $false }
+  if (-not $admitted) {
+    try { $admitted = [bool](Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $Admission -Name 'status' -Default '')) } catch { $admitted = $false }
+  }
+  if (-not $admitted) { [void]$missing.Add('admitted=true') }
+
   $canaryRequired = $false
   try { $canaryRequired = [bool](Test-BacklogClaimTruthy (Get-BacklogPackObjectValue -Obj $Admission -Name 'canary_required' -Default $false)) } catch { $canaryRequired = $false }
   if (-not $canaryRequired) { [void]$missing.Add('canary_required=true') }
