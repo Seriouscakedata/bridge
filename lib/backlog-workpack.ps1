@@ -2096,11 +2096,20 @@ function Resolve-BacklogWorkpackFrontier {
       # Explicit depends_on is authoritative. Heuristic "foundation" without explicit deps stays a
       # serial barrier; explicit, already-satisfied deps can join the frontier if touch sets do not
       # overlap. This keeps scaffold/schema steps safe while allowing later ready lanes to fan out.
-      $depSignal = Get-BacklogTaskDepSignal -Text $txt
+      # 2026-06-11 S2: the text heuristic must NOT override the coordinator's explicit DAG.
+      # Autopilot atoms embed "Files: package.json" etc INSIDE item text, so the foundation/
+      # dependent regex misfired on them and froze whole chapters (empty depends_on on an
+      # autopilot atom is a DELIBERATE "independent", not missing metadata).
+      $isAutopilotAtom = $false
+      try { $isAutopilotAtom = [bool](Get-BacklogPackObjectValue -Obj $item -Name 'autopilot_generated' -Default $false) } catch { $isAutopilotAtom = $false }
+      $depSignal = if ($isAutopilotAtom) { '' } else { Get-BacklogTaskDepSignal -Text $txt }
       if ($depSignal -eq 'foundation' -and $explicitDeps.Count -eq 0) {
         $structuralWait++
         Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'structural-barrier' -Detail 'foundation/schema/setup task must run before parallel dependents'
-        if (-not $selectionFull) { break }
+        # 2026-06-11 S1: this used to `break` — one foundation-flavored item ABORTED selection of
+        # the ENTIRE remaining frontier (selected=0, claim never happened, and the barrier itself
+        # was never picked either => the queue wedged). Later candidates are safe to consider:
+        # touch-overlap + conflict-group checks below still serialize anything genuinely related.
         continue
       }
       if ($depSignal -eq 'dependent' -and $explicitDeps.Count -eq 0) {
@@ -2150,6 +2159,26 @@ function Resolve-BacklogWorkpackFrontier {
         [void]$usedTouches.Add($tv)
         if (-not $usedTouchOwners.ContainsKey($tv)) { $usedTouchOwners[$tv] = $itemId }
       }
+    }
+  }
+
+  # 2026-06-11 S1: a structural-barrier (foundation) item must actually RUN, not just block.
+  # If nothing else was selectable this wave, pick the FIRST barrier solo — selected==1 flows
+  # into the existing serial-single-fallback path, so the barrier executes serially and the
+  # chapter unfreezes on the next wave. Without this the barrier stayed blocked forever.
+  if ($selected.Count -eq 0 -and $structuralWait -gt 0) {
+    foreach ($candidate in @($candidateReports.ToArray())) {
+      if ([string]$candidate.block_reason -ne 'structural-barrier') { continue }
+      $barrierId = [string]$candidate.id
+      $barrierItem = $null
+      foreach ($it in $eligible) {
+        if ([string](Get-BacklogPackObjectValue -Obj $it -Name 'id' -Default '') -eq $barrierId) { $barrierItem = $it; break }
+      }
+      if ($null -eq $barrierItem) { continue }
+      [void]$selected.Add($barrierItem)
+      Set-BacklogWorkpackCandidateSelected -Candidate $candidate -Order 1
+      $readyCount++
+      break
     }
   }
 
