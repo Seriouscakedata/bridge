@@ -121,9 +121,11 @@ function Invoke-DeepSeekChat {
 }
 
 function Invoke-LLMProvider {
-  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [string]$Purpose = '')
+  # 2026-06-11 Q2: -Thinking threads through to DeepSeek (the provider already supported it but
+  # was unreachable from Invoke-LLM — thinking was effectively always disabled); gemini ignores it.
+  param([string]$Model, [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [switch]$Thinking, [string]$Purpose = '')
   if ([string]::IsNullOrWhiteSpace($Model)) { return $null }
-  if ($Model -like 'deepseek*') { return Invoke-DeepSeekChat -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose }
+  if ($Model -like 'deepseek*') { return Invoke-DeepSeekChat -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Thinking:$Thinking -Purpose $Purpose }
   if ($Model -like 'gemini*')   { return Invoke-GeminiChat   -Model $Model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose }
   return $null
 }
@@ -131,18 +133,18 @@ function Invoke-LLMProvider {
 function Invoke-LLM {
   # Route a cheap background call by Purpose (gate|librarian|reflect|critic|deep) or explicit -Model.
   # Falls back to the configured fallback model if the primary provider fails.
-  param([string]$Purpose = '', [string]$Model = '', [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3)
+  param([string]$Purpose = '', [string]$Model = '', [string]$Prompt, [int]$TimeoutSec = 120, [double]$Temperature = 0.3, [switch]$Thinking)
   if ([string]::IsNullOrWhiteSpace($Prompt)) { return $null }
   $cfg = Get-LLMConfig
   $model = $Model
   if ([string]::IsNullOrWhiteSpace($model) -and $Purpose -and $cfg.ContainsKey($Purpose)) { $model = [string]$cfg[$Purpose] }
   if ([string]::IsNullOrWhiteSpace($model)) { $model = [string]$cfg['fallback'] }
   if ($model -eq 'off') { return $null }
-  $res = Invoke-LLMProvider -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose
+  $res = Invoke-LLMProvider -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Thinking:$Thinking -Purpose $Purpose
   if (-not [string]::IsNullOrWhiteSpace($res)) { return $res }
   $fb = [string]$cfg['fallback']
   if ($fb -and $fb -ne $model -and $fb -ne 'off') {
-    return (Invoke-LLMProvider -Model $fb -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Purpose $Purpose)
+    return (Invoke-LLMProvider -Model $fb -Prompt $Prompt -TimeoutSec $TimeoutSec -Temperature $Temperature -Thinking:$Thinking -Purpose $Purpose)
   }
   return $null
 }

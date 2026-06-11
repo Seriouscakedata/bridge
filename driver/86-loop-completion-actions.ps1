@@ -126,7 +126,16 @@ $script:DriverLoopCompletionCriticActionsBlock = {
               }
             } catch {}
             $heavyRegex = '(?i)security|auth|secret|crypto|race|mutex|lock|concurr(en|ency)?|sql\s*injection|inject(ion)?|csrf|xss'
-            $isHeavyCritic = (@($diffNames).Count -gt 3) -or ($linesChanged -gt 100) -or ($diff -match $heavyRegex)
+            # 2026-06-11 Q2: PATH trigger — a 1-file/80-line control-plane diff with none of the
+            # keyword matches was reviewed by the light non-thinking model, exactly where a false
+            # green costs the most (rollbacks, dirty-guard wedges). Control-plane paths now always
+            # get the heavy critic.
+            $controlPlanePathRegex = '(?i)^(driver/|driver\.ps1|supervisor\.ps1|watchdog\.ps1|server\.ps1|lib/(backlog|parallel|supervisor|watchdog|llm|agent-wait|common|doctor|verify-selftest|policy))'
+            $touchesControlPlanePath = $false
+            foreach ($dn in @($diffNames)) {
+              if ((([string]$dn).Trim() -replace '\\','/') -match $controlPlanePathRegex) { $touchesControlPlanePath = $true; break }
+            }
+            $isHeavyCritic = (@($diffNames).Count -gt 3) -or ($linesChanged -gt 100) -or ($diff -match $heavyRegex) -or $touchesControlPlanePath
             $crcNow = 0
             try { $crcNow = [int](Read-State).critic_retry_count } catch {}
             if ($crcNow -ge 1) { $isHeavyCritic = $true }
@@ -402,8 +411,11 @@ $diff
             if ($criticCacheHit) {
               Add-Message -From system -Text "🔎 Критик: тот же дифф уже одобрен ранее (verdict-кэш по MD5 диффа) — пропускаю повторное LLM-ревью." -Kind event | Out-Null
             } else {
+              # Q2: heavy reviews run with provider thinking enabled and a longer budget
+              # (thinking lengthens the response; 90s starved it).
+              $criticTimeoutSec = if ($isHeavyCritic) { 180 } else { 90 }
               for ($criticEmptyAttempt = 1; $criticEmptyAttempt -le $criticEmptyMaxAttempts; $criticEmptyAttempt++) {
-                $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+                $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec $criticTimeoutSec -Temperature 0.1 -Thinking:$isHeavyCritic
                 if (-not [string]::IsNullOrWhiteSpace($rawC)) { break }
                 if ($criticEmptyAttempt -lt $criticEmptyMaxAttempts) {
                   Add-Message -From system -Text ("🔁 Критик вернул пустой ответ (empty " + $criticEmptyAttempt + "/" + $criticEmptyMaxAttempts + ") — повторяю только critic gate.") -Kind event | Out-Null
