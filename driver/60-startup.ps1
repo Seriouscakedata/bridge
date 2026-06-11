@@ -1,5 +1,68 @@
 ﻿function Initialize-DriverStartup {
 # ---------- startup ----------
+function Get-DriverStartupSessionLedgerEvents {
+  param([string]$Channel = '')
+  $events = New-Object System.Collections.ArrayList
+  try {
+    $ledger = Join-Path (Get-DecisionsPath) 'session-ledger.jsonl'
+    if (-not (Test-Path -LiteralPath $ledger)) { return @() }
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($rawLine in [System.IO.File]::ReadAllLines($ledger, $u8NoBom)) {
+      try {
+        $line = ([string]$rawLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line.Length -gt 0 -and [int][char]$line[0] -eq 0xFEFF) { $line = $line.Substring(1) }
+        $entry = $line | ConvertFrom-Json
+        $entryChannel = if ($entry.PSObject.Properties.Name -contains 'channel') { [string]$entry.channel } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($Channel) -and -not [string]::IsNullOrWhiteSpace($entryChannel) -and $entryChannel -ne $Channel) { continue }
+        $tsText = if ($entry.PSObject.Properties.Name -contains 'ts') { [string]$entry.ts } else { '' }
+        $ts = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse($tsText, [ref]$ts)) { continue }
+        [void]$events.Add([pscustomobject][ordered]@{
+          ts    = $ts
+          event = if ($entry.PSObject.Properties.Name -contains 'event') { [string]$entry.event } else { '' }
+          what  = if ($entry.PSObject.Properties.Name -contains 'what')  { [string]$entry.what }  else { '' }
+          task  = if ($entry.PSObject.Properties.Name -contains 'task')  { [string]$entry.task }  else { '' }
+        })
+      } catch {}
+    }
+  } catch {}
+  return @($events | Sort-Object ts)
+}
+
+function Test-DriverStartupVerifiedRepairAfterTaskStart {
+  param(
+    [object]$State,
+    [string]$TaskText = '',
+    [string]$Channel = ''
+  )
+  $isDoctorTask = $false
+  try {
+    if ($State -and $State.PSObject.Properties.Name -contains 'doctor_active' -and [bool]$State.doctor_active) { $isDoctorTask = $true }
+  } catch {}
+  if (-not $isDoctorTask -and [string]$TaskText -match '(?i)doctor|доктор|саморемонт') { $isDoctorTask = $true }
+  if (-not $isDoctorTask) { return $false }
+
+  $events = @(Get-DriverStartupSessionLedgerEvents -Channel $Channel)
+  if ($events.Count -eq 0) { return $false }
+  $lastTaskStart = $null
+  foreach ($event in $events) {
+    if ([string]$event.event -eq 'task_start') { $lastTaskStart = $event.ts }
+  }
+  if ($null -eq $lastTaskStart) { return $false }
+
+  foreach ($event in $events) {
+    if ($event.ts -le $lastTaskStart) { continue }
+    $eventType = [string]$event.event
+    if ($eventType -eq 'verified_commit') { return $true }
+    if ($eventType -eq 'doctor_fix') {
+      $what = [string]$event.what
+      if ($what -and $what -notmatch '(?i)^doctor_activated$' -and $what -match '(?i)verified|repair|fixed|pass|ok|commit|исправ|почин|провер') { return $true }
+    }
+  }
+  return $false
+}
+
 Sweep-AgentOrphans
 
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
@@ -23,6 +86,12 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   } catch {}
   if ($maxRestarts -lt 2) { $maxRestarts = 2 }
   if ($maxRestarts -gt 10) { $maxRestarts = 10 }
+
+  $restartBudgetResetByVerifiedRepair = $false
+  if ($prevRestartCount -ge $maxRestarts -and (Test-DriverStartupVerifiedRepairAfterTaskStart -State $boot -TaskText $resumeTask -Channel $Channel)) {
+    $prevRestartCount = 0
+    $restartBudgetResetByVerifiedRepair = $true
+  }
 
   if ($prevRestartCount -ge $maxRestarts) {
     # Stuck task: bail out. Mark backlog failed if linked, clear state, post msg.
@@ -71,6 +140,9 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     } | Out-Null
     $remaining = $maxRestarts - $prevRestartCount - 1
     $tail = if ($remaining -le 0) { '' } else { " (осталось $remaining попыток до auto-fail)" }
+    if ($restartBudgetResetByVerifiedRepair) {
+      Add-Message -From system -Text "🩺 Restart-budget сброшен: найден verified repair marker после task_start; задача не помечается failed после stale-heartbeat restart." -Kind event | Out-Null
+    }
     Add-Message -From system -Text ("♻ Мост перезапущен — возобновляю прерванную задачу (прогресс и история сохранены)." + $tail) -Kind event | Out-Null
   }
 } else {
