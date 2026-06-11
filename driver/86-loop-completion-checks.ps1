@@ -65,9 +65,24 @@ function Get-DriverDoneGateChangedPaths {
       if ($baseType.Trim() -eq 'commit') { $baseResolvedHere = $true }
     } catch {
       # Keep this fail-soft: throwing here turns missing project-repo bases into DONE-gate CONTINUE loops.
+      # N-retry degrade (2026-06-11): a base sha that is STILL missing after 3 consecutive checks will never
+      # resolve in this repo (e.g. recorded from a project repo) — escalate with an explicit [NEEDS_REVIEW]
+      # throw instead of silently retrying forever; non-missing-object errors keep the plain fail-soft path.
+      $missingObjMsg = [string]$_.Exception.Message
+      $looksMissingObject = ($missingObjMsg -match '(?i)exit\s+128') -or ($missingObjMsg -match '(?i)not a valid object|bad object|could not get object|not in object store|missing')
+      if ($looksMissingObject) {
+        if ($null -eq $script:_MissingBaseObjHits) { $script:_MissingBaseObjHits = @{} }
+        if (-not $script:_MissingBaseObjHits.ContainsKey($TaskBaseCommit)) { $script:_MissingBaseObjHits[$TaskBaseCommit] = 0 }
+        $script:_MissingBaseObjHits[$TaskBaseCommit] = [int]$script:_MissingBaseObjHits[$TaskBaseCommit] + 1
+        if ([int]$script:_MissingBaseObjHits[$TaskBaseCommit] -ge 3) {
+          throw ("[NEEDS_REVIEW] task_base_commit '" + $TaskBaseCommit + "' missing for 3+ consecutive checks — base object not reachable; degrading to needs-review to avoid an infinite CONTINUE loop")
+        }
+      }
       $baseResolvedHere = $false
     }
     if ($baseResolvedHere) {
+      # Successful resolve clears the consecutive missing-object streak for this sha.
+      if ($null -ne $script:_MissingBaseObjHits) { [void]$script:_MissingBaseObjHits.Remove($TaskBaseCommit) }
       foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only',$TaskBaseCommit,'HEAD') -Description 'diff task_base_commit..HEAD')) {
         & $addPath $p
       }
