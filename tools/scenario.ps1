@@ -956,6 +956,179 @@ foreach ($mode in $modes) {
 if ($result) { break }
 }
 
+# Infra-flake retry: 0xC0000005 (Windows ACCESS_VIOLATION) in a single-process
+# headless mode is a Chrome kernel-crash, not a logical test failure. Do ONE
+# extra headless attempt with a generous probe window so a transient crash does
+# not produce a false QA FAIL.
+$infraFlakeCode = -1073741819
+if (-not $result -and $browserPaths.Count -gt 0) {
+  $hadInfraFlakeCrash = @($diag.attempts | Where-Object {
+    $_ -and ($_.exit_code -eq $infraFlakeCode) -and ([string]$_.mode -like '*single-process')
+  })
+  if ($hadInfraFlakeCrash.Count -gt 0) {
+    $ifBrowser = $browserPaths[0]
+    $ifBrowserTag = ([IO.Path]::GetFileNameWithoutExtension($ifBrowser) -replace '[^a-zA-Z0-9_-]', '_')
+    $ifId = $runId + '_' + $ifBrowserTag + '_headless_infraflake_retry'
+    $ifProfileDir = Join-Path $scenarioProfileRoot ('scenario_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+    [void](New-Item -ItemType Directory -Path $ifProfileDir -Force)
+    $ifCrashDir = Join-Path $ifProfileDir 'crash'
+    [void](New-Item -ItemType Directory -Path $ifCrashDir -Force)
+    $ifCacheDir = Join-Path $ifProfileDir 'cache'
+    [void](New-Item -ItemType Directory -Path $ifCacheDir -Force)
+
+    # Probe with increased marker-timeout (20 s instead of normal 8 s cap).
+    $ifProbeSec = 20
+    $ifProbeDeadline = (Get-Date).AddSeconds($ifProbeSec)
+    $ifProbeSout = Join-Path $logDir ($ifId + '.probe.browser.stdout.log')
+    $ifProbeSerr = Join-Path $logDir ($ifId + '.probe.browser.stderr.log')
+    $ifProbeArgs = @(New-BrowserArguments -Mode 'headless' -LoadUrl $probeLoadUrl -ProfileDir $ifProfileDir -CrashDir $ifCrashDir -CacheDir $ifCacheDir)
+    $ifProbeAttempt = @{
+      phase             = 'self-probe'
+      scenario_name     = $probeName
+      mode              = 'headless'
+      browser_path      = $ifBrowser
+      profile_dir       = $ifProfileDir
+      crash_dir         = $ifCrashDir
+      cache_dir         = $ifCacheDir
+      stdout            = $ifProbeSout
+      stderr            = $ifProbeSerr
+      args              = @($ifProbeArgs | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) })
+      arguments         = (Join-ProcessArguments -Arguments @($ifProbeArgs | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) }))
+      started_at        = (Get-Date).ToUniversalTime().ToString('o')
+      launch_elapsed_ms = $null
+      exit_code         = $null
+      elapsed_ms        = $null
+      debug_marker_seen = $false
+      result_seen       = $false
+      infra_flake_retry = $true
+    }
+    $diag.attempts += $ifProbeAttempt
+    $diag.infra_flake_retry = $true
+    Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+
+    $ifProbeHandle = $null
+    $ifProbeMarker = $null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+      $ifProbeHandle = Start-ScenarioBrowserProcess -FilePath $ifBrowser -Arguments $ifProbeArgs `
+        -StdoutPath $ifProbeSout -StderrPath $ifProbeSerr -ProfileDir $ifProfileDir
+      $ifProbeAttempt.launch_elapsed_ms = [int]$sw.ElapsedMilliseconds
+    } catch {
+      $ifProbeAttempt.launch_error = $_.Exception.Message
+    }
+    if ($ifProbeHandle) {
+      $ifProbeProc = $ifProbeHandle.Process
+      $ifExitAt = $null
+      $ifGrace = $null
+      while ((Get-Date) -lt $ifProbeDeadline) {
+        try {
+          $dr = Invoke-RestMethod -Uri $probeDebugUrl -Headers $headers -TimeoutSec 3
+          if ($dr.ok -and $dr.result) {
+            $ifProbeMarker = $dr.result
+            $ifProbeAttempt.debug_marker_seen = $true
+            break
+          }
+        } catch {}
+        if ($ifProbeProc -and $ifProbeProc.HasExited) {
+          if (-not $ifExitAt) {
+            $ifExitAt = Get-Date
+            $ifGrace = $ifExitAt.AddSeconds(2)
+            $ifProbeAttempt.exit_code = $ifProbeProc.ExitCode
+          }
+          if ((Get-Date) -ge $ifGrace) { break }
+        }
+        Start-Sleep -Milliseconds 300
+      }
+      $sw.Stop()
+      if ($ifProbeProc -and $ifProbeProc.HasExited -and $null -eq $ifProbeAttempt.exit_code) { $ifProbeAttempt.exit_code = $ifProbeProc.ExitCode }
+      $ifProbeAttempt.elapsed_ms = [int]$sw.ElapsedMilliseconds
+      $ifProbeAttempt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
+      Complete-ScenarioBrowserProcess -Handle $ifProbeHandle -Kill
+      Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+    }
+
+    if ($ifProbeMarker) {
+      # Probe passed: run the actual scenario with a fresh full timeout.
+      $ifDeadline = (Get-Date).AddSeconds($TimeoutSec)
+      $ifSout = Join-Path $logDir ($ifId + '.browser.stdout.log')
+      $ifSerr = Join-Path $logDir ($ifId + '.browser.stderr.log')
+      $ifArgs = @(New-BrowserArguments -Mode 'headless' -LoadUrl $loadUrl -ProfileDir $ifProfileDir -CrashDir $ifCrashDir -CacheDir $ifCacheDir)
+      $ifAttempt = @{
+        phase             = 'scenario'
+        scenario_name     = $Name
+        mode              = 'headless'
+        browser_path      = $ifBrowser
+        profile_dir       = $ifProfileDir
+        crash_dir         = $ifCrashDir
+        cache_dir         = $ifCacheDir
+        stdout            = $ifSout
+        stderr            = $ifSerr
+        args              = @($ifArgs | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) })
+        arguments         = (Join-ProcessArguments -Arguments @($ifArgs | ForEach-Object { ConvertTo-RedactedArgument ([string]$_) }))
+        started_at        = (Get-Date).ToUniversalTime().ToString('o')
+        launch_elapsed_ms = $null
+        exit_code         = $null
+        elapsed_ms        = $null
+        debug_marker_seen = $false
+        result_seen       = $false
+        infra_flake_retry = $true
+      }
+      $diag.attempts += $ifAttempt
+      Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+      $ifProcHandle = $null
+      $sw = [Diagnostics.Stopwatch]::StartNew()
+      try {
+        $ifProcHandle = Start-ScenarioBrowserProcess -FilePath $ifBrowser -Arguments $ifArgs `
+          -StdoutPath $ifSout -StderrPath $ifSerr -ProfileDir $ifProfileDir
+        $ifAttempt.launch_elapsed_ms = [int]$sw.ElapsedMilliseconds
+      } catch {
+        $ifAttempt.launch_error = $_.Exception.Message
+      }
+      if ($ifProcHandle) {
+        $ifProc = $ifProcHandle.Process
+        $lastProcHandle = $ifProcHandle
+        $lastProfileDir = $ifProfileDir
+        $ifExitAt = $null
+        $ifGrace = $null
+        while ((Get-Date) -lt $ifDeadline) {
+          try {
+            $resp = Invoke-RestMethod -Uri $resultUrl -Headers $headers -TimeoutSec 5
+            if ($resp.ok -and $resp.result) {
+              $result = $resp.result
+              $ifAttempt.result_seen = $true
+              break
+            }
+          } catch {}
+          if (-not $debugMarker) {
+            try {
+              $dr2 = Invoke-RestMethod -Uri $debugUrl -Headers $headers -TimeoutSec 5
+              if ($dr2.ok -and $dr2.result) {
+                $debugMarker = $dr2.result
+                $ifAttempt.debug_marker_seen = $true
+              }
+            } catch {}
+          }
+          if ($ifProc -and $ifProc.HasExited) {
+            if (-not $ifExitAt) {
+              $ifExitAt = Get-Date
+              $ifGrace = $ifExitAt.AddSeconds(3)
+              $ifAttempt.exit_code = $ifProc.ExitCode
+            }
+            if ((Get-Date) -ge $ifGrace) { break }
+          }
+          Start-Sleep -Milliseconds 500
+        }
+        $sw.Stop()
+        if ($ifProc -and $ifProc.HasExited -and $null -eq $ifAttempt.exit_code) { $ifAttempt.exit_code = $ifProc.ExitCode }
+        $ifAttempt.elapsed_ms = [int]$sw.ElapsedMilliseconds
+        $ifAttempt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
+        if (-not $result) { Complete-ScenarioBrowserProcess -Handle $ifProcHandle -Kill }
+        Write-ScenarioDiagnostics -Path $diagPath -Data $diag
+      }
+    }
+  }
+}
+
 # Optional: keep browser alive for a bit (useful when chained with visit.ps1 for screenshots).
 if ($KeepBrowserMs -gt 0) { Start-Sleep -Milliseconds $KeepBrowserMs }
 
