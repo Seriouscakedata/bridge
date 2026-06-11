@@ -333,7 +333,17 @@ try {
       # stay in long-term memory regardless.
       $held = [string]$startupState.held_task
       $reason = [string]$startupState.doctor_reason
-      Update-State {
+      # 2026-06-11 freeze-audit wave1 atom2 (mirror of Abort-Doctor): requeue the suspended
+      # backlog item as 'held' with a reason instead of parking it in a state dead-end the
+      # operator had to untangle by hand. No auto-resume (avoids the loop chain this guard
+      # exists for); the queue stays free and the task is never lost.
+      $heldBid = ''
+      try { $heldBid = [string]$startupState.current_backlog_id } catch {}
+      $heldRequeued = $false
+      if (-not [string]::IsNullOrWhiteSpace($heldBid) -and (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
+        try { $heldRequeued = [bool](Set-Idea -Id $heldBid -Status 'held' -Reason ('doctor-restart-loop: ' + $reason)) } catch { $heldRequeued = $false }
+      }
+      Update-State ({
         param($s)
         $s.doctor_active = $false
         $s.doctor_attempts = 0
@@ -343,7 +353,8 @@ try {
         $s.doctor_started_at = $null
         Close-ReplayForStateTask -State $s -Status 'aborted'
         $s.current_task = $null    # operator will re-submit / inspect; don't auto-resume held_task to avoid loop chain
-        $s.held_task = $held       # keep for the operator-visible event below
+        if ($heldRequeued) { $s.held_task = $null; $s.current_backlog_id = $null }
+        else { $s.held_task = $held }   # fallback: keep for the operator-visible event below
         $s.task_turn = 0
         $s.task_mode = 'normal'
         Clear-AuditorSuppressedHashes -State $s
@@ -352,9 +363,14 @@ try {
         $s.active_agent = $null
         $s.active_model = $null
         $s.status_text = $null
-      } | Out-Null
+      }.GetNewClosure()) | Out-Null
       $snip = $held; if ($snip.Length -gt 80) { $snip = $snip.Substring(0,80) + '...' }
-      Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newRestartCount рестартов мостa при reason='" + $reason + "'). Приостановленная задача: «" + $snip + "» — оператор, проверь рабочее дерево (git status / git stash list) и при необходимости перепиши задачу.") -Kind event | Out-Null
+      if ($heldRequeued) {
+        $bidSnip = $heldBid; if ($bidSnip.Length -gt 8) { $bidSnip = $bidSnip.Substring(0,8) }
+        Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newRestartCount рестартов при reason='" + $reason + "'). Задача " + $bidSnip + " возвращена в backlog (held, reason=doctor-restart-loop) — конвейер свободен. Codex-правки в stash (git stash list).") -Kind event | Out-Null
+      } else {
+        Add-Message -From system -Text ("⚠ Доктор отменён: restart-loop ($newRestartCount рестартов мостa при reason='" + $reason + "'). Приостановленная задача: «" + $snip + "» — оператор, проверь рабочее дерево (git status / git stash list) и при необходимости перепиши задачу.") -Kind event | Out-Null
+      }
     }
   }
 } catch {}

@@ -269,20 +269,45 @@ function Complete-Doctor {
 }
 
 function Abort-Doctor {
-  # Called when Doctor attempts are exhausted or Doctor itself fails. Keep held_task in
-  # state (operator decides what to do); clear active/attempts so loop won't retry.
+  # Called when Doctor attempts are exhausted or Doctor itself fails.
+  # 2026-06-11 freeze-audit wave1 atom2: this used to park held_task in a state dead-end
+  # ("жду оператора") — the task fell out of the queue FOREVER (reconcile later marked the
+  # backlog item failed, terminal, no auto-return). Now: requeue the backlog item as 'held'
+  # with an explicit reason (visible, queue keeps moving, operator decides with context).
+  # No auto-resume to approved/new — Doctor exhausted means a human look IS warranted; the
+  # win is the conveyor stays free and the task is never lost. Fallback: if there is no
+  # backlog id or Set-Idea fails, keep held_task in state (old behavior, reaper backstops).
   param([string]$Reason = 'attempts exhausted')
-  Update-State {
+  $abortHeld = ''
+  $abortBid = ''
+  try {
+    $abortState = Read-State
+    if ($abortState) {
+      try { $abortHeld = [string]$abortState.held_task } catch {}
+      try { $abortBid = [string]$abortState.current_backlog_id } catch {}
+    }
+  } catch {}
+  $requeued = $false
+  if (-not [string]::IsNullOrWhiteSpace($abortBid) -and (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
+    try { $requeued = [bool](Set-Idea -Id $abortBid -Status 'held' -Reason ('doctor-exhausted: ' + $Reason)) } catch { $requeued = $false }
+  }
+  Update-State ({
     param($s)
     $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null
     $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
     $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
     $s.current_task=$null; $s.task_turn=0; Clear-AuditorSuppressedHashes -State $s
-  } | Out-Null
-  try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
+    if ($requeued) { $s.held_task=$null; $s.current_backlog_id=$null }
+  }.GetNewClosure()) | Out-Null
+  if ($requeued) {
+    $bidShort = $abortBid; if ($bidShort.Length -gt 8) { $bidShort = $bidShort.Substring(0,8) }
+    try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Задача " + $bidShort + " возвращена в backlog со статусом held (reason=doctor-exhausted) — конвейер свободен, реши её судьбу.") -Kind event | Out-Null } catch {}
+  } else {
+    try { Add-Message -From system -Text ("🩺 Доктор не справился (" + $Reason + "). Held-task сохранён в state. Жду оператора.") -Kind event | Out-Null } catch {}
+  }
   try { Send-PushEvent -Kind need_you -Text "Doctor failed: $Reason" } catch {}
   try { Append-DoctorEvent -Event 'abort' -Reason $Reason } catch {}
-  try { Write-DoctorLog ("Doctor abort: " + $Reason) } catch {}
+  try { Write-DoctorLog ("Doctor abort: " + $Reason + $(if ($requeued) { ' (requeued ' + $abortBid + ' as held)' } else { '' })) } catch {}
 }
 
 function Test-RestartLoop {
