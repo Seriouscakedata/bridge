@@ -600,6 +600,20 @@ $script:DriverLoopCompletionInitialChecksBlock = {
           if ($ceiling -and (-not $converged -or -not $hasPlan)) {
             Add-Message -From system -Text "💬 Потолок обсуждения ($discussMaxTurns ходов) достигнут — закрываю обсуждение с текущим планом, передаю Codex'у." -Kind event | Out-Null
           }
+          # 2026-06-11 S4: the converged Решение/Риски/План block used to be WIPED here without
+          # ever reaching the decisions journal (Save-Decision only fired for discuss-only DONE) —
+          # every main-flow discussion was forgotten and the next one started from scratch. Persist
+          # the snapshot BEFORE the reset so Get-DecisionsRecall feeds it into future prompts.
+          try {
+            $s4State = Read-State
+            $s4Snapshot = [string]$s4State.discuss_snapshot
+            if (-not [string]::IsNullOrWhiteSpace($s4Snapshot) -and (Get-Command Save-Decision -ErrorAction SilentlyContinue)) {
+              $s4Title = [string]$s4State.current_task
+              if ([string]::IsNullOrWhiteSpace($s4Title)) { $s4Title = 'discussion' }
+              if ($s4Title.Length -gt 120) { $s4Title = $s4Title.Substring(0,120) }
+              Save-Decision -Title $s4Title -Content $s4Snapshot | Out-Null
+            }
+          } catch {}
           Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot='' } | Out-Null
         }
       } elseif ($modeBeforeIncrement -eq 'study') {
