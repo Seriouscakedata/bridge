@@ -597,6 +597,11 @@ function Invoke-Coder {
     } catch {
       try { if ($cfg.coderTimeoutMs -gt 0) { $coderTimeoutMs = [int]$cfg.coderTimeoutMs } } catch {}
     }
+    # 2026-06-11 A2 (speed program): the planner-fallback rung inherited the full coder budget
+    # (25 min) — when Claude hung AND Codex hung, the "quick reserve plan" took longer than the
+    # original hang (worst case ~44 min to an answer). The fallback prompt itself demands a SHORT
+    # reply with no file edits; 6 minutes is generous for a read-and-plan turn.
+    if ($Mode -eq 'planner-fallback' -and $coderTimeoutMs -gt 360000) { $coderTimeoutMs = 360000 }
     $probeTags = @()
     $probeTaskPrompt = $Prompt
     try {
