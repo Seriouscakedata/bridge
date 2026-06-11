@@ -669,6 +669,13 @@ $script:DriverLoopIdleClaimBlock = {
               $batchParallelTimeoutMin = [int][Math]::Ceiling($batchPerTaskTimeoutSec / 60.0)
               try { $batchParallelTimeoutMin = [int](Get-BacklogPackObjectValue -Obj $wpBatch -Name 'parallel_timeout_min' -Default $batchParallelTimeoutMin) } catch {}
               if ($batchParallelTimeoutMin -lt 1) { $batchParallelTimeoutMin = [int][Math]::Ceiling($batchPerTaskTimeoutSec / 60.0) }
+              # 2026-06-11 S3: the wall budget was a flat 10 min (ceil(600s/60)) for ANY wave size —
+              # a 2-atom and a 20-atom wave got the same cap, so larger/xhigh waves were killed,
+              # quarantined, retried identically 3x and held (false quarantine class). Scale the
+              # wall with wave width; the planner-path equivalent already uses 25 min.
+              $batchWaveSize = @($safeArr).Count
+              $batchScaledTimeoutMin = [Math]::Max(25, 10 + (2 * $batchWaveSize))
+              if ($batchParallelTimeoutMin -lt $batchScaledTimeoutMin) { $batchParallelTimeoutMin = [int]$batchScaledTimeoutMin }
               $batchIds = @($safeArr | ForEach-Object { [string]$_.id })
               $claimedIdea = [pscustomobject]@{
                 id = [string]$batchIds[0]
