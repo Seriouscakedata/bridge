@@ -198,6 +198,25 @@
   .pipeline-strip .ps.ps-code.active{color:#68d391}
   .pipeline-strip .ps.ps-critic.active{color:var(--model,#facc15)}
   .pipeline-strip .ps.ps-final.active{color:#60a5fa}
+  #beat{
+    flex:none;
+    display:inline-flex;
+    align-items:center;
+    min-height:26px;
+    padding:4px 9px;
+    border-radius:999px;
+    border:1px solid var(--border-soft);
+    background:#1a1f29;
+    color:var(--muted);
+    font-size:11px;
+    font-weight:700;
+    line-height:1;
+    white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+  }
+  #beat.ok{color:var(--codex);background:rgba(104,211,145,.12);border-color:rgba(104,211,145,.34)}
+  #beat.warn{color:var(--model);background:rgba(255,209,102,.12);border-color:rgba(255,209,102,.38)}
+  #beat.bad{color:var(--danger);background:rgba(255,107,107,.12);border-color:rgba(255,107,107,.42)}
   /* Legacy dead selectors retained for older browsers/JS to no-op */
   .meta,.meta-line,.chips{display:none}
   .btns{position:relative;min-width:0;max-width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:nowrap}
@@ -2102,6 +2121,34 @@
   .channel-item.active{background:rgba(114,183,255,.16);border-color:rgba(114,183,255,.32);color:#cfe5ff}
   .channel-item .ch-name{flex:1;font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .channel-item .ch-desc{display:block;font-size:11px;color:var(--muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+  .channel-item .ch-health{
+    flex:none;
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:#647082;
+    box-shadow:0 0 0 1px rgba(255,255,255,.08);
+  }
+  .channel-item .ch-health.ok{background:var(--codex);box-shadow:0 0 10px rgba(104,211,145,.35)}
+  .channel-item .ch-health.warn{background:var(--model);box-shadow:0 0 10px rgba(255,209,102,.35)}
+  .channel-item .ch-health.bad{background:var(--danger);box-shadow:0 0 10px rgba(255,107,107,.38)}
+  .channel-item .ch-agent{
+    flex:none;
+    min-width:18px;
+    height:18px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:999px;
+    border:1px solid rgba(255,255,255,.12);
+    background:rgba(255,255,255,.06);
+    color:var(--soft);
+    font-size:10px;
+    font-weight:800;
+    line-height:1;
+  }
+  .channel-item .ch-agent.claude{color:var(--claude);background:var(--claude-bg);border-color:rgba(184,140,255,.35)}
+  .channel-item .ch-agent.codex{color:var(--codex);background:var(--codex-bg);border-color:rgba(104,211,145,.35)}
   .channel-item .ch-actions{display:none;gap:3px;margin-left:auto;align-items:center;flex-shrink:0}
   .channel-item:hover .ch-actions, .channel-item.active .ch-actions{display:inline-flex}
   .channel-item .ch-mini{
@@ -2172,7 +2219,7 @@
     <span id="chipClaude" hidden><span class="dot"></span><span class="lbl">Claude</span></span>
     <span id="chipCodex" hidden><span class="dot"></span><span class="lbl">Codex</span></span>
     <span id="chipModel" hidden><span class="dot"></span><span class="lbl">модель</span></span>
-    <span id="beat" hidden></span>
+    <span id="beat" role="status" aria-live="polite" title="heartbeat"></span>
     <span id="sessionStats" hidden>—</span>
   </div>
   <div id="btnsPrimary" class="btns btns-primary">
@@ -2509,6 +2556,8 @@ let channelSwitchInProgress = false;
 // reference channelsCache.active to attach ?channel=X to API calls, so we need
 // the binding live BEFORE the first poll() call near script end.
 let channelsCache = { active: 'main', items: [], scope: null };
+const channelHealthCache = Object.create(null);
+let channelHealthPollSeq = 0;
 // Per-channel message cache for instant switching. Each entry:
 // { msgs: [array of message objects], lastSeq: max seq we've seen for this channel,
 //   loadedFull: did we ever do since=0 for this channel? }.
@@ -5987,12 +6036,36 @@ const channelNewBtn   = document.getElementById('channelNewBtn');
 
 async function pollChannels(){
   const myEpoch = channelEpoch;
+  const myHealthSeq = ++channelHealthPollSeq;
   try{
     const data = await fetchJson('/api/channels');
     if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
     channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
     renderChannels();
+    const slugs = Array.from(new Set([channelsCache.active].concat(channelsCache.items.map(x => String(x && x.slug || '')).filter(Boolean)))).filter(Boolean).slice(0, 5);
+    if(slugs.length){
+      await Promise.allSettled(slugs.map(async slug => {
+        try{
+          const st = await fetchJson('/api/status?channel=' + encodeURIComponent(slug));
+          if(myEpoch !== channelEpoch || myHealthSeq !== channelHealthPollSeq) return;
+          const beat = activityInfo(st || {});
+          const act = st && (st.active_agent === 'claude' || st.active_agent === 'codex') ? st.active_agent : '';
+          channelHealthCache[slug] = {
+            level: beat.level || 'bad',
+            label: beat.label || '',
+            title: beat.title || '',
+            active_agent: act,
+            active_model: st && st.active_model ? String(st.active_model) : ''
+          };
+        }catch(e){
+          if(myEpoch === channelEpoch && myHealthSeq === channelHealthPollSeq){
+            channelHealthCache[slug] = { level:'bad', label:'status failed', title:String(e && e.message ? e.message : e), active_agent:'', active_model:'' };
+          }
+        }
+      }));
+      if(myEpoch === channelEpoch && myHealthSeq === channelHealthPollSeq) renderChannels();
+    }
   }catch(e){ /* keep last cache */ }
 }
 function channelProjectName(projectRoot){
@@ -6027,9 +6100,18 @@ function renderChannels(){
   for(const ch of items){
     const slug = String(ch.slug || '');
     const isActive = slug === active;
+    const health = channelHealthCache[slug] || null;
+    const healthLevel = health && /^(ok|warn|bad)$/.test(health.level) ? health.level : '';
+    const activeAgent = health && (health.active_agent === 'claude' || health.active_agent === 'codex') ? health.active_agent : '';
     const item = document.createElement('div');
     item.className = 'channel-item' + (isActive ? ' active' : '');
     item.dataset.slug = slug;
+    const healthDot = document.createElement('span');
+    healthDot.className = 'ch-health' + (healthLevel ? ' ' + healthLevel : '');
+    healthDot.title = health
+      ? ('heartbeat: ' + (health.label || health.level) + (health.title ? ' - ' + health.title : ''))
+      : 'heartbeat: loading';
+    item.appendChild(healthDot);
     const nameWrap = document.createElement('div');
     nameWrap.style.flex = '1';
     nameWrap.style.overflow = 'hidden';
@@ -6045,6 +6127,13 @@ function renderChannels(){
       nameWrap.appendChild(d);
     }
     item.appendChild(nameWrap);
+    if(activeAgent){
+      const agent = document.createElement('span');
+      agent.className = 'ch-agent ' + activeAgent;
+      agent.textContent = activeAgent === 'claude' ? 'CL' : 'CX';
+      agent.title = (activeAgent === 'claude' ? 'Claude' : 'Codex') + (health.active_model ? ' - ' + modelLabel(health.active_model) : '');
+      item.appendChild(agent);
+    }
     const acts = document.createElement('div');
     acts.className = 'ch-actions';
     // 2026-05-30: per-channel autonomy toggle (travel off by default)
