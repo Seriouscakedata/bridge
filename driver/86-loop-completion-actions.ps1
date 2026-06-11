@@ -373,17 +373,47 @@ $diff
 {"verdict":"OK","severity":"none","issues":[],"summary":"одна фраза по-русски"}
 Где severity = "serious" ТОЛЬКО если есть баг/уязвимость/регрессия, которую обязательно исправить до закрытия; иначе "minor" или "none".
 "@
+            # 2026-06-11 A5 (speed program): no verdict memo existed — the SAME diff was re-reviewed
+            # by the LLM on every verify-retry / restart-resume tail (1-2 extra calls x up to 90s
+            # each per task tail). Memo an OK/none verdict in state keyed by MD5(diff); 'serious'
+            # is never cached (must re-review after a fix), and any deterministic finding from THIS
+            # pass (cli-flag / quality-bypass) disqualifies the cache.
+            $criticCacheKey = ''
+            try {
+              $md5 = [System.Security.Cryptography.MD5]::Create()
+              $criticCacheKey = ([System.BitConverter]::ToString($md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$diff))) -replace '-','')
+            } catch { $criticCacheKey = '' }
+            $criticCacheHit = $false
+            $criticCacheSummary = ''
+            if (-not [string]::IsNullOrWhiteSpace($criticCacheKey) -and $cliFlagIssues.Count -eq 0 -and $qualityBypassIssues.Count -eq 0) {
+              try {
+                $ccState = Read-State
+                if ($ccState.PSObject.Properties.Name -contains 'critic_verdict_cache' -and $ccState.critic_verdict_cache) {
+                  $cc = $ccState.critic_verdict_cache
+                  if ([string]$cc.key -eq $criticCacheKey -and [string]$cc.verdict -eq 'OK' -and [string]$cc.severity -eq 'none') {
+                    $criticCacheHit = $true
+                    $criticCacheSummary = [string]$cc.summary
+                  }
+                }
+              } catch { $criticCacheHit = $false }
+            }
             $criticEmptyMaxAttempts = 2
             $rawC = ''
-            for ($criticEmptyAttempt = 1; $criticEmptyAttempt -le $criticEmptyMaxAttempts; $criticEmptyAttempt++) {
-              $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
-              if (-not [string]::IsNullOrWhiteSpace($rawC)) { break }
-              if ($criticEmptyAttempt -lt $criticEmptyMaxAttempts) {
-                Add-Message -From system -Text ("🔁 Критик вернул пустой ответ (empty " + $criticEmptyAttempt + "/" + $criticEmptyMaxAttempts + ") — повторяю только critic gate.") -Kind event | Out-Null
+            if ($criticCacheHit) {
+              Add-Message -From system -Text "🔎 Критик: тот же дифф уже одобрен ранее (verdict-кэш по MD5 диффа) — пропускаю повторное LLM-ревью." -Kind event | Out-Null
+            } else {
+              for ($criticEmptyAttempt = 1; $criticEmptyAttempt -le $criticEmptyMaxAttempts; $criticEmptyAttempt++) {
+                $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec 90 -Temperature 0.1
+                if (-not [string]::IsNullOrWhiteSpace($rawC)) { break }
+                if ($criticEmptyAttempt -lt $criticEmptyMaxAttempts) {
+                  Add-Message -From system -Text ("🔁 Критик вернул пустой ответ (empty " + $criticEmptyAttempt + "/" + $criticEmptyMaxAttempts + ") — повторяю только critic gate.") -Kind event | Out-Null
+                }
               }
             }
             $verdict='OK'; $severity='none'; $summary=''; $issuesText=''
-            if (-not [string]::IsNullOrWhiteSpace($rawC)) {
+            if ($criticCacheHit) {
+              $summary = if ([string]::IsNullOrWhiteSpace($criticCacheSummary)) { 'OK (verdict-кэш)' } else { $criticCacheSummary + ' [verdict-кэш]' }
+            } elseif (-not [string]::IsNullOrWhiteSpace($rawC)) {
               $cleanC = ($rawC -replace '```json','' -replace '```','').Trim()
               $mC = [regex]::Match($cleanC, '(?s)\{.*\}')
               if ($mC.Success) {
@@ -464,6 +494,17 @@ $diff
               $plannerStatus = 'CONTINUE'
               Update-State { param($s) $s.task_mode='normal' } | Out-Null
             } else {
+              # A5: memo a FRESH final OK/none verdict (post-escalations) for this exact diff.
+              if ($verdict -eq 'OK' -and $severity -eq 'none' -and -not $criticCacheHit -and -not [string]::IsNullOrWhiteSpace($criticCacheKey)) {
+                try {
+                  $cacheSummaryToStore = $summary
+                  Update-State ({ param($s)
+                    $s | Add-Member -NotePropertyName critic_verdict_cache -NotePropertyValue ([pscustomobject]@{
+                      key = [string]$criticCacheKey; verdict = 'OK'; severity = 'none'; summary = [string]$cacheSummaryToStore; ts = (Get-Date).ToUniversalTime().ToString('o')
+                    }) -Force
+                  }.GetNewClosure()) | Out-Null
+                } catch {}
+              }
               if ($verdict -ne 'SKIPPED_EMPTY') {
                 try {
                   Update-State { param($s)
