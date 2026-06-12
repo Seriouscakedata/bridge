@@ -712,38 +712,79 @@ $script:DriverLoopCompletionCleanupBlock = {
         Add-Message -From system -Text "📝 Итог обсуждения сохранён: $dpath" -Kind event | Out-Null
       } catch {}
     }
+    # 2026-06-12 stage 3a (speed program): these memory writes are 2-3 LLM calls (~2-3 min) that
+    # used to run SYNCHRONOUSLY here, blocking the next claim while prose was being written.
+    # They now run in a detached memory-tail process (NOT a bridge job — active_jobs are awaited
+    # by preflight and would re-block the loop). Same conditions, same writes, same channel
+    # notifications — just off the critical path. Fail-soft: if the spawn fails, fall back to
+    # the old synchronous path so memory is never silently lost.
+    $memoryTailSpawned = $false
     try {
-      $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
-      if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
-    } catch {}
-    try {
-      $stWorklog = Read-State
-      $didWorklogActions = [bool]$stWorklog.task_did_actions
-      if (($didWorklogActions -or $mode -eq 'study') -and (Get-Command Update-ProjectMemoryAfterTask -ErrorAction SilentlyContinue)) {
-        $commitForWorklog = ''
-        try {
-          $rootForWorklog = Get-ActiveProjectRoot
-          if (-not [string]::IsNullOrWhiteSpace($rootForWorklog)) {
-            $commitForWorklog = (& git -C $rootForWorklog rev-parse --short HEAD 2>$null).Trim()
-          }
-        } catch {}
-        $worklogId = Update-ProjectMemoryAfterTask -TaskText $task -Outcome $visibleReply -Channel $Channel -Commit $commitForWorklog
-        if ($worklogId) { Add-Message -From system -Text "🧠 Проектная память: worklog обновлён." -Kind event | Out-Null }
+      $stMemTail = Read-State
+      $commitForWorklog = ''
+      try {
+        $rootForWorklog = Get-ActiveProjectRoot
+        if (-not [string]::IsNullOrWhiteSpace($rootForWorklog)) {
+          $commitForWorklog = (& git -C $rootForWorklog rev-parse --short HEAD 2>$null).Trim()
+        }
+      } catch {}
+      $memPayload = [pscustomobject]@{
+        task        = [string]$task
+        outcome     = [string]$visibleReply
+        mode        = [string]$mode
+        mode_before = [string]$modeBeforeIncrement
+        channel     = [string]$Channel
+        did_actions = [bool]$stMemTail.task_did_actions
+        task_turn   = [int]$stMemTail.task_turn
+        start_seq   = [int]$stMemTail.task_start_seq
+        commit      = $commitForWorklog
       }
-    } catch {}
-    try {
-      $stMem = Read-State
-      $turnForSkill = [int]$stMem.task_turn
-      $didActionsForSkill = [bool]$stMem.task_did_actions
-      if ($turnForSkill -ge 2 -and $didActionsForSkill -and $modeBeforeIncrement -ne 'study') {
-        $startSeqSkill = [int]$stMem.task_start_seq
-        $thread = (Get-Messages -Since ($startSeqSkill - 1) | ForEach-Object {
-          "**$($_.from):** $($_.text)"
-        }) -join "`n`n"
-        $skillId = Add-SkillMemory -TaskText $task -Transcript $thread
-        if ($skillId) { Add-Message -From system -Text "📘 плейбук сохранён." -Kind event | Out-Null }
+      $memTailScript = Join-Path $bridgeRoot 'tools\memory-tail.ps1'
+      if (Test-Path -LiteralPath $memTailScript) {
+        $payloadDir = Join-Path $bridgeRoot 'tmp'
+        if (-not (Test-Path -LiteralPath $payloadDir)) { New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null }
+        $payloadPath = Join-Path $payloadDir ('memory-tail-' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.json')
+        $u8MemTail = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($payloadPath, ($memPayload | ConvertTo-Json -Depth 4), $u8MemTail)
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $memTailScript, '-PayloadPath', $payloadPath) -WindowStyle Hidden | Out-Null
+        $memoryTailSpawned = $true
+        Add-Message -From system -Text "🧠 Память (task/worklog/плейбук) дописывается в фоне — закрытие не ждёт." -Kind event | Out-Null
       }
-    } catch {}
+    } catch { $memoryTailSpawned = $false }
+    if (-not $memoryTailSpawned) {
+      try {
+        $memId = Add-TaskMemory -TaskText $task -Outcome $visibleReply -Source ('task:' + $mode)
+        if ($memId) { Add-Message -From system -Text "🧠 Запомнено в долговременную память." -Kind event | Out-Null }
+      } catch {}
+      try {
+        $stWorklog = Read-State
+        $didWorklogActions = [bool]$stWorklog.task_did_actions
+        if (($didWorklogActions -or $mode -eq 'study') -and (Get-Command Update-ProjectMemoryAfterTask -ErrorAction SilentlyContinue)) {
+          $commitForWorklogSync = ''
+          try {
+            $rootForWorklogSync = Get-ActiveProjectRoot
+            if (-not [string]::IsNullOrWhiteSpace($rootForWorklogSync)) {
+              $commitForWorklogSync = (& git -C $rootForWorklogSync rev-parse --short HEAD 2>$null).Trim()
+            }
+          } catch {}
+          $worklogId = Update-ProjectMemoryAfterTask -TaskText $task -Outcome $visibleReply -Channel $Channel -Commit $commitForWorklogSync
+          if ($worklogId) { Add-Message -From system -Text "🧠 Проектная память: worklog обновлён." -Kind event | Out-Null }
+        }
+      } catch {}
+      try {
+        $stMem = Read-State
+        $turnForSkill = [int]$stMem.task_turn
+        $didActionsForSkill = [bool]$stMem.task_did_actions
+        if ($turnForSkill -ge 2 -and $didActionsForSkill -and $modeBeforeIncrement -ne 'study') {
+          $startSeqSkill = [int]$stMem.task_start_seq
+          $thread = (Get-Messages -Since ($startSeqSkill - 1) | ForEach-Object {
+            "**$($_.from):** $($_.text)"
+          }) -join "`n`n"
+          $skillId = Add-SkillMemory -TaskText $task -Transcript $thread
+          if ($skillId) { Add-Message -From system -Text "📘 плейбук сохранён." -Kind event | Out-Null }
+        }
+      } catch {}
+    }
     try {
       if ($modeBeforeIncrement -eq 'study') {
         $studyReportPath = $null
