@@ -217,6 +217,216 @@ function Start-FeatureVerifierIfDue {
   try { Invoke-DriverFeatureVerifierBrokenFiling -Reason 'post-verifier-check' | Out-Null } catch {}
 }
 
+if (-not $script:DriverOriginalGetMemoryRecall) {
+  try { $script:DriverOriginalGetMemoryRecall = (Get-Command Get-MemoryRecall -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+if (-not $script:DriverOriginalSearchProjectMemory) {
+  try { $script:DriverOriginalSearchProjectMemory = (Get-Command Search-ProjectMemory -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+if (-not $script:DriverOriginalStartBacklogReaperIfDue) {
+  try { $script:DriverOriginalStartBacklogReaperIfDue = (Get-Command Start-BacklogReaperIfDue -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+$script:DriverBacklogReaperRetryDueAt = $null
+$script:DriverBacklogReaperRetryIds = @()
+
+function Get-DriverMemoryRecordTimestamp {
+  param($Mem)
+  foreach ($field in @('ts','createdAt','created_at','timestamp')) {
+    try {
+      if ($Mem -and ($Mem.PSObject.Properties.Name -contains $field) -and -not [string]::IsNullOrWhiteSpace([string]$Mem.$field)) {
+        return ([datetime]::Parse([string]$Mem.$field).ToUniversalTime())
+      }
+    } catch {}
+  }
+  return $null
+}
+
+function Invoke-DriverMemoryArchiveRotation {
+  param(
+    [string]$Channel = $null,
+    [int]$MaxEntries = 1000,
+    [int]$OlderThanDays = 14
+  )
+  try {
+    foreach ($fn in @('Get-MemoryStorePath','Get-MemoryDir','Get-AllMemories','Save-AllMemories','Write-AtomicFile')) {
+      if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { return $null }
+    }
+    if ([string]::IsNullOrWhiteSpace($Channel)) {
+      if (Get-Command Get-CurrentMemoryChannel -ErrorAction SilentlyContinue) { $Channel = Get-CurrentMemoryChannel }
+    }
+    if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+    $storePath = Get-MemoryStorePath -Slug $Channel
+    if (-not (Test-Path -LiteralPath $storePath)) { return [pscustomobject]@{ rotated=$false; reason='missing-store'; count=0 } }
+    $lineCount = 0
+    foreach ($line in [System.IO.File]::ReadLines($storePath)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      $lineCount++
+      if ($lineCount -gt $MaxEntries) { break }
+    }
+    if ($lineCount -le $MaxEntries) { return [pscustomobject]@{ rotated=$false; reason='below-threshold'; count=$lineCount } }
+
+    $mems = @(Get-AllMemories -Channel $Channel)
+    if ($mems.Count -le $MaxEntries) { return [pscustomobject]@{ rotated=$false; reason='below-threshold-after-parse'; count=$mems.Count } }
+    $cutoff = (Get-Date).ToUniversalTime().AddDays(-1 * [Math]::Max(1, $OlderThanDays))
+    $archive = New-Object 'System.Collections.Generic.List[object]'
+    $keep = New-Object 'System.Collections.Generic.List[object]'
+    $oldest = $null; $newest = $null
+    foreach ($m in $mems) {
+      $kind = ''
+      try { if ($m.PSObject.Properties.Name -contains 'type') { $kind = [string]$m.type } } catch {}
+      if ($kind -eq 'archive_summary') { [void]$keep.Add($m); continue }
+      $pinned = $false
+      try { $pinned = [bool]($m.PSObject.Properties.Name -contains 'pinned' -and $m.pinned) } catch {}
+      if ($pinned) { [void]$keep.Add($m); continue }
+      $ts = Get-DriverMemoryRecordTimestamp -Mem $m
+      if ($null -eq $ts -or $ts -ge $cutoff) { [void]$keep.Add($m); continue }
+      [void]$archive.Add($m)
+      if ($null -eq $oldest -or $ts -lt $oldest) { $oldest = $ts }
+      if ($null -eq $newest -or $ts -gt $newest) { $newest = $ts }
+    }
+    if ($archive.Count -eq 0) { return [pscustomobject]@{ rotated=$false; reason='no-old-records'; count=$mems.Count } }
+
+    $dir = Get-MemoryDir -Slug $Channel
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $archiveName = 'archive-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.jsonl'
+    $archivePath = Join-Path $dir $archiveName
+    $archiveLines = @($archive.ToArray() | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 })
+    Write-AtomicFile -Path $archivePath -Content (($archiveLines -join "`n") + "`n")
+
+    $summaryText = "Archived " + $archive.Count + " memory records older than " + $OlderThanDays + " days to " + $archiveName + "."
+    $summary = [ordered]@{
+      id = ('archive-summary-' + ([guid]::NewGuid().ToString('N')))
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      type = 'archive_summary'
+      kind = 'memory_note'
+      channel = $Channel
+      text = $summaryText
+      tags = @('memory-archive','archive_summary')
+      importance = 0.4
+      status = 'active'
+      count = $archive.Count
+      oldest = $(if ($oldest) { $oldest.ToString('o') } else { $null })
+      newest = $(if ($newest) { $newest.ToString('o') } else { $null })
+      archived_to = $archiveName
+    }
+    [void]$keep.Add([pscustomobject]$summary)
+    Save-AllMemories -Mems @($keep.ToArray()) -Channel $Channel
+    return [pscustomobject]@{ rotated=$true; archived=$archive.Count; kept=$keep.Count; archive=$archiveName; channel=$Channel }
+  } catch {
+    try { Add-Message -From system -Kind event -Text ("⚠ Memory archive rotation skipped: " + $_.Exception.Message) | Out-Null } catch {}
+    return [pscustomobject]@{ rotated=$false; reason='error'; error=$_.Exception.Message }
+  }
+}
+
+function Invoke-DriverMemoryArchiveRotationForRecall {
+  try {
+    $channel = $null
+    try { if (Get-Command Get-CurrentMemoryChannel -ErrorAction SilentlyContinue) { $channel = Get-CurrentMemoryChannel } } catch {}
+    Invoke-DriverMemoryArchiveRotation -Channel $channel | Out-Null
+  } catch {}
+}
+
+function Get-MemoryRecall {
+  param([string]$TaskText = '')
+  Invoke-DriverMemoryArchiveRotationForRecall
+  if ($script:DriverOriginalGetMemoryRecall) { return (& $script:DriverOriginalGetMemoryRecall -TaskText $TaskText) }
+  return ''
+}
+
+function Search-ProjectMemory {
+  param(
+    [string]$Query,
+    [string[]]$Kind = @(),
+    [string[]]$Trust = @(),
+    [string[]]$Status = @('active'),
+    [int]$TopK = 0,
+    [double]$MinScore = -1,
+    [string]$Channel = $null
+  )
+  Invoke-DriverMemoryArchiveRotationForRecall
+  if (-not $script:DriverOriginalSearchProjectMemory) { return @() }
+  return @(& $script:DriverOriginalSearchProjectMemory -Query $Query -Kind $Kind -Trust $Trust -Status $Status -TopK $TopK -MinScore $MinScore -Channel $Channel)
+}
+
+function Get-DriverRunningBacklogIdSet {
+  $set = @{}
+  try {
+    foreach ($item in @(Get-Backlog)) {
+      $status = ([string]$item.status).Trim().ToLowerInvariant()
+      if (@('running','working') -contains $status) {
+        $id = [string]$item.id
+        if (-not [string]::IsNullOrWhiteSpace($id)) { $set[$id] = $true }
+      }
+    }
+  } catch {}
+  return $set
+}
+
+function Get-DriverBacklogItemsStillRunning {
+  param([string[]]$Ids)
+  $remaining = New-Object 'System.Collections.Generic.List[string]'
+  if (-not $Ids -or @($Ids).Count -eq 0) { return @() }
+  $want = @{}
+  foreach ($id in @($Ids)) { if (-not [string]::IsNullOrWhiteSpace($id)) { $want[$id] = $true } }
+  try {
+    foreach ($item in @(Get-Backlog)) {
+      $id = [string]$item.id
+      if (-not $want.ContainsKey($id)) { continue }
+      $status = ([string]$item.status).Trim().ToLowerInvariant()
+      if (@('running','working') -contains $status) { [void]$remaining.Add($id) }
+    }
+  } catch {
+    foreach ($id in $want.Keys) { [void]$remaining.Add($id) }
+  }
+  return @($remaining.ToArray())
+}
+
+function Start-BacklogReaperIfDue {
+  $retryNow = $false
+  if ($script:DriverBacklogReaperRetryDueAt -and (Get-Date) -ge $script:DriverBacklogReaperRetryDueAt) { $retryNow = $true }
+  if (-not (Get-Command Invoke-BacklogStateReaper -ErrorAction SilentlyContinue)) { return }
+  $recovered = @()
+  try {
+    $preItems = @(Get-Backlog)
+    $hasRunning = @($preItems | Where-Object { @('running','working') -contains ([string]$_.status).Trim().ToLowerInvariant() }).Count
+    if ($hasRunning -eq 0 -and -not $retryNow) { return }
+    $recovered = @(Invoke-BacklogLocked ({
+      $items = @(Get-Backlog)
+      $reapState = $null; try { $reapState = Read-State } catch {}
+      $r = Invoke-BacklogStateReaper -Items $items -RuntimeState $reapState -HeartbeatMaxAgeSeconds 900
+      if (@($r.recovered).Count -gt 0) { Save-Backlog @($r.items); return @($r.recovered) }
+      return @()
+    }.GetNewClosure()))
+  } catch { $recovered = @() }
+  foreach ($rec in @($recovered)) {
+    try {
+      Add-Message -From system -Text ("♻️ Zombie-reaper восстановил задачу " + [string]$rec.id + " (была '" + [string]$rec.from_status + "' без живого владельца) → held; lease освобождён для повторного claim.") -Kind event | Out-Null
+    } catch {}
+  }
+  $candidateIds = @($recovered | ForEach-Object { [string]$_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($retryNow -and $script:DriverBacklogReaperRetryIds) { $candidateIds = @($candidateIds + @($script:DriverBacklogReaperRetryIds)) | Select-Object -Unique }
+  if (@($candidateIds).Count -eq 0) { return }
+  Start-Sleep -Seconds 5
+  $stillRunning = @(Get-DriverBacklogItemsStillRunning -Ids $candidateIds)
+  if ($stillRunning.Count -eq 0) {
+    $script:DriverBacklogReaperRetryDueAt = $null
+    $script:DriverBacklogReaperRetryIds = @()
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='zombie-reaper-recovered-verified'; item_ids=@($candidateIds) }) } catch {}
+    return
+  }
+  if ($retryNow) {
+    $script:DriverBacklogReaperRetryDueAt = $null
+    $script:DriverBacklogReaperRetryIds = @()
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='zombie-reaper-recovery-retry-failed'; item_ids=@($stillRunning) }) } catch {}
+    try { Add-Message -From system -Kind event -Text ("⚠ Zombie-reaper retry did not recover item(s) from running/working: " + ((@($stillRunning) | Select-Object -First 4) -join ',')) | Out-Null } catch {}
+  } else {
+    $script:DriverBacklogReaperRetryDueAt = (Get-Date).AddSeconds(30)
+    $script:DriverBacklogReaperRetryIds = @($stillRunning)
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='zombie-reaper-recovery-retry-scheduled'; retry_at=$script:DriverBacklogReaperRetryDueAt.ToUniversalTime().ToString('o'); item_ids=@($stillRunning) }) } catch {}
+    try { Add-Message -From system -Kind event -Text ("⚠ Zombie-reaper did not recover item(s) from running/working; retry scheduled in 30s: " + ((@($stillRunning) | Select-Object -First 4) -join ',')) | Out-Null } catch {}
+  }
+}
+
 # ---------- driver self-test (pre-promote runtime gate) ----------
 # smoke.ps1 PARSES every .ps1 and runs common.ps1 at runtime (Get-PreflightBlockers), but it never
 # EXECUTES driver.ps1 -- so a parse-OK-but-runtime-broken edit here (the PS5.1 `(if...)` expression

@@ -566,6 +566,104 @@ function Get-ActiveSlugs {
   if ($slugs.Count -eq 0) { $slugs = @('main') }
   return $slugs
 }
+function Invoke-SupervisorPinnedChannel {
+  param(
+    [Parameter(Mandatory=$true)][string]$Slug,
+    [Parameter(Mandatory=$true)][scriptblock]$Body
+  )
+  $oldPin = $null; $hadPin = $false
+  try {
+    if (Get-Command Get-PinnedChannel -ErrorAction SilentlyContinue) { $oldPin = Get-PinnedChannel; $hadPin = $true }
+    if (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) { Set-PinnedChannel $Slug }
+    return (& $Body)
+  } finally {
+    if ($hadPin -and (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue)) {
+      try { Set-PinnedChannel $oldPin } catch {}
+    }
+  }
+}
+function Get-SupervisorChannelStatePath {
+  param([Parameter(Mandatory=$true)][string]$Slug)
+  return (Invoke-SupervisorPinnedChannel -Slug $Slug -Body { Get-StatePath })
+}
+function Update-SupervisorSuccessfulHeartbeat {
+  param([string[]]$Slugs)
+  $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+  foreach ($slug in @($Slugs)) {
+    if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+    try {
+      $heartbeatIso = $nowIso
+      Invoke-SupervisorPinnedChannel -Slug $slug -Body ({
+        Update-State {
+          param($s)
+          $s | Add-Member -NotePropertyName lastSuccessfulHeartbeat -NotePropertyValue $heartbeatIso -Force
+        } | Out-Null
+      }.GetNewClosure()) | Out-Null
+    } catch {
+      Log ("WARN: lastSuccessfulHeartbeat update failed for channel '" + $slug + "': " + $_.Exception.Message)
+    }
+  }
+}
+function Get-SupervisorStaleHeartbeatSlugs {
+  param(
+    [string[]]$Slugs,
+    [int]$MaxAgeSeconds = 600
+  )
+  $now = Get-Date
+  $stale = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($slug in @($Slugs)) {
+    if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+    try {
+      $statePath = Get-SupervisorChannelStatePath -Slug $slug
+      if (-not $statePath -or -not (Test-Path -LiteralPath $statePath)) { continue }
+      $state = $null
+      try { $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $state = $null }
+      $rawHeartbeat = $null
+      try {
+        if ($state -and ($state.PSObject.Properties.Name -contains 'lastSuccessfulHeartbeat')) {
+          $rawHeartbeat = [string]$state.lastSuccessfulHeartbeat
+        }
+      } catch {}
+      if ([string]::IsNullOrWhiteSpace($rawHeartbeat)) {
+        if (-not $script:watchdogHeartbeatMissingSince.ContainsKey($slug)) { $script:watchdogHeartbeatMissingSince[$slug] = $now }
+        if (($now - [datetime]$script:watchdogHeartbeatMissingSince[$slug]).TotalSeconds -ge $MaxAgeSeconds) { [void]$stale.Add($slug) }
+        continue
+      }
+      if ($script:watchdogHeartbeatMissingSince.ContainsKey($slug)) { $script:watchdogHeartbeatMissingSince.Remove($slug) }
+      $hb = $null
+      try { $hb = [datetime]::Parse($rawHeartbeat).ToUniversalTime() } catch { $hb = $null }
+      if ($null -eq $hb) {
+        if (-not $script:watchdogHeartbeatMissingSince.ContainsKey($slug)) { $script:watchdogHeartbeatMissingSince[$slug] = $now }
+        if (($now - [datetime]$script:watchdogHeartbeatMissingSince[$slug]).TotalSeconds -ge $MaxAgeSeconds) { [void]$stale.Add($slug) }
+        continue
+      }
+      if (((Get-Date).ToUniversalTime() - $hb).TotalSeconds -ge $MaxAgeSeconds) { [void]$stale.Add($slug) }
+    } catch {
+      Log ("WARN: lastSuccessfulHeartbeat stale-check failed for channel '" + $slug + "': " + $_.Exception.Message)
+    }
+  }
+  return @($stale.ToArray())
+}
+function Reset-WatchdogForSupervisorHeartbeat {
+  param([string[]]$StaleSlugs)
+  if (-not $StaleSlugs -or @($StaleSlugs).Count -eq 0) { return $false }
+  $now = Get-Date
+  if ($script:watchdogHeartbeatResetUntil -and $now -lt $script:watchdogHeartbeatResetUntil) { return $false }
+  $script:watchdogHeartbeatResetUntil = $now.AddMinutes(10)
+  $sample = (@($StaleSlugs) | Select-Object -First 4) -join ','
+  Log ("lastSuccessfulHeartbeat stale/missing for channel(s) " + $sample + " -> watchdog reset")
+  try {
+    Add-Message -From system -Text ("⚠ lastSuccessfulHeartbeat stale/missing >10min for channel(s): " + $sample + " — resetting watchdog safety-net.") -Kind event | Out-Null
+  } catch {}
+  try {
+    $wdProcs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -like '*-File*watchdog.ps1*' -and $_.CommandLine -notlike '*-Command*' })
+    foreach ($wd in $wdProcs) {
+      try { Stop-Process -Id ([int]$wd.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}
+    }
+  } catch { Log ("watchdog reset stop error: " + $_.Exception.Message) }
+  return $true
+}
 function Record-CircuitRestart {
   param([string]$Detail, [bool]$ReapFired = $false, [bool]$FlagPresent = $false)
   try {
@@ -758,6 +856,8 @@ $minRecycleSec = 60      # at least 60s between consecutive recycles
 $lastWdSpawn   = $null   # rate-limit watchdog (re)spawns (guards against a spawn storm)
 $minWdSpawnSec = 60      # at least 60s between watchdog spawn attempts
 $flagCbFreeze  = Join-Path $ctl 'cb-freeze.flag'
+$script:watchdogHeartbeatMissingSince = @{}
+$script:watchdogHeartbeatResetUntil = $null
 $script:cbCooldownUntil = $null
 $script:startupFailureCount = 0
 $script:startupFailureLimit = 10
@@ -858,6 +958,11 @@ while ($true) {
       }
     }
     $slugs = Get-ActiveSlugs
+    try {
+      $staleHeartbeatSlugs = @(Get-SupervisorStaleHeartbeatSlugs -Slugs $slugs -MaxAgeSeconds 600)
+      if (Reset-WatchdogForSupervisorHeartbeat -StaleSlugs $staleHeartbeatSlugs) { $lastWdSpawn = $null }
+      Update-SupervisorSuccessfulHeartbeat -Slugs $slugs
+    } catch { Log ("lastSuccessfulHeartbeat supervisor loop error: " + $_.Exception.Message) }
     if (-not (Test-CircuitSpawnPaused)) {
       if ($null -eq $srv -or $srv.HasExited) {
         if ($null -ne $srv -and $srv.HasExited -and -not $reapFired) {
