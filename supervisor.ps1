@@ -870,7 +870,11 @@ $hcSrvHungLimit    = 3     # consecutive failures before kill+restart
 $hcSrvLastTs       = [datetime]::MinValue
 $hcSrvFails        = 0
 $hcDrvIntervalSec  = 60    # driver CPU-stagnation probe interval
-$hcDrvHungLimit    = 5     # consecutive zero-CPU intervals before kill+restart
+$hcDrvHungLimit    = 15    # consecutive zero-CPU intervals before kill+restart.
+                           # 2026-06-12 (zatyk #5): 5 min false-killed drivers that were
+                           # legitimately blocked on long Codex/LLM calls (3 kills in one
+                           # evening); surviving tasks then died on the restart cap. Long
+                           # coder chunks run 10-12 min, so the hung bar is 15 min now.
 $hcDrvGraceSec     = 300   # skip check if driver uptime < 5 min
 $hcDrvLastTs       = [datetime]::MinValue
 $hcDrvCpuSnaps     = @{}   # slug -> last TotalProcessorTime.Ticks (long)
