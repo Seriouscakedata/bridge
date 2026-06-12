@@ -210,57 +210,76 @@ function Invoke-QAAgentScenarioSuite {
 
   $result.Ran = $true
   $failures = New-Object 'System.Collections.Generic.List[string]'
+  $rescued = New-Object 'System.Collections.Generic.List[string]'
   foreach ($sf in @($runnable.ToArray())) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($sf.Name)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell.exe'
-    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-QAAgentArgument $runner) + ' -Name ' + (Quote-QAAgentArgument $name) + ' -Url ' + (Quote-QAAgentArgument $Url) + ' -TimeoutSec ' + [string]$TimeoutSec
-    $psi.WorkingDirectory = $BridgeRoot
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    try {
-      [void]$proc.Start()
-      $completed = $proc.WaitForExit(($TimeoutSec + 20) * 1000)
-      if (-not $completed) {
-        try { $proc.Kill() } catch {}
-        $result.Failed++
-        [void]$failures.Add($name + ': timed out')
-        continue
-      }
-      $out = ''
-      try { $out += $proc.StandardOutput.ReadToEnd() } catch {}
-      try {
-        $err = $proc.StandardError.ReadToEnd()
-        if (-not [string]::IsNullOrWhiteSpace($err)) { $out += "`n" + $err }
-      } catch {}
-      if ($proc.ExitCode -eq 0) {
-        $result.Passed++
-      } else {
-        $short = ($out -replace '\s+', ' ').Trim()
-        if ($short.Length -gt 500) { $short = $short.Substring(0, 500) }
-        if ([string]::IsNullOrWhiteSpace($short)) { $short = 'exit ' + [string]$proc.ExitCode }
-        $result.Failed++
-        [void]$failures.Add($name + ': ' + $short)
-      }
-    } catch {
+    $attempt = Invoke-QAAgentSingleScenario -Runner $runner -Name $name -Url $Url -TimeoutSec $TimeoutSec -BridgeRoot $BridgeRoot
+    if (-not [bool]$attempt.Ok) {
+      # 2026-06-12 stage 2 (speed program, stochastics): ONE flaky scenario used to fail the
+      # WHOLE suite -> the task looped a full re-verification pass (~10 min) per flake; the
+      # channel-switch flake alone burned ~20 min twice in one chain. Retry JUST the failed
+      # scenario once: a flake passes on retry (marked "retry rescued" for visibility), a real
+      # breakage fails twice and the suite stays honestly red.
+      $attempt = Invoke-QAAgentSingleScenario -Runner $runner -Name $name -Url $Url -TimeoutSec $TimeoutSec -BridgeRoot $BridgeRoot
+      if ([bool]$attempt.Ok) { [void]$rescued.Add($name) }
+    }
+    if ([bool]$attempt.Ok) {
+      $result.Passed++
+    } else {
       $result.Failed++
-      [void]$failures.Add($name + ': ' + $_.Exception.Message)
+      [void]$failures.Add($name + ': ' + [string]$attempt.Detail)
     }
   }
+  $rescuedText = if ($rescued.Count -gt 0) { ('; retry rescued: ' + [string]::Join(',', @($rescued.ToArray()))) } else { '' }
   if ($result.Failed -gt 0) {
     $result.Ok = $false
     $result.Bugs = @($failures.ToArray())
-    $result.Summary = ('scenarios FAIL: ' + [string]::Join(' ; ', @($failures.ToArray())))
+    $result.Summary = ('scenarios FAIL: ' + [string]::Join(' ; ', @($failures.ToArray())) + $rescuedText)
     if ($result.Summary.Length -gt 900) { $result.Summary = $result.Summary.Substring(0, 900) }
   } else {
     $skipText = if ($result.Skipped -gt 0) { ('; skipped unsafe: ' + $result.Skipped) } else { '' }
-    $result.Summary = ('scenarios PASS: ' + $result.Passed + '/' + $runnable.Count + $skipText)
+    $result.Summary = ('scenarios PASS: ' + $result.Passed + '/' + $runnable.Count + $skipText + $rescuedText)
   }
   return $result
+}
+
+function Invoke-QAAgentSingleScenario {
+  # Runs one scenario file in an isolated process; returns @{Ok; Detail}. Extracted (stage 2)
+  # so the suite can retry exactly the failed scenario instead of failing the whole run.
+  param([string]$Runner, [string]$Name, [string]$Url, [int]$TimeoutSec, [string]$BridgeRoot)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'powershell.exe'
+  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-QAAgentArgument $Runner) + ' -Name ' + (Quote-QAAgentArgument $Name) + ' -Url ' + (Quote-QAAgentArgument $Url) + ' -TimeoutSec ' + [string]$TimeoutSec
+  $psi.WorkingDirectory = $BridgeRoot
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  try {
+    [void]$proc.Start()
+    $completed = $proc.WaitForExit(($TimeoutSec + 20) * 1000)
+    if (-not $completed) {
+      try { $proc.Kill() } catch {}
+      return [pscustomobject]@{ Ok = $false; Detail = 'timed out' }
+    }
+    $out = ''
+    try { $out += $proc.StandardOutput.ReadToEnd() } catch {}
+    try {
+      $err = $proc.StandardError.ReadToEnd()
+      if (-not [string]::IsNullOrWhiteSpace($err)) { $out += "`n" + $err }
+    } catch {}
+    if ($proc.ExitCode -eq 0) {
+      return [pscustomobject]@{ Ok = $true; Detail = '' }
+    }
+    $short = ($out -replace '\s+', ' ').Trim()
+    if ($short.Length -gt 500) { $short = $short.Substring(0, 500) }
+    if ([string]::IsNullOrWhiteSpace($short)) { $short = 'exit ' + [string]$proc.ExitCode }
+    return [pscustomobject]@{ Ok = $false; Detail = $short }
+  } catch {
+    return [pscustomobject]@{ Ok = $false; Detail = $_.Exception.Message }
+  }
 }
 
 function Invoke-QAAgentPostCommit {
