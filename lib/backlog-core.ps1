@@ -1563,6 +1563,13 @@ function Ensure-BridgeSelfCanaryGateTasks {
     }
     if (-not $parent) { continue }
     if ([string](Get-BacklogPackObjectValue -Obj $parent -Name 'status' -Default '') -ne 'approved') { continue }
+    # 2026-06-12 routing fix (zatyk #4): if this parent was already routed to the main
+    # backlog earlier, do not spawn another child on every idle pass of this channel.
+    $routedChildId = [string](Get-BacklogPackObjectValue -Obj $parent -Name 'canary_gate_routed_to_main' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($routedChildId)) {
+      [void]$existing.Add($routedChildId)
+      continue
+    }
     $claim = $null
     try { $claim = Test-BacklogApprovedItemClaimable -Item $parent -ProjectScopeAllowed ([bool](Test-ProjectScopedApprovedBacklogAllowed)) } catch { $claim = $null }
     if (-not ($claim -and [string]$claim.reason -eq 'control-plane-blocked')) { continue }
@@ -1589,6 +1596,49 @@ function Ensure-BridgeSelfCanaryGateTasks {
     $parentText = [string](Get-BacklogPackObjectValue -Obj $parent -Name 'text' -Default '')
     if ($parentText.Length -gt 500) { $parentText = $parentText.Substring(0, 500) + '...' }
     $childText = "Bridge-self canary gate/admission for approved control-plane backlog task [parent:$parentId]. Operator-authorized child task: run the parent only with canary evidence, driver.ps1 -SelfTest, smoke.ps1, and rollback notes. Parent task: $parentText"
+    # 2026-06-12 routing fix (zatyk #4): the canary child edits BRIDGE control-plane files,
+    # which are writable only from the main channel workspace (project channels confine the
+    # coder sandbox to the project root). Spawning the child in a project channel made it
+    # structurally impossible: two episodes of 60+ minutes of thrash (temp-script workarounds,
+    # crash -196608, operator kill). Spawn the child into the MAIN backlog instead, and stamp
+    # the parent so this channel does not re-spawn a child on every idle pass.
+    $spawnInMain = ($Channel -and ([string]$Channel).Trim().ToLowerInvariant() -ne 'main')
+    $childId = ''
+    if ($spawnInMain) {
+      $prevBridgeChannel = $env:BRIDGE_CHANNEL
+      try {
+        $env:BRIDGE_CHANNEL = 'main'
+        $childId = Add-Idea -Text $childText -From 'bridge-self-canary-gate' -Tags @('operator','bridge-self-canary-gate','canary-gate',('parent:' + $parentId)) -Status 'approved' -Severity 'critical' -Project '' -Scope 'bridge' -SkipCurator
+        if (-not [string]::IsNullOrWhiteSpace([string]$childId)) {
+          $mainItems = @(Get-Backlog)
+          foreach ($candidate in @($mainItems)) {
+            if ([string](Get-BacklogPackObjectValue -Obj $candidate -Name 'id' -Default '') -eq [string]$childId) {
+              Set-BacklogObjectProperty -Item $candidate -Name 'parent_id' -Value $parentId
+              Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_parent_id' -Value $parentId
+              Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_for' -Value 'bridge-self-control-plane'
+              Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_created_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+              Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_origin_channel' -Value ([string]$Channel)
+              Save-Backlog $mainItems
+              break
+            }
+          }
+        }
+      } finally {
+        $env:BRIDGE_CHANNEL = $prevBridgeChannel
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$childId)) { continue }
+      $freshLocal = @(Get-Backlog)
+      foreach ($candidate in @($freshLocal)) {
+        if ([string](Get-BacklogPackObjectValue -Obj $candidate -Name 'id' -Default '') -eq $parentId) {
+          Set-BacklogObjectProperty -Item $candidate -Name 'canary_gate_routed_to_main' -Value ([string]$childId)
+          Save-Backlog $freshLocal
+          break
+        }
+      }
+      [void]$created.Add([string]$childId)
+      $Items = @(Get-Backlog)
+      continue
+    }
     $childId = Add-Idea -Text $childText -From 'bridge-self-canary-gate' -Tags @('operator','bridge-self-canary-gate','canary-gate',('parent:' + $parentId)) -Status 'approved' -Severity 'critical' -Project $Channel -Scope 'bridge' -SkipCurator
     if ([string]::IsNullOrWhiteSpace([string]$childId)) { continue }
     $latest = @(Get-Backlog)
