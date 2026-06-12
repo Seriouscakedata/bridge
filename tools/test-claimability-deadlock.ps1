@@ -81,6 +81,35 @@ try {
   $afterReport = Get-ApprovedBacklogClaimabilityReport
   Check 'held parent is removed from approved deadlock set' ([int]$afterReport.approved_count -eq 1 -and @($afterReport.runnable_ids) -contains [string]$children[0].id) $afterReport
 
+  $newHoldRestore = Restore-BacklogClaimabilityDeadlockHeldApprovals -Channel 'main'
+  Check 'restore skips current canary-gated holds' ([int]$newHoldRestore.restored_count -eq 0 -and [string]$heldParent.status -eq 'held') $newHoldRestore
+
+  $itemsForRestore = @(Get-Backlog)
+  foreach ($candidate in @($itemsForRestore)) {
+    if ([string]$candidate.id -eq 'deadlock-parent') {
+      Set-BacklogObjectProperty -Item $candidate -Name 'held_reason' -Value 'claimability-deadlock-hardening'
+    }
+    if (@($candidate.tags) -contains 'bridge-self-canary-gate') {
+      Set-BacklogObjectProperty -Item $candidate -Name 'tags' -Value @('bridge-self-canary-gate','canary-gate',('parent:deadlock-parent'))
+    }
+  }
+  Save-Backlog $itemsForRestore
+  $nonOperatorRestore = Restore-BacklogClaimabilityDeadlockHeldApprovals -Channel 'main'
+  $stillHeldParent = @((Get-Backlog) | Where-Object { [string]$_.id -eq 'deadlock-parent' })[0]
+  Check 'restore requires operator canary evidence' ([int]$nonOperatorRestore.restored_count -eq 0 -and [string]$stillHeldParent.status -eq 'held') $nonOperatorRestore
+
+  $itemsForRestore = @(Get-Backlog)
+  foreach ($candidate in @($itemsForRestore)) {
+    if (@($candidate.tags) -contains 'bridge-self-canary-gate') {
+      Set-BacklogObjectProperty -Item $candidate -Name 'tags' -Value @('operator','bridge-self-canary-gate','canary-gate',('parent:deadlock-parent'))
+      break
+    }
+  }
+  Save-Backlog $itemsForRestore
+  $restore = Restore-BacklogClaimabilityDeadlockHeldApprovals -Channel 'main'
+  $restoredParent = @((Get-Backlog) | Where-Object { [string]$_.id -eq 'deadlock-parent' })[0]
+  Check 'legacy hardening-held parent restores after canary gate appears' ([int]$restore.restored_count -eq 1 -and @($restore.restored_ids) -contains 'deadlock-parent' -and [string]$restoredParent.status -eq 'approved') $restore
+
   Save-Backlog @([pscustomobject][ordered]@{
     id = 'project-blocked'
     ts = (Get-Date).ToUniversalTime().ToString('o')

@@ -1508,6 +1508,76 @@ function Set-ApprovedBacklogClaimabilityDeadlockHeld {
   }
 }
 
+function Test-BacklogClaimabilityDeadlockCanaryGatePresent {
+  param(
+    [Parameter(Mandatory=$false)][object[]]$Items = $null,
+    [Parameter(Mandatory=$true)][string]$ParentId
+  )
+  $parentId = ([string]$ParentId).Trim()
+  if ([string]::IsNullOrWhiteSpace($parentId)) { return $false }
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+
+  foreach ($item in @($Items)) {
+    if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '') -ne $parentId) { continue }
+    $routedChildId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'canary_gate_routed_to_main' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($routedChildId)) { return $true }
+    break
+  }
+
+  foreach ($candidate in @($Items)) {
+    $candidateTags = @()
+    try { $candidateTags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $candidate -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $candidateTags = @() }
+    if (-not (@($candidateTags) -contains 'bridge-self-canary-gate')) { continue }
+    if (-not (@($candidateTags) -contains 'operator')) { continue }
+    $candidateStatus = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'status' -Default '')
+    if (@('rejected','failed') -contains $candidateStatus) { continue }
+    $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'parent_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($candidateParent)) { $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'canary_gate_parent_id' -Default '') }
+    $candidateText = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'text' -Default '')
+    if ([string]$candidateParent -eq $parentId -or $candidateText -match [regex]::Escape('[parent:' + $parentId + ']')) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Restore-BacklogClaimabilityDeadlockHeldApprovals {
+  param(
+    [Parameter(Mandatory=$false)][object[]]$Items = $null,
+    [Parameter(Mandatory=$false)][string]$Channel = ''
+  )
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+  $restored = New-Object 'System.Collections.Generic.List[string]'
+  $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+
+  foreach ($item in @($Items)) {
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($id)) { continue }
+    if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '') -ne 'held') { continue }
+    if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'held_by' -Default '') -ne 'claimability-deadlock') { continue }
+    $heldReason = [string](Get-BacklogPackObjectValue -Obj $item -Name 'held_reason' -Default '')
+    if ($heldReason -notmatch 'claimability-deadlock-hardening') { continue }
+    if (-not (Test-BacklogClaimabilityDeadlockCanaryGatePresent -Items $Items -ParentId $id)) { continue }
+
+    Set-BacklogObjectProperty -Item $item -Name 'status' -Value 'approved'
+    Set-BacklogObjectProperty -Item $item -Name 'claimability_deadlock_restored_at' -Value $nowIso
+    Set-BacklogObjectProperty -Item $item -Name 'claimability_deadlock_restored_by' -Value 'bridge-self-canary-gate'
+    Set-BacklogObjectProperty -Item $item -Name 'claimability_deadlock_restored_channel' -Value ([string]$Channel)
+    Set-BacklogObjectProperty -Item $item -Name 'held_by' -Value $null
+    Set-BacklogObjectProperty -Item $item -Name 'held_reason' -Value $null
+    Set-BacklogObjectProperty -Item $item -Name 'held_at' -Value $null
+    [void]$restored.Add($id)
+  }
+
+  if ($restored.Count -gt 0) { Save-Backlog $Items }
+  return [pscustomobject][ordered]@{
+    changed = ($restored.Count -gt 0)
+    restored_count = [int]$restored.Count
+    restored_ids = @($restored.ToArray())
+    reason = $(if ($restored.Count -gt 0) { 'canary-gate-present' } else { 'no-held-deadlock-hardening-items' })
+  }
+}
+
 function Get-BacklogClaimabilitySignature {
   param(
     [Parameter(Mandatory=$false)]$Claimability,
@@ -1554,6 +1624,7 @@ function Update-BacklogClaimabilityIdleState {
         $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue 0 -Force
         $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue '' -Force
         $s | Add-Member -NotePropertyName idleClaimabilityBackoffUntil -NotePropertyValue '' -Force
+        $s | Add-Member -NotePropertyName claimabilityDeadlockFingerprint -NotePropertyValue '' -Force
       }.GetNewClosure()) | Out-Null
     } catch {}
     return [pscustomobject][ordered]@{

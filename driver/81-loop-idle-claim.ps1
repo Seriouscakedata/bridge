@@ -933,6 +933,20 @@ $script:DriverLoopIdleClaimBlock = {
       if ((-not $claimedIdea) -and (-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         try {
           if (Get-Command Get-ApprovedBacklogClaimabilityReport -ErrorAction SilentlyContinue) {
+            if (Get-Command Restore-BacklogClaimabilityDeadlockHeldApprovals -ErrorAction SilentlyContinue) {
+              try {
+                $deadlockRestore = Restore-BacklogClaimabilityDeadlockHeldApprovals -Channel $Channel
+                if ($deadlockRestore -and [int]$deadlockRestore.restored_count -gt 0) {
+                  Write-BacklogJsonLine ([ordered]@{
+                    ts = (Get-Date).ToUniversalTime().ToString('o')
+                    action = 'claimability-deadlock-restored'
+                    channel = [string]$Channel
+                    restored_ids = @($deadlockRestore.restored_ids)
+                  })
+                  Add-Message -From system -Text ("🧯 Claimability deadlock: restored held parents after canary gate: " + ((@($deadlockRestore.restored_ids) | Select-Object -First 4) -join ',')) -Kind event | Out-Null
+                }
+              } catch {}
+            }
             $claimability = Get-ApprovedBacklogClaimabilityReport
             if ($claimability -and [int]$claimability.approved_count -gt 0 -and [int]$claimability.runnable_count -eq 0) {
               $governorDeferredItems = @()
@@ -999,7 +1013,17 @@ $script:DriverLoopIdleClaimBlock = {
               }
               $nowClaimability = [DateTime]::UtcNow
               $dueClaimability = $false
-              if ([string]$script:LastBacklogClaimabilitySignature -ne $sig) {
+              $persistedClaimabilityFingerprint = ''
+              try {
+                $claimabilityState = Read-State
+                if ($claimabilityState -and ($claimabilityState.PSObject.Properties.Name -contains 'claimabilityDeadlockFingerprint')) {
+                  $persistedClaimabilityFingerprint = [string]$claimabilityState.claimabilityDeadlockFingerprint
+                }
+              } catch { $persistedClaimabilityFingerprint = '' }
+              if (-not [string]::IsNullOrWhiteSpace($persistedClaimabilityFingerprint) -and [string]$persistedClaimabilityFingerprint -eq [string]$sig) {
+                $script:LastBacklogClaimabilitySignature = $sig
+                if ($null -eq $script:LastBacklogClaimabilityAt) { $script:LastBacklogClaimabilityAt = $nowClaimability }
+              } elseif ([string]$script:LastBacklogClaimabilitySignature -ne $sig) {
                 $dueClaimability = $true
               } elseif ($null -eq $script:LastBacklogClaimabilityAt) {
                 $dueClaimability = $true
@@ -1009,6 +1033,11 @@ $script:DriverLoopIdleClaimBlock = {
               if ($dueClaimability) {
                 $script:LastBacklogClaimabilitySignature = $sig
                 $script:LastBacklogClaimabilityAt = $nowClaimability
+                try {
+                  Update-State ({ param($s)
+                    $s | Add-Member -NotePropertyName claimabilityDeadlockFingerprint -NotePropertyValue ([string]$sig) -Force
+                  }.GetNewClosure()) | Out-Null
+                } catch {}
                 Write-BacklogJsonLine ([ordered]@{
                   ts = $nowClaimability.ToString('o')
                   action = 'approved-claimability-blocked'
@@ -1410,6 +1439,7 @@ $script:DriverLoopIdleClaimBlock = {
           $s | Add-Member -NotePropertyName idleClaimabilityStreak -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName idleClaimabilitySignature -NotePropertyValue '' -Force
           $s | Add-Member -NotePropertyName idleClaimabilityBackoffUntil -NotePropertyValue '' -Force
+          $s | Add-Member -NotePropertyName claimabilityDeadlockFingerprint -NotePropertyValue '' -Force
           Clear-AuditorSuppressedHashes -State $s
           Clear-ChunkingState $s
           $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
