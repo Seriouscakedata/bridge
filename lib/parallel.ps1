@@ -2075,7 +2075,8 @@ function Commit-ParallelDispatchCollectedOutputs {
           }
         }
         $actualFiles = $Context.deliveredPaths.Count
-        $commitResult = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('commit','-m',("parallel collect: " + $Context.collectedStreams + " streams, " + $actualFiles + " actual changed files"))
+        # Keep the commit subject free of result counts; the measured counts are logged below as runtime evidence.
+        $commitResult = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('commit','-m','parallel collect: staged worker outputs')
         foreach ($line in @($commitResult.Output)) { [void]$out.Add($line) }
         return [pscustomobject]@{ ExitCode = ([int]$commitResult.ExitCode); Output = @($out.ToArray()) }
       } finally {
