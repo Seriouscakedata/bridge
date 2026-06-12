@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # memory-tail.ps1 -- stage 3a (speed program): the post-close memory writes (Add-TaskMemory,
 # Update-ProjectMemoryAfterTask worklog, Add-SkillMemory) are 2-3 LLM calls that used to run
 # SYNCHRONOUSLY inside the close path, blocking the next claim for ~2-3 minutes per task.

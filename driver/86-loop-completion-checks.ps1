@@ -1106,6 +1106,25 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         $qaTaskId = [string]$stQa.current_task_id
         if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = [string]$stQa.current_backlog_id }
         if ([string]::IsNullOrWhiteSpace($qaTaskId)) { $qaTaskId = 'task-' + [string]$stQa.task_start_seq }
+        # 2026-06-12 stage 3b (speed program): QA verdict memo by HEAD, mirroring the critic
+        # cache (A5). The full QA pass (bridge smoke + scenarios, ~2-3 min) used to re-run on
+        # every DONE attempt of a task tail even when no new commit landed since the last PASS.
+        # Cache key = repo HEAD; ONLY PASS is cached; a dirty tree blocks the cache (edits after
+        # the PASS); any new commit changes HEAD and auto-invalidates. FAIL always re-runs.
+        $qaCacheHit = $false
+        try {
+          $qaRepoRoot = Get-TaskRepoRoot
+          $qaHead = ([string](& git -C $qaRepoRoot rev-parse HEAD 2>$null | Out-String)).Trim()
+          $qaDirty = ([string](& git -C $qaRepoRoot status --porcelain 2>$null | Out-String)).Trim()
+          if ($qaHead -and ($qaDirty -eq '') -and $stQa.PSObject.Properties.Name -contains 'qa_verdict_cache' -and $stQa.qa_verdict_cache) {
+            $qc = $stQa.qa_verdict_cache
+            if ([string]$qc.head -eq $qaHead -and [string]$qc.verdict -eq 'PASS') { $qaCacheHit = $true }
+          }
+        } catch { $qaCacheHit = $false }
+        if ($qaCacheHit) {
+          try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
+          Add-Message -From system -Text ("✅ QA-агент: кэш PASS на " + $qaHead.Substring(0,[Math]::Min(7,$qaHead.Length)) + " — HEAD не менялся с прошлого прогона, повторный QA пропущен.") -Kind event | Out-Null
+        } else {
         $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
         if ($qaResult.Verdict -eq 'FAIL') {
           try { Set-TaskLastFailure -Kind qa_failed -Text ([string]$qaResult.Summary) } catch {}
@@ -1114,7 +1133,17 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         } else {
           try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
           try { Update-State { param($s) if ($null -ne $s.PSObject.Properties['qa_gate_error_count']) { $s.qa_gate_error_count = 0 } } | Out-Null } catch {}
+          try {
+            $qaHeadForCache = ''
+            try { $qaHeadForCache = ([string](& git -C (Get-TaskRepoRoot) rev-parse HEAD 2>$null | Out-String)).Trim() } catch {}
+            if ($qaHeadForCache) {
+              Update-State ({ param($s)
+                $s | Add-Member -NotePropertyName qa_verdict_cache -NotePropertyValue ([pscustomobject]@{ head = [string]$qaHeadForCache; verdict = 'PASS'; ts = (Get-Date).ToUniversalTime().ToString('o') }) -Force
+              }.GetNewClosure()) | Out-Null
+            }
+          } catch {}
           Add-Message -From system -Text "✅ QA-агент: PASS — $($qaResult.Summary)" -Kind event | Out-Null
+        }
         }
       }
     } catch {
