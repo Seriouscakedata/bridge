@@ -725,8 +725,23 @@
   .backlog-item-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
   .backlog-item-text{color:var(--soft);word-break:break-word}
   .backlog-item-meta{color:var(--muted);font-size:11px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-  .backlog-item-btns{display:flex;gap:4px;flex-shrink:0;align-items:flex-start;padding-top:1px}
+  .backlog-item-btns{display:flex;gap:4px;flex-shrink:0;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;padding-top:1px}
   .backlog-item-btns button{padding:3px 7px;font-size:11px;min-height:0}
+  .backlog-approve-btn, .backlog-hold-btn, .backlog-reject-btn {
+    font-size:0.72em;
+    padding:2px 7px;
+    border-radius:4px;
+    border:1px solid currentColor;
+    cursor:pointer;
+    opacity:0.85;
+    margin-left:3px;
+  }
+  .backlog-approve-btn{background:#1a3a1a;color:#6fcf6f}
+  .backlog-hold-btn{background:#3a3a10;color:#d4c860}
+  .backlog-reject-btn{background:#3a1a1a;color:#e07070}
+  .backlog-approve-btn:hover{background:#2a5a2a}
+  .backlog-hold-btn:hover{background:#5a5a18}
+  .backlog-reject-btn:hover{background:#5a2a2a}
   .backlog-empty{padding:16px 10px;color:var(--muted);text-align:center;font-size:13px}
   .backlog-filter{display:flex;gap:4px;flex-wrap:wrap;padding:8px 10px 6px;border-bottom:1px solid var(--border-soft)}
   .backlog-filter button{
@@ -3441,6 +3456,12 @@ function backlogItemHtml(item){
     btnHtml = '<button class="backlog-restore-btn" data-id="' + esc(id) + '" title="Восстановить в очередь" type="button">&#8617; Restore</button>';
   } else if(st === 'approved'){
     btnHtml = '<button class="backlog-drop-btn" data-id="' + esc(id) + '" title="Удалить из очереди" type="button">&#128683; Drop</button>';
+  } else if(st === 'new'){
+    btnHtml = '<button class="backlog-approve-btn" data-id="' + esc(id) + '" title="Approve" type="button">&#10003; Approve</button>' +
+      '<button class="backlog-hold-btn" data-id="' + esc(id) + '" title="Hold" type="button">&#9646; Hold</button>' +
+      '<button class="backlog-reject-btn" data-id="' + esc(id) + '" title="Reject" type="button">&#10007; Reject</button>';
+  } else if(st === 'held'){
+    btnHtml = '<button class="backlog-approve-btn" data-id="' + esc(id) + '" title="Approve" type="button">&#10003; Approve</button>';
   }
   return '<div class="backlog-item status-dot" data-id="' + esc(id) + '" data-status="' + esc(st) + '">' +
     dot +
@@ -5710,6 +5731,27 @@ if(backlogPanel){
       const id = dropBtn.dataset.id;
       dropBtn.disabled = true;
       backlogUpdate(id, 'auto-dropped', false, 'manual user drop');
+      return;
+    }
+    const approveBtn = e.target.closest('.backlog-approve-btn');
+    if(approveBtn){
+      const id = approveBtn.dataset.id;
+      approveBtn.disabled = true;
+      backlogUpdate(id, 'approved', true);
+      return;
+    }
+    const holdBtn = e.target.closest('.backlog-hold-btn');
+    if(holdBtn){
+      const id = holdBtn.dataset.id;
+      holdBtn.disabled = true;
+      backlogUpdate(id, 'held', false);
+      return;
+    }
+    const rejectBtn = e.target.closest('.backlog-reject-btn');
+    if(rejectBtn){
+      const id = rejectBtn.dataset.id;
+      rejectBtn.disabled = true;
+      backlogUpdate(id, 'auto-dropped', false, 'manual user reject');
       return;
     }
   });
