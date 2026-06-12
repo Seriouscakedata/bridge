@@ -3990,17 +3990,23 @@ function updateScrollProgress(){
 }
 function updateBottomButton(){
   stickToBottom = isNearBottom();
-  if(stickToBottom){
+  const atScrollEnd = log.scrollHeight - log.scrollTop - log.clientHeight <= 2;
+  if(stickToBottom && (followLock !== false || atScrollEnd)){
     unseenCount = 0;
     clearUnreadMarker();
   }
-  toBottom.classList.toggle('show', !stickToBottom);
+  const hasPausedNew = followLock === false && unseenCount > 0;
+  toBottom.classList.toggle('show', !stickToBottom || hasPausedNew);
   toBottom.classList.toggle('has-new', unseenCount > 0);
   toTop.classList.toggle('show', log.scrollTop > Math.max(420, log.clientHeight * 0.7));
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
   const _flBtn = document.getElementById('followLockBtn');
-  if(_flBtn) _flBtn.textContent = followLock ? '🔒' : '🔓';
+  if(_flBtn){
+    _flBtn.textContent = followLock ? '🔒' : '🔓';
+    _flBtn.title = followLock ? 'Follow lock on: new messages stay pinned' : 'Follow lock off: preserve scroll position';
+    _flBtn.setAttribute('aria-pressed', followLock ? 'true' : 'false');
+  }
   updateScrollProgress();
   updateDocumentTitle();
 }
@@ -4174,7 +4180,7 @@ function applyViewPrefs(){
   systemToggle.title = showSystem ? 'Скрыть системные события' : 'Показать системные события';
   rebuildSystemGroups();
   updateDaySeparators();
-  if(stickToBottom) requestAnimationFrame(() => scrollToBottom('auto'));
+  if(stickToBottom && followLock !== false) requestAnimationFrame(() => scrollToBottom('auto'));
   else requestAnimationFrame(updateBottomButton);
   updateOverview();
 }
@@ -4669,7 +4675,7 @@ function renderMessageBatch(data, options){
     if(visibleAdded && !beforeBottom && !firstLoad) ensureUnreadMarker(firstVisibleAdded);
     const focusedHash = focusHashTarget(!firstLoad);
     if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
-    if((beforeBottom && followLock !== false) || firstLoad){
+    if(firstLoad || followLock !== false){
       if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
       firstLoad = false;
     } else {
@@ -4868,11 +4874,12 @@ async function status(){
     }
     const retryBadge = document.getElementById('retryBadge');
     if(retryBadge){
-      const vr = s.verify_retry_count || 0;
-      const cr = s.critic_retry_count || 0;
-      const tr = s.timeout_retry_count || 0;
+      const vr = Number(s.verify_retry_count || 0) || 0;
+      const cr = Number(s.critic_retry_count || 0) || 0;
+      const tr = Number(s.timeout_retry_count || 0) || 0;
       const total = vr + cr + tr;
-      if(s.doctor_active){
+      const doctorActive = s.doctor_active === true || s.doctor_active === 'true';
+      if(doctorActive){
         retryBadge.textContent = 'doctor:' + (s.doctor_reason || '?');
         retryBadge.className = 'bad';
         retryBadge.title = s.doctor_reason || 'doctor active';
@@ -5732,7 +5739,8 @@ if(_followLockBtn){
   _followLockBtn.addEventListener('click', () => {
     followLock = !followLock;
     localStorage.setItem('bridgeFollow', followLock ? 'true' : 'false');
-    updateBottomButton();
+    if(followLock) scrollToBottom('smooth');
+    else updateBottomButton();
   });
 }
 if(moreMenuBtn){
@@ -6016,26 +6024,33 @@ window.addEventListener('keydown', e => {
     lightbox.setAttribute('aria-hidden','true');
     lightbox.querySelector('img').src = '';
   }
+  const _ae = document.activeElement;
+  const _typing = _ae && (_ae === input || _ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.tagName === 'SELECT' || _ae.isContentEditable);
   if((e.ctrlKey||e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k'){
+    if(_typing) return;
     e.preventDefault();
     killSwitch();
     return;
   }
-  const _ae = document.activeElement;
-  if(_ae && (_ae === input || _ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.isContentEditable)) return;
+  if(_typing) return;
+  if(e.altKey || e.ctrlKey || e.metaKey) return;
   if(e.key === 'j'){
+    e.preventDefault();
     const _msgs = Array.from(document.querySelectorAll('.msg'));
     const _st = log.scrollTop;
     const _next = _msgs.find(m => m.offsetTop > _st + log.clientHeight * 0.3);
     if(_next){ _next.scrollIntoView({behavior:'smooth', block:'center'}); flashTargetMessage(_next); }
   } else if(e.key === 'k'){
+    e.preventDefault();
     const _msgs = Array.from(document.querySelectorAll('.msg')).reverse();
     const _st = log.scrollTop;
     const _prev = _msgs.find(m => m.offsetTop < _st + log.clientHeight * 0.3);
     if(_prev){ _prev.scrollIntoView({behavior:'smooth', block:'center'}); flashTargetMessage(_prev); }
   } else if(e.key === 'g' && !e.ctrlKey && !e.metaKey){
+    e.preventDefault();
     log.scrollTo({top:0, behavior:'smooth'});
   } else if(e.key === 'G'){
+    e.preventDefault();
     scrollToBottom('smooth');
   }
 });
