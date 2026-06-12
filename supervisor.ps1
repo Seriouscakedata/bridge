@@ -586,8 +586,134 @@ function Test-CircuitSpawnPaused {
   }
 }
 
-$script:restartLimitState = New-SupervisorRestartLimitState
+function Get-SupervisorRestartLimitFilePath {
+  # Lives under the user profile (NOT OneDrive/bridge root) so counters survive
+  # supervisor crashes AND bridge-root rollbacks alike.
+  return (Join-Path $HOME '.bridge-runtime\restart-limits.json')
+}
+function ConvertTo-SupervisorRestartLimitDocument {
+  # Pure: in-memory limiter state -> persistable contract document.
+  # Prunes attempts older than the configured window and expired cooldowns.
+  param(
+    [Parameter(Mandatory=$true)][hashtable]$State,
+    [Parameter(Mandatory=$true)][object]$Settings,
+    [datetime]$Now = (Get-Date)
+  )
+  $nowUtc = ([datetime]$Now).ToUniversalTime()
+  $cutoffUtc = $nowUtc.AddMinutes(-1 * [Math]::Max(1, [int]$Settings.windowMin))
+  $channels = [ordered]@{}
+  foreach ($key in @($State.Keys | Sort-Object)) {
+    $entry = $State[$key]
+    if ($null -eq $entry) { continue }
+    $attempts = @(@($entry.attempts) | ForEach-Object {
+      try { ([datetime]$_).ToUniversalTime() } catch {}
+    } | Where-Object { $_ -is [datetime] -and $_ -ge $cutoffUtc } | Sort-Object)
+    $cooldownIso = $null
+    if ($entry.cooldownUntil) {
+      try {
+        $cu = ([datetime]$entry.cooldownUntil).ToUniversalTime()
+        if ($cu -gt $nowUtc) { $cooldownIso = $cu.ToString('o') }
+      } catch {}
+    }
+    if ((@($attempts).Count -eq 0) -and (-not $cooldownIso)) { continue }
+    $channels[$key] = [ordered]@{
+      count = @($attempts).Count
+      windowStart = $(if (@($attempts).Count) { ([datetime]@($attempts)[0]).ToString('o') } else { $null })
+      lastRestart = $(if (@($attempts).Count) { ([datetime]@($attempts)[-1]).ToString('o') } else { $null })
+      attempts = @(@($attempts) | ForEach-Object { $_.ToString('o') })
+      cooldownUntil = $cooldownIso
+    }
+  }
+  return [ordered]@{ channels = $channels; updatedAt = $nowUtc.ToString('o') }
+}
+function Save-SupervisorRestartLimitStateFile {
+  # Atomic persist (temp file + Move-Item -Force). Warn-only on failure: the
+  # limiter must keep working in-memory even if the file is locked/unwritable.
+  param(
+    [Parameter(Mandatory=$true)][hashtable]$State,
+    [Parameter(Mandatory=$true)][object]$Settings,
+    [string]$Path = (Get-SupervisorRestartLimitFilePath),
+    [datetime]$Now = (Get-Date)
+  )
+  $tmp = $null
+  try {
+    $doc = ConvertTo-SupervisorRestartLimitDocument -State $State -Settings $Settings -Now $Now
+    $json = [pscustomobject]$doc | ConvertTo-Json -Depth 6
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = $Path + '.tmp.' + $PID
+    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+    return $true
+  } catch {
+    try { Log ("WARN: restart-limit persist failed (continuing in-memory): " + $_.Exception.Message) } catch {}
+    try { if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
+    return $false
+  }
+}
+function Import-SupervisorRestartLimitStateFile {
+  # Restore limiter state across supervisor restarts. Any error -> empty state
+  # (warn-only); stale attempts/expired cooldowns are pruned on load.
+  param(
+    [Parameter(Mandatory=$true)][object]$Settings,
+    [string]$Path = (Get-SupervisorRestartLimitFilePath),
+    [datetime]$Now = (Get-Date)
+  )
+  $state = New-SupervisorRestartLimitState
+  try {
+    if (-not (Test-Path -LiteralPath $Path)) { return $state }
+    $raw = [System.IO.File]::ReadAllText($Path)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $state }
+    $doc = $raw | ConvertFrom-Json
+    if (-not $doc -or -not ($doc.PSObject.Properties.Name -contains 'channels') -or -not $doc.channels) { return $state }
+    $nowUtc = ([datetime]$Now).ToUniversalTime()
+    $cutoffUtc = $nowUtc.AddMinutes(-1 * [Math]::Max(1, [int]$Settings.windowMin))
+    foreach ($prop in @($doc.channels.PSObject.Properties)) {
+      $key = [string]$prop.Name
+      $chan = $prop.Value
+      if ([string]::IsNullOrWhiteSpace($key) -or $null -eq $chan) { continue }
+      $attempts = @()
+      if (($chan.PSObject.Properties.Name -contains 'attempts') -and $chan.attempts) {
+        foreach ($a in @($chan.attempts)) {
+          try {
+            $ts = ([datetime]$a).ToUniversalTime()
+            if ($ts -ge $cutoffUtc -and $ts -le $nowUtc.AddMinutes(5)) { $attempts += $ts }
+          } catch {}
+        }
+      } elseif (($chan.PSObject.Properties.Name -contains 'count') -and $chan.lastRestart) {
+        # Contract-only shape (no attempts array): synthesize count attempts at lastRestart.
+        try {
+          $n = [int]$chan.count
+          $ts = ([datetime]$chan.lastRestart).ToUniversalTime()
+          if ($n -gt 0 -and $ts -ge $cutoffUtc) { for ($i = 0; $i -lt $n; $i++) { $attempts += $ts } }
+        } catch {}
+      }
+      $cooldownUntil = $null
+      if (($chan.PSObject.Properties.Name -contains 'cooldownUntil') -and $chan.cooldownUntil) {
+        try {
+          $cu = ([datetime]$chan.cooldownUntil).ToUniversalTime()
+          if ($cu -gt $nowUtc) { $cooldownUntil = $cu }
+        } catch {}
+      }
+      if ((@($attempts).Count -eq 0) -and ($null -eq $cooldownUntil)) { continue }
+      $state[$key] = [pscustomobject]@{
+        attempts = @($attempts | Sort-Object)
+        cooldownUntil = $cooldownUntil
+        lastCooldownNoticeAt = $null
+      }
+    }
+    if (@($state.Keys).Count -gt 0) {
+      try { Log ("restart-limit state restored from " + $Path + " (" + @($state.Keys).Count + " channel(s))") } catch {}
+    }
+  } catch {
+    try { Log ("WARN: restart-limit state load failed (starting empty): " + $_.Exception.Message) } catch {}
+    return (New-SupervisorRestartLimitState)
+  }
+  return $state
+}
+
 $script:restartLimitSettings = Get-SupervisorRestartLimitSettings -Config $cfg
+$script:restartLimitState = Import-SupervisorRestartLimitStateFile -Settings $script:restartLimitSettings
 $script:fatalExitSettings = Get-SupervisorFatalExitCodeSettings -Config $cfg
 try {
   if ($cfg -and $cfg.supervisor -and $null -ne $cfg.supervisor.stopWaitMs) {
@@ -617,6 +743,9 @@ function Test-SupervisorProcessStartAllowed {
     -LogCallback { param($m) Log $m } `
     -MessageCallback { param($m) Add-Message -From system -Text $m -Kind event | Out-Null } `
     -PushCallback { param($m) try { Send-PushEvent -Kind need_you -Text $m } catch {} }
+  # Every gate call mutates state (attempt append / cooldown enter / window prune):
+  # persist so counters survive a supervisor crash+restart. Warn-only inside.
+  Save-SupervisorRestartLimitStateFile -State $script:restartLimitState -Settings $script:restartLimitSettings | Out-Null
   return [bool]$res.allowed
 }
 
