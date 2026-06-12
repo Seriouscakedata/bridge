@@ -482,6 +482,12 @@
   .wave-chip.parallel{border-color:rgba(104,211,145,.5);color:#68d391;background:#0c1c10}
   .wave-chip.serial{border-color:rgba(255,193,7,.4);color:#d4a017;background:#1a1400}
   .wave-chip .wc-jobs{font-size:11px;color:var(--muted);margin-left:4px}
+  .wave-board{display:flex;flex-direction:column;gap:2px;background:#0d1117;border:1px solid var(--border-soft);border-radius:6px;padding:4px 8px;font-size:11px;font-family:var(--mono);max-width:420px}
+  .wave-board-row{display:flex;align-items:center;gap:6px;padding:2px 0;overflow:hidden}
+  .wb-dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .wb-dot.wb-codex{background:#4fc3f7}.wb-dot.wb-claude{background:#68d391}.wb-dot.wb-other{background:#888}
+  .wb-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--soft)}
+  .wb-meta{color:var(--muted);flex:none;font-size:10px;margin-left:2px}
   .last-event-ticker{display:flex;align-items:center;width:100%;padding:3px 14px;background:var(--head-bg);border-bottom:1px solid var(--border-soft);font-size:11.5px;color:var(--muted);cursor:pointer;user-select:none;line-height:1.6;overflow:hidden;transition:color .15s}
   .last-event-ticker:hover{color:var(--soft)}
   .last-event-ticker .let-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
@@ -2213,6 +2219,7 @@
       <span class="agent-model" id="agentModel"></span>
     </div>
     <div id="waveChip" class="wave-chip" hidden></div>
+    <div id="waveBoard" class="wave-board" hidden></div>
     <div class="status-pill" id="statusPill" title="Текущая активность моста">
       <b id="st">ожидание</b>
       <span class="status-task" id="task">нет активной задачи</span>
@@ -3540,6 +3547,29 @@ function updateWaveChip(){
   const isParallel = batchActive && batchMode !== 'serial' && streamN > 1;
   const isSerial = batchActive && (batchMode === 'serial' || !!serialReason);
   const jobsK = jobs.length;
+  const board = document.getElementById('waveBoard');
+  if(board){
+    if(!streams.length){
+      board.hidden = true;
+      board.innerHTML = '';
+    } else {
+      board.hidden = false;
+      board.innerHTML = streams.map(function(w){
+        const coderRaw = String(w.coder || w.model || '');
+        const coderCls = /codex/i.test(coderRaw) ? 'wb-codex' : (/claude/i.test(coderRaw) ? 'wb-claude' : 'wb-other');
+        const rawBody = String(w.body || '').replace(/[\r\n]+/g, ' ');
+        const bodyText = rawBody.slice(0, 48);
+        const elapsed = w.startedAt ? elapsedShort(w.startedAt) : '';
+        const nFiles = Array.isArray(w.files) ? w.files.length : 0;
+        const meta = [elapsed, nFiles > 0 ? nFiles + ' files' : ''].filter(Boolean).join(' / ');
+        return '<div class="wave-board-row">'
+          + '<span class="wb-dot ' + coderCls + '"></span>'
+          + '<span class="wb-body">' + esc(coderRaw || '?') + ': ' + esc(bodyText) + (rawBody.length > 48 ? '&hellip;' : '') + '</span>'
+          + (meta ? '<span class="wb-meta">' + esc(meta) + '</span>' : '')
+          + '</div>';
+      }).join('');
+    }
+  }
 
   if(!isParallel && !isSerial && jobsK === 0){
     chip.hidden = true;
