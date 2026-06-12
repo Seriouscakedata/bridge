@@ -6473,7 +6473,11 @@ function renderChTabs(items, active){
     return;
   }
   chTabsStrip.classList.add('visible');
-  const shown = visible.slice(0, 5);
+  let shown = visible.slice(0, 5);
+  if(active && visible.length > 5 && !shown.some(ch => String(ch.slug || '') === active)){
+    const activeCh = visible.find(ch => String(ch.slug || '') === active);
+    if(activeCh) shown = shown.slice(0, 4).concat(activeCh);
+  }
   for(const ch of shown){
     const slug = String(ch.slug || '');
     if(!slug) continue;
