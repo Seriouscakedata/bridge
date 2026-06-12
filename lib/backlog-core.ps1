@@ -1430,6 +1430,7 @@ function Get-ApprovedBacklogClaimabilityReport {
     project_scope_allowed = [bool]$projectAllowed
     runnable_ids = @($runnable.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     control_plane_ids = @($controlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
+    control_plane_all_ids = @($controlPlane.ToArray() | ForEach-Object { [string]$_.id })
     admitted_control_plane_ids = @($admittedControlPlane.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     project_scope_ids = @($projectScope.ToArray() | Select-Object -First 8 | ForEach-Object { [string]$_.id })
     governor_deferred = $(if ($governorResult) { @($governorResult.deferred) } else { @() })
@@ -1469,7 +1470,12 @@ function Set-ApprovedBacklogClaimabilityDeadlockHeld {
     return [pscustomobject][ordered]@{ changed = $false; held_count = 0; held_ids = @(); reason = 'not-deadlock' }
   }
 
-  $ids = @($Claimability.control_plane_ids | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $rawIds = @()
+  try { $rawIds = @($Claimability.control_plane_all_ids) } catch { $rawIds = @() }
+  if ($rawIds.Count -eq 0) {
+    try { $rawIds = @($Claimability.control_plane_ids) } catch { $rawIds = @() }
+  }
+  $ids = @($rawIds | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   if ($ids.Count -eq 0) {
     return [pscustomobject][ordered]@{ changed = $false; held_count = 0; held_ids = @(); reason = 'no-control-plane-ids' }
   }

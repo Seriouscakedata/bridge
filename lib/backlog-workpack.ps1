@@ -50,6 +50,55 @@ function Invoke-BacklogClaimabilityDeadlockAdmission {
   if (-not $deadlock) {
     return [pscustomobject][ordered]@{ deadlock = $false; held_count = 0; held_ids = @(); reason = 'not-deadlock' }
   }
+  $controlPlaneParentIds = @()
+  try { $controlPlaneParentIds = @($Claimability.control_plane_all_ids) } catch { $controlPlaneParentIds = @() }
+  if ($controlPlaneParentIds.Count -eq 0) {
+    try { $controlPlaneParentIds = @($Claimability.control_plane_ids) } catch { $controlPlaneParentIds = @() }
+  }
+  $missingCanary = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rawParentId in @($controlPlaneParentIds)) {
+    $parentId = ([string]$rawParentId).Trim()
+    if ([string]::IsNullOrWhiteSpace($parentId)) { continue }
+    $parent = $null
+    foreach ($candidateParent in @($Items)) {
+      if ([string](Get-BacklogPackObjectValue -Obj $candidateParent -Name 'id' -Default '') -eq $parentId) {
+        $parent = $candidateParent
+        break
+      }
+    }
+
+    $hasCanaryGate = $false
+    if ($parent) {
+      $routedChildId = [string](Get-BacklogPackObjectValue -Obj $parent -Name 'canary_gate_routed_to_main' -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($routedChildId)) { $hasCanaryGate = $true }
+    }
+    if (-not $hasCanaryGate) {
+      foreach ($candidate in @($Items)) {
+        $candidateTags = @()
+        try { $candidateTags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $candidate -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $candidateTags = @() }
+        if (-not (@($candidateTags) -contains 'bridge-self-canary-gate')) { continue }
+        if (-not (@($candidateTags) -contains 'operator')) { continue }
+        $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'parent_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($candidateParent)) { $candidateParent = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'canary_gate_parent_id' -Default '') }
+        $candidateText = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'text' -Default '')
+        if ([string]$candidateParent -eq $parentId -or $candidateText -match [regex]::Escape('[parent:' + $parentId + ']')) {
+          $hasCanaryGate = $true
+          break
+        }
+      }
+    }
+    if (-not $hasCanaryGate) { [void]$missingCanary.Add($parentId) }
+  }
+  if ($missingCanary.Count -gt 0) {
+    return [pscustomobject][ordered]@{
+      deadlock = $true
+      changed = $false
+      held_count = 0
+      held_ids = @()
+      reason = 'missing-canary-gate'
+      missing_canary_parent_ids = @($missingCanary.ToArray())
+    }
+  }
   $held = Set-ApprovedBacklogClaimabilityDeadlockHeld -Items $Items -Claimability $Claimability -Channel $Channel
   return [pscustomobject][ordered]@{
     deadlock = $true

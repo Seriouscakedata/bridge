@@ -62,6 +62,10 @@ try {
   $report = Get-ApprovedBacklogClaimabilityReport
   Check 'pure detector recognizes control-plane-only deadlock' (Test-ApprovedBacklogClaimabilityDeadlock -Claimability $report) $report
 
+  $prematureAdmission = Invoke-BacklogClaimabilityDeadlockAdmission -Claimability $report -Channel 'main'
+  $prematureParent = @((Get-Backlog) | Where-Object { [string]$_.id -eq 'deadlock-parent' })[0]
+  Check 'deadlock admission refuses hold before canary child exists' (([bool]$prematureAdmission.deadlock) -and [int]$prematureAdmission.held_count -eq 0 -and [string]$prematureAdmission.reason -eq 'missing-canary-gate' -and [string]$prematureParent.status -eq 'approved') $prematureAdmission
+
   $gate = Ensure-BridgeSelfCanaryGateTasks -ParentIds @('deadlock-parent') -Channel 'main'
   Check 'canary child is created before hold' ([int]$gate.created_count -eq 1) $gate
 
@@ -91,6 +95,31 @@ try {
   })
   $mixedReport = Get-ApprovedBacklogClaimabilityReport
   Check 'detector rejects non-control-plane-only blocked set' (-not (Test-ApprovedBacklogClaimabilityDeadlock -Claimability $mixedReport)) $mixedReport
+
+  $manyParents = @()
+  for ($i = 1; $i -le 10; $i++) {
+    $manyParents += [pscustomobject][ordered]@{
+      id = ('deadlock-parent-' + $i)
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      from = 'test'
+      status = 'approved'
+      tags = @('control-plane')
+      attempts = 0
+      score = 0
+      project = 'main'
+      scope = 'bridge'
+      text = 'Modify bridge control-plane logic.'
+    }
+  }
+  Save-Backlog $manyParents
+  $manyReport = Get-ApprovedBacklogClaimabilityReport
+  $manyIds = @($manyReport.control_plane_all_ids)
+  Check 'report exposes all control-plane ids for deadlock admission' ($manyIds.Count -eq 10 -and @($manyIds) -contains 'deadlock-parent-10') $manyReport
+  $manyGate = Ensure-BridgeSelfCanaryGateTasks -ParentIds $manyIds -Channel 'main'
+  Check 'canary gate is created for every control-plane parent' ([int]$manyGate.created_count -eq 10) $manyGate
+  $manyAdmission = Invoke-BacklogClaimabilityDeadlockAdmission -Claimability $manyReport -Channel 'main'
+  $manyHeld = @((Get-Backlog) | Where-Object { [string]$_.status -eq 'held' -and [string]$_.held_by -eq 'claimability-deadlock' })
+  Check 'deadlock admission holds all parents beyond display sample' ([int]$manyAdmission.held_count -eq 10 -and $manyHeld.Count -eq 10 -and @($manyAdmission.held_ids) -contains 'deadlock-parent-10') $manyAdmission
 } finally {
   if (Test-Path -LiteralPath $script:TestRoot) { Remove-Item -LiteralPath $script:TestRoot -Recurse -Force }
 }

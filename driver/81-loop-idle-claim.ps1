@@ -941,15 +941,20 @@ $script:DriverLoopIdleClaimBlock = {
               if ([int]$claimability.control_plane_blocked -gt 0) {
                 $idleTransition = $null
                 $canaryGate = $null
+                $controlPlaneParentIds = @()
+                try { $controlPlaneParentIds = @($claimability.control_plane_all_ids) } catch { $controlPlaneParentIds = @() }
+                if ($controlPlaneParentIds.Count -eq 0) {
+                  try { $controlPlaneParentIds = @($claimability.control_plane_ids) } catch { $controlPlaneParentIds = @() }
+                }
                 try { $idleTransition = Update-BacklogClaimabilityIdleState -Claimability $claimability -Channel $Channel -Signature $sig -BackoffSeconds 300 -ForceReflectAfter 3 } catch { $idleTransition = $null }
                 try {
-                  $canaryGate = Ensure-BridgeSelfCanaryGateTasks -ParentIds @($claimability.control_plane_ids) -Channel $Channel
+                  $canaryGate = Ensure-BridgeSelfCanaryGateTasks -ParentIds $controlPlaneParentIds -Channel $Channel
                   if ($canaryGate -and [int]$canaryGate.created_count -gt 0) {
                     Write-BacklogJsonLine ([ordered]@{
                       ts = (Get-Date).ToUniversalTime().ToString('o')
                       action = 'bridge-self-canary-gate-created'
                       channel = [string]$Channel
-                      parent_ids = @($claimability.control_plane_ids)
+                      parent_ids = @($controlPlaneParentIds)
                       child_ids = @($canaryGate.created_ids)
                     })
                     Add-Message -From system -Text ("🧪 Bridge-self canary gate: создано operator-задач для control-plane parents: " + ((@($canaryGate.created_ids) | Select-Object -First 4) -join ',')) -Kind event | Out-Null
@@ -1015,7 +1020,7 @@ $script:DriverLoopIdleClaimBlock = {
                   other = [int]$claimability.other_blocked
                   governor_deferred = [int]$claimability.governor_deferred_count
                   governor_dropped = [int]$claimability.governor_dropped_count
-                  control_plane_ids = @($claimability.control_plane_ids)
+                  control_plane_ids = @($controlPlaneParentIds)
                   project_scope_ids = @($claimability.project_scope_ids)
                   governor_deferred_items = @($governorDeferredItems)
                 })
