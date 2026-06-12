@@ -827,6 +827,28 @@ try {
         } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'POST' -and $path -eq '/api/stop') {
+        # Dedicated stop-lever for TG-bot and external callers. Kills the current agent process
+        # for the target channel and sets abort=true. Mirrors /api/control action=kill logic.
+        # Honors ?channel=<slug> or body.channel.
+        $body = $null; try { $body = Read-Body $ctx | ConvertFrom-Json } catch {}
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body -and $null -ne $body.channel) { $chParam = [string]$body.channel }
+        $prevPin = Get-PinnedChannel
+        $killedPid = $null
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          $apid = (Read-State).agent_pid
+          Update-State { param($s) $s.abort = $true } | Out-Null
+          if ($apid) {
+            $killedPid = $apid
+            try { Start-Process taskkill -ArgumentList '/PID',([string]$apid),'/F','/T' -NoNewWindow -Wait } catch {}
+          }
+          [void](Add-Message -From system -Text "🛑 Stop requested via /api/stop." -Kind event)
+        } finally { Set-PinnedChannel $prevPin }
+        $pidVal = if ($null -ne $killedPid) { [string]$killedPid } else { 'null' }
+        Send-Text $ctx "{`"ok`":true,`"killedPid`":$pidVal}" 'application/json; charset=utf-8'
+      }
       elseif ($method -eq 'POST' -and $path -eq '/api/archive') {
         # User-triggered chat archive: move old messages to conversation.archive.jsonl, keeping the
         # last N live. ONLY when the channel is idle, so we never strip context mid-task. Honors
