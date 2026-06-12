@@ -1332,7 +1332,11 @@
   .from-system .msg-head{margin-bottom:3px}
   .from-system .msg-actions{display:none}
   .from-system .who{color:var(--system)}
-  .from-system .md{font-size:12px}
+  .from-system .md{font-size:13.5px}
+  .from-system + .from-claude,
+  .from-system + .from-codex,
+  .from-claude + .from-system,
+  .from-codex + .from-system{margin-top:10px}
   .from-system.system-collapsed:not(.search-hit){display:none}
   .system-bundle{
     align-self:center;
@@ -1377,7 +1381,7 @@
   body.compact-mode .msg-head{margin-bottom:3px}
   body.compact-mode .md{font-size:13px;line-height:1.45}
   body.compact-mode .from-system .bubble{padding:4px 8px}
-  body.compact-mode .from-system .md{font-size:11.5px}
+  body.compact-mode .from-system .md{font-size:12.5px}
   .day-sep{
     align-self:center;
     width:min(760px,92%);
@@ -1471,16 +1475,16 @@
   .expand-inline{display:block;background:none;border:none;cursor:pointer;color:var(--model);font-size:12.5px;font-weight:600;padding:6px 0 2px;width:100%;text-align:center;letter-spacing:.02em;opacity:.85;transition:opacity .15s,color .15s}
   .expand-inline:hover{opacity:1;color:var(--fg)}
   .msg.expanded .expand-inline{display:none}
-  .md h1,.md h2,.md h3,.md h4{margin:.65em 0 .35em;line-height:1.25;color:#fff}
-  .md h1{font-size:1.28em}
-  .md h2{font-size:1.18em}
-  .md h3{font-size:1.08em}
+  .md h1,.md h2,.md h3,.md h4{line-height:1.25;color:var(--txt)}
+  .md h1{font-size:16px;font-weight:750;margin:11px 0 5px}
+  .md h2{font-size:15px;font-weight:700;margin:10px 0 4px}
+  .md h3{font-size:13.5px;font-weight:650;margin:8px 0 3px;color:var(--soft)}
   .md h4{font-size:1em}
-  .md ul,.md ol{margin:.45em 0;padding-left:1.35em}
-  .md li{margin:.22em 0}
+  .md ul,.md ol{padding-left:18px;margin:4px 0}
+  .md li{margin:2px 0}
   .md li.task{list-style:none;margin-left:-1.35em;display:flex;gap:8px;align-items:flex-start}
   .md li.task input{margin-top:.28em;accent-color:var(--codex)}
-  .md blockquote{margin:.55em 0;padding:.1em .9em;border-left:3px solid var(--border);color:var(--soft)}
+  .md blockquote{border-left:3px solid var(--border-soft);margin:6px 0;padding:4px 10px;color:var(--muted);font-size:13px}
   .md .table-wrap{max-width:100%;overflow:auto;margin:.65em 0;border:1px solid var(--border);border-radius:10px;background:#0b0f15}
   .md table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px}
   .md th,.md td{padding:8px 10px;border-bottom:1px solid var(--border-soft);vertical-align:top;text-align:left}
@@ -1488,14 +1492,15 @@
   .md tr:last-child td{border-bottom:0}
   .md tbody tr:hover{background:rgba(255,255,255,.025)}
   .md code{
-    background:#0c1016;
+    background:rgba(255,255,255,.07);
     border:1px solid var(--border-soft);
-    border-radius:5px;
+    border-radius:4px;
     padding:1px 5px;
     font-family:Consolas,"Cascadia Mono","Courier New",monospace;
-    font-size:.92em;
+    font-size:12.5px;
     color:#f4d78b;
   }
+  .md pre code{background:transparent;padding:0}
   .codebox{
     max-width:100%;
     min-width:0;
@@ -1640,6 +1645,29 @@
   #working.claude .work-dot{background:var(--claude-bg);color:var(--claude)}
   #working.codex .work-dot{background:var(--codex-bg);color:var(--codex)}
   #working .lbl{font-size:13px;font-weight:650;color:var(--soft)}
+  #activity-banner{
+    display:none;
+    width:100%;
+    padding:8px 16px;
+    background:linear-gradient(90deg,rgba(23,26,33,.96),rgba(28,32,42,.96));
+    border-bottom:1px solid var(--border-soft);
+    align-items:center;
+    gap:10px;
+    font-size:13px;
+    position:sticky;
+    top:0;
+    z-index:40;
+    backdrop-filter:blur(8px);
+  }
+  #activity-banner.visible{display:flex}
+  #activity-banner.claude{border-bottom-color:rgba(184,140,255,.4)}
+  #activity-banner.codex{border-bottom-color:rgba(104,211,145,.35)}
+  #activity-banner .ab-dot{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:800}
+  #activity-banner.claude .ab-dot{background:var(--claude-bg);color:var(--claude)}
+  #activity-banner.codex .ab-dot{background:var(--codex-bg);color:var(--codex)}
+  #activity-banner .ab-lbl{font-weight:650;color:var(--soft);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #activity-banner .ab-elapsed{font-size:12px;color:var(--muted);white-space:nowrap}
+  #working{display:none!important}
   .typing{display:inline-flex;gap:4px}
   .typing i{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:bounce 1.2s infinite}
   .typing i:nth-child(2){animation-delay:.2s}
@@ -2129,6 +2157,43 @@
     z-index:60;padding:6px;
   }
   .channel-selector.open .channel-menu{display:block}
+  .ch-tabs-strip{
+    display:none;
+    width:100%;
+    align-items:center;
+    gap:8px;
+    padding:7px 16px;
+    background:rgba(15,17,21,.86);
+    border-bottom:1px solid var(--border-soft);
+    overflow-x:auto;
+    scrollbar-width:thin;
+  }
+  .ch-tabs-strip.visible{display:flex}
+  .ch-tab{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    min-height:28px;
+    max-width:210px;
+    padding:5px 14px;
+    border-radius:999px;
+    border:1px solid var(--border-soft);
+    background:var(--panel-2);
+    color:var(--soft);
+    font-size:13px;
+    font-weight:650;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:background .15s,border-color .15s,color .15s;
+  }
+  .ch-tab:hover{background:rgba(255,255,255,.07);border-color:rgba(114,183,255,.32);color:var(--txt)}
+  .ch-tab.active{background:rgba(114,183,255,.14);border-color:rgba(114,183,255,.45);color:#d6ebff}
+  .ch-tab .ch-tab-name{overflow:hidden;text-overflow:ellipsis}
+  .ch-tab-dot{width:8px;height:8px;border-radius:50%;background:#647082;box-shadow:0 0 0 1px rgba(255,255,255,.08);flex:none}
+  .ch-tab-dot.ok{background:var(--codex);box-shadow:0 0 10px rgba(104,211,145,.35)}
+  .ch-tab-dot.warn{background:var(--model);box-shadow:0 0 10px rgba(255,209,102,.35)}
+  .ch-tab-dot.bad{background:var(--danger);box-shadow:0 0 10px rgba(255,107,107,.38)}
+  .ch-tab-more{cursor:default;color:var(--muted);background:rgba(255,255,255,.035)}
   .channel-menu-head{
     font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
     padding:6px 10px 4px;
@@ -2189,6 +2254,8 @@
     .channel-btn .channel-name{max-width:120px}
     .channel-btn{max-width:190px}
     .channel-menu{left:auto;right:0;min-width:240px}
+    .ch-tabs-strip{padding:6px 10px;gap:6px}
+    .ch-tab{max-width:150px;padding:5px 10px;font-size:12.5px}
   }
 </style>
 </head>
@@ -2280,6 +2347,13 @@
   </div>
   <button id="headerToggle" class="icon header-toggle-btn" type="button" title="Скрыть/показать панель" aria-label="Скрыть/показать панель" aria-pressed="false">⌃</button>
 </header>
+<div id="activity-banner" role="status" aria-live="polite" aria-label="Bridge activity">
+  <span class="ab-dot"></span>
+  <span class="ab-lbl"></span>
+  <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
+  <span class="ab-elapsed"></span>
+</div>
+<div id="chTabsStrip" class="ch-tabs-strip" role="tablist" aria-label="Channels"></div>
 <div id="lastEventTicker" class="last-event-ticker" hidden></div>
 <div id="filterBar" class="filterbar" aria-label="Фильтр ленты">
   <span class="label">показать:</span>
@@ -2316,7 +2390,7 @@
     <strong>История загружается</strong>
     <span>Если сообщений нет, проверьте фильтр или строку поиска.</span>
   </div>
-  <div id="working" class="">
+  <div id="working" class="" hidden>
     <span class="work-dot">...</span>
     <span class="lbl"></span>
     <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -4746,6 +4820,7 @@ function showConnectionProblem(source, err){
   setChip('chipCodex', false);
   setChip('chipModel', false);
   working.style.display = 'none';
+  updateActivityBanner({}, '', '');
   updateEmptyState();
   updateDocumentTitle();
   updateBottomButton();
@@ -4760,6 +4835,45 @@ function fallbackStatus(s, mdl){
   if(s.paused) return 'Пауза: мост ждёт команды продолжить.';
   if(s.status === 'idle') return 'Ожидание новой задачи.';
   return s.status || 'Ожидание';
+}
+function updateActivityBanner(s, statusText, mdl){
+  const banner = document.getElementById('activity-banner');
+  if(!banner) return;
+  s = s || {};
+  const act = s.active_agent === 'claude' || s.active_agent === 'codex' ? s.active_agent : '';
+  const hbMs = s.heartbeat ? Date.parse(s.heartbeat) : NaN;
+  const hbFresh = Number.isFinite(hbMs) && (Date.now() - hbMs) < 30000;
+  const statusRaw = String(s.status || '').toLowerCase();
+  const statusDetail = String(s.status_text || '').toLowerCase();
+  const hasWorkText = Boolean(statusDetail && statusDetail !== 'idle' && !/idle|waiting/.test(statusDetail));
+  const busy = Boolean(act) || (hbFresh && statusRaw && statusRaw !== 'idle') || (hbFresh && hasWorkText && Boolean(s.current_task));
+  if(!busy){
+    banner.className = '';
+    banner.classList.remove('visible');
+    banner.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  banner.className = act || '';
+  banner.classList.add('visible');
+  banner.setAttribute('aria-hidden', 'false');
+  const dotEl = banner.querySelector('.ab-dot');
+  const lblEl = banner.querySelector('.ab-lbl');
+  const elEl = banner.querySelector('.ab-elapsed');
+  const who = act === 'claude' ? 'Claude' : act === 'codex' ? 'Codex' : '';
+  if(dotEl) dotEl.textContent = act === 'claude' ? 'AI' : act === 'codex' ? 'CX' : '...';
+  if(lblEl){
+    const label = statusText || s.status_text || (who ? (who + ' is working...') : 'Bridge is working...');
+    lblEl.textContent = mdl && who ? (label + ' (' + mdl + ')') : label;
+  }
+  if(elEl){
+    const startMs = s.claimed_at ? Date.parse(s.claimed_at) : NaN;
+    if(Number.isFinite(startMs)){
+      const sec = Math.max(0, Math.round((Date.now() - startMs)/1000));
+      elEl.textContent = sec >= 60 ? (Math.floor(sec/60) + 'm ' + (sec%60) + 's') : (sec > 5 ? sec + 's' : '');
+    } else {
+      elEl.textContent = hbFresh ? 'live' : '';
+    }
+  }
 }
 async function status(){
   if(statusInFlight) return;
@@ -4801,6 +4915,7 @@ async function status(){
       }
       statusText += live;
     }
+    updateActivityBanner(s, statusText, mdl);
     const statusEl = document.getElementById('st');
     statusEl.textContent = statusText;
     statusEl.title = statusText === readableStatus ? '' : readableStatus;
@@ -6196,6 +6311,7 @@ const channelNameEl   = document.getElementById('channelName');
 const channelGlyphEl  = channelBtn ? channelBtn.querySelector('.channel-glyph') : null;
 const channelListEl   = document.getElementById('channelList');
 const channelNewBtn   = document.getElementById('channelNewBtn');
+const chTabsStrip     = document.getElementById('chTabsStrip');
 // 2026-05-28: `channelsCache` declaration moved up next to channelEpoch -- it's
 // referenced by poll()/pollPlan()/pollBacklog() above this section and a `let`
 // declared here would put it in TDZ at first-poll time. (Kept this comment as a
@@ -6255,6 +6371,7 @@ function renderChannels(){
   if(channelGlyphEl) channelGlyphEl.textContent = isBridge ? '\uD83C\uDF09' : '\uD83D\uDCC1';
   if(channelNameEl) channelNameEl.textContent = scopeLabel;
   if(channelBtn) channelBtn.title = scopeLabel + ' (' + displayChannel + ')';
+  renderChTabs(items, active);
   if(!channelListEl) return;
   channelListEl.innerHTML = '';
   if(!items.length){
@@ -6341,6 +6458,53 @@ function renderChannels(){
     item.appendChild(acts);
     item.addEventListener('click', () => { if(!isActive) switchChannel(slug); });
     channelListEl.appendChild(item);
+  }
+}
+function renderChTabs(items, active){
+  if(!chTabsStrip) return;
+  const visible = (Array.isArray(items) ? items : []).filter(ch => {
+    if(!ch) return false;
+    const status = String(ch.status || ch.state || '').toLowerCase();
+    return ch.archived !== true && String(ch.archived).toLowerCase() !== 'true' && status !== 'archived';
+  });
+  chTabsStrip.innerHTML = '';
+  if(visible.length <= 1){
+    chTabsStrip.classList.remove('visible');
+    return;
+  }
+  chTabsStrip.classList.add('visible');
+  const shown = visible.slice(0, 5);
+  for(const ch of shown){
+    const slug = String(ch.slug || '');
+    if(!slug) continue;
+    const isActive = slug === active;
+    const health = channelHealthCache[slug] || null;
+    const healthLevel = health && /^(ok|warn|bad)$/.test(health.level) ? health.level : '';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ch-tab' + (isActive ? ' active' : '');
+    btn.dataset.slug = slug;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.title = String(ch.description || ch.project_root || slug);
+    const dot = document.createElement('span');
+    dot.className = 'ch-tab-dot' + (healthLevel ? ' ' + healthLevel : '');
+    dot.setAttribute('aria-hidden', 'true');
+    btn.appendChild(dot);
+    const name = document.createElement('span');
+    name.className = 'ch-tab-name';
+    name.textContent = String(ch.name || slug);
+    btn.appendChild(name);
+    btn.addEventListener('click', () => { if(!isActive) switchChannel(slug); });
+    chTabsStrip.appendChild(btn);
+  }
+  const hiddenCount = Math.max(0, visible.length - shown.length);
+  if(hiddenCount > 0){
+    const more = document.createElement('span');
+    more.className = 'ch-tab ch-tab-more';
+    more.textContent = '+' + hiddenCount;
+    more.title = 'Open the channel menu to see all channels';
+    chTabsStrip.appendChild(more);
   }
 }
 function openChannelMenu(){
