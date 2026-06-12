@@ -2232,6 +2232,42 @@ function Resolve-BacklogWorkpackFrontier {
   $claimAvailable = ([bool]$batchAvailable -or [bool]$serialAvailable)
   $workpackBatchMode = if ($serialAvailable) { 'serial' } elseif ($batchAvailable) { 'parallel' } else { '' }
   $serialReason = if ($serialAvailable) { 'serial-single-fallback' } else { '' }
+
+  # 2026-06-12 A6 (speed program, benchmark-proven): the close-tail (~19 min of planner turns +
+  # critic + QA + gates) is paid PER TASK regardless of edit size. K small same-file atoms used
+  # to run K separate full pipelines (~24 min each) because touch-overlap correctly serializes
+  # them — but that serialization can happen INSIDE one task: chain the co-touch atoms into ONE
+  # serial batch (the batch text generator, commit-per-atom CONTINUE-CHUNK protocol and the
+  # single batch close already exist), so the tail is paid once per chain instead of per atom.
+  # Cap 4 keeps a chain inside the commit-famine budget; protected core/safety items never reach
+  # this path (excluded from this frontier upstream). 6-atom benchmark math: 6x(5 work + 19 tail)
+  # = 144 min serially -> 2 chains x (4x5 + 19) ~= 78 min, ~8-13 min/atom.
+  if ($serialAvailable -and $selected.Count -eq 1) {
+    $chainAnchorId = [string](Get-BacklogPackObjectValue -Obj $selected[0] -Name 'id' -Default '')
+    $serialChainCap = 4
+    foreach ($candidate in @($candidateReports.ToArray())) {
+      if ($selected.Count -ge $serialChainCap) { break }
+      if (-not [bool]$candidate.blocked) { continue }
+      if ([string]$candidate.block_reason -ne 'conflicts-or-touch-overlap') { continue }
+      $chainConflicts = @($candidate.conflict_with_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      # Only atoms whose ONLY conflict is the chain anchor (same file, nothing else) qualify.
+      if ($chainConflicts.Count -eq 0) { continue }
+      if (@($chainConflicts | Where-Object { $_ -ne $chainAnchorId }).Count -gt 0) { continue }
+      $chainItem = $null
+      foreach ($it in $eligible) {
+        if ([string](Get-BacklogPackObjectValue -Obj $it -Name 'id' -Default '') -eq [string]$candidate.id) { $chainItem = $it; break }
+      }
+      if ($null -eq $chainItem) { continue }
+      [void]$selected.Add($chainItem)
+      Set-BacklogWorkpackCandidateSelected -Candidate $candidate -Order $selected.Count
+    }
+    if ($selected.Count -gt 1) {
+      $ids = @($selected.ToArray() | ForEach-Object { [string]$_.id })
+      $packs = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
+      $workpackBatchMode = 'serial'
+      $serialReason = 'serial-chain-same-touch'
+    }
+  }
   $reason = 'unknown'
   if (-not [bool]$Config.enabled) {
     $reason = 'disabled'
