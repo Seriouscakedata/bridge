@@ -4,5 +4,35 @@
     "description":  "Personal Telegram bot = operator chat interface to the bridge (text, files, screenshots, voice). Web UI untouched.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\telegram-bridge-bot",
     "created":  "2026-06-12T15:35:54.1751549+03:00",
-    "archived":  false
+    "archived":  false,
+    "plan_approved":  true,
+    "plan_approved_at":  "2026-06-12T14:15:32.9029796Z",
+    "plan_approved_signature":  "42490a2b167f0d0492ef7c708c1973c86840e31c30c3f784dc3f456f32e05d78",
+    "plan_approved_signature_version":  "staged-v1",
+    "plan_approved_files":  [
+                                "PROJECT_BRIEF.md",
+                                "DISCUSS_PRODUCT.md",
+                                "DISCUSS_UX.md",
+                                "DISCUSS_UI.md",
+                                "DISCUSS_BACKEND.md",
+                                "DISCUSS_QA.md",
+                                "DISCUSS_INTEGRATION.md",
+                                "PROJECT_MAP.md",
+                                "PROJECT_PLAN.md",
+                                ".bridge\\project-contract.json"
+                            ],
+    "plan_approved_git_head":  "3d05a378606c14c2093af0eb83996719cc406a0a",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\telegram-bridge-bot\\.bridge\\project-contract.json",
+    "plan_contract_score":  92,
+    "plan_contract_required_sections":  [
+                                            "goal",
+                                            "scope/non_goals",
+                                            "users/roles",
+                                            "surfaces/routes/screens",
+                                            "data/backend",
+                                            "acceptance_scenarios",
+                                            "checks",
+                                            "risk",
+                                            "parallel_policy"
+                                        ]
 }
