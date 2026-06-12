@@ -1,0 +1,8 @@
+{
+    "slug":  "telegram-bridge-bot",
+    "name":  "Telegram Bridge Bot",
+    "description":  "Personal Telegram bot = operator chat interface to the bridge (text, files, screenshots, voice). Web UI untouched.",
+    "project_root":  "C:\\Users\\rafie\\bridge-projects\\telegram-bridge-bot",
+    "created":  "2026-06-12T15:35:54.1751549+03:00",
+    "archived":  false
+}
