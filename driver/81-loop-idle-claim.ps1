@@ -1280,6 +1280,23 @@ $script:DriverLoopIdleClaimBlock = {
         $btext = if ($isWorkpackBatch) { [string]$claimedIdea.text } else { '[Автозадача из бэклога] ' + [string]$claimedIdea.text }
         $today = (Get-Date).ToString('yyyy-MM-dd')
         $studyDetect = Detect-StudyMode -TaskText $btext -IsAutonomous
+        # 2026-06-12 stage 1b (speed program): deterministic operator-atom fast lane. A well-formed
+        # atom already IS the coder instruction (Files: <=2 paths + Acceptance:/Checks:), so the
+        # planner's first relay turn (~4-5 min of premium LLM re-phrasing the atom text) adds
+        # nothing — skip straight to Codex. QUALITY GUARD: only skip_planner; the critic, QA,
+        # gates and the planner's verify role stay fully intact. Control-plane paths (driver/,
+        # lib/, root .ps1) and workpack batches never take this lane.
+        $operatorAtomFastLane = $false
+        try {
+          $oaTxt = [string]$claimedIdea.text
+          $oaHasAccept = ($oaTxt -imatch '\b(Acceptance|Checks?)\s*:\s*\S')
+          $oaFilesSeg = [regex]::Match($oaTxt, '(?is)\bFiles?\s*:\s*(.+?)(?:\bAcceptance\b|\bChecks?\b|[\r\n]|$)')
+          if ($oaHasAccept -and $oaFilesSeg.Success -and -not $isWorkpackBatch -and -not $studyDetect) {
+            $oaPaths = @([regex]::Matches([string]$oaFilesSeg.Groups[1].Value, '[A-Za-z0-9_/\\-]+\.[A-Za-z][A-Za-z0-9]{0,5}') | ForEach-Object { ([string]$_.Value) -replace '\\','/' })
+            $oaControlPlane = @($oaPaths | Where-Object { $_ -match '(?i)^(driver/|lib/|control/|(driver|supervisor|watchdog|server|smoke)\.ps1$)' }).Count -gt 0
+            $operatorAtomFastLane = ($oaPaths.Count -ge 1 -and $oaPaths.Count -le 2 -and -not $oaControlPlane)
+          }
+        } catch { $operatorAtomFastLane = $false }
         $taskRepoRootForBacklog = Get-TaskRepoRoot
         $baseCommit = try { (& git -C $taskRepoRootForBacklog rev-parse HEAD 2>$null).Trim() } catch { '' }
         $baseDirty = @()
@@ -1351,6 +1368,11 @@ $script:DriverLoopIdleClaimBlock = {
           Start-ReplayForStateTask -State $s -TaskText $btext -ChannelName $Channel
           Clear-FastLaneFlags $s
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
+          elseif ($operatorAtomFastLane) {
+            # stage 1b: only skip_planner — critic/QA/gates and the planner's verify role stay on.
+            $s | Add-Member -NotePropertyName skip_planner -NotePropertyValue $true -Force
+            $s | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue 'operator-atom-declared' -Force
+          }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
