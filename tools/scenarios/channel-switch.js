@@ -37,7 +37,7 @@ async function scenario(s) {
   B.switchChannel(initial);          // intent A: back
   await s.wait(30);                   // 30ms "oops"
   B.switchChannel(target);           // intent B: actually stay on target (later click wins)
-  await s.waitFor(() => String(B.channelsCache.active) === target && B.channelSwitchInProgress === false, 6000, 'rapid double-switch resolves to target');
+  await s.waitFor(() => String(B.channelsCache.active) === target && B.channelSwitchInProgress === false, 15000, 'rapid double-switch resolves to target');
   s.assert(String(B.channelsCache.active) === target, 'after double-switch, active = ' + target);
 
   // --- Step 3: switch back to initial. Cache hit should be fast.

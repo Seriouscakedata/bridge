@@ -6159,7 +6159,8 @@ async function pollChannels(){
     const data = await fetchJson('/api/channels');
     if(myEpoch !== channelEpoch) return;
     if(!data || !data.ok) return;
-    channelsCache = { active: String(data.active || 'main'), items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
+    const _pcActive = channelSwitchInProgress ? (channelsCache && channelsCache.active ? String(channelsCache.active) : String(data.active || 'main')) : String(data.active || 'main');
+    channelsCache = { active: _pcActive, items: Array.isArray(data.items) ? data.items : [], scope: data.active_scope || null };
     renderChannels();
     const slugs = Array.from(new Set([channelsCache.active].concat(channelsCache.items.map(x => String(x && x.slug || '')).filter(Boolean)))).filter(Boolean).slice(0, 5);
     if(slugs.length){
