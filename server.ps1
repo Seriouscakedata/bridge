@@ -655,16 +655,14 @@ try {
         $text = [string]$body.text
         $atts = @()
         if ($null -ne $body.PSObject.Properties['attachments']) { $atts = @($body.attachments) }
-        if (-not [string]::IsNullOrWhiteSpace($text) -or $atts.Count -gt 0) {
-          $reqChannel = Get-ActiveChannel
-          $prevPinnedChannel = $script:PinnedChannel
-          try {
-            $script:PinnedChannel = $reqChannel
+        $chParam = Get-QueryParamUtf8 $ctx 'channel'
+        $prevPin = Get-PinnedChannel
+        try {
+          if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
+          if (-not [string]::IsNullOrWhiteSpace($text) -or $atts.Count -gt 0) {
             [void](Add-Message -From user -Text $text -Attachments $atts)
-          } finally {
-            $script:PinnedChannel = $prevPinnedChannel
           }
-        }
+        } finally { Set-PinnedChannel $prevPin }
         Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/stt') {
