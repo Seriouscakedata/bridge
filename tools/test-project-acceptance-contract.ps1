@@ -291,6 +291,30 @@ try {
   $webFactSingleCommandCli = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgSingleCommandCli
   Assert-True (-not [bool]$webFactSingleCommandCli.required) 'expected single-command CLI-only contract to skip server:web-start'
 
+  $stringOnlyNonWebContract = [ordered]@{
+    goal = 'Deliver a Telegram bot that talks to a local bridge HTTP API.'
+    surfaces = @(
+      'Telegram chat through long polling getUpdates',
+      'Bridge HTTP API at http://localhost:8787'
+    )
+    user_journeys = @(
+      'Operator sends ping from phone then bot posts to bridge and sends the bridge reply back to Telegram'
+    )
+    checks = @(
+      'python -m py_compile bot/*.py',
+      'python -m unittest discover tests'
+    )
+  }
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'project-contract.json'), (($stringOnlyNonWebContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $cfgStringOnlyNonWeb = Get-ProjectAcceptanceConfig -ProjectRoot $project
+  $coverageStringOnlyNonWeb = Get-ProjectAcceptanceJourneyCoverageFact -ProjectRoot $project -Config $cfgStringOnlyNonWeb
+  Assert-True ([bool]$coverageStringOnlyNonWeb.required -and [bool]$coverageStringOnlyNonWeb.ok) 'expected string surfaces plus string command checks to satisfy non-web journey coverage'
+  Assert-True ([int]$coverageStringOnlyNonWeb.non_web_surface_count -ge 1) ('expected at least one inferred non-web string surface, got ' + [string]$coverageStringOnlyNonWeb.non_web_surface_count)
+  Assert-True ([int]$coverageStringOnlyNonWeb.non_web_command_check_count -eq 2) ('expected two string command checks, got ' + [string]$coverageStringOnlyNonWeb.non_web_command_check_count)
+  Assert-True ([string]$coverageStringOnlyNonWeb.reason -eq 'cli/artifact contract checks present') ('expected CLI/artifact coverage reason for string-only non-web contract, got ' + [string]$coverageStringOnlyNonWeb.reason)
+  $webFactStringOnlyNonWeb = Get-ProjectAcceptanceWebAcceptanceFact -ProjectRoot $project -Config $cfgStringOnlyNonWeb
+  Assert-True (-not [bool]$webFactStringOnlyNonWeb.required) 'expected string-only Telegram/API contract to skip server:web-start'
+
   $traceOnlyCliContract = [ordered]@{
     project_goal = 'Deliver a report-first CLI product with journey coverage delegated to named acceptance traces.'
     surfaces = @(

@@ -995,21 +995,44 @@ function Get-ProjectAcceptancePlanContractNonWebEvidence {
     }
   }
 
-  $nonWebKinds = @('cli','artifact','report','file','document','data','manifest')
+  $nonWebKinds = @('cli','artifact','report','file','document','data','manifest','bot','chat')
   $surfaceKinds = New-Object 'System.Collections.Generic.List[string]'
   foreach ($surface in @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('surfaces'))) {
-    if ($surface -is [string]) { continue }
-    $kind = ([string](Get-ProjectAcceptanceObjectValue -Obj $surface -Names @('kind','type','surface_kind','surfaceKind') -Default '')).Trim().ToLowerInvariant()
+    $kind = ''
+    if ($surface -is [string]) {
+      $text = ([string]$surface).Trim()
+      if ([string]::IsNullOrWhiteSpace($text)) { continue }
+      $lower = $text.ToLowerInvariant()
+      if ($lower -match '\bweb\b|\bbrowser\b|\bpage\b|\broute\b|\bscreen\b') {
+        continue
+      } elseif ($lower -match '\btelegram\b|\bbot\b|\blong polling\b|\bchat\b') {
+        $kind = 'bot'
+      } elseif ($lower -match '\bcli\b|\bcommand\b|\bterminal\b|\bscript\b|\bpowershell\b|\bpwsh\b') {
+        $kind = 'cli'
+      } elseif ($lower -match '\breport\b') {
+        $kind = 'report'
+      } elseif ($lower -match '\bfile\b|\bartifact\b|\bdocument\b|\bdata\b|\bmanifest\b') {
+        $kind = 'artifact'
+      }
+    } else {
+      $kind = ([string](Get-ProjectAcceptanceObjectValue -Obj $surface -Names @('kind','type','surface_kind','surfaceKind') -Default '')).Trim().ToLowerInvariant()
+    }
     if ([string]::IsNullOrWhiteSpace($kind)) { continue }
     if ($nonWebKinds -contains $kind) { [void]$surfaceKinds.Add($kind) }
   }
 
   $commandIds = New-Object 'System.Collections.Generic.List[string]'
   foreach ($check in @(Get-ProjectAcceptanceContractArray -Obj $info.contract -Names @('checks','quality_gates','done_criteria'))) {
-    if ($check -is [string]) { continue }
-    $command = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('command','cmd','shell','run') -Default '')).Trim()
+    $command = ''
+    $id = ''
+    if ($check -is [string]) {
+      $command = ([string]$check).Trim()
+      $id = $command
+    } else {
+      $command = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('command','cmd','shell','run') -Default '')).Trim()
+      $id = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('id','name','title','label') -Default $command)).Trim()
+    }
     if ([string]::IsNullOrWhiteSpace($command)) { continue }
-    $id = ([string](Get-ProjectAcceptanceObjectValue -Obj $check -Names @('id','name','title','label') -Default $command)).Trim()
     if ([string]::IsNullOrWhiteSpace($id)) { $id = $command }
     [void]$commandIds.Add($id)
   }
