@@ -214,82 +214,6 @@ $script:DriverDoneGateSmokeJob = {
   [pscustomobject]$result
 }
 
-function Invoke-DeterministicAcceptance {
-  # 2026-06-12 speed program, stage 1a. The VERIFY gate used to spend a FULL planner turn
-  # (~4-5 min of premium LLM) asking the agent to "run a check and paste [[VERIFIED:]]" — even
-  # when the task itself declares a deterministic check (Checks: py_compile / .ps1 files). The
-  # driver now runs those checks ITSELF and the factual output becomes the verification
-  # evidence: stricter than LLM prose (a real run, not words) and ~4-5 min faster per atom.
-  # SECURITY: this NEVER executes raw strings from the task text. It only recognizes known
-  # check patterns and builds the commands itself from the declared file list. Unrecognized
-  # tasks return $null -> the normal VERIFY turn happens as before.
-  param([string]$TaskText, [string]$RepoRoot)
-  if ([string]::IsNullOrWhiteSpace($TaskText) -or [string]::IsNullOrWhiteSpace($RepoRoot)) { return $null }
-  if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) { return $null }
-
-  $filesMatch = [regex]::Match($TaskText, '(?is)\bFiles?\s*:\s*(.+?)(?:\bAcceptance\b|\bChecks?\b|[\r\n]|$)')
-  if (-not $filesMatch.Success) { return $null }
-  $declared = @()
-  foreach ($pm in [regex]::Matches([string]$filesMatch.Groups[1].Value, '[A-Za-z0-9_/\\-]+\.[A-Za-z][A-Za-z0-9]{0,5}')) {
-    $rel = ([string]$pm.Value).Trim() -replace '/','\'
-    if (-not [string]::IsNullOrWhiteSpace($rel)) { $declared += $rel }
-  }
-  if ($declared.Count -eq 0 -or $declared.Count -gt 6) { return $null }
-
-  $wantsPyCompile = ($TaskText -imatch 'py_compile')
-  $evidence = New-Object System.Collections.Generic.List[string]
-  $ranAny = $false
-  foreach ($rel in ($declared | Sort-Object -Unique)) {
-    $full = Join-Path $RepoRoot $rel
-    # path confinement: the resolved file must stay inside the repo root
-    try {
-      $fullNorm = [System.IO.Path]::GetFullPath($full)
-      $rootNorm = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\') + '\'
-      if (-not $fullNorm.StartsWith($rootNorm, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
-    } catch { return $null }
-    $ext = [System.IO.Path]::GetExtension($rel).ToLowerInvariant()
-    $recognized = (($ext -eq '.py' -and $wantsPyCompile) -or ($ext -eq '.ps1'))
-    if (-not $recognized) { return $null }   # unknown check type -> normal VERIFY turn, not a FAIL
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-      [void]$evidence.Add("$rel -> FILE NOT FOUND")
-      return [pscustomobject]@{ Ok = $false; Evidence = ($evidence -join '; ') }
-    }
-    if ($ext -eq '.py' -and $wantsPyCompile) {
-      try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = 'python'
-        $psi.Arguments = '-m py_compile "' + $full + '"'
-        $psi.WorkingDirectory = $RepoRoot
-        $psi.UseShellExecute = $false; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
-        $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
-        [void]$p.Start()
-        if (-not $p.WaitForExit(60000)) { try { $p.Kill() } catch {}; [void]$evidence.Add("py_compile $rel -> TIMEOUT 60s"); return [pscustomobject]@{ Ok = $false; Evidence = ($evidence -join '; ') } }
-        if ($p.ExitCode -ne 0) {
-          $err = ''; try { $err = ($p.StandardError.ReadToEnd() -replace '\s+',' ').Trim() } catch {}
-          if ($err.Length -gt 200) { $err = $err.Substring(0,200) }
-          [void]$evidence.Add("py_compile $rel -> exit $($p.ExitCode) $err")
-          return [pscustomobject]@{ Ok = $false; Evidence = ($evidence -join '; ') }
-        }
-        [void]$evidence.Add("py_compile $rel -> exit 0")
-        $ranAny = $true
-      } catch { return $null }
-    } elseif ($ext -eq '.ps1') {
-      try {
-        [void][scriptblock]::Create([System.IO.File]::ReadAllText($full, [System.Text.Encoding]::UTF8))
-        [void]$evidence.Add("parse $rel -> OK")
-        $ranAny = $true
-      } catch {
-        $pe = ($_.Exception.Message -replace '\s+',' ').Trim()
-        if ($pe.Length -gt 200) { $pe = $pe.Substring(0,200) }
-        [void]$evidence.Add("parse $rel -> FAIL $pe")
-        return [pscustomobject]@{ Ok = $false; Evidence = ($evidence -join '; ') }
-      }
-    }
-  }
-  if (-not $ranAny) { return $null }
-  return [pscustomobject]@{ Ok = $true; Evidence = ($evidence -join '; ') }
-}
-
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -650,6 +574,100 @@ $script:DriverLoopCompletionInitialChecksBlock = {
         try {
           Add-Message -From system -Text ("🔀 Parallel dispatch: " + $parStreams.Count + " streams detected in planner reply") -Kind event | Out-Null
           $parResult = Invoke-ParallelDispatch -Streams $parStreams -TimeoutMin 25 -PollSec 10
+          # --- per-task timeout retry for timed-out/quarantined parallel workers ---
+          $batchCfg = $null
+          try {
+            if (Get-Command Get-BatchTimeoutConfig -ErrorAction SilentlyContinue) {
+              $batchCfg = Get-BatchTimeoutConfig
+            }
+          } catch { $batchCfg = $null }
+          $retryTimeoutSec = 0
+          $retryMaxAttempts = 3
+          try { $retryTimeoutSec = [int]$batchCfg.TimeoutSec } catch {}
+          try { $retryMaxAttempts = [int]$batchCfg.MaxAttempts } catch {}
+          if ($retryMaxAttempts -lt 1) { $retryMaxAttempts = 3 }
+          $batchRetryEnabled = $false
+          try { $batchRetryEnabled = [bool]$batchCfg.Enabled } catch {}
+          $quarantinedIds = @()
+          try { $quarantinedIds = @($parResult.quarantined_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+          if ($batchCfg -and $batchRetryEnabled -and $retryTimeoutSec -gt 0 -and $quarantinedIds.Count -gt 0 -and (Get-Command Invoke-BatchWithPerTaskTimeout -ErrorAction SilentlyContinue)) {
+            $quarantineSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($qid in $quarantinedIds) { [void]$quarantineSet.Add([string]$qid) }
+            $timedOutBlocks = @($parStreams | Where-Object {
+              $sid = ''
+              try { $sid = [string]$_.id } catch {}
+              -not [string]::IsNullOrWhiteSpace($sid) -and $quarantineSet.Contains($sid)
+            })
+            if ($timedOutBlocks.Count -gt 0) {
+              Add-Message -From system -Text ("[batch-timeout] " + $timedOutBlocks.Count + " parallel worker(s) timed out/quarantined, retrying sequentially...") -Kind event | Out-Null
+              $retryMerged = 0
+              $retryMergedIds = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($block in $timedOutBlocks) {
+                $retryResult = Invoke-BatchWithPerTaskTimeout `
+                  -Tasks @($block) `
+                  -ExecuteTask {
+                    param($b)
+                    if (Get-Command Invoke-WorkerBlock -ErrorAction SilentlyContinue) {
+                      return (Invoke-WorkerBlock $b)
+                    }
+                    $singleTaskHash = Get-ParallelDispatchTaskHash
+                    $startup = Start-ParallelDispatchWorkers -Streams @($b) -TaskHash $singleTaskHash
+                    if (-not $startup.ok) {
+                      return @{ ok=$false; merged=0; merged_ids=@(); quarantined=1; quarantined_ids=@([string]$b.id); total=1; clean=$false; reason=$startup.reason }
+                    }
+                    $singleWorkers = @($startup.workers)
+                    $singleCompleted = Wait-ParallelDispatchResults -Workers $singleWorkers -TaskHash $singleTaskHash -TimeoutMin ([int][Math]::Ceiling($retryTimeoutSec / 60.0)) -PollSec 10
+                    return (Complete-ParallelDispatchOutputs -Workers $singleWorkers -Completed $singleCompleted -TaskHash $singleTaskHash)
+                  } `
+                  -TimeoutSec $retryTimeoutSec `
+                  -MaxAttempts $retryMaxAttempts `
+                  -Name ("retry-" + [string]$block.Id)
+                $retryTaskResults = @()
+                try { $retryTaskResults = @($retryResult.Results) } catch {}
+                if ($retryTaskResults.Count -eq 0 -and $retryResult) { $retryTaskResults = @($retryResult) }
+                foreach ($rr in @($retryTaskResults)) {
+                  $rrOk = $false
+                  try { $rrOk = [bool]$rr.ok } catch {}
+                  if ($rrOk) {
+                    $retryResultAddedId = $false
+                    $rrMerged = 0
+                    try { $rrMerged = [int]$rr.merged } catch {}
+                    if ($rrMerged -lt 1) { $rrMerged = 1 }
+                    $retryMerged += $rrMerged
+                    try {
+                      foreach ($mid in @($rr.merged_ids)) {
+                        $midText = [string]$mid
+                        if (-not [string]::IsNullOrWhiteSpace($midText)) {
+                          $retryResultAddedId = $true
+                          if (-not $retryMergedIds.Contains($midText)) { [void]$retryMergedIds.Add($midText) }
+                        }
+                      }
+                    } catch {}
+                    if (-not $retryResultAddedId) {
+                      $bid = [string]$block.id
+                      if (-not [string]::IsNullOrWhiteSpace($bid) -and -not $retryMergedIds.Contains($bid)) { [void]$retryMergedIds.Add($bid) }
+                    }
+                  }
+                }
+              }
+              if ($retryMerged -gt 0) {
+                $remainingQuarantined = @($quarantinedIds | Where-Object { -not $retryMergedIds.Contains([string]$_) })
+                try { $parResult.merged = ([int]$parResult.merged + $retryMerged) } catch {}
+                try { $parResult.quarantined = @($remainingQuarantined).Count } catch {}
+                try { $parResult.quarantined_ids = @($remainingQuarantined) } catch {}
+                try {
+                  $mergedIds = @($parResult.merged_ids)
+                  foreach ($mid in @($retryMergedIds.ToArray())) {
+                    if (@($mergedIds) -inotcontains $mid) { $mergedIds += $mid }
+                  }
+                  $parResult.merged_ids = @($mergedIds)
+                } catch {}
+                try { $parResult.ok = ([int]$parResult.merged -gt 0) } catch {}
+                try { $parResult.clean = (@($remainingQuarantined).Count -eq 0 -and [int]$parResult.merged -ge @($parStreams).Count) } catch {}
+                try { $parResult.reason = $(if ([bool]$parResult.clean) { 'all_delivered' } elseif ([bool]$parResult.ok) { 'partial' } else { [string]$parResult.reason }) } catch {}
+              }
+            }
+          }
           if ($parResult.ok) {
             Add-Message -From system -Text ("✅ Parallel completed: " + $parResult.merged + " streams merged into main") -Kind event | Out-Null
             $plannerStatus = 'DONE'   # work landed via workers; let verify+critic gates run
@@ -813,26 +831,11 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     $didActions = [bool](Read-State).task_did_actions
     $hasVerify  = $reply -imatch '(?im)^\s*\[\[VERIFIED:\s*.+?\]\]\s*$'
     $vrc        = [int](Read-State).verify_retry_count
-    # 2026-06-12 stage 1a: deterministic acceptance BEFORE burning a planner VERIFY turn.
-    # If the task declares known checks (Checks: py_compile / .ps1 files), the driver runs them
-    # itself; a factual PASS replaces the [[VERIFIED:]] turn (stricter: real run, not words).
-    # FAIL or unrecognized -> the normal VERIFY turn proceeds exactly as before.
-    $autoAccepted = $false
-    if ($didActions -and -not $hasVerify) {
-      $detAccept = $null
-      try { $detAccept = Invoke-DeterministicAcceptance -TaskText ([string](Read-State).current_task) -RepoRoot (Get-TaskRepoRoot) } catch { $detAccept = $null }
-      if ($detAccept -and [bool]$detAccept.Ok) {
-        $autoAccepted = $true
-        Add-Message -From system -Text ("🤖 Автоприёмка (детерминированная): " + [string]$detAccept.Evidence + " — VERIFY-ход планировщика пропущен, проверка фактическим запуском.") -Kind event | Out-Null
-      } elseif ($detAccept) {
-        Add-Message -From system -Text ("🤖 Автоприёмка: FAIL — " + [string]$detAccept.Evidence + " — отдаю на обычную верификацию.") -Kind event | Out-Null
-      }
-    }
-    if ($didActions -and -not $hasVerify -and -not $autoAccepted -and $vrc -lt 2) {
+    if ($didActions -and -not $hasVerify -and $vrc -lt 2) {
       Add-Message -From system -Text "🔍 Фаза верификации: задача меняла файлы, но проверки нет. Агент, ВЫПОЛНИ проверочную команду/тест/чтение файла/скриншот, покажи результат и добавь строку [[VERIFIED: что проверено | результат]], затем STATUS: DONE." -Kind event | Out-Null
       $plannerStatus = 'VERIFY'
       Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1; $s.force_planner=$true } | Out-Null
-    } elseif ($didActions -and -not $hasVerify -and -not $autoAccepted -and $vrc -ge 2) {
+    } elseif ($didActions -and -not $hasVerify -and $vrc -ge 2) {
       $vfDiff = ''
       try {
         $vfBase = [string](Read-State).task_base_commit

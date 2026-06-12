@@ -81,6 +81,43 @@
       }
     }
   }
+  if ($speaker -eq 'claude') {
+    try {
+      $stBatchTimeoutHint = Read-State
+      $wpBatchActiveForHint = $false
+      try { $wpBatchActiveForHint = [bool](Get-BacklogPackObjectValue -Obj $stBatchTimeoutHint -Name 'workpack_batch_active' -Default $false) } catch {}
+      if ($wpBatchActiveForHint) {
+        $perTaskTimeoutSec = 0
+        $taskCount = 0
+        try { $perTaskTimeoutSec = [int](Get-BacklogPackObjectValue -Obj $stBatchTimeoutHint -Name 'workpack_batch_per_task_timeout_sec' -Default 0) } catch {}
+        try {
+          if ($stBatchTimeoutHint.PSObject.Properties.Name -contains 'workpack_batch_ids') {
+            $taskCount = @($stBatchTimeoutHint.workpack_batch_ids).Count
+          }
+        } catch {}
+        if ($taskCount -le 1) {
+          try {
+            $hintStreams = Test-CanParallelize -PlanText $task
+            $taskCount = @($hintStreams).Count
+          } catch {}
+        }
+        $batchTimeoutHint = ""
+        if ($perTaskTimeoutSec -gt 0 -and $taskCount -gt 1) {
+          $batchTimeoutHint = @"
+
+BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независимых задач.
+- Автоматически разбей на $taskCount отдельных [[PARALLEL:N]] блоков (один блок = одна задача).
+- В каждом блоке укажи: timeout_sec=$perTaskTimeoutSec
+- Если воркер превысит таймаут — драйвер выполнит retry (до 3 раз).
+- НЕ пытайся выполнить все задачи в одном Codex-вызове.
+"@
+        }
+        if (-not [string]::IsNullOrWhiteSpace($batchTimeoutHint)) {
+          $prompt = [string]$prompt + $batchTimeoutHint
+        }
+      }
+    } catch {}
+  }
   try {
     if ($turnResult) { }  # already produced by the deterministic dispatch above -> skip planner
     elseif ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
