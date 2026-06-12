@@ -939,16 +939,53 @@ function Invoke-ConversationAutoArchiveIfDue {
   $result = $null
   try { $result = Invoke-ConversationArchive -Keep $Keep } catch { return [pscustomobject]@{ ok=$false; action='archive_failed'; lineCount=$count; threshold=$threshold; archived=0; kept=0 } }
   try { [System.IO.File]::WriteAllText($marker, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  $archiveResult = $null
   try {
-    $archived = [int]$result.archived
-    $kept = [int]$result.kept
-    if ($archived -gt 0) {
-      Add-Message -From system -Kind event -Text ("🗄 Live feed auto-archive: moved " + $archived + " old messages; kept hot tail " + $kept + " (threshold " + $threshold + ").") | Out-Null
-    }
-    return [pscustomobject]@{ ok=[bool]$result.ok; action='archived'; lineCount=$count; threshold=$threshold; archived=$archived; kept=$kept }
+    $candidates = @($result | Where-Object {
+      $_ -and ($_.PSObject.Properties.Name -contains 'archived') -and ($_.PSObject.Properties.Name -contains 'kept')
+    })
+    if ($candidates.Count -gt 0) { $archiveResult = $candidates[-1] }
+  } catch {}
+  if ($null -eq $archiveResult) { $archiveResult = $result }
+
+  $archived = 0
+  $kept = 0
+  $ok = $true
+  try {
+    $archived = [int]$archiveResult.archived
+    $kept = [int]$archiveResult.kept
+    if ($archiveResult.PSObject.Properties.Name -contains 'ok') { $ok = [bool]$archiveResult.ok }
   } catch {
-    return [pscustomobject]@{ ok=$true; action='archived'; lineCount=$count; threshold=$threshold; archived=0; kept=0 }
+    return [pscustomobject]@{ ok=$false; action='archive_result_invalid'; lineCount=$count; threshold=$threshold; archived=0; kept=0; error=$_.Exception.Message }
   }
+  if ($archived -gt 0) {
+    $eventText = "🗄 Live feed auto-archive: moved " + $archived + " old messages; kept hot tail " + $kept + " (threshold " + $threshold + ")."
+    $eventWritten = $false
+    try {
+      $beforeEventCount = @([System.IO.File]::ReadAllLines($convPath, [System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+      Add-Message -From system -Kind event -Text $eventText | Out-Null
+      $afterEventCount = @([System.IO.File]::ReadAllLines($convPath, [System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+      $eventWritten = ($afterEventCount -gt $beforeEventCount)
+    } catch {}
+    if (-not $eventWritten) {
+      try {
+        $liveLines = @([System.IO.File]::ReadAllLines($convPath, [System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $lastSeq = 0
+        if ($liveLines.Count -gt 0) {
+          try { $lastSeq = [int](($liveLines[-1] | ConvertFrom-Json).seq) } catch { $lastSeq = 0 }
+        }
+        $fallbackEvent = [ordered]@{
+          seq  = ($lastSeq + 1)
+          ts   = (Get-Date).ToUniversalTime().ToString('o')
+          from = 'system'
+          kind = 'event'
+          text = $eventText
+        }
+        [System.IO.File]::AppendAllText($convPath, (($fallbackEvent | ConvertTo-Json -Compress -Depth 6) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+      } catch {}
+    }
+  }
+  return [pscustomobject]@{ ok=$ok; action='archived'; lineCount=$count; threshold=$threshold; archived=$archived; kept=$kept }
 }
 
 function Get-AutonomyRequireApproval {
