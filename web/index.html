@@ -1293,6 +1293,7 @@
   .mini-btn.expand-msg{font-weight:800}
   .msg.expanded .mini-btn.expand-msg{color:var(--model);border-color:rgba(255,209,102,.48);background:rgba(255,209,102,.1)}
   .mini-btn.copied{color:var(--codex);border-color:rgba(104,211,145,.55);background:rgba(104,211,145,.1)}
+  .copy-sha{display:inline-flex;align-items:center;vertical-align:middle;margin:0 2px 0 4px;height:16px;min-width:20px;padding:0 4px;border-radius:4px;font-size:10px;}
   .mini-btn.bad{color:var(--danger);border-color:rgba(255,107,107,.56);background:rgba(255,107,107,.1)}
   .from-claude .avatar,.from-claude .bubble{border-color:rgba(184,140,255,.28)}
   .from-claude .avatar{background:var(--claude-bg);color:var(--claude)}
@@ -4427,6 +4428,24 @@ function renderMd(src){
   return html;
 }
 
+function attachShaCopyBtns(div){
+  const shaRe = /^[0-9a-f]{7,40}$/i;
+  div.querySelectorAll('.md code').forEach(code => {
+    if(code.closest('pre')) return;
+    const token = code.textContent.trim();
+    if(!shaRe.test(token)) return;
+    if(code.nextElementSibling && code.nextElementSibling.classList.contains('copy-sha')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mini-btn copy-sha';
+    btn.dataset.sha = token;
+    btn.title = 'Copy SHA';
+    btn.setAttribute('aria-label', 'Copy SHA');
+    btn.innerHTML = '&#x2398;';
+    code.insertAdjacentElement('afterend', btn);
+  });
+}
+
 function msgAttachments(m){
   return Array.isArray(m.attachments) ? m.attachments : (m.attachments ? [m.attachments] : []);
 }
@@ -4596,6 +4615,7 @@ function addMsg(m){
       (isLong ? '<button type="button" class="expand-inline expand-msg" aria-label="Показать полностью">Показать полностью ↓</button>' : '') +
       renderAttachments(m) +
     '</div>';
+  attachShaCopyBtns(div);
   log.insertBefore(div, working);
   if(m.from === 'system' && seq){
     if(seq >= (_lastSysEvent.seq||0)){
@@ -5867,6 +5887,11 @@ document.addEventListener('click', e => {
   if(codeBtn){
     const code = codeBtn.closest('.codebox')?.querySelector('code')?.textContent || '';
     copyText(code, codeBtn);
+    return;
+  }
+  const shaBtn = e.target.closest('.copy-sha');
+  if(shaBtn){
+    copyText(shaBtn.dataset.sha || '', shaBtn);
     return;
   }
   const favoriteBtn = e.target.closest('.favorite-msg');
