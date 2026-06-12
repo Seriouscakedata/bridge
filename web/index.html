@@ -6469,7 +6469,23 @@ async function switchChannel(slug){
       .finally(() => { if(activeTimer) clearTimeout(activeTimer); });
     if(!isCurrent()) return;  // superseded
 
-    const loaded = await reloadMessagesForChannel(channelEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
+    const reloadEpoch = channelEpoch;
+    if(hasCache){
+      reloadMessagesForChannel(reloadEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined)
+        .then(loaded => {
+          if(loaded !== false && reloadEpoch === channelEpoch && String(channelsCache.active || '') === slug){
+            renderChannels();
+            status(); pollPlan(); pollMetrics(); pollBacklog();
+          }
+        })
+        .catch(e => {
+          if(e && e.name === 'AbortError') return;
+          try{ console.warn('[bridge] cached channel diff fetch failed', e); }catch(_e){}
+        });
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return;
+    }
+    const loaded = await reloadMessagesForChannel(reloadEpoch, slug, ctrl ? {signal: ctrl.signal} : undefined);
     if(loaded !== false){
       if(!isCurrent()) return;
       renderChannels();
