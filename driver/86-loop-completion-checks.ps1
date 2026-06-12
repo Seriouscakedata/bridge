@@ -577,6 +577,10 @@ $script:DriverLoopCompletionInitialChecksBlock = {
           # --- per-task timeout retry for timed-out/quarantined parallel workers ---
           $batchCfg = $null
           try {
+            if (-not (Get-Command Get-BatchTimeoutConfig -ErrorAction SilentlyContinue)) {
+              $batchTimeoutPath = Join-Path $bridgeRoot 'lib\batch-timeout.ps1'
+              if (Test-Path -LiteralPath $batchTimeoutPath -PathType Leaf) { . $batchTimeoutPath }
+            }
             if (Get-Command Get-BatchTimeoutConfig -ErrorAction SilentlyContinue) {
               $batchCfg = Get-BatchTimeoutConfig
             }
@@ -602,22 +606,48 @@ $script:DriverLoopCompletionInitialChecksBlock = {
               Add-Message -From system -Text ("[batch-timeout] " + $timedOutBlocks.Count + " parallel worker(s) timed out/quarantined, retrying sequentially...") -Kind event | Out-Null
               $retryMerged = 0
               $retryMergedIds = New-Object 'System.Collections.Generic.List[string]'
+              $retryTimeoutMin = [int][Math]::Ceiling($retryTimeoutSec / 60.0)
+              if ($retryTimeoutMin -lt 1) { $retryTimeoutMin = 1 }
               foreach ($block in $timedOutBlocks) {
+                $retryTask = [pscustomobject]@{
+                  Id         = [string]$block.Id
+                  Block      = $block
+                  TimeoutMin = $retryTimeoutMin
+                  BridgeRoot = [string]$bridgeRoot
+                }
                 $retryResult = Invoke-BatchWithPerTaskTimeout `
-                  -Tasks @($block) `
-                  -ExecuteTask {
-                    param($b)
-                    if (Get-Command Invoke-WorkerBlock -ErrorAction SilentlyContinue) {
-                      return (Invoke-WorkerBlock $b)
+                  -Tasks @($retryTask) `
+                  -BootstrapScript {
+                    param($task)
+                    $root = [string]$task.BridgeRoot
+                    if ([string]::IsNullOrWhiteSpace($root)) { throw 'missing bridge root for parallel retry bootstrap' }
+                    . (Join-Path $root 'lib\common.ps1')
+                    if (-not (Get-Command Start-ParallelDispatchWorkers -ErrorAction SilentlyContinue)) {
+                      . (Join-Path $root 'lib\parallel.ps1')
                     }
+                  } `
+                  -ExecuteTask {
+                    param($task)
+                    $b = $task.Block
+                    $singleTimeoutMin = 1
+                    try { $singleTimeoutMin = [int]$task.TimeoutMin } catch {}
+                    if ($singleTimeoutMin -lt 1) { $singleTimeoutMin = 1 }
                     $singleTaskHash = Get-ParallelDispatchTaskHash
                     $startup = Start-ParallelDispatchWorkers -Streams @($b) -TaskHash $singleTaskHash
                     if (-not $startup.ok) {
-                      return @{ ok=$false; merged=0; merged_ids=@(); quarantined=1; quarantined_ids=@([string]$b.id); total=1; clean=$false; reason=$startup.reason }
+                      throw ("parallel retry startup failed for stream " + [string]$b.id + ": " + [string]$startup.reason)
                     }
                     $singleWorkers = @($startup.workers)
-                    $singleCompleted = Wait-ParallelDispatchResults -Workers $singleWorkers -TaskHash $singleTaskHash -TimeoutMin ([int][Math]::Ceiling($retryTimeoutSec / 60.0)) -PollSec 10
-                    return (Complete-ParallelDispatchOutputs -Workers $singleWorkers -Completed $singleCompleted -TaskHash $singleTaskHash)
+                    $singleCompleted = Wait-ParallelDispatchResults -Workers $singleWorkers -TaskHash $singleTaskHash -TimeoutMin $singleTimeoutMin -PollSec 10
+                    $singleResult = Complete-ParallelDispatchOutputs -Workers $singleWorkers -Completed $singleCompleted -TaskHash $singleTaskHash
+                    $singleClean = $false; try { $singleClean = [bool]$singleResult.clean } catch {}
+                    $singleQ = 0; try { $singleQ = [int]$singleResult.quarantined } catch {}
+                    if (-not $singleClean -or $singleQ -gt 0) {
+                      $singleReason = ''; try { $singleReason = [string]$singleResult.reason } catch {}
+                      if ([string]::IsNullOrWhiteSpace($singleReason)) { $singleReason = 'not_clean' }
+                      throw ("parallel retry stream " + [string]$b.id + " did not complete cleanly: " + $singleReason)
+                    }
+                    return $singleResult
                   } `
                   -TimeoutSec $retryTimeoutSec `
                   -MaxAttempts $retryMaxAttempts `
@@ -626,16 +656,24 @@ $script:DriverLoopCompletionInitialChecksBlock = {
                 try { $retryTaskResults = @($retryResult.Results) } catch {}
                 if ($retryTaskResults.Count -eq 0 -and $retryResult) { $retryTaskResults = @($retryResult) }
                 foreach ($rr in @($retryTaskResults)) {
+                  $dispatchResult = $rr
+                  $rrSucceeded = $true
+                  try {
+                    if ($rr.PSObject.Properties.Name -contains 'Status') { $rrSucceeded = ([string]$rr.Status -eq 'Success') }
+                    if ($rr.PSObject.Properties.Name -contains 'Result') { $dispatchResult = $rr.Result }
+                  } catch {}
                   $rrOk = $false
-                  try { $rrOk = [bool]$rr.ok } catch {}
-                  if ($rrOk) {
+                  try { $rrOk = [bool]$dispatchResult.ok } catch {}
+                  $rrClean = $false
+                  try { $rrClean = [bool]$dispatchResult.clean } catch {}
+                  if ($rrSucceeded -and $rrOk -and $rrClean) {
                     $retryResultAddedId = $false
                     $rrMerged = 0
-                    try { $rrMerged = [int]$rr.merged } catch {}
+                    try { $rrMerged = [int]$dispatchResult.merged } catch {}
                     if ($rrMerged -lt 1) { $rrMerged = 1 }
                     $retryMerged += $rrMerged
                     try {
-                      foreach ($mid in @($rr.merged_ids)) {
+                      foreach ($mid in @($dispatchResult.merged_ids)) {
                         $midText = [string]$mid
                         if (-not [string]::IsNullOrWhiteSpace($midText)) {
                           $retryResultAddedId = $true

@@ -66,7 +66,8 @@ function Invoke-BatchWithPerTaskTimeout {
     [scriptblock]$ExecuteTask,
     [int]$TimeoutSec,
     [int]$MaxAttempts = 3,
-    [string]$Name = 'batch'
+    [string]$Name = 'batch',
+    [scriptblock]$BootstrapScript = $null
   )
 
   if ($null -eq $ExecuteTask) { throw 'Invoke-BatchWithPerTaskTimeout requires ExecuteTask.' }
@@ -79,6 +80,8 @@ function Invoke-BatchWithPerTaskTimeout {
   $failed = New-Object 'System.Collections.Generic.List[int]'
   $results = New-Object 'System.Collections.Generic.List[object]'
   $taskScriptText = $ExecuteTask.ToString()
+  $bootstrapScriptText = ''
+  if ($BootstrapScript) { $bootstrapScriptText = $BootstrapScript.ToString() }
 
   for ($i = 0; $i -lt $taskList.Count; $i++) {
     $task = $taskList[$i]
@@ -100,10 +103,14 @@ function Invoke-BatchWithPerTaskTimeout {
 
       try {
         $job = Start-Job -ScriptBlock {
-          param($t, [string]$taskScript)
+          param($t, [string]$taskScript, [string]$bootstrapScript)
+          if (-not [string]::IsNullOrWhiteSpace($bootstrapScript)) {
+            $bootstrap = [scriptblock]::Create($bootstrapScript)
+            . $bootstrap $t
+          }
           $sb = [scriptblock]::Create($taskScript)
           & $sb $t
-        } -ArgumentList $task, $taskScriptText
+        } -ArgumentList $task, $taskScriptText, $bootstrapScriptText
 
         $done = Wait-Job -Job $job -Timeout $taskTimeoutSec -ErrorAction Stop
         if ($done) {
@@ -226,6 +233,23 @@ function Test-BatchTimeoutSelfTest {
     if ([string]$result.Results[0].Result -ne 'ok1') { return $false }
     if ([string]$result.Results[1].Status -ne 'TimedOut') { return $false }
     if ([string]$result.Results[2].Result -ne 'ok3') { return $false }
+  } catch {
+    return $false
+  }
+
+  $bootstrapResult = Invoke-BatchWithPerTaskTimeout -Tasks @([pscustomobject]@{ Value = 41 }) -BootstrapScript {
+    function Invoke-BatchTimeoutBootstrapProbe {
+      param([int]$Value)
+      return ($Value + 1)
+    }
+  } -ExecuteTask {
+    param($Task)
+    return (Invoke-BatchTimeoutBootstrapProbe -Value ([int]$Task.Value))
+  } -TimeoutSec 5 -MaxAttempts 1 -Name 'batch-bootstrap-selftest'
+
+  if ((@($bootstrapResult.Succeeded | ForEach-Object { [int]$_ }) -join ',') -ne '0') { return $false }
+  try {
+    if ([int]$bootstrapResult.Results[0].Result -ne 42) { return $false }
   } catch {
     return $false
   }
