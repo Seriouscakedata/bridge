@@ -2513,6 +2513,7 @@
 <div id="scrollProgress" aria-hidden="true"><span></span></div>
 <button id="toTop" class="scroll-jump" type="button" title="Прокрутить вверх"><span aria-hidden="true">↑</span></button>
 <button id="toBottom" class="scroll-jump" type="button" title="Прокрутить вниз"><span aria-hidden="true">↓</span><span id="newCount" class="new-count"></span></button>
+<button id="followLockBtn" class="scroll-jump show" type="button" title="Следить за новыми (Follow lock)" aria-label="Follow lock" style="bottom:calc(132px + env(safe-area-inset-bottom,0px));right:16px;font-size:16px;width:32px;height:32px;">🔒</button>
 
 <footer>
   <button id="attach" class="icon" title="Прикрепить файл" type="button">📎</button>
@@ -2568,6 +2569,7 @@ let lastSeq = 0;
 let _lastSysEvent = {seq:0, ts:'', text:''};
 let firstLoad = true;
 let stickToBottom = true;
+let followLock = localStorage.getItem('bridgeFollow') !== 'false';
 let unseenCount = 0;
 let searchMatches = [];
 let searchIndex = -1;
@@ -3997,6 +3999,8 @@ function updateBottomButton(){
   toTop.classList.toggle('show', log.scrollTop > Math.max(420, log.clientHeight * 0.7));
   newCount.textContent = unseenCount > 99 ? '99+' : (unseenCount ? String(unseenCount) : '');
   toBottom.title = unseenCount ? unseenCount + ' новых сообщений ниже' : 'Прокрутить вниз';
+  const _flBtn = document.getElementById('followLockBtn');
+  if(_flBtn) _flBtn.textContent = followLock ? '🔒' : '🔓';
   updateScrollProgress();
   updateDocumentTitle();
 }
@@ -4665,7 +4669,7 @@ function renderMessageBatch(data, options){
     if(visibleAdded && !beforeBottom && !firstLoad) ensureUnreadMarker(firstVisibleAdded);
     const focusedHash = focusHashTarget(!firstLoad);
     if(searchPanel.classList.contains('open') && searchInput.value.trim()) updateSearch(false);
-    if(beforeBottom || firstLoad){
+    if((beforeBottom && followLock !== false) || firstLoad){
       if(!focusedHash) scrollToBottom(firstLoad ? 'auto' : 'smooth');
       firstLoad = false;
     } else {
@@ -5723,6 +5727,14 @@ input.addEventListener('blur', updateComposerMeta);
 log.addEventListener('scroll', updateBottomButton);
 toTop.addEventListener('click', () => log.scrollTo({top:0, behavior:'smooth'}));
 toBottom.addEventListener('click', () => scrollToBottom('smooth'));
+const _followLockBtn = document.getElementById('followLockBtn');
+if(_followLockBtn){
+  _followLockBtn.addEventListener('click', () => {
+    followLock = !followLock;
+    localStorage.setItem('bridgeFollow', followLock ? 'true' : 'false');
+    updateBottomButton();
+  });
+}
 if(moreMenuBtn){
   moreMenuBtn.addEventListener('click', e => {
     e.stopPropagation();
@@ -6003,6 +6015,28 @@ window.addEventListener('keydown', e => {
     lightbox.classList.remove('open');
     lightbox.setAttribute('aria-hidden','true');
     lightbox.querySelector('img').src = '';
+  }
+  if((e.ctrlKey||e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k'){
+    e.preventDefault();
+    killSwitch();
+    return;
+  }
+  const _ae = document.activeElement;
+  if(_ae && (_ae === input || _ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.isContentEditable)) return;
+  if(e.key === 'j'){
+    const _msgs = Array.from(document.querySelectorAll('.msg'));
+    const _st = log.scrollTop;
+    const _next = _msgs.find(m => m.offsetTop > _st + log.clientHeight * 0.3);
+    if(_next){ _next.scrollIntoView({behavior:'smooth', block:'center'}); flashTargetMessage(_next); }
+  } else if(e.key === 'k'){
+    const _msgs = Array.from(document.querySelectorAll('.msg')).reverse();
+    const _st = log.scrollTop;
+    const _prev = _msgs.find(m => m.offsetTop < _st + log.clientHeight * 0.3);
+    if(_prev){ _prev.scrollIntoView({behavior:'smooth', block:'center'}); flashTargetMessage(_prev); }
+  } else if(e.key === 'g' && !e.ctrlKey && !e.metaKey){
+    log.scrollTo({top:0, behavior:'smooth'});
+  } else if(e.key === 'G'){
+    scrollToBottom('smooth');
   }
 });
 window.addEventListener('hashchange', () => focusHashTarget(true));
