@@ -1479,6 +1479,12 @@ function Get-BacklogWorkpackItemEditTouches {
       foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @())) {
         $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
         if ([string]::IsNullOrWhiteSpace($v)) { continue }
+        # 2026-06-12 W1b: the packer stamps the COARSE conflict group ('general', 'llm', 'core')
+        # into workpack_touch_set — a bare word, not a file. Treating it as a touch pre-empted
+        # the Files:-from-text parse below, so the batch [[PARALLEL]] blocks carried
+        # "Files: general" and every worker stream got quarantined as outside-touch (the wasted
+        # first wave, ~9 min). Only path-like values (a '/' or an extension dot) are touches.
+        if ($v -notmatch '[./]') { continue }
         if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
             (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
         if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
