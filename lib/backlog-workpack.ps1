@@ -34,6 +34,32 @@ function ConvertTo-BacklogPackInt {
   return $Default
 }
 
+function Invoke-BacklogClaimabilityDeadlockAdmission {
+  param(
+    [Parameter(Mandatory=$false)][object[]]$Items = $null,
+    [Parameter(Mandatory=$false)]$Claimability = $null,
+    [Parameter(Mandatory=$false)][string]$Channel = ''
+  )
+
+  if (-not (Get-Command Test-ApprovedBacklogClaimabilityDeadlock -ErrorAction SilentlyContinue)) {
+    return [pscustomobject][ordered]@{ deadlock = $false; held_count = 0; held_ids = @(); reason = 'detector-unavailable' }
+  }
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+  if ($null -eq $Claimability) { $Claimability = Get-ApprovedBacklogClaimabilityReport -Items $Items }
+  $deadlock = [bool](Test-ApprovedBacklogClaimabilityDeadlock -Claimability $Claimability)
+  if (-not $deadlock) {
+    return [pscustomobject][ordered]@{ deadlock = $false; held_count = 0; held_ids = @(); reason = 'not-deadlock' }
+  }
+  $held = Set-ApprovedBacklogClaimabilityDeadlockHeld -Items $Items -Claimability $Claimability -Channel $Channel
+  return [pscustomobject][ordered]@{
+    deadlock = $true
+    changed = [bool]$held.changed
+    held_count = [int]$held.held_count
+    held_ids = @($held.held_ids)
+    reason = [string]$held.reason
+  }
+}
+
 function Get-BacklogPackConfig {
   $cfg = [ordered]@{
     enabled            = $true

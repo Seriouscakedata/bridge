@@ -954,6 +954,20 @@ $script:DriverLoopIdleClaimBlock = {
                     })
                     Add-Message -From system -Text ("🧪 Bridge-self canary gate: создано operator-задач для control-plane parents: " + ((@($canaryGate.created_ids) | Select-Object -First 4) -join ',')) -Kind event | Out-Null
                   }
+                  if (Get-Command Invoke-BacklogClaimabilityDeadlockAdmission -ErrorAction SilentlyContinue) {
+                    $deadlockAdmission = Invoke-BacklogClaimabilityDeadlockAdmission -Claimability $claimability -Channel $Channel
+                    if ($deadlockAdmission -and [int]$deadlockAdmission.held_count -gt 0) {
+                      Write-BacklogJsonLine ([ordered]@{
+                        ts = (Get-Date).ToUniversalTime().ToString('o')
+                        action = 'claimability-deadlock-held'
+                        channel = [string]$Channel
+                        held_ids = @($deadlockAdmission.held_ids)
+                        canary_created_ids = @($canaryGate.created_ids)
+                        canary_existing_ids = @($canaryGate.existing_ids)
+                      })
+                      Add-Message -From system -Text ("🧯 Claimability deadlock: control-plane parents held after canary gate: " + ((@($deadlockAdmission.held_ids) | Select-Object -First 4) -join ',')) -Kind event | Out-Null
+                    }
+                  }
                 } catch {}
                 if ($idleTransition -and [bool]$idleTransition.blocked -and (-not $canaryGate -or [int]$canaryGate.created_count -eq 0)) {
                   $idleClaimabilityBackoffSeconds = [int]$idleTransition.backoff_seconds

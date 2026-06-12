@@ -1437,6 +1437,71 @@ function Get-ApprovedBacklogClaimabilityReport {
   }
 }
 
+function Test-ApprovedBacklogClaimabilityDeadlock {
+  param([Parameter(Mandatory=$false)]$Claimability)
+
+  if (-not $Claimability) { return $false }
+  $approved = 0
+  $runnable = 0
+  $controlPlane = 0
+  $projectScope = 0
+  $other = 0
+  try { $approved = [int]$Claimability.approved_count } catch { $approved = 0 }
+  try { $runnable = [int]$Claimability.runnable_count } catch { $runnable = 0 }
+  try { $controlPlane = [int]$Claimability.control_plane_blocked } catch { $controlPlane = 0 }
+  try { $projectScope = [int]$Claimability.project_scope_blocked } catch { $projectScope = 0 }
+  try { $other = [int]$Claimability.other_blocked } catch { $other = 0 }
+
+  return ($approved -gt 0 -and $runnable -eq 0 -and $controlPlane -eq $approved -and $projectScope -eq 0 -and $other -eq 0)
+}
+
+function Set-ApprovedBacklogClaimabilityDeadlockHeld {
+  param(
+    [Parameter(Mandatory=$false)][object[]]$Items = $null,
+    [Parameter(Mandatory=$false)]$Claimability = $null,
+    [Parameter(Mandatory=$false)][string]$Channel = '',
+    [Parameter(Mandatory=$false)][string]$Reason = 'claimability-deadlock-control-plane-canary-gated'
+  )
+
+  if ($null -eq $Items) { $Items = @(Get-Backlog) }
+  if ($null -eq $Claimability) { $Claimability = Get-ApprovedBacklogClaimabilityReport -Items $Items }
+  if (-not (Test-ApprovedBacklogClaimabilityDeadlock -Claimability $Claimability)) {
+    return [pscustomobject][ordered]@{ changed = $false; held_count = 0; held_ids = @(); reason = 'not-deadlock' }
+  }
+
+  $ids = @($Claimability.control_plane_ids | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($ids.Count -eq 0) {
+    return [pscustomobject][ordered]@{ changed = $false; held_count = 0; held_ids = @(); reason = 'no-control-plane-ids' }
+  }
+
+  $held = New-Object 'System.Collections.Generic.List[string]'
+  $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+  foreach ($item in @($Items)) {
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($id) -or (@($ids) -notcontains $id)) { continue }
+    if ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '') -ne 'approved') { continue }
+    $claim = $null
+    try { $claim = Test-BacklogApprovedItemClaimable -Item $item -ProjectScopeAllowed ([bool](Test-ProjectScopedApprovedBacklogAllowed)) } catch { $claim = $null }
+    if (-not ($claim -and [string]$claim.reason -eq 'control-plane-blocked')) { continue }
+
+    Set-BacklogObjectProperty -Item $item -Name 'status' -Value 'held'
+    Set-BacklogObjectProperty -Item $item -Name 'held_by' -Value 'claimability-deadlock'
+    Set-BacklogObjectProperty -Item $item -Name 'held_reason' -Value ([string]$Reason)
+    Set-BacklogObjectProperty -Item $item -Name 'held_at' -Value $nowIso
+    Set-BacklogObjectProperty -Item $item -Name 'held_channel' -Value ([string]$Channel)
+    Set-BacklogObjectProperty -Item $item -Name 'canary_gate_required' -Value $true
+    [void]$held.Add($id)
+  }
+
+  if ($held.Count -gt 0) { Save-Backlog $Items }
+  return [pscustomobject][ordered]@{
+    changed = ($held.Count -gt 0)
+    held_count = [int]$held.Count
+    held_ids = @($held.ToArray())
+    reason = $(if ($held.Count -gt 0) { [string]$Reason } else { 'no-approved-control-plane-parents-held' })
+  }
+}
+
 function Get-BacklogClaimabilitySignature {
   param(
     [Parameter(Mandatory=$false)]$Claimability,

@@ -183,7 +183,17 @@ if (Test-Path $auditGuardScript) {
     $failed += "AUDIT-LAUNCH-GUARD: tools\test-audit-launch-guard.ps1 not found"
 }
 
-# 11. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
+# 11. Claimability deadlock hardening -- control-plane-only approved sets must be held after canary-gate admission.
+$claimabilityDeadlockScript = Join-Path $b 'tools\test-claimability-deadlock.ps1'
+if (Test-Path $claimabilityDeadlockScript) {
+    $cdRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $claimabilityDeadlockScript 2>&1
+    $cdCode = $LASTEXITCODE
+    if ($cdCode -ne 0) { $failed += ("CLAIMABILITY-DEADLOCK (exit=$cdCode): " + (($cdRaw -join '; ') -replace '\s+',' ').Trim()) }
+} else {
+    $failed += "CLAIMABILITY-DEADLOCK: tools\test-claimability-deadlock.ps1 not found"
+}
+
+# 12. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
 $backlogLib = Join-Path $b 'lib\backlog.ps1'
 if (Test-Path $backlogLib) {
     $blArg = $backlogLib -replace "'","''"
