@@ -969,7 +969,8 @@ if ($result) { break }
 # not produce a false QA FAIL.
 $infraFlakeCode = -1073741819
 $infraFlakeRetryGraceSec = 18
-if (-not $result -and $browserPaths.Count -gt 0) {
+$hasFastHttpFallback = $Name -in @('backlog-add', 'channel-switch')
+if (-not $result -and -not $hasFastHttpFallback -and $browserPaths.Count -gt 0) {
   $hadInfraFlakeCrash = @($diag.attempts | Where-Object {
     $_ -and ($_.exit_code -eq $infraFlakeCode) -and ([string]$_.mode -like '*single-process')
   })
