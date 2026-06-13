@@ -1646,7 +1646,10 @@ try {
         # EventSource auto-reconnects; retry:3000 sets 3s interval.
         $lsState = $null
         try { $lsState = Get-RunbookStateObject } catch {}
-        $lsChannel = [string](Get-RunbookPropertyValue $lsState 'channel')
+        $lsChannel = [string](Get-RunbookPropertyValue $lsState 'current_channel')
+        if ([string]::IsNullOrWhiteSpace($lsChannel)) {
+          $lsChannel = [string](Get-RunbookPropertyValue $lsState 'channel')
+        }
         if ([string]::IsNullOrWhiteSpace($lsChannel)) {
           try { $lsChannel = [string](Get-EffectiveChannel) } catch { $lsChannel = 'main' }
         }
@@ -1660,18 +1663,35 @@ try {
           try { $lsHbAge = [int]([Math]::Floor(([datetime]::UtcNow - [datetime]::Parse($lsHbRaw)).TotalSeconds)) } catch {}
         }
         $lsTaskId = [string](Get-RunbookPropertyValue $lsState 'current_backlog_id')
+        if ([string]::IsNullOrWhiteSpace($lsTaskId)) {
+          $lsTaskId = [string](Get-RunbookPropertyValue $lsState 'current_task_id')
+        }
+        $lsCurrentTask = [string](Get-RunbookPropertyValue $lsState 'current_task')
         $lsTaskTitle = ''; $lsTaskDesc = ''
         if (-not [string]::IsNullOrWhiteSpace($lsTaskId)) {
+          $lsTask = $null
           try {
             . (Join-Path $PSScriptRoot 'lib\backlog.ps1')
-            $lsTask = Get-BacklogItem -Id $lsTaskId
-            if ($lsTask) {
-              $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'title')
-              $lsTaskDesc  = [string](Get-RunbookPropertyValue $lsTask 'task')
-              if ($lsTaskDesc.Length -gt 300) { $lsTaskDesc = $lsTaskDesc.Substring(0, 300) + '…' }
+            if (Get-Command Get-Backlog -ErrorAction SilentlyContinue) {
+              foreach ($lsItem in @(Get-Backlog)) {
+                if ([string](Get-RunbookPropertyValue $lsItem 'id') -eq $lsTaskId) {
+                  $lsTask = $lsItem
+                  break
+                }
+              }
             }
-          } catch {}
+          } catch { $lsTask = $null }
+          if ($lsTask) {
+            $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'title')
+            if ([string]::IsNullOrWhiteSpace($lsTaskTitle)) { $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'slug') }
+            $lsTaskDesc = [string](Get-RunbookPropertyValue $lsTask 'task')
+            if ([string]::IsNullOrWhiteSpace($lsTaskDesc)) { $lsTaskDesc = [string](Get-RunbookPropertyValue $lsTask 'text') }
+          }
         }
+        if ([string]::IsNullOrWhiteSpace($lsTaskDesc)) { $lsTaskDesc = $lsCurrentTask }
+        if ([string]::IsNullOrWhiteSpace($lsTaskTitle)) { $lsTaskTitle = $lsTaskDesc }
+        if ($lsTaskTitle.Length -gt 120) { $lsTaskTitle = $lsTaskTitle.Substring(0, 120) + '...' }
+        if ($lsTaskDesc.Length -gt 300) { $lsTaskDesc = $lsTaskDesc.Substring(0, 300) + '...' }
         $lsPs = 0
         foreach ($lsSt in @(Get-RunbookPropertyValue $lsState 'parallel_streams')) {
           if ($null -ne $lsSt -and [string](Get-RunbookPropertyValue $lsSt 'status') -eq 'running') { $lsPs++ }
