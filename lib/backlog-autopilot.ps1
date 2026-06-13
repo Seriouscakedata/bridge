@@ -269,6 +269,36 @@ function Get-ProjectAutopilotSlug {
   return 'main'
 }
 
+function Write-ProjectAutopilotCoordinatorCostMetric {
+  param(
+    [string]$Channel = '',
+    [string]$ChapterHint = '',
+    [double]$WallclockSec = 0,
+    [object]$LlmCallsCount = $null,
+    [int]$AtomsEmitted = 0
+  )
+  $root = ''
+  try {
+    if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) { $root = Get-BridgeRoot }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($root)) { $root = Split-Path -Parent $PSScriptRoot }
+  $path = Join-Path (Join-Path $root 'tmp') 'coordinator-cost.jsonl'
+  $entry = [ordered]@{
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    channel = [string]$Channel
+    chapter_hint = [string]$ChapterHint
+    wallclock_sec = [Math]::Round([double]$WallclockSec, 3)
+    llm_calls_count = $LlmCallsCount
+    atoms_emitted = [int]$AtomsEmitted
+  }
+  $json = $entry | ConvertTo-Json -Compress -Depth 6
+  if ([string]::IsNullOrWhiteSpace($json) -or $json -match "[`r`n]") { throw 'invalid coordinator cost metric json' }
+  $dir = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  [System.IO.File]::AppendAllText($path, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  return $path
+}
+
 function Get-ProjectAutopilotBinding {
   $slug = Get-ProjectAutopilotSlug
   if ([string]::IsNullOrWhiteSpace($slug) -or $slug -eq 'main') { return $null }
@@ -1333,6 +1363,7 @@ function Add-ProjectBacklogFromMarker {
   $created = New-Object 'System.Collections.Generic.List[string]'
   $createdSlugs = New-Object 'System.Collections.Generic.List[string]'
   $createdChapters = New-Object 'System.Collections.Generic.List[string]'
+  $startedAt = Get-Date
   $errors = New-Object 'System.Collections.Generic.List[string]'
   $skipped = 0
   foreach ($t in $tasks) {
@@ -1392,6 +1423,11 @@ function Add-ProjectBacklogFromMarker {
   }
 
   try { Request-BacklogPackIfNeeded | Out-Null } catch {}
+  $chapterHint = ''
+  try { $chapterHint = (@($createdChapters.ToArray() | Sort-Object -Unique) | Select-Object -First 1) -join ',' } catch {}
+  try {
+    Write-ProjectAutopilotCoordinatorCostMetric -Channel $Channel -ChapterHint $chapterHint -WallclockSec (((Get-Date) - $startedAt).TotalSeconds) -AtomsEmitted $created.Count | Out-Null
+  } catch {}
   return [pscustomobject]@{ created=$created.Count; skipped=$skipped; errors=@($errors.ToArray()); ids=@($created.ToArray()); slugs=@($createdSlugs.ToArray()); chapters=@($createdChapters.ToArray() | Sort-Object -Unique) }
 }
 

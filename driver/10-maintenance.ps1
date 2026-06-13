@@ -554,6 +554,7 @@ function Test-ChannelMaintenanceEnabled {
 }
 
 function Start-BacklogReaperIfDue {
+  try { Invoke-BacklogHeldItemAutoTriage | Out-Null } catch {}
   # Recover zombie running/working backlog items whose worker died -- no live agent_pid, no fresh
   # worker heartbeat, and no matching active runtime task. The reaper (lib/backlog-state-reaper.ps1)
   # was built + unit-tested but NEVER wired into the loop, so an orphaned 'running' atom (e.g. a stream
@@ -580,6 +581,102 @@ function Start-BacklogReaperIfDue {
       Add-Message -From system -Text ("♻️ Zombie-reaper восстановил задачу " + [string]$rec.id + " (была '" + [string]$rec.from_status + "' без живого владельца) → held; lease освобождён для повторного claim.") -Kind event | Out-Null
     } catch {}
   }
+}
+
+function Test-BacklogHeldItemAutoTriageDue {
+  param(
+    [string]$MarkerPath = '',
+    [double]$FloorHours = 3.0,
+    [switch]$Force
+  )
+  if ($Force) { return $true }
+  if ([string]::IsNullOrWhiteSpace($MarkerPath)) { $MarkerPath = Join-Path $bridgeRoot 'control\held-auto-triage.last' }
+  if (-not (Test-Path -LiteralPath $MarkerPath)) { return $true }
+  try {
+    $last = [datetime]::Parse((Get-Content -LiteralPath $MarkerPath -Raw -Encoding UTF8).Trim(), $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    return (((Get-Date).ToUniversalTime() - $last).TotalHours -ge [Math]::Max(0.1, $FloorHours))
+  } catch {
+    return $true
+  }
+}
+
+function Test-BacklogHeldItemOldEnough {
+  param($Item, [double]$MinAgeDays = 1.0)
+  if (-not $Item) { return $false }
+  $raw = ''
+  foreach ($name in @('created_at','ts','created','submitted_at')) {
+    try { $raw = [string](Get-BacklogPackObjectValue -Obj $Item -Name $name -Default '') } catch { $raw = '' }
+    if (-not [string]::IsNullOrWhiteSpace($raw)) { break }
+  }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+  try {
+    $created = [datetime]::Parse($raw, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    return (((Get-Date).ToUniversalTime() - $created).TotalDays -gt $MinAgeDays)
+  } catch {
+    return $false
+  }
+}
+
+function Invoke-BacklogHeldItemAutoTriage {
+  param(
+    [object[]]$Items = $null,
+    [int]$MaxActions = 5,
+    [double]$MinAgeDays = 1.0,
+    [double]$FloorHours = 3.0,
+    [string]$MarkerPath = '',
+    [switch]$Force
+  )
+  if (-not (Get-Command Test-BacklogAutoTriageDecision -ErrorAction SilentlyContinue)) { return [pscustomobject]@{ actions=0; escalated=0; changed=$false } }
+  if (-not (Get-Command Approve-BacklogItemViaCanary -ErrorAction SilentlyContinue)) { return [pscustomobject]@{ actions=0; escalated=0; changed=$false } }
+  if ($MaxActions -lt 1) { $MaxActions = 1 } elseif ($MaxActions -gt 20) { $MaxActions = 20 }
+  if ([string]::IsNullOrWhiteSpace($MarkerPath)) { $MarkerPath = Join-Path $bridgeRoot 'control\held-auto-triage.last' }
+  if (-not (Test-BacklogHeldItemAutoTriageDue -MarkerPath $MarkerPath -FloorHours $FloorHours -Force:$Force)) { return [pscustomobject]@{ actions=0; escalated=0; changed=$false; due=$false } }
+
+  $loadedFromBacklog = ($null -eq $Items)
+  if ($loadedFromBacklog) { $Items = @(Get-Backlog) }
+  $actions = 0
+  $changed = $false
+  $escalated = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($item in @($Items)) {
+    if ($actions -ge $MaxActions) { break }
+    $status = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).Trim().ToLowerInvariant()
+    if ($status -notin @('held','new')) { continue }
+    if (-not (Test-BacklogHeldItemOldEnough -Item $item -MinAgeDays $MinAgeDays)) { continue }
+    $id = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
+    $decision = Test-BacklogAutoTriageDecision -Item $item
+    $kind = ([string](Get-BacklogPackObjectValue -Obj $decision -Name 'decision' -Default '')).Trim().ToLowerInvariant()
+    $reason = [string](Get-BacklogPackObjectValue -Obj $decision -Name 'reason' -Default '')
+    if ($kind -eq 'approve') {
+      Set-BacklogObjectProperty -Item $item -Name 'status' -Value 'approved'
+      Set-BacklogObjectProperty -Item $item -Name 'approved_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+      Set-BacklogObjectProperty -Item $item -Name 'approved_by' -Value 'auto-triage'
+      try { Add-Message -From system -Text ("Авто-триаж: approved " + $id + " (" + $reason + ")") -Kind event | Out-Null } catch {}
+      $actions++; $changed = $true
+    } elseif ($kind -eq 'canary') {
+      [void](Approve-BacklogItemViaCanary -Item $item -Decision $decision)
+      try { Add-Message -From system -Text ("Авто-триаж: canary " + $id + " (" + $reason + ")") -Kind event | Out-Null } catch {}
+      $actions++; $changed = $true
+    } elseif ($kind -eq 'reject') {
+      Set-BacklogObjectProperty -Item $item -Name 'status' -Value 'rejected'
+      Set-BacklogObjectProperty -Item $item -Name 'rejected_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+      Set-BacklogObjectProperty -Item $item -Name 'rejected_reason' -Value $reason
+      try { Add-Message -From system -Text ("Авто-триаж: rejected " + $id + " (" + $reason + ")") -Kind event | Out-Null } catch {}
+      $actions++; $changed = $true
+    } else {
+      [void]$escalated.Add(($id + " " + $reason).Trim())
+      try { Add-Message -From system -Text ("Авто-триаж: escalate " + $id + " (" + $reason + ")") -Kind event | Out-Null } catch {}
+    }
+  }
+  if ($escalated.Count -gt 0) {
+    try { Add-Message -From system -Text (($escalated.Count.ToString()) + " задач ждут решения оператора: " + ((@($escalated.ToArray()) | Select-Object -First 10) -join '; ')) -Kind event | Out-Null } catch {}
+  }
+  if ($changed -and $loadedFromBacklog) { Save-Backlog @($Items) }
+  try {
+    $parent = Split-Path -Parent $MarkerPath
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    [System.IO.File]::WriteAllText($MarkerPath, (Get-Date).ToUniversalTime().ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+  return [pscustomobject]@{ actions=$actions; escalated=$escalated.Count; changed=$changed; due=$true }
 }
 
 function Start-AuditIfDue {

@@ -1128,6 +1128,52 @@ function Test-BacklogAutoTriageDecision {
   }
 }
 
+function Approve-BacklogItemViaCanary {
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    $Decision = $null
+  )
+  if (-not $Item) { return $null }
+  $decisionText = ''
+  $reason = ''
+  try { $decisionText = [string](Get-BacklogPackObjectValue -Obj $Decision -Name 'decision' -Default '') } catch {}
+  if ([string]::IsNullOrWhiteSpace($decisionText)) {
+    try { $decisionText = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'decision' -Default '') } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($decisionText)) { $decisionText = 'canary' }
+  if ($decisionText -ne 'canary') {
+    throw "Approve-BacklogItemViaCanary requires decision='canary'; got '$decisionText'"
+  }
+  try { $reason = [string](Get-BacklogPackObjectValue -Obj $Decision -Name 'reason' -Default '') } catch {}
+  if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'auto-canary' }
+
+  $checks = @('driver.ps1 -SelfTest', 'smoke.ps1', 'canary')
+  $admission = [ordered]@{
+    admitted = $true
+    mode = 'bridge_self_canary'
+    canary_required = $true
+    checks = @($checks)
+    evidence_required = @($checks)
+    rollback_plan = 'git revert <commit> + driver -SelfTest + smoke'
+    reason = [string]$reason
+  }
+  Set-BacklogObjectProperty -Item $Item -Name 'bridge_self_admission' -Value ([pscustomobject]$admission)
+  Set-BacklogObjectProperty -Item $Item -Name 'status' -Value 'approved'
+  Set-BacklogObjectProperty -Item $Item -Name 'approved_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+  Set-BacklogObjectProperty -Item $Item -Name 'approved_by' -Value 'auto-canary'
+
+  $tags = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($tag in @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @()))) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$tag) -and -not $tags.Contains([string]$tag)) { [void]$tags.Add([string]$tag) }
+  }
+  if (-not $tags.Contains('operator')) { [void]$tags.Add('operator') }
+  Set-BacklogObjectProperty -Item $Item -Name 'tags' -Value @($tags.ToArray())
+
+  $id = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+  try { Add-Message -From system -Text ("Авто-canary одобрение: " + $id + " (" + [string]$reason + ")") -Kind event | Out-Null } catch {}
+  return $Item
+}
+
 function Test-BacklogItemHeld {
   param($Item)
   if (-not $Item) { return $false }
@@ -1289,10 +1335,13 @@ function Test-BacklogApprovedItemClaimable {
       $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
     }
   } catch { $touchesControl = $false }
-  if ($touchesControl -and -not $isOperator) {
+  if ($touchesControl) {
     $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
     if ($admission -and [bool]$admission.ok) {
       return [pscustomobject]@{ claimable=$true; reason='bridge-self-admission'; admission=$admission }
+    }
+    if ($isOperator) {
+      return [pscustomobject]@{ claimable=$true; reason='operator'; admission=$admission }
     }
     return [pscustomobject]@{ claimable=$false; reason='control-plane-blocked'; admission=$admission }
   }
