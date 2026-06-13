@@ -475,6 +475,16 @@
     transition:background .2s,border-color .2s;
   }
   .audit-badge:hover{opacity:.85}
+  #cuBadge{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:6px;border:1px solid var(--border-soft);font-size:12px;cursor:pointer;background:#1a1f29;color:var(--soft);position:relative;transition:border-color .2s,background .2s;}
+  #cuBadge.ok{border-color:rgba(74,222,128,.4);color:#4ade80;}
+  #cuBadge.fail{border-color:rgba(248,113,113,.4);color:#f87171;}
+  .cu-popup{position:fixed;z-index:9999;background:#13161e;border:1px solid var(--border-soft);border-radius:10px;padding:12px;width:500px;max-height:75vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.6);display:none;font-size:12px;}
+  .cu-popup.open{display:block;}
+  .cu-entry{border-bottom:1px solid var(--border-soft);padding:8px 0;}
+  .cu-entry:last-child{border-bottom:none;}
+  .cu-shots{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;}
+  .cu-thumb{width:100%;border-radius:4px;cursor:zoom-in;display:block;}
+  .cu-meta{color:var(--soft);margin-bottom:3px;}
   .queue-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;background:#1a1f29;border:1px solid var(--border-soft);font-size:12px;color:var(--soft);cursor:pointer;white-space:nowrap;flex:none;user-select:none;transition:background .2s,border-color .2s;}
   .queue-chip:hover{opacity:.85}
   .queue-chip.warn{background:#2a2000;border-color:rgba(255,193,7,.5);color:#ffc107}
@@ -2312,6 +2322,11 @@
       <span id="auditIcon">🔍</span>
       <span id="auditStatus">—</span>
     </div>
+    <div id="cuBadge" hidden title="Computer-action — click для истории">
+      <span id="cuIcon">🖱</span>
+      <span id="cuStatus">—</span>
+    </div>
+    <div class="cu-popup" id="cuPopup"></div>
     <div id="queueChip" class="queue-chip" hidden title="Queue approved/running/held - click to open backlog">
       <span id="queueChipText"></span>
     </div>
@@ -3440,6 +3455,57 @@ async function pollAudit(){
     // silent — audit is optional
   }
 }
+function _cuEscHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+async function pollComputerUse(){
+  const badge=document.getElementById('cuBadge');
+  const statusEl=document.getElementById('cuStatus');
+  const iconEl=document.getElementById('cuIcon');
+  const popup=document.getElementById('cuPopup');
+  if(!badge||!statusEl)return;
+  try{
+    const r=await fetch('/api/computer-use-history',{cache:'no-store'});
+    if(!r.ok)return;
+    const items=await r.json();
+    if(!items||!items.length){badge.hidden=true;return;}
+    badge.hidden=false;
+    const last=items[items.length-1];
+    badge.className=last.ok?'ok':'fail';
+    iconEl.textContent=last.ok?'🖱✅':'🖱⚠';
+    statusEl.textContent=(last.latencyMs||0)+'ms';
+    badge.title=(last.task||'')+'\n'+(last.message||'');
+    let html='<div style="font-weight:600;font-size:13px;margin-bottom:10px">История computer-action <small style="color:var(--soft)">('+items.length+')</small></div>';
+    for(let i=items.length-1;i>=0;i--){
+      const e=items[i];
+      const ts=e.ts?new Date(e.ts).toLocaleTimeString():'?';
+      html+='<div class="cu-entry">';
+      html+='<div class="cu-meta">'+ts+' \u00b7 '+(e.ok?'✅':'⚠')+' '+_cuEscHtml(e.layer||'—')+' \u00b7 '+(e.latencyMs||0)+'ms</div>';
+      html+='<div>'+_cuEscHtml(e.task||'')+'</div>';
+      html+='<div class="cu-meta" style="margin-top:2px">'+_cuEscHtml(e.message||'')+'</div>';
+      if(e.beforeShot||e.afterShot){
+        html+='<div class="cu-shots">';
+        html+='<div><div class="cu-meta">до</div>'+(e.beforeShot?'<img class="cu-thumb" src="/api/computer-use-screenshot?name='+encodeURIComponent(e.beforeShot)+'" loading="lazy" alt="до">':'<span>—</span>')+'</div>';
+        html+='<div><div class="cu-meta">после</div>'+(e.afterShot?'<img class="cu-thumb" src="/api/computer-use-screenshot?name='+encodeURIComponent(e.afterShot)+'" loading="lazy" alt="после">':'<span>—</span>')+'</div>';
+        html+='</div>';
+      }
+      html+='</div>';
+    }
+    popup.innerHTML=html;
+  }catch(e){}
+}
+(function(){
+  const badge=document.getElementById('cuBadge');
+  const popup=document.getElementById('cuPopup');
+  if(!badge||!popup)return;
+  badge.addEventListener('click',function(ev){
+    ev.stopPropagation();
+    const r=badge.getBoundingClientRect();
+    if(popup.classList.toggle('open')){
+      popup.style.top=(r.bottom+6)+'px';
+      popup.style.left=Math.max(8,r.right-500)+'px';
+    }
+  });
+  document.addEventListener('click',function(){popup.classList.remove('open');});
+})();
 let backlogInFlight = false;
 let _backlogItems = [];
 let _backlogShowArchived = false;
@@ -6258,6 +6324,8 @@ setInterval(pollBacklog, 15000);
 setInterval(refreshTimes, 30000);
 pollAudit();
 setInterval(pollAudit, 600000);
+pollComputerUse();
+setInterval(pollComputerUse, 15000);
 
 // 2026-05-28: Expose select internals so scenario JS (and ad-hoc debugging)
 // can interact with them. `let` at script scope isn't visible on `window`,
