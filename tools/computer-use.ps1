@@ -43,36 +43,48 @@ $ProgressPreference = 'SilentlyContinue'
 $script:Logs = New-Object 'System.Collections.Generic.List[string]'
 $script:StartedAt = [DateTime]::UtcNow
 $script:BeforeShot = ''
+$script:CuHistoryWritten = $false
+$script:CuShotId = $script:StartedAt.ToString('yyyyMMddHHmmssfff') + '-' + [string]$PID
+
+function Add-ComputerUseLog {
+  param([string]$Text)
+  if (-not [string]::IsNullOrWhiteSpace($Text)) { [void]$script:Logs.Add($Text) }
+}
 
 try {
   $shotScript = Join-Path $PSScriptRoot 'screenshot.ps1'
   $bridgeRt2 = Split-Path $PSScriptRoot -Parent
   $shotDir2 = Join-Path $bridgeRt2 'control\cu-screenshots'
   if (-not (Test-Path -LiteralPath $shotDir2)) { [void](New-Item -ItemType Directory -Path $shotDir2 -Force) }
-  $ts2 = $script:StartedAt.ToString('yyyyMMddHHmmss')
   $tmpB = (& $shotScript | Select-Object -Last 1)
   if (-not [string]::IsNullOrWhiteSpace($tmpB) -and (Test-Path -LiteralPath $tmpB)) {
-    $beforeName = "cu-${ts2}-before.png"
+    $beforeName = 'cu-' + $script:CuShotId + '-before.png'
     Copy-Item -LiteralPath $tmpB -Destination (Join-Path $shotDir2 $beforeName) -Force
     $script:BeforeShot = $beforeName
   }
-} catch {}
+} catch {
+  Add-ComputerUseLog ('history: before screenshot failed: ' + $_.Exception.Message)
+}
 
 function Write-CuHistory {
   param([bool]$Ok,[string]$Message,[string]$Layer)
+  if ($script:CuHistoryWritten) { return }
+  $mutex = $null
+  $lockTaken = $false
   try {
     $bridgeRt = Split-Path $PSScriptRoot -Parent
     $shotDir = Join-Path $bridgeRt 'control\cu-screenshots'
     if (-not (Test-Path -LiteralPath $shotDir)) { [void](New-Item -ItemType Directory -Path $shotDir -Force) }
-    $ts = $script:StartedAt.ToString('yyyyMMddHHmmss')
     $afterName = ''
     try {
       $tmpShot = (& (Join-Path $PSScriptRoot 'screenshot.ps1') | Select-Object -Last 1)
       if (-not [string]::IsNullOrWhiteSpace($tmpShot) -and (Test-Path -LiteralPath $tmpShot)) {
-        $afterName = "cu-${ts}-after.png"
+        $afterName = 'cu-' + $script:CuShotId + '-after.png'
         Copy-Item -LiteralPath $tmpShot -Destination (Join-Path $shotDir $afterName) -Force
       }
-    } catch {}
+    } catch {
+      Add-ComputerUseLog ('history: after screenshot failed: ' + $_.Exception.Message)
+    }
     $record = [ordered]@{
       ts         = $script:StartedAt.ToString('o')
       task       = [string]$Task
@@ -85,20 +97,39 @@ function Write-CuHistory {
     }
     $line = ($record | ConvertTo-Json -Compress -Depth 4)
     $histFile = Join-Path $bridgeRt 'control\cu-history.jsonl'
+    $mutex = New-Object System.Threading.Mutex($false, 'BridgeComputerUseHistory')
+    try {
+      $lockTaken = [bool]$mutex.WaitOne(3000)
+    } catch [System.Threading.AbandonedMutexException] {
+      $lockTaken = $true
+    }
+    if (-not $lockTaken) {
+      Add-ComputerUseLog 'history: skipped write because history lock timed out'
+      return
+    }
     $existing = @()
     if (Test-Path -LiteralPath $histFile) { $existing = @(Get-Content -LiteralPath $histFile -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) }
     $newLines = @(@($existing | Select-Object -Last 19) + @($line))
-    [System.IO.File]::WriteAllText($histFile, ($newLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
-  } catch {}
-}
-
-function Add-ComputerUseLog {
-  param([string]$Text)
-  if (-not [string]::IsNullOrWhiteSpace($Text)) { [void]$script:Logs.Add($Text) }
+    [System.IO.File]::WriteAllText($histFile, (($newLines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    $script:CuHistoryWritten = $true
+  } catch {
+    Add-ComputerUseLog ('history: write failed: ' + $_.Exception.Message)
+  } finally {
+    if ($lockTaken -and $mutex) {
+      try { $mutex.ReleaseMutex() } catch { Add-ComputerUseLog ('history: lock release failed: ' + $_.Exception.Message) }
+    }
+    if ($mutex) { $mutex.Dispose() }
+  }
 }
 
 function Complete-ComputerUse {
   param([bool]$Ok, [string]$Message, [hashtable]$Extra = $null)
+  $historyLayer = ''
+  if ($Extra -and $Extra.ContainsKey('layer')) { $historyLayer = [string]$Extra['layer'] }
+  if ([string]::IsNullOrWhiteSpace($historyLayer)) {
+    if ($Ok) { $historyLayer = 'unknown' } else { $historyLayer = 'error' }
+  }
+  Write-CuHistory -Ok $Ok -Message $Message -Layer $historyLayer
   $result = [ordered]@{
     ok = [bool]$Ok
     message = [string]$Message
@@ -359,19 +390,15 @@ if ([string]::IsNullOrWhiteSpace($Task)) {
 try {
   $layer1 = Invoke-UIAutomationLayer -TaskText $Task
   if ($layer1 -and [bool]$layer1.ok) {
-    Write-CuHistory -Ok $true -Message ([string]$layer1.message) -Layer 'uia'
     Complete-ComputerUse -Ok $true -Message ([string]$layer1.message) -Extra @{ layer='uia'; verified=[bool]$layer1.verified }
   }
   Add-ComputerUseLog ('layer1: ' + [string]$layer1.message)
   $layer2 = Invoke-VisionLayer -TaskText $Task
   if ($layer2 -and [bool]$layer2.ok) {
-    Write-CuHistory -Ok $true -Message ([string]$layer2.message) -Layer 'vision'
     Complete-ComputerUse -Ok $true -Message ([string]$layer2.message) -Extra @{ layer='vision'; verified=[bool]$layer2.verified }
   }
-  Write-CuHistory -Ok $false -Message ([string]$layer2.message) -Layer 'none'
   Complete-ComputerUse -Ok $false -Message ([string]$layer2.message) -Extra @{ layer='none'; verified=$false }
 } catch {
   Add-ComputerUseLog ('fatal: ' + $_.Exception.Message)
-  Write-CuHistory -Ok $false -Message ('computer-use failed: ' + $_.Exception.Message) -Layer 'error'
-  Complete-ComputerUse -Ok $false -Message ('computer-use failed: ' + $_.Exception.Message)
+  Complete-ComputerUse -Ok $false -Message ('computer-use failed: ' + $_.Exception.Message) -Extra @{ layer='error'; verified=$false }
 }
