@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-apply-restart-stamp.ps1 -- unit checks for apply restart sidecar.
 
 $ErrorActionPreference = 'Stop'

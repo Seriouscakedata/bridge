@@ -1,4 +1,4 @@
-# common-files.ps1 -- decomposed helpers from common.ps1. Dot-sourced by common.ps1.
+﻿# common-files.ps1 -- decomposed helpers from common.ps1. Dot-sourced by common.ps1.
 
 function Resolve-BridgeContainedPath {
   param(
