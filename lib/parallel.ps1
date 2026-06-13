@@ -1589,8 +1589,19 @@ function Stop-ParallelDispatchStalledWorker {
   )
 
   try {
-    if ($Worker.process -and -not $Worker.process.HasExited) {
-      Start-Process taskkill -ArgumentList '/PID',([string]$Worker.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue
+    $proc = $Worker.process
+    if ($proc -and -not ($proc.HasExited)) {
+      $pidText = [string]$Worker.pid
+      try { & taskkill.exe /PID $pidText /F /T 2>$null | Out-Null } catch {}
+      try { $proc.Refresh() } catch {}
+      if (-not ($proc.HasExited)) {
+        try { $proc.Kill() } catch {}
+      }
+      try { $null = $proc.WaitForExit(5000) } catch {}
+      try { $proc.Refresh() } catch {}
+      if (-not ($proc.HasExited)) {
+        try { Stop-Process -Id ([int]$Worker.pid) -Force -ErrorAction SilentlyContinue } catch {}
+      }
     }
   } catch {}
 
@@ -1600,8 +1611,8 @@ function Stop-ParallelDispatchStalledWorker {
     commits = @()
     error   = $Reason
   }
-  Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -Result $res
-  try { Add-Message -From system -Text ("dispatch_stall: Worker " + $Worker.id + " killed: " + $Reason) -Kind event } catch {}
+  Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -Result $res -SkipMessage
+  try { Add-Message -From system -Text ("dispatch_stall: Worker " + $Worker.id + " killed: " + $Reason) -Kind event | Out-Null } catch {}
 }
 
 function Wait-ParallelDispatchResults {
@@ -1674,7 +1685,7 @@ function Wait-ParallelDispatchResults {
           Stop-ParallelDispatchStalledWorker -Completed $completed -Worker $w -Reason 'zero_output_stall'
         } elseif ($stalledMs -ge ($stallWarnZeroMin * 60000) -and -not $led.warnedZero) {
           $led.warnedZero = $true
-          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": zero output for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillZeroMin + "m if no progress") -Kind event } catch {}
+          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": zero output for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillZeroMin + "m if no progress") -Kind event | Out-Null } catch {}
         }
       } else {
         # Stalled-after-output discriminator
@@ -1682,7 +1693,7 @@ function Wait-ParallelDispatchResults {
           Stop-ParallelDispatchStalledWorker -Completed $completed -Worker $w -Reason 'stagnation_timeout'
         } elseif ($stalledMs -ge ($stallWarnGrowthMin * 60000) -and -not $led.warnedGrowth) {
           $led.warnedGrowth = $true
-          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": output stalled for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillGrowthMin + "m") -Kind event } catch {}
+          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": output stalled for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillGrowthMin + "m") -Kind event | Out-Null } catch {}
         }
       }
     }
