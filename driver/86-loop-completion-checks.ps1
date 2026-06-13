@@ -119,6 +119,78 @@ function Test-DriverReplyHasSmokeEvidence {
   return $false
 }
 
+function Test-CoveredAfterRestart {
+  param(
+    [string]$BridgeRoot,
+    [string]$ClaimedAt,
+    [string]$BacklogId,
+    [string]$TaskText,
+    [hashtable]$StateObj
+  )
+  # Returns: @{ Covered=$false; Sha='' }
+  $result = @{ Covered = $false; Sha = '' }
+  try {
+    # (a) resumed after restart
+    $applyRestarts = [int]($StateObj.task_apply_restart_count)
+    $hardRestarts  = [int]($StateObj.task_hard_restart_count)
+    if (($applyRestarts + $hardRestarts) -le 0) { return $result }
+
+    # (b) working tree is clean
+    $dirty = ([string](& git -C $BridgeRoot status --porcelain 2>$null | Out-String)).Trim()
+    if ($dirty -ne '') { return $result }
+
+    # (c) critic verdict OK
+    $cache = $StateObj.critic_verdict_cache
+    if ($null -ne $cache -and [string]$cache.verdict -ne 'OK') { return $result }
+
+    # (d) git log finds a commit since claimed_at matching backlog_id or first 60 chars of task text
+    $since = ''
+    if (-not [string]::IsNullOrWhiteSpace($ClaimedAt)) {
+      # parse ISO date; use as --since argument
+      $since = $ClaimedAt
+    }
+    # build grep patterns: backlog_id (if non-empty) and first 60 chars of task text (escaped)
+    $patterns = @()
+    if (-not [string]::IsNullOrWhiteSpace($BacklogId)) { $patterns += $BacklogId }
+    if (-not [string]::IsNullOrWhiteSpace($TaskText)) {
+      $shortened = $TaskText.Trim()
+      if ($shortened.Length -gt 60) { $shortened = $shortened.Substring(0, 60) }
+      # escape for git --grep (git uses POSIX basic regex; escape special chars)
+      $escaped = $shortened -replace '([\\.\[\]^$*+?{}()|])', '\$1'
+      if ($escaped.Length -gt 0) { $patterns += $escaped }
+    }
+    if ($patterns.Count -eq 0) { return $result }
+
+    # Search bridge repo and optionally project-repo (if different)
+    $repos = @($BridgeRoot)
+    try {
+      if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
+        $projRoot = [string](Get-TaskRepoRoot)
+        if (-not [string]::IsNullOrWhiteSpace($projRoot) -and $projRoot -ne $BridgeRoot) {
+          $repos += $projRoot
+        }
+      }
+    } catch {}
+
+    foreach ($repo in $repos) {
+      foreach ($pat in $patterns) {
+        $gitArgs = @('log', '--oneline', '--grep', $pat)
+        if (-not [string]::IsNullOrWhiteSpace($since)) { $gitArgs += @('--since', $since) }
+        $lines = @(& git -C $repo @gitArgs 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($lines.Count -gt 0) {
+          $sha = ([string]$lines[0]).Split(' ')[0].Trim()
+          if ($sha.Length -ge 7) {
+            $result.Covered = $true
+            $result.Sha = $sha
+            return $result
+          }
+        }
+      }
+    }
+  } catch {}
+  return $result
+}
+
 function New-DriverDoneGatePlan {
   param(
     [Parameter(Mandatory=$true)][string]$BridgeRoot,
@@ -869,6 +941,24 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     $didActions = [bool](Read-State).task_did_actions
     $hasVerify  = $reply -imatch '(?im)^\s*\[\[VERIFIED:\s*.+?\]\]\s*$'
     $vrc        = [int](Read-State).verify_retry_count
+    # covered-after-restart: если работа уже закоммичена в прошлой сессии, не требуем новый verify
+    if ($didActions -and -not $hasVerify) {
+      $covSt = Read-State
+      $covResult = Test-CoveredAfterRestart `
+        -BridgeRoot $bridgeRoot `
+        -ClaimedAt ([string]$covSt.claimed_at) `
+        -BacklogId ([string]$covSt.current_backlog_id) `
+        -TaskText ([string]$covSt.current_task) `
+        -StateObj $covSt
+      if ($covResult.Covered) {
+        $covMsg = "✅ covered-after-restart: задача закрыта — коммит найден после рестарта ($($covResult.Sha)), рабочее дерево чистое, критик OK. Новый verify не требуется."
+        Add-Message -From system -Text $covMsg -Kind event | Out-Null
+        try { Write-BridgeLog -Channel (Get-EffectiveChannel) -Text ("covered-after-restart: sha=$($covResult.Sha) task=$([string]$covSt.current_backlog_id)") -Kind 'covered_close' } catch {}
+        Update-State { param($s) $s.task_did_actions = $false } | Out-Null
+        # не переходим в VERIFY — пусть DONE закроется
+        $didActions = $false
+      }
+    }
     if ($didActions -and -not $hasVerify -and $vrc -lt 2) {
       Add-Message -From system -Text "🔍 Фаза верификации: задача меняла файлы, но проверки нет. Агент, ВЫПОЛНИ проверочную команду/тест/чтение файла/скриншот, покажи результат и добавь строку [[VERIFIED: что проверено | результат]], затем STATUS: DONE." -Kind event | Out-Null
       $plannerStatus = 'VERIFY'
