@@ -1022,6 +1022,29 @@ try {
         $u = Get-UsageSummary
         Send-Text $ctx ($u | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/computer-use-history') {
+        $histPath = Join-Path $root 'control\cu-history.jsonl'
+        if (Test-Path -LiteralPath $histPath) {
+          $lines = @(Get-Content -LiteralPath $histPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          $items = @($lines | Select-Object -Last 20)
+          Send-Text $ctx ('[' + ($items -join ',') + ']') 'application/json; charset=utf-8'
+        } else {
+          Send-Text $ctx '[]' 'application/json; charset=utf-8'
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/computer-use-screenshot') {
+        $name = Get-QueryParamUtf8 $ctx 'name'
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -match '[\\\/\.\.]' -or -not $name.EndsWith('.png')) {
+          Send-FileNotFound $ctx
+        } else {
+          $shotPath = Join-Path $root "control\cu-screenshots\$name"
+          if (Test-Path -LiteralPath $shotPath) {
+            Send-Bytes $ctx ([System.IO.File]::ReadAllBytes($shotPath)) 'image/png'
+          } else {
+            Send-FileNotFound $ctx
+          }
+        }
+      }
       elseif ($method -eq 'POST' -and $path -eq '/api/architect/run') {
         # 🧭 Manual Architect trigger from UI (or curl). Accepts optional body {"mode":"deep-think"}.
         $mode = 'normal'

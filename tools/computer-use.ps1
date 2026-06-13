@@ -41,6 +41,56 @@ if (-not $Worker) {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $script:Logs = New-Object 'System.Collections.Generic.List[string]'
+$script:StartedAt = [DateTime]::UtcNow
+$script:BeforeShot = ''
+
+try {
+  $shotScript = Join-Path $PSScriptRoot 'screenshot.ps1'
+  $bridgeRt2 = Split-Path $PSScriptRoot -Parent
+  $shotDir2 = Join-Path $bridgeRt2 'control\cu-screenshots'
+  if (-not (Test-Path -LiteralPath $shotDir2)) { [void](New-Item -ItemType Directory -Path $shotDir2 -Force) }
+  $ts2 = $script:StartedAt.ToString('yyyyMMddHHmmss')
+  $tmpB = (& $shotScript | Select-Object -Last 1)
+  if (-not [string]::IsNullOrWhiteSpace($tmpB) -and (Test-Path -LiteralPath $tmpB)) {
+    $beforeName = "cu-${ts2}-before.png"
+    Copy-Item -LiteralPath $tmpB -Destination (Join-Path $shotDir2 $beforeName) -Force
+    $script:BeforeShot = $beforeName
+  }
+} catch {}
+
+function Write-CuHistory {
+  param([bool]$Ok,[string]$Message,[string]$Layer)
+  try {
+    $bridgeRt = Split-Path $PSScriptRoot -Parent
+    $shotDir = Join-Path $bridgeRt 'control\cu-screenshots'
+    if (-not (Test-Path -LiteralPath $shotDir)) { [void](New-Item -ItemType Directory -Path $shotDir -Force) }
+    $ts = $script:StartedAt.ToString('yyyyMMddHHmmss')
+    $afterName = ''
+    try {
+      $tmpShot = (& (Join-Path $PSScriptRoot 'screenshot.ps1') | Select-Object -Last 1)
+      if (-not [string]::IsNullOrWhiteSpace($tmpShot) -and (Test-Path -LiteralPath $tmpShot)) {
+        $afterName = "cu-${ts}-after.png"
+        Copy-Item -LiteralPath $tmpShot -Destination (Join-Path $shotDir $afterName) -Force
+      }
+    } catch {}
+    $record = [ordered]@{
+      ts         = $script:StartedAt.ToString('o')
+      task       = [string]$Task
+      ok         = [bool]$Ok
+      message    = [string]$Message
+      layer      = [string]$Layer
+      latencyMs  = [int]([DateTime]::UtcNow - $script:StartedAt).TotalMilliseconds
+      beforeShot = [string]$script:BeforeShot
+      afterShot  = [string]$afterName
+    }
+    $line = ($record | ConvertTo-Json -Compress -Depth 4)
+    $histFile = Join-Path $bridgeRt 'control\cu-history.jsonl'
+    $existing = @()
+    if (Test-Path -LiteralPath $histFile) { $existing = @(Get-Content -LiteralPath $histFile -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) }
+    $newLines = @(@($existing | Select-Object -Last 19) + @($line))
+    [System.IO.File]::WriteAllText($histFile, ($newLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
 
 function Add-ComputerUseLog {
   param([string]$Text)
@@ -309,15 +359,19 @@ if ([string]::IsNullOrWhiteSpace($Task)) {
 try {
   $layer1 = Invoke-UIAutomationLayer -TaskText $Task
   if ($layer1 -and [bool]$layer1.ok) {
+    Write-CuHistory -Ok $true -Message ([string]$layer1.message) -Layer 'uia'
     Complete-ComputerUse -Ok $true -Message ([string]$layer1.message) -Extra @{ layer='uia'; verified=[bool]$layer1.verified }
   }
   Add-ComputerUseLog ('layer1: ' + [string]$layer1.message)
   $layer2 = Invoke-VisionLayer -TaskText $Task
   if ($layer2 -and [bool]$layer2.ok) {
+    Write-CuHistory -Ok $true -Message ([string]$layer2.message) -Layer 'vision'
     Complete-ComputerUse -Ok $true -Message ([string]$layer2.message) -Extra @{ layer='vision'; verified=[bool]$layer2.verified }
   }
+  Write-CuHistory -Ok $false -Message ([string]$layer2.message) -Layer 'none'
   Complete-ComputerUse -Ok $false -Message ([string]$layer2.message) -Extra @{ layer='none'; verified=$false }
 } catch {
   Add-ComputerUseLog ('fatal: ' + $_.Exception.Message)
+  Write-CuHistory -Ok $false -Message ('computer-use failed: ' + $_.Exception.Message) -Layer 'error'
   Complete-ComputerUse -Ok $false -Message ('computer-use failed: ' + $_.Exception.Message)
 }
