@@ -399,7 +399,7 @@ function Invoke-Coder {
 
 ЗАДАЧА:
 "@
-      $fallbackModel = 'claude-fable-5'
+      $fallbackModel = 'claude-opus-4-8'   # 2026-06-13: was claude-fable-5 which 404s on the bridge's claude.exe subscription
       try {
         $fallbackCfg = Get-BridgeConfig
         if ($fallbackCfg.deepModel) { $fallbackModel = [string]$fallbackCfg.deepModel }
