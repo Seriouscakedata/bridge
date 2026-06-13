@@ -1286,7 +1286,14 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         } catch { $qaCacheHit = $false }
         if ($qaCacheHit) {
           try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
-          Add-Message -From system -Text ("✅ QA-агент: кэш PASS на " + $qaHead.Substring(0,[Math]::Min(7,$qaHead.Length)) + " — HEAD не менялся с прошлого прогона, повторный QA пропущен.") -Kind event | Out-Null
+          $qcLogMsg = if (
+            $null -ne $qc.PSObject.Properties['source'] -and [string]$qc.source -eq 'post_commit'
+          ) {
+            '✅ QA done-гейт: кэш PASS (post-commit QA на том же HEAD)'
+          } else {
+            '✅ QA-агент: кэш PASS на ' + $qaHead.Substring(0,[Math]::Min(7,$qaHead.Length)) + ' — HEAD не менялся с прошлого прогона, повторный QA пропущен.'
+          }
+          Add-Message -From system -Text $qcLogMsg -Kind event | Out-Null
         } else {
         $qaResult = Invoke-QAAgent -TaskId $qaTaskId -TaskTitle $task -Channel $Channel
         if ($qaResult.Verdict -eq 'FAIL') {

@@ -247,6 +247,17 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
                 } else {
                   try { Clear-TaskLastFailureKind -Kind qa_failed } catch {}
                   Add-Message -From system -Text ("✅ QA Runner post-commit: PASS — " + [string]$postCommitQa.Summary) -Kind event | Out-Null
+                  # post-commit PASS populates qa_verdict_cache so done-gate skips re-run on same HEAD
+                  try {
+                    Update-State { param($s)
+                      $s | Add-Member -NotePropertyName qa_verdict_cache -NotePropertyValue ([pscustomobject]@{
+                        head    = [string]$acNewHead
+                        verdict = 'PASS'
+                        source  = 'post_commit'
+                        ts      = (Get-Date).ToUniversalTime().ToString('o')
+                      }) -Force
+                    } | Out-Null
+                  } catch {}
                 }
               } catch {
                 $qaErr = ($_.Exception.Message -replace '\s+', ' ').Trim()
