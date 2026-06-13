@@ -299,6 +299,9 @@ function New-ClaudePromptSuffix {
     [object]$PromptState,
     [int]$DiscussTurn,
     [int]$StudyTurn,
+    [string]$TaskText,
+    [string[]]$TaskTags = @(),
+    [string]$CurrentTaskId,
     [string]$ClaudeToolHint,
     [string]$ClaudeActionBlock
   )
@@ -371,8 +374,29 @@ $ClaudeActionBlock
 Урок 2026-06-12: 6 UX-правок web/index.html (261 КБ) шли по 24 мин/атом, потому что КАЖДЫЙ атом ворочал весь монолит. Корень скорости — не мост, а стратегия: изучить структуру → точечные мелкие правки по ориентирам.
 "@
 
+  $plannerInstructions = $claudeBase
+  if (Test-IsLargeTask -TaskText $TaskText -Tags $TaskTags) {
+    $decomposeInstruction = @"
+
+🔴 КРУПНАЯ ЗАДАЧА — ОБЯЗАТЕЛЬНАЯ ДЕКОМПОЗИЦИЯ:
+Эта задача помечена как КРУПНАЯ (≥3 файла / [ФИЧА] / >1200 символов). Ты НЕ должен вызывать кодера напрямую.
+ТВОЙ ПЕРВЫЙ И ЕДИНСТВЕННЫЙ ХОД: разбей задачу на 2-5 атомов через Add-Idea.
+Каждый атом обязан содержать:
+  - Один файл (Files: <путь>)
+  - Конкретный Acceptance критерий
+  - Теги: decomposed-child
+  - parent: $($CurrentTaskId)
+  - Текст ≤800 символов
+После добавления всех атомов выведи отдельной строкой:
+[[DECOMPOSED: N атомов]]
+где N = число добавленных атомов.
+НЕ пиши код, НЕ пиши STATUS: CONTINUE — только атомы и [[DECOMPOSED: N атомов]].
+"@
+    $plannerInstructions = $decomposeInstruction + "`n" + $plannerInstructions
+  }
+
   if ($Mode -eq 'research') {
-    return $claudeBase + "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
+    return $plannerInstructions + "`n`nРЕЖИМ RESEARCH: ищи, читай внешние источники, анализируй. ЗАПРЕЩЕНО запускать Bash/изменять файлы.`nОБЯЗАТЕЛЬНО в этом ходе: дай хотя бы 1 маркер [[EVIDENCE: url | краткий тезис | high|med|low]].`nЗатем напиши STATUS: CONTINUE с планом для Codex (или STATUS: DONE если задача только исследовательская)."
   } elseif ($Mode -eq 'discuss') {
     $discussSnapshot = if ($PromptState.discuss_snapshot) { [string]$PromptState.discuss_snapshot } else { '' }
     $snapshotBlock = if (-not [string]::IsNullOrWhiteSpace($discussSnapshot)) { "`n`nПРЕДЫДУЩИЙ СНИМОК ОБСУЖДЕНИЯ (пережил сжатие истории; продолжай отсюда):`n$discussSnapshot" } else { '' }
@@ -382,7 +406,7 @@ $ClaudeActionBlock
       "`n`nФаза исследования/оппозиции (ход $DiscussTurn): разбери варианты и риски; к ходу $($script:discussMinTurns - 1) перейдёшь к конвергенции."
     }
     $discussNote = "`n`nРЕЖИМ ОБСУЖДЕНИЯ (ход $DiscussTurn, минимум $script:discussMinTurns, максимум $script:discussMaxTurns). Цель — НЕ спорить, а СОЙТИСЬ к решению; ты ведёшь обсуждение к синтезу.`nКаждый ход ЗАКАНЧИВАЙ блоком состояния — ровно эти строки с этими префиксами (для машинного парсинга):`nТип: <idea|architecture|implementation>`nСогласовано: <что уже принято обеими сторонами; это не переоткрывается>`nОткрыто: <нерешённые вопросы; если их нет — напиши «нет»>`nРешение: <текущий консолидированный вариант>`nРиски: <ключевые риски и как смягчаем>`nЕсли Тип=architecture или implementation: обязателен пункт «План реализации:» — конкретные файлы/шаги/критерии готовности.`nЯвно принимай сильные пункты Codex, не пересказывай без нужды; спорь только по сути нерешённого.`nSTATUS: DONE разрешён, когда ходов >= $script:discussMinTurns И «Открыто:» пусто/«нет» И заполнены «Решение:» и «Риски:» — тогда дай ## ИТОГ.`nЕсли discuss закрывается БЕЗ передачи кодеру (DONE, но не было CONTINUE→Codex, нет [[FILE:]] и нет коммита по этой задаче) — в ## ИТОГЕ ОБЯЗАТЕЛЬНА отдельная строка: ``DISCUSS-ONLY: код не написан. Причина: <короткое почему>. Идея в бэклоге: <id или нет>``. Иначе пользователь решит «обсудили и сделали», а в коде ничего нет (это уже случалось — задача c5a256c8).`nSTATUS: CONTINUE разрешён в конце discuss, если Тип=architecture/implementation И есть непустой «План реализации:».`nИначе — STATUS: DISCUSS.$convergeNote$snapshotBlock"
-    return $claudeBase + $discussNote
+    return $plannerInstructions + $discussNote
   } elseif ($Mode -eq 'study') {
     $subtype = [string]$PromptState.study_subtype
     $phase = [string]$PromptState.study_phase
@@ -395,9 +419,9 @@ $ClaudeActionBlock
     }
     $forceStudy = if ($StudyTurn -ge ($script:studyMaxTurns - 1)) { "`nВНИМАНИЕ: достигнут последний бюджетный ход study — форсируй синтез сейчас." } else { '' }
     $studyNote = "`n`nРЕЖИМ STUDY (фаза: $phase, ходов: $StudyTurn, макс: $script:studyMaxTurns). $subtypeNote`n`nПоисковые запросы пиши ЯВНО в ответе с пояснением зачем.`nФаза 'plan' → сформулируй план изучения: какие вопросы закрыть и какими источниками.`nФаза 'gather-local'/'gather-web' → собирай проверяемые факты. Для web-фактов обязателен [[EVIDENCE: url | тезис | high|med|low]].`nФаза 'synthesis' → ОБЯЗАТЕЛЕН итоговый Отчёт в [[FILE:]] (Markdown, структура: Назначение · Архитектура · Файлы/точки входа · Как использовать · Зависимости · Риски · Альтернативы · Источники).`nFINDING-маркер для локальных находок: [[FINDING: файл_или_источник | факт]].$forceStudy`n$snapBlock"
-    return $claudeBase + $studyNote
+    return $plannerInstructions + $studyNote
   }
-  return $claudeBase
+  return $plannerInstructions
 }
 
 function New-CodexPromptSuffix {
@@ -504,6 +528,21 @@ $restartReminder
   }
 }
 
+function Test-IsLargeTask {
+  param([string]$TaskText, [string[]]$Tags = @())
+
+  if ($Tags -contains 'atom' -or $Tags -contains 'decomposed-child') { return $false }
+  if ($TaskText -match '\[ФИЧА\]|feature|КРУПНАЯ') { return $true }
+  if ($TaskText.Length -gt 1200) { return $true }
+  $fileMatches = ([regex]::Matches(
+      $TaskText,
+      '(?:^|\s)(?:Files?:\s*)?[\w./\\-]+\.\w{2,4}(?:\s|,|$)',
+      [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )).Count
+  if ($fileMatches -ge 3) { return $true }
+  return $false
+}
+
 function Invoke-PromptBuilder {
   param([string]$Role, [string]$Task, [string]$Mode = 'normal', [switch]$FastLane)
 
@@ -516,6 +555,21 @@ function Invoke-PromptBuilder {
   $promptState = Read-State
   $discussTurn = [int]$promptState.discuss_turn
   $studyTurn = [int]$promptState.task_turn
+  $currentTaskId = ''
+  if ([string]$promptState.current_backlog_id) {
+    $currentTaskId = [string]$promptState.current_backlog_id
+  } elseif ([string]$promptState.current_task_id) {
+    $currentTaskId = [string]$promptState.current_task_id
+  }
+  $taskTags = @()
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($currentTaskId) -and (Get-Command Get-IdeaById -ErrorAction SilentlyContinue)) {
+      $currentIdea = Get-IdeaById -Id $currentTaskId
+      if ($currentIdea -and $currentIdea.tags) {
+        $taskTags = @($currentIdea.tags | ForEach-Object { [string]$_ })
+      }
+    }
+  } catch {}
   $autoScopeLine = Get-PromptAutoScopeLine -PromptState $promptState -Context $context
   $progressBlocks = Get-PromptProgressBlocks -Role $Role
   $shared = New-SharedPromptBlock -Task $Task -Transcript $transcript -AutoScopeLine $autoScopeLine -Context $context -ProgressBlocks $progressBlocks
@@ -526,6 +580,9 @@ function Invoke-PromptBuilder {
       -PromptState $promptState `
       -DiscussTurn $discussTurn `
       -StudyTurn $studyTurn `
+      -TaskText $Task `
+      -TaskTags $taskTags `
+      -CurrentTaskId $currentTaskId `
       -ClaudeToolHint (Get-ClaudeToolHint -Mode $Mode) `
       -ClaudeActionBlock (Get-ClaudeActionBlock -Mode $Mode -BridgeRoot $script:bridgeRoot)
   } else {

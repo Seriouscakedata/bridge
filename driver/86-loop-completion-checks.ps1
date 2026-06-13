@@ -119,6 +119,18 @@ function Test-DriverReplyHasSmokeEvidence {
   return $false
 }
 
+function Test-PlannerDecomposed {
+  # Returns @{IsDecomposed=$true; Count=N} if planner emitted [[DECOMPOSED: N]].
+  param([AllowNull()][string]$ReplyText)
+
+  if ([string]::IsNullOrWhiteSpace($ReplyText)) { return @{ IsDecomposed = $false; Count = 0 } }
+  $m = [regex]::Match($ReplyText, '\[\[DECOMPOSED:\s*(\d+)(?:\s*атом[^\]]*)?\s*\]\]', 'IgnoreCase')
+  if ($m.Success) {
+    return @{ IsDecomposed = $true; Count = [int]$m.Groups[1].Value }
+  }
+  return @{ IsDecomposed = $false; Count = 0 }
+}
+
 function Test-DriverDoneGateBridgeCorePath {
   param([AllowNull()][string]$Path)
 
@@ -742,6 +754,43 @@ $script:DriverLoopCompletionInitialChecksBlock = {
   if ($speaker -eq 'claude') {
     $statusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(CHAT|CONTINUE|DISCUSS|DONE|RESEARCH)\s*$')
     if ($statusHits.Count -gt 0) { $plannerStatus = $statusHits[$statusHits.Count - 1].Groups[1].Value.ToUpper() }
+
+    # Planner decomposed the parent backlog atom into child atoms; close the parent
+    # without sending the decomposed parent through coder/DONE gates.
+    $decompResult = Test-PlannerDecomposed -ReplyText $reply
+    if ($decompResult.IsDecomposed) {
+      $stDecomp = Read-State
+      $parentId = [string]$stDecomp.current_backlog_id
+      if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = [string]$stDecomp.current_task_id }
+      $decompExpected = [int]$decompResult.Count
+      Write-Host "[[DECOMPOSED]] detected: $decompExpected atoms. Closing parent '$parentId' as decomposed."
+      try {
+        if (-not (Get-Command Get-Backlog -ErrorAction SilentlyContinue) -or -not (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
+          . (Join-Path $bridgeRoot 'lib\backlog.ps1')
+        }
+      } catch {}
+
+      $parentClosed = $false
+      if (-not [string]::IsNullOrWhiteSpace($parentId) -and (Get-Command Get-Backlog -ErrorAction SilentlyContinue)) {
+        $ideas = @(Get-Backlog)
+        $parent = $ideas | Where-Object { [string]$_.id -eq $parentId } | Select-Object -First 1
+        if ($parent -and (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
+          $parentClosed = [bool](Set-Idea -Id $parentId -Status 'decomposed' -Reason "Decomposed into $decompExpected child atoms")
+        }
+        $children = @($ideas | Where-Object {
+          $tags = @($_.tags | ForEach-Object { [string]$_ })
+          ($tags -contains 'decomposed-child') -and ([string]$_.text -match [regex]::Escape($parentId))
+        })
+        Write-Host "Decomposed children found: $($children.Count) / expected: $decompExpected"
+        Add-Message -From system -Text ("[[DECOMPOSED]] detected: {0} atoms; parent {1} status={2}; children found {3}/{0}. No coder turn needed." -f $decompExpected,$parentId,$(if ($parentClosed) { 'decomposed' } else { 'unchanged' }),$children.Count) -Kind event | Out-Null
+      } else {
+        Add-Message -From system -Text ("[[DECOMPOSED]] detected: {0} atoms, but parent backlog id/function unavailable. No coder turn needed." -f $decompExpected) -Kind event | Out-Null
+      }
+
+      Update-State ({ param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'decomposed'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName last_decomposed_result -NotePropertyValue ([pscustomobject]@{ status='decomposed'; child_count=$decompExpected; parent_id=$parentId; ts=(Get-Date).ToUniversalTime().ToString('o') }) -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+      try { Send-PushEvent -Kind done -Text ("Decomposed parent: " + $parentId) } catch {}
+      continue
+    }
 
     # FIX 2026-05-27: parallel coder dispatch. If planner reply contains >= 2 [[PARALLEL:N]]
     # blocks with file-disjoint workloads, fan out to worker pool (Claude+Codex round-robin
