@@ -120,15 +120,94 @@ function Test-DriverReplyHasSmokeEvidence {
 }
 
 function Test-PlannerDecomposed {
-  # Returns @{IsDecomposed=$true; Count=N} if planner emitted [[DECOMPOSED: N]].
-  param([AllowNull()][string]$ReplyText)
+    # Returns @{IsDecomposed=$true; Count=N} if planner emitted [[DECOMPOSED: N]].
+    param([AllowNull()][string]$ReplyText)
 
   if ([string]::IsNullOrWhiteSpace($ReplyText)) { return @{ IsDecomposed = $false; Count = 0 } }
   $m = [regex]::Match($ReplyText, '\[\[DECOMPOSED:\s*(\d+)(?:\s*атом[^\]]*)?\s*\]\]', 'IgnoreCase')
   if ($m.Success) {
     return @{ IsDecomposed = $true; Count = [int]$m.Groups[1].Value }
-  }
-  return @{ IsDecomposed = $false; Count = 0 }
+    }
+    return @{ IsDecomposed = $false; Count = 0 }
+}
+
+function Invoke-DriverDecomposedMarker {
+    param(
+        [Parameter(Mandatory=$true)][object]$DecompResult,
+        [Parameter(Mandatory=$true)][string]$BridgeRoot,
+        [scriptblock]$ReadStateScript = $null,
+        [scriptblock]$GetBacklogScript = $null,
+        [scriptblock]$SetIdeaScript = $null,
+        [scriptblock]$AddMessageScript = $null,
+        [scriptblock]$UpdateStateScript = $null,
+        [scriptblock]$SendPushScript = $null
+    )
+
+    if (-not [bool]$DecompResult.IsDecomposed) {
+        return [pscustomobject]@{ Handled=$false; Count=0; ParentId=''; ParentClosed=$false; ChildrenFound=0 }
+    }
+
+    $stDecomp = if ($ReadStateScript) { & $ReadStateScript } else { Read-State }
+    $parentId = [string]$stDecomp.current_backlog_id
+    if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = [string]$stDecomp.current_task_id }
+    $decompExpected = [int]$DecompResult.Count
+    Write-Host "[[DECOMPOSED]] detected: $decompExpected atoms. Closing parent '$parentId' as decomposed."
+
+    if (-not $GetBacklogScript -or -not $SetIdeaScript) {
+        try {
+            if (-not (Get-Command Get-Backlog -ErrorAction SilentlyContinue) -or -not (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
+                . (Join-Path $BridgeRoot 'lib\backlog.ps1')
+            }
+        } catch {}
+    }
+
+    $parentClosed = $false
+    $children = @()
+    if (-not [string]::IsNullOrWhiteSpace($parentId) -and ($GetBacklogScript -or (Get-Command Get-Backlog -ErrorAction SilentlyContinue))) {
+        $ideas = if ($GetBacklogScript) { @(& $GetBacklogScript) } else { @(Get-Backlog) }
+        $parent = $ideas | Where-Object { [string]$_.id -eq $parentId } | Select-Object -First 1
+        if ($parent) {
+            if ($SetIdeaScript) {
+                $parentClosed = [bool](& $SetIdeaScript $parentId 'decomposed' "Decomposed into $decompExpected child atoms")
+            } elseif (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+                $parentClosed = [bool](Set-Idea -Id $parentId -Status 'decomposed' -Reason "Decomposed into $decompExpected child atoms")
+            }
+        }
+        $children = @($ideas | Where-Object {
+            $tags = @($_.tags | ForEach-Object { [string]$_ })
+            ($tags -contains 'decomposed-child') -and ([string]$_.text -match [regex]::Escape($parentId))
+        })
+        Write-Host "Decomposed children found: $($children.Count) / expected: $decompExpected"
+        $message = ("[[DECOMPOSED]] detected: {0} atoms; parent {1} status={2}; children found {3}/{0}. No coder turn needed." -f $decompExpected,$parentId,$(if ($parentClosed) { 'decomposed' } else { 'unchanged' }),$children.Count)
+    } else {
+        $message = ("[[DECOMPOSED]] detected: {0} atoms, but parent backlog id/function unavailable. No coder turn needed." -f $decompExpected)
+    }
+
+    if ($AddMessageScript) {
+        & $AddMessageScript $message | Out-Null
+    } else {
+        Add-Message -From system -Text $message -Kind event | Out-Null
+    }
+
+    if ($UpdateStateScript) {
+        & $UpdateStateScript $decompExpected $parentId | Out-Null
+    } else {
+        Update-State ({ param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'decomposed'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName last_decomposed_result -NotePropertyValue ([pscustomobject]@{ status='decomposed'; child_count=$decompExpected; parent_id=$parentId; ts=(Get-Date).ToUniversalTime().ToString('o') }) -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+    }
+
+    if ($SendPushScript) {
+        & $SendPushScript $parentId | Out-Null
+    } else {
+        try { Send-PushEvent -Kind done -Text ("Decomposed parent: " + $parentId) } catch {}
+    }
+
+    return [pscustomobject]@{
+        Handled = $true
+        Count = $decompExpected
+        ParentId = $parentId
+        ParentClosed = $parentClosed
+        ChildrenFound = $children.Count
+    }
 }
 
 function Test-DriverDoneGateBridgeCorePath {
@@ -759,36 +838,7 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     # without sending the decomposed parent through coder/DONE gates.
     $decompResult = Test-PlannerDecomposed -ReplyText $reply
     if ($decompResult.IsDecomposed) {
-      $stDecomp = Read-State
-      $parentId = [string]$stDecomp.current_backlog_id
-      if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = [string]$stDecomp.current_task_id }
-      $decompExpected = [int]$decompResult.Count
-      Write-Host "[[DECOMPOSED]] detected: $decompExpected atoms. Closing parent '$parentId' as decomposed."
-      try {
-        if (-not (Get-Command Get-Backlog -ErrorAction SilentlyContinue) -or -not (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
-          . (Join-Path $bridgeRoot 'lib\backlog.ps1')
-        }
-      } catch {}
-
-      $parentClosed = $false
-      if (-not [string]::IsNullOrWhiteSpace($parentId) -and (Get-Command Get-Backlog -ErrorAction SilentlyContinue)) {
-        $ideas = @(Get-Backlog)
-        $parent = $ideas | Where-Object { [string]$_.id -eq $parentId } | Select-Object -First 1
-        if ($parent -and (Get-Command Set-Idea -ErrorAction SilentlyContinue)) {
-          $parentClosed = [bool](Set-Idea -Id $parentId -Status 'decomposed' -Reason "Decomposed into $decompExpected child atoms")
-        }
-        $children = @($ideas | Where-Object {
-          $tags = @($_.tags | ForEach-Object { [string]$_ })
-          ($tags -contains 'decomposed-child') -and ([string]$_.text -match [regex]::Escape($parentId))
-        })
-        Write-Host "Decomposed children found: $($children.Count) / expected: $decompExpected"
-        Add-Message -From system -Text ("[[DECOMPOSED]] detected: {0} atoms; parent {1} status={2}; children found {3}/{0}. No coder turn needed." -f $decompExpected,$parentId,$(if ($parentClosed) { 'decomposed' } else { 'unchanged' }),$children.Count) -Kind event | Out-Null
-      } else {
-        Add-Message -From system -Text ("[[DECOMPOSED]] detected: {0} atoms, but parent backlog id/function unavailable. No coder turn needed." -f $decompExpected) -Kind event | Out-Null
-      }
-
-      Update-State ({ param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'decomposed'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName last_decomposed_result -NotePropertyValue ([pscustomobject]@{ status='decomposed'; child_count=$decompExpected; parent_id=$parentId; ts=(Get-Date).ToUniversalTime().ToString('o') }) -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
-      try { Send-PushEvent -Kind done -Text ("Decomposed parent: " + $parentId) } catch {}
+      Invoke-DriverDecomposedMarker -DecompResult $decompResult -BridgeRoot $bridgeRoot | Out-Null
       continue
     }
 

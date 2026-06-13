@@ -100,6 +100,54 @@ Invoke-Case 'Integration: decomposed-child atom product is not large' {
   Assert-True -Condition (-not [bool]$actual) -Name 'Integration: decomposed-child atom product is not large' -Actual $actual
 }
 
+Invoke-Case 'Integration: [[DECOMPOSED]] closes parent and finds child atoms' {
+  $script:setIdeaCalls = @()
+  $script:updateStateCalls = @()
+  $script:decomposedMessage = ''
+  $mockIdeas = @(
+    [pscustomobject]@{ id='parent-123'; text='parent task'; tags=@(); status='approved' },
+    [pscustomobject]@{ id='child-1'; text='Files: lib/foo.ps1 parent: parent-123'; tags=@('decomposed-child'); status='new' },
+    [pscustomobject]@{ id='child-2'; text='Files: driver/bar.ps1 parent: parent-123'; tags=@('decomposed-child'); status='new' },
+    [pscustomobject]@{ id='other'; text='Files: tools/other.ps1 parent: another-parent'; tags=@('decomposed-child'); status='new' }
+  )
+
+  $decomp = Test-PlannerDecomposed -ReplyText '[[DECOMPOSED: 2 атомов]]'
+  $actual = Invoke-DriverDecomposedMarker `
+    -DecompResult $decomp `
+    -BridgeRoot (Resolve-Path "$PSScriptRoot\..").Path `
+    -ReadStateScript { [pscustomobject]@{ current_backlog_id='parent-123'; current_task_id='' } } `
+    -GetBacklogScript { $mockIdeas } `
+    -SetIdeaScript {
+      param($Id, $Status, $Reason)
+      $script:setIdeaCalls += [pscustomobject]@{ Id=$Id; Status=$Status; Reason=$Reason }
+      return $true
+    } `
+    -AddMessageScript { param($Text) $script:decomposedMessage = $Text } `
+    -UpdateStateScript { param($Count, $ParentId) $script:updateStateCalls += [pscustomobject]@{ Count=$Count; ParentId=$ParentId } } `
+    -SendPushScript { param($ParentId) }
+
+  $firstCall = @($script:setIdeaCalls)[0]
+  $stateCall = @($script:updateStateCalls)[0]
+  $ok = [bool]$actual.Handled `
+    -and [string]$actual.ParentId -eq 'parent-123' `
+    -and [bool]$actual.ParentClosed `
+    -and [int]$actual.ChildrenFound -eq 2 `
+    -and $null -ne $firstCall `
+    -and [string]$firstCall.Id -eq 'parent-123' `
+    -and [string]$firstCall.Status -eq 'decomposed' `
+    -and $null -ne $stateCall `
+    -and [int]$stateCall.Count -eq 2 `
+    -and [string]$stateCall.ParentId -eq 'parent-123' `
+    -and $script:decomposedMessage -match 'children found 2/2'
+
+  Assert-True -Condition $ok -Name 'Integration: [[DECOMPOSED]] closes parent and finds child atoms' -Actual @{
+    result = $actual
+    set_calls = $script:setIdeaCalls
+    update_calls = $script:updateStateCalls
+    message = $script:decomposedMessage
+  }
+}
+
 Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)
 if ($script:failed -gt 0) { exit 1 }
 exit 0
