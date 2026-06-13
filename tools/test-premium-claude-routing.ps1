@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
@@ -62,7 +62,7 @@ $architecturalStream = [pscustomobject]@{
   body       = ''
 }
 $architecturalPick = Select-WorkerForStream -Stream $architecturalStream
-Check 'architectural can pick premium fable' ([string]$architecturalPick.id -eq 'claude-fable') $architecturalPick
+Check 'architectural prefers codex before premium fable by default' ([string]$architecturalPick.id -eq 'codex-xhigh') $architecturalPick
 
 $markedStream = [pscustomobject]@{
   id         = 's3'
@@ -73,7 +73,18 @@ $markedStream = [pscustomobject]@{
   body       = '[[FABLE]]'
 }
 $markedPick = Select-WorkerForStream -Stream $markedStream
-Check 'explicit premium marker can pick fable' ([string]$markedPick.id -eq 'claude-fable') $markedPick
+Check 'premium marker unlocks fable but codex priority still wins' ([string]$markedPick.id -eq 'codex-high') $markedPick
+
+$explicitFableStream = [pscustomobject]@{
+  id         = 's4'
+  files      = @('lib/example.ps1')
+  complexity = 'complex'
+  opus       = $false
+  premium    = $false
+  body       = "worker: claude-fable"
+}
+$explicitFablePick = Select-WorkerForStream -Stream $explicitFableStream
+Check 'explicit worker override can still pick fable' ([string]$explicitFablePick.id -eq 'claude-fable') $explicitFablePick
 
 $plan = @'
 [[PARALLEL:a]]

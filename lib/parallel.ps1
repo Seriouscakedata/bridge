@@ -288,7 +288,8 @@ function Select-WorkerForStream {
   #   4. Protect premium Claude models: skip Opus/Fable/Mythos unless complexity=architectural OR
   #      stream has an explicit premium marker.
   #   5. Prefer workers whose `domains` array contains the detected domain.
-  #   6. Sort: cheapest cost asc, then fastest speed desc.
+  #   6. Sort: for complex/architectural prefer codex-cli before cost; otherwise
+  #      cheapest cost asc, then fastest speed desc.
   # Returns $null only if pool is completely empty (caller falls back).
   param([object]$Stream, [string[]]$AlreadyUsedIds = @())
 
