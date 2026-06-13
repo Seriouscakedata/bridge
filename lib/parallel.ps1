@@ -1589,18 +1589,51 @@ function Stop-ParallelDispatchStalledWorker {
   )
 
   try {
-    $proc = $Worker.process
-    if ($proc -and -not ($proc.HasExited)) {
-      $pidText = [string]$Worker.pid
-      try { & taskkill.exe /PID $pidText /F /T 2>$null | Out-Null } catch {}
-      try { $proc.Refresh() } catch {}
-      if (-not ($proc.HasExited)) {
-        try { $proc.Kill() } catch {}
+    $proc = $null
+    try { $proc = $Worker.process } catch {}
+
+    $workerPid = 0
+    try { $workerPid = [int]$Worker.pid } catch {}
+
+    $pidTicks = [long]0
+    try { $pidTicks = [long]$Worker.pidTicks } catch {}
+
+    if ($workerPid -gt 0) {
+      $pidMatchesWorker = $true
+      if ($pidTicks -gt 0) {
+        $pidMatchesWorker = $false
+        try {
+          $liveByPid = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+          if ($liveByPid -and $liveByPid.StartTime.Ticks -eq $pidTicks) { $pidMatchesWorker = $true }
+        } catch {}
       }
+
+      if ($pidMatchesWorker) {
+        try { & taskkill.exe /PID ([string]$workerPid) /F /T 2>$null | Out-Null } catch {}
+      }
+    }
+
+    try { if ($proc) { $proc.Refresh() } } catch {}
+    if ($proc -and -not ($proc.HasExited)) {
+      try { $proc.Kill() } catch {}
       try { $null = $proc.WaitForExit(5000) } catch {}
       try { $proc.Refresh() } catch {}
-      if (-not ($proc.HasExited)) {
-        try { Stop-Process -Id ([int]$Worker.pid) -Force -ErrorAction SilentlyContinue } catch {}
+    }
+
+    if ($workerPid -gt 0) {
+      $stillLive = $false
+      try {
+        $live = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        if ($live) {
+          if ($pidTicks -le 0) {
+            $stillLive = $true
+          } else {
+            try { $stillLive = ($live.StartTime.Ticks -eq $pidTicks) } catch {}
+          }
+        }
+      } catch {}
+      if ($stillLive) {
+        try { Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue } catch {}
       }
     }
   } catch {}
