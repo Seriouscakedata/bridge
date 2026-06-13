@@ -21,7 +21,8 @@ projects/
 decisions/*
 !decisions/
 sandbox/
-tmp/
+tmp/*
+!tmp/restart-source-audit.md
 memory/
 jobs/
 radar/
