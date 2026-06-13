@@ -581,6 +581,11 @@ function Set-BacklogOutcomeDoneWithLedger {
       [void]$doneIds.Add([string]$id)
       $dirty = $true
 
+      # Canary-child close: if this item is a canary gate child, auto-close its approved/held parent.
+      if (Get-Command Close-BacklogCanaryParent -ErrorAction SilentlyContinue) {
+        $null = Close-BacklogCanaryParent -ChildItem $item -AllItems $items
+      }
+
       if ($hasWiringGap) {
         $followExists = $false
         foreach ($existing in @($items)) {

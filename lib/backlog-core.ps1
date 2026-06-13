@@ -2437,4 +2437,74 @@ function Test-SelfDevSafetyReflex {
   return $out
 }
 
+function Close-BacklogCanaryParent {
+  # If ChildItem is a canary gate child, mark an approved/held parent done in-place.
+  # Returns @{ closed; reason; parent_id; child_id; was_status }.
+  param(
+    [Parameter(Mandatory=$true)]$ChildItem,
+    [Parameter(Mandatory=$true)]$AllItems
+  )
+  if ($null -eq $ChildItem) {
+    return [pscustomobject]@{ closed = $false; reason = 'child_is_null'; parent_id = ''; child_id = ''; was_status = '' }
+  }
+  $childProps = @($ChildItem.PSObject.Properties.Name)
+  $parentId = ''
+  if ($childProps -contains 'canary_gate_parent_id') {
+    $parentId = [string]$ChildItem.PSObject.Properties['canary_gate_parent_id'].Value
+  }
+  if ([string]::IsNullOrWhiteSpace($parentId)) {
+    $isCGChild = $false
+    if ($childProps -contains 'tags') {
+      $isCGChild = (@($ChildItem.PSObject.Properties['tags'].Value) -contains 'bridge-self-canary-gate')
+    }
+    if ($isCGChild -and $childProps -contains 'parent_id') {
+      $parentId = [string]$ChildItem.PSObject.Properties['parent_id'].Value
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($parentId)) {
+    return [pscustomobject]@{ closed = $false; reason = 'not_a_canary_child'; parent_id = ''; child_id = ''; was_status = '' }
+  }
+
+  $childId = ''
+  if ($childProps -contains 'id') {
+    $childId = [string]$ChildItem.PSObject.Properties['id'].Value
+  }
+  $parent = $null
+  foreach ($it in @($AllItems)) {
+    if ($null -eq $it) { continue }
+    if (@($it.PSObject.Properties.Name) -contains 'id' -and [string]$it.PSObject.Properties['id'].Value -eq $parentId) {
+      $parent = $it
+      break
+    }
+  }
+  if ($null -eq $parent) {
+    return [pscustomobject]@{ closed = $false; reason = 'parent_not_found'; parent_id = $parentId; child_id = $childId; was_status = '' }
+  }
+
+  $parentStatus = ''
+  if (@($parent.PSObject.Properties.Name) -contains 'status') {
+    $parentStatus = ([string]$parent.PSObject.Properties['status'].Value).ToLowerInvariant().Trim()
+  }
+  if ($parentStatus -ne 'approved' -and $parentStatus -ne 'held') {
+    return [pscustomobject]@{ closed = $false; reason = "parent_already_$parentStatus"; parent_id = $parentId; child_id = $childId; was_status = $parentStatus }
+  }
+
+  $reason = "closed-by-canary-child:$childId"
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  foreach ($kv in @(
+    @('status', 'done'),
+    @('done_by', 'canary-child'),
+    @('done_reason', $reason),
+    @('closed_by_canary_child_id', $childId),
+    @('closed_by_canary_child_at', $now)
+  )) {
+    $n = $kv[0]
+    $v = $kv[1]
+    if ($parent.PSObject.Properties.Name -contains $n) { $parent.PSObject.Properties[$n].Value = $v }
+    else { $parent | Add-Member -NotePropertyName $n -NotePropertyValue $v -Force }
+  }
+
+  return [pscustomobject]@{ closed = $true; reason = $reason; parent_id = $parentId; child_id = $childId; was_status = $parentStatus }
+}
+
 #endregion Operator batch reporting and self-execution safety
