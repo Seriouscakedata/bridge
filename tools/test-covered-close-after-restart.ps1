@@ -7,6 +7,8 @@ param([string]$BridgeRoot = (Split-Path $PSScriptRoot -Parent))
 
 $ErrorActionPreference = 'Stop'
 $passed = 0; $failed = 0
+$existingGetTaskRepoRoot = Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue
+$script:CoveredCloseProjectRepoRoot = ''
 
 # Load the function under test
 . (Join-Path $BridgeRoot 'driver\86-loop-completion-checks.ps1')
@@ -29,6 +31,8 @@ function Assert-True([bool]$cond, [string]$label) {
 $tmpParent = Join-Path $BridgeRoot 'tmp'
 New-Item -ItemType Directory -Path $tmpParent -Force | Out-Null
 $fixtureRoot = Join-Path $tmpParent ("bridge-covered-close-test-" + [guid]::NewGuid().ToString('N'))
+$projectRoot = Join-Path $tmpParent ("bridge-covered-close-project-" + [guid]::NewGuid().ToString('N'))
+$missingProjectRoot = Join-Path $tmpParent ("bridge-covered-close-missing-" + [guid]::NewGuid().ToString('N'))
 
 try {
   New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
@@ -153,9 +157,68 @@ try {
     -BacklogId $fakeState7.current_backlog_id -TaskText $fakeState7.current_task -StateObj $fakeState7
 
   Assert-True ($r7.Covered -eq $false) "Covered=false when critic timestamp is missing"
+
+  New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+  & git -C $projectRoot init -q
+  & git -C $projectRoot config user.email 'bridge-test@example.invalid'
+  & git -C $projectRoot config user.name 'Bridge Test'
+  & git -C $projectRoot config commit.gpgsign false
+  Set-Content -LiteralPath (Join-Path $projectRoot 'project-fixture.txt') -Value 'covered-close project fixture' -Encoding UTF8
+  $projectMsg = 'covered-close project repo matching fixture commit'
+  & git -C $projectRoot add project-fixture.txt
+  & git -C $projectRoot commit -q --no-gpg-sign -m $projectMsg
+  $projectSha = (& { Invoke-TestGit -RepoRoot $projectRoot log --oneline -1 } | Select-Object -First 1).Split(' ')[0].Trim()
+  $projectClaimedAt = (& { Invoke-TestGit -RepoRoot $projectRoot log --format=%aI -1 } | Out-String).Trim()
+  $projectCommitAt = [datetimeoffset]::Parse($projectClaimedAt)
+  $script:CoveredCloseProjectRepoRoot = $projectRoot
+  Set-Item -Path Function:\Get-TaskRepoRoot -Value { return $script:CoveredCloseProjectRepoRoot }
+
+  Write-Host ""
+  Write-Host "=== Test-CoveredAfterRestart: scenario 8 (covered - matching commit in project repo) ==="
+  $fakeState8 = @{
+    task_apply_restart_count = 1
+    task_hard_restart_count  = 0
+    critic_verdict_cache     = @{ verdict = 'OK'; severity = 'none'; ts = $projectCommitAt.AddSeconds(5).ToString('o') }
+    claimed_at               = $projectCommitAt.AddSeconds(-5).ToString('o')
+    current_backlog_id       = ''
+    current_task             = $projectMsg
+  }
+  $r8 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState8.claimed_at `
+    -BacklogId $fakeState8.current_backlog_id -TaskText $fakeState8.current_task -StateObj $fakeState8
+
+  Assert-True ($r8.Covered -eq $true) "Covered=true when matching commit is in project repo"
+  Assert-True ($r8.Sha -eq $projectSha) "Sha matches project repo HEAD"
+  Assert-True ($r8.Repo -eq (Resolve-Path -LiteralPath $projectRoot).ProviderPath) "Repo points to normalized project repo"
+
+  Write-Host ""
+  Write-Host "=== Test-CoveredAfterRestart: scenario 9 (not covered - project repo dirty) ==="
+  Set-Content -LiteralPath (Join-Path $projectRoot 'dirty.txt') -Value 'dirty project worktree' -Encoding UTF8
+  $r9 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState8.claimed_at `
+    -BacklogId $fakeState8.current_backlog_id -TaskText $fakeState8.current_task -StateObj $fakeState8
+
+  Assert-True ($r9.Covered -eq $false) "Covered=false when any candidate repo is dirty"
+  Assert-True ([string]::IsNullOrWhiteSpace($r9.Sha)) "Sha is empty when project repo is dirty"
+
+  Write-Host ""
+  Write-Host "=== Test-CoveredAfterRestart: scenario 10 (not covered - task repo cannot be resolved) ==="
+  Set-Item -Path Function:\Get-TaskRepoRoot -Value { return $script:CoveredCloseMissingProjectRepoRoot }
+  $script:CoveredCloseMissingProjectRepoRoot = $missingProjectRoot
+  $r10 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState1.claimed_at `
+    -BacklogId $fakeState1.current_backlog_id -TaskText $fakeState1.current_task -StateObj $fakeState1
+
+  Assert-True ($r10.Covered -eq $false) "Covered=false when task repo helper returns a missing repo"
+  Assert-True ([string]::IsNullOrWhiteSpace($r10.Sha)) "Sha is empty when task repo is missing"
 } finally {
   if ($fixtureRoot -like (Join-Path $tmpParent 'bridge-covered-close-test-*')) {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if ($projectRoot -like (Join-Path $tmpParent 'bridge-covered-close-project-*')) {
+    Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if ($existingGetTaskRepoRoot -and $existingGetTaskRepoRoot.CommandType -eq 'Function') {
+    Set-Item -Path Function:\Get-TaskRepoRoot -Value $existingGetTaskRepoRoot.ScriptBlock
+  } else {
+    Remove-Item -Path Function:\Get-TaskRepoRoot -ErrorAction SilentlyContinue
   }
 }
 

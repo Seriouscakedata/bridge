@@ -127,8 +127,8 @@ function Test-CoveredAfterRestart {
     [string]$TaskText,
     [object]$StateObj
   )
-  # Returns: @{ Covered=$false; Sha='' }
-  $result = @{ Covered = $false; Sha = '' }
+  # Returns: @{ Covered=$false; Sha=''; Repo='' }
+  $result = @{ Covered = $false; Sha = ''; Repo = '' }
   try {
     $getStateValue = {
       param($Obj, [string]$Name)
@@ -147,37 +147,66 @@ function Test-CoveredAfterRestart {
     $hardRestarts  = [int](& $getStateValue $StateObj 'task_hard_restart_count')
     if (($applyRestarts + $hardRestarts) -le 0) { return $result }
 
-    # Search bridge repo and optionally project-repo (if different).
-    $repos = New-Object 'System.Collections.Generic.List[string]'
-    $seenRepos = @{}
-    $addRepo = {
+    $resolveGitRepoRoot = {
       param([string]$RepoRoot)
-      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return }
-      $resolvedRepo = ''
+      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return '' }
+      $resolvedInput = ''
       try {
-        $resolvedRepo = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).ProviderPath
+        $resolvedInput = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).ProviderPath
       } catch {
-        return
+        return ''
       }
-      $repoKey = $resolvedRepo.TrimEnd('\','/').ToLowerInvariant()
-      if (-not $seenRepos.ContainsKey($repoKey)) {
-        $seenRepos[$repoKey] = $true
-        [void]$repos.Add($resolvedRepo)
+
+      $topLevel = ''
+      try {
+        $topLevel = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $resolvedInput -Arguments @('rev-parse','--show-toplevel') -Description 'rev-parse --show-toplevel' | Select-Object -First 1) -join '')).Trim()
+      } catch {
+        return ''
+      }
+      if ([string]::IsNullOrWhiteSpace($topLevel)) { return '' }
+
+      try {
+        return (Resolve-Path -LiteralPath $topLevel -ErrorAction Stop).ProviderPath
+      } catch {
+        return $topLevel
       }
     }
-    & $addRepo $BridgeRoot
+
+    # Search bridge repo and project-repo (when the channel has one). If the
+    # task repo helper returns a path that cannot be resolved as a git repo,
+    # fail closed instead of silently searching only bridge.
+    $repos = New-Object 'System.Collections.Generic.List[string]'
+    $seenRepos = @{}
+    $addResolvedRepo = {
+      param([string]$RepoRoot)
+      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return }
+      $repoKey = $RepoRoot.TrimEnd('\','/').ToLowerInvariant()
+      if (-not $seenRepos.ContainsKey($repoKey)) {
+        $seenRepos[$repoKey] = $true
+        [void]$repos.Add($RepoRoot)
+      }
+    }
+    $bridgeRepo = [string](& $resolveGitRepoRoot $BridgeRoot)
+    if ([string]::IsNullOrWhiteSpace($bridgeRepo)) { return $result }
+    & $addResolvedRepo $bridgeRepo
+
     try {
       if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
-        & $addRepo ([string](Get-TaskRepoRoot))
+        $taskRepoRaw = [string](Get-TaskRepoRoot)
+        if (-not [string]::IsNullOrWhiteSpace($taskRepoRaw)) {
+          $taskRepo = [string](& $resolveGitRepoRoot $taskRepoRaw)
+          if ([string]::IsNullOrWhiteSpace($taskRepo)) { return $result }
+          & $addResolvedRepo $taskRepo
+        }
       }
     } catch {
-      $null = $_
+      return $result
     }
     if ($repos.Count -eq 0) { return $result }
 
     # (b) every candidate working tree is clean
     foreach ($repo in @($repos.ToArray())) {
-      $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments @('status','--porcelain') -Description 'status --porcelain') | Out-String)).Trim()
+      $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments @('status','--porcelain','-uall') -Description 'status --porcelain -uall') | Out-String)).Trim()
       if ($dirty -ne '') { return $result }
     }
 
@@ -225,6 +254,7 @@ function Test-CoveredAfterRestart {
           if ($sha.Length -ge 7) {
             $result.Covered = $true
             $result.Sha = $sha
+            $result.Repo = $repo
             return $result
           }
         }
