@@ -115,6 +115,15 @@ function Write-TurnLog {
       fast_lane = [bool]$FastLane
     }
     Add-Content -LiteralPath (Join-Path $bridgeRoot 'turns.jsonl') -Value ($entry | ConvertTo-Json -Depth 10 -Compress) -Encoding UTF8
+    # Accumulate per-phase LLM latency
+    try {
+      $script:DriverTurnPhaseMs = [long][Math]::Round($sec * 1000)
+      if ($Speaker -eq 'claude' -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) {
+        Update-TaskPhaseTiming -Phase planner_ms -Ms $script:DriverTurnPhaseMs
+      } elseif ($Speaker -eq 'codex' -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) {
+        Update-TaskPhaseTiming -Phase worker_ms -Ms $script:DriverTurnPhaseMs
+      }
+    } catch {}
     try {
       $null = Add-UsageRecord -Kind prepaid -Provider $Speaker -Model $Model -Purpose $Mode -Sec $sec -Status $turnStatus
     } catch {}

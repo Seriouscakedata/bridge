@@ -594,7 +594,12 @@ function Invoke-DriverDoneGateChecksSequential {
     $parseResult = & $script:DriverDoneGateParseJob $BridgeRoot @($Plan.ParseFiles)
   }
   if ([bool]$Plan.SmokeNeeded) {
+    $script:DriverSmokeTimingStart = [DateTime]::UtcNow
     $smokeResult = & $script:DriverDoneGateSmokeJob (Join-Path $BridgeRoot 'smoke.ps1') $Channel
+    try {
+      $smokeMs = [long]([DateTime]::UtcNow - $script:DriverSmokeTimingStart).TotalMilliseconds
+      if ($smokeMs -gt 100 -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) { Update-TaskPhaseTiming -Phase smoke_ms -Ms $smokeMs }
+    } catch {}
   }
   if ([bool]$Plan.GateSuiteNeeded) {
     $useScope = [string]::IsNullOrWhiteSpace([string]$Plan.GateScopeError)
@@ -1275,7 +1280,14 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         if ($gateSuiteCommand -and $gateSuiteCommand.CommandType -eq 'Function') {
           $gateSuiteScriptBlock = $gateSuiteCommand.ScriptBlock
         }
+        $script:DriverVerifyTimingStart = [DateTime]::UtcNow
         $gateChecks = Invoke-DriverDoneGateChecks -BridgeRoot $bridgeRoot -TaskBaseCommit ([string]$stGate.task_base_commit) -Channel ([string](Get-EffectiveChannel)) -Reply $reply -GateRegressionSuiteScriptBlock $gateSuiteScriptBlock
+        try {
+          $verifyElapsedMs = [long]([DateTime]::UtcNow - $script:DriverVerifyTimingStart).TotalMilliseconds
+          if ($verifyElapsedMs -gt 100 -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) {
+            Update-TaskPhaseTiming -Phase verify_ms -Ms $verifyElapsedMs
+          }
+        } catch {}
         if ($gateChecks.Mode -eq 'parallel') {
           Add-Message -From system -Text ("🧪 DONE-gate: parallel checks completed ({0} jobs)." -f $gateChecks.JobsStarted) -Kind event | Out-Null
         } elseif ($gateChecks.FallbackReason) {

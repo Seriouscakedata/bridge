@@ -101,6 +101,31 @@ function Append-MetricsRecord {
   Add-Content -LiteralPath $mf -Value $line -Encoding UTF8
 }
 
+function Append-TaskLatencyRecord {
+  param(
+    [string]$TaskId = '',
+    [string]$TaskTextShort = '',
+    [long]$TotalMs = 0,
+    [hashtable]$PhaseTimings = @{}
+  )
+  $top3 = @($PhaseTimings.GetEnumerator() | Where-Object { $_.Value -gt 0 } | Sort-Object { $_.Value } -Descending | Select-Object -First 3 | ForEach-Object {
+    [ordered]@{ phase=[string]$_.Key; ms=[long]$_.Value }
+  })
+  Append-MetricsRecord @{
+    type            = 'task-latency'
+    task_id         = [string]$TaskId
+    task_text_short = [string]$TaskTextShort
+    total_ms        = [long]$TotalMs
+    phase_timings   = $PhaseTimings
+    top3            = @($top3)
+  }
+}
+
+function Get-TaskLatencyRecords {
+  param([int]$Limit = 20)
+  @(Read-MetricsJsonl | Where-Object { [string]$_.type -eq 'task-latency' } | Select-Object -Last $Limit)
+}
+
 function Read-RecentTurns {
   param([int]$Limit = 200)
 

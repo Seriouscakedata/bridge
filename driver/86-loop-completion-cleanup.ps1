@@ -723,6 +723,7 @@ $script:DriverLoopCompletionCleanupBlock = {
     # by preflight and would re-block the loop). Same conditions, same writes, same channel
     # notifications — just off the critical path. Fail-soft: if the spawn fails, fall back to
     # the old synchronous path so memory is never silently lost.
+    $script:DriverMemoryPhaseStart = [DateTime]::UtcNow
     $memoryTailSpawned = $false
     try {
       $stMemTail = Read-State
@@ -790,6 +791,12 @@ $script:DriverLoopCompletionCleanupBlock = {
         }
       } catch {}
     }
+    try {
+      $memMs = [long]([DateTime]::UtcNow - $script:DriverMemoryPhaseStart).TotalMilliseconds
+      if ($memMs -gt 100 -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) {
+        Update-TaskPhaseTiming -Phase memory_ms -Ms $memMs
+      }
+    } catch {}
     try {
       if ($modeBeforeIncrement -eq 'study') {
         $studyReportPath = $null
@@ -994,7 +1001,39 @@ $script:DriverLoopCompletionCleanupBlock = {
     }
     try { Send-PushEvent -Kind done -Text "Задача: $(Get-PushSnippet -Text $task)" } catch {}
     Add-Message -From system -Text "✅ Задача выполнена. Жду следующую." -Kind event | Out-Null
-    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_critic_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_critic_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_coder_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
+    # Latency breakdown report
+    try {
+      $latSt = Read-State
+      $phKeys = @('planner_ms','worker_ms','critic_ms','verify_ms','smoke_ms','restart_ms','memory_ms')
+      $phVals = @{}
+      foreach ($k in $phKeys) {
+        $sk = "task_timing_$k"
+        $v = 0L
+        if ($latSt.PSObject.Properties.Name -contains $sk) { try { $v = [long]($latSt.$sk) } catch {} }
+        $phVals[$k] = $v
+      }
+      $totalMs = 0L
+      try {
+        if (-not [string]::IsNullOrWhiteSpace([string]$latSt.task_timing_start_at)) {
+          $startAt = [DateTime]::Parse([string]$latSt.task_timing_start_at, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+          $totalMs = [long]([DateTime]::UtcNow - $startAt).TotalMilliseconds
+        }
+      } catch {}
+      $phLabels = @{ planner_ms='Планировщик'; worker_ms='Кодер'; critic_ms='Критик'; verify_ms='Проверки'; smoke_ms='Smoke'; restart_ms='Рестарт'; memory_ms='Память' }
+      $sorted = @($phVals.GetEnumerator() | Where-Object { $_.Value -gt 0 } | Sort-Object { $_.Value } -Descending | Select-Object -First 3)
+      if ($sorted.Count -gt 0) {
+        $top3Str = ($sorted | ForEach-Object {
+          $lbl = if ($phLabels.ContainsKey($_.Key)) { $phLabels[$_.Key] } else { $_.Key }
+          "$lbl $([Math]::Round($_.Value/1000,1))с"
+        }) -join ' › '
+        Add-Message -From system -Text "⏱ Топ задержек: $top3Str" -Kind event | Out-Null
+      }
+      if (Get-Command Append-TaskLatencyRecord -ErrorAction SilentlyContinue) {
+        $taskTextShort = if ($task.Length -gt 80) { $task.Substring(0,77) + '...' } else { $task }
+        Append-TaskLatencyRecord -TaskId ([string]$latSt.current_backlog_id) -TaskTextShort $taskTextShort -TotalMs $totalMs -PhaseTimings $phVals
+      }
+    } catch {}
+    Update-State { param($s) Complete-TaskAgentDuration $s; Close-ReplayForStateTask -State $s -Status 'done'; $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0; Clear-AuditorSuppressedHashes -State $s; Clear-FastLaneFlags $s -PreserveReflectSkip; Clear-ChunkingState $s; $s.current_backlog_id=$null; $s | Add-Member -NotePropertyName task_timing_planner_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_worker_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_critic_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_verify_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_smoke_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_restart_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_memory_ms -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName task_timing_start_at -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_critic_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_critic_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName completion_coder_result -NotePropertyValue '' -Force; $s | Add-Member -NotePropertyName completion_coder_empty_attempts -NotePropertyValue 0 -Force; $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force; $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force; $s | Add-Member -NotePropertyName workpack_batch_mode -NotePropertyValue '' -Force; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.status='idle'; $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force } | Out-Null
     continue
   }
 }

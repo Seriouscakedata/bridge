@@ -1042,6 +1042,26 @@ function Update-State {
   }
 }
 
+function Update-TaskPhaseTiming {
+  param([string]$Phase, [long]$Ms)
+  if ($Ms -le 0 -or [string]::IsNullOrWhiteSpace($Phase)) { return }
+  $keyCapture = "task_timing_${Phase}"
+  $msCapture  = [long]$Ms
+  try {
+    Update-State ({
+      param($s)
+      $cur = 0L
+      if ($s.PSObject.Properties.Name -contains $keyCapture) {
+        try { $cur = [long]($s.$keyCapture) } catch { $cur = 0L }
+      }
+      $s | Add-Member -NotePropertyName $keyCapture -NotePropertyValue ($cur + $msCapture) -Force
+      if ([string]::IsNullOrWhiteSpace([string]$s.task_timing_start_at)) {
+        $s | Add-Member -NotePropertyName 'task_timing_start_at' -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+      }
+    }.GetNewClosure())
+  } catch {}
+}
+
 function Clear-AuditorSuppressedHashes {
   param($State)
   if (-not $State) { return }
@@ -2043,6 +2063,14 @@ function Initialize-Bridge {
       task_last_failure  = $null
       agent_telemetry    = $null
       session_mission    = $null
+      task_timing_planner_ms = 0
+      task_timing_worker_ms  = 0
+      task_timing_critic_ms  = 0
+      task_timing_verify_ms  = 0
+      task_timing_smoke_ms   = 0
+      task_timing_restart_ms = 0
+      task_timing_memory_ms  = 0
+      task_timing_start_at   = ''
     }
     Write-State -State $state -AllowPartial   # initial create; guard skip OK
   } else {
@@ -2064,6 +2092,7 @@ function Initialize-Bridge {
       task_last_failure=$null
       agent_telemetry=$null
       session_mission=$null
+      task_timing_planner_ms=0; task_timing_worker_ms=0; task_timing_critic_ms=0; task_timing_verify_ms=0; task_timing_smoke_ms=0; task_timing_restart_ms=0; task_timing_memory_ms=0; task_timing_start_at=''
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {

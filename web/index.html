@@ -1329,14 +1329,23 @@
     box-shadow:none;
     color:#b0bac8;
   }
-  .from-system .msg-head{margin-bottom:3px}
-  .from-system .msg-actions{display:none}
-  .from-system .who{color:var(--system)}
-  .from-system .md{font-size:13.5px}
-  .from-system + .from-claude,
-  .from-system + .from-codex,
-  .from-claude + .from-system,
-  .from-codex + .from-system{margin-top:10px}
+.from-system .msg-head{margin-bottom:3px}
+.from-system .msg-actions{display:none}
+.from-system .who{color:var(--system)}
+.from-system .md{font-size:13.5px}
+.from-system.latency-breakdown .bubble{
+  background:rgba(18,21,27,.78);
+  border-color:rgba(140,150,165,.34);
+}
+.from-system.latency-breakdown .md{
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:12.5px;
+  color:#98a4b5;
+}
+.from-system + .from-claude,
+.from-system + .from-codex,
+.from-claude + .from-system,
+.from-codex + .from-system{margin-top:10px}
   .from-system.system-collapsed:not(.search-hit){display:none}
   .system-bundle{
     align-self:center;
@@ -2863,6 +2872,8 @@ if(settingsOpen && (overviewOpen || planOpen || codeOpen || dashOpen || usageOpe
 }
 let _backlogFilter = 'all';
 let _lastStatus = null;
+let prevStatus = '';
+let lastLatencySignature = '';
 let composerExpanded = localStorage.getItem('bridgeComposerExpanded') === '1';
 let headerCollapsed = localStorage.getItem(HEADER_KEY) === '1';
 let enterMode = localStorage.getItem('bridgeEnterMode') || 'send';
@@ -4710,6 +4721,37 @@ function addMsg(m){
   }
   return div;
 }
+function formatLatencySeconds(ms){
+  const seconds = Math.max(0, Number(ms) || 0) / 1000;
+  return seconds >= 10 ? Math.round(seconds) + 's' : seconds.toFixed(seconds >= 1 ? 1 : 2).replace(/\.?0+$/,'') + 's';
+}
+async function showLatencyBreakdown(){
+  try{
+    const r = await fetch('/api/task-latency');
+    if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
+    const data = await r.json();
+    const latest = data && Array.isArray(data.tasks) ? data.tasks[0] : null;
+    const top3 = latest && Array.isArray(latest.top3) ? latest.top3.filter(Boolean).slice(0, 3) : [];
+    if(!latest || !top3.length) return;
+    const signature = String(latest.task_id || '') + '|' + String(latest.ts || '');
+    if(signature && signature === lastLatencySignature) return;
+    const parts = top3.map(item => {
+      const label = String(item.label || item.phase || 'phase');
+      return label + ' ' + formatLatencySeconds(item.ms);
+    });
+    const el = addMsg({
+      from:'system',
+      ts:new Date().toISOString(),
+      text:'⏱ Задержки: ' + parts.join(' › ')
+    });
+    if(el){
+      el.classList.add('latency-breakdown');
+      applyMessageFilter();
+      if(isNearBottom()) scrollToBottom('smooth');
+    }
+    lastLatencySignature = signature;
+  }catch(_e){}
+}
 function refreshTimes(){
   document.querySelectorAll('time.time').forEach(t => {
     t.textContent = relativeTime(t.getAttribute('datetime'));
@@ -4899,6 +4941,7 @@ async function status(){
     const mdl = modelLabel(s.active_model);
     activeAgentLabel = act === 'claude' ? 'Claude' : act === 'codex' ? 'Codex' : '';
     const readableStatus = s.status || 'idle';
+    const currentStatus = readableStatus === 'idle' ? 'idle' : 'working';
     let statusText = (act === 'claude' || act === 'codex' || s.paused)
       ? (s.status_text || fallbackStatus(s, mdl))
       : readableStatus;
@@ -5019,6 +5062,10 @@ async function status(){
     } else {
       working.style.display = 'none';
     }
+    if(prevStatus === 'working' && currentStatus === 'idle'){
+      showLatencyBreakdown();
+    }
+    prevStatus = currentStatus;
     _lastStatus = s;
     updateOverview();
     updateBottomButton();
@@ -6627,6 +6674,7 @@ async function switchChannel(slug){
   try{
     closeChannelMenu();
     channelEpoch++;
+    prevStatus = '';
     channelsCache.active = slug;
     renderChannels();
 

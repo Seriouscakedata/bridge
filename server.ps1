@@ -1186,6 +1186,42 @@ try {
         $m = Get-MetricsForApi
         Send-Text $ctx ($m | ConvertTo-Json -Compress -Depth 4) 'application/json; charset=utf-8'
       }
+      elseif ($method -eq 'GET' -and $path -eq '/api/task-latency') {
+        try {
+          $latencyRecords = @()
+          if (Get-Command Get-TaskLatencyRecords -ErrorAction SilentlyContinue) {
+            $latencyRecords = @(Get-TaskLatencyRecords -Limit 10)
+          }
+          $phaseLabels = @{ planner_ms='Планировщик (Claude)'; worker_ms='Кодер (Codex)'; critic_ms='Критик'; verify_ms='Проверки'; smoke_ms='Smoke'; restart_ms='Рестарт'; memory_ms='Память' }
+          $tasks = @($latencyRecords | ForEach-Object {
+            $rec = $_
+            $top3 = @()
+            try {
+              if ($rec.top3) {
+                $top3 = @($rec.top3 | ForEach-Object {
+                  $ph = [string]$_.phase
+                  [pscustomobject][ordered]@{
+                    phase = $ph
+                    ms    = [long]$_.ms
+                    label = if ($phaseLabels.ContainsKey($ph)) { $phaseLabels[$ph] } else { $ph }
+                  }
+                })
+              }
+            } catch {}
+            [pscustomobject][ordered]@{
+              ts             = [string]$rec.ts
+              task_id        = [string]$rec.task_id
+              task_text_short= [string]$rec.task_text_short
+              total_ms       = [long]$rec.total_ms
+              phase_timings  = $rec.phase_timings
+              top3           = @($top3)
+            }
+          })
+          Send-Text $ctx ([pscustomobject]@{ tasks = @($tasks) } | ConvertTo-Json -Compress -Depth 6)
+        } catch {
+          Send-Text $ctx ([pscustomobject]@{ tasks = @(); error = $_.Exception.Message } | ConvertTo-Json -Compress)
+        }
+      }
       elseif ($method -eq 'GET' -and $path -eq '/api/audit/latest') {
         $auditScope = Get-AuditApiScope $ctx
         $auditDir = [string]$auditScope.dir

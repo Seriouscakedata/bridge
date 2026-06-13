@@ -414,6 +414,7 @@ $diff
               # Q2: heavy reviews run with provider thinking enabled and a longer budget
               # (thinking lengthens the response; 90s starved it).
               $criticTimeoutSec = if ($isHeavyCritic) { 180 } else { 90 }
+              $script:DriverCriticTimingStart = [DateTime]::UtcNow
               for ($criticEmptyAttempt = 1; $criticEmptyAttempt -le $criticEmptyMaxAttempts; $criticEmptyAttempt++) {
                 $rawC = Invoke-LLM -Purpose 'critic' -Model $criticModelName -Prompt $criticPrompt -TimeoutSec $criticTimeoutSec -Temperature 0.1 -Thinking:$isHeavyCritic
                 if (-not [string]::IsNullOrWhiteSpace($rawC)) { break }
@@ -421,6 +422,12 @@ $diff
                   Add-Message -From system -Text ("🔁 Критик вернул пустой ответ (empty " + $criticEmptyAttempt + "/" + $criticEmptyMaxAttempts + ") — повторяю только critic gate.") -Kind event | Out-Null
                 }
               }
+              try {
+                $criticElapsedMs = [long]([DateTime]::UtcNow - $script:DriverCriticTimingStart).TotalMilliseconds
+                if ($criticElapsedMs -gt 100 -and (Get-Command Update-TaskPhaseTiming -ErrorAction SilentlyContinue)) {
+                  Update-TaskPhaseTiming -Phase critic_ms -Ms $criticElapsedMs
+                }
+              } catch {}
             }
             $verdict='OK'; $severity='none'; $summary=''; $issuesText=''
             if ($criticCacheHit) {
