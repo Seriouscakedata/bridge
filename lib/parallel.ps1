@@ -1478,13 +1478,31 @@ function Stop-ParallelDispatchTimedOutWorkers {
       $proc = $null
       try { $proc = $w.process } catch {}
 
+      $expectedCli = ''
+      try { $expectedCli = ([string]$w.cli).ToLowerInvariant().Trim() } catch {}
+
       if ($workerPid -gt 0) {
-        $pidMatchesWorker = $true
+        $pidMatchesWorker = $false
         if ($pidTicks -gt 0) {
-          $pidMatchesWorker = $false
           try {
             $liveByPid = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
             if ($liveByPid -and $liveByPid.StartTime.Ticks -eq $pidTicks) { $pidMatchesWorker = $true }
+          } catch {}
+        } elseif ($expectedCli) {
+          $pidMatchesWorker = $false
+          try {
+            $liveByPid = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+            if ($liveByPid) {
+              $pName = ([string]$liveByPid.ProcessName).ToLowerInvariant()
+              if ($pName -like "*$expectedCli*") {
+                $pidMatchesWorker = $true
+              } elseif ($pName -eq 'powershell' -or $pName -eq 'pwsh') {
+                try {
+                  $wmiProc = Get-CimInstance Win32_Process -Filter "ProcessId=$workerPid" -Property CommandLine -ErrorAction SilentlyContinue
+                  if ($wmiProc -and $wmiProc.CommandLine -like '*parallel-llm-worker*') { $pidMatchesWorker = $true }
+                } catch {}
+              }
+            }
           } catch {}
         }
 
@@ -1506,7 +1524,19 @@ function Stop-ParallelDispatchTimedOutWorkers {
           $live = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
           if ($live) {
             if ($pidTicks -le 0) {
-              $stillLive = $true
+              if ($expectedCli) {
+                try {
+                  $pName = ([string]$live.ProcessName).ToLowerInvariant()
+                  if ($pName -like "*$expectedCli*") {
+                    $stillLive = $true
+                  } elseif ($pName -eq 'powershell' -or $pName -eq 'pwsh') {
+                    try {
+                      $wmiProc = Get-CimInstance Win32_Process -Filter "ProcessId=$workerPid" -Property CommandLine -ErrorAction SilentlyContinue
+                      if ($wmiProc -and $wmiProc.CommandLine -like '*parallel-llm-worker*') { $stillLive = $true }
+                    } catch {}
+                  }
+                } catch {}
+              }
             } else {
               try { $stillLive = ($live.StartTime.Ticks -eq $pidTicks) } catch {}
             }
@@ -1642,13 +1672,31 @@ function Stop-ParallelDispatchStalledWorker {
     $pidTicks = [long]0
     try { $pidTicks = [long]$Worker.pidTicks } catch {}
 
+    $expectedCli = ''
+    try { $expectedCli = ([string]$Worker.cli).ToLowerInvariant().Trim() } catch {}
+
     if ($workerPid -gt 0) {
-      $pidMatchesWorker = $true
+      $pidMatchesWorker = $false
       if ($pidTicks -gt 0) {
-        $pidMatchesWorker = $false
         try {
           $liveByPid = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
           if ($liveByPid -and $liveByPid.StartTime.Ticks -eq $pidTicks) { $pidMatchesWorker = $true }
+        } catch {}
+      } elseif ($expectedCli) {
+        $pidMatchesWorker = $false
+        try {
+          $liveByPid = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+          if ($liveByPid) {
+            $pName = ([string]$liveByPid.ProcessName).ToLowerInvariant()
+            if ($pName -like "*$expectedCli*") {
+              $pidMatchesWorker = $true
+            } elseif ($pName -eq 'powershell' -or $pName -eq 'pwsh') {
+              try {
+                $wmiProc = Get-CimInstance Win32_Process -Filter "ProcessId=$workerPid" -Property CommandLine -ErrorAction SilentlyContinue
+                if ($wmiProc -and $wmiProc.CommandLine -like '*parallel-llm-worker*') { $pidMatchesWorker = $true }
+              } catch {}
+            }
+          }
         } catch {}
       }
 
@@ -1670,7 +1718,19 @@ function Stop-ParallelDispatchStalledWorker {
         $live = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
         if ($live) {
           if ($pidTicks -le 0) {
-            $stillLive = $true
+            if ($expectedCli) {
+              try {
+                $pName = ([string]$live.ProcessName).ToLowerInvariant()
+                if ($pName -like "*$expectedCli*") {
+                  $stillLive = $true
+                } elseif ($pName -eq 'powershell' -or $pName -eq 'pwsh') {
+                  try {
+                    $wmiProc = Get-CimInstance Win32_Process -Filter "ProcessId=$workerPid" -Property CommandLine -ErrorAction SilentlyContinue
+                    if ($wmiProc -and $wmiProc.CommandLine -like '*parallel-llm-worker*') { $stillLive = $true }
+                  } catch {}
+                }
+              } catch {}
+            }
           } else {
             try { $stillLive = ($live.StartTime.Ticks -eq $pidTicks) } catch {}
           }
