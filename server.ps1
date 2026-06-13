@@ -1632,6 +1632,72 @@ try {
           Send-Text $ctx ('{"ok":false,"error":' + (($_.ToString()) | ConvertTo-Json -Depth 10 -Compress) + '}') 'application/json; charset=utf-8' 500
         }
       }
+      elseif ($method -eq 'GET' -and ($path -eq '/miniapp' -or $path -eq '/miniapp.html')) {
+        $miniAppPath = Join-Path $root 'web\miniapp.html'
+        if (Test-Path -LiteralPath $miniAppPath) {
+          $html = Get-Content -LiteralPath $miniAppPath -Raw -Encoding UTF8
+          Send-Text $ctx $html 'text/html; charset=utf-8'
+        } else {
+          Send-Text $ctx 'miniapp not found' 'text/plain; charset=utf-8' 404
+        }
+      }
+      elseif ($method -eq 'GET' -and $path -eq '/api/live-stream') {
+        # SSE write-once-close pattern: compatible with single-threaded HttpListener.
+        # EventSource auto-reconnects; retry:3000 sets 3s interval.
+        $lsState = $null
+        try { $lsState = Get-RunbookStateObject } catch {}
+        $lsChannel = [string](Get-RunbookPropertyValue $lsState 'channel')
+        if ([string]::IsNullOrWhiteSpace($lsChannel)) {
+          try { $lsChannel = [string](Get-EffectiveChannel) } catch { $lsChannel = 'main' }
+        }
+        $lsRawStatus = [string](Get-RunbookPropertyValue $lsState 'status')
+        $lsPaused = $false
+        try { $lsPaused = [System.Convert]::ToBoolean([string](Get-RunbookPropertyValue $lsState 'paused')) } catch {}
+        $lsStatus = if ($lsPaused) { 'paused' } elseif ($lsRawStatus -eq 'working') { 'working' } else { 'idle' }
+        $lsHbAge = 9999
+        $lsHbRaw = [string](Get-RunbookPropertyValue $lsState 'heartbeat')
+        if (-not [string]::IsNullOrWhiteSpace($lsHbRaw)) {
+          try { $lsHbAge = [int]([Math]::Floor(([datetime]::UtcNow - [datetime]::Parse($lsHbRaw)).TotalSeconds)) } catch {}
+        }
+        $lsTaskId = [string](Get-RunbookPropertyValue $lsState 'current_backlog_id')
+        $lsTaskTitle = ''; $lsTaskDesc = ''
+        if (-not [string]::IsNullOrWhiteSpace($lsTaskId)) {
+          try {
+            . (Join-Path $PSScriptRoot 'lib\backlog.ps1')
+            $lsTask = Get-BacklogItem -Id $lsTaskId
+            if ($lsTask) {
+              $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'title')
+              $lsTaskDesc  = [string](Get-RunbookPropertyValue $lsTask 'task')
+              if ($lsTaskDesc.Length -gt 300) { $lsTaskDesc = $lsTaskDesc.Substring(0, 300) + '…' }
+            }
+          } catch {}
+        }
+        $lsPs = 0
+        foreach ($lsSt in @(Get-RunbookPropertyValue $lsState 'parallel_streams')) {
+          if ($null -ne $lsSt -and [string](Get-RunbookPropertyValue $lsSt 'status') -eq 'running') { $lsPs++ }
+        }
+        $lsJsonObj = [ordered]@{
+          ok                     = $true
+          channel                = $lsChannel
+          status                 = $lsStatus
+          heartbeat_age_sec      = $lsHbAge
+          task_id                = $lsTaskId
+          task_title             = $lsTaskTitle
+          task_desc              = $lsTaskDesc
+          parallel_streams_active = $lsPs
+          ts                     = ([datetime]::UtcNow.ToString('o'))
+        }
+        $lsJsonStr = ($lsJsonObj | ConvertTo-Json -Compress -Depth 4)
+        $lsSseBody = "retry: 3000`ndata: $lsJsonStr`n`n"
+        $lsBytes   = [System.Text.Encoding]::UTF8.GetBytes($lsSseBody)
+        $ctx.Response.StatusCode  = 200
+        $ctx.Response.ContentType = 'text/event-stream; charset=utf-8'
+        $ctx.Response.AddHeader('Cache-Control', 'no-cache')
+        $ctx.Response.AddHeader('Access-Control-Allow-Origin', '*')
+        $ctx.Response.ContentLength64 = $lsBytes.Length
+        $ctx.Response.OutputStream.Write($lsBytes, 0, $lsBytes.Length)
+        $ctx.Response.OutputStream.Close()
+      }
       else {
         Send-Text $ctx 'not found' 'text/plain; charset=utf-8' 404
       }

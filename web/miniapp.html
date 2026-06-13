@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Bridge Control</title>
+  <style>
+    :root {
+      --bg: var(--tg-theme-bg-color, #1a1a2e);
+      --card: rgba(255, 255, 255, 0.08);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --text: #f5f7ff;
+      --muted: rgba(245, 247, 255, 0.68);
+      --accent: #6c63ff;
+      --working: #34c759;
+      --paused: #ff9f0a;
+      --idle: #636366;
+      --danger: #ff453a;
+      --shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(108, 99, 255, 0.22), transparent 38%),
+        radial-gradient(circle at bottom right, rgba(52, 199, 89, 0.14), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+    }
+
+    .shell {
+      width: 100%;
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      margin: 0;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .connection {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--muted);
+      font-size: 0.95rem;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--idle);
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.06);
+      flex: 0 0 auto;
+    }
+
+    .card {
+      margin-bottom: 14px;
+      padding: 16px;
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      background: var(--card);
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 0.84rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .status-row,
+    .heartbeat-row,
+    .footer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status-row strong,
+    .heartbeat-row strong,
+    .footer-row strong {
+      font-size: 1rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .task-title {
+      margin: 0 0 10px;
+      font-size: 1.45rem;
+      line-height: 1.2;
+    }
+
+    .task-desc {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .parallel-note {
+      margin: 14px 0 0;
+      color: #cbc8ff;
+      font-weight: 600;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    button {
+      min-height: 44px;
+      border: 0;
+      border-radius: 14px;
+      padding: 12px 10px;
+      font: inherit;
+      font-weight: 600;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.09);
+      cursor: pointer;
+      transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .primary {
+      background: linear-gradient(135deg, var(--accent), #857dff);
+    }
+
+    .warning {
+      background: linear-gradient(135deg, #d28a12, var(--paused));
+    }
+
+    .danger {
+      background: linear-gradient(135deg, #cc3c33, var(--danger));
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .footer {
+      padding-bottom: 6px;
+      color: var(--muted);
+    }
+
+    .message {
+      margin-top: 8px;
+      color: var(--muted);
+      min-height: 1.3em;
+    }
+
+    @media (max-width: 360px) {
+      .controls {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <main class="shell" id="app">
+    <header class="header">
+      <h1 class="brand">⚡ Bridge</h1>
+      <div class="connection" id="connection-indicator" aria-live="polite">
+        <span class="dot" id="connection-dot"></span>
+        <span id="connection-text">🟡 Connecting</span>
+      </div>
+    </header>
+
+    <section class="card" id="status-card">
+      <p class="eyebrow">Status</p>
+      <div class="status-row">
+        <strong id="channel-value">Channel: --</strong>
+        <span class="badge" id="status-badge">⚫ Idle</span>
+      </div>
+    </section>
+
+    <section class="card" id="task-card">
+      <p class="eyebrow">Task</p>
+      <h2 class="task-title" id="task-title">Ожидание данных...</h2>
+      <p class="task-desc" id="task-desc">Подключение к live stream.</p>
+      <p class="parallel-note" id="parallel-note" hidden>⚙ 0 потоков параллельно</p>
+    </section>
+
+    <section class="card" id="heartbeat-card">
+      <p class="eyebrow">Heartbeat</p>
+      <div class="heartbeat-row">
+        <strong id="heartbeat-status">Ожидание heartbeat...</strong>
+        <span id="task-id">Task ID: --</span>
+      </div>
+    </section>
+
+    <section class="card" id="controls-card">
+      <p class="eyebrow">Controls</p>
+      <div class="controls">
+        <button class="warning" id="pause-btn" type="button">⏸ Пауза</button>
+        <button class="primary" id="resume-btn" type="button">▶ Resume</button>
+        <button class="danger" id="stop-btn" type="button">⏹ Стоп</button>
+      </div>
+      <div class="hint">Команды отправляются на текущий channel с Bearer token.</div>
+      <div class="message" id="action-message" aria-live="polite"></div>
+    </section>
+
+    <footer class="footer">
+      <div class="footer-row">
+        <strong id="updated-label">Обновлено -- сек назад</strong>
+        <span id="timestamp-value">ts: --</span>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      if (window.Telegram && window.Telegram.WebApp) {
+        var webApp = window.Telegram.WebApp;
+        webApp.ready();
+        webApp.expand();
+        document.documentElement.style.setProperty("--tg-theme-bg-color", webApp.themeParams.bg_color || "#1a1a2e");
+      }
+
+      var params = new URLSearchParams(window.location.search);
+      var token = params.get("token") || "";
+      var source = null;
+      var lastUpdateTs = null;
+      var state = {
+        channel: "main",
+        status: "idle",
+        heartbeat_age_sec: null,
+        task_id: "",
+        task_title: "Ожидание данных...",
+        task_desc: "Подключение к live stream.",
+        parallel_streams_active: 0,
+        ts: null
+      };
+
+      var els = {
+        connectionDot: document.getElementById("connection-dot"),
+        connectionText: document.getElementById("connection-text"),
+        channelValue: document.getElementById("channel-value"),
+        statusBadge: document.getElementById("status-badge"),
+        taskTitle: document.getElementById("task-title"),
+        taskDesc: document.getElementById("task-desc"),
+        parallelNote: document.getElementById("parallel-note"),
+        heartbeatStatus: document.getElementById("heartbeat-status"),
+        taskId: document.getElementById("task-id"),
+        updatedLabel: document.getElementById("updated-label"),
+        timestampValue: document.getElementById("timestamp-value"),
+        actionMessage: document.getElementById("action-message"),
+        pauseBtn: document.getElementById("pause-btn"),
+        resumeBtn: document.getElementById("resume-btn"),
+        stopBtn: document.getElementById("stop-btn")
+      };
+
+      function escapeText(value) {
+        return typeof value === "string" && value.trim() ? value.trim() : "--";
+      }
+
+      function setConnection(connected, label) {
+        els.connectionDot.style.background = connected ? "var(--working)" : "var(--danger)";
+        els.connectionText.textContent = label;
+      }
+
+      function getStatusMeta(status) {
+        switch (status) {
+          case "working":
+            return { label: "🟢 Working", color: "var(--working)" };
+          case "paused":
+            return { label: "⏸ Paused", color: "var(--paused)" };
+          default:
+            return { label: "⚫ Idle", color: "var(--idle)" };
+        }
+      }
+
+      function secondsSince(value) {
+        if (!value) {
+          return null;
+        }
+        var parsed = Date.parse(value);
+        if (Number.isNaN(parsed)) {
+          return null;
+        }
+        return Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+      }
+
+      function render() {
+        var meta = getStatusMeta(state.status);
+        var heartbeatAge = typeof state.heartbeat_age_sec === "number" ? state.heartbeat_age_sec : null;
+        var heartbeatFresh = heartbeatAge !== null && heartbeatAge < 60;
+        var updatedAge = secondsSince(lastUpdateTs || state.ts);
+        var controlsDisabled = !token;
+
+        els.channelValue.textContent = "Channel: " + escapeText(state.channel || "main");
+        els.statusBadge.textContent = meta.label;
+        els.statusBadge.style.color = meta.color;
+        els.statusBadge.style.boxShadow = "inset 0 0 0 1px rgba(255,255,255,0.04)";
+        els.taskTitle.textContent = escapeText(state.task_title || "Без названия");
+        els.taskDesc.textContent = state.task_desc ? state.task_desc : "Описание пока не пришло.";
+        els.taskId.textContent = "Task ID: " + escapeText(state.task_id);
+
+        if (typeof state.parallel_streams_active === "number" && state.parallel_streams_active > 0) {
+          els.parallelNote.hidden = false;
+          els.parallelNote.textContent = "⚙ " + state.parallel_streams_active + " потоков параллельно";
+        } else {
+          els.parallelNote.hidden = true;
+        }
+
+        if (heartbeatAge === null) {
+          els.heartbeatStatus.textContent = "Heartbeat ещё не получен";
+        } else if (heartbeatFresh) {
+          els.heartbeatStatus.textContent = "Агент активен";
+        } else {
+          els.heartbeatStatus.textContent = "Агент устарел " + heartbeatAge + " сек";
+        }
+
+        if (updatedAge === null) {
+          els.updatedLabel.textContent = "Обновлено -- сек назад";
+        } else {
+          els.updatedLabel.textContent = "Обновлено " + updatedAge + " сек назад";
+        }
+
+        els.timestampValue.textContent = "ts: " + escapeText(state.ts);
+        els.pauseBtn.disabled = controlsDisabled;
+        els.resumeBtn.disabled = controlsDisabled;
+        els.stopBtn.disabled = controlsDisabled;
+
+        if (controlsDisabled) {
+          els.actionMessage.textContent = "Токен не найден в URL (`?token=`), команды отключены.";
+        }
+      }
+
+      function mergeState(nextState) {
+        state.channel = nextState.channel || state.channel || "main";
+        state.status = nextState.status || state.status || "idle";
+        state.heartbeat_age_sec = typeof nextState.heartbeat_age_sec === "number" ? nextState.heartbeat_age_sec : state.heartbeat_age_sec;
+        state.task_id = nextState.task_id || state.task_id;
+        state.task_title = nextState.task_title || state.task_title;
+        state.task_desc = nextState.task_desc || state.task_desc;
+        state.parallel_streams_active = typeof nextState.parallel_streams_active === "number"
+          ? nextState.parallel_streams_active
+          : state.parallel_streams_active;
+        state.ts = nextState.ts || state.ts;
+        lastUpdateTs = state.ts || lastUpdateTs;
+      }
+
+      function handleEventMessage(raw) {
+        if (!raw) {
+          return;
+        }
+        try {
+          var parsed = JSON.parse(raw);
+          mergeState(parsed);
+          setConnection(true, "🟢 Connected");
+          els.actionMessage.textContent = "";
+          render();
+        } catch (error) {
+          setConnection(false, "🔴 Disconnected");
+          els.actionMessage.textContent = "Некорректный JSON в live stream.";
+        }
+      }
+
+      function startStream() {
+        if (!token) {
+          setConnection(false, "🔴 Disconnected");
+          els.actionMessage.textContent = "Откройте страницу с `?token=` для live stream и control API.";
+          render();
+          return;
+        }
+
+        if (!window.EventSource) {
+          setConnection(false, "🔴 Disconnected");
+          els.actionMessage.textContent = "EventSource не поддерживается в этом браузере.";
+          render();
+          return;
+        }
+
+        source = new EventSource("/api/live-stream?token=" + encodeURIComponent(token));
+        setConnection(false, "🟡 Connecting");
+
+        source.onmessage = function (event) {
+          handleEventMessage(event.data);
+        };
+
+        source.onerror = function () {
+          setConnection(false, "🔴 Disconnected");
+          render();
+        };
+      }
+
+      async function postJson(endpoint, payload, successMessage) {
+        if (!token) {
+          els.actionMessage.textContent = "Нет token в URL.";
+          render();
+          return;
+        }
+
+        els.actionMessage.textContent = "Отправка команды...";
+        try {
+          var response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + token
+            },
+            body: JSON.stringify(payload)
+          });
+
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+
+          els.actionMessage.textContent = successMessage;
+        } catch (error) {
+          els.actionMessage.textContent = "Ошибка команды: " + error.message;
+        }
+      }
+
+      els.pauseBtn.addEventListener("click", function () {
+        postJson("/api/control", { action: "pause", channel: state.channel || "main" }, "Команда pause отправлена.");
+      });
+
+      els.resumeBtn.addEventListener("click", function () {
+        postJson("/api/control", { action: "resume", channel: state.channel || "main" }, "Команда resume отправлена.");
+      });
+
+      els.stopBtn.addEventListener("click", function () {
+        if (!window.confirm("Остановить channel " + (state.channel || "main") + "?")) {
+          return;
+        }
+        postJson("/api/stop", { channel: state.channel || "main" }, "Команда stop отправлена.");
+      });
+
+      window.setInterval(function () {
+        render();
+      }, 1000);
+
+      render();
+      startStream();
+    })();
+  </script>
+</body>
+</html>
