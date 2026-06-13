@@ -119,6 +119,24 @@ function Test-DriverReplyHasSmokeEvidence {
   return $false
 }
 
+function Test-DriverDoneGateBridgeCorePath {
+  param([AllowNull()][string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $normalizedPath = (([string]$Path).Trim() -replace '\\','/').TrimStart('./')
+  if ([string]::IsNullOrWhiteSpace($normalizedPath)) { return $false }
+
+  return (
+    $normalizedPath -match '^(?i:driver/)' -or
+    $normalizedPath -match '^(?i:driver\.ps1)$' -or
+    $normalizedPath -match '^(?i:supervisor\.ps1)$' -or
+    $normalizedPath -match '^(?i:server\.ps1)$' -or
+    $normalizedPath -match '^(?i:lib/verify-selftest\.ps1)$' -or
+    $normalizedPath -match '^(?i:tools/run-tests\.ps1)$' -or
+    $normalizedPath -match '^(?i:lib/(backlog|parallel|qa|router|foundry)(?:/|[^/]*\.ps1$))'
+  )
+}
+
 function Test-CoveredAfterRestart {
   param(
     [string]$BridgeRoot,
@@ -289,12 +307,19 @@ function New-DriverDoneGatePlan {
   $gateScope = @()
   $gateScopeError = ''
   $gateSuiteNeeded = $true
+  $gateNonCoreFastSubset = $false
+  $bridgeCorePaths = @($changedPaths | Where-Object { Test-DriverDoneGateBridgeCorePath -Path $_ } | Sort-Object -Unique)
   if (-not (Get-Command Get-GateRegressionScope -ErrorAction SilentlyContinue)) {
     throw 'gate-regression runtime import missing: Get-GateRegressionScope'
   } else {
     try {
       $gateScope = @(Get-GateRegressionScope -ChangedPaths @($changedPaths))
-      $gateSuiteNeeded = ($gateScope.Count -gt 0)
+      if ($changedPaths.Count -gt 0 -and $bridgeCorePaths.Count -eq 0) {
+        $gateSuiteNeeded = $false
+        $gateNonCoreFastSubset = $true
+      } else {
+        $gateSuiteNeeded = ($gateScope.Count -gt 0)
+      }
     } catch {
       $gateScopeError = ($_.Exception.Message -replace '\s+',' ').Trim()
       throw ("gate-regression scope failed: " + $gateScopeError)
@@ -314,6 +339,8 @@ function New-DriverDoneGatePlan {
     SmokeSkippedByVerified = [bool]$smokeSkippedByVerified
     GateScope = @($gateScope)
     GateScopeError = $gateScopeError
+    GateBridgeCorePaths = @($bridgeCorePaths)
+    GateNonCoreFastSubset = [bool]$gateNonCoreFastSubset
     GateSuiteNeeded = [bool]$gateSuiteNeeded
     JobNames = @($jobs.ToArray())
   }
@@ -1209,7 +1236,11 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
         }
 
         if (-not [bool]$gateChecks.Plan.GateSuiteNeeded) {
-          Add-Message -From system -Text "🧪 Gate-regression: scope empty, skipped." -Kind event | Out-Null
+          if ([bool]$gateChecks.Plan.GateNonCoreFastSubset) {
+            Add-Message -From system -Text "🧪 gate-regression: non-core scope, fast subset (parse/smoke only)." -Kind event | Out-Null
+          } else {
+            Add-Message -From system -Text "🧪 Gate-regression: scope empty, skipped." -Kind event | Out-Null
+          }
         } else {
           if ($gateChecks.Plan.GateScopeError) {
             Add-Message -From system -Text ("🧪 Gate-regression: scope unavailable ({0}); running full snapshot suite." -f $gateChecks.Plan.GateScopeError) -Kind event | Out-Null

@@ -1,646 +1,650 @@
 {
-  "port": 8787,
-  "codexExe": "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
-  "claudeGlob": "C:/Users/rafie/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/claude.exe",
-  "loopDelaySeconds": 2,
-  "maxTurns": 150,
-  "criticMaxRetries": 3,
-  "taskRestartCaps": {
-    "apply": 6,
-    "hard": 3,
-    "total": 8
-  },
-  "mode": "interactive",
-  "planner": "claude",
-  "coder": {
-    "agent": "codex",
-    "sandboxMode": "workspace-write",
-    "sandboxModeByChannel": {
-      "literary-slop-video": "danger-full-access"
-    }
-  },
-  "workRoot": "C:/Users/rafie",
-  "idlePollSeconds": 1,
-  "idleMaxPollSeconds": 5,
-  "idleFastTicks": 8,
-  "fullContextCount": 20,
-  "summarizeBatch": 15,
-  "triageModel": "sonnet",
-  "deepModel": "claude-opus-4-8",
-  "sttModel": "gemini-2.5-flash",
-  "router": {
-    "minSuccess": 0.5,
-    "minSamples": 5,
-    "windowHours": 24
-  },
-  "plannerRouting": {
-    "opusOnLongPrompts": false,
-    "opusOnDiscuss": false,
-    "opusOnStudy": true,
-    "opusKeywords": [
-      "архитектур",
-      "рефактор",
-      "перераб",
-      "мигр",
-      "интеграц",
-      "масштаб",
-      "overhaul",
-      "спроектируй",
-      "refactor"
-    ]
-  },
-  "fastLane": {
-    "autoDetect": true,
-    "minChars": 100,
-    "embedBatchEnabled": true
-  },
-  "memory": {
-    "enabled": true,
-    "embedModel": "gemini-embedding-001",
-    "embedDim": 1536,
-    "autoGate": true,
-    "recallTopK": 5,
-    "recallMinScore": 0.62,
-    "dedupThreshold": 0.93,
-    "dedupCosine": 0.93,
-    "ageDaysPrune": 30,
-    "minImportanceKeep": 0.5,
-    "unusedDaysPrune": 7,
-    "maxInjectChars": 1200,
-    "embedCacheEnabled": false,
-    "antiSkillTopK": 2,
-    "antiSkillMinScore": 0.55,
-    "antiSkillMaxInjectChars": 600
-  },
-  "backlog": {
-    "useLLMPriority": false,
-    "enableLLMPrioritizerOnIdle": false,
-    "prioritizerIntervalMinutes": 60,
-    "prioritizerMaxItems": 20
-  },
-  "qaRunner": {
-    "runUnsafeScenarios": false,
-    "scenarioTimeoutSec": 90,
-    "scenarioUrl": "http://localhost:8787"
-  },
-  "learningLoop": {
-    "autoRevert": false,
-    "autoRevertShadow": true,
-    "autoRevertMaxHypothesisAgeHours": 30,
-    "autoRevertMaxCommitsBehindHead": 0,
-    "autoRevertRequireUnhealthy": true,
-    "autoRevertRequireCleanWorktree": true
-  },
-  "llm": {
-    "gate": "deepseek-v4-flash",
-    "librarian": "deepseek-v4-flash",
-    "reflect": "deepseek-v4-flash",
-    "qa": "deepseek-v4-flash",
-    "prioritizer": "deepseek-v4-pro",
-    "deep": "deepseek-v4-pro",
-    "critic": "deepseek-v4-flash",
-    "criticHeavy": "deepseek-v4-pro",
-    "fallback": "gemini-2.5-flash"
-  },
-  "usage": {
-    "dailyCapUsd": 0,
-    "prices": {
-      "deepseek-v4-flash": {
-        "in": 0.07,
-        "out": 1.1
-      },
-      "deepseek-v4-pro": {
-        "in": 0.55,
-        "out": 2.19
-      },
-      "gemini-2.5-flash": {
-        "in": 0.3,
-        "out": 2.5
-      },
-      "gemini-embedding-001": {
-        "in": 0.15,
-        "out": 0
-      }
-    },
-    "window_hours": [
-      1,
-      24
-    ]
-  },
-  "notify": {
-    "enabled": true,
-    "events": {
-      "done": true,
-      "need_you": true,
-      "gate": true
-    },
-    "throttleSeconds": 20,
-    "timeoutSec": 10
-  },
-  "circuitBreaker": {
-    "enabled": true,
-    "windowMin": 30,
-    "maxRestarts": 5,
-    "cooldownMin": 15
-  },
-  "supervisor": {
-    "reapBloatedMB": 8192,
-    "reapWarnMB": 6144,
-    "reapGraceMs": 60000,
-    "restartLimitMaxPerHour": 1000,
-    "restartLimitWindowMin": 60,
-    "restartLimitCooldownMin": 5,
-    "stopWaitMs": 5000,
-    "fatalDriverExitCodes": [
-      3
-    ],
-    "fatalServerExitCodes": [],
-    "scriptIntegrityEnabled": false,
-    "scriptIntegrityManifest": "security/script-integrity.json",
-    "maxConcurrentDrivers": 20
-  },
-  "auditor": {
-    "enabled": true,
-    "intervalMin": 15,
-    "cooldownMin": 30,
-    "model": "gemini-2.5-flash-lite",
-    "doctorRecidivismHours": 24,
-    "doctorRecidivismMax": 5
-  },
-  "doctor": {
-    "maxRepairAttempts": 3,
-    "maxRestartResumes": 3
-  },
-  "canary": {
-    "enabled": false,
-    "intervalHours": 6,
-    "cooldownMinutes": 30,
-    "llmModel": "gemini-2.5-flash-lite",
-    "quarantineFailures": 2,
-    "quarantineHours": 12,
-    "worktreePath": "C:\\Users\\rafie\\OneDrive\\Documents\\bridge-canary-worktree",
-    "branchName": "canary/heartbeat"
-  },
-  "autonomy": {
-    "enabled": true,
-    "requireApproval": false,
-    "idleQuietMinutes": 1,
-    "maxAutonomousTasksPerDay": 150,
-    "autonomyDisabledChannels": [],
-    "reflectEveryHours": 720,
-    "maxIdeasPerReflect": 1,
-    "maxOpenIdeas": 3,
-    "stablePromoteMinutes": 30
-  },
-  "reflect": {
-    "minTaskDurationSec": 60
-  },
-  "conversationAutoArchiveLines": 1500,
-  "librarian": {
-    "deltaTriggerCount": 10,
-    "ceilingHours": 6
-  },
-  "audit": {
-    "enabled": false,
-    "windowStartHour": 1,
-    "windowEndHour": 6,
-    "floorHours": 20,
-    "maxWaitMinutes": 60,
-    "deepAgents": [
-      {
-        "role": "security-model",
-        "model": "deepseek-v4-pro",
-        "timeoutSec": 140
-      },
-      {
-        "role": "functional-model",
-        "model": "gemini-2.5-flash",
-        "timeoutSec": 140
-      },
-      {
-        "role": "reliability-model",
-        "model": "deepseek-v4-flash",
-        "timeoutSec": 120
-      },
-      {
-        "role": "architecture-model",
-        "model": "deepseek-v4-pro",
-        "timeoutSec": 140
-      },
-      {
-        "role": "dependency-model",
-        "model": "deepseek-v4-flash",
-        "timeoutSec": 120
-      }
-    ]
-  },
-  "channelMaintenance": {
-    "nonMainBrainstormEnabled": false,
-    "nonMainAuditEnabled": false
-  },
-  "chunking": {
-    "enabled": true,
-    "maxChunksPerTask": 10
-  },
-  "parallel": {
-    "enabled": true,
-    "maxStreams": 20,
-    "claudeCoderModel": "sonnet",
-    "drainingTimeoutSec": 30,
-    "wipBranchPrefix": "wip/parallel",
-    "complexityFloor": {
-      "simple": 2,
-      "moderate": 3,
-      "complex": 4,
-      "architectural": 5
-    },
-    "domainHints": {
-      "frontend": [
-        "html",
-        "css",
-        "js",
-        "jsx",
-        "tsx",
-        "vue",
-        "svelte"
-      ],
-      "scripts": [
-        "ps1",
-        "sh",
-        "bash",
-        "cmd",
-        "bat"
-      ],
-      "backend": [
-        "py",
-        "go",
-        "rs",
-        "java",
-        "cs",
-        "rb",
-        "ts",
-        "cpp",
-        "c"
-      ],
-      "docs": [
-        "md",
-        "txt",
-        "rst",
-        "adoc"
-      ],
-      "config": [
-        "json",
-        "yaml",
-        "yml",
-        "toml",
-        "ini",
-        "xml"
-      ]
-    },
-    "fallbackWorkerId": "codex-high",
-    "workers": [
-      {
-        "id": "codex-xhigh",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "xhigh",
-        "strength": 5,
-        "speed": 1,
-        "cost": 5,
-        "domains": [
-          "any",
-          "backend",
-          "scripts"
-        ],
-        "purpose": "Architectural / deep reasoning."
-      },
-      {
-        "id": "codex-high",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "high",
-        "strength": 4,
-        "speed": 2,
-        "cost": 4,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Default coder."
-      },
-      {
-        "id": "codex-high-2",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "high",
-        "strength": 4,
-        "speed": 2,
-        "cost": 4,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Default coder (dup)."
-      },
-      {
-        "id": "codex-high-3",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "high",
-        "strength": 4,
-        "speed": 2,
-        "cost": 4,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Default coder (dup)."
-      },
-      {
-        "id": "codex-medium",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "medium",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "config",
-          "frontend"
-        ],
-        "purpose": "Mid-sized changes."
-      },
-      {
-        "id": "codex-medium-2",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "medium",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "config",
-          "frontend"
-        ],
-        "purpose": "Mid-sized (dup)."
-      },
-      {
-        "id": "codex-medium-3",
-        "cli": "codex",
-        "model": "gpt-5.5",
-        "reasoning": "medium",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "config",
-          "frontend"
-        ],
-        "purpose": "Mid-sized (dup)."
-      },
-      {
-        "id": "codex-alt",
-        "cli": "codex",
-        "model": "gpt-5.4",
-        "reasoning": "high",
-        "strength": 3,
-        "speed": 3,
-        "cost": 2,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Alt 5.4."
-      },
-      {
-        "id": "codex-alt-2",
-        "cli": "codex",
-        "model": "gpt-5.4",
-        "reasoning": "high",
-        "strength": 3,
-        "speed": 3,
-        "cost": 2,
-        "domains": [
-          "any",
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Alt 5.4 (dup)."
-      },
-      {
-        "id": "codex-specialist",
-        "cli": "codex",
-        "model": "gpt-5.3-codex",
-        "reasoning": "high",
-        "strength": 3,
-        "speed": 2,
-        "cost": 3,
-        "domains": [
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Code specialist."
-      },
-      {
-        "id": "codex-specialist-2",
-        "cli": "codex",
-        "model": "gpt-5.3-codex",
-        "reasoning": "high",
-        "strength": 3,
-        "speed": 2,
-        "cost": 3,
-        "domains": [
-          "backend",
-          "scripts",
-          "frontend"
-        ],
-        "purpose": "Code specialist (dup)."
-      },
-      {
-        "id": "claude-sonnet",
-        "cli": "claude",
-        "model": "sonnet",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "frontend",
-          "docs",
-          "config",
-          "any"
-        ],
-        "purpose": "UI/markdown coder."
-      },
-      {
-        "id": "claude-sonnet-2",
-        "cli": "claude",
-        "model": "sonnet",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "frontend",
-          "docs",
-          "config",
-          "any"
-        ],
-        "purpose": "UI coder (dup)."
-      },
-      {
-        "id": "claude-sonnet-3",
-        "cli": "claude",
-        "model": "sonnet",
-        "strength": 3,
-        "speed": 3,
-        "cost": 3,
-        "domains": [
-          "frontend",
-          "docs",
-          "config",
-          "any"
-        ],
-        "purpose": "UI coder (dup)."
-      },
-      {
-        "id": "claude-fable",
-        "cli": "claude",
-        "model": "claude-opus-4-8",
-        "strength": 5,
-        "speed": 1,
-        "cost": 5,
-        "domains": [
-          "any",
-          "frontend",
-          "docs",
-          "backend"
-        ],
-        "purpose": "Premium architecture model for deep-think, study, and architectural/design decisions."
-      },
-      {
-        "id": "claude-fable-2",
-        "cli": "claude",
-        "model": "claude-opus-4-8",
-        "strength": 5,
-        "speed": 1,
-        "cost": 5,
-        "domains": [
-          "any",
-          "frontend",
-          "docs",
-          "backend"
-        ],
-        "purpose": "Premium architecture model (dup) for complex architectural work in parallel."
-      },
-      {
-        "id": "deepseek-pro",
-        "cli": "deepseek",
-        "model": "deepseek-v4-pro",
-        "strength": 4,
-        "speed": 3,
-        "cost": 2,
-        "domains": [
-          "any",
-          "backend",
-          "frontend",
-          "config",
-          "docs"
-        ],
-        "purpose": "DeepSeek v4 Pro — strong, cheap; single-file edits via LLM-worker."
-      },
-      {
-        "id": "deepseek-pro-2",
-        "cli": "deepseek",
-        "model": "deepseek-v4-pro",
-        "strength": 4,
-        "speed": 3,
-        "cost": 2,
-        "domains": [
-          "any",
-          "backend",
-          "frontend",
-          "config",
-          "docs"
-        ],
-        "purpose": "DeepSeek v4 Pro (dup)."
-      },
-      {
-        "id": "gemini-flash",
-        "cli": "gemini",
-        "model": "gemini-2.5-flash",
-        "strength": 2,
-        "speed": 4,
-        "cost": 1,
-        "domains": [
-          "frontend",
-          "docs",
-          "config",
-          "any"
-        ],
-        "purpose": "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker."
-      },
-      {
-        "id": "gemini-flash-2",
-        "cli": "gemini",
-        "model": "gemini-2.5-flash",
-        "strength": 2,
-        "speed": 4,
-        "cost": 1,
-        "domains": [
-          "frontend",
-          "docs",
-          "config",
-          "any"
-        ],
-        "purpose": "Gemini 2.5 Flash (dup)."
-      }
-    ]
-  },
-  "coderTimeoutMs": 1500000,
-  "probeTimeout": {
-    "minMs": 120000,
-    "baseMs": 180000,
-    "maxMs": 1200000,
-    "metrics": {
-      "channels": {
-        "weight": 10000,
-        "capMs": 90000
-      },
-      "stateKb": {
-        "weight": 120,
-        "capMs": 180000
-      },
-      "locks": {
-        "weight": 15000,
-        "capMs": 120000
-      },
-      "jobs": {
-        "weight": 5000,
-        "capMs": 180000
-      },
-      "restartsHour": {
-        "weight": 45000,
-        "capMs": 270000
-      }
-    }
-  },
-  "radarEveryHours": 720
+    "port":  8787,
+    "codexExe":  "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
+    "claudeGlob":  "C:/Users/rafie/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/claude.exe",
+    "loopDelaySeconds":  2,
+    "maxTurns":  150,
+    "criticMaxRetries":  3,
+    "taskRestartCaps":  {
+                            "apply":  6,
+                            "hard":  3,
+                            "total":  8
+                        },
+    "mode":  "interactive",
+    "planner":  "claude",
+    "coder":  {
+                  "agent":  "codex",
+                  "sandboxMode":  "workspace-write",
+                  "sandboxModeByChannel":  {
+                                               "literary-slop-video":  "danger-full-access"
+                                           }
+              },
+    "workRoot":  "C:/Users/rafie",
+    "idlePollSeconds":  1,
+    "idleMaxPollSeconds":  5,
+    "idleFastTicks":  8,
+    "fullContextCount":  20,
+    "summarizeBatch":  15,
+    "triageModel":  "sonnet",
+    "deepModel":  "claude-opus-4-8",
+    "sttModel":  "gemini-2.5-flash",
+    "router":  {
+                   "minSuccess":  0.5,
+                   "minSamples":  5,
+                   "windowHours":  24
+               },
+    "plannerRouting":  {
+                           "opusOnLongPrompts":  false,
+                           "opusOnDiscuss":  false,
+                           "opusOnStudy":  true,
+                           "opusKeywords":  [
+                                                "архитектур",
+                                                "рефактор",
+                                                "перераб",
+                                                "мигр",
+                                                "интеграц",
+                                                "масштаб",
+                                                "overhaul",
+                                                "спроектируй",
+                                                "refactor"
+                                            ]
+                       },
+    "fastLane":  {
+                     "autoDetect":  true,
+                     "minChars":  100,
+                     "embedBatchEnabled":  true
+                 },
+    "memory":  {
+                   "enabled":  true,
+                   "embedModel":  "gemini-embedding-001",
+                   "embedDim":  1536,
+                   "autoGate":  true,
+                   "recallTopK":  5,
+                   "recallMinScore":  0.62,
+                   "dedupThreshold":  0.93,
+                   "dedupCosine":  0.93,
+                   "ageDaysPrune":  30,
+                   "minImportanceKeep":  0.5,
+                   "unusedDaysPrune":  7,
+                   "maxInjectChars":  1200,
+                   "embedCacheEnabled":  false,
+                   "antiSkillTopK":  2,
+                   "antiSkillMinScore":  0.55,
+                   "antiSkillMaxInjectChars":  600
+               },
+    "backlog":  {
+                    "useLLMPriority":  false,
+                    "enableLLMPrioritizerOnIdle":  false,
+                    "prioritizerIntervalMinutes":  60,
+                    "prioritizerMaxItems":  20
+                },
+    "qaRunner":  {
+                     "runUnsafeScenarios":  false,
+                     "scenarioTimeoutSec":  90,
+                     "scenarioUrl":  "http://localhost:8787"
+                 },
+    "learningLoop":  {
+                         "autoRevert":  false,
+                         "autoRevertShadow":  true,
+                         "autoRevertMaxHypothesisAgeHours":  30,
+                         "autoRevertMaxCommitsBehindHead":  0,
+                         "autoRevertRequireUnhealthy":  true,
+                         "autoRevertRequireCleanWorktree":  true
+                     },
+    "llm":  {
+                "gate":  "deepseek-v4-flash",
+                "librarian":  "deepseek-v4-flash",
+                "reflect":  "deepseek-v4-flash",
+                "qa":  "deepseek-v4-flash",
+                "prioritizer":  "deepseek-v4-pro",
+                "deep":  "deepseek-v4-pro",
+                "critic":  "deepseek-v4-flash",
+                "criticHeavy":  "deepseek-v4-pro",
+                "fallback":  "gemini-2.5-flash"
+            },
+    "usage":  {
+                  "dailyCapUsd":  0,
+                  "prices":  {
+                                 "deepseek-v4-flash":  {
+                                                           "in":  0.07,
+                                                           "out":  1.1
+                                                       },
+                                 "deepseek-v4-pro":  {
+                                                         "in":  0.55,
+                                                         "out":  2.19
+                                                     },
+                                 "gemini-2.5-flash":  {
+                                                          "in":  0.3,
+                                                          "out":  2.5
+                                                      },
+                                 "gemini-embedding-001":  {
+                                                              "in":  0.15,
+                                                              "out":  0
+                                                          }
+                             },
+                  "window_hours":  [
+                                       1,
+                                       24
+                                   ]
+              },
+    "notify":  {
+                   "enabled":  true,
+                   "events":  {
+                                  "done":  true,
+                                  "need_you":  true,
+                                  "gate":  true
+                              },
+                   "throttleSeconds":  20,
+                   "timeoutSec":  10
+               },
+    "circuitBreaker":  {
+                           "enabled":  true,
+                           "windowMin":  30,
+                           "maxRestarts":  5,
+                           "cooldownMin":  15
+                       },
+    "supervisor":  {
+                       "reapBloatedMB":  8192,
+                       "reapWarnMB":  6144,
+                       "reapGraceMs":  60000,
+                       "restartLimitMaxPerHour":  1000,
+                       "restartLimitWindowMin":  60,
+                       "restartLimitCooldownMin":  5,
+                       "stopWaitMs":  5000,
+                       "fatalDriverExitCodes":  [
+                                                    3
+                                                ],
+                       "fatalServerExitCodes":  [
+
+                                                ],
+                       "scriptIntegrityEnabled":  false,
+                       "scriptIntegrityManifest":  "security/script-integrity.json",
+                       "maxConcurrentDrivers":  20
+                   },
+    "auditor":  {
+                    "enabled":  true,
+                    "intervalMin":  15,
+                    "cooldownMin":  30,
+                    "model":  "gemini-2.5-flash-lite",
+                    "doctorRecidivismHours":  24,
+                    "doctorRecidivismMax":  5
+                },
+    "doctor":  {
+                   "maxRepairAttempts":  3,
+                   "maxRestartResumes":  3
+               },
+    "canary":  {
+                   "enabled":  false,
+                   "intervalHours":  6,
+                   "cooldownMinutes":  30,
+                   "llmModel":  "gemini-2.5-flash-lite",
+                   "quarantineFailures":  2,
+                   "quarantineHours":  12,
+                   "worktreePath":  "C:\\Users\\rafie\\OneDrive\\Documents\\bridge-canary-worktree",
+                   "branchName":  "canary/heartbeat"
+               },
+    "autonomy":  {
+                     "enabled":  true,
+                     "requireApproval":  false,
+                     "idleQuietMinutes":  1,
+                     "maxAutonomousTasksPerDay":  150,
+                     "autonomyDisabledChannels":  [
+
+                                                  ],
+                     "reflectEveryHours":  720,
+                     "maxIdeasPerReflect":  1,
+                     "maxOpenIdeas":  3,
+                     "stablePromoteMinutes":  30
+                 },
+    "reflect":  {
+                    "minTaskDurationSec":  60
+                },
+    "conversationAutoArchiveLines":  1500,
+    "librarian":  {
+                      "deltaTriggerCount":  10,
+                      "ceilingHours":  6
+                  },
+    "audit":  {
+                  "enabled":  false,
+                  "windowStartHour":  1,
+                  "windowEndHour":  6,
+                  "floorHours":  20,
+                  "maxWaitMinutes":  60,
+                  "deepAgents":  [
+                                     {
+                                         "role":  "security-model",
+                                         "model":  "deepseek-v4-pro",
+                                         "timeoutSec":  140
+                                     },
+                                     {
+                                         "role":  "functional-model",
+                                         "model":  "gemini-2.5-flash",
+                                         "timeoutSec":  140
+                                     },
+                                     {
+                                         "role":  "reliability-model",
+                                         "model":  "deepseek-v4-flash",
+                                         "timeoutSec":  120
+                                     },
+                                     {
+                                         "role":  "architecture-model",
+                                         "model":  "deepseek-v4-pro",
+                                         "timeoutSec":  140
+                                     },
+                                     {
+                                         "role":  "dependency-model",
+                                         "model":  "deepseek-v4-flash",
+                                         "timeoutSec":  120
+                                     }
+                                 ]
+              },
+    "channelMaintenance":  {
+                               "nonMainBrainstormEnabled":  false,
+                               "nonMainAuditEnabled":  false
+                           },
+    "chunking":  {
+                     "enabled":  true,
+                     "maxChunksPerTask":  10
+                 },
+    "parallel":  {
+                     "enabled":  true,
+                     "maxStreams":  20,
+                     "claudeCoderModel":  "sonnet",
+                     "drainingTimeoutSec":  30,
+                     "wipBranchPrefix":  "wip/parallel",
+                     "complexityFloor":  {
+                                             "simple":  2,
+                                             "moderate":  3,
+                                             "complex":  4,
+                                             "architectural":  5
+                                         },
+                     "domainHints":  {
+                                         "frontend":  [
+                                                          "html",
+                                                          "css",
+                                                          "js",
+                                                          "jsx",
+                                                          "tsx",
+                                                          "vue",
+                                                          "svelte"
+                                                      ],
+                                         "scripts":  [
+                                                         "ps1",
+                                                         "sh",
+                                                         "bash",
+                                                         "cmd",
+                                                         "bat"
+                                                     ],
+                                         "backend":  [
+                                                         "py",
+                                                         "go",
+                                                         "rs",
+                                                         "java",
+                                                         "cs",
+                                                         "rb",
+                                                         "ts",
+                                                         "cpp",
+                                                         "c"
+                                                     ],
+                                         "docs":  [
+                                                      "md",
+                                                      "txt",
+                                                      "rst",
+                                                      "adoc"
+                                                  ],
+                                         "config":  [
+                                                        "json",
+                                                        "yaml",
+                                                        "yml",
+                                                        "toml",
+                                                        "ini",
+                                                        "xml"
+                                                    ]
+                                     },
+                     "fallbackWorkerId":  "codex-high",
+                     "workers":  [
+                                     {
+                                         "id":  "codex-xhigh",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "xhigh",
+                                         "strength":  5,
+                                         "speed":  1,
+                                         "cost":  5,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts"
+                                                     ],
+                                         "purpose":  "Architectural / deep reasoning."
+                                     },
+                                     {
+                                         "id":  "codex-high",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "high",
+                                         "strength":  4,
+                                         "speed":  2,
+                                         "cost":  4,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Default coder."
+                                     },
+                                     {
+                                         "id":  "codex-high-2",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "high",
+                                         "strength":  4,
+                                         "speed":  2,
+                                         "cost":  4,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Default coder (dup)."
+                                     },
+                                     {
+                                         "id":  "codex-high-3",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "high",
+                                         "strength":  4,
+                                         "speed":  2,
+                                         "cost":  4,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Default coder (dup)."
+                                     },
+                                     {
+                                         "id":  "codex-medium",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "medium",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "config",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Mid-sized changes."
+                                     },
+                                     {
+                                         "id":  "codex-medium-2",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "medium",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "config",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Mid-sized (dup)."
+                                     },
+                                     {
+                                         "id":  "codex-medium-3",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.5",
+                                         "reasoning":  "medium",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "config",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Mid-sized (dup)."
+                                     },
+                                     {
+                                         "id":  "codex-alt",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.4",
+                                         "reasoning":  "high",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  2,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Alt 5.4."
+                                     },
+                                     {
+                                         "id":  "codex-alt-2",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.4",
+                                         "reasoning":  "high",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  2,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Alt 5.4 (dup)."
+                                     },
+                                     {
+                                         "id":  "codex-specialist",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.3-codex",
+                                         "reasoning":  "high",
+                                         "strength":  3,
+                                         "speed":  2,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Code specialist."
+                                     },
+                                     {
+                                         "id":  "codex-specialist-2",
+                                         "cli":  "codex",
+                                         "model":  "gpt-5.3-codex",
+                                         "reasoning":  "high",
+                                         "strength":  3,
+                                         "speed":  2,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "backend",
+                                                         "scripts",
+                                                         "frontend"
+                                                     ],
+                                         "purpose":  "Code specialist (dup)."
+                                     },
+                                     {
+                                         "id":  "claude-sonnet",
+                                         "cli":  "claude",
+                                         "model":  "sonnet",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "frontend",
+                                                         "docs",
+                                                         "config",
+                                                         "any"
+                                                     ],
+                                         "purpose":  "UI/markdown coder."
+                                     },
+                                     {
+                                         "id":  "claude-sonnet-2",
+                                         "cli":  "claude",
+                                         "model":  "sonnet",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "frontend",
+                                                         "docs",
+                                                         "config",
+                                                         "any"
+                                                     ],
+                                         "purpose":  "UI coder (dup)."
+                                     },
+                                     {
+                                         "id":  "claude-sonnet-3",
+                                         "cli":  "claude",
+                                         "model":  "sonnet",
+                                         "strength":  3,
+                                         "speed":  3,
+                                         "cost":  3,
+                                         "domains":  [
+                                                         "frontend",
+                                                         "docs",
+                                                         "config",
+                                                         "any"
+                                                     ],
+                                         "purpose":  "UI coder (dup)."
+                                     },
+                                     {
+                                         "id":  "claude-fable",
+                                         "cli":  "claude",
+                                         "model":  "claude-opus-4-8",
+                                         "strength":  5,
+                                         "speed":  1,
+                                         "cost":  5,
+                                         "domains":  [
+                                                         "any",
+                                                         "frontend",
+                                                         "docs",
+                                                         "backend"
+                                                     ],
+                                         "purpose":  "Premium architecture model for deep-think, study, and architectural/design decisions."
+                                     },
+                                     {
+                                         "id":  "claude-fable-2",
+                                         "cli":  "claude",
+                                         "model":  "claude-opus-4-8",
+                                         "strength":  5,
+                                         "speed":  1,
+                                         "cost":  5,
+                                         "domains":  [
+                                                         "any",
+                                                         "frontend",
+                                                         "docs",
+                                                         "backend"
+                                                     ],
+                                         "purpose":  "Premium architecture model (dup) for complex architectural work in parallel."
+                                     },
+                                     {
+                                         "id":  "deepseek-pro",
+                                         "cli":  "deepseek",
+                                         "model":  "deepseek-v4-pro",
+                                         "strength":  2,
+                                         "speed":  3,
+                                         "cost":  2,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "frontend",
+                                                         "config",
+                                                         "docs"
+                                                     ],
+                                         "purpose":  "DeepSeek v4 Pro — strong, cheap; single-file edits via LLM-worker."
+                                     },
+                                     {
+                                         "id":  "deepseek-pro-2",
+                                         "cli":  "deepseek",
+                                         "model":  "deepseek-v4-pro",
+                                         "strength":  2,
+                                         "speed":  3,
+                                         "cost":  2,
+                                         "domains":  [
+                                                         "any",
+                                                         "backend",
+                                                         "frontend",
+                                                         "config",
+                                                         "docs"
+                                                     ],
+                                         "purpose":  "DeepSeek v4 Pro (dup)."
+                                     },
+                                     {
+                                         "id":  "gemini-flash",
+                                         "cli":  "gemini",
+                                         "model":  "gemini-2.5-flash",
+                                         "strength":  2,
+                                         "speed":  4,
+                                         "cost":  1,
+                                         "domains":  [
+                                                         "frontend",
+                                                         "docs",
+                                                         "config",
+                                                         "any"
+                                                     ],
+                                         "purpose":  "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker."
+                                     },
+                                     {
+                                         "id":  "gemini-flash-2",
+                                         "cli":  "gemini",
+                                         "model":  "gemini-2.5-flash",
+                                         "strength":  2,
+                                         "speed":  4,
+                                         "cost":  1,
+                                         "domains":  [
+                                                         "frontend",
+                                                         "docs",
+                                                         "config",
+                                                         "any"
+                                                     ],
+                                         "purpose":  "Gemini 2.5 Flash (dup)."
+                                     }
+                                 ]
+                 },
+    "coderTimeoutMs":  1500000,
+    "probeTimeout":  {
+                         "minMs":  120000,
+                         "baseMs":  180000,
+                         "maxMs":  1200000,
+                         "metrics":  {
+                                         "channels":  {
+                                                          "weight":  10000,
+                                                          "capMs":  90000
+                                                      },
+                                         "stateKb":  {
+                                                         "weight":  120,
+                                                         "capMs":  180000
+                                                     },
+                                         "locks":  {
+                                                       "weight":  15000,
+                                                       "capMs":  120000
+                                                   },
+                                         "jobs":  {
+                                                      "weight":  5000,
+                                                      "capMs":  180000
+                                                  },
+                                         "restartsHour":  {
+                                                              "weight":  45000,
+                                                              "capMs":  270000
+                                                          }
+                                     }
+                     },
+    "radarEveryHours":  720
 }

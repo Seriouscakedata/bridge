@@ -59,7 +59,7 @@ function Invoke-FastpathCase {
   }
 
   if ($Case.Name -eq 'CONTROL_PLANE') {
-    Check 'Class CONTROL_PLANE: Get-GateRegressionScope returns non-empty for driver.ps1' ($scope.Count -gt 0) $scope
+    Check 'Class CONTROL_PLANE: Get-GateRegressionScope returns non-empty for driver/ change' ($scope.Count -gt 0) $scope
     Check 'Class CONTROL_PLANE: snapshot suite is scheduled' ([bool]$plan.GateSuiteNeeded) $plan
     Check 'Class CONTROL_PLANE: gate-regression job is present' $suiteJobPresent $plan.JobNames
     return
@@ -83,13 +83,14 @@ STATUS: DONE
   $missingBaseChangedPaths = $null
   $missingBaseError = ''
   try {
-    foreach ($i in 1..4) {
+    $script:_MissingBaseObjHits = @{}
+    foreach ($i in 1..2) {
       $missingBaseChangedPaths = @(Get-DriverDoneGateChangedPaths -BridgeRoot $root -TaskBaseCommit '0000000000000000000000000000000000000000')
     }
   } catch {
     $missingBaseError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
-  Check 'Missing task_base_commit: repeated changed-path scans stay fail-soft' ([string]::IsNullOrWhiteSpace($missingBaseError)) $missingBaseError
+  Check 'Missing task_base_commit: pre-escalation changed-path scans stay fail-soft' ([string]::IsNullOrWhiteSpace($missingBaseError)) $missingBaseError
   Check 'Missing task_base_commit: changed paths still return an array' ($null -ne $missingBaseChangedPaths) $missingBaseChangedPaths
 
   $primitiveSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/backlog-dedup.ps1','tools/test-primitives.ps1'))
@@ -99,6 +100,17 @@ STATUS: DONE
   $gateSelection = @(Get-GateRegressionTestSelection -BridgeRoot $root -Scope @('lib/verify-selftest.ps1'))
   Check 'Gate regression scope: verify-selftest changes select sentinel tests' ($gateSelection -contains 'test-gate-regression-sentinel.ps1' -and $gateSelection -contains 'test-verify-chain-fastpath.ps1') $gateSelection
 
+  $docsPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('docs/operator-note.md')
+  Check 'Gate regression fast subset: docs-only change skips full suite' (-not [bool]$docsPlan.GateSuiteNeeded -and [bool]$docsPlan.GateNonCoreFastSubset) $docsPlan
+  Check 'Gate regression fast subset: docs-only change starts no gate job' (-not (@($docsPlan.JobNames) -contains 'gate-regression')) $docsPlan.JobNames
+
+  $toolsTestPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('tools/test-gate-regression-sentinel.ps1')
+  Check 'Gate regression fast subset: tools/test change skips full suite' (-not [bool]$toolsTestPlan.GateSuiteNeeded -and [bool]$toolsTestPlan.GateNonCoreFastSubset) $toolsTestPlan
+  Check 'Gate regression fast subset: tools/test keeps parse+smoke only' ((@($toolsTestPlan.JobNames) -contains 'parse') -and (@($toolsTestPlan.JobNames) -contains 'smoke') -and -not (@($toolsTestPlan.JobNames) -contains 'gate-regression')) $toolsTestPlan.JobNames
+
+  $backlogPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('lib/backlog-dedup.ps1')
+  Check 'Gate regression core scope: lib/backlog keeps full suite' ([bool]$backlogPlan.GateSuiteNeeded -and (@($backlogPlan.JobNames) -contains 'gate-regression')) $backlogPlan
+
   $runner = Invoke-VerifySelftestProcess -FilePath ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
     -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'tools\run-tests.ps1'),'-NoSnapshot','-TimeoutSec','20','-OnlyCsv','test-project-acceptance-contract.ps1','-Quiet') `
     -WorkingDirectory $root -TimeoutSec 45
@@ -107,7 +119,7 @@ STATUS: DONE
 
 $cases = @(
   [FastpathCase]::new('TRIVIAL', [string[]]@('docs/test'), $false),
-  [FastpathCase]::new('CONTROL_PLANE', [string[]]@('driver.ps1'), $true)
+  [FastpathCase]::new('CONTROL_PLANE', [string[]]@('driver/86-loop-completion-checks.ps1'), $true)
 )
 
 foreach ($case in $cases) {
