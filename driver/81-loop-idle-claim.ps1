@@ -246,6 +246,7 @@ $script:DriverLoopIdleClaimBlock = {
       $intentForcedFastLane = ($intentMode -eq 'fast')
       $intentForcedDiscuss  = ($intentMode -eq 'discuss')
       $intentForcedStudy    = ($intentMode -eq 'study')
+      $intentComputerAction  = ($intentMode -eq 'computer_action')
       # 2026-05-29 complexity throttle: even when the classifier routed to a
       # heavy mode (e.g. discuss) by topic, a CONFIDENT trivial/simple verdict
       # means the task does not warrant the full ceremony. Test-IntentLowComplexity
@@ -308,6 +309,7 @@ $script:DriverLoopIdleClaimBlock = {
       $intentForcedFastLaneClosure = $intentForcedFastLane
       $intentForcedDiscussClosure  = $intentForcedDiscuss
       $intentForcedStudyClosure    = $intentForcedStudy
+      $intentComputerActionClosure  = $intentComputerAction
       $discussVerbClosure          = $discussVerbMark
       $intentLowComplexityClosure  = $intentLowComplexity
 
@@ -330,6 +332,7 @@ $script:DriverLoopIdleClaimBlock = {
         elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($discussVerbClosure -and -not $intentLowComplexityClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
+        elseif ($intentComputerActionClosure) { $s.task_mode='normal' }
         elseif ($intentForcedFastLaneClosure) { Set-FastLaneFlags -State $s -Reason 'llm-intent'; $s.task_mode='normal' }
         elseif ($intentForcedDiscussClosure -and -not $intentLowComplexityClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentForcedStudyClosure) { $s.task_mode='study'; $s.study_subtype='external'; $s.study_phase='plan' }
@@ -366,6 +369,7 @@ $script:DriverLoopIdleClaimBlock = {
           elseif ($normalOverride) { $effMode = 'normal'; $effReason = 'normal-override' }
           elseif ($deepThinkMark) { $effMode = 'discuss'; $effReason = 'deep-think-marker' }
           elseif ($discussVerbMark -and -not $intentLowComplexity) { $effMode = 'discuss'; $effReason = 'discuss-verb' }
+          elseif ($intentComputerAction) { $effMode = 'computer_action'; $effReason = 'computer-action-fastlane' }
           elseif ($intentForcedFastLane) { $effMode = 'fast'; $effReason = 'llm-intent-fast' }
           elseif ($intentForcedDiscuss -and -not $intentLowComplexity) { $effMode = 'discuss'; $effReason = 'llm-intent-discuss' }
           elseif ($intentForcedStudy) { $effMode = 'study'; $effReason = 'llm-intent-study' }
@@ -378,6 +382,7 @@ $script:DriverLoopIdleClaimBlock = {
             discuss_verb            = [bool]$discussVerbMark
             low_confidence          = [bool]($taskIntent -and ([double]$taskIntent.confidence -lt 0.7))
             unsafe_fastlane_blocked = [bool]($taskIntent -and ([string]$taskIntent.primary_mode -eq 'fast') -and (-not $fastLaneSafe))
+            computer_action         = [bool]$intentComputerAction
             study_detect            = [bool]$studyDetect
             low_complexity          = [bool]$intentLowComplexity
           }
@@ -406,9 +411,20 @@ $script:DriverLoopIdleClaimBlock = {
         if ($intentLowComplexity) { $verdictText += "`n   → режим: fast-lane (простая задача — пропускаю планировщик/критика/обсуждение). Нужен полный разбор — добавь [[DEEP-THINK]]." }
         elseif ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
         elseif ($intentForcedStudy) { $verdictText += "`n   → режим: study" }
+        elseif ($intentComputerAction) { $verdictText += "`n   → режим: computer_action (локальный mouse/window fast-lane, без planner/coder/critic)" }
         elseif ($intentForcedFastLane) { $verdictText += "`n   → режим: fast-lane (skip planner)" }
         elseif ([double]$taskIntent.confidence -lt 0.7) { $verdictText += "`n   (confidence < 70% → не применён, режим normal)" }
         Add-Message -From system -Text $verdictText -Kind event | Out-Null
+      }
+      if ($intentComputerAction -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
+        try {
+          [void](Invoke-DriverComputerActionFastLane -TaskText $taskMsg -ChannelName $Channel)
+        } catch {
+          Add-Message -From system -Text ("⚠ Computer-action fast-lane error: " + $_.Exception.Message) -Kind event | Out-Null
+          Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; Clear-FastLaneFlags $s; Clear-ChunkingState $s } | Out-Null
+        }
+        $state = Read-State
+        continue
       }
       $state = Read-State
     } else {

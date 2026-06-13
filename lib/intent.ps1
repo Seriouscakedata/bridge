@@ -4,7 +4,7 @@
 # instead of matching trigger words ("обсуди", "снова", "срочно", ...) we ask a
 # cheap LLM to read the task text and return a STRUCTURED decomposition:
 # primary mode + subtasks + flags. The driver consumes this to pick task_mode
-# (discuss / normal / study / fast / chat) and the planner sees the breakdown
+# (discuss / normal / study / fast / chat / computer_action) and the planner sees the breakdown
 # in its prompt so it can act on the user's actual intent, not just keywords.
 #
 # Cost: one gemini-2.5-flash-lite call per new task (~$0.0001). Graceful
@@ -42,9 +42,17 @@ function ConvertFrom-IntentJson {
   try { return ($m.Value | ConvertFrom-Json) } catch { return $null }
 }
 
+function Test-IsComputerActionTask {
+  param([string]$TaskText)
+  $t = ([string]$TaskText).Trim()
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  if ($t -match '(?i)(удал\w*|сотр\w*|формат\w*|shutdown|restart-computer|перезагруз\w*\s+комп|выключ\w*\s+комп|git\s+push|reset\s+--hard)') { return $false }
+  return [bool]([regex]::IsMatch($t, '(?i)(нажм\w*|кликн\w*|щелкн\w*|кнопк\w*|мышк\w*|курсор|закрой\s+(?:это|то)?\s*окн\w*|закрыть\s+(?:это|то)?\s*окн\w*|\bclick\b|\bpress\b|move\s+mouse|close\s+(?:this\s+)?window)'))
+}
+
 function Test-TaskIntent {
   # Classify a user task. Returns a PSCustomObject with:
-  #   primary_mode    : 'discuss' | 'normal' | 'study' | 'fast' | 'chat'
+  #   primary_mode    : 'discuss' | 'normal' | 'study' | 'fast' | 'chat' | 'computer_action'
   #   confidence      : 0.0-1.0
   #   reasoning       : short string (logged to chat)
   #   subtasks        : array of {action, object, after?, with?} hashtables
@@ -61,6 +69,21 @@ function Test-TaskIntent {
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return $null }
   if ([string]::IsNullOrWhiteSpace($Model)) { $Model = Get-IntentModel }
   if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) { return $null }
+
+  if (Test-IsComputerActionTask -TaskText $TaskText) {
+    return [pscustomobject]@{
+      primary_mode = 'computer_action'
+      confidence = 0.9
+      reasoning = 'локальное управление мышью/окном: отдельный быстрый computer-use fast-lane'
+      subtasks = @(@{ action = 'computer_action'; object = 'mouse/window control' })
+      user_wants_dialogue = $false
+      complexity = 'trivial'
+      estimated_turns = 1
+      raw = $null
+      source = 'deterministic-computer-action'
+      model = 'rule'
+    }
+  }
 
   # Skip the LLM call for very short prompts -- they're almost always fast-lane
   # or chat ("привет", "статус?", "запусти аудит"). Saves the round-trip.
@@ -104,6 +127,7 @@ function Test-TaskIntent {
 - "study"    — пользователь хочет ИЗУЧЕНИЕ темы (внешней / внутренней) без немедленной реализации. Признаки: «изучи», «разберись как работает», «исследуй», «найди в интернете», «прочитай эти статьи».
 - "fast"     — простая безопасная императивная команда (одно обратимое OS/UI/read-действие): «запусти X», «открой файл Y», «покажи логи», «сделай скриншот», «найди программу». НЕ удаление/форматирование/kill/push.
 - "chat"     — пользователь задаёт вопрос/просит объяснение БЕЗ изменения файлов: «что такое X?», «как работает Y?», «расскажи про Z», «простыми словами объясни». Ответ — текстом в чат.
+- "computer_action" — пользователь просит управлять мышью/окном прямо сейчас: «нажми OK», «кликни по кнопке», «закрой это окно», «press button», «click», «move mouse». Это отдельный быстрый локальный путь без planner/coder/critic.
 - "normal"   — обычная задача на реализацию: «сделай X», «добавь Y», «почини Z». БЕЗ явного намерения обсуждать или исследовать. Это default.
 
 ПОДЗАДАЧИ: разложи задачу на 1-5 атомарных шагов. Для каждого укажи action (discuss|implement|fix|research|configure|answer) и object (что именно).
@@ -135,7 +159,7 @@ $taskForLLM
   # Normalize + validate.
   $mode = ''
   if ($obj.PSObject.Properties.Name -contains 'primary_mode') { $mode = ([string]$obj.primary_mode).Trim().ToLowerInvariant() }
-  if ($mode -notin @('discuss','normal','study','fast','chat')) { $mode = 'normal' }
+  if ($mode -notin @('discuss','normal','study','fast','chat','computer_action')) { $mode = 'normal' }
 
   $conf = 0.0
   try { $conf = [double]$obj.confidence } catch {}

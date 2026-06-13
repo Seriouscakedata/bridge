@@ -217,6 +217,66 @@ function Start-FeatureVerifierIfDue {
   try { Invoke-DriverFeatureVerifierBrokenFiling -Reason 'post-verifier-check' | Out-Null } catch {}
 }
 
+function Invoke-DriverComputerActionFastLane {
+  param(
+    [string]$TaskText,
+    [string]$ChannelName = ''
+  )
+  $toolPath = Join-Path $bridgeRoot 'tools\computer-use.ps1'
+  if (-not (Test-Path -LiteralPath $toolPath)) {
+    Add-Message -From system -Text "🖱 Computer-action fast-lane недоступен: tools\computer-use.ps1 не найден." -Kind event | Out-Null
+    return $false
+  }
+  Add-Message -From system -Text "🖱 Computer-action fast-lane: выполняю локальное UI-действие без planner/coder/critic." -Kind event | Out-Null
+  $started = [DateTime]::UtcNow
+  $output = ''
+  $ok = $false
+  try {
+    $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $toolPath -Task $TaskText -TimeoutMs 5000 2>&1)
+    $output = (($lines | ForEach-Object { [string]$_ }) -join "`n").Trim()
+    $ok = ($LASTEXITCODE -eq 0)
+  } catch {
+    $output = $_.Exception.Message
+    $ok = $false
+  }
+  $elapsedMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+  $summary = $output
+  if ($summary.Length -gt 1200) { $summary = $summary.Substring(0, 1200) + '...' }
+  if ([string]::IsNullOrWhiteSpace($summary)) { $summary = if ($ok) { 'computer-use completed' } else { 'computer-use failed without output' } }
+  $prefix = if ($ok) { "✅ Computer-action выполнен" } else { "⚠ Computer-action не выполнен" }
+  Add-Message -From system -Text ($prefix + " (" + $elapsedMs + " ms).`n" + $summary) -Kind event | Out-Null
+  Update-State ({ param($s)
+    try { Complete-TaskAgentDuration $s } catch {}
+    try { Close-ReplayForStateTask -State $s -Status $(if ($ok) { 'done' } else { 'failed' }) } catch {}
+    $s.current_task=$null
+    $s.task_turn=0
+    $s.task_mode='normal'
+    $s.no_progress_count=0
+    $s.timeout_retry_count=0
+    $s.task_did_actions=[bool]$ok
+    $s.coder_fired=$false
+    $s.coder_bypass_retry_count=0
+    $s.verify_retry_count=0
+    $s.force_planner=$false
+    $s.discuss_turn=0
+    $s.discuss_snapshot=''
+    $s.study_phase=''
+    $s.study_subtype=''
+    $s.study_snapshot=''
+    $s.research_count=0
+    try { Clear-AuditorSuppressedHashes -State $s } catch {}
+    try { Clear-FastLaneFlags $s } catch {}
+    try { Clear-ChunkingState $s } catch {}
+    $s.active_agent=$null
+    $s.active_model=$null
+    $s.status_text=$null
+    $s.agent_pid=$null
+    $s.status='idle'
+    $s.heartbeat=(Get-Date).ToString('o')
+  }.GetNewClosure()) | Out-Null
+  return [bool]$ok
+}
+
 if (-not $script:DriverOriginalGetMemoryRecall) {
   try { $script:DriverOriginalGetMemoryRecall = (Get-Command Get-MemoryRecall -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
 }
@@ -449,7 +509,7 @@ if ($SelfTest) {
     if ($probeCfg.PSObject.Properties.Name -contains 'criticMaxRetries') { $cr = [int]$probeCfg.criticMaxRetries }
     if ($cr -lt 0) { [void]$stFail.Add('criticMaxRetries < 0') }
   } catch { [void]$stFail.Add('config probe threw: ' + $_.Exception.Message) }
-  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Get-BacklogClaimabilitySignature','Update-BacklogClaimabilityIdleState','Ensure-BridgeSelfCanaryGateTasks','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue','ConvertTo-BacklogClaimStringArray','Test-BridgeSelfAdmissionEvidence','Add-FeatureVerifierBrokenBugfixBacklogItems')) {
+  foreach ($fn in @('Wait-AgentProcess','Get-PlannerModel','Start-ReplayForStateTask','Sweep-AgentOrphans','Initialize-DriverStartup','Start-DriverMainLoop','Activate-Doctor','Complete-Doctor','Abort-Doctor','Get-TaskRepoRoot','Test-QualityBypassesInDiff','Start-ProjectAcceptanceIfDue','Invoke-ProjectAcceptance','Invoke-VerifySelftestGate','Get-GateRegressionScope','Invoke-GateRegressionSuite','New-TaskManagementSnapshot','Write-TaskManagementShadowRecord','Format-TaskManagementSummary','Get-ApprovedBacklogClaimabilityReport','Get-BacklogClaimabilitySignature','Update-BacklogClaimabilityIdleState','Ensure-BridgeSelfCanaryGateTasks','Invoke-QAAgentScenarioSuite','Invoke-QAAgentPostCommit','Start-BacklogPrioritizerIfDue','ConvertTo-BacklogClaimStringArray','Test-BridgeSelfAdmissionEvidence','Add-FeatureVerifierBrokenBugfixBacklogItems','Invoke-DriverComputerActionFastLane')) {
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { [void]$stFail.Add('missing function: ' + $fn) }
   }
   foreach ($sbName in @('DriverLoopPreflightBlock','DriverLoopIdleClaimBlock','DriverLoopTurnSetupBlock','DriverLoopAgentTurnBlock','DriverLoopReplyMarkersBlock','DriverLoopModeTransitionBlock','DriverLoopCompletionBlock','DriverLoopFinalGuardBlock')) {
