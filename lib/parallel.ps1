@@ -1545,7 +1545,8 @@ function Wait-ParallelDispatchResults {
     [object[]]$Workers,
     [string]$TaskHash,
     [int]$TimeoutMin = 25,
-    [int]$PollSec = 10
+    [int]$PollSec = 10,
+    [hashtable]$EagerContext = $null
   )
 
   $workers = @($Workers)
@@ -1569,6 +1570,38 @@ function Wait-ParallelDispatchResults {
     Update-ParallelDispatchHeartbeat
     foreach ($w in $workers) {
       Wait-ParallelDispatchPollWorker -Completed $completed -Worker $w
+    }
+
+    # Eager collect: deliver each successful stream as soon as it reaches a terminal result.
+    if ($null -ne $EagerContext) {
+      foreach ($w in $workers) {
+        $wid = [string]$w.id
+        if (-not $completed.ContainsKey($wid)) { continue }
+        if ($EagerContext.eagerCollected.Contains($wid)) { continue }
+
+        $res = $completed[$wid]
+        $workerStatus = [string]$res.status
+        if ($EagerContext.allowedTerminalStatuses -notcontains $workerStatus) {
+          continue
+        }
+
+        $streamCommits = 0
+        try { $streamCommits = @($res.commits).Count } catch {}
+        if ($streamCommits -eq 0) {
+          continue
+        }
+
+        $EagerContext.completed[$wid] = $res
+        $previousCollectedStreams = $EagerContext.collectedStreams
+        Collect-ParallelDispatchWorkerOutput -Context $EagerContext -Worker $w
+        if ($EagerContext.collectedStreams -gt $previousCollectedStreams) {
+          Commit-ParallelDispatchCollectedOutputs -Context $EagerContext
+          $EagerContext.deliveredPaths = New-Object 'System.Collections.Generic.List[string]'
+          $EagerContext.collectedStreams = 0
+        }
+
+        [void]$EagerContext.eagerCollected.Add($wid)
+      }
     }
   }
 
@@ -1630,6 +1663,7 @@ function New-ParallelDispatchAggregationContext {
     baseCommit = Get-ParallelTaskBaseCommit
     gitExe = Get-GitExe
     deliveredPaths = (New-Object 'System.Collections.Generic.List[string]')
+    eagerCollected = (New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase))
     allowedTerminalStatuses = @('done', 'paused-for-restart')
   }
 }
@@ -1814,6 +1848,8 @@ function Invoke-ParallelDispatchCollectPhase {
 
   Add-ParallelDispatchIncompleteWorkersToQuarantine -Context $Context
   foreach ($w in $Context.workers) {
+    $wid = [string]$w.id
+    if ($Context.ContainsKey('eagerCollected') -and $Context.eagerCollected.Contains($wid)) { continue }
     Collect-ParallelDispatchWorkerOutput -Context $Context -Worker $w
   }
 }
@@ -2351,10 +2387,21 @@ function Complete-ParallelDispatchOutputs {
   param(
     [object[]]$Workers,
     [object]$Completed,
-    [string]$TaskHash
+    [string]$TaskHash,
+    [hashtable]$EagerContext = $null
   )
 
-  $context = New-ParallelDispatchAggregationContext -Workers $Workers -Completed $Completed -TaskHash $TaskHash
+  $context = if ($null -ne $EagerContext) {
+    $fullCompleted = ConvertTo-ParallelDispatchCompletedMap -Completed $Completed
+    foreach ($key in $fullCompleted.Keys) {
+      if (-not $EagerContext.completed.ContainsKey($key)) {
+        $EagerContext.completed[$key] = $fullCompleted[$key]
+      }
+    }
+    $EagerContext
+  } else {
+    New-ParallelDispatchAggregationContext -Workers $Workers -Completed $Completed -TaskHash $TaskHash
+  }
   Invoke-ParallelDispatchCollectPhase -Context $context
   Commit-ParallelDispatchCollectedOutputs -Context $context
   Invoke-ParallelDispatchMergePhase -Context $context
@@ -2713,8 +2760,9 @@ function Invoke-ParallelDispatch {
   }
 
   $workers = @($startup.workers)
-  $completed = Wait-ParallelDispatchResults -Workers $workers -TaskHash $taskHash -TimeoutMin $TimeoutMin -PollSec $PollSec
-  $result = Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash
+  $eagerContext = New-ParallelDispatchAggregationContext -Workers $workers -Completed @{} -TaskHash $taskHash
+  $completed = Wait-ParallelDispatchResults -Workers $workers -TaskHash $taskHash -TimeoutMin $TimeoutMin -PollSec $PollSec -EagerContext $eagerContext
+  $result = Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash -EagerContext $eagerContext
   $qState = Update-ParallelDispatchBatchQuarantineState -Streams @($allStreams) -Result $result -StreamToBacklogId $streamToBacklogId -TaskHash $taskHash
   try {
     $newGiveupCount = @($qState.new_giveup_ids).Count
