@@ -1026,18 +1026,28 @@ try {
         $histPath = Join-Path $root 'control\cu-history.jsonl'
         if (Test-Path -LiteralPath $histPath) {
           $lines = @(Get-Content -LiteralPath $histPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          $items = @($lines | Select-Object -Last 20)
-          Send-Text $ctx ('[' + ($items -join ',') + ']') 'application/json; charset=utf-8'
+          $items = New-Object 'System.Collections.Generic.List[object]'
+          foreach ($line in @($lines | Select-Object -Last 40)) {
+            try {
+              $item = $line | ConvertFrom-Json -ErrorAction Stop
+              if ($null -ne $item) { [void]$items.Add($item) }
+            } catch {
+              continue
+            }
+          }
+          $jsonItems = @($items | Select-Object -Last 20 | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+          Send-Text $ctx ('[' + ($jsonItems -join ',') + ']') 'application/json; charset=utf-8'
         } else {
           Send-Text $ctx '[]' 'application/json; charset=utf-8'
         }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/computer-use-screenshot') {
         $name = Get-QueryParamUtf8 $ctx 'name'
-        if ([string]::IsNullOrWhiteSpace($name) -or $name -match '[\\\/\.\.]' -or -not $name.EndsWith('.png')) {
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -notmatch '^[A-Za-z0-9_-]+\.png$') {
           Send-FileNotFound $ctx
         } else {
-          $shotPath = Join-Path $root "control\cu-screenshots\$name"
+          $shotDir = Join-Path $root 'control\cu-screenshots'
+          $shotPath = Join-Path $shotDir $name
           if (Test-Path -LiteralPath $shotPath) {
             Send-Bytes $ctx ([System.IO.File]::ReadAllBytes($shotPath)) 'image/png'
           } else {
