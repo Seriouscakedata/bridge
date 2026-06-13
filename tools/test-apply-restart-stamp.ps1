@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # test-apply-restart-stamp.ps1 -- unit checks for apply restart sidecar.
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +64,13 @@ try {
   $r5 = New-TestRoot; [void]$testRoots.Add($r5)
   $missing = Consume-ApplyRestartStamp -Root $r5 -TaskId 'task-a'
   Check 'missing stamp rejected' (-not [bool]$missing.ok -and [string]$missing.reason -eq 'missing-stamp') $missing
+
+  # overwrite path: create stamp then create again on same root -- exercises File.Replace
+  $r7 = New-TestRoot; [void]$testRoots.Add($r7)
+  New-ApplyRestartStamp -Root $r7 -TaskId 'task-a' -Touched @('driver.ps1') -Reason 'test' | Out-Null
+  $overwrite = New-ApplyRestartStamp -Root $r7 -TaskId 'task-b' -Touched @('lib\common.ps1') -Reason 'overwrite'
+  $overwroteExists = Test-Path -LiteralPath $overwrite.path
+  Check 'overwrite existing stamp succeeds' ([bool]$overwrite.ok -and $overwroteExists) $overwrite
 
   $r6 = New-TestRoot; [void]$testRoots.Add($r6)
   try {

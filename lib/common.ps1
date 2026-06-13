@@ -517,7 +517,7 @@ function New-ApplyRestartStamp {
     }
   }
   $json = $stamp | ConvertTo-Json -Depth 8
-  Write-AtomicFile -Path $stampPath -Content $json -NoCopyFallback
+  Write-AtomicFile -Path $stampPath -Content $json -DirectWriteFallback
   return [pscustomobject][ordered]@{
     ok         = $true
     path       = $stampPath

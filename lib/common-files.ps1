@@ -1,4 +1,4 @@
-﻿# common-files.ps1 -- decomposed helpers from common.ps1. Dot-sourced by common.ps1.
+# common-files.ps1 -- decomposed helpers from common.ps1. Dot-sourced by common.ps1.
 
 function Resolve-BridgeContainedPath {
   param(
@@ -80,7 +80,7 @@ function Write-AtomicFile {
   # 2026-05-27v6: tmp-leak fix. Removal failures now log to control/tmp-leak.log
   # (was SilentlyContinue silent-swallow leading to 100+ orphan .tmp.* files).
   # On startup, Sweep-OrphanTmpFiles() picks them up.
-  param([string]$Path, [string]$Content, [switch]$NoCopyFallback)
+  param([string]$Path, [string]$Content, [switch]$NoCopyFallback, [switch]$DirectWriteFallback)
   $tmp = "$Path.tmp.$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
   [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
   $tries = 0; $maxTries = 6
@@ -95,6 +95,21 @@ function Write-AtomicFile {
     } catch {
       $tries++
       if ($tries -ge $maxTries) {
+        if ($DirectWriteFallback) {
+          Remove-FileWithRetry -Path $tmp -Reason 'atomic-directwrite-cleanup' | Out-Null
+          try {
+            $logDir = Join-Path (Get-BridgeRoot) 'control'
+            if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+            $u8b = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::AppendAllText(
+              (Join-Path $logDir 'tmp-leak.log'),
+              ((Get-Date).ToString('o') + " | reason=atomic-replace-fell-to-directwrite | path=$Path`n"),
+              $u8b
+            )
+          } catch {}
+          [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+          return
+        }
         if ($NoCopyFallback) {
           Remove-FileWithRetry -Path $tmp -Reason 'atomic-nocopy-fail' | Out-Null
           throw "Write-AtomicFile: exhausted $maxTries retries on '$Path' (-NoCopyFallback: refusing Copy-Item torn write)"
