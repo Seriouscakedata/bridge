@@ -163,6 +163,30 @@ function Get-PostMortemFailureInfo {
   return [pscustomobject]@{ kind=$kind; ts=$ts; text=$text }
 }
 
+function Get-TimeoutPostMortemContextProfile {
+  param([string]$Task = '', [string]$Context = '')
+  $combined = (([string]$Task) + "`n" + ([string]$Context)).ToLowerInvariant()
+  $hasGuard = ($combined -match '(invoke-plandag|maxwaves|wave-cap|timeout-guard|timeoutmin|nodetimeoutsec|per[-_ ]?node timeout|per[-_ ]?task timeout)')
+  $slowAgentOutput = ($combined -match '(131\s*kb|131кб|large output|output.*\b\d{5,}\b|opus-fallback|opus fallback|slow model|медленн\w* модел|долго печатал)')
+  $mode = 'unknown_timeout'
+  if ($hasGuard -and $slowAgentOutput) { $mode = 'agent_output_delay_with_guard' }
+  elseif ($hasGuard) { $mode = 'guarded_timeout_path' }
+  elseif ($slowAgentOutput) { $mode = 'agent_output_delay' }
+
+  $guidance = switch ($mode) {
+    'agent_output_delay_with_guard' { 'Перед выводом о infinite hang явно проверь: путь уже имеет wave-cap/timeout guard; вероятнее задержка агента/модели или большой вывод, а не зависший DAG.' }
+    'guarded_timeout_path' { 'Перед выводом о infinite hang явно проверь существующий wave-cap/timeout guard и опиши, какой именно guard сработал или не сработал.' }
+    'agent_output_delay' { 'Отличай зависший код от долгого вывода агента на медленной модели; проверь размер вывода, fallback модели и наличие финального результата.' }
+    default { 'Если подозреваешь infinite hang, сначала проверь наличие wave-cap/timeout guard и последние признаки прогресса.' }
+  }
+  return [pscustomobject][ordered]@{
+    mode = $mode
+    has_timeout_guard = [bool]$hasGuard
+    likely_agent_output_delay = [bool]$slowAgentOutput
+    guidance = $guidance
+  }
+}
+
 function Get-PostMortemTurnsTail {
   param(
     [string]$RepoRoot,
@@ -370,11 +394,30 @@ function Invoke-LegacyFailurePostMortem {
   param([string]$FailureType, [string]$Task = '', [string]$Context = '', [string]$Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Task)) { return }
   $shortTask = if ($Task.Length -gt 120) { $Task.Substring(0, 120) + '...' } else { $Task }
+  $timeoutProfile = $null
+  if ([string]$FailureType -match '(?i)timeout') {
+    $timeoutProfile = Get-TimeoutPostMortemContextProfile -Task $Task -Context $Context
+  }
+  $timeoutProfileText = ''
+  if ($timeoutProfile) {
+    $timeoutProfileText = @"
+
+Таймаут-профиль:
+mode: $($timeoutProfile.mode)
+has_timeout_guard: $($timeoutProfile.has_timeout_guard)
+likely_agent_output_delay: $($timeoutProfile.likely_agent_output_delay)
+guidance: $($timeoutProfile.guidance)
+"@
+  }
   $prompt = @"
 Ты анализируешь сбой задачи в системе AI-агентов (мост Claude+Codex).
 Тип сбоя: $FailureType
 Задача: $shortTask
 Контекст: $Context
+$timeoutProfileText
+
+Если timeout-профиль указывает на wave-cap/timeout guard или долгий вывод агента,
+НЕ называй это "infinite hang" без отдельного доказательства отсутствия guard/progress.
 
 Ответь ТОЛЬКО в таком формате (без пояснений):
 УРОК: <одно-два предложения - почему упало и что делать иначе в будущем>

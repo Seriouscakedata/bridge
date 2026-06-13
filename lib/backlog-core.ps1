@@ -994,6 +994,140 @@ function Test-ItemFilesHitControlPlane {
   return [bool](Test-IdeaTouchesControlPlanePath -Idea $Item)
 }
 
+function Get-BacklogAutoTriageValue {
+  param($Item, [string]$Name, $Default = $null)
+  if (-not $Item -or [string]::IsNullOrWhiteSpace($Name)) { return $Default }
+  try {
+    if (Get-Command Get-BacklogPackObjectValue -ErrorAction SilentlyContinue) {
+      return (Get-BacklogPackObjectValue -Obj $Item -Name $Name -Default $Default)
+    }
+  } catch {}
+  try {
+    if ($Item -is [System.Collections.IDictionary] -and $Item.Contains($Name)) { return $Item[$Name] }
+  } catch {}
+  try {
+    if ($Item.PSObject -and $Item.PSObject.Properties[$Name]) { return $Item.$Name }
+  } catch {}
+  return $Default
+}
+
+function Get-BacklogAutoTriageText {
+  param($Item)
+  if (-not $Item) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @('text','title','task','description','acceptance','checks','criteria')) {
+    try {
+      $value = Get-BacklogAutoTriageValue -Item $Item -Name $name -Default $null
+      if ($null -eq $value) { continue }
+      if ($value -is [System.Array]) {
+        foreach ($entry in @($value)) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$entry)) { [void]$parts.Add([string]$entry) }
+        }
+      } elseif (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+        [void]$parts.Add([string]$value)
+      }
+    } catch {}
+  }
+  return [string]::Join("`n", $parts.ToArray())
+}
+
+function Get-BacklogAutoTriageFiles {
+  param($Item)
+  $paths = New-Object 'System.Collections.Generic.List[string]'
+  if ($Item) {
+    foreach ($name in @('files','workpack_touch_set','touch_set')) {
+      try {
+        foreach ($path in @(ConvertTo-BacklogClaimStringArray (Get-BacklogAutoTriageValue -Item $Item -Name $name -Default @()))) {
+          $p = ([string]$path).Trim()
+          if (-not [string]::IsNullOrWhiteSpace($p)) { [void]$paths.Add($p) }
+        }
+      } catch {}
+    }
+    $text = Get-BacklogAutoTriageText -Item $Item
+    foreach ($m in [regex]::Matches($text, '(?im)^\s*Files\s*:\s*(.+)$')) {
+      foreach ($part in @($m.Groups[1].Value -split ',')) {
+        $p = ([string]$part).Trim().Trim('"', "'")
+        if (-not [string]::IsNullOrWhiteSpace($p)) { [void]$paths.Add($p) }
+      }
+    }
+  }
+  return @($paths.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+}
+
+function Test-BacklogAutoTriageHasAcceptance {
+  param($Item)
+  if (-not $Item) { return $false }
+  foreach ($name in @('acceptance','checks','criteria')) {
+    try {
+      $value = Get-BacklogAutoTriageValue -Item $Item -Name $name -Default $null
+      if ($value -is [System.Array]) {
+        foreach ($entry in @($value)) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$entry)) { return $true }
+        }
+      } elseif (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+        return $true
+      }
+    } catch {}
+  }
+  $text = Get-BacklogAutoTriageText -Item $Item
+  return ($text -match '(?im)^\s*(Acceptance|Checks)\s*:')
+}
+
+function Test-BacklogAutoTriageDecision {
+  # Deterministic held/new backlog triage. This helper never calls an LLM and
+  # never returns approve for bridge control-plane work.
+  param($Item)
+  $text = Get-BacklogAutoTriageText -Item $Item
+  $touchesControlPlane = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
+  $destructivePattern = '(?i)(drop|delete|force-push|rm\s+-rf|secret|token|password|auth\.json|icacls|disable.*gate|bypass)'
+  if ($text -match $destructivePattern) {
+    return [pscustomobject][ordered]@{
+      decision = 'escalate'
+      reason = 'destructive_or_secret_keyword'
+      touches_control_plane = $touchesControlPlane
+      risk = 'high'
+    }
+  }
+
+  $files = @(Get-BacklogAutoTriageFiles -Item $Item)
+  $hasFiles = ($files.Count -gt 0)
+  $hasAcceptance = [bool](Test-BacklogAutoTriageHasAcceptance -Item $Item)
+  $fitForAuto = ($hasFiles -and $hasAcceptance)
+
+  if ($touchesControlPlane) {
+    if ($fitForAuto -and $files.Count -le 3) {
+      return [pscustomobject][ordered]@{
+        decision = 'canary'
+        reason = 'control_plane_with_bounded_files_and_acceptance'
+        touches_control_plane = $true
+        risk = 'medium'
+      }
+    }
+    return [pscustomobject][ordered]@{
+      decision = 'escalate'
+      reason = 'control_plane_requires_operator_detail'
+      touches_control_plane = $true
+      risk = 'high'
+    }
+  }
+
+  if ($fitForAuto) {
+    return [pscustomobject][ordered]@{
+      decision = 'approve'
+      reason = 'non_control_plane_with_files_and_acceptance'
+      touches_control_plane = $false
+      risk = 'low'
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    decision = 'reject'
+    reason = 'missing_files_or_acceptance'
+    touches_control_plane = $false
+    risk = 'low'
+  }
+}
+
 function Test-BacklogItemHeld {
   param($Item)
   if (-not $Item) { return $false }

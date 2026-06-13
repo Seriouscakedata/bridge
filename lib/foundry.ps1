@@ -209,6 +209,12 @@ function Test-FoundryStepResult {
   return @{ ok = $true; reason = '' }
 }
 
+function Get-FoundryNodeTimeoutSec {
+  param([int]$NodeTimeoutSec = 300)
+  if ($NodeTimeoutSec -le 0) { return 300 }
+  return $NodeTimeoutSec
+}
+
 function Get-FoundryDefaultOps {
   # Wire the REAL plumbing for New-FoundryStepRunner against a project repo.
   # Returns the $Ops hashtable (Prepare/Await/Result/Merge/Cleanup). Refuses the
@@ -217,7 +223,8 @@ function Get-FoundryDefaultOps {
   param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [int]$TimeoutMin = 25,
-    [int]$PollSec = 10
+    [int]$PollSec = 10,
+    [int]$NodeTimeoutSec = 300
   )
   $repo = [string]$RepoRoot
   if ([string]::IsNullOrWhiteSpace($repo) -or -not (Test-Path (Join-Path $repo '.git'))) {
@@ -234,6 +241,7 @@ function Get-FoundryDefaultOps {
 
   $tmin = $TimeoutMin
   $psec = $PollSec
+  $nodeTimeout = Get-FoundryNodeTimeoutSec -NodeTimeoutSec $NodeTimeoutSec
   $ops = @{}
 
   $ops['Prepare'] = {
@@ -258,7 +266,7 @@ function Get-FoundryDefaultOps {
     $worker = $null
     try { $worker = Spawn-Worker -StreamId $sid -Body $body -Worktree $wt.path -BranchName $wt.branch -WorkerSpec $spec -HostManagedCommit }
     catch { Remove-Worktree $wt; return @{ ok = $false; error = ('spawn: ' + $_.Exception.Message) } }
-    return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker; baseSha = $baseSha } }
+    return @{ ok = $true; ctx = @{ sid = $sid; wt = $wt; worker = $worker; baseSha = $baseSha; startedAt = (Get-Date); timeoutSec = $nodeTimeout; timedOut = $false; timeoutAt = $null } }
   }.GetNewClosure()
 
   $ops['Await'] = {
@@ -268,9 +276,24 @@ function Get-FoundryDefaultOps {
     $deadline = (Get-Date).AddMinutes($tmin)
     while ($true) {
       $alive = 0
+      $now = Get-Date
       foreach ($c in $cs) {
         $r = Get-WorkerResult $c.worker
-        if ([string](Get-RunnerField $r 'status' '') -eq 'running') { $alive++ }
+        if ([string](Get-RunnerField $r 'status' '') -eq 'running') {
+          $sid = [string](Get-RunnerField $c 'sid' 'step')
+          $started = Get-RunnerField $c 'startedAt' $null
+          $limitSec = [int](Get-RunnerField $c 'timeoutSec' $nodeTimeout)
+          $expired = $false
+          try { if ($started -and $limitSec -gt 0 -and $now -ge ([datetime]$started).AddSeconds($limitSec)) { $expired = $true } } catch {}
+          if ($expired) {
+            $w = $c.worker
+            try { if ($w.process -and -not $w.process.HasExited) { Start-Process taskkill -ArgumentList '/PID', ([string]$w.pid), '/F', '/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue } } catch {}
+            try { $c.timedOut = $true; $c.timeoutAt = $now } catch {}
+            try { Add-Message -From system -Text ("⏱ DAG node timeout: step=" + $sid + "; timeoutSec=" + $limitSec + "; workerPid=" + [string]$w.pid) -Kind event | Out-Null } catch {}
+          } else {
+            $alive++
+          }
+        }
       }
       if ($alive -eq 0) { break }
       if ((Get-Date) -ge $deadline) {
@@ -291,6 +314,14 @@ function Get-FoundryDefaultOps {
     # Get-WorkerResult delegates to Get-WorkerCommits, which queries the bridge
     # repo and so always returns empty for a project worktree branch.
     $r = Get-WorkerResult $Ctx.worker
+    if ([bool](Get-RunnerField $Ctx 'timedOut' $false)) {
+      $limitSec = [int](Get-RunnerField $Ctx 'timeoutSec' 300)
+      return @{
+        status  = 'failed'
+        reply   = ('node timeout after ' + $limitSec + 's at step ' + [string](Get-RunnerField $Ctx 'sid' 'step'))
+        commits = @()
+      }
+    }
     $branch = ''
     try { $branch = [string]$Ctx.wt.branch } catch {}
     $base = [string](Get-RunnerField $Ctx 'baseSha' '')
@@ -367,11 +398,12 @@ function New-FoundryStepRunner {
     [string]$RepoRoot = '',
     [int]$TimeoutMin = 25,
     [int]$PollSec = 10,
+    [int]$NodeTimeoutSec = 300,
     [scriptblock]$Verify = $null
   )
   if ($null -eq $Ops) {
     if ([string]::IsNullOrWhiteSpace($RepoRoot)) { throw 'New-FoundryStepRunner: provide -Ops or -RepoRoot' }
-    $Ops = Get-FoundryDefaultOps -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec
+    $Ops = Get-FoundryDefaultOps -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec -NodeTimeoutSec $NodeTimeoutSec
   }
   foreach ($k in @('Prepare', 'Await', 'Result', 'Merge', 'Cleanup')) {
     if (-not $Ops.ContainsKey($k) -or $null -eq $Ops[$k]) { throw ("New-FoundryStepRunner: Ops is missing '" + $k + "'") }
@@ -667,6 +699,7 @@ function Invoke-FoundryPlanDispatch {
     [int]$MaxParallel = 0,
     [int]$TimeoutMin = 25,
     [int]$PollSec = 10,
+    [int]$NodeTimeoutSec = 300,
     [int]$MaxWaves = 0,
     [scriptblock]$BatchRunner = $null,
     [scriptblock]$Verify = $null,
@@ -737,8 +770,8 @@ function Invoke-FoundryPlanDispatch {
       return (New-FoundryDispatchResult -Ok $false -Outcome 'error' -Reason 'no project repo bound' -Summary 'no repo (-RepoRoot empty)')
     }
     try {
-      if ($null -ne $Verify) { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec -Verify $Verify }
-      else                   { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec }
+      if ($null -ne $Verify) { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec -NodeTimeoutSec $NodeTimeoutSec -Verify $Verify }
+      else                   { $runner = New-FoundryStepRunner -RepoRoot $RepoRoot -TimeoutMin $TimeoutMin -PollSec $PollSec -NodeTimeoutSec $NodeTimeoutSec }
     } catch {
       return (New-FoundryDispatchResult -Ok $false -Outcome 'error' -Reason $_.Exception.Message -Summary ('runner build failed: ' + $_.Exception.Message))
     }
