@@ -117,6 +117,59 @@ STATUS: DONE
   Check 'Gate regression runner: selected test with server grandchildren completes' ([int]$runner.ExitCode -eq 0 -and -not [bool]$runner.TimedOut) $runner
 }
 
+function Invoke-BridgeCoreCoverageChecks {
+  # Fail-safe bridge-core classification: every engine *.ps1 outside the explicit
+  # non-risky trees MUST be treated as bridge-core (full suite). These cases guard
+  # against silently dropping a risky engine change into the parse+smoke fast subset.
+
+  # (a) Dependency proof — directly rebuts the "calls an undefined gate-scope function"
+  # critic finding: Get-GateRegressionScope must be resolvable, and New-DriverDoneGatePlan
+  # must build a plan (it calls Get-GateRegressionScope internally) without throwing.
+  Check 'Gate scope dependency: Get-GateRegressionScope command is available' ([bool](Get-Command Get-GateRegressionScope -ErrorAction SilentlyContinue)) $null
+  $depErr = ''
+  try {
+    [void](New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('lib/common.ps1'))
+    [void](New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('docs/x.md'))
+  } catch {
+    $depErr = ($_.Exception.Message -replace '\s+',' ').Trim()
+  }
+  Check 'Gate scope dependency: New-DriverDoneGatePlan resolves the scope call without throwing' ([string]::IsNullOrWhiteSpace($depErr)) $depErr
+
+  # (b) Risky engine files outside the old narrow allowlist are now bridge-core.
+  $corePaths = @(
+    'lib/common.ps1','watchdog.ps1','scheduler.ps1','lib/circuit-breaker.ps1',
+    'lib/memory.ps1','lib/settings.ps1','critic.ps1','librarian.ps1',
+    'server.ps1','supervisor.ps1','driver.ps1','tools/run-tests.ps1','tools/smoke.ps1'
+  )
+  foreach ($cp in $corePaths) {
+    Check ("Bridge-core (full suite): {0} classified as core" -f $cp) ([bool](Test-DriverDoneGateBridgeCorePath -Path $cp)) $cp
+  }
+
+  # (c) Non-risky trees stay non-core (fast subset) — incl. a PROJECT *.ps1 under channels/.
+  $nonCorePaths = @(
+    'web/index.html','config.json','docs/readme.md','memory/note.md',
+    'channels/telegram-bridge-bot/state.py','channels/foo/script.ps1',
+    'tools/test-gate-regression-sentinel.ps1','tools/diag/gate-regression-sentinel-selftest.ps1',
+    'tools/auto/Invoke-foo.ps1','bot/main.py'
+  )
+  foreach ($ncp in $nonCorePaths) {
+    Check ("Non-core (fast subset): {0} classified as non-core" -f $ncp) (-not [bool](Test-DriverDoneGateBridgeCorePath -Path $ncp)) $ncp
+  }
+
+  # (d) Plan-level: a risky lib change (not in the old allowlist) now runs the full suite.
+  $libCommonPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('lib/common.ps1')
+  Check 'Bridge-core plan: lib/common.ps1 schedules the full snapshot suite' ([bool]$libCommonPlan.GateSuiteNeeded -and (@($libCommonPlan.JobNames) -contains 'gate-regression') -and -not [bool]$libCommonPlan.GateNonCoreFastSubset) $libCommonPlan
+
+  # (e) Plan-level: a pure UI/config change skips the full suite (fast subset).
+  $uiPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('web/index.html','config.json')
+  Check 'Non-core plan: web/config change uses fast subset, no gate job' ([bool]$uiPlan.GateNonCoreFastSubset -and -not [bool]$uiPlan.GateSuiteNeeded -and -not (@($uiPlan.JobNames) -contains 'gate-regression')) $uiPlan
+
+  # (f) Mixed scope semantics: ALL paths must be non-core to fast-subset; one risky path
+  # flips the whole turn back to the full suite (no coverage loss for the risky file).
+  $mixedPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply 'STATUS: DONE' -ChangedPathsOverride @('docs/note.md','lib/common.ps1')
+  Check 'Mixed scope: one risky engine path forces the full suite' ([bool]$mixedPlan.GateSuiteNeeded -and (@($mixedPlan.JobNames) -contains 'gate-regression') -and -not [bool]$mixedPlan.GateNonCoreFastSubset) $mixedPlan
+}
+
 $cases = @(
   [FastpathCase]::new('TRIVIAL', [string[]]@('docs/test'), $false),
   [FastpathCase]::new('CONTROL_PLANE', [string[]]@('driver/86-loop-completion-checks.ps1'), $true)
@@ -126,6 +179,7 @@ foreach ($case in $cases) {
   Invoke-FastpathCase -Case $case
 }
 Invoke-AdditionalFastpathChecks
+Invoke-BridgeCoreCoverageChecks
 
 Write-Host ("{0} passed, {1} failed" -f $script:PassCount, $script:FailCount)
 if ($script:FailCount -gt 0) { exit 1 }

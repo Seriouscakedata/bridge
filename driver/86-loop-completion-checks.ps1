@@ -126,15 +126,23 @@ function Test-DriverDoneGateBridgeCorePath {
   $normalizedPath = (([string]$Path).Trim() -replace '\\','/').TrimStart('./')
   if ([string]::IsNullOrWhiteSpace($normalizedPath)) { return $false }
 
-  return (
-    $normalizedPath -match '^(?i:driver/)' -or
-    $normalizedPath -match '^(?i:driver\.ps1)$' -or
-    $normalizedPath -match '^(?i:supervisor\.ps1)$' -or
-    $normalizedPath -match '^(?i:server\.ps1)$' -or
-    $normalizedPath -match '^(?i:lib/verify-selftest\.ps1)$' -or
-    $normalizedPath -match '^(?i:tools/run-tests\.ps1)$' -or
-    $normalizedPath -match '^(?i:lib/(backlog|parallel|qa|router|foundry)(?:/|[^/]*\.ps1$))'
-  )
+  # Fail-safe bridge-core classification (2026-06-13). The non-core fast subset must
+  # NEVER hide a risky engine change behind parse+smoke. A narrow core allowlist did
+  # exactly that: lib/common.ps1, watchdog.ps1, scheduler.ps1, lib/circuit-breaker.ps1,
+  # lib/memory.ps1, critic.ps1 (etc.) all fell through to the fast subset and silently
+  # skipped the full regression suite. Invert the logic: treat ANY engine *.ps1 as
+  # bridge-core, and fast-subset only an explicit set of non-risky trees. This is a
+  # strict superset of the old core set (no coverage reduction) while keeping the
+  # speedup for project files, docs and tools/test* diffs.
+
+  # (1) Data / docs / web / project trees — never bridge-core (no executable engine risk).
+  if ($normalizedPath -match '^(?i:(docs|web|memory|decisions|channels|snapshots|logs|node_modules)/)') { return $false }
+  # (2) Test, diagnostic and foundry-synthesised scripts — fast subset on their own change.
+  if ($normalizedPath -match '^(?i:tools/(test-[^/]+\.ps1|diag/|auto/))') { return $false }
+  # (3) Any remaining PowerShell engine file — bridge-core, full snapshot suite.
+  if ($normalizedPath -match '(?i)\.ps1$') { return $true }
+  # (4) Everything else (project sources, config, data) — non-core fast subset.
+  return $false
 }
 
 function Test-CoveredAfterRestart {
