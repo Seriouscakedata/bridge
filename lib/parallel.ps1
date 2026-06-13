@@ -335,11 +335,19 @@ function Select-WorkerForStream {
   if ($strictDomain.Count -gt 0) { $candidates = $strictDomain }
 
   # 6. Pick cheapest + fastest
-  # 2026-05-27v6: tie-breaker visibility (audit #11). Sort by cost asc, then speed
-  # desc, then id alphabetic for deterministic tie-break. If multiple candidates
-  # have equal (cost, speed) after sort, log the tie so we can detect routing surprises.
-  $sorted = @($candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+  # For complex/architectural: codex-cli workers sort first before cost — structural
+  # protection against heavy tasks landing on cheap non-codex models at equal strength
+  # (observed: repeated failures on complex streams routed to cost-winner non-codex).
+  # For simple/moderate: unchanged cost-asc behaviour.
+  $isHeavyComplexity = ($complexity -eq 'complex' -or $complexity -eq 'architectural')
+  $sorted = if ($isHeavyComplexity) {
+    @($candidates | Sort-Object @{Expression={ if ([string]$_.cli -eq 'codex') { 0 } else { 1 } }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+  } else {
+    @($candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+  }
   $pick = $sorted | Select-Object -First 1
+  # Heavy complexity resolves codex-vs-non-codex earlier in the sort key, so the
+  # tie log below only fires when candidates are also equal on codex-cli ordering.
   if ($pick -and $sorted.Count -ge 2) {
     $second = $sorted[1]
     if ([int]$pick.cost -eq [int]$second.cost -and [int]$pick.speed -eq [int]$second.speed) {

@@ -95,5 +95,36 @@ $streamB = $streams | Where-Object { [string]$_.id -eq 'b' } | Select-Object -Fi
 Check 'parser marks FABLE as premium' ([bool]$streamA.premium -and [bool]$streamA.opus) $streamA
 Check 'parser leaves unmarked stream non-premium' (-not [bool]$streamB.premium) $streamB
 
+# --- Codex priority tests: complex/architectural prefer codex over cheap non-codex ---
+function Get-BridgeConfig {
+  return [pscustomobject]@{
+    parallel = [pscustomobject]@{
+      complexityFloor = [pscustomobject]@{
+        simple        = 2
+        moderate      = 3
+        complex       = 4
+        architectural = 5
+      }
+      domainHints = [pscustomobject]@{
+        backend  = @('ps1')
+        docs     = @('md')
+        frontend = @('tsx')
+      }
+      workers = @(
+        [pscustomobject]@{ id='cheap-claude'; cli='claude'; model='some-model'; strength=4; speed=4; cost=1; domains=@('any') },
+        [pscustomobject]@{ id='codex-high';   cli='codex';  model='gpt-5.5'; reasoning='high'; strength=4; speed=2; cost=4; domains=@('any') }
+      )
+    }
+  }
+}
+
+$s5 = [pscustomobject]@{ id='s5'; files=@('lib/a.ps1'); complexity='complex'; opus=$false; premium=$false; body='' }
+$pick5 = Select-WorkerForStream -Stream $s5
+Check 'complex: codex-high beats cheap-claude despite higher cost' ([string]$pick5.id -eq 'codex-high') $pick5
+
+$s6 = [pscustomobject]@{ id='s6'; files=@('lib/a.ps1'); complexity='simple'; opus=$false; premium=$false; body='' }
+$pick6 = Select-WorkerForStream -Stream $s6
+Check 'simple: cheap-claude is acceptable (cost-asc unchanged)' ([string]$pick6.id -eq 'cheap-claude') $pick6
+
 if ($failures -gt 0) { exit 1 }
 Write-Host 'test-premium-claude-routing: PASS'
