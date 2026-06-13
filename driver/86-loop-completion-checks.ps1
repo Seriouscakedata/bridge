@@ -125,23 +125,36 @@ function Test-CoveredAfterRestart {
     [string]$ClaimedAt,
     [string]$BacklogId,
     [string]$TaskText,
-    [hashtable]$StateObj
+    [object]$StateObj
   )
   # Returns: @{ Covered=$false; Sha='' }
   $result = @{ Covered = $false; Sha = '' }
   try {
+    $getStateValue = {
+      param($Obj, [string]$Name)
+      if ($null -eq $Obj -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
+      if ($Obj -is [hashtable]) {
+        if ($Obj.ContainsKey($Name)) { return $Obj[$Name] }
+        return $null
+      }
+      $prop = $Obj.PSObject.Properties[$Name]
+      if ($null -ne $prop) { return $prop.Value }
+      return $null
+    }
+
     # (a) resumed after restart
-    $applyRestarts = [int]($StateObj.task_apply_restart_count)
-    $hardRestarts  = [int]($StateObj.task_hard_restart_count)
+    $applyRestarts = [int](& $getStateValue $StateObj 'task_apply_restart_count')
+    $hardRestarts  = [int](& $getStateValue $StateObj 'task_hard_restart_count')
     if (($applyRestarts + $hardRestarts) -le 0) { return $result }
 
     # (b) working tree is clean
-    $dirty = ([string](& git -C $BridgeRoot status --porcelain 2>$null | Out-String)).Trim()
+    $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('status','--porcelain') -Description 'status --porcelain') | Out-String)).Trim()
     if ($dirty -ne '') { return $result }
 
     # (c) critic verdict OK
-    $cache = $StateObj.critic_verdict_cache
-    if ($null -ne $cache -and [string]$cache.verdict -ne 'OK') { return $result }
+    $cache = & $getStateValue $StateObj 'critic_verdict_cache'
+    $criticVerdict = [string](& $getStateValue $cache 'verdict')
+    if ($criticVerdict -ne 'OK') { return $result }
 
     # (d) git log finds a commit since claimed_at matching backlog_id or first 60 chars of task text
     $since = ''
@@ -176,7 +189,7 @@ function Test-CoveredAfterRestart {
       foreach ($pat in $patterns) {
         $gitArgs = @('log', '--oneline', '--grep', $pat)
         if (-not [string]::IsNullOrWhiteSpace($since)) { $gitArgs += @('--since', $since) }
-        $lines = @(& git -C $repo @gitArgs 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $lines = @(Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments $gitArgs -Description 'log covered-after-restart' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($lines.Count -gt 0) {
           $sha = ([string]$lines[0]).Split(' ')[0].Trim()
           if ($sha.Length -ge 7) {
