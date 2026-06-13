@@ -147,48 +147,78 @@ function Test-CoveredAfterRestart {
     $hardRestarts  = [int](& $getStateValue $StateObj 'task_hard_restart_count')
     if (($applyRestarts + $hardRestarts) -le 0) { return $result }
 
-    # (b) working tree is clean
-    $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('status','--porcelain') -Description 'status --porcelain') | Out-String)).Trim()
-    if ($dirty -ne '') { return $result }
+    # Search bridge repo and optionally project-repo (if different).
+    $repos = New-Object 'System.Collections.Generic.List[string]'
+    $seenRepos = @{}
+    $addRepo = {
+      param([string]$RepoRoot)
+      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return }
+      $resolvedRepo = ''
+      try {
+        $resolvedRepo = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).ProviderPath
+      } catch {
+        return
+      }
+      $repoKey = $resolvedRepo.TrimEnd('\','/').ToLowerInvariant()
+      if (-not $seenRepos.ContainsKey($repoKey)) {
+        $seenRepos[$repoKey] = $true
+        [void]$repos.Add($resolvedRepo)
+      }
+    }
+    & $addRepo $BridgeRoot
+    try {
+      if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
+        & $addRepo ([string](Get-TaskRepoRoot))
+      }
+    } catch {
+      $null = $_
+    }
+    if ($repos.Count -eq 0) { return $result }
 
-    # (c) critic verdict OK
+    # (b) every candidate working tree is clean
+    foreach ($repo in @($repos.ToArray())) {
+      $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments @('status','--porcelain') -Description 'status --porcelain') | Out-String)).Trim()
+      if ($dirty -ne '') { return $result }
+    }
+
+    # claimed_at is required both for git --since and for rejecting stale critic verdicts.
+    if ([string]::IsNullOrWhiteSpace($ClaimedAt)) { return $result }
+    $claimedAtUtc = $null
+    try {
+      $claimedAtUtc = [datetimeoffset]::Parse($ClaimedAt).UtcDateTime
+    } catch {
+      return $result
+    }
+
+    # (c) critic verdict OK/none and fresh for this task, not a stale cache from a previous task.
     $cache = & $getStateValue $StateObj 'critic_verdict_cache'
     $criticVerdict = [string](& $getStateValue $cache 'verdict')
-    if ($criticVerdict -ne 'OK') { return $result }
+    $criticSeverity = [string](& $getStateValue $cache 'severity')
+    $criticTsText = [string](& $getStateValue $cache 'ts')
+    if ($criticVerdict -ne 'OK' -or $criticSeverity -ne 'none' -or [string]::IsNullOrWhiteSpace($criticTsText)) { return $result }
+    $criticTsUtc = $null
+    try {
+      $criticTsUtc = [datetimeoffset]::Parse($criticTsText).UtcDateTime
+    } catch {
+      return $result
+    }
+    if ($criticTsUtc -lt $claimedAtUtc) { return $result }
 
     # (d) git log finds a commit since claimed_at matching backlog_id or first 60 chars of task text
-    $since = ''
-    if (-not [string]::IsNullOrWhiteSpace($ClaimedAt)) {
-      # parse ISO date; use as --since argument
-      $since = $ClaimedAt
-    }
-    # build grep patterns: backlog_id (if non-empty) and first 60 chars of task text (escaped)
+    $since = $ClaimedAt
+    # Build literal grep patterns: backlog_id (if non-empty) and first 60 chars of task text.
     $patterns = @()
     if (-not [string]::IsNullOrWhiteSpace($BacklogId)) { $patterns += $BacklogId }
     if (-not [string]::IsNullOrWhiteSpace($TaskText)) {
       $shortened = $TaskText.Trim()
       if ($shortened.Length -gt 60) { $shortened = $shortened.Substring(0, 60) }
-      # escape for git --grep (git uses POSIX basic regex; escape special chars)
-      $escaped = $shortened -replace '([\\.\[\]^$*+?{}()|])', '\$1'
-      if ($escaped.Length -gt 0) { $patterns += $escaped }
+      if ($shortened.Length -gt 0) { $patterns += $shortened }
     }
     if ($patterns.Count -eq 0) { return $result }
 
-    # Search bridge repo and optionally project-repo (if different)
-    $repos = @($BridgeRoot)
-    try {
-      if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
-        $projRoot = [string](Get-TaskRepoRoot)
-        if (-not [string]::IsNullOrWhiteSpace($projRoot) -and $projRoot -ne $BridgeRoot) {
-          $repos += $projRoot
-        }
-      }
-    } catch {}
-
-    foreach ($repo in $repos) {
+    foreach ($repo in @($repos.ToArray())) {
       foreach ($pat in $patterns) {
-        $gitArgs = @('log', '--oneline', '--grep', $pat)
-        if (-not [string]::IsNullOrWhiteSpace($since)) { $gitArgs += @('--since', $since) }
+        $gitArgs = @('log', '--oneline', '--fixed-strings', '--grep', $pat, '--since', $since)
         $lines = @(Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments $gitArgs -Description 'log covered-after-restart' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($lines.Count -gt 0) {
           $sha = ([string]$lines[0]).Split(' ')[0].Trim()

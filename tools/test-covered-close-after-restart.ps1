@@ -37,19 +37,22 @@ try {
   & git -C $fixtureRoot config user.name 'Bridge Test'
   & git -C $fixtureRoot config commit.gpgsign false
   Set-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.txt') -Value 'covered-close fixture' -Encoding UTF8
-  $headMsg = 'covered-close fixture commit for restart gate'
+  $headMsg = 'covered-close plus+ [literal] (ok) fixture commit'
   & git -C $fixtureRoot add fixture.txt
   & git -C $fixtureRoot commit -q --no-gpg-sign -m $headMsg
 
   $headSha = (& { Invoke-TestGit -RepoRoot $fixtureRoot log --oneline -1 } | Select-Object -First 1).Split(' ')[0].Trim()
   $claimedAt = (& { Invoke-TestGit -RepoRoot $fixtureRoot log --format=%aI -1 } | Out-String).Trim()
-  $claimedAtDt = ([datetime]::Parse($claimedAt)).AddSeconds(-5).ToString('yyyy-MM-ddTHH:mm:sszzz')
+  $commitAt = [datetimeoffset]::Parse($claimedAt)
+  $claimedAtDt = $commitAt.AddSeconds(-5).ToString('o')
+  $criticOkCache = @{ verdict = 'OK'; severity = 'none'; ts = $commitAt.AddSeconds(5).ToString('o') }
+  $criticStaleCache = @{ verdict = 'OK'; severity = 'none'; ts = $commitAt.AddSeconds(-30).ToString('o') }
 
-  Write-Host "=== Test-CoveredAfterRestart: scenario 1 (covered - restart + clean tree + real commit) ==="
+  Write-Host "=== Test-CoveredAfterRestart: scenario 1 (covered - restart + clean tree + real literal commit) ==="
   $fakeState1 = @{
     task_apply_restart_count = 1
     task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'OK' }
+    critic_verdict_cache     = $criticOkCache
     claimed_at               = $claimedAtDt
     current_backlog_id       = ''
     current_task             = $headMsg
@@ -66,7 +69,7 @@ try {
   $fakeState2 = @{
     task_apply_restart_count = 1
     task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'OK' }
+    critic_verdict_cache     = $criticOkCache
     claimed_at               = $claimedAtDt
     current_backlog_id       = ''
     current_task             = 'XNOMATCH_unique_task_text_that_will_never_be_in_any_commit_xyz987'
@@ -82,7 +85,7 @@ try {
   $fakeState3 = @{
     task_apply_restart_count = 0
     task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'OK' }
+    critic_verdict_cache     = $criticOkCache
     claimed_at               = $claimedAtDt
     current_backlog_id       = ''
     current_task             = $headMsg
@@ -111,7 +114,7 @@ try {
   $fakeState5 = @{
     task_apply_restart_count = 1
     task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'WARN' }
+    critic_verdict_cache     = @{ verdict = 'WARN'; severity = 'serious'; ts = $commitAt.AddSeconds(5).ToString('o') }
     claimed_at               = $claimedAtDt
     current_backlog_id       = ''
     current_task             = $headMsg
@@ -120,6 +123,36 @@ try {
     -BacklogId $fakeState5.current_backlog_id -TaskText $fakeState5.current_task -StateObj $fakeState5
 
   Assert-True ($r5.Covered -eq $false) "Covered=false when critic verdict is not OK"
+
+  Write-Host ""
+  Write-Host "=== Test-CoveredAfterRestart: scenario 6 (not covered - critic OK is stale) ==="
+  $fakeState6 = @{
+    task_apply_restart_count = 1
+    task_hard_restart_count  = 0
+    critic_verdict_cache     = $criticStaleCache
+    claimed_at               = $claimedAtDt
+    current_backlog_id       = ''
+    current_task             = $headMsg
+  }
+  $r6 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState6.claimed_at `
+    -BacklogId $fakeState6.current_backlog_id -TaskText $fakeState6.current_task -StateObj $fakeState6
+
+  Assert-True ($r6.Covered -eq $false) "Covered=false when critic OK predates claimed_at"
+
+  Write-Host ""
+  Write-Host "=== Test-CoveredAfterRestart: scenario 7 (not covered - critic timestamp missing) ==="
+  $fakeState7 = @{
+    task_apply_restart_count = 1
+    task_hard_restart_count  = 0
+    critic_verdict_cache     = @{ verdict = 'OK'; severity = 'none' }
+    claimed_at               = $claimedAtDt
+    current_backlog_id       = ''
+    current_task             = $headMsg
+  }
+  $r7 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState7.claimed_at `
+    -BacklogId $fakeState7.current_backlog_id -TaskText $fakeState7.current_task -StateObj $fakeState7
+
+  Assert-True ($r7.Covered -eq $false) "Covered=false when critic timestamp is missing"
 } finally {
   if ($fixtureRoot -like (Join-Path $tmpParent 'bridge-covered-close-test-*')) {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
