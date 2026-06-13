@@ -166,19 +166,28 @@ function Invoke-DriverDecomposedMarker {
     if (-not [string]::IsNullOrWhiteSpace($parentId) -and ($GetBacklogScript -or (Get-Command Get-Backlog -ErrorAction SilentlyContinue))) {
         $ideas = if ($GetBacklogScript) { @(& $GetBacklogScript) } else { @(Get-Backlog) }
         $parent = $ideas | Where-Object { [string]$_.id -eq $parentId } | Select-Object -First 1
-        if ($parent) {
-            if ($SetIdeaScript) {
-                $parentClosed = [bool](& $SetIdeaScript $parentId 'decomposed' "Decomposed into $decompExpected child atoms")
-            } elseif (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
-                $parentClosed = [bool](Set-Idea -Id $parentId -Status 'decomposed' -Reason "Decomposed into $decompExpected child atoms")
-            }
-        }
         $children = @($ideas | Where-Object {
             $tags = @($_.tags | ForEach-Object { [string]$_ })
             ($tags -contains 'decomposed-child') -and ([string]$_.text -match [regex]::Escape($parentId))
         })
+        $minChildren = [int][Math]::Ceiling($decompExpected / 2)
         Write-Host "Decomposed children found: $($children.Count) / expected: $decompExpected"
-        $message = ("[[DECOMPOSED]] detected: {0} atoms; parent {1} status={2}; children found {3}/{0}. No coder turn needed." -f $decompExpected,$parentId,$(if ($parentClosed) { 'decomposed' } else { 'unchanged' }),$children.Count)
+        if ($children.Count -ge 1 -and $children.Count -ge $minChildren) {
+            if ($parent) {
+                if ($SetIdeaScript) {
+                    $parentClosed = [bool](& $SetIdeaScript $parentId 'decomposed' "Decomposed into $decompExpected child atoms")
+                } elseif (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+                    $parentClosed = [bool](Set-Idea -Id $parentId -Status 'decomposed' -Reason "Decomposed into $decompExpected child atoms")
+                }
+            }
+            $message = ("[[DECOMPOSED]] detected: {0} atoms; parent {1} status={2}; children found {3}/{0}. No coder turn needed." -f $decompExpected,$parentId,$(if ($parentClosed) { 'decomposed' } else { 'unchanged' }),$children.Count)
+        } elseif ($children.Count -lt 1) {
+            $message = "DECOMPOSE FAILED: marker said $decompExpected but $($children.Count) children created — parent kept open"
+            Write-Host $message
+        } else {
+            $message = "DECOMPOSE PARTIAL: $($children.Count)/$decompExpected children (need >= $minChildren) — parent kept open"
+            Write-Host $message
+        }
     } else {
         $message = ("[[DECOMPOSED]] detected: {0} atoms, but parent backlog id/function unavailable. No coder turn needed." -f $decompExpected)
     }
