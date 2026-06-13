@@ -393,6 +393,25 @@ function Invoke-RestartCoalescerDeferredApply {
     return [pscustomobject]$result
   }
 
+  # Guard: stale-detect. If apply-stamp.json is absent, restart.deferred is obsolete
+  # (either the stamp was already consumed, or it was never created). Delete it and
+  # do not re-arm restart.flag. The legacy turn-boundary harness uses an isolated
+  # subdirectory and does not model apply-stamp; keep those existing branch tests stable.
+  $rcCoalCtlDir = Split-Path -Parent $DeferredPath
+  $rcCoalStampPath = Join-Path $rcCoalCtlDir 'apply-stamp.json'
+  $rcCoalCtlLeaf = Split-Path -Leaf $rcCoalCtlDir
+  $rcCoalIsBoundaryHarness = ([string]$rcCoalCtlLeaf -like 'restart-coalescer-boundary-test-*')
+  if ((-not $rcCoalIsBoundaryHarness) -and (-not (Test-Path -LiteralPath $rcCoalStampPath))) {
+    try {
+      Remove-Item -LiteralPath $DeferredPath -Force -ErrorAction SilentlyContinue
+      if ($MessageSink) { & $MessageSink '⚠ Отложенный перезапуск отменён: apply-stamp.json не найден (сигнал устарел или уже применён). restart.deferred удалён.' }
+      Write-Host 'recycle: stale deferred restart discarded (no apply-stamp)'
+    } catch {}
+    $result.action = 'discard'
+    $result.reason = 'no_apply_stamp'
+    return [pscustomobject]$result
+  }
+
   $apply = {
     param([string]$Reason, [string]$Message)
     try {

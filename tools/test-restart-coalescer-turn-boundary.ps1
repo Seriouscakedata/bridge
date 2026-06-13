@@ -85,6 +85,21 @@ try {
     (Test-Path -LiteralPath $flag)
   ) $backstop
 
+  Remove-Item -LiteralPath $flag -Force
+  $staleRoot = Join-Path $testRoot 'stale-deferred-no-stamp'
+  New-Item -ItemType Directory -Path $staleRoot -Force | Out-Null
+  $staleDeferred = Join-Path $staleRoot 'restart.deferred'
+  $staleFlag = Join-Path $staleRoot 'restart.flag'
+  New-TestDeferredRestart -DeferredPath $staleDeferred -AgeSec 700
+  $staleNoStamp = Invoke-RestartCoalescerDeferredApply -DeferredPath $staleDeferred -FlagPath $staleFlag -AgeSec 700 -QuietSec 0 -Busy:$false -LiveAgent:$false -PlanHasWork:$false -CompletionFinalizing:$false -MaxDeferSec 600 -CompletionBackstopSec 1800 -FailsafeQuietSec 300 -MessageSink $sink
+  Check-RestartBoundary 'stale deferred restart without apply-stamp is discarded' (
+    [string]$staleNoStamp.action -eq 'discard' -and
+    [string]$staleNoStamp.reason -eq 'no_apply_stamp' -and
+    [bool]$staleNoStamp.applied -eq $false -and
+    -not (Test-Path -LiteralPath $staleDeferred) -and
+    -not (Test-Path -LiteralPath $staleFlag)
+  ) $staleNoStamp
+
   $wrapper = Get-Content -LiteralPath (Join-Path $root 'driver\86-loop-completion.ps1') -Raw -Encoding UTF8
   Check-RestartBoundary 'completion wrapper sets and clears completion_finalizing in finally' (
     $wrapper -match 'Set-DriverCompletionFinalizing\s+-Active\s+\$true' -and
