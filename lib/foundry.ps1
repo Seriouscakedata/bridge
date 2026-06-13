@@ -677,17 +677,41 @@ function Invoke-FoundryPlanDispatch {
   # Plan-gate (Ф4): DAG must not execute until the operator has approved the PROJECT_PLAN.
   # Same gate as Start-ProjectAutopilotIfNeeded; reuses Test-ProjectPlanApproved.
   if (-not [string]::IsNullOrWhiteSpace($Channel)) {
-    $planApproved = $true
+    $planApproved = $false
+    $approvalError = ''
     if (Get-Command Test-ProjectPlanApproved -ErrorAction SilentlyContinue) {
-      try { $planApproved = [bool](Test-ProjectPlanApproved -Channel $Channel -ProjectRoot $RepoRoot) } catch { $planApproved = $false }
+      try {
+        $planApproved = [bool](Test-ProjectPlanApproved -Channel $Channel -ProjectRoot $RepoRoot)
+      } catch {
+        $approvalError = 'Test-ProjectPlanApproved error: ' + $_.Exception.Message
+      }
+    } else {
+      $approvalError = 'Test-ProjectPlanApproved недоступен — отказ fail-secure'
     }
     if (-not $planApproved) {
-      $gateReasons = @('plan_approved не установлен — выполните Set-ProjectPlanApproved')
+      $gateReasons = @()
+      if (-not [string]::IsNullOrWhiteSpace($approvalError)) {
+        $gateReasons += $approvalError
+      } else {
+        $gateReasons += 'plan_approved не установлен — выполните Set-ProjectPlanApproved'
+      }
       if (-not [string]::IsNullOrWhiteSpace($RepoRoot) -and (Get-Command Test-ProjectPlanContractReady -ErrorAction SilentlyContinue)) {
         try {
           $pc = Test-ProjectPlanContractReady -ProjectRoot $RepoRoot
-          if ($pc -and @($pc.issues).Count -gt 0) { $gateReasons = @($pc.issues) }
-        } catch {}
+          $contractIssues = @()
+          if ($pc -and $pc.PSObject.Properties['issues']) {
+            foreach ($issue in @($pc.issues)) {
+              $issueText = [string]$issue
+              if (-not [string]::IsNullOrWhiteSpace($issueText)) { $contractIssues += $issueText.Trim() }
+            }
+          }
+          if ($contractIssues.Count -gt 0) {
+            if (-not [string]::IsNullOrWhiteSpace($approvalError)) { $gateReasons = @($approvalError) + $contractIssues }
+            else { $gateReasons = $contractIssues }
+          }
+        } catch {
+          $gateReasons += ('Test-ProjectPlanContractReady error: ' + $_.Exception.Message)
+        }
       }
       $gateMsg = 'DISPATCH-DAG ждёт утверждённый PROJECT_PLAN (Ф4): ' + ($gateReasons -join '; ')
       try { Add-Message -From system -Text $gateMsg -Kind event | Out-Null } catch {}

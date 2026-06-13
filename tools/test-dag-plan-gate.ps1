@@ -16,88 +16,118 @@ function Assert-True([bool]$cond, [string]$label) {
 
 # ===== MOCKS (defined BEFORE dot-sourcing foundry.ps1) =====
 $script:MockPlanApproved = $false
+$script:MockPlanContractIssues = @('plan_approved не установлен — выполните Set-ProjectPlanApproved')
 $script:MockMessages = [System.Collections.Generic.List[string]]::new()
+$script:MockStatuses = @{}
+$script:MockRunnerCalls = 0
+$script:MockStep = [pscustomobject]@{ id='step-1'; title='fixture step' }
 
 function Get-BridgeRoot { return $script:BridgeRoot }
-function Get-FoundryMaxParallel { return 2 }
-function Get-PlanScheduleState { return [pscustomobject]@{ reason='no-plan'; total=0; complete=$false } }
+function Get-PlanScheduleState {
+  $status = [string]$script:MockStatuses['step-1']
+  $done = ($status -eq 'done')
+  return [pscustomobject]@{
+    reason = 'has-plan'
+    total = 1
+    complete = $done
+    done = if ($done) { 1 } else { 0 }
+    blocked = 0
+    skipped = 0
+    deadlocked = $false
+    blockers = @{}
+  }
+}
+function Get-ReadyPlanSteps {
+  param([int]$Max = 1)
+  $status = [string]$script:MockStatuses['step-1']
+  if ([string]::IsNullOrWhiteSpace($status) -or $status -eq 'pending') { return @($script:MockStep) }
+  return @()
+}
+function Set-PlanStepStatus {
+  param([string]$Id, [string]$Status, [string]$Result = '')
+  $script:MockStatuses[$Id] = $Status
+}
+function Normalize-PlanStatus {
+  param([string]$Status)
+  return $Status.ToLowerInvariant()
+}
 function Test-ProjectPlanApproved {
   param([string]$Channel, [string]$ProjectRoot = '')
   return $script:MockPlanApproved
 }
 function Test-ProjectPlanContractReady {
   param([string]$ProjectRoot)
-  return [pscustomobject]@{ ready=$false; issues=@('plan_approved не установлен — выполните Set-ProjectPlanApproved') }
+  return [pscustomobject]@{ ready=$false; issues=$script:MockPlanContractIssues }
 }
 function Add-Message {
   param([string]$From, [string]$Text, [string]$Kind = '')
   [void]$script:MockMessages.Add($Text)
 }
+function Reset-Fixture {
+  $script:MockMessages.Clear()
+  $script:MockStatuses = @{ 'step-1' = 'pending' }
+  $script:MockRunnerCalls = 0
+  $script:MockPlanContractIssues = @('plan_approved не установлен — выполните Set-ProjectPlanApproved')
+}
+function Invoke-MockRunner {
+  param($Steps)
+  $script:MockRunnerCalls++
+  return @($Steps | ForEach-Object { @{ id = [string]$_.id; ok = $true; result = 'ran' } })
+}
 
 # Load function under test
 . (Join-Path $BridgeRoot 'lib\foundry.ps1')
-
-$cmd = Get-Command Invoke-FoundryPlanDispatch -CommandType Function
-if (-not $cmd.Parameters.ContainsKey('Channel')) {
-  $script:InvokeFoundryPlanDispatch_Original = ${function:Invoke-FoundryPlanDispatch}
-  function Invoke-FoundryPlanDispatch {
-    [CmdletBinding()]
-    param(
-      [string]$Channel = '',
-      [string]$RepoRoot = '',
-      [int]$MaxParallel = 0,
-      [int]$TimeoutMin = 25,
-      [int]$PollSec = 10,
-      [int]$MaxWaves = 0,
-      [scriptblock]$BatchRunner = $null,
-      [scriptblock]$Verify = $null
-    )
-    if (-not [string]::IsNullOrWhiteSpace($Channel) -and -not (Test-ProjectPlanApproved -Channel $Channel -ProjectRoot $RepoRoot)) {
-      $contract = Test-ProjectPlanContractReady -ProjectRoot $RepoRoot
-      Add-Message -From 'foundry' -Text ('DISPATCH-DAG ждёт утверждённый PROJECT_PLAN (Ф4): ' + (($contract.issues | Select-Object -First 1) -as [string])) -Kind 'plan-gate'
-      return [pscustomobject][ordered]@{ ok=$false; outcome='plan-not-approved'; reason='plan_approved missing'; summary='plan gate'; done=0; blocked=0; skipped=0; waves=0; deadlocked=$false; blockers=@{} }
-    }
-
-    $args = @{
-      RepoRoot = $RepoRoot
-      MaxParallel = $MaxParallel
-      TimeoutMin = $TimeoutMin
-      PollSec = $PollSec
-    }
-    if ($MaxWaves -gt 0) { $args.MaxWaves = $MaxWaves }
-    if ($null -ne $BatchRunner) { $args.BatchRunner = $BatchRunner }
-    if ($null -ne $Verify) { $args.Verify = $Verify }
-    & $script:InvokeFoundryPlanDispatch_Original @args
-  }
-}
 
 Write-Host "=== Invoke-FoundryPlanDispatch plan-gate: unit tests ==="
 
 # ===== Scenario 1: no plan_approved -> dispatch отказывает =====
 Write-Host "--- Scenario 1: no plan_approved -> outcome=plan-not-approved ---"
 $script:MockPlanApproved = $false
-$script:MockMessages.Clear()
-$r1 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner {}
+Reset-Fixture
+$r1 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner ${function:Invoke-MockRunner}
 Assert-True ([string]$r1.outcome -eq 'plan-not-approved') "outcome=plan-not-approved"
 Assert-True (-not [bool]$r1.ok) "ok=false"
 Assert-True ($script:MockMessages.Count -gt 0) "Add-Message was called"
 Assert-True ([bool]($script:MockMessages | Where-Object { $_ -like '*DISPATCH-DAG ждёт утверждённый PROJECT_PLAN*' })) "message contains gate text"
 Assert-True ([bool]($script:MockMessages | Where-Object { $_ -like '*(Ф4)*' })) "message contains phase marker (Ф4)"
+Assert-True ($script:MockRunnerCalls -eq 0) "runner not called while unapproved"
 
-# ===== Scenario 2: plan_approved -> dispatch НЕ блокируется =====
-Write-Host "--- Scenario 2: plan_approved=true -> proceeds past gate ---"
+# ===== Scenario 2: empty validator issues -> default reason is preserved =====
+Write-Host "--- Scenario 2: empty contract issues -> default reason preserved ---"
+$script:MockPlanApproved = $false
+Reset-Fixture
+$script:MockPlanContractIssues = @($null, '', '   ')
+$r2 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner ${function:Invoke-MockRunner}
+Assert-True ([string]$r2.outcome -eq 'plan-not-approved') "outcome=plan-not-approved with empty issues"
+Assert-True ([bool]($script:MockMessages | Where-Object { $_ -like '*plan_approved не установлен*' })) "default reason kept when issues are empty"
+Assert-True ($script:MockRunnerCalls -eq 0) "runner not called when empty issues"
+
+# ===== Scenario 3: plan_approved -> dispatch стартует =====
+Write-Host "--- Scenario 3: plan_approved=true -> runner starts ---"
 $script:MockPlanApproved = $true
-$script:MockMessages.Clear()
-$r2 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner {}
-Assert-True ([string]$r2.outcome -ne 'plan-not-approved') "outcome!=plan-not-approved (got: $($r2.outcome))"
+Reset-Fixture
+$r3 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner ${function:Invoke-MockRunner}
+Assert-True ([string]$r3.outcome -eq 'complete') "approved plan completes fixture step"
+Assert-True ($script:MockRunnerCalls -eq 1) "runner called once when approved"
 Assert-True (-not ($script:MockMessages | Where-Object { $_ -like '*DISPATCH-DAG ждёт*' })) "no gate message when approved"
 
-# ===== Scenario 3: нет $Channel -> гейт пропускается (backward compat) =====
-Write-Host "--- Scenario 3: no -Channel -> gate skipped ---"
+# ===== Scenario 4: нет $Channel -> гейт пропускается (backward compat) =====
+Write-Host "--- Scenario 4: no -Channel -> gate skipped ---"
 $script:MockPlanApproved = $false
-$script:MockMessages.Clear()
-$r3 = Invoke-FoundryPlanDispatch -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner {}
-Assert-True ([string]$r3.outcome -ne 'plan-not-approved') "no channel -> gate skipped"
+Reset-Fixture
+$r4 = Invoke-FoundryPlanDispatch -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner ${function:Invoke-MockRunner}
+Assert-True ([string]$r4.outcome -eq 'complete') "no channel -> fixture step runs"
+Assert-True ($script:MockRunnerCalls -eq 1) "runner called once without channel"
+
+# ===== Scenario 5: approval validator missing -> fail-secure =====
+Write-Host "--- Scenario 5: missing Test-ProjectPlanApproved -> fail-secure ---"
+$script:MockPlanApproved = $true
+Reset-Fixture
+Remove-Item Function:\Test-ProjectPlanApproved -Force
+$r5 = Invoke-FoundryPlanDispatch -Channel 'test-channel' -RepoRoot 'C:\fake-root' -MaxParallel 1 -BatchRunner ${function:Invoke-MockRunner}
+Assert-True ([string]$r5.outcome -eq 'plan-not-approved') "missing approval validator blocks dispatch"
+Assert-True ([bool]($script:MockMessages | Where-Object { $_ -like '*Test-ProjectPlanApproved недоступен*' })) "message names missing validator"
+Assert-True ($script:MockRunnerCalls -eq 0) "runner not called when validator is missing"
 
 Write-Host ""
 Write-Host "=== RESULT: $passed passed, $failed failed ==="
