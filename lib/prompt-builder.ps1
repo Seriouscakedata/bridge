@@ -240,6 +240,7 @@ $AutoScopeLine
       `files: путь1, путь2` — файлы которые этот поток правит. НЕ должны пересекаться между потоками.
       `complexity: simple|moderate|complex|architectural` — насколько сложна работа в этом потоке. От этого зависит какой воркер получит задачу (см. ниже).
   Минимум 2 блока. До 20 одновременно (см. `parallel.maxStreams`). Драйвер сам выбирает подходящего воркера из пула.
+  ⚠ ЗАПРЕТ СМЕШЕНИЯ ФОРМ (КРИТИЧНО): форма `[[PARALLEL:<id>]] ... [[/PARALLEL:<id>]]` — ИСКЛЮЧИТЕЛЬНО для файлов САМОГО МОСТА. Для telegram-bridge-bot и ЛЮБОГО внешнего репо эта форма ЗАПРЕЩЕНА — guard дропнет потоки с ошибкой, задача зависнет. Для внешних репо используй только форму `[[PARALLEL: <путь_к_репо> || под-задача 1 ;; под-задача 2]]`.
 
   ⚙ ПУЛ ВОРКЕРОВ И РОУТИНГ:
   В `config.json -> parallel.workers` лежит список воркеров с метаданными (strength 1-5, speed, cost, domains, model, reasoning). Драйвер для каждого блока подбирает воркера автоматически:
@@ -286,6 +287,11 @@ $AutoScopeLine
   STATUS: CONTINUE
   ```
   В этом примере: A → codex-high/xhigh (complex+backend), B → claude-sonnet (moderate+frontend), C → codex-medium или alt (simple+docs).
+  ПРИМЕР для ВНЕШНЕГО репо (telegram-bridge-bot):
+  ```
+  [[PARALLEL: C:\Users\rafie\bridge-projects\telegram-bridge-bot || добавь команду /stats в bot/main.py ;; обнови тесты stats в tests/test_stats.py]]
+  ```
+  Мост запустит два Codex-воркера в изолированных копиях telegram-bridge-bot параллельно, затем смержит.
 $bridgeScopeRules
 
 ДИАЛОГ:
