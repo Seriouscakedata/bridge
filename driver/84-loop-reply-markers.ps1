@@ -397,8 +397,8 @@
         Add-Message -From system -Text ("🧭 DISPATCH-DAG: исполняю план-доску как DAG над проектом " + $projFull + $parNote + "…") -Kind event | Out-Null
         $dag = $null
         try {
-          if ($reqPar -gt 0) { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot -MaxParallel $reqPar }
-          else               { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot }
+          if ($reqPar -gt 0) { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot -MaxParallel $reqPar -Channel $Channel }
+          else               { $dag = Invoke-FoundryPlanDispatch -RepoRoot $projRoot -Channel $Channel }
         } catch {
           Add-Message -From system -Text ("⚠ DISPATCH-DAG исключение: " + $_.Exception.Message) -Kind event | Out-Null
         }

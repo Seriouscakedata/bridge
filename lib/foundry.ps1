@@ -669,9 +669,31 @@ function Invoke-FoundryPlanDispatch {
     [int]$PollSec = 10,
     [int]$MaxWaves = 0,
     [scriptblock]$BatchRunner = $null,
-    [scriptblock]$Verify = $null
+    [scriptblock]$Verify = $null,
+    [string]$Channel = ''
   )
   if ($MaxParallel -le 0) { $MaxParallel = Get-FoundryMaxParallel }
+
+  # Plan-gate (Ф4): DAG must not execute until the operator has approved the PROJECT_PLAN.
+  # Same gate as Start-ProjectAutopilotIfNeeded; reuses Test-ProjectPlanApproved.
+  if (-not [string]::IsNullOrWhiteSpace($Channel)) {
+    $planApproved = $true
+    if (Get-Command Test-ProjectPlanApproved -ErrorAction SilentlyContinue) {
+      try { $planApproved = [bool](Test-ProjectPlanApproved -Channel $Channel -ProjectRoot $RepoRoot) } catch { $planApproved = $false }
+    }
+    if (-not $planApproved) {
+      $gateReasons = @('plan_approved не установлен — выполните Set-ProjectPlanApproved')
+      if (-not [string]::IsNullOrWhiteSpace($RepoRoot) -and (Get-Command Test-ProjectPlanContractReady -ErrorAction SilentlyContinue)) {
+        try {
+          $pc = Test-ProjectPlanContractReady -ProjectRoot $RepoRoot
+          if ($pc -and @($pc.issues).Count -gt 0) { $gateReasons = @($pc.issues) }
+        } catch {}
+      }
+      $gateMsg = 'DISPATCH-DAG ждёт утверждённый PROJECT_PLAN (Ф4): ' + ($gateReasons -join '; ')
+      try { Add-Message -From system -Text $gateMsg -Kind event | Out-Null } catch {}
+      return (New-FoundryDispatchResult -Ok $false -Outcome 'plan-not-approved' -Reason $gateMsg -Summary 'plan gate: не утверждён')
+    }
+  }
 
   # 1) There must be a plan with steps to dispatch.
   $ss = $null
