@@ -1581,6 +1581,29 @@ function Wait-ParallelDispatchPollWorker {
   Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -Result $res
 }
 
+function Stop-ParallelDispatchStalledWorker {
+  param(
+    [hashtable]$Completed,
+    [object]$Worker,
+    [string]$Reason
+  )
+
+  try {
+    if ($Worker.process -and -not $Worker.process.HasExited) {
+      Start-Process taskkill -ArgumentList '/PID',([string]$Worker.pid),'/F','/T' -NoNewWindow -Wait -ErrorAction SilentlyContinue
+    }
+  } catch {}
+
+  $res = [pscustomobject]@{
+    status  = 'failed'
+    reply   = ''
+    commits = @()
+    error   = $Reason
+  }
+  Complete-ParallelDispatchWorkerResult -Completed $Completed -Worker $Worker -Result $res
+  try { Add-Message -From system -Text ("dispatch_stall: Worker " + $Worker.id + " killed: " + $Reason) -Kind event } catch {}
+}
+
 function Wait-ParallelDispatchResults {
   param(
     [object[]]$Workers,
@@ -1593,6 +1616,20 @@ function Wait-ParallelDispatchResults {
   $workers = @($Workers)
   $deadline = (Get-Date).AddMinutes($TimeoutMin)
   $completed = @{}
+  # Stall detection ledger: per-worker byte-growth tracking
+  $stallLedger = @{}
+  $stallWarnZeroMin   = 5;  $stallKillZeroMin   = 10
+  $stallWarnGrowthMin = 8;  $stallKillGrowthMin = 15
+  foreach ($w in $workers) {
+    $stallLedger[[string]$w.id] = [pscustomobject]@{
+      lastTotLen      = [long]-1
+      lastProgressMs  = [long]0
+      sawAnyOutput    = $false
+      warnedZero      = $false
+      warnedGrowth    = $false
+    }
+  }
+  $stallSw = [System.Diagnostics.Stopwatch]::StartNew()
   while ($completed.Count -lt $workers.Count) {
     if ((Get-Date) -ge $deadline) {
       Stop-ParallelDispatchTimedOutWorkers -Workers $workers -Completed $completed -TimeoutMin $TimeoutMin
@@ -1611,6 +1648,43 @@ function Wait-ParallelDispatchResults {
     Update-ParallelDispatchHeartbeat
     foreach ($w in $workers) {
       Wait-ParallelDispatchPollWorker -Completed $completed -Worker $w
+    }
+
+    # Stall detection: check byte-growth for each still-running worker
+    $tickMs = $stallSw.ElapsedMilliseconds
+    foreach ($w in $workers) {
+      $wid = [string]$w.id
+      if ($completed.ContainsKey($wid)) { continue }
+      $led = $stallLedger[$wid]
+      if ($null -eq $led) { continue }
+
+      $totLen = [long]0
+      foreach ($fp in @([string]$w.outFile, [string]$w.errFile)) {
+        if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+        $fi = Get-Item -LiteralPath $fp -ErrorAction SilentlyContinue
+        if ($fi) { $totLen += [long]$fi.Length }
+      }
+      if ($totLen -gt 0) { $led.sawAnyOutput = $true }
+      if ($totLen -gt $led.lastTotLen) { $led.lastProgressMs = $tickMs; $led.lastTotLen = $totLen }
+      $stalledMs = $tickMs - $led.lastProgressMs
+
+      if (-not $led.sawAnyOutput) {
+        # Zero-output-ever discriminator
+        if ($stalledMs -ge ($stallKillZeroMin * 60000)) {
+          Stop-ParallelDispatchStalledWorker -Completed $completed -Worker $w -Reason 'zero_output_stall'
+        } elseif ($stalledMs -ge ($stallWarnZeroMin * 60000) -and -not $led.warnedZero) {
+          $led.warnedZero = $true
+          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": zero output for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillZeroMin + "m if no progress") -Kind event } catch {}
+        }
+      } else {
+        # Stalled-after-output discriminator
+        if ($stalledMs -ge ($stallKillGrowthMin * 60000)) {
+          Stop-ParallelDispatchStalledWorker -Completed $completed -Worker $w -Reason 'stagnation_timeout'
+        } elseif ($stalledMs -ge ($stallWarnGrowthMin * 60000) -and -not $led.warnedGrowth) {
+          $led.warnedGrowth = $true
+          try { Add-Message -From system -Text ("⚠ Worker " + $wid + ": output stalled for " + [int]($stalledMs/60000) + "m — will kill at " + $stallKillGrowthMin + "m") -Kind event } catch {}
+        }
+      }
     }
 
     # Eager collect: deliver each successful stream as soon as it reaches a terminal result.
