@@ -579,6 +579,30 @@ function Test-CanParallelize {
       continue
     }
 
+    # External-project guard (repair 2026-06-13): if ALL declared files are missing from the
+    # current repo tree (top-level dir absent AND file untracked), the planner likely used
+    # bridge-internal parallel syntax for an external project repo. Drop the stream early
+    # with a hint so workers are never spawned and no_progress_loop is avoided.
+    $rpGuard = ''
+    try { if (Get-Command Get-ParallelRepoRoot -ErrorAction SilentlyContinue) { $rpGuard = [string](Get-ParallelRepoRoot) } } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($rpGuard) -and (Test-Path -LiteralPath $rpGuard)) {
+      $gitEG = 'git'
+      try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $gitEG = [string](Get-GitExe) } } catch {}
+      $extFiles = New-Object System.Collections.Generic.List[string]
+      foreach ($f in $files) {
+        $topDir = (([string]$f) -split '[/\\]')[0]
+        $topPath = Join-Path $rpGuard $topDir
+        if (Test-Path -LiteralPath $topPath) { continue }
+        $tracked = $false
+        try { & $gitEG -C $rpGuard ls-files --error-unmatch -- ([string]$f) 2>$null | Out-Null; $tracked = ($LASTEXITCODE -eq 0) } catch {}
+        if (-not $tracked) { [void]$extFiles.Add($f) }
+      }
+      if ($extFiles.Count -gt 0 -and $extFiles.Count -eq $files.Count) {
+        [void]$droppedStreams.Add($id + ' (all files are outside this repo: ' + ($extFiles -join ', ') + ' -- use external-repo parallel dispatch form)')
+        continue
+      }
+    }
+
     $conflictFile = ''
     foreach ($f in $files) {
       if ($owners.ContainsKey($f) -and [string]$owners[$f] -ne $id) { $conflictFile = [string]$f; break }
@@ -870,6 +894,13 @@ function Invoke-ParallelOutsideFilesCheckout {
   $commands = New-Object 'System.Collections.Generic.List[object]'
   [void]$commands.Add([string[]](@('reset', '-q', '--') + @($safePaths)))
   [void]$commands.Add([string[]](@('checkout', '--') + @($safePaths)))
+  # Untracked over-reach files (new files a worker created outside its declared
+  # touch-set) make `git checkout -- <path>` fail with "pathspec did not match",
+  # because checkout only reverts TRACKED files. `git clean -f -d` removes those
+  # untracked artifacts so the outside changes are fully undone and the worktree
+  # does not carry them into the next retry. Scoped to safePaths only (never the
+  # whole tree) and respects .gitignore (no -x), so it cannot nuke unrelated files.
+  [void]$commands.Add([string[]](@('clean', '-f', '-d', '--') + @($safePaths)))
 
   foreach ($cmdArgs in $commands) {
     $gitArgs = [string[]]@($cmdArgs)
@@ -893,7 +924,17 @@ function Invoke-ParallelOutsideFilesCheckout {
     if ($output.Count -gt 0) {
       $result.output += @($output | ForEach-Object { [string]$_ })
     }
-    if ($exitCode -ne 0) { $result.ok = $false }
+    if ($exitCode -ne 0) {
+      # A pure "pathspec did not match" from checkout means the path was untracked
+      # (a newly-created over-reach file); the clean step removes it, so this is not
+      # a cleanup failure. Any other non-zero exit is treated as a real failure.
+      $op = ''
+      if ($gitArgs.Count -gt 0) { $op = [string]$gitArgs[0] }
+      $joinedOut = ''
+      try { $joinedOut = (@($output | ForEach-Object { [string]$_ }) -join "`n") } catch { $joinedOut = '' }
+      $isUntrackedCheckout = ($op -eq 'checkout' -and $joinedOut -match 'did not match')
+      if (-not $isUntrackedCheckout) { $result.ok = $false }
+    }
   }
 
   if (-not $result.ok -and [string]::IsNullOrWhiteSpace($result.message)) {
