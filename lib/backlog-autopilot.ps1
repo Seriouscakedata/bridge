@@ -949,6 +949,13 @@ function Set-ProjectPlanApproved {
       if (-not $apState) { $apState = [pscustomobject]@{} }
       $apState | Add-Member -NotePropertyName empty_streak_reset_ts -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
       $apState | Add-Member -NotePropertyName empty_coordinator_streak -NotePropertyValue 0 -Force
+      # Clear the sticky hard-pause flag too: the pause message says "до расширения PROJECT_PLAN/scope",
+      # and a re-approval IS that scope expansion + fresh operator authorization. Without clearing this,
+      # the gate at the top of Start-ProjectAutopilotIfNeeded short-circuits on paused=true before the
+      # (now reset) streak is ever consulted -> permanent deadlock.
+      $apState | Add-Member -NotePropertyName paused -NotePropertyValue $false -Force
+      $apState | Add-Member -NotePropertyName paused_at -NotePropertyValue '' -Force
+      $apState | Add-Member -NotePropertyName pause_reason -NotePropertyValue '' -Force
       Write-ProjectAutopilotState -State $apState
     } catch {}
   }
