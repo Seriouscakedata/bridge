@@ -474,7 +474,11 @@ function Normalize-ParallelId {
 function Normalize-ParallelFilePath {
   param([string]$Path)
   $p = ([string]$Path).Trim()
-  $p = $p.Trim(" `t`r`n""'`.,;")
+  $p = $p.Trim(" `t`r`n""'")
+  # keep a LEADING dot (dotfiles: .gitignore/.env/.gitattributes); strip only trailing list punctuation.
+  # Trimming '.' from both ends turned '.gitignore' into 'gitignore', so it never matched the changed
+  # path '.gitignore' in the parallel touch-set guard -> every dotfile-touching stream got quarantined.
+  $p = $p.TrimEnd('.,;')
   if ($p.StartsWith('./') -or $p.StartsWith('.\')) { $p = $p.Substring(2) }
   $p = $p -replace '\\','/'
   while ($p.StartsWith('/')) { $p = $p.Substring(1) }
@@ -490,7 +494,8 @@ function Split-ParallelFileList {
   foreach ($part in ($raw -split '[,;]')) {
     $p = ([string]$part).Trim()
     $p = $p -replace '^\s*[-*]\s+',''
-    $p = $p.Trim(" `t`r`n""'`.,;")
+    $p = $p.Trim(" `t`r`n""'")
+    $p = $p.TrimEnd('.,;')   # keep leading dot for dotfiles; strip only trailing list punctuation
     if ([string]::IsNullOrWhiteSpace($p)) { continue }
     if ($p -match '\s+#') { $p = ($p -split '\s+#',2)[0].Trim() }
     $n = Normalize-ParallelFilePath $p
