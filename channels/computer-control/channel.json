@@ -6,8 +6,8 @@
     "created":  "2026-06-13T21:02:35.7906286+03:00",
     "archived":  false,
     "plan_approved":  true,
-    "plan_approved_at":  "2026-06-14T03:18:00.7443876Z",
-    "plan_approved_signature":  "fe044dd31e66306bd9227284d4ac9c9e1f83b945cf348d8284ef003d220972b5",
+    "plan_approved_at":  "2026-06-14T07:23:14.1041590Z",
+    "plan_approved_signature":  "d950ce6ff79f6658bd41009a15894d84bd98c66eb6df2cda77dca6517ca0c5ef",
     "plan_approved_signature_version":  "staged-v1",
     "plan_approved_files":  [
                                 "PROJECT_BRIEF.md",
@@ -21,7 +21,7 @@
                                 "PROJECT_PLAN.md",
                                 ".bridge\\project-contract.json"
                             ],
-    "plan_approved_git_head":  "4264a71ea26ca08a3b752513f0b36e1fcdd43db6",
+    "plan_approved_git_head":  "3e6b1d03af1189b2ba4bd7428423b21450d547e8",
     "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\computer-control\\.bridge\\project-contract.json",
     "plan_contract_score":  100,
     "plan_contract_required_sections":  [
