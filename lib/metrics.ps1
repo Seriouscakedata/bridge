@@ -797,13 +797,20 @@ function Invoke-PostMortem {
   param([string]$FailureType, [string]$Task = '', [string]$Context = '', [string]$Channel = $null)
   if ([string]::IsNullOrWhiteSpace($Task)) { return }
   $shortTask = if ($Task.Length -gt 120) { $Task.Substring(0, 120) + '...' } else { $Task }
+  $failureHint = ''
+  if ($FailureType -in @('safety', 'rollback')) {
+    $failureHint = "ВНИМАНИЕ: тип сбоя '$FailureType' требует ОБЯЗАТЕЛЬНОГО заполнения СЦЕНАРИЙ_АТАКИ_ИЛИ_СБОЯ. Security-вердикт без временной цепочки entry→damage и списка модулей будет отклонён."
+  }
   $prompt = @"
 Ты анализируешь сбой задачи в системе AI-агентов (мост Claude+Codex).
 Тип сбоя: $FailureType
 Задача: $shortTask
 Контекст: $Context
+$failureHint
 
 Ответь ТОЛЬКО в таком формате (без пояснений):
+СЦЕНАРИЙ_АТАКИ_ИЛИ_СБОЯ: <обязательная временная цепочка — шаги с относительными временными метками, например T+0с, T+5с, ...: entry(что запустило цепочку) → propagation(как распространялось) → impact(на что повлияло) → damage(итоговый ущерб). ОБЯЗАТЕЛЬНО укажи конкретные модули/функции на каждом шаге. Для типа сбоя 'safety' или 'rollback': этот раздел ДОЛЖЕН быть заполнен содержательно — статический паттерн-матчинг по именам файлов или строкам кода НЕ является достаточным основанием для security-вердикта без этой цепочки. Если восстановить цепочку невозможно — напиши UNKNOWN_CHAIN.>
+ЗАТРОНУТЫ_МОДУЛИ: <через запятую — все модули/файлы/функции, затронутые в цепочке выше, или NONE>
 УРОК: <одно-два предложения — почему упало и что делать иначе в будущем>
 ИДЕЯ: <одна строка — конкретная идея в бэклог для устранения причины, или NONE>
 НЕ_ПОВТОРЯТЬ: <КОНТЕКСТ: что и при каких условиях пробовали | ПРОВАЛ: что именно пошло не так> или NONE
@@ -814,12 +821,32 @@ function Invoke-PostMortem {
   $lessonM = [regex]::Match($raw, '(?im)^УРОК:\s*(.+)$')
   $ideaM   = [regex]::Match($raw, '(?im)^ИДЕЯ:\s*(.+)$')
   $negativeM = [regex]::Match($raw, '(?im)^НЕ_ПОВТОРЯТЬ:\s*(.+)$')
+  $scenarioM = [regex]::Match($raw, '(?ims)^СЦЕНАРИЙ_АТАКИ_ИЛИ_СБОЯ:\s*(.+?)(?=^[А-Я_]+:|\z)')
+  $touchedM  = [regex]::Match($raw, '(?im)^ЗАТРОНУТЫ_МОДУЛИ:\s*(.+)$')
 
   if ($lessonM.Success) {
     $lesson  = $lessonM.Groups[1].Value.Trim()
     $memText = "[$FailureType] Задача: $shortTask — Урок: $lesson"
     try { Add-Memory -Channel $Channel -Text $memText -Tags @('lesson', $FailureType) -Source 'postmortem' -Importance 0.7 | Out-Null } catch {}
     try { Add-Message -From system -Text "🧠 Post-mortem ($FailureType): $lesson" -Kind event | Out-Null } catch {}
+  }
+  if ($scenarioM.Success) {
+    $scenario = $scenarioM.Groups[1].Value.Trim()
+    if ($scenario -and $scenario -notmatch '(?i)^(NONE|UNKNOWN_CHAIN|нет|N/A)$') {
+      $memScenario = "[$FailureType] Сценарий: $scenario"
+      if ($memScenario.Length -gt 700) { $memScenario = $memScenario.Substring(0, 700).Trim() }
+      try { Add-Memory -Channel $Channel -Text $memScenario -Tags @('postmortem-scenario', $FailureType) -Source 'postmortem-scenario-replay' -Importance 0.75 | Out-Null } catch {}
+    }
+  }
+  $touchedList = ''
+  if ($touchedM.Success) {
+    $touchedList = $touchedM.Groups[1].Value.Trim()
+  }
+  if ($FailureType -in @('safety', 'rollback')) {
+    $hasChain = $scenarioM.Success -and $scenarioM.Groups[1].Value.Trim() -notmatch '(?i)^(NONE|UNKNOWN_CHAIN|нет|N/A)$'
+    if (-not $hasChain) {
+      try { Add-Message -From system -Text "⚠ Post-mortem ($FailureType): СЦЕНАРИЙ_АТАКИ_ИЛИ_СБОЯ отсутствует — security-вердикт не подтверждён (только статический паттерн)." -Kind event | Out-Null } catch {}
+    }
   }
   if ($ideaM.Success) {
     $ideaText = $ideaM.Groups[1].Value.Trim()
@@ -836,7 +863,9 @@ function Invoke-PostMortem {
     }
   }
   # Append a structured failure record for the Architect's meta-pattern detection.
-  try { Add-FailureRecord -Class $FailureType -Task $shortTask -Context $Context -Channel $Channel } catch {}
+  $failureContext = $Context
+  if ($touchedList) { $failureContext = "$Context | touched_modules: $touchedList" }
+  try { Add-FailureRecord -Class $FailureType -Task $shortTask -Context $failureContext -Channel $Channel } catch {}
 }
 
 # --- Failures catalogue (meta-pattern source for Architect) ---
