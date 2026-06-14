@@ -2305,6 +2305,27 @@ function Resolve-BacklogWorkpackFrontier {
     }
   }
 
+  # 2026-06-14 (operator root-fix, user-approved): serial-single fallback for the touch-overlap WEDGE.
+  # If nothing was selected this wave AND eligible atoms were blocked purely by mutual touch-overlap
+  # (e.g. several atoms all writing one module file), pick the FIRST touch-overlap-blocked atom solo
+  # -> selected==1 -> serial path. Without this the channel wedged idle on same-file atoms instead of
+  # serializing them across waves. Mirrors the structural-barrier solo fallback above.
+  if ($selected.Count -eq 0 -and $touchSkips -gt 0) {
+    foreach ($candidate in @($candidateReports.ToArray())) {
+      if ([string]$candidate.block_reason -ne 'conflicts-or-touch-overlap') { continue }
+      $overlapId = [string]$candidate.id
+      $overlapItem = $null
+      foreach ($it in $eligible) {
+        if ([string](Get-BacklogPackObjectValue -Obj $it -Name 'id' -Default '') -eq $overlapId) { $overlapItem = $it; break }
+      }
+      if ($null -eq $overlapItem) { continue }
+      [void]$selected.Add($overlapItem)
+      Set-BacklogWorkpackCandidateSelected -Candidate $candidate -Order 1
+      $readyCount++
+      break
+    }
+  }
+
   $ids = @($selected.ToArray() | ForEach-Object { [string]$_.id })
   $packs = @($selected.ToArray() | ForEach-Object { [string]$_.workpack_id } | Sort-Object -Unique)
   $groups = @($usedGroups.Keys | Sort-Object -Unique)
