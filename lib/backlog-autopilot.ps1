@@ -99,6 +99,16 @@ function Test-ProjectAutopilotCoordinatorHasChildren {
 function Get-ProjectAutopilotInferredEmptyCoordinatorStreak {
   param([string]$ExcludeCoordinatorId = '')
   $items = @(Get-Backlog)
+  # 2026-06-14 (operator root-fix): a plan re-approval baselines empty_streak_reset_ts. Coordinators
+  # emitted BEFORE that baseline are NOT counted, so re-approving an expanded release scope clears the
+  # empty-coordinator-streak pause and the autopilot resumes instead of staying deadlocked on an old
+  # 'release done' streak.
+  $resetTs = [datetime]::MinValue
+  try {
+    $apSt = Read-ProjectAutopilotState
+    $rt = if ($apSt) { [string](Get-BacklogPackObjectValue -Obj $apSt -Name 'empty_streak_reset_ts' -Default '') } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($rt)) { $resetTs = [datetime]::Parse($rt).ToUniversalTime() }
+  } catch {}
   $coordinators = @($items |
     Where-Object {
       (Test-ProjectAutopilotCoordinatorItem -Item $_) -and
@@ -110,6 +120,9 @@ function Get-ProjectAutopilotInferredEmptyCoordinatorStreak {
 
   $streak = 0
   foreach ($it in $coordinators) {
+    $cts = [datetime]::MinValue
+    try { $cts = [datetime]::Parse([string](Get-BacklogPackObjectValue -Obj $it -Name 'ts' -Default '')).ToUniversalTime() } catch {}
+    if ($cts -lt $resetTs) { break }
     $status = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
     if ($status -in @('approved','running','new')) { continue }
     if ($status -ne 'done') { break }
@@ -927,6 +940,18 @@ function Set-ProjectPlanApproved {
   # clear the one-time gate-notified marker so a future re-gate (plan rewrite) notifies the operator again
   try { $gm = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.plan-gate-notified'; if (Test-Path -LiteralPath $gm) { Remove-Item -LiteralPath $gm -Force -ErrorAction SilentlyContinue } } catch {}
   try { $cm = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.plan-contract-gate-notified'; if (Test-Path -LiteralPath $cm) { Remove-Item -LiteralPath $cm -Force -ErrorAction SilentlyContinue } } catch {}
+  # 2026-06-14 (operator root-fix): on (re-)approval, baseline the autopilot empty-coordinator-streak so an
+  # expanded release scope RESUMES the autopilot instead of staying deadlocked on an old 'release done'
+  # streak. Re-approval = fresh operator authorization to keep building -> clear the empty-streak pause.
+  if ($Approved) {
+    try {
+      $apState = Read-ProjectAutopilotState
+      if (-not $apState) { $apState = [pscustomobject]@{} }
+      $apState | Add-Member -NotePropertyName empty_streak_reset_ts -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+      $apState | Add-Member -NotePropertyName empty_coordinator_streak -NotePropertyValue 0 -Force
+      Write-ProjectAutopilotState -State $apState
+    } catch {}
+  }
   return $Approved
 }
 
