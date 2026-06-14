@@ -4,5 +4,35 @@
     "description":  "Operator hands: fast/accurate/cheap computer task execution.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\computer-control",
     "created":  "2026-06-13T21:02:35.7906286+03:00",
-    "archived":  false
+    "archived":  false,
+    "plan_approved":  true,
+    "plan_approved_at":  "2026-06-14T03:18:00.7443876Z",
+    "plan_approved_signature":  "fe044dd31e66306bd9227284d4ac9c9e1f83b945cf348d8284ef003d220972b5",
+    "plan_approved_signature_version":  "staged-v1",
+    "plan_approved_files":  [
+                                "PROJECT_BRIEF.md",
+                                "DISCUSS_PRODUCT.md",
+                                "DISCUSS_UX.md",
+                                "DISCUSS_UI.md",
+                                "DISCUSS_BACKEND.md",
+                                "DISCUSS_QA.md",
+                                "DISCUSS_INTEGRATION.md",
+                                "PROJECT_MAP.md",
+                                "PROJECT_PLAN.md",
+                                ".bridge\\project-contract.json"
+                            ],
+    "plan_approved_git_head":  "4264a71ea26ca08a3b752513f0b36e1fcdd43db6",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\computer-control\\.bridge\\project-contract.json",
+    "plan_contract_score":  100,
+    "plan_contract_required_sections":  [
+                                            "goal",
+                                            "scope/non_goals",
+                                            "users/roles",
+                                            "surfaces/routes/screens",
+                                            "data/backend",
+                                            "acceptance_scenarios",
+                                            "checks",
+                                            "risk",
+                                            "parallel_policy"
+                                        ]
 }
