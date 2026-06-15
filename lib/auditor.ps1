@@ -114,6 +114,7 @@ function Get-AuditorGitInfo {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { $Path = $root }
   $status = @()
   $head = ''
+  $headFull = ''
   $ageMin = 999999
   try {
     $status = @(& git -C $Path status --porcelain 2>$null | ForEach-Object { [string]$_ })
@@ -122,6 +123,10 @@ function Get-AuditorGitInfo {
     $head = [string]((& git -C $Path rev-parse --short HEAD 2>$null) | Select-Object -First 1)
     $head = $head.Trim()
   } catch { $head = '' }
+  try {
+    $headFull = [string]((& git -C $Path rev-parse HEAD 2>$null) | Select-Object -First 1)
+    $headFull = $headFull.Trim()
+  } catch { $headFull = '' }
   try {
     $raw = [string]((& git -C $Path log -1 --format=%cI HEAD 2>$null) | Select-Object -First 1)
     $dt = ConvertTo-AuditorDateTime $raw
@@ -134,6 +139,7 @@ function Get-AuditorGitInfo {
   } catch { $commitMsg = '' }
   return [ordered]@{
     head = $head
+    head_full = $headFull
     status_short = ($status -join "`n")
     working_tree_lines = [int]$status.Count
     last_commit_age_min = [int]$ageMin
@@ -141,7 +147,47 @@ function Get-AuditorGitInfo {
   }
 }
 
-function Test-AuditorDoctorQaPass {
+function Test-AuditorDoctorCommitMessage {
+  param([string]$Message)
+  if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+  $msg = ([string]$Message).Trim()
+  if ($msg -match '^(?:[^:]+:\s*)?[^A-Za-zА-Яа-я0-9]{0,8}ДОКТОР\s*[—-]') { return $true }
+  if ($msg -match '^\[salvage\].*?:\s*[^A-Za-zА-Яа-я0-9]{0,8}ДОКТОР\s*[—-]') { return $true }
+  return $false
+}
+
+function Test-AuditorQaCachePass {
+  param(
+    $QaVerdictCache,
+    [string]$CommitSha,
+    [int]$MaxMinutes = 360
+  )
+  if ($null -eq $QaVerdictCache -or [string]::IsNullOrWhiteSpace($CommitSha)) { return $false }
+  try {
+    $qcHead = [string](Get-AuditorObjectProperty -Object $QaVerdictCache -Name 'head')
+    $qcVerdict = [string](Get-AuditorObjectProperty -Object $QaVerdictCache -Name 'verdict')
+    $qcSource = [string](Get-AuditorObjectProperty -Object $QaVerdictCache -Name 'source')
+    $qcTs = Get-AuditorObjectProperty -Object $QaVerdictCache -Name 'ts'
+    if ([string]::IsNullOrWhiteSpace($qcHead) -or [string]::IsNullOrWhiteSpace($qcVerdict)) { return $false }
+    if ($qcVerdict -ne 'PASS' -or $qcSource -ne 'post_commit') { return $false }
+
+    $commit = ([string]$CommitSha).Trim()
+    $cacheHead = $qcHead.Trim()
+    $headMatches = ($cacheHead -eq $commit)
+    if (-not $headMatches -and $cacheHead.Length -ge 7 -and $commit.Length -ge 7) {
+      $headMatches = $cacheHead.StartsWith($commit, [System.StringComparison]::OrdinalIgnoreCase) -or $commit.StartsWith($cacheHead, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $headMatches) { return $false }
+
+    $dt = ConvertTo-AuditorDateTime $qcTs
+    if (-not $dt) { return $false }
+    $cutoff = (Get-Date).AddMinutes(-[Math]::Abs($MaxMinutes))
+    return [bool]($dt -ge $cutoff)
+  } catch {}
+  return $false
+}
+
+function Test-AuditorDoctorRepairComplete {
   param(
     [int]$MaxMinutes = 360,
     [string]$LogPath = $null
@@ -162,6 +208,17 @@ function Test-AuditorDoctorQaPass {
     if ($lastComplete -and $lastComplete -ge $cutoff) { return $true }
   } catch {}
   return $false
+}
+
+function Test-AuditorDoctorQaPass {
+  param(
+    [int]$MaxMinutes = 360,
+    [string]$LogPath = $null,
+    $QaVerdictCache = $null,
+    [string]$CommitSha = ''
+  )
+  if (-not (Test-AuditorDoctorRepairComplete -MaxMinutes $MaxMinutes -LogPath $LogPath)) { return $false }
+  return (Test-AuditorQaCachePass -QaVerdictCache $QaVerdictCache -CommitSha $CommitSha -MaxMinutes $MaxMinutes)
 }
 
 function Get-AuditorSupervisorRestartCount {
@@ -388,6 +445,8 @@ function Get-AuditorSnapshot {
     $activeJobsCount = 0
     try { if ($st -and $st.PSObject.Properties.Name -contains 'active_jobs') { $activeJobsCount = @($st.active_jobs).Count } } catch {}
     $activeAgent = if ($st -and $st.PSObject.Properties.Name -contains 'active_agent') { [string]$st.active_agent } else { '' }
+    $qaVerdictCache = $null
+    try { if ($st -and $st.PSObject.Properties.Name -contains 'qa_verdict_cache') { $qaVerdictCache = $st.qa_verdict_cache } } catch { $qaVerdictCache = $null }
     $channels[$slug] = [ordered]@{
       status = if ($st) { [string]$st.status } else { 'missing_state' }
       doctor_active = if ($st) { [bool]$st.doctor_active } else { $false }
@@ -401,9 +460,12 @@ function Get-AuditorSnapshot {
       critic_retry_count = Get-AuditorStateInt -State $st -Names @('critic_retry_count') -Default 0
       current_task_short = if ($st) { Get-AuditorCurrentTaskShort -State $st } else { '' }
       restart_events_20min = [int]$restartCount
+      head = [string]$git.head
+      head_full = [string]$git.head_full
       working_tree_lines = [int]$git.working_tree_lines
       last_commit_age_min = [int]$git.last_commit_age_min
       last_commit_msg = [string]$git.last_commit_msg
+      qa_verdict_cache = $qaVerdictCache
       empty_reply_streak = [int](Get-AuditorEmptyReplyStreak -Slug $slug)
       progress_fingerprint_repeats = [int]$progressRepeats
       task_age_min = [int]$taskAge
@@ -481,8 +543,10 @@ function Test-AuditorTriggers {
       [void]$items.Add((New-AuditorTrigger -Name 'critic_pingpong' -Channel $slug -Detail ("critic_retry_count={0}, max={1}" -f [int]$c.critic_retry_count, $criticMax)))
     }
     $active = ([string]$c.status -ne 'idle' -and -not [string]::IsNullOrWhiteSpace([string]$c.current_task_short))
-    $lastCommitIsDoctor = ([string]$c.last_commit_msg -match 'ДОКТОР')
-    $doctorQaOk = if ($lastCommitIsDoctor) { Test-AuditorDoctorQaPass -MaxMinutes 360 } else { $false }
+    $lastCommitIsDoctor = Test-AuditorDoctorCommitMessage -Message ([string]$c.last_commit_msg)
+    $lastCommitSha = [string]$c.head_full
+    if ([string]::IsNullOrWhiteSpace($lastCommitSha)) { $lastCommitSha = [string]$c.head }
+    $doctorQaOk = if ($lastCommitIsDoctor) { Test-AuditorDoctorQaPass -MaxMinutes 360 -CommitSha $lastCommitSha -QaVerdictCache $c.qa_verdict_cache } else { $false }
     if ($active -and -not $inDiscussion -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
       [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min)))
     }

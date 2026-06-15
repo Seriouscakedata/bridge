@@ -7,6 +7,7 @@ $script:FailCount = 0
 
 $script:TestBridgeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-doctor-famine-" + [guid]::NewGuid().ToString('N'))
 $script:DoctorLogPath = Join-Path $script:TestBridgeRoot 'control\doctor.log'
+$script:HeadSha = 'abcdef1234567890abcdef1234567890abcdef12'
 
 function Get-BridgeRoot { return $script:TestBridgeRoot }
 
@@ -62,8 +63,28 @@ function Clear-DoctorLog {
   }
 }
 
+function New-QaVerdictCache {
+  param(
+    [string]$Head = $script:HeadSha,
+    [string]$Verdict = 'PASS',
+    [string]$Source = 'post_commit',
+    [int]$MinutesAgo = 10
+  )
+
+  return [pscustomobject]@{
+    head = $Head
+    verdict = $Verdict
+    source = $Source
+    ts = (Get-Date).AddMinutes(-[Math]::Abs($MinutesAgo)).ToUniversalTime().ToString('o')
+  }
+}
+
 function New-CommitFamineSnapshot {
-  param([string]$LastCommitMsg)
+  param(
+    [string]$LastCommitMsg,
+    $QaVerdictCache = $null,
+    [string]$Head = $script:HeadSha
+  )
 
   return [pscustomobject]@{
     channels = [ordered]@{
@@ -80,9 +101,12 @@ function New-CommitFamineSnapshot {
         critic_retry_count = 0
         current_task_short = 'test task'
         restart_events_20min = 0
+        head = $Head.Substring(0, 7)
+        head_full = $Head
         working_tree_lines = 1
         last_commit_age_min = 45
         last_commit_msg = $LastCommitMsg
+        qa_verdict_cache = $QaVerdictCache
         empty_reply_streak = 0
         progress_fingerprint_repeats = 0
         task_age_min = 45
@@ -115,30 +139,49 @@ try {
   New-Item -ItemType Directory -Path (Join-Path $script:TestBridgeRoot 'control') -Force | Out-Null
 
   Write-Host '=== doctor commit_famine skip ==='
+  $doctorCommitMsg = 'auto-commit (driver; coder sandbox cannot reach .git): ДОКТОР — задача саморемонта моста'
+  $ordinaryMentionsMarker = 'auto-commit (driver; coder sandbox cannot reach .git): [Автозадача] проверить маркер «ДОКТОР» в auditor'
 
   Write-Host '--- Scenario 1: doctor_last_commit_with_qa_pass ---'
   $recent = (Get-Date).AddMinutes(-10).ToString('yyyy-MM-dd HH:mm:ss')
   Write-DoctorLogLines @("[${recent}] Doctor complete: repaired")
-  Assert-True (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath) 'Scenario 1: fresh repaired log returns true'
-  Assert-True (-not (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'ДОКТОР: repaired bridge'))) 'Scenario 1: commit_famine suppressed'
+  $freshQaCache = New-QaVerdictCache
+  Assert-True (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $freshQaCache -CommitSha $script:HeadSha) 'Scenario 1: fresh repaired log and post-commit QA cache return true'
+  Assert-True (-not (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg $doctorCommitMsg -QaVerdictCache $freshQaCache))) 'Scenario 1: commit_famine suppressed'
 
   Write-Host '--- Scenario 2: doctor_last_commit_no_qa_pass ---'
-  $old = (Get-Date).AddMinutes(-400).ToString('yyyy-MM-dd HH:mm:ss')
-  Write-DoctorLogLines @("[${old}] Doctor complete: repaired")
-  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath)) 'Scenario 2: stale repaired log returns false'
-  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'ДОКТОР: repaired bridge')) 'Scenario 2: commit_famine remains active'
+  Write-DoctorLogLines @("[${recent}] Doctor complete: repaired")
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $null -CommitSha $script:HeadSha)) 'Scenario 2: missing post-commit QA cache returns false'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg $doctorCommitMsg -QaVerdictCache $null)) 'Scenario 2: commit_famine remains active'
 
   Write-Host '--- Scenario 3: non_doctor_last_commit ---'
   Write-DoctorLogLines @("[${recent}] Doctor complete: repaired")
-  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change')) 'Scenario 3: non-doctor commit does not suppress'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -QaVerdictCache $freshQaCache)) 'Scenario 3: non-doctor commit does not suppress'
 
   Write-Host '--- Scenario 4: doctor_log_missing ---'
   Clear-DoctorLog
-  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath)) 'Scenario 4: missing doctor.log returns false'
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $freshQaCache -CommitSha $script:HeadSha)) 'Scenario 4: missing doctor.log returns false'
 
   Write-Host '--- Scenario 5: doctor_log_only_activate ---'
   Write-DoctorLogLines @("[${recent}] Doctor activate: commit_famine")
-  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath)) 'Scenario 5: activate without complete returns false'
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $freshQaCache -CommitSha $script:HeadSha)) 'Scenario 5: activate without complete returns false'
+
+  Write-Host '--- Scenario 6: doctor_last_commit_stale_repair ---'
+  $old = (Get-Date).AddMinutes(-400).ToString('yyyy-MM-dd HH:mm:ss')
+  Write-DoctorLogLines @("[${old}] Doctor complete: repaired")
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $freshQaCache -CommitSha $script:HeadSha)) 'Scenario 6: stale repaired log returns false'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg $doctorCommitMsg -QaVerdictCache $freshQaCache)) 'Scenario 6: commit_famine remains active'
+
+  Write-Host '--- Scenario 7: ordinary_task_mentions_doctor_marker ---'
+  Write-DoctorLogLines @("[${recent}] Doctor complete: repaired")
+  Assert-True (-not (Test-AuditorDoctorCommitMessage -Message $ordinaryMentionsMarker)) 'Scenario 7: ordinary task title is not treated as Doctor commit'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg $ordinaryMentionsMarker -QaVerdictCache $freshQaCache)) 'Scenario 7: marker mention does not suppress'
+
+  Write-Host '--- Scenario 8: qa_cache_wrong_source_or_head ---'
+  $wrongSourceCache = New-QaVerdictCache -Source 'done_gate'
+  $wrongHeadCache = New-QaVerdictCache -Head '1111111234567890abcdef1234567890abcdef12'
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $wrongSourceCache -CommitSha $script:HeadSha)) 'Scenario 8: non-post_commit QA cache returns false'
+  Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $wrongHeadCache -CommitSha $script:HeadSha)) 'Scenario 8: QA cache for another head returns false'
 } finally {
   try {
     if (Test-Path -LiteralPath $script:TestBridgeRoot) {
