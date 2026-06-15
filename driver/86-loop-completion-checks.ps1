@@ -1275,6 +1275,34 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
       }
     } catch {}
   }
+  # Post-restart fast-path: check done_qa_pass_commit field on backlog item.
+  # This stamp survives restarts (unlike done_gate_pass_sha in state) and lets the
+  # DONE-gate skip the full parse/smoke/gate-regression/QA cycle when a task already
+  # has a confirmed commit with QA PASS from a prior (possibly interrupted) run.
+  if (-not $doneGateCachedPass -and (($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $dqpcState = Read-State
+      $dqpcTask = [string]$dqpcState.current_backlog_id
+      if ([string]::IsNullOrWhiteSpace($dqpcTask)) { $dqpcTask = [string]$dqpcState.current_task_id }
+      if (-not [string]::IsNullOrWhiteSpace($dqpcTask) -and [bool]$dqpcState.task_did_actions) {
+        $dqpcItem = @(Get-Backlog) | Where-Object { [string]$_.id -eq $dqpcTask } | Select-Object -First 1
+        if ($dqpcItem -and ($dqpcItem.PSObject.Properties.Name -contains 'done_qa_pass_commit')) {
+          $dqpcSha = ([string]$dqpcItem.done_qa_pass_commit).Trim()
+          if (-not [string]::IsNullOrWhiteSpace($dqpcSha)) {
+            $dqpcValid = $false
+            try {
+              $dqpcOut = ([string](& git -C $bridgeRoot rev-parse --verify ($dqpcSha + '^{commit}') 2>$null | Out-String)).Trim()
+              $dqpcValid = (-not [string]::IsNullOrWhiteSpace($dqpcOut))
+            } catch {}
+            if ($dqpcValid) {
+              $doneGateCachedPass = $true
+              Add-Message -From system -Text ("✅ DONE-gate: задача $dqpcTask уже имеет подтверждённый коммит $($dqpcSha.Substring(0,[Math]::Min(7,$dqpcSha.Length))) с QA PASS — повторный полный цикл пропущен (post-restart fast-path).") -Kind event | Out-Null
+            }
+          }
+        }
+      }
+    } catch {}
+  }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and -not $doneGateCachedPass -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     try {
       $stGate = Read-State
@@ -1529,6 +1557,29 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             $s | Add-Member -NotePropertyName done_gate_pass_sha -NotePropertyValue $dgpSha -Force
             $s | Add-Member -NotePropertyName done_gate_pass_task -NotePropertyValue $dgpTask -Force
           }.GetNewClosure()) | Out-Null
+          # Persist done_qa_pass_commit on the backlog task item.
+          # Stored on the item (not only in state) so it survives bridge restarts.
+          try {
+            $dqpStampTask = $dgpTask
+            $dqpStampSha = $dgpSha
+            if (-not [string]::IsNullOrWhiteSpace($dqpStampTask)) {
+              Invoke-BacklogLocked ({
+                $bkItems = @(Get-Backlog)
+                $bkDirty = $false
+                foreach ($bkItem in $bkItems) {
+                  if ([string]$bkItem.id -ne $dqpStampTask) { continue }
+                  if ($bkItem.PSObject.Properties.Name -contains 'done_qa_pass_commit') {
+                    $bkItem.PSObject.Properties['done_qa_pass_commit'].Value = $dqpStampSha
+                  } else {
+                    $bkItem | Add-Member -NotePropertyName done_qa_pass_commit -NotePropertyValue $dqpStampSha -Force
+                  }
+                  $bkDirty = $true
+                  break
+                }
+                if ($bkDirty) { Save-Backlog -Items $bkItems }
+              }.GetNewClosure()) | Out-Null
+            }
+          } catch {}
         }
       }
     } catch {}

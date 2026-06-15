@@ -1328,6 +1328,29 @@ $script:DriverLoopIdleClaimBlock = {
               $claimedIdea = $null
             }
           }
+          # Post-restart fast-path: if the task already has done_qa_pass_commit with a
+          # valid git commit, close it immediately without re-running the full delivery cycle.
+          # Mirrors the canary-gate-already-verified-skip pattern.
+          if ($claimedIdea) {
+            $dqpPreSha = ''
+            $dqpPreValid = $false
+            try {
+              if ($currentClaimedIdea.PSObject.Properties.Name -contains 'done_qa_pass_commit') {
+                $dqpPreSha = ([string]$currentClaimedIdea.done_qa_pass_commit).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($dqpPreSha)) {
+                  $dqpPreOut = ([string](& git -C $bridgeRoot rev-parse --verify ($dqpPreSha + '^{commit}') 2>$null | Out-String)).Trim()
+                  $dqpPreValid = (-not [string]::IsNullOrWhiteSpace($dqpPreOut))
+                }
+              }
+            } catch { $dqpPreValid = $false }
+            if ($dqpPreValid) {
+              $dqpPreId = [string]$claimedIdea.id
+              try { Set-Idea -Id $dqpPreId -Status 'done' | Out-Null } catch {}
+              Add-Message -From system -Text ("✅ DONE-gate pre-claim: задача $dqpPreId авто-закрыта — уже имеет подтверждённый коммит $($dqpPreSha.Substring(0,[Math]::Min(7,$dqpPreSha.Length))) с QA PASS (post-restart защита от commit_famine).") -Kind event | Out-Null
+              try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='done-qa-pass-commit-preclaim-skip'; item_id=$dqpPreId; commit=$dqpPreSha }) } catch {}
+              $claimedIdea = $null
+            }
+          }
           $preflightChecked = $false
           try {
             if ($claimedIdea -and $currentClaimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$currentClaimedIdea.preflight_checked }
