@@ -89,14 +89,27 @@ function Get-DriverDoneGateChangedPaths {
     }
   }
 
-  foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only','--cached') -Description 'diff --cached')) {
-    & $addPath $p
-  }
-  foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('diff','--name-only') -Description 'diff working tree')) {
-    & $addPath $p
-  }
-  foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments @('ls-files','--others','--exclude-standard') -Description 'ls-files untracked')) {
-    & $addPath $p
+  # 2026-06-15 (doctor repair gate): the working/staged/untracked scans are the resilient
+  # fallback the W2 fail-soft block above relies on ("changed-paths still come from the
+  # working/staged/untracked scan below"). They were NOT actually fail-soft: any git error
+  # here (e.g. a gate-snapshot extraction with no .git -> `diff --cached` drops to no-index
+  # mode and exits 129, or a transient index.lock) THREW and took the whole DONE-gate down
+  # into an uncapped CONTINUE loop. Make each scan independently fail-soft: a scan that errors
+  # is skipped, the others still contribute. A genuinely broken bridge repo surfaces through
+  # parse/smoke, not by deadlocking completion. (Covered by test-verify-chain-fastpath.ps1
+  # "pre-escalation changed-path scans stay fail-soft".)
+  foreach ($scan in @(
+    @{ Args = @('diff','--name-only','--cached'); Desc = 'diff --cached' },
+    @{ Args = @('diff','--name-only'); Desc = 'diff working tree' },
+    @{ Args = @('ls-files','--others','--exclude-standard'); Desc = 'ls-files untracked' }
+  )) {
+    try {
+      foreach ($p in @(Invoke-DriverDoneGateGitLines -BridgeRoot $BridgeRoot -Arguments $scan.Args -Description $scan.Desc)) {
+        & $addPath $p
+      }
+    } catch {
+      # fail-soft by design: skip a working-tree scan that git could not run; never throw the gate.
+    }
   }
 
   return @($changedPaths.ToArray())
