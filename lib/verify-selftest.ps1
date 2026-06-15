@@ -459,7 +459,7 @@ function Invoke-GateRegressionSuite {
   # even when every test was healthy. Scoped runs now get a sane per-test cap and a wrapper
   # budget derived from the selection size; the no-scope full-suite path keeps old behavior.
   $perTestTimeout = if ($selectedTests.Count -gt 0) { 60 } else { [int]$TimeoutSec }
-  $wrapperTimeout = if ($selectedTests.Count -gt 0) { [Math]::Max(150, ($selectedTests.Count * 30) + 90) } else { [Math]::Max(1, [int]$TimeoutSec) + 30 }
+  $wrapperTimeout = if ($selectedTests.Count -gt 0) { [Math]::Max(150, ($selectedTests.Count * $perTestTimeout) + 30) } else { [Math]::Max(1, [int]$TimeoutSec) + 30 }
   $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TimeoutSec', ([string]$perTestTimeout))
   if ($selectedTests.Count -gt 0) {
     $runArgs += '-OnlyCsv'

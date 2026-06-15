@@ -37,6 +37,33 @@ if (-not $script:BacklogOriginalInvokeBacklogIntakeGate) {
   try { $script:BacklogOriginalInvokeBacklogIntakeGate = (Get-Command Invoke-BacklogIntakeGate -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
 }
 
+function Test-BacklogCausalMapAuditSource {
+  param($Item)
+
+  $cmd = Get-Command Test-BacklogPackItemAuditSource -CommandType Function -ErrorAction SilentlyContinue
+  if ($cmd) {
+    try {
+      return [bool](& $cmd -Item $Item)
+    } catch {
+      # Fall through to the local predicate so the intake gate does not crash
+      # if the workpack helper was not loaded or changed signature.
+    }
+  }
+
+  $from = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'from' -Default '')).ToLowerInvariant()
+  if ($from -match 'audit') { return $true }
+
+  $text = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')).ToLowerInvariant()
+  if ($text -match '^\s*\[(deep-)?audit[/: -]') { return $true }
+
+  $tags = @(Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @())
+  foreach ($tag in $tags) {
+    if (([string]$tag).ToLowerInvariant() -match 'audit') { return $true }
+  }
+
+  return $false
+}
+
 function Add-BacklogFindingCausalMapText {
   param(
     [System.Collections.Generic.List[string]]$Target,
@@ -174,7 +201,7 @@ function Invoke-BacklogIntakeGate {
 
   $status = ([string](Get-BacklogPackObjectValue -Obj $Record -Name 'status' -Default '')).Trim().ToLowerInvariant()
   if ($status -ne 'approved') { return $base }
-  if (-not (Test-BacklogPackItemAuditSource -Item $Record)) { return $base }
+  if (-not (Test-BacklogCausalMapAuditSource -Item $Record)) { return $base }
 
   $causal = Test-BacklogFindingCausalMap -Item $Record
   if (-not [bool]$causal.ok) {
