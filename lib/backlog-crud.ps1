@@ -26,14 +26,42 @@ function Test-BacklogCrudTerminalStatus {
   return (@('done','rejected') -contains ([string]$Status).Trim().ToLowerInvariant())
 }
 
+function Get-BacklogCrudRejectRationale {
+  param($Item, [string]$Reason)
+  if (-not [string]::IsNullOrWhiteSpace($Reason)) { return ([string]$Reason).Trim() }
+  foreach ($prop in @('reason','rationale','resolved_reason')) {
+    $value = Get-BacklogCrudPropertyValue -Item $Item -Name $prop
+    if (-not [string]::IsNullOrWhiteSpace([string]$value)) { return ([string]$value).Trim() }
+  }
+  try {
+    $curator = Get-BacklogCrudPropertyValue -Item $Item -Name 'auto_curator'
+    if ($null -ne $curator -and $curator.PSObject.Properties.Name -contains 'reason') {
+      $value = $curator.PSObject.Properties['reason'].Value
+      if (-not [string]::IsNullOrWhiteSpace([string]$value)) { return ([string]$value).Trim() }
+    }
+  } catch {}
+  return ''
+}
+
+function Ensure-BacklogCrudRejectedExtractableSeed {
+  param($Item, [string]$Reason)
+  if ($null -eq $Item) { return }
+  $existing = Get-BacklogCrudPropertyValue -Item $Item -Name 'extractable_seed'
+  if (-not [string]::IsNullOrWhiteSpace([string]$existing)) { return }
+  $seed = Get-BacklogCrudRejectRationale -Item $Item -Reason $Reason
+  if ([string]::IsNullOrWhiteSpace([string]$seed)) { return }
+  $Item | Add-Member -NotePropertyName extractable_seed -NotePropertyValue ([string]$seed) -Force
+}
+
 function Copy-BacklogCrudStickyTerminalEvidence {
   param($Current, $Previous)
 
   $currentStatus = Get-BacklogCrudStatus -Item $Current
   if (-not (Test-BacklogCrudTerminalStatus -Status $currentStatus)) { return }
 
-  foreach ($prop in @('reason','done_sha','done_by')) {
+  foreach ($prop in @('reason','done_sha','done_by','extractable_seed')) {
     if ($prop -in @('done_sha','done_by') -and $currentStatus -ne 'done') { continue }
+    if ($prop -eq 'extractable_seed' -and $currentStatus -ne 'rejected') { continue }
     $newValue = Get-BacklogCrudPropertyValue -Item $Current -Name $prop
     $oldValue = Get-BacklogCrudPropertyValue -Item $Previous -Name $prop
     if ([string]::IsNullOrWhiteSpace([string]$newValue) -and -not [string]::IsNullOrWhiteSpace([string]$oldValue)) {
@@ -424,6 +452,8 @@ function Set-Idea {
       if ($requestedStatusLower -eq 'approved') {
         $i | Add-Member -NotePropertyName approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
         $i | Add-Member -NotePropertyName approved_at_sha -NotePropertyValue (& $currentShaFn) -Force
+      } elseif ($requestedStatusLower -eq 'rejected') {
+        Ensure-BacklogCrudRejectedExtractableSeed -Item $i -Reason $Reason
       } elseif ($requestedStatusLower -eq 'auto-dropped' -and -not [string]::IsNullOrWhiteSpace($Reason)) {
         $manual = [ordered]@{
           verdict = 'drop'
@@ -458,6 +488,7 @@ function Remove-Idea {
     if ([string]$i.id -ne $Id) { continue }
     $i | Add-Member -NotePropertyName status -NotePropertyValue 'rejected' -Force
     $i | Add-Member -NotePropertyName rejected_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+    Ensure-BacklogCrudRejectedExtractableSeed -Item $i -Reason $null
     $found = $true
     break
   }
