@@ -2,6 +2,11 @@
 # driver.ps1 at most once per autonomy.reflectEveryHours, only when the bridge is idle.
 # Reads recent activity + memory + open backlog, asks the CHEAP router (deepseek-v4-flash)
 # for a few concrete, safe improvement ideas, and files them into the backlog as 'new'.
+param(
+  [switch]$SelfModelSmokeSelfTest,
+  [string]$SelfModelSmokeScript = $null
+)
+
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\self-model.ps1')
 $ErrorActionPreference = 'Continue'
@@ -11,6 +16,109 @@ try { [Console]::OutputEncoding = $Utf8NoBom } catch {}
 
 $bridgeRoot = Get-BridgeRoot
 function Write-ReflectLog { param([string]$Msg) try { Add-Content -LiteralPath (Join-Path $bridgeRoot 'reflect.log') -Value ((Get-Date).ToString('s') + '  ' + $Msg) -Encoding UTF8 } catch {} }
+
+$script:ReflectSelfModelCriticalModules = @('driver','tools','core')
+
+function Get-ReflectSelfModelSmokeSnapshot {
+  param([string]$BridgeRoot)
+
+  $pack = ''
+  try {
+    if (Get-Command Get-SelfModelPack -ErrorAction SilentlyContinue) {
+      $pack = [string](Get-SelfModelPack -BridgeRoot $BridgeRoot)
+    }
+  } catch {
+    $pack = ''
+  }
+
+  $lines = @()
+  if (-not [string]::IsNullOrWhiteSpace($pack)) {
+    $lines = @($pack -split "`r?`n")
+  }
+  $subsystemCount = @($lines | Where-Object { $_ -match '^\s*-\s+' }).Count
+  $missingModules = @()
+  foreach ($module in $script:ReflectSelfModelCriticalModules) {
+    if ($pack -notmatch [regex]::Escape($module)) {
+      $missingModules += $module
+    }
+  }
+
+  [pscustomobject]@{
+    subsystem_count = [int]$subsystemCount
+    missing_modules = @($missingModules)
+  }
+}
+
+function Invoke-ReflectSelfModelSmoke {
+  param(
+    [string]$BridgeRoot,
+    [string]$SmokeScript = $null
+  )
+
+  if ([string]::IsNullOrWhiteSpace($SmokeScript)) {
+    $SmokeScript = Join-Path $BridgeRoot 'tools\self_model_smoke.ps1'
+  }
+
+  $before = Get-ReflectSelfModelSmokeSnapshot -BridgeRoot $BridgeRoot
+  $exitCode = $null
+  $smokeOut = ''
+  $smokeParsed = $null
+  $warningPath = $null
+  $passed = $false
+
+  try {
+    if (-not (Test-Path -LiteralPath $SmokeScript -PathType Leaf)) {
+      $exitCode = -1
+      $smokeOut = "self_model_smoke.ps1 not found: $SmokeScript"
+    } else {
+      $smokeOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File $SmokeScript -BridgeRoot $BridgeRoot 2>&1 | Out-String).Trim()
+      $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+      try { $smokeParsed = $smokeOut | ConvertFrom-Json } catch { $smokeParsed = $null }
+      $passed = (($exitCode -eq 0) -and $smokeParsed -and [bool]$smokeParsed.testPassed)
+    }
+  } catch {
+    $exitCode = -2
+    $smokeOut = $_.Exception.Message
+  }
+
+  $after = Get-ReflectSelfModelSmokeSnapshot -BridgeRoot $BridgeRoot
+  if (-not $passed) {
+    try {
+      $decisionsDir = Join-Path $BridgeRoot 'decisions'
+      if (-not (Test-Path -LiteralPath $decisionsDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $decisionsDir -Force | Out-Null
+      }
+      $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+      $warningPath = Join-Path $decisionsDir "reflect-smoke-$ts.json"
+      [pscustomobject]@{
+        ts = (Get-Date).ToString('o')
+        type = 'reflect-selfmodel-smoke-warning'
+        smoke_exit_code = $exitCode
+        subsystem_count_before = $before.subsystem_count
+        subsystem_count_after = $after.subsystem_count
+        missing_modules = @($after.missing_modules)
+        smoke_output = (($smokeOut -replace '\s+',' ').Trim())
+      } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $warningPath -Encoding UTF8
+    } catch {
+      Write-ReflectLog ("self-model smoke warning write failed: " + $_.Exception.Message)
+    }
+  }
+
+  [pscustomobject]@{
+    passed = [bool]$passed
+    exit_code = $exitCode
+    warning_path = $warningPath
+    subsystem_count_before = $before.subsystem_count
+    subsystem_count_after = $after.subsystem_count
+    missing_modules = @($after.missing_modules)
+    output = $smokeOut
+  }
+}
+
+if ($SelfModelSmokeSelfTest) {
+  Invoke-ReflectSelfModelSmoke -BridgeRoot $bridgeRoot -SmokeScript $SelfModelSmokeScript | ConvertTo-Json -Depth 5 -Compress
+  return
+}
 
 $auto = Get-AutonomySettings
 if (-not [bool]$auto.enabled) { Write-ReflectLog 'autonomy disabled; exit'; return }
@@ -204,18 +312,12 @@ foreach ($it in $ideas) {
 Write-ReflectLog "ideas added: $added"
 # self-model smoke after reflection guards against subsystem count regression.
 try {
-  $smokeScript = Join-Path $bridgeRoot 'tools\self_model_smoke.ps1'
-  if (Test-Path -LiteralPath $smokeScript) {
-    $smokeOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File $smokeScript -BridgeRoot $bridgeRoot 2>&1 | Out-String).Trim()
-    $smokeParsed = $null
-    try { $smokeParsed = $smokeOut | ConvertFrom-Json } catch { $smokeParsed = $null }
-    $smokePassed = ($smokeParsed -and [bool]$smokeParsed.testPassed)
-    if (-not $smokePassed) {
-      Write-ReflectLog ("self-model smoke FAIL after reflect: " + ($smokeOut -replace '\s+',' ').Trim())
-      try { Add-Message -From system -Text "⚠ Рефлексия: self-model smoke не прошёл после рефлексии — возможна деградация самомодели." -Kind event | Out-Null } catch {}
-    } else {
-      Write-ReflectLog 'self-model smoke OK after reflect'
-    }
+  $smokeResult = Invoke-ReflectSelfModelSmoke -BridgeRoot $bridgeRoot -SmokeScript $SelfModelSmokeScript
+  if (-not [bool]$smokeResult.passed) {
+    Write-ReflectLog ("self-model smoke FAIL after reflect: exit=" + $smokeResult.exit_code + " warning=" + $smokeResult.warning_path)
+    try { Add-Message -From system -Text "⚠ Рефлексия: self-model smoke не прошёл после рефлексии — возможна деградация самомодели." -Kind event | Out-Null } catch {}
+  } else {
+    Write-ReflectLog 'self-model smoke OK after reflect'
   }
 } catch { Write-ReflectLog ("self-model smoke error: " + $_.Exception.Message) }
 if ($added -gt 0) {
