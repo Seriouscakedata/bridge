@@ -430,6 +430,7 @@ function New-DriverDoneGatePlan {
   $gateSuiteNeeded = $true
   $gateNonCoreFastSubset = $false
   $bridgeCorePaths = @($changedPaths | Where-Object { Test-DriverDoneGateBridgeCorePath -Path $_ } | Sort-Object -Unique)
+  $integrityNeeded = ($changedPaths.Count -ge 2)
   if (-not (Get-Command Get-GateRegressionScope -ErrorAction SilentlyContinue)) {
     throw 'gate-regression runtime import missing: Get-GateRegressionScope'
   } else {
@@ -451,6 +452,7 @@ function New-DriverDoneGatePlan {
   if ($parseFiles.Count -gt 0) { [void]$jobs.Add('parse') }
   if ($smokeNeeded) { [void]$jobs.Add('smoke') }
   if ($gateSuiteNeeded) { [void]$jobs.Add('gate-regression') }
+  if ($integrityNeeded) { [void]$jobs.Add('integrity') }
 
   return [pscustomobject][ordered]@{
     ChangedPaths = @($changedPaths)
@@ -463,6 +465,7 @@ function New-DriverDoneGatePlan {
     GateBridgeCorePaths = @($bridgeCorePaths)
     GateNonCoreFastSubset = [bool]$gateNonCoreFastSubset
     GateSuiteNeeded = [bool]$gateSuiteNeeded
+    IntegrityNeeded = [bool]$integrityNeeded
     JobNames = @($jobs.ToArray())
   }
 }
@@ -552,6 +555,27 @@ $script:DriverDoneGateRegressionJob = {
   [pscustomobject]$result
 }
 
+$script:DriverDoneGateIntegrityJob = {
+  param([string]$BridgeRoot)
+  $result = [ordered]@{ Name='integrity'; Skipped=$false; Ok=$false; ExitCode=1; Output=''; RuntimeError='' }
+  try {
+    $integrityScript = Join-Path $BridgeRoot 'tools\test-state-integrity.ps1'
+    if (-not (Test-Path -LiteralPath $integrityScript -PathType Leaf)) {
+      $result.Skipped = $true
+      $result.Ok = $true
+      $result.RuntimeError = 'test-state-integrity.ps1 not found - skipped'
+      return [pscustomobject]$result
+    }
+    $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $integrityScript -BridgeRoot $BridgeRoot 2>&1 | Out-String
+    $result.Output = [string]$out
+    $result.ExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    $result.Ok = ($result.ExitCode -eq 0)
+  } catch {
+    $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
+  }
+  [pscustomobject]$result
+}
+
 function New-DriverDoneGateMissingResult {
   param([Parameter(Mandatory=$true)][string]$Name)
 
@@ -591,6 +615,16 @@ function New-DriverDoneGateMissingResult {
         ScopeApplied = $false
       }
     }
+    'integrity' {
+      return [pscustomobject][ordered]@{
+        Name = 'integrity'
+        Skipped = $false
+        Ok = $false
+        ExitCode = 1
+        Output = ''
+        RuntimeError = 'background job completed without an integrity result'
+      }
+    }
   }
 
   return [pscustomobject][ordered]@{
@@ -612,6 +646,7 @@ function Invoke-DriverDoneGateChecksSequential {
   $parseResult = $null
   $smokeResult = $null
   $gateResult = $null
+  $integrityResult = $null
   if ($Plan.ParseFiles.Count -gt 0) {
     $parseResult = & $script:DriverDoneGateParseJob $BridgeRoot @($Plan.ParseFiles)
   }
@@ -666,6 +701,9 @@ function Invoke-DriverDoneGateChecksSequential {
     }
     $gateResult = [pscustomobject]$gateResult
   }
+  if ([bool]$Plan.IntegrityNeeded) {
+    $integrityResult = & $script:DriverDoneGateIntegrityJob $BridgeRoot
+  }
 
   return [pscustomobject][ordered]@{
     Mode = 'sequential'
@@ -675,6 +713,7 @@ function Invoke-DriverDoneGateChecksSequential {
     Parse = $parseResult
     Smoke = $smokeResult
     GateRegression = $gateResult
+    Integrity = $integrityResult
   }
 }
 
@@ -690,7 +729,7 @@ function Invoke-DriverDoneGateChecks {
 
   $plan = New-DriverDoneGatePlan -BridgeRoot $BridgeRoot -TaskBaseCommit $TaskBaseCommit -Reply $Reply -ChangedPathsOverride $ChangedPathsOverride
   if ($plan.JobNames.Count -eq 0) {
-    return [pscustomobject][ordered]@{ Mode='none'; FallbackReason=''; Plan=$plan; JobsStarted=0; Parse=$null; Smoke=$null; GateRegression=$null }
+    return [pscustomobject][ordered]@{ Mode='none'; FallbackReason=''; Plan=$plan; JobsStarted=0; Parse=$null; Smoke=$null; GateRegression=$null; Integrity=$null }
   }
   if ([bool]$plan.GateSuiteNeeded -and -not (Test-Path -LiteralPath (Join-Path $BridgeRoot 'lib\verify-selftest.ps1') -PathType Leaf)) {
     $seq = Invoke-DriverDoneGateChecksSequential -Plan $plan -BridgeRoot $BridgeRoot -Channel $Channel -GateRegressionSuiteScriptBlock $GateRegressionSuiteScriptBlock
@@ -714,6 +753,9 @@ function Invoke-DriverDoneGateChecks {
     if ([bool]$plan.GateSuiteNeeded) {
       $useScope = [string]::IsNullOrWhiteSpace([string]$plan.GateScopeError)
       $startedJobs['gate-regression'] = Start-Job -ScriptBlock $script:DriverDoneGateRegressionJob -ArgumentList $BridgeRoot, @($plan.ChangedPaths), $useScope
+    }
+    if ([bool]$plan.IntegrityNeeded) {
+      $startedJobs['integrity'] = Start-Job -ScriptBlock $script:DriverDoneGateIntegrityJob -ArgumentList $BridgeRoot
     }
 
     if ($startedJobs.Count -gt 0) {
@@ -747,6 +789,7 @@ function Invoke-DriverDoneGateChecks {
       Parse = $(if ($results.ContainsKey('parse')) { $results['parse'] } else { $null })
       Smoke = $(if ($results.ContainsKey('smoke')) { $results['smoke'] } else { $null })
       GateRegression = $(if ($results.ContainsKey('gate-regression')) { $results['gate-regression'] } else { $null })
+      Integrity = $(if ($results.ContainsKey('integrity')) { $results['integrity'] } else { $null })
     }
   } catch {
     $fallbackReason = ($_.Exception.Message -replace '\s+',' ').Trim()
@@ -1450,6 +1493,18 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
               Add-Message -From system -Text ("⚠️ Gate-regression провалился 2× ({0}) — закрываю как есть; нужно внимание оператора. Таймаут suite = inconclusive, не доказанная регрессия." -f $failReason) -Kind event | Out-Null
               try { Send-PushEvent -Kind need_you -Text "Gate-regression 2x FAIL: $(Get-PushSnippet -Text $task)" } catch {}
             }
+          }
+        }
+        $integrityResult = $gateChecks.Integrity
+        if ($integrityResult -and -not [bool]$integrityResult.Skipped) {
+          if (-not [bool]$integrityResult.Ok) {
+            $intOut = if ($integrityResult.RuntimeError) { [string]$integrityResult.RuntimeError } else { ([string]$integrityResult.Output -replace '\s+',' ').Trim() }
+            if ($intOut.Length -gt 300) { $intOut = $intOut.Substring(0,300) + '...' }
+            Add-Message -From system -Text ("🚨 State integrity FAILED (exit={0}): {1}. Codex, исправь." -f $integrityResult.ExitCode, $intOut) -Kind event | Out-Null
+            Update-State { param($s) $s.verify_retry_count=[int]$s.verify_retry_count+1 } | Out-Null
+            $plannerStatus = 'CONTINUE'
+          } else {
+            Add-Message -From system -Text "✅ State integrity: OK." -Kind event | Out-Null
           }
         }
       }
