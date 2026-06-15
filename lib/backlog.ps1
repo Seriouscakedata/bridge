@@ -64,28 +64,103 @@ function Test-BacklogCausalMapAuditSource {
   return $false
 }
 
+function Test-BacklogCausalMapValueHasText {
+  param(
+    $Value,
+    [int]$Depth = 0
+  )
+
+  if ($null -eq $Value) { return $false }
+  if ($Depth -gt 8) { return (-not [string]::IsNullOrWhiteSpace([string]$Value)) }
+  if ($Value -is [string]) { return (-not [string]::IsNullOrWhiteSpace($Value)) }
+  if ($Value -is [System.Collections.IDictionary]) {
+    foreach ($key in @($Value.Keys)) {
+      if (Test-BacklogCausalMapValueHasText -Value $Value[$key] -Depth ($Depth + 1)) { return $true }
+    }
+    return $false
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary])) {
+    foreach ($entry in @($Value)) {
+      if (Test-BacklogCausalMapValueHasText -Value $entry -Depth ($Depth + 1)) { return $true }
+    }
+    return $false
+  }
+  if ($Value -is [ValueType]) { return (-not [string]::IsNullOrWhiteSpace([string]$Value)) }
+
+  $props = @()
+  try { $props = @($Value.PSObject.Properties | Where-Object { $_.Name -and $_.Name -ne 'Count' }) } catch { $props = @() }
+  if ($props.Count -gt 0) {
+    foreach ($prop in $props) {
+      if (Test-BacklogCausalMapValueHasText -Value $prop.Value -Depth ($Depth + 1)) { return $true }
+    }
+    return $false
+  }
+
+  return (-not [string]::IsNullOrWhiteSpace([string]$Value))
+}
+
+function Test-BacklogCausalMapNameIsFilePath {
+  param([string]$Name)
+  return (([string]$Name).Trim() -match '(?i)^(?:[\w.-]+[\\/])*[\w.-]+\.(?:ps1|psm1|js|jsx|ts|tsx|json|html|css|md|yml|yaml|env)$')
+}
+
 function Add-BacklogFindingCausalMapText {
   param(
     [System.Collections.Generic.List[string]]$Target,
-    $Value
+    $Value,
+    [int]$Depth = 0
   )
 
   if ($null -eq $Target -or $null -eq $Value) { return }
+  if ($Depth -gt 8) {
+    $s = [string]$Value
+    if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$Target.Add($s) }
+    return
+  }
+
   if ($Value -is [string]) {
     if (-not [string]::IsNullOrWhiteSpace($Value)) { [void]$Target.Add($Value) }
     return
   }
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary])) {
-    foreach ($entry in @($Value)) { Add-BacklogFindingCausalMapText -Target $Target -Value $entry }
+
+  if ($Value -is [System.Collections.IDictionary]) {
+    foreach ($key in @($Value.Keys)) {
+      $name = ([string]$key).Trim()
+      $child = $Value[$key]
+      if ((Test-BacklogCausalMapNameIsFilePath -Name $name) -and (Test-BacklogCausalMapValueHasText -Value $child -Depth ($Depth + 1))) {
+        [void]$Target.Add($name)
+      }
+      Add-BacklogFindingCausalMapText -Target $Target -Value $child -Depth ($Depth + 1)
+    }
     return
   }
-  try {
-    $json = $Value | ConvertTo-Json -Depth 6 -Compress
-    if (-not [string]::IsNullOrWhiteSpace($json)) { [void]$Target.Add([string]$json) }
-  } catch {
+
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary])) {
+    foreach ($entry in @($Value)) { Add-BacklogFindingCausalMapText -Target $Target -Value $entry -Depth ($Depth + 1) }
+    return
+  }
+
+  if ($Value -is [ValueType]) {
     $s = [string]$Value
     if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$Target.Add($s) }
+    return
   }
+
+  $props = @()
+  try { $props = @($Value.PSObject.Properties | Where-Object { $_.Name -and $_.Name -ne 'Count' }) } catch { $props = @() }
+  if ($props.Count -gt 0) {
+    foreach ($prop in $props) {
+      $name = ([string]$prop.Name).Trim()
+      if ((Test-BacklogCausalMapNameIsFilePath -Name $name) -and (Test-BacklogCausalMapValueHasText -Value $prop.Value -Depth ($Depth + 1))) {
+        [void]$Target.Add($name)
+      }
+      Add-BacklogFindingCausalMapText -Target $Target -Value $prop.Value -Depth ($Depth + 1)
+    }
+    return
+  }
+
+  $s = [string]$Value
+  if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$Target.Add($s) }
 }
 
 function Get-BacklogFindingCausalMapText {
