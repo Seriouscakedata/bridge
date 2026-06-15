@@ -441,7 +441,9 @@ function Test-AuditorTriggers {
     if ([int]$c.empty_reply_streak -ge 2) {
       [void]$items.Add((New-AuditorTrigger -Name 'empty_reply_streak' -Channel $slug -Detail ("{0} consecutive empty agent replies" -f [int]$c.empty_reply_streak)))
     }
-    $inDiscussion = ([string]$c.task_mode -eq 'discuss') -or ([int]$c.discuss_turn -gt 0)
+    # After a hard restart doctor.ps1 resets task_mode='normal' and discuss_turn=0,
+    # so also detect DISCUSS tasks by their title prefix — current_task_short survives restarts.
+    $inDiscussion = ([string]$c.task_mode -eq 'discuss') -or ([int]$c.discuss_turn -gt 0) -or ([string]$c.current_task_short -match '^\[DISCUSS\]')
     if ([int]$c.task_turn -gt 30 -and [int]$c.hb_age_sec -lt 60 -and -not $inDiscussion) {
       [void]$items.Add((New-AuditorTrigger -Name 'same_task_too_long' -Channel $slug -Detail ("task_turn={0}, hb_age_sec={1}" -f [int]$c.task_turn, [int]$c.hb_age_sec)))
     }
