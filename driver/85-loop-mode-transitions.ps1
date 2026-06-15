@@ -14,6 +14,7 @@
     $noopTask = ''
     $noopHasEvidence = $false
     $noopHasCoveredVerifiedEvidence = $false
+    $noopHasDoneQaPassCommit = $false
     $noopEvidenceChecked = $false
     $noopGuardError = ''
     try {
@@ -34,34 +35,21 @@
         } | Out-Null
       }
       $noopHasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
+      if ($noopHasBacklogId) {
+        $noopHasDoneQaPassCommit = [bool](Test-TaskDoneQaPassCommitEvidence -BacklogId $noopBacklogId -BridgeRoot $bridgeRoot)
+      }
     } catch {
       $noopGuardError = $_.Exception.Message
       $noopHasEvidence = $false
       $noopHasCoveredVerifiedEvidence = $false
+      $noopHasDoneQaPassCommit = $false
       $noopEvidenceChecked = $false
     }
     try {
       $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
-      $noopAllowDone = $false
-      $noopRejectReason = 'missing_action_evidence'
-      if (-not $noopHasBacklogId) {
-        $noopAllowDone = $true
-        $noopRejectReason = 'not_backlog_task'
-      } elseif ($noopProjectAutopilot) {
-        $noopAllowDone = $true
-        $noopRejectReason = 'project_autopilot'
-      } elseif ([int]$projectBacklogCreated -gt 0) {
-        $noopAllowDone = $true
-        $noopRejectReason = 'project_backlog_created'
-      } elseif (-not $noopEvidenceChecked) {
-        $noopRejectReason = 'evidence_check_failed'
-      } elseif ($noopHasEvidence) {
-        $noopAllowDone = $true
-        $noopRejectReason = 'action_evidence'
-      } elseif ($noopHasCoveredVerifiedEvidence) {
-        $noopAllowDone = $true
-        $noopRejectReason = 'covered_verified_evidence'
-      }
+      $noopDecision = Get-TaskDoneEvidenceDecision -HasBacklogId $noopHasBacklogId -ProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated) -EvidenceChecked $noopEvidenceChecked -HasEvidence $noopHasEvidence -HasCoveredVerifiedEvidence $noopHasCoveredVerifiedEvidence -HasDoneQaPassCommit $noopHasDoneQaPassCommit
+      $noopAllowDone = [bool]$noopDecision.allow
+      $noopRejectReason = [string]$noopDecision.reason
 
       if (-not $noopAllowDone) {
         $plannerStatus = 'CONTINUE'

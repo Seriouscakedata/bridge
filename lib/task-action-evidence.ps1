@@ -268,3 +268,66 @@ function Get-TaskActionEvidence {
     head             = [string]$head
   }
 }
+
+function Test-TaskDoneQaPassCommitEvidence {
+  # Read-only. Returns $true when the backlog item identified by $BacklogId carries a
+  # done_qa_pass_commit SHA that resolves to a real commit in the bridge repo.
+  # Mirrors the post-restart fast-path in driver/86-loop-completion-checks.ps1 so the
+  # mode-transition DONE evidence gate (driver/85) does not raise a false
+  # missing_action_evidence when task_base_commit was reset to HEAD after a restart
+  # (head_changed=false -> has_actions=false) yet a confirmed QA-passed commit already
+  # exists for the task. Fail-closed: any error / missing field / bad SHA returns $false.
+  param(
+    [AllowNull()][string]$BacklogId = '',
+    [string]$BridgeRoot = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($BacklogId)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { return $false }
+  try {
+    $item = @(Get-Backlog) | Where-Object { [string]$_.id -eq $BacklogId } | Select-Object -First 1
+    if (-not $item) { return $false }
+    if (-not ($item.PSObject.Properties.Name -contains 'done_qa_pass_commit')) { return $false }
+    $sha = ([string]$item.done_qa_pass_commit).Trim()
+    if ([string]::IsNullOrWhiteSpace($sha)) { return $false }
+    $out = ([string](& git -C $BridgeRoot rev-parse --verify ($sha + '^{commit}') 2>$null | Out-String)).Trim()
+    return (-not [string]::IsNullOrWhiteSpace($out))
+  } catch {
+    return $false
+  }
+}
+
+function Get-TaskDoneEvidenceDecision {
+  # Pure, deterministic decision for the driver/85 mode-transition DONE evidence gate.
+  # Returns { allow; reason } describing whether a planner DONE may pass without fresh
+  # commit/diff evidence and why. Order is significant and mirrors the original inline
+  # chain: non-backlog / autopilot / backlog-created bypasses first, then the fail-closed
+  # evidence_check_failed guard, then positive evidence signals (action -> covered-verified
+  # -> done_qa_pass_commit). Default is fail-closed: allow=$false, reason=missing_action_evidence.
+  param(
+    [bool]$HasBacklogId,
+    [bool]$ProjectAutopilot,
+    [int]$ProjectBacklogCreated = 0,
+    [bool]$EvidenceChecked,
+    [bool]$HasEvidence,
+    [bool]$HasCoveredVerifiedEvidence,
+    [bool]$HasDoneQaPassCommit
+  )
+  $allow = $false
+  $reason = 'missing_action_evidence'
+  if (-not $HasBacklogId) {
+    $allow = $true; $reason = 'not_backlog_task'
+  } elseif ($ProjectAutopilot) {
+    $allow = $true; $reason = 'project_autopilot'
+  } elseif ($ProjectBacklogCreated -gt 0) {
+    $allow = $true; $reason = 'project_backlog_created'
+  } elseif (-not $EvidenceChecked) {
+    $reason = 'evidence_check_failed'
+  } elseif ($HasEvidence) {
+    $allow = $true; $reason = 'action_evidence'
+  } elseif ($HasCoveredVerifiedEvidence) {
+    $allow = $true; $reason = 'covered_verified_evidence'
+  } elseif ($HasDoneQaPassCommit) {
+    $allow = $true; $reason = 'done_qa_pass_commit_evidence'
+  }
+  return [pscustomobject]@{ allow = [bool]$allow; reason = [string]$reason }
+}
