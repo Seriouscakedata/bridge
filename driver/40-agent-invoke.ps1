@@ -93,7 +93,8 @@
     # with coder cap (900s, 4cb5f53). Sonnet finishes long before this cap, no regression
     # for simple tasks; watchdog still catches truly hung drivers via restart_loop guard.
     $waitReason = $null
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs $plannerFirstOutputGraceMs -StopReason ([ref]$waitReason))) {
+    $plannerMaxAliveExtensionMs = if ($Mode -eq 'coder-fallback') { 300000 } else { 0 }
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 900000 -ErrFile $errF -OutFile $outF -FirstOutputGraceMs $plannerFirstOutputGraceMs -MaxAliveExtensionMs $plannerMaxAliveExtensionMs -StopReason ([ref]$waitReason))) {
       Stop-AgentTree $p.Id
       # Detect the opt-in zero-output grace kill, not a regular timeout or later stagnation abort.
       if ([string]$waitReason -eq 'zero_output_grace') {
@@ -630,9 +631,16 @@ function Invoke-Coder {
         try { Add-Message -From system -Text ("⚠ probe-timeout: adaptive calculation failed, using coderTimeoutMs=" + $coderTimeoutMs + ": " + $_.Exception.Message) -Kind event | Out-Null } catch {}
       }
     }
+    $coderMaxAliveExtensionMs = 1800000
+    if ($Mode -eq 'planner-fallback') {
+      $coderMaxAliveExtensionMs = 300000
+    } elseif ($Mode -eq 'discuss') {
+      $coderMaxAliveExtensionMs = 0
+    }
     $waitOk = $false
+    $coderWaitReason = $null
     try {
-      $waitOk = Wait-AgentProcess -Proc $p -TimeoutMs $coderTimeoutMs -MsgFile $msgF -ErrFile $errF -OutFile $outF
+      $waitOk = Wait-AgentProcess -Proc $p -TimeoutMs $coderTimeoutMs -MsgFile $msgF -ErrFile $errF -OutFile $outF -MaxAliveExtensionMs $coderMaxAliveExtensionMs -StopReason ([ref]$coderWaitReason)
     } catch {
       $probeExit = 'error'
       $probeVerdict = 'wait-error: ' + $_.Exception.Message
@@ -640,11 +648,12 @@ function Invoke-Coder {
     }
     if (-not $waitOk) {
       $probeExit = 'timeout'
-      $probeVerdict = 'timeout'
+      $coderErrorType = if ([string]::IsNullOrWhiteSpace([string]$coderWaitReason)) { 'coder_timeout' } else { 'coder_' + [string]$coderWaitReason }
+      $probeVerdict = $coderErrorType
       Stop-AgentTree $p.Id
       Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response '' `
-        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType 'coder_timeout' -Provider 'codex'
-      return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType='coder_timeout' }
+        -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'timeout' -ErrorType $coderErrorType -Provider 'codex'
+      return [pscustomobject]@{ text=''; status='timeout'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$coderErrorType }
     }
     $probeExit = 'ok'
     if (Test-Path $msgF) { $reply = Get-Content $msgF -Raw -Encoding UTF8 }
@@ -725,7 +734,8 @@ $NewBlock
         -RedirectStandardInput ([string]$Launch.In) -RedirectStandardOutput ([string]$Launch.Out) -RedirectStandardError ([string]$Launch.Err) -NoNewWindow -PassThru
     }
     $null = $p.Handle; Register-AgentPid $p.Id
-    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000 -ErrFile $errF -OutFile $outF)) { Stop-AgentTree $p.Id; return $null }
+    $summaryWaitReason = $null
+    if (-not (Wait-AgentProcess -Proc $p -TimeoutMs 120000 -ErrFile $errF -OutFile $outF -MaxAliveExtensionMs 300000 -StopReason ([ref]$summaryWaitReason))) { Stop-AgentTree $p.Id; return $null }
     if (Test-Path $outF) { $reply = Get-Content $outF -Raw -Encoding UTF8 }
   } finally { if ($p -and $p.Id) { Unregister-AgentPid $p.Id }; Remove-Item $inF,$outF,$errF -ErrorAction SilentlyContinue }
   if ($null -eq $reply) { return $null }

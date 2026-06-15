@@ -33,6 +33,175 @@ if (-not $script:BacklogOriginalGetNextBacklogWorkpackBatch) {
 if (-not $script:BacklogOriginalNewBacklogWorkpackBatchTaskText) {
   try { $script:BacklogOriginalNewBacklogWorkpackBatchTaskText = (Get-Command New-BacklogWorkpackBatchTaskText -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
 }
+if (-not $script:BacklogOriginalInvokeBacklogIntakeGate) {
+  try { $script:BacklogOriginalInvokeBacklogIntakeGate = (Get-Command Invoke-BacklogIntakeGate -CommandType Function -ErrorAction Stop).ScriptBlock } catch {}
+}
+
+function Add-BacklogFindingCausalMapText {
+  param(
+    [System.Collections.Generic.List[string]]$Target,
+    $Value
+  )
+
+  if ($null -eq $Target -or $null -eq $Value) { return }
+  if ($Value -is [string]) {
+    if (-not [string]::IsNullOrWhiteSpace($Value)) { [void]$Target.Add($Value) }
+    return
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary])) {
+    foreach ($entry in @($Value)) { Add-BacklogFindingCausalMapText -Target $Target -Value $entry }
+    return
+  }
+  try {
+    $json = $Value | ConvertTo-Json -Depth 6 -Compress
+    if (-not [string]::IsNullOrWhiteSpace($json)) { [void]$Target.Add([string]$json) }
+  } catch {
+    $s = [string]$Value
+    if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$Target.Add($s) }
+  }
+}
+
+function Get-BacklogFindingCausalMapText {
+  param($Item)
+
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @(
+      'text',
+      'title',
+      'summary',
+      'description',
+      'details',
+      'rationale',
+      'reason',
+      'affected_files',
+      'files',
+      'file_roles',
+      'touch_set',
+      'propagation_path',
+      'failure_path',
+      'multi_layer_failure_path',
+      'causal_map',
+      'cross_file_causal_map',
+      'evidence'
+    )) {
+    try {
+      Add-BacklogFindingCausalMapText -Target $parts -Value (Get-BacklogPackObjectValue -Obj $Item -Name $name -Default $null)
+    } catch {}
+  }
+  return (@($parts.ToArray()) -join "`n")
+}
+
+function Get-BacklogFindingCausalMapFiles {
+  param(
+    $Item,
+    [string]$Text = ''
+  )
+
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  $addFile = {
+    param([string]$Path)
+    $p = ([string]$Path).Trim().Replace('\','/')
+    if ([string]::IsNullOrWhiteSpace($p)) { return }
+    if ($p -notmatch '(?i)\.[a-z0-9]{1,8}$') { return }
+    $p = ($p -replace '^\.\/','').ToLowerInvariant()
+    if (-not $files.Contains($p)) { [void]$files.Add($p) }
+  }
+
+  try {
+    $gateFiles = Get-BacklogIntakeGateFileEvidence -Item $Item
+    foreach ($p in @($gateFiles.existing) + @($gateFiles.missing)) { & $addFile ([string]$p) }
+  } catch {}
+
+  foreach ($m in [regex]::Matches([string]$Text, '(?i)(?:^|[\s"''])(?<file>(?:[\w.-]+[\\/])*[\w.-]+\.(?:ps1|psm1|js|jsx|ts|tsx|json|html|css|md|yml|yaml|env))(?:[:#]\d{1,6})?')) {
+    & $addFile ([string]$m.Groups['file'].Value)
+  }
+
+  return @($files.ToArray())
+}
+
+function Test-BacklogFindingCausalMap {
+  param($Item)
+
+  $text = Get-BacklogFindingCausalMapText -Item $Item
+  $files = @(Get-BacklogFindingCausalMapFiles -Item $Item -Text $text)
+  $norm = ([regex]::Replace([string]$text, '\s+', ' ')).Trim()
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+
+  $hasTwoFiles = ($files.Count -ge 2)
+  $hasCausalLanguage = ($norm -match '(?i)(cause\s*(?:-|=)?>\s*effect|cause[s]?\b|causal|because|due\s+to|leads?\s+to|results?\s+in|therefore|breaks?\b|prevents?\b|regression)')
+  $hasFileRoles = ($norm -match '(?i)(file\s+roles?|roles?\s*:|producer|consumer|caller|callee|reader|writer|source|sink|entry(?:point)?|owner|boundary)')
+  $hasPropagationPath = ($norm -match '(?i)(propagation\s+path|propagat|flow[s]?|routes?|handoff|passes?\s+through|travels?\s+through|chain|->|=>)')
+  $hasMultiLayerFailurePath = ($norm -match '(?i)(multi[- ]?layer|failure\s+path|layer[s]?|boundary|cross[- ]?file|end[- ]?to[- ]?end|control[- ]?plane)')
+  $mentionsEveryFile = $true
+  foreach ($file in @($files)) {
+    $escaped = [regex]::Escape([string]$file)
+    $alt = [regex]::Escape(([string]$file).Replace('/','\'))
+    if ($norm -notmatch "(?i)($escaped|$alt)") {
+      $mentionsEveryFile = $false
+      break
+    }
+  }
+
+  if (-not $hasTwoFiles) { [void]$missing.Add('affected_files>=2') }
+  if (-not $mentionsEveryFile) { [void]$missing.Add('all_affected_files_named') }
+  if (-not $hasFileRoles) { [void]$missing.Add('file_roles') }
+  if (-not $hasPropagationPath) { [void]$missing.Add('propagation_path') }
+  if (-not $hasMultiLayerFailurePath) { [void]$missing.Add('multi_layer_failure_path') }
+  if (-not $hasCausalLanguage) { [void]$missing.Add('causal_language') }
+
+  return [pscustomobject]@{
+    ok = ($missing.Count -eq 0)
+    missing = @($missing.ToArray())
+    affected_files = @($files)
+    file_count = [int]$files.Count
+    has_file_roles = [bool]$hasFileRoles
+    has_propagation_path = [bool]$hasPropagationPath
+    has_multi_layer_failure_path = [bool]$hasMultiLayerFailurePath
+    has_causal_language = [bool]$hasCausalLanguage
+  }
+}
+
+function Invoke-BacklogIntakeGate {
+  param($Record)
+
+  if (-not $script:BacklogOriginalInvokeBacklogIntakeGate) {
+    return [pscustomobject]@{ gated=$true; action='hold'; status='held'; reason='intake gate unavailable'; matched_id=''; evidence=$null }
+  }
+
+  $base = & $script:BacklogOriginalInvokeBacklogIntakeGate -Record $Record
+  $action = ([string](Get-BacklogPackObjectValue -Obj $base -Name 'action' -Default '')).Trim().ToLowerInvariant()
+  if ($action -ne 'allow') { return $base }
+
+  $status = ([string](Get-BacklogPackObjectValue -Obj $Record -Name 'status' -Default '')).Trim().ToLowerInvariant()
+  if ($status -ne 'approved') { return $base }
+  if (-not (Test-BacklogPackItemAuditSource -Item $Record)) { return $base }
+
+  $causal = Test-BacklogFindingCausalMap -Item $Record
+  if (-not [bool]$causal.ok) {
+    return [pscustomobject]@{
+      gated = $true
+      action = 'hold'
+      status = 'held'
+      reason = 'cross_file_causal_map required'
+      matched_id = ''
+      evidence = [pscustomobject]@{
+        previous_action = $action
+        previous_reason = [string](Get-BacklogPackObjectValue -Obj $base -Name 'reason' -Default '')
+        previous_evidence = (Get-BacklogPackObjectValue -Obj $base -Name 'evidence' -Default $null)
+        cross_file_causal_map = $causal
+      }
+    }
+  }
+
+  try {
+    $existingEvidence = Get-BacklogPackObjectValue -Obj $base -Name 'evidence' -Default $null
+    $base | Add-Member -NotePropertyName evidence -NotePropertyValue ([pscustomobject]@{
+      previous_evidence = $existingEvidence
+      cross_file_causal_map = $causal
+    }) -Force
+  } catch {}
+  return $base
+}
 
 function Get-BacklogWorkpackPerTaskTimeoutSec {
   return 600

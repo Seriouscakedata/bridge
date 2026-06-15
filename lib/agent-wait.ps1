@@ -6,7 +6,7 @@ function Wait-AgentProcess {
   # long turn does not look dead to the watchdog.
   # Returns $true if the process exited within the timeout. When -StopReason is passed,
   # it receives: exited, zero_output_grace, hard_timeout, soft_timeout_no_signal,
-  # or stagnation_timeout.
+  # soft_timeout_output_cap, or stagnation_timeout.
   param(
     $Proc,
     [int]$TimeoutMs,
@@ -14,6 +14,7 @@ function Wait-AgentProcess {
     [string]$ErrFile='',
     [string]$OutFile='',
     [int]$FirstOutputGraceMs=0,
+    [int]$MaxAliveExtensionMs=0,
     $StopReason=$null
   )
   if ($StopReason) { $StopReason.Value = 'running' }
@@ -131,6 +132,10 @@ function Wait-AgentProcess {
 
     if ($elapsedMs -ge $hardMs) {
       if ($StopReason) { $StopReason.Value = 'hard_timeout' }
+      return $false
+    }
+    if ($MaxAliveExtensionMs -gt 0 -and $elapsedMs -ge ($softMs + $MaxAliveExtensionMs) -and $haveSignal -and $sawAnyOutput -and $stalledMs -lt $stallGraceMs) {
+      if ($StopReason) { $StopReason.Value = 'soft_timeout_output_cap' }
       return $false
     }
     if ($elapsedMs -ge $softMs) {
