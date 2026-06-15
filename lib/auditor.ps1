@@ -127,12 +127,41 @@ function Get-AuditorGitInfo {
     $dt = ConvertTo-AuditorDateTime $raw
     if ($dt) { $ageMin = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $dt).TotalMinutes)) }
   } catch { $ageMin = 999999 }
+  $commitMsg = ''
+  try {
+    $commitMsg = [string]((& git -C $Path log -1 --format=%s HEAD 2>$null) | Select-Object -First 1)
+    $commitMsg = $commitMsg.Trim()
+  } catch { $commitMsg = '' }
   return [ordered]@{
     head = $head
     status_short = ($status -join "`n")
     working_tree_lines = [int]$status.Count
     last_commit_age_min = [int]$ageMin
+    last_commit_msg = $commitMsg
   }
+}
+
+function Test-AuditorDoctorQaPass {
+  param(
+    [int]$MaxMinutes = 360,
+    [string]$LogPath = $null
+  )
+  if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    $LogPath = Join-Path (Get-BridgeRoot) 'control\doctor.log'
+  }
+  if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
+  try {
+    $lines = Get-Content -LiteralPath $LogPath -Tail 100 -Encoding UTF8 -ErrorAction Stop
+    $cutoff = (Get-Date).AddMinutes(-[Math]::Abs($MaxMinutes))
+    $lastComplete = $null
+    foreach ($line in $lines) {
+      if ([string]$line -match '\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] Doctor complete: repaired') {
+        try { $lastComplete = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $null) } catch {}
+      }
+    }
+    if ($lastComplete -and $lastComplete -ge $cutoff) { return $true }
+  } catch {}
+  return $false
 }
 
 function Get-AuditorSupervisorRestartCount {
@@ -374,6 +403,7 @@ function Get-AuditorSnapshot {
       restart_events_20min = [int]$restartCount
       working_tree_lines = [int]$git.working_tree_lines
       last_commit_age_min = [int]$git.last_commit_age_min
+      last_commit_msg = [string]$git.last_commit_msg
       empty_reply_streak = [int](Get-AuditorEmptyReplyStreak -Slug $slug)
       progress_fingerprint_repeats = [int]$progressRepeats
       task_age_min = [int]$taskAge
@@ -451,7 +481,9 @@ function Test-AuditorTriggers {
       [void]$items.Add((New-AuditorTrigger -Name 'critic_pingpong' -Channel $slug -Detail ("critic_retry_count={0}, max={1}" -f [int]$c.critic_retry_count, $criticMax)))
     }
     $active = ([string]$c.status -ne 'idle' -and -not [string]::IsNullOrWhiteSpace([string]$c.current_task_short))
-    if ($active -and -not $inDiscussion -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30) {
+    $lastCommitIsDoctor = ([string]$c.last_commit_msg -match 'ДОКТОР')
+    $doctorQaOk = if ($lastCommitIsDoctor) { Test-AuditorDoctorQaPass -MaxMinutes 360 } else { $false }
+    if ($active -and -not $inDiscussion -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
       [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min)))
     }
   }
