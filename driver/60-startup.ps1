@@ -152,7 +152,21 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     if ($stuckTaskShort.Length -gt 100) { $stuckTaskShort = $stuckTaskShort.Substring(0, 100) + '…' }
     $stuckBacklogId = if ($boot.current_backlog_id) { [string]$boot.current_backlog_id } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($stuckBacklogId)) {
-      try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $restartCapHit + "_" + $newTotalRestartCount) | Out-Null } catch {}
+      $dqpcMarkedDone = $false
+      try { . (Join-Path (Get-BridgeRoot) 'lib\task-action-evidence.ps1') } catch {}
+      if (Get-Command Test-TaskDoneQaPassCommitEvidence -ErrorAction SilentlyContinue) {
+        try {
+          if (Test-TaskDoneQaPassCommitEvidence -BacklogId $stuckBacklogId -BridgeRoot (Get-BridgeRoot)) {
+            $dqpcEntry = @(Get-Backlog) | Where-Object { [string]$_.id -eq $stuckBacklogId } | Select-Object -First 1
+            $dqpcSha = ([string]$dqpcEntry.done_qa_pass_commit).Trim()
+            try { Set-Idea -Id $stuckBacklogId -Status 'done' -Reason ("restart_cap_reconciled_done_qa_pass_commit_" + $dqpcSha) | Out-Null } catch {}
+            $dqpcMarkedDone = $true
+          }
+        } catch {}
+      }
+      if (-not $dqpcMarkedDone) {
+        try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $restartCapHit + "_" + $newTotalRestartCount) | Out-Null } catch {}
+      }
     }
     Update-State {
       param($s)
