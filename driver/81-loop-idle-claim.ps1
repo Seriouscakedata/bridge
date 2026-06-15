@@ -1302,6 +1302,32 @@ $script:DriverLoopIdleClaimBlock = {
             try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-held-skip'; item_id=$hid; reason='already-held' }) } catch {}
             $claimedIdea = $null
           }
+          # Canary gate skip: if this is a bridge-self-canary-gate child whose parent is
+          # already done (or the child has a verified stamp from a prior turn), auto-close
+          # without re-running canary + selftest + smoke. Prevents restart-cap overflow /
+          # zombie-reaper from re-firing completed canary gates.
+          if ($claimedIdea) {
+            $cgCheck = $null
+            try {
+              $isCGTask = $false
+              try {
+                if ($currentClaimedIdea.PSObject.Properties.Name -contains 'tags') {
+                  $isCGTask = (@($currentClaimedIdea.PSObject.Properties['tags'].Value) -contains 'bridge-self-canary-gate')
+                }
+              } catch { $isCGTask = $false }
+              if ($isCGTask -and (Get-Command Test-CanaryGateChildAlreadyVerified -ErrorAction SilentlyContinue)) {
+                $cgAllItems = @(Get-Backlog)
+                $cgCheck = Test-CanaryGateChildAlreadyVerified -Item $currentClaimedIdea -AllItems $cgAllItems
+              }
+            } catch { $cgCheck = $null }
+            if ($cgCheck -and [bool]$cgCheck.verified) {
+              $cgId = [string]$claimedIdea.id
+              try { Set-Idea -Id $cgId -Status 'done' | Out-Null } catch {}
+              Add-Message -From system -Text ("✅ Canary gate: задача $cgId авто-закрыта (уже верифицирована: $($cgCheck.reason)) — повторный прогон пропущен.") -Kind event | Out-Null
+              try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='canary-gate-already-verified-skip'; item_id=$cgId; reason=[string]$cgCheck.reason; parent_id=[string]$cgCheck.parent_id }) } catch {}
+              $claimedIdea = $null
+            }
+          }
           $preflightChecked = $false
           try {
             if ($claimedIdea -and $currentClaimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$currentClaimedIdea.preflight_checked }

@@ -582,8 +582,25 @@ function Set-BacklogOutcomeDoneWithLedger {
       $dirty = $true
 
       # Canary-child close: if this item is a canary gate child, auto-close its approved/held parent.
+      # Also stamp canary_gate_verified_at + canary_gate_commit_hash on the child so the pre-flight
+      # gate can detect re-queued runs (restart-cap overflow / zombie-reaper) and skip re-running.
       if (Get-Command Close-BacklogCanaryParent -ErrorAction SilentlyContinue) {
         $null = Close-BacklogCanaryParent -ChildItem $item -AllItems $items
+      }
+      $isCGChildItem = $false
+      try {
+        if ($item.PSObject.Properties.Name -contains 'tags') {
+          $isCGChildItem = (@($item.PSObject.Properties['tags'].Value) -contains 'bridge-self-canary-gate')
+        }
+      } catch { $isCGChildItem = $false }
+      if ($isCGChildItem) {
+        $cgVerifyTs = (Get-Date).ToUniversalTime().ToString('o')
+        $cgVerifyCommit = ''
+        try { $cgVerifyCommit = ([string](& git -C (Get-BridgeRoot) rev-parse HEAD 2>$null)).Trim() } catch {}
+        & $setPropFn -Item $item -Name 'canary_gate_verified_at' -Value $cgVerifyTs
+        if (-not [string]::IsNullOrWhiteSpace($cgVerifyCommit)) {
+          & $setPropFn -Item $item -Name 'canary_gate_commit_hash' -Value $cgVerifyCommit
+        }
       }
 
       if ($hasWiringGap) {

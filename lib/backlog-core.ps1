@@ -2690,4 +2690,67 @@ function Close-BacklogCanaryParent {
   return [pscustomobject]@{ closed = $true; reason = $reason; parent_id = $parentId; child_id = $childId; was_status = $parentStatus }
 }
 
+function Test-CanaryGateChildAlreadyVerified {
+  # Check whether a canary gate child task already passed the gate in a prior turn.
+  # Used by the pre-flight gate to skip re-runs caused by restart-cap overflow / zombie-reaper.
+  # Returns: { verified:bool; reason:string; parent_id:string; parent_status:string }
+  param(
+    [Parameter(Mandatory=$true)]$Item,
+    [Parameter(Mandatory=$false)][object[]]$AllItems = $null
+  )
+
+  $noResult = [pscustomobject]@{ verified = $false; reason = 'not-a-canary-gate-child'; parent_id = ''; parent_status = '' }
+  if ($null -eq $Item) { return $noResult }
+  $props = @($Item.PSObject.Properties.Name)
+
+  # Must have bridge-self-canary-gate tag and a parent reference.
+  $hasCGTag = $false
+  if ($props -contains 'tags') {
+    $hasCGTag = (@($Item.PSObject.Properties['tags'].Value) -contains 'bridge-self-canary-gate')
+  }
+  $parentId = ''
+  if ($props -contains 'canary_gate_parent_id') { $parentId = [string]$Item.PSObject.Properties['canary_gate_parent_id'].Value }
+  if ([string]::IsNullOrWhiteSpace($parentId) -and ($props -contains 'parent_id')) { $parentId = [string]$Item.PSObject.Properties['parent_id'].Value }
+  if (-not $hasCGTag -or [string]::IsNullOrWhiteSpace($parentId)) { return $noResult }
+
+  # Check 1: child has an explicit verified stamp from a prior turn.
+  $verifiedAt = ''
+  $verifiedCommit = ''
+  if ($props -contains 'canary_gate_verified_at') { $verifiedAt = [string]$Item.PSObject.Properties['canary_gate_verified_at'].Value }
+  if ($props -contains 'canary_gate_commit_hash') { $verifiedCommit = [string]$Item.PSObject.Properties['canary_gate_commit_hash'].Value }
+  if (-not [string]::IsNullOrWhiteSpace($verifiedAt)) {
+    $r = "canary_gate_verified_at=$verifiedAt"
+    if (-not [string]::IsNullOrWhiteSpace($verifiedCommit)) { $r += " commit=$verifiedCommit" }
+    return [pscustomobject]@{ verified = $true; reason = $r; parent_id = $parentId; parent_status = 'unknown' }
+  }
+
+  # Check 2: parent is done and was explicitly closed by a canary child.
+  $allItems2 = $AllItems
+  if ($null -eq $allItems2) { try { $allItems2 = @(Get-Backlog) } catch { $allItems2 = @() } }
+  $parent = $null
+  foreach ($it in @($allItems2)) {
+    if ($null -eq $it) { continue }
+    if (@($it.PSObject.Properties.Name) -contains 'id' -and [string]$it.PSObject.Properties['id'].Value -eq $parentId) {
+      $parent = $it
+      break
+    }
+  }
+  if ($null -eq $parent) {
+    return [pscustomobject]@{ verified = $false; reason = 'parent-not-found'; parent_id = $parentId; parent_status = '' }
+  }
+  $parentStatus = ''
+  if (@($parent.PSObject.Properties.Name) -contains 'status') {
+    $parentStatus = ([string]$parent.PSObject.Properties['status'].Value).ToLowerInvariant().Trim()
+  }
+  $closedByCanaryChildId = ''
+  if (@($parent.PSObject.Properties.Name) -contains 'closed_by_canary_child_id') {
+    $closedByCanaryChildId = [string]$parent.PSObject.Properties['closed_by_canary_child_id'].Value
+  }
+  if ($parentStatus -eq 'done' -and -not [string]::IsNullOrWhiteSpace($closedByCanaryChildId)) {
+    return [pscustomobject]@{ verified = $true; reason = "parent done, closed by canary child $closedByCanaryChildId (parent_id=$parentId)"; parent_id = $parentId; parent_status = $parentStatus }
+  }
+
+  return [pscustomobject]@{ verified = $false; reason = "parent status=$parentStatus"; parent_id = $parentId; parent_status = $parentStatus }
+}
+
 #endregion Operator batch reporting and self-execution safety

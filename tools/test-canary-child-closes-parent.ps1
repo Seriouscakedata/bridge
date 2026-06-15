@@ -76,6 +76,38 @@ Assert-True (-not [bool]$r6.closed) "parent not found: no-op"
 Assert-True ([string]$r6.reason -eq 'parent_not_found') "reason=parent_not_found"
 
 Write-Host ""
+Write-Host "=== Test-CanaryGateChildAlreadyVerified: unit tests ==="
+
+Write-Host "--- Scenario 7: child verified stamp -> verified=true ---"
+$p7 = MakeFakeItem @{ id = 'parent-007'; status = 'approved' }
+$c7 = MakeFakeItem @{ id = 'child-007'; status = 'held'; canary_gate_parent_id = 'parent-007'; tags = @('bridge-self-canary-gate'); canary_gate_verified_at = '2026-06-15T10:00:00.0000000Z'; canary_gate_commit_hash = 'abcdef1' }
+$r7 = Test-CanaryGateChildAlreadyVerified -Item $c7 -AllItems @($p7)
+Assert-True ([bool]$r7.verified) "stamp: verified=true"
+Assert-True ([string]$r7.parent_id -eq 'parent-007') "stamp: parent_id correct"
+Assert-True ([string]$r7.reason -like 'canary_gate_verified_at=*commit=abcdef1') "stamp: reason includes commit"
+
+Write-Host "--- Scenario 8: parent done + closed_by_canary_child_id -> verified=true ---"
+$p8 = MakeFakeItem @{ id = 'parent-008'; status = 'done'; closed_by_canary_child_id = 'child-008' }
+$c8 = MakeFakeItem @{ id = 'child-008'; status = 'held'; canary_gate_parent_id = 'parent-008'; tags = @('bridge-self-canary-gate') }
+$r8 = Test-CanaryGateChildAlreadyVerified -Item $c8 -AllItems @($p8)
+Assert-True ([bool]$r8.verified) "parent closed: verified=true"
+Assert-True ([string]$r8.parent_status -eq 'done') "parent closed: parent_status=done"
+
+Write-Host "--- Scenario 9: parent approved without stamp -> verified=false ---"
+$p9 = MakeFakeItem @{ id = 'parent-009'; status = 'approved' }
+$c9 = MakeFakeItem @{ id = 'child-009'; status = 'held'; canary_gate_parent_id = 'parent-009'; tags = @('bridge-self-canary-gate') }
+$r9 = Test-CanaryGateChildAlreadyVerified -Item $c9 -AllItems @($p9)
+Assert-True (-not [bool]$r9.verified) "parent approved: verified=false"
+Assert-True ([string]$r9.parent_status -eq 'approved') "parent approved: parent_status=approved"
+
+Write-Host "--- Scenario 10: no bridge-self-canary-gate tag -> verified=false ---"
+$p10 = MakeFakeItem @{ id = 'parent-010'; status = 'done'; closed_by_canary_child_id = 'child-010' }
+$c10 = MakeFakeItem @{ id = 'child-010'; status = 'held'; canary_gate_parent_id = 'parent-010'; tags = @('regular-task') }
+$r10 = Test-CanaryGateChildAlreadyVerified -Item $c10 -AllItems @($p10)
+Assert-True (-not [bool]$r10.verified) "no tag: verified=false"
+Assert-True ([string]$r10.reason -eq 'not-a-canary-gate-child') "no tag: reason=not-a-canary-gate-child"
+
+Write-Host ""
 Write-Host "=== MIGRATION: 4 held-zombie parents ==="
 $backlogPath = Join-Path $BridgeRoot 'channels\main\backlog.jsonl'
 if (-not (Test-Path -LiteralPath $backlogPath)) {
