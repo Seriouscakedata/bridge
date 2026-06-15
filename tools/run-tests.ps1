@@ -158,6 +158,10 @@ foreach ($t in $testFiles) {
     if ($proc.WaitForExit($TimeoutSec * 1000)) {
       $code = [int]$proc.ExitCode
       $ok = ($code -eq 0)
+      # The timed overload can return before redirected async readers finish
+      # draining. The parameterless wait is instant after exit and prevents
+      # false "stdout pipe did not close" failures for chatty tests.
+      try { $proc.WaitForExit() | Out-Null } catch {}
       try { $outTask.Wait(3000) | Out-Null } catch {}
       try { $errTask.Wait(3000) | Out-Null } catch {}
       if ($outTask.IsCompleted) {
