@@ -98,6 +98,34 @@ function Get-DriverStartupRestartCaps {
   return [pscustomobject]$caps
 }
 
+function Get-RestartRootCauseClass {
+  param($BootState, [bool]$IsTrustedApply, [string]$StampReason = '')
+  if ($IsTrustedApply) { return 'operator' }
+
+  if ($BootState) {
+    $prevStatus = [string]$BootState.status
+    $prevStatusText = [string]$BootState.status_text
+    if ($prevStatus -match '(?i)timeout|timed.out' -or $prevStatusText -match '(?i)timeout|timed.out') {
+      return 'timeout'
+    }
+
+    $agentPid = 0
+    try { $agentPid = [int]$BootState.agent_pid } catch { $agentPid = 0 }
+    if ($agentPid -gt 0) {
+      $alive = $false
+      try {
+        $p = Get-Process -Id $agentPid -ErrorAction SilentlyContinue
+        if ($p) { $alive = $true }
+      } catch {
+        $alive = $false
+      }
+      if (-not $alive) { return 'killed' }
+    }
+  }
+
+  return 'crash'
+}
+
 Sweep-AgentOrphans
 
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
@@ -199,6 +227,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     # autonomy unblocked) or reversibly stash it if broken — so no operator has to do it by hand.
     try { Invoke-FailedTaskSalvage -TaskText $stuckTaskShort -BacklogId $stuckBacklogId | Out-Null } catch { try { Write-DoctorLog ("salvage call error: " + $_.Exception.Message) } catch {} }
   } else {
+    $restartRootCauseClass = Get-RestartRootCauseClass -BootState $boot -IsTrustedApply $isTrustedApplyRestart -StampReason $(if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { '' })
     Update-State {
       param($s)
       Start-ReplayForStateTask -State $s -TaskText $resumeTask -ChannelName $Channel
@@ -211,6 +240,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
       $s | Add-Member -NotePropertyName task_restart_total_count -NotePropertyValue $newTotalRestartCount -Force
       $s | Add-Member -NotePropertyName task_last_restart_kind -NotePropertyValue $(if ($isTrustedApplyRestart) { 'apply' } else { 'hard' }) -Force
       $s | Add-Member -NotePropertyName task_last_restart_stamp_reason -NotePropertyValue $(if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { '' }) -Force
+      $s | Add-Member -NotePropertyName task_restart_root_cause_class -NotePropertyValue $restartRootCauseClass -Force
     } | Out-Null
     $remainingByKind = if ($isTrustedApplyRestart) { $maxApplyRestarts - $newApplyRestartCount } else { $maxHardRestarts - $newHardRestartCount }
     $remainingByTotal = $maxTotalRestarts - $newTotalRestartCount
@@ -221,6 +251,21 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
     }
     $restartKindText = if ($isTrustedApplyRestart) { 'trusted apply-stamp' } else { 'hard/untrusted restart: ' + $(if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { 'missing-stamp' }) }
     Add-Message -From system -Text ("♻ Мост перезапущен — возобновляю прерванную задачу (" + $restartKindText + "; apply=" + $newApplyRestartCount + "/" + $maxApplyRestarts + ", hard=" + $newHardRestartCount + "/" + $maxHardRestarts + ", total=" + $newTotalRestartCount + "/" + $maxTotalRestarts + ")." + $tail) -Kind event | Out-Null
+    try {
+      $rrLogPath = Join-Path (Get-DecisionsPath) 'restart-root-cause-log.jsonl'
+      $rrEntry = [ordered]@{
+        ts = (Get-Date).ToString('o')
+        class = $restartRootCauseClass
+        kind = if ($isTrustedApplyRestart) { 'apply' } else { 'hard' }
+        stamp_reason = if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { '' }
+        apply_count = $newApplyRestartCount
+        hard_count = $newHardRestartCount
+        total_count = $newTotalRestartCount
+        task_id = $resumeTaskId
+      }
+      $rrJson = $rrEntry | ConvertTo-Json -Compress
+      [System.IO.File]::AppendAllText($rrLogPath, $rrJson + "`n", [System.Text.Encoding]::UTF8)
+    } catch {}
   }
 } else {
   Update-State {

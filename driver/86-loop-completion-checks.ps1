@@ -403,6 +403,52 @@ function Test-CoveredAfterRestart {
   return $result
 }
 
+function Test-DoneGateDiffIntegrity {
+  param(
+    [string]$CommitSha,
+    [string]$BridgeRoot,
+    [string[]]$DeclaredFiles = @()
+  )
+  if ([string]::IsNullOrWhiteSpace($CommitSha) -or [string]::IsNullOrWhiteSpace($BridgeRoot)) {
+    return [pscustomobject]@{ ok=$false; reason='missing-args'; changedFiles=@(); overlap=@() }
+  }
+
+  $changedFiles = @()
+  try {
+    $out = (& git -c "safe.directory=$BridgeRoot" -C $BridgeRoot diff-tree --no-commit-id -r --name-only $CommitSha 2>$null | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($out)) {
+      $changedFiles = @($out -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+  } catch {
+    return [pscustomobject]@{ ok=$false; reason='git-diff-error'; changedFiles=@(); overlap=@() }
+  }
+
+  if ($changedFiles.Count -eq 0) {
+    return [pscustomobject]@{ ok=$false; reason='empty-diff'; changedFiles=@(); overlap=@() }
+  }
+
+  if ($DeclaredFiles.Count -gt 0) {
+    $normDeclared = @($DeclaredFiles | ForEach-Object { ($_ -replace '\\','/').TrimStart('/') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $normChanged = @($changedFiles | ForEach-Object { ($_ -replace '\\','/').TrimStart('/') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $overlap = @()
+    foreach ($declared in $normDeclared) {
+      foreach ($changed in $normChanged) {
+        if ($changed -eq $declared -or $changed.StartsWith($declared + '/') -or $declared.StartsWith($changed + '/')) {
+          $overlap += $declared
+          break
+        }
+      }
+    }
+    $overlap = @($overlap | Sort-Object -Unique)
+    if ($overlap.Count -eq 0) {
+      return [pscustomobject]@{ ok=$false; reason='foreign-diff'; changedFiles=$changedFiles; overlap=@() }
+    }
+    return [pscustomobject]@{ ok=$true; reason='overlap-found'; changedFiles=$changedFiles; overlap=$overlap }
+  }
+
+  return [pscustomobject]@{ ok=$true; reason='no-declared-files'; changedFiles=$changedFiles; overlap=@() }
+}
+
 function New-DriverDoneGatePlan {
   param(
     [Parameter(Mandatory=$true)][string]$BridgeRoot,
@@ -1629,6 +1675,20 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
                     $bkItem | Add-Member -NotePropertyName done_qa_pass_commit -NotePropertyValue $dqpStampSha -Force
                   }
                   $bkDirty = $true
+                  try {
+                    $declaredFs = @()
+                    try {
+                      if ($bkItem.PSObject.Properties.Name -contains 'files') {
+                        $declaredFs = @($bkItem.files | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                      }
+                    } catch {
+                      $declaredFs = @()
+                    }
+                    $diffCheck = Test-DoneGateDiffIntegrity -CommitSha $dqpStampSha -BridgeRoot (Get-BridgeRoot) -DeclaredFiles $declaredFs
+                    if (-not $diffCheck.ok) {
+                      try { Add-Message -From system -Text ("⚠ DONE-gate diff-integrity: $($diffCheck.reason) для коммита $($dqpStampSha.Substring(0,[Math]::Min(8,$dqpStampSha.Length))) (declared=$($declaredFs.Count), changed=$($diffCheck.changedFiles.Count)).") -Kind event | Out-Null } catch {}
+                    }
+                  } catch {}
                   break
                 }
                 if ($bkDirty) { Save-Backlog -Items $bkItems }

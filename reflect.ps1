@@ -202,6 +202,22 @@ foreach ($it in $ideas) {
   if ($id) { $added++ }
 }
 Write-ReflectLog "ideas added: $added"
+# self-model smoke after reflection guards against subsystem count regression.
+try {
+  $smokeScript = Join-Path $bridgeRoot 'tools\self_model_smoke.ps1'
+  if (Test-Path -LiteralPath $smokeScript) {
+    $smokeOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File $smokeScript -BridgeRoot $bridgeRoot 2>&1 | Out-String).Trim()
+    $smokeParsed = $null
+    try { $smokeParsed = $smokeOut | ConvertFrom-Json } catch { $smokeParsed = $null }
+    $smokePassed = ($smokeParsed -and [bool]$smokeParsed.testPassed)
+    if (-not $smokePassed) {
+      Write-ReflectLog ("self-model smoke FAIL after reflect: " + ($smokeOut -replace '\s+',' ').Trim())
+      try { Add-Message -From system -Text "⚠ Рефлексия: self-model smoke не прошёл после рефлексии — возможна деградация самомодели." -Kind event | Out-Null } catch {}
+    } else {
+      Write-ReflectLog 'self-model smoke OK after reflect'
+    }
+  }
+} catch { Write-ReflectLog ("self-model smoke error: " + $_.Exception.Message) }
 if ($added -gt 0) {
   try { Add-Message -From system -Text "🤔 Саморефлексия: предложено идей — $added. Загляни в Бэклог (🧠 → вкладка «Бэклог»), чтобы одобрить или отклонить." -Kind event | Out-Null } catch {}
 }
