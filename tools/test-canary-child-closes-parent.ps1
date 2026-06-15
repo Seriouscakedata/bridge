@@ -92,6 +92,7 @@ $c8 = MakeFakeItem @{ id = 'child-008'; status = 'held'; canary_gate_parent_id =
 $r8 = Test-CanaryGateChildAlreadyVerified -Item $c8 -AllItems @($p8)
 Assert-True ([bool]$r8.verified) "parent closed: verified=true"
 Assert-True ([string]$r8.parent_status -eq 'done') "parent closed: parent_status=done"
+Assert-True ([string]$r8.reason -like '*closed by canary child child-008*') "parent closed: reason names closing child"
 
 Write-Host "--- Scenario 9: parent approved without stamp -> verified=false ---"
 $p9 = MakeFakeItem @{ id = 'parent-009'; status = 'approved' }
