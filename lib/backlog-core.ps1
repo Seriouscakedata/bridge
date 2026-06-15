@@ -2750,6 +2750,18 @@ function Test-CanaryGateChildAlreadyVerified {
     return [pscustomobject]@{ verified = $true; reason = "parent done, closed by canary child $closedByCanaryChildId (parent_id=$parentId)"; parent_id = $parentId; parent_status = $parentStatus }
   }
 
+  # Check 3: parent was closed via done_qa_pass_commit fast-path (pre-claim).
+  # The commit+QA are already confirmed, so canary re-run is unnecessary.
+  if ($parentStatus -eq 'done') {
+    $dqpcProp = ''
+    if (@($parent.PSObject.Properties.Name) -contains 'done_qa_pass_commit') {
+      $dqpcProp = [string]$parent.PSObject.Properties['done_qa_pass_commit'].Value
+    }
+    if (-not [string]::IsNullOrWhiteSpace($dqpcProp)) {
+      return [pscustomobject]@{ verified = $true; reason = "parent done via done_qa_pass_commit=$($dqpcProp.Substring(0,[Math]::Min(7,$dqpcProp.Length))) (parent_id=$parentId)"; parent_id = $parentId; parent_status = $parentStatus }
+    }
+  }
+
   return [pscustomobject]@{ verified = $false; reason = "parent status=$parentStatus"; parent_id = $parentId; parent_status = $parentStatus }
 }
 

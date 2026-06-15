@@ -112,6 +112,22 @@ $item5 = New-MockBacklogItem @{
 }
 Assert-True (-not (Test-DoneQaPassCommitFastPath -Item $item5 -BridgeRoot $BridgeRoot)) 'Scenario 5: null returns false'
 
+Write-Host "--- Scenario 6: canary child skips when parent has done_qa_pass_commit ---"
+$parent6 = New-MockBacklogItem @{
+  id = 'parent-006'
+  status = 'done'
+  done_qa_pass_commit = $headSha
+}
+$child6 = New-MockBacklogItem @{
+  id = 'child-006'
+  status = 'new'
+  tags = @('bridge-self-canary-gate')
+  canary_gate_parent_id = 'parent-006'
+}
+$result6 = Test-CanaryGateChildAlreadyVerified -Item $child6 -AllItems @($parent6, $child6)
+Assert-True ([bool]$result6.verified) 'Scenario 6: canary child reports verified'
+Assert-True (([string]$result6.reason).Contains('done_qa_pass_commit')) 'Scenario 6: reason mentions done_qa_pass_commit'
+
 Write-Host ("{0} passed, {1} failed" -f $script:PassCount, $script:FailCount)
 if ($script:FailCount -gt 0) { exit 1 }
 exit 0
