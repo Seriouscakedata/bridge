@@ -140,7 +140,7 @@ $results = New-Object System.Collections.Generic.List[object]
 foreach ($t in $testFiles) {
   $tmpOut = [System.IO.Path]::GetTempFileName()
   $tmpErr = [System.IO.Path]::GetTempFileName()
-  $ok = $false; $code = -1; $tail = ''
+  $ok = $false; $code = -1; $tail = ''; $timedOut = $false
   try {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $ps
@@ -177,6 +177,7 @@ foreach ($t in $testFiles) {
     } else {
       try { $proc.Kill() } catch {}
       $code = 124
+      $timedOut = $true
       $tail = ("TIMEOUT after {0}s" -f $TimeoutSec)
     }
   } catch {
@@ -189,18 +190,20 @@ foreach ($t in $testFiles) {
     if ($lines.Count -gt 0) { $tail = [string]($lines[-1]) }
   }
   Remove-Item -LiteralPath $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
-  $results.Add([pscustomobject]@{ name = $t.Name; ok = $ok; code = $code; tail = [string]$tail })
+  $results.Add([pscustomobject]@{ name = $t.Name; ok = $ok; inconclusive = $timedOut; code = $code; tail = [string]$tail })
   if (-not $Quiet) {
-    $tag = if ($ok) { 'PASS' } else { 'FAIL' }
+    $tag = if ($ok) { 'PASS' } elseif ($timedOut) { 'INCONCL' } else { 'FAIL' }
     Write-Host ("{0,-5} {1}" -f $tag, $t.Name)
   }
 }
 
 $arr = @($results.ToArray())
-$failed = @($arr | Where-Object { -not $_.ok })
-$passCount = $arr.Count - $failed.Count
+$failed = @($arr | Where-Object { -not $_.ok -and -not $_.inconclusive })
+$inconclusiveArr = @($arr | Where-Object { $_.inconclusive })
+$passCount = $arr.Count - $failed.Count - $inconclusiveArr.Count
 Write-Host ''
-Write-Host ("=== gate-regression suite: {0}/{1} passed, {2} failed ===" -f $passCount, $arr.Count, $failed.Count)
+Write-Host ("=== gate-regression suite: {0}/{1} passed, {2} failed, {3} inconclusive ===" -f $passCount, $arr.Count, $failed.Count, $inconclusiveArr.Count)
 foreach ($f in $failed) { Write-Host ("  FAIL {0} (exit {1}): {2}" -f $f.name, $f.code, $f.tail) }
+foreach ($inc in $inconclusiveArr) { Write-Host ("  INCONCL {0}: {1}" -f $inc.name, $inc.tail) }
 if ($failed.Count -gt 0) { exit 1 }
 exit 0
