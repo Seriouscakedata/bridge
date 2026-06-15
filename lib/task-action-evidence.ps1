@@ -331,3 +331,34 @@ function Get-TaskDoneEvidenceDecision {
   }
   return [pscustomobject]@{ allow = [bool]$allow; reason = [string]$reason }
 }
+
+function Write-DiffIntegrityDecision {
+  # Writes decisions/diff-integrity-<ts>.json for DONE-gate commit-to-diff integrity check.
+  param(
+    [string]$CommitSha,
+    [string]$BridgeRoot,
+    [object]$CheckResult,
+    [string[]]$DeclaredFiles = @(),
+    [string]$BacklogId = ''
+  )
+  try {
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss_fff')
+    $decDir = Join-Path $BridgeRoot 'decisions'
+    if (-not (Test-Path $decDir -PathType Container)) { New-Item -ItemType Directory -Path $decDir -Force | Out-Null }
+    $decPath = Join-Path $decDir "diff-integrity-$ts.json"
+    $record = [ordered]@{
+      ts             = (Get-Date).ToUniversalTime().ToString('o')
+      commit_sha     = [string]$CommitSha
+      backlog_id     = [string]$BacklogId
+      declared_files = @($DeclaredFiles)
+      changed_files  = @(if ($null -ne $CheckResult -and $null -ne $CheckResult.changedFiles) { $CheckResult.changedFiles } else { @() })
+      overlap        = @(if ($null -ne $CheckResult -and $null -ne $CheckResult.overlap) { $CheckResult.overlap } else { @() })
+      result         = if ($null -ne $CheckResult -and [bool]$CheckResult.ok) { 'ok' } else { 'failed' }
+      reason         = if ($null -ne $CheckResult) { [string]$CheckResult.reason } else { 'unknown' }
+    }
+    [System.IO.File]::WriteAllText($decPath, ($record | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($true)))
+    return $decPath
+  } catch {
+    return $null
+  }
+}

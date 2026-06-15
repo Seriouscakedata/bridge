@@ -1688,6 +1688,17 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
                     if (-not $diffCheck.ok) {
                       try { Add-Message -From system -Text ("⚠ DONE-gate diff-integrity: $($diffCheck.reason) для коммита $($dqpStampSha.Substring(0,[Math]::Min(8,$dqpStampSha.Length))) (declared=$($declaredFs.Count), changed=$($diffCheck.changedFiles.Count)).") -Kind event | Out-Null } catch {}
                     }
+                    try {
+                      $diResult = if ([bool]$diffCheck.ok) { 'ok' } else { 'failed' }
+                      if (Get-Command Write-DiffIntegrityDecision -ErrorAction SilentlyContinue) {
+                        Write-DiffIntegrityDecision -CommitSha $dqpStampSha -BridgeRoot (Get-BridgeRoot) -CheckResult $diffCheck -DeclaredFiles $declaredFs -BacklogId $dqpStampTask | Out-Null
+                      }
+                      if ($bkItem.PSObject.Properties.Name -contains 'diff_integrity_result') {
+                        $bkItem.PSObject.Properties['diff_integrity_result'].Value = $diResult
+                      } else {
+                        $bkItem | Add-Member -NotePropertyName diff_integrity_result -NotePropertyValue $diResult -Force
+                      }
+                    } catch {}
                   } catch {}
                   break
                 }
