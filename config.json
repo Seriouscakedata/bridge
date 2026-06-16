@@ -14,6 +14,7 @@
     "planner":  "claude",
     "coder":  {
                   "agent":  "codex",
+                  "model":  "gpt-5.5",
                   "sandboxMode":  "workspace-write",
                   "sandboxModeByChannel":  {
                                                "literary-slop-video":  "danger-full-access"
@@ -35,7 +36,7 @@
                },
     "plannerRouting":  {
                            "opusOnLongPrompts":  false,
-                           "opusOnDiscuss":  false,
+                           "opusOnDiscuss":  true,
                            "opusOnStudy":  true,
                            "opusKeywords":  [
                                                 "архитектур",
@@ -648,11 +649,14 @@
                      },
     "radarEveryHours":  720,
     "synthesisMode":  {
-                          "enabled":  false,
+                          "enabled":  true,
                           "defaultDepth":  "smart",
+                          "claudeModel":  "claude-opus-4-8",
+                          "cheapModel":  "gemini-2.5-flash",
+                          "llmProposerModel":  "deepseek-v4-pro",
                           "proposerModels":  {
-                                                 "A":  "codex",
-                                                 "B":  "claude",
+                                                 "A":  "codex:gpt-5.5:xhigh",
+                                                 "B":  "claude-opus-4-8:xhigh",
                                                  "C":  "deepseek-v4-pro"
                                              },
                           "judgeByTaskType":  {

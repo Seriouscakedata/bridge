@@ -206,6 +206,17 @@ $md = Read-SynthesisArtifact -Dir $deepDir -Name 'micro_debate.json'
 Assert-True 'Deep: micro_debate ran (not skipped)' ((Get-ArtifactField -Obj $md -Name 'skipped') -eq $false)
 
 # ---------------------------------------------------------------------------------------------------
+# RUN: driver-facing wrapper
+# ---------------------------------------------------------------------------------------------------
+
+Write-Host '=== Driver wrapper ==='
+$drvTurn = Invoke-SynthesisDriverTurn -Task 'обсуди и сделай caching layer' -Channel 'scratch-driver' -Depth 'Deep' -DecisionId 'driver1'
+$drvDir = Get-ChannelDecisionsDir -Slug 'scratch-driver' -DecisionId 'driver1'
+Assert-True 'Driver wrapper: returns ok' ([string]$drvTurn.status -eq 'ok')
+Assert-True 'Driver wrapper: emits STATUS CONTINUE for implementation task' ([string]$drvTurn.text -match '(?im)^\s*STATUS:\s*CONTINUE\s*$')
+Assert-Artifact -Dir $drvDir -Name 'final_decision_record.json' -Validator { param($o,$e) Test-FinalDecisionRecord $o $e }
+
+# ---------------------------------------------------------------------------------------------------
 # Cleanup + verdict
 # ---------------------------------------------------------------------------------------------------
 

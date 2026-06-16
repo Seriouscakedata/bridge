@@ -81,6 +81,7 @@ function Get-PlannerModel {
 
   if ($Mode -eq 'study' -and $opusOnStudy) { return $deepModel }
   if ($Mode -eq 'discuss' -and $opusOnDisc) { return $deepModel }
+  if ($Mode -eq 'synthesis') { return $deepModel }
 
   if ($opusOnLong) {
     $wordCount = ($text -split '\s+' | Where-Object { $_ }).Count

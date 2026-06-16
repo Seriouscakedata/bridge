@@ -340,13 +340,29 @@ $script:DriverLoopIdleClaimBlock = {
       try { $fastLaneSafe = [bool](Test-IsSafeOsFastLaneTask -TaskText $taskMsg) } catch { $fastLaneSafe = $false }
       if (-not $fastLaneSafe) { $intentForcedFastLane = $false; $intentLowComplexity = $false }
 
-      # 2026-06-16 Decision Synthesis depth-router SHADOW (Ch12, log-only — NO routing yet).
-      # Records which depth the synthesis router WOULD pick, for promotion evidence. Behavior-neutral.
+      # 2026-06-16 Decision Synthesis depth-router. When synthesisMode.enabled=true it replaces
+      # role-based DISCUSS for explicit discussion / Deep / High-Stakes decisions.
+      $synthDepth = $null
+      $synthRoute = $null
       if (Get-Command Get-SynthesisDepthDecision -ErrorAction SilentlyContinue) {
         try {
           $synthDepth = Get-SynthesisDepthDecision -Text $taskMsg -Intent $taskIntent
-          Write-DepthShadow -Text $taskMsg -Decision $synthDepth
+          Write-DepthShadow -Channel $Channel -Text $taskMsg -Decision $synthDepth
         } catch {}
+      }
+      if (Get-Command Get-SynthesisRouteDecision -ErrorAction SilentlyContinue) {
+        try {
+          $synthRoute = Get-SynthesisRouteDecision `
+            -Text $taskMsg `
+            -Intent $taskIntent `
+            -ExplicitDiscuss ($discussVerbMark -or $intentForcedDiscuss) `
+            -ExplicitDeepThink $deepThinkMark `
+            -LowComplexity $intentLowComplexity `
+            -FastLane (-not [string]::IsNullOrWhiteSpace($fastLaneReason)) `
+            -NormalOverride $normalOverride `
+            -StudyMode ([bool]$studyDetect -or $intentForcedStudy) `
+            -ComputerAction $intentComputerAction
+        } catch { $synthRoute = $null }
       }
 
       $taskProjectRoot = Get-ActiveProjectRoot
@@ -396,6 +412,10 @@ $script:DriverLoopIdleClaimBlock = {
       $intentComputerActionClosure  = $intentComputerAction
       $discussVerbClosure          = $discussVerbMark
       $intentLowComplexityClosure  = $intentLowComplexity
+      $synthesisRouteClosure       = [bool]($synthRoute -and [bool]$synthRoute.route)
+      $synthesisDepthClosure       = if ($synthRoute) { [string]$synthRoute.depth } else { '' }
+      $synthesisTaskTypeClosure    = if ($synthRoute) { [string]$synthRoute.judge_task_type } else { '' }
+      $synthesisReasonClosure      = if ($synthRoute) { [string]$synthRoute.reason } else { '' }
 
       Update-State ({ param($s)
         $s.current_task=$taskMsg; $s.last_user_seq=$maxUser; $s.task_turn=0; $s.task_mode='normal'
@@ -414,6 +434,13 @@ $script:DriverLoopIdleClaimBlock = {
         # deep-think still win because they suppress $taskIntent upstream.
         if ($fastLaneReason) { Set-FastLaneFlags -State $s -Reason $fastLaneReason; $s.task_mode='normal' }
         elseif ($normalOverride) { $s.task_mode='normal' }  # explicit operator force
+        elseif ($synthesisRouteClosure) {
+          $s.task_mode='synthesis'; $s.discuss_turn=0
+          $s | Add-Member -NotePropertyName synthesis_depth -NotePropertyValue $synthesisDepthClosure -Force
+          $s | Add-Member -NotePropertyName synthesis_task_type -NotePropertyValue $synthesisTaskTypeClosure -Force
+          $s | Add-Member -NotePropertyName synthesis_route_reason -NotePropertyValue $synthesisReasonClosure -Force
+          $s | Add-Member -NotePropertyName synthesis_decision_id -NotePropertyValue '' -Force
+        }
         elseif ($deepThinkMark) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($discussVerbClosure -and -not $intentLowComplexityClosure) { $s.task_mode='discuss'; $s.discuss_turn=0 }
         elseif ($intentComputerActionClosure) { $s.task_mode='normal' }
@@ -451,6 +478,7 @@ $script:DriverLoopIdleClaimBlock = {
           $effMode = 'normal'; $effReason = 'default-normal'
           if ($fastLaneReason) { $effMode = 'fast'; $effReason = "fastlane:$fastLaneReason" }
           elseif ($normalOverride) { $effMode = 'normal'; $effReason = 'normal-override' }
+          elseif ($synthesisRouteClosure) { $effMode = 'synthesis'; $effReason = "synthesis:$synthesisReasonClosure" }
           elseif ($deepThinkMark) { $effMode = 'discuss'; $effReason = 'deep-think-marker' }
           elseif ($discussVerbMark -and -not $intentLowComplexity) { $effMode = 'discuss'; $effReason = 'discuss-verb' }
           elseif ($intentComputerAction) { $effMode = 'computer_action'; $effReason = 'computer-action-fastlane' }
@@ -469,6 +497,7 @@ $script:DriverLoopIdleClaimBlock = {
             computer_action         = [bool]$intentComputerAction
             study_detect            = [bool]$studyDetect
             low_complexity          = [bool]$intentLowComplexity
+            synthesis_route         = [bool]$synthesisRouteClosure
           }
           $mPrimary = if ($taskIntent) { [string]$taskIntent.primary_mode } else { '' }
           $mConf    = if ($taskIntent) { [double]$taskIntent.confidence } else { $null }
@@ -483,8 +512,9 @@ $script:DriverLoopIdleClaimBlock = {
       if ($fastLaneReason -eq 'marker') { Add-Message -From system -Text "🚀 Fast-lane активирован ([[FAST]])" -Kind event | Out-Null }
       elseif ($fastLaneReason -eq 'auto') { Add-Message -From system -Text "🚀 Auto fast-lane detected (короткая императивная задача)" -Kind event | Out-Null }
       if ($normalOverride -and -not $fastLaneReason) { Add-Message -From system -Text "📐 [[NORMAL]] override -- task_mode=normal forced (auto-detect bypassed)." -Kind event | Out-Null }
-      if ($deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
-      if ($discussVerbMark -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentLowComplexity) { Add-Message -From system -Text "🗣 Discuss-verb detected (обсуди/согласуйте/...) — режим: discuss (Claude↔Codex до сходимости, max 6 ходов). Хочешь обычный режим без обсуждения — добавь [[NORMAL]] в начало задачи." -Kind event | Out-Null }
+      if ($synthesisRouteClosure -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text ("🧠 Decision Synthesis включён: depth=$synthesisDepthClosure; reason=$synthesisReasonClosure. Старый Claude↔Codex DISCUSS заменён на multi-model synthesis.") -Kind event | Out-Null }
+      if (-not $synthesisRouteClosure -and $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) { Add-Message -From system -Text "🧭💭 Deep-think dialog detected — режим: discuss (Claude↔Codex до сходимости, max 6 ходов)." -Kind event | Out-Null }
+      if (-not $synthesisRouteClosure -and $discussVerbMark -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentLowComplexity) { Add-Message -From system -Text "🗣 Discuss-verb detected (обсуди/согласуйте/...) — режим: discuss (Claude↔Codex до сходимости, max 6 ходов). Хочешь обычный режим без обсуждения — добавь [[NORMAL]] в начало задачи." -Kind event | Out-Null }
       if ($studyDetect -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride -and -not $intentForcedDiscuss -and -not $intentForcedStudy -and -not $intentForcedFastLane) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: user" -Kind event | Out-Null }
       # 2026-05-28: announce LLM-classifier verdict so user sees what mode was inferred and why.
       if ($taskIntent -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
@@ -493,6 +523,7 @@ $script:DriverLoopIdleClaimBlock = {
         if (-not [string]::IsNullOrWhiteSpace([string]$taskIntent.reasoning)) { $verdictText += "`n   причина: " + [string]$taskIntent.reasoning }
         if ([bool]$taskIntent.user_wants_dialogue) { $verdictText += "`n   ⚠ пользователь явно хочет диалог" }
         if ($intentLowComplexity) { $verdictText += "`n   → режим: fast-lane (простая задача — пропускаю планировщик/критика/обсуждение). Нужен полный разбор — добавь [[DEEP-THINK]]." }
+        elseif ($synthesisRouteClosure) { $verdictText += "`n   → режим: synthesis (multi-model decision)" }
         elseif ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
         elseif ($intentForcedStudy) { $verdictText += "`n   → режим: study" }
         elseif ($intentComputerAction) { $verdictText += "`n   → режим: computer_action (локальный mouse/window fast-lane, без planner/coder/critic)" }
@@ -1509,6 +1540,33 @@ $script:DriverLoopIdleClaimBlock = {
             $operatorAtomFastLane = ($oaPaths.Count -ge 1 -and $oaPaths.Count -le 2 -and -not $oaControlPlane)
           }
         } catch { $operatorAtomFastLane = $false }
+        $backlogSynthesisRoute = $null
+        try {
+          if (Get-Command Get-SynthesisRouteDecision -ErrorAction SilentlyContinue) {
+            $backlogDiscussMark = [bool]([regex]::IsMatch([string]$btext, '(?im)(^\s*\[DISCUSS\]|\bобсуди|обсуждени|\bdiscuss\b|deep-think|architecture decision|architectural decision)'))
+            $backlogSynthesisRoute = Get-SynthesisRouteDecision `
+              -Text ([string]$btext) `
+              -ExplicitDiscuss $backlogDiscussMark `
+              -ExplicitDeepThink $false `
+              -LowComplexity $false `
+              -FastLane ([bool]($operatorAtomFastLane -or $isWorkpackBatch)) `
+              -NormalOverride $false `
+              -StudyMode ([bool]$studyDetect) `
+              -ComputerAction $false
+            try {
+              $bd = [pscustomobject]@{
+                depth = [string]$backlogSynthesisRoute.depth
+                judge_task_type = [string]$backlogSynthesisRoute.judge_task_type
+                rationale = [string]$backlogSynthesisRoute.rationale
+              }
+              Write-DepthShadow -Channel $Channel -Text ([string]$btext) -Decision $bd
+            } catch {}
+          }
+        } catch { $backlogSynthesisRoute = $null }
+        $backlogSynthesisRouteClosure = [bool]($backlogSynthesisRoute -and [bool]$backlogSynthesisRoute.route)
+        $backlogSynthesisDepthClosure = if ($backlogSynthesisRoute) { [string]$backlogSynthesisRoute.depth } else { '' }
+        $backlogSynthesisTaskTypeClosure = if ($backlogSynthesisRoute) { [string]$backlogSynthesisRoute.judge_task_type } else { '' }
+        $backlogSynthesisReasonClosure = if ($backlogSynthesisRoute) { [string]$backlogSynthesisRoute.reason } else { '' }
         $taskRepoRootForBacklog = Get-TaskRepoRoot
         $baseCommit = try { (& git -C $taskRepoRootForBacklog rev-parse HEAD 2>$null).Trim() } catch { '' }
         $baseDirty = @()
@@ -1580,6 +1638,13 @@ $script:DriverLoopIdleClaimBlock = {
           Start-ReplayForStateTask -State $s -TaskText $btext -ChannelName $Channel
           Clear-FastLaneFlags $s
           if ($studyDetect) { $s.task_mode='study'; $s.study_subtype=[string]$studyDetect.subtype; $s.study_phase='plan' }
+          elseif ($backlogSynthesisRouteClosure) {
+            $s.task_mode='synthesis'
+            $s | Add-Member -NotePropertyName synthesis_depth -NotePropertyValue $backlogSynthesisDepthClosure -Force
+            $s | Add-Member -NotePropertyName synthesis_task_type -NotePropertyValue $backlogSynthesisTaskTypeClosure -Force
+            $s | Add-Member -NotePropertyName synthesis_route_reason -NotePropertyValue $backlogSynthesisReasonClosure -Force
+            $s | Add-Member -NotePropertyName synthesis_decision_id -NotePropertyValue '' -Force
+          }
           elseif ($operatorAtomFastLane) {
             # stage 1b: only skip_planner — critic/QA/gates and the planner's verify role stay on.
             $s | Add-Member -NotePropertyName skip_planner -NotePropertyValue $true -Force
@@ -1657,6 +1722,7 @@ $script:DriverLoopIdleClaimBlock = {
           }
         } catch {}
         if ($studyDetect) { Add-Message -From system -Text "📚 Study-режим: триггер «$([string]$studyDetect.trigger)» · источник: backlog" -Kind event | Out-Null }
+        elseif ($backlogSynthesisRouteClosure) { Add-Message -From system -Text ("🧠 Decision Synthesis для backlog: depth=$backlogSynthesisDepthClosure; reason=$backlogSynthesisReasonClosure.") -Kind event | Out-Null }
         $state = Read-State
       } else {
         Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null

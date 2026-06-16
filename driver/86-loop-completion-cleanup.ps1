@@ -733,6 +733,14 @@ $script:DriverLoopCompletionCleanupBlock = {
         $dpath = Save-Decision -Title $task -Content $thread
         Add-Message -From system -Text "📝 Итог обсуждения сохранён: $dpath" -Kind event | Out-Null
       } catch {}
+    } elseif ($mode -eq 'synthesis') {
+      try {
+        $stSynthDone = Read-State
+        $sid = [string]$stSynthDone.synthesis_decision_id
+        $title = if ([string]::IsNullOrWhiteSpace($sid)) { $task } else { "Decision Synthesis $sid" }
+        $dpath = Save-Decision -Title $title -Content $visibleReply
+        Add-Message -From system -Text "📝 Итог Decision Synthesis сохранён: $dpath" -Kind event | Out-Null
+      } catch {}
     }
     # 2026-06-12 stage 3a (speed program): these memory writes are 2-3 LLM calls (~2-3 min) that
     # used to run SYNCHRONOUSLY here, blocking the next claim while prose was being written.

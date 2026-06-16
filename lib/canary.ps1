@@ -92,7 +92,7 @@ function Test-CanaryStateBusy {
 
   if (-not $State) { return $null }
 
-  if ($State.task_mode -and ([string]$State.task_mode -in @('active', 'discuss', 'code', 'running'))) {
+  if ($State.task_mode -and ([string]$State.task_mode -in @('active', 'discuss', 'synthesis', 'code', 'running'))) {
     return "$Label task_mode=$($State.task_mode)"
   }
   if ($State.auditor_state -and $State.auditor_state.status -eq 'active') {

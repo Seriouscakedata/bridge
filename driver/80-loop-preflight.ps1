@@ -57,8 +57,8 @@
         # Holding until state cleanup is safer than trusting the final transcript marker:
         # STATUS: DONE / ## ИТОГ may be present while IDEA filing has not run yet.
         if (-not [string]::IsNullOrWhiteSpace($rcTask)) { return $true }
-        if ($rcStatus -in @('discuss','planning','working','coding','research','study')) { return $true }
-        if ($rcMode -in @('discuss','planning','working','coding','research','study')) { return $true }
+        if ($rcStatus -in @('discuss','planning','working','coding','research','study','synthesis')) { return $true }
+        if ($rcMode -in @('discuss','planning','working','coding','research','study','synthesis')) { return $true }
         return $false
       }
       # 2026-05-30 defense: Get-ActiveSlugs now lives in lib/channels.ps1 (driver dot-sources it).

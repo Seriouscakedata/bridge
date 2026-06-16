@@ -349,10 +349,10 @@ function Get-CoderReasoningEffort {
     $wtLabel = 'n/a'
     return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
   }
-  if ($mode -eq 'discuss') {
-    # 2026-05-30: discuss = deep architectural dialogue (brainstorm/deep-think) where Codex critiques
-    # and counter-proposes on hard problems -> xhigh, symmetric with Opus's xhigh in discuss. Was 'high'.
-    return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt='discuss-xhigh' }
+  if ($mode -in @('discuss','synthesis')) {
+    # Discuss/synthesis are decision-quality paths, not routine coding. Keep Codex symmetric with
+    # premium Claude by forcing maximum reasoning.
+    return [pscustomobject]@{ effort='xhigh'; plen=$plen; mode=$mode; crc=$crc; wt=($mode + '-xhigh') }
   }
 
   $wtClean = $true
@@ -373,6 +373,23 @@ function Get-CoderReasoningEffort {
     return [pscustomobject]@{ effort='medium'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
   }
   return [pscustomobject]@{ effort='high'; plen=$plen; mode=$mode; crc=$crc; wt=$wtLabel }
+}
+
+function Get-CoderModel {
+  $default = 'gpt-5.5'
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'coder') -and $cfg.coder) {
+      $coderCfg = $cfg.coder
+      foreach ($name in @('model','codexModel')) {
+        if (($coderCfg.PSObject.Properties.Name -contains $name) -and $coderCfg.$name) {
+          $m = [string]$coderCfg.$name
+          if (-not [string]::IsNullOrWhiteSpace($m)) { return $m }
+        }
+      }
+    }
+  } catch {}
+  return $default
 }
 
 function Invoke-Coder {
@@ -487,7 +504,7 @@ function Invoke-Coder {
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "codex_in_$g.txt"; $msgF=Join-Path $env:TEMP "codex_msg_$g.txt"; $outF=Join-Path $env:TEMP "codex_out_$g.txt"; $errF=Join-Path $env:TEMP "codex_err_$g.txt"
   [System.IO.File]::WriteAllText($inF, $Prompt, $Utf8NoBom)
-  $readOnlyCoderMode = ($Mode -eq 'discuss' -or $Mode -eq 'planner-fallback')
+  $readOnlyCoderMode = ($Mode -eq 'discuss' -or $Mode -eq 'synthesis' -or $Mode -eq 'planner-fallback')
   $sbMode = if ($readOnlyCoderMode) { 'read-only' } else { Get-CoderSandboxMode }
   $reply = ''
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -567,7 +584,8 @@ function Invoke-Coder {
     $effRes = Get-CoderReasoningEffort -CoderCwd $coderCwd
     $effort = [string]$effRes.effort
     if ([string]::IsNullOrWhiteSpace($effort)) { $effort = 'high' }
-    $replayCoderModel = "codex-cli/$effort"
+    $coderModel = Get-CoderModel
+    $replayCoderModel = "codex-cli/$coderModel/$effort"
     $reasonArg = "model_reasoning_effort=`"$effort`""
     try {
       Add-Content -LiteralPath (Join-Path $bridgeRoot 'driver.out.log') -Value (
@@ -576,7 +594,7 @@ function Invoke-Coder {
     } catch {}
     $launch = [pscustomobject]@{
       File = $codexExe
-      Args = @('exec','--color','never','--skip-git-repo-check','-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-')
+      Args = @('exec','--color','never','--skip-git-repo-check','-m',$coderModel,'-c',$reasonArg,'-s',$sbMode,'-C',$coderCwd,'-o',$msgF,'-')
       Cwd  = $coderCwd
       In   = $inF
       Out  = $outF

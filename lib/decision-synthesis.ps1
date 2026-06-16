@@ -11,9 +11,9 @@
 #   Claude  = Invoke-Planner (driver/40-agent-invoke.ps1) -> @{ text; status; ... }
 #   Gemini  = Invoke-LLM     (lib/llm.ps1, -Purpose)       -> string reply (or $null)
 #
-# MODEL POLICY (hard): the Gemini-tier proposer + cheap-tier calls map to gemini-2.5-flash. NEVER
-# gemini-2.5-pro. gemini-3-flash is reserve only. We pass an explicit -Model 'gemini-2.5-flash' to
-# Invoke-LLM so the policy holds regardless of the runtime LLMConfig.
+# MODEL POLICY: Codex and Claude are explicit and high-reasoning for synthesis/discussion.
+# Cheap synthesis calls default to gemini-2.5-flash. The third proposer is config-driven
+# (synthesisMode.proposerModels.C), so config and implementation cannot drift.
 #
 # This file does NOT wire any driver. It only provides functions.
 
@@ -25,8 +25,72 @@ if (-not (Get-Command Get-SynthesisDepthDecision -ErrorAction SilentlyContinue))
   try { . (Join-Path $PSScriptRoot 'decision-depth.ps1') } catch {}
 }
 
-# Model id for the Gemini-tier proposer + cheap-tier calls. Hard policy: flash, never pro.
-$script:SynthGeminiModel = 'gemini-2.5-flash'
+# Default cheap-tier model for contract/normalize/conflict/review/debate/simple stages.
+$script:SynthCheapModel = 'gemini-2.5-flash'
+
+function Get-SynthConfig {
+  try {
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $cfg = Get-BridgeConfig
+      if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'synthesisMode') -and $cfg.synthesisMode) {
+        return $cfg.synthesisMode
+      }
+    }
+  } catch {}
+  return $null
+}
+
+function Get-SynthConfigValue {
+  param([string]$Name, [string]$Default = '')
+  $sm = Get-SynthConfig
+  if ($sm -and ($sm.PSObject.Properties.Name -contains $Name) -and $null -ne $sm.$Name) {
+    $v = [string]$sm.$Name
+    if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
+  }
+  return $Default
+}
+
+function Get-SynthClaudeModel {
+  $m = Get-SynthConfigValue -Name 'claudeModel' -Default ''
+  if (-not [string]::IsNullOrWhiteSpace($m)) { return $m }
+  try {
+    $cfg = Get-BridgeConfig
+    if ($cfg -and $cfg.deepModel) { return [string]$cfg.deepModel }
+  } catch {}
+  try {
+    $v = Get-Variable -Name deepModel -Scope Script -ErrorAction SilentlyContinue
+    if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { return [string]$v.Value }
+  } catch {}
+  return 'claude-opus-4-8'
+}
+
+function Get-SynthLLMModel {
+  param([string]$Purpose = 'synthesis')
+  $sm = Get-SynthConfig
+  if ($Purpose -eq 'synthesis-propose') {
+    try {
+      if ($sm -and $sm.proposerModels -and ($sm.proposerModels.PSObject.Properties.Name -contains 'C')) {
+        $c = [string]$sm.proposerModels.C
+        if (-not [string]::IsNullOrWhiteSpace($c) -and $c -notin @('codex','claude')) { return $c }
+      }
+    } catch {}
+    $p = Get-SynthConfigValue -Name 'llmProposerModel' -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($p)) { return $p }
+  }
+  if ($Purpose -eq 'synthesis-judge') {
+    try {
+      if ($sm -and $sm.judgeByTaskType) {
+        foreach ($k in @('research','creative')) {
+          if ($sm.judgeByTaskType.PSObject.Properties.Name -contains $k) {
+            $j = [string]$sm.judgeByTaskType.$k
+            if (-not [string]::IsNullOrWhiteSpace($j) -and $j -notin @('codex','claude')) { return $j }
+          }
+        }
+      }
+    } catch {}
+  }
+  return (Get-SynthConfigValue -Name 'cheapModel' -Default $script:SynthCheapModel)
+}
 
 # ---------------------------------------------------------------------------------------------------
 # JSON extraction + artifact I/O
@@ -112,21 +176,24 @@ function Get-SynthReplyText {
 function Invoke-SynthClaude {
   # Claude / Planner proposer. Returns reply text or $null.
   param([string]$Prompt)
-  try { return (Get-SynthReplyText (Invoke-Planner -Prompt $Prompt -Mode 'advisory' -NoFallback)) } catch { return $null }
+  try {
+    return (Get-SynthReplyText (Invoke-Planner -Prompt $Prompt -Model (Get-SynthClaudeModel) -Mode 'advisory' -NoFallback))
+  } catch { return $null }
 }
 
 function Invoke-SynthCoder {
   # Codex / Coder proposer. Returns reply text or $null.
   param([string]$Prompt)
-  try { return (Get-SynthReplyText (Invoke-Coder -Prompt $Prompt -Mode 'code' -NoFallback)) } catch { return $null }
+  try { return (Get-SynthReplyText (Invoke-Coder -Prompt $Prompt -Mode 'synthesis' -NoFallback)) } catch { return $null }
 }
 
 function Invoke-SynthGemini {
-  # Gemini-tier / cheap-tier call. Invoke-LLM returns the reply STRING directly (or $null).
-  # Hard model policy: explicit gemini-2.5-flash.
+  # LLM-tier call. Invoke-LLM returns the reply STRING directly (or $null).
+  # The model is explicit and config-driven so provider defaults never decide roles.
   param([string]$Prompt, [string]$Purpose = 'synthesis')
   try {
-    $r = Invoke-LLM -Model $script:SynthGeminiModel -Purpose $Purpose -Prompt $Prompt -TimeoutSec 120 -Temperature 0.3
+    $model = Get-SynthLLMModel -Purpose $Purpose
+    $r = Invoke-LLM -Model $model -Purpose $Purpose -Prompt $Prompt -TimeoutSec 120 -Temperature 0.3
     if ([string]::IsNullOrWhiteSpace([string]$r)) { return $null }
     return [string]$r
   } catch { return $null }
@@ -831,5 +898,176 @@ function Invoke-SynthesisPipeline {
     $h['pipeline_error'] = $msg
     [void](Write-SynthesisArtifact -Dir $dir -Name 'final_decision_record.json' -Obj $h)
     return $h
+  }
+}
+
+function Test-SynthesisImplementationRequested {
+  param([string]$Task = '', $Record = $null)
+  if ($null -eq $Record) { return $false }
+  $needsOperator = $false
+  try {
+    if ($Record.PSObject.Properties.Name -contains 'needs_operator') { $needsOperator = [bool]$Record.needs_operator }
+  } catch {}
+  if ($needsOperator) { return $false }
+
+  $plan = @(Get-SynthArrayField -Obj $Record -Name 'implementation_plan')
+  if ($plan.Count -eq 0) { return $false }
+
+  $t = ([string]$Task).ToLowerInvariant()
+  if ($t -match 'сдела|реализ|встрой|внедр|исправ|почини|поменяй|замени|добавь|создай|настрой|подключ|implement|build|fix|change|update|wire|integrate') {
+    return $true
+  }
+  try {
+    $st = Read-State
+    if ($st -and -not [string]::IsNullOrWhiteSpace([string]$st.current_backlog_id)) { return $true }
+  } catch {}
+  return $false
+}
+
+function Format-SynthesisDecisionRecordForDriver {
+  param(
+    [Parameter(Mandatory)][string]$Task,
+    [Parameter(Mandatory)][string]$Channel,
+    [Parameter(Mandatory)][string]$DecisionId,
+    [string]$Depth = '',
+    $Record = $null
+  )
+  $dir = ''
+  try { $dir = Get-ChannelDecisionsDir -Slug $Channel -DecisionId $DecisionId } catch {}
+  $needsOperator = $false
+  try {
+    if ($Record -and ($Record.PSObject.Properties.Name -contains 'needs_operator')) { $needsOperator = [bool]$Record.needs_operator }
+  } catch {}
+  $shouldImplement = Test-SynthesisImplementationRequested -Task $Task -Record $Record
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  [void]$lines.Add("## Decision Synthesis")
+  if (-not [string]::IsNullOrWhiteSpace($Depth)) { [void]$lines.Add("Depth: $Depth") }
+  if (-not [string]::IsNullOrWhiteSpace($DecisionId)) { [void]$lines.Add("DecisionId: $DecisionId") }
+  if (-not [string]::IsNullOrWhiteSpace($dir)) { [void]$lines.Add("Artifacts: $dir") }
+  [void]$lines.Add("")
+
+  $final = [string](Get-ArtifactField -Obj $Record -Name 'final_answer')
+  if (-not [string]::IsNullOrWhiteSpace($final)) {
+    [void]$lines.Add("Итог:")
+    [void]$lines.Add($final.Trim())
+    [void]$lines.Add("")
+  }
+
+  $decisions = @(Get-SynthArrayField -Obj $Record -Name 'decisions')
+  if ($decisions.Count -gt 0) {
+    [void]$lines.Add("Принятые решения:")
+    foreach ($d in ($decisions | Select-Object -First 8)) {
+      $txt = [string](Get-ArtifactField -Obj $d -Name 'decision')
+      $test = [string](Get-ArtifactField -Obj $d -Name 'test')
+      if (-not [string]::IsNullOrWhiteSpace($txt)) {
+        $line = "- " + $txt.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($test)) { $line += " | test: " + $test.Trim() }
+        [void]$lines.Add($line)
+      }
+    }
+    [void]$lines.Add("")
+  }
+
+  $open = @(Get-SynthArrayField -Obj $Record -Name 'open_questions')
+  if ($open.Count -gt 0) {
+    [void]$lines.Add("Открытые вопросы:")
+    foreach ($q in ($open | Select-Object -First 6)) {
+      $qt = ([string]$q).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($qt)) { [void]$lines.Add("- " + $qt) }
+    }
+    [void]$lines.Add("")
+  }
+
+  $findings = @(Get-SynthArrayField -Obj $Record -Name 'red_team_findings')
+  if ($findings.Count -gt 0) {
+    [void]$lines.Add("Red-team:")
+    foreach ($f in ($findings | Select-Object -First 6)) {
+      $sev = [string](Get-ArtifactField -Obj $f -Name 'severity')
+      $what = [string](Get-ArtifactField -Obj $f -Name 'what')
+      if (-not [string]::IsNullOrWhiteSpace($what)) { [void]$lines.Add("- [$sev] " + $what.Trim()) }
+    }
+    [void]$lines.Add("")
+  }
+
+  $plan = @(Get-SynthArrayField -Obj $Record -Name 'implementation_plan')
+  if ($plan.Count -gt 0) {
+    [void]$lines.Add("План реализации:")
+    foreach ($p in ($plan | Select-Object -First 12)) {
+      $pt = ([string]$p).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($pt)) { [void]$lines.Add("- " + $pt) }
+    }
+    [void]$lines.Add("")
+  }
+
+  $next = [string](Get-ArtifactField -Obj $Record -Name 'next_step')
+  if (-not [string]::IsNullOrWhiteSpace($next)) {
+    [void]$lines.Add("Следующий шаг: " + $next.Trim())
+    [void]$lines.Add("")
+  }
+
+  if ($needsOperator) {
+    [void]$lines.Add("NEEDS-OPERATOR: synthesis не запускает реализацию автоматически, потому что решение помечено как требующее оператора.")
+    [void]$lines.Add("DISCUSS-ONLY: код не написан. Причина: требуется подтверждение оператора по Decision Record.")
+    [void]$lines.Add("STATUS: DONE")
+  } elseif ($shouldImplement) {
+    [void]$lines.Add("Codex: реализуй принятый Decision Record выше. Не переоткрывай уже принятые решения; проверь критерии/test у решений и заверши с [[VERIFIED: ...]].")
+    [void]$lines.Add("STATUS: CONTINUE")
+  } else {
+    [void]$lines.Add("DISCUSS-ONLY: код не написан. Причина: задача закрыта как решение/обсуждение; реализации из текста задачи не требуется.")
+    [void]$lines.Add("STATUS: DONE")
+  }
+
+  return [string]::Join("`n", $lines.ToArray())
+}
+
+function Invoke-SynthesisDriverTurn {
+  param(
+    [Parameter(Mandatory)][string]$Task,
+    [string]$Channel = '',
+    [string]$Depth = '',
+    [string]$DecisionId = ''
+  )
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  try {
+    if ([string]::IsNullOrWhiteSpace($DecisionId)) { $DecisionId = New-SynthesisDecisionId }
+    if ([string]::IsNullOrWhiteSpace($Depth)) {
+      $d = Get-SynthesisDepthDecision -Text $Task
+      try { if ($d -is [hashtable]) { $Depth = [string]$d['depth'] } else { $Depth = [string]$d.depth } } catch {}
+    }
+    try {
+      if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+        $did = $DecisionId; $dep = $Depth
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName synthesis_decision_id -NotePropertyValue $did -Force
+          $s | Add-Member -NotePropertyName synthesis_depth -NotePropertyValue $dep -Force
+          $s.heartbeat = (Get-Date).ToString('o')
+        }.GetNewClosure()) | Out-Null
+      }
+    } catch {}
+
+    $record = Invoke-SynthesisPipeline -Task $Task -Channel $Channel -Depth $Depth -DecisionId $DecisionId
+    $reply = Format-SynthesisDecisionRecordForDriver -Task $Task -Channel $Channel -DecisionId $DecisionId -Depth $Depth -Record $record
+    return [pscustomobject]@{
+      text = $reply
+      status = 'ok'
+      duration = [int]$sw.Elapsed.TotalSeconds
+      errorType = $null
+      fallback = ''
+      decision_id = $DecisionId
+      depth = $Depth
+    }
+  } catch {
+    $msg = $_.Exception.Message
+    $reply = "Decision Synthesis failed: $msg`nNEEDS-OPERATOR: synthesis failed before a safe decision.`nSTATUS: DONE"
+    return [pscustomobject]@{
+      text = $reply
+      status = 'ok'
+      duration = [int]$sw.Elapsed.TotalSeconds
+      errorType = $null
+      fallback = ''
+      decision_id = $DecisionId
+      depth = $Depth
+    }
   }
 }

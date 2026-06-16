@@ -8,6 +8,7 @@
   $skipPlanner = [bool]$state.skip_planner
   $speaker = if ($forceCoder) { 'codex' }
               elseif ($forcePlanner) { 'claude' }
+              elseif ($mode -eq 'synthesis') { 'claude' }
               elseif ($mode -eq 'research') { 'claude' }
               elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
               elseif ($skipPlanner -and $mode -eq 'normal' -and $tt -eq 0) { 'codex' }
@@ -19,15 +20,15 @@
   $plannerEscalate = $false
   try { $plannerEscalate = ([int](Read-State).timeout_retry_count -ge 1) } catch {}
   $plannerModel = Select-PlannerModel -TaskText $task -Mode $mode -Escalate $plannerEscalate
-  $activeModel  = if ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
+  $activeModel  = if ($mode -eq 'synthesis') { 'decision-synthesis' } elseif ($speaker -eq 'claude') { $plannerModel } else { 'codex' }
   $statusText   = Get-AgentStatusText -Speaker $speaker -Mode $mode -TaskText $task
   Update-State ({ param($s) $s.active_agent=$speaker; $s.active_model=$activeModel; $s.status_text=$statusText; $s.status='working'; $s.claimed_at=(Get-Date).ToString('o'); $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 
   $fastLaneTurn = ($speaker -eq 'codex' -and $mode -eq 'normal' -and [bool](Read-State).skip_planner)
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'summary' -TaskText $task)
-  if (-not $fastLaneTurn) { Update-ContextSummary }   # compress old history if it grew beyond the hot window
+  if (-not $fastLaneTurn -and $mode -ne 'synthesis') { Update-ContextSummary }   # synthesis builds stateless artifacts; no prompt history needed
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'prompt' -TaskText $task)
-  $prompt = Build-Prompt -Role $speaker -Task $task -Mode $mode -FastLane:$fastLaneTurn
+  $prompt = if ($mode -eq 'synthesis') { '' } else { Build-Prompt -Role $speaker -Task $task -Mode $mode -FastLane:$fastLaneTurn }
   Set-BridgeStatusText (Get-AgentPhaseStatusText -Speaker $speaker -Mode $mode -Phase 'invoke' -TaskText $task)
   $turnStart = [DateTime]::UtcNow
   $headBeforeTurn = ''

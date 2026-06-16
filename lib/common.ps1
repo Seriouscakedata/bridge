@@ -2255,8 +2255,9 @@ try { . (Join-Path $PSScriptRoot 'radar.ps1') } catch { Write-Warning "radar.ps1
 # 2026-06-03 slimming Atom 1: Model Decision Layer (SHADOW). Contract + deterministic validator + shadow
 # logger. Behavior-neutral until promoted; legacy heuristics still decide. See SLIMMING_PLAN.md.
 try { . (Join-Path $PSScriptRoot 'decision-contract.ps1') } catch { Write-Warning "decision-contract.ps1 failed to load: $($_.Exception.Message)" }
-# 2026-06-16 Decision Synthesis engine (Multi-Model Decision Synthesis). Dormant until synthesisMode.enabled
-# + Ch12 driver wiring. depth -> artifacts -> synthesis load order (synthesis calls the artifact validators). See DECISION_SYNTHESIS_PLAN.md.
+# 2026-06-16 Decision Synthesis engine (Multi-Model Decision Synthesis). Live when
+# synthesisMode.enabled=true. depth -> artifacts -> synthesis load order (synthesis calls
+# the artifact validators). See DECISION_SYNTHESIS_PLAN.md.
 try { . (Join-Path $PSScriptRoot 'decision-depth.ps1') } catch { Write-Warning "decision-depth.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'decision-artifacts.ps1') } catch { Write-Warning "decision-artifacts.ps1 failed to load: $($_.Exception.Message)" }
 try { . (Join-Path $PSScriptRoot 'decision-synthesis.ps1') } catch { Write-Warning "decision-synthesis.ps1 failed to load: $($_.Exception.Message)" }

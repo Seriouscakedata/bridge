@@ -1200,7 +1200,13 @@ $script:DriverLoopCompletionInitialChecksBlock = {
       }
     }
     elseif ($plannerStatus -eq 'CONTINUE') {
-      if ($modeBeforeIncrement -eq 'discuss') {
+      if ($modeBeforeIncrement -eq 'synthesis') {
+        Add-Message -From system -Text "🧠 Decision Synthesis завершён: принято решение и план реализации. Передаю Codex'у в normal-контур с verify/critic gates." -Kind event | Out-Null
+        Update-State { param($s)
+          $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''
+          $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+        } | Out-Null
+      } elseif ($modeBeforeIncrement -eq 'discuss') {
         $dtNow = [int](Read-State).discuss_turn
         # FIX 2026-05-27: accept synonyms for the convergence-check keywords. Claude often
         # writes "Согласовано:" / "Decision:" / "Решено:" instead of literal "Решение:" —

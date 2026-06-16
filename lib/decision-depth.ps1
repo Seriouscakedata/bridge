@@ -1,7 +1,30 @@
 ﻿# lib/decision-depth.ps1 — Decision Synthesis depth-mode router (Chapter 1, SHADOW).
 # Part of replacing the role-based DISCUSS with Multi-Model Decision Synthesis (see DECISION_SYNTHESIS_PLAN.md).
 # Pure deterministic classifier (NO LLM, never gemini) + a shadow logger. SHADOW ONLY in Ch1:
-# it RECORDS the chosen depth; it does NOT change task_mode or any live behavior.
+# it RECORDS the chosen depth; it DOES NOT change task_mode by itself. The driver uses the
+# route helper below only when synthesisMode.enabled=true.
+
+function Get-SynthesisModeConfig {
+  try {
+    if (Get-Command Get-BridgeConfig -ErrorAction SilentlyContinue) {
+      $cfg = Get-BridgeConfig
+      if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'synthesisMode') -and $cfg.synthesisMode) {
+        return $cfg.synthesisMode
+      }
+    }
+  } catch {}
+  return $null
+}
+
+function Test-SynthesisModeEnabled {
+  $sm = Get-SynthesisModeConfig
+  if (-not $sm) { return $false }
+  try {
+    return (($sm.PSObject.Properties.Name -contains 'enabled') -and [bool]$sm.enabled)
+  } catch {
+    return $false
+  }
+}
 
 function Get-SynthesisTaskType {
   # Deterministic keyword classifier -> the task_type later used to pick the judge model.
@@ -110,5 +133,61 @@ function Write-DepthShadow {
     if (Get-Command Write-DecisionShadowSignal -ErrorAction SilentlyContinue) {
       Write-DecisionShadowSignal -Reason 'write-failed' -Detail $_.Exception.Message -Channel ([string]$Channel) -Stage 'depth-router'
     }
+  }
+}
+
+function Get-SynthesisRouteDecision {
+  # Decide whether the live driver should replace role-based DISCUSS with Decision Synthesis.
+  # FAST/NORMAL/computer-action/study guards still win; explicit discussion and Deep/High-Stakes
+  # smart-router decisions enter synthesis when config.synthesisMode.enabled=true.
+  param(
+    [string]$Text = '',
+    $Intent = $null,
+    [bool]$ExplicitDiscuss = $false,
+    [bool]$ExplicitDeepThink = $false,
+    [bool]$LowComplexity = $false,
+    [bool]$FastLane = $false,
+    [bool]$NormalOverride = $false,
+    [bool]$StudyMode = $false,
+    [bool]$ComputerAction = $false
+  )
+
+  $depthDecision = Get-SynthesisDepthDecision -Text $Text -Intent $Intent
+  $depth = ''
+  $judgeTaskType = ''
+  $rationale = ''
+  try {
+    if ($depthDecision -is [hashtable]) {
+      $depth = [string]$depthDecision['depth']
+      $judgeTaskType = [string]$depthDecision['judge_task_type']
+      $rationale = [string]$depthDecision['rationale']
+    } else {
+      $depth = [string]$depthDecision.depth
+      $judgeTaskType = [string]$depthDecision.judge_task_type
+      $rationale = [string]$depthDecision.rationale
+    }
+  } catch {}
+
+  $enabled = Test-SynthesisModeEnabled
+  $route = $false
+  $reason = ''
+  if (-not $enabled) { $reason = 'synthesis disabled' }
+  elseif ($FastLane) { $reason = 'fast-lane guard' }
+  elseif ($NormalOverride) { $reason = 'normal override' }
+  elseif ($ComputerAction) { $reason = 'computer-action fast lane' }
+  elseif ($StudyMode -and -not ($ExplicitDiscuss -or $ExplicitDeepThink)) { $reason = 'study mode owns this task' }
+  elseif ($LowComplexity) { $reason = 'low complexity guard' }
+  elseif ($ExplicitDeepThink) { $route = $true; $reason = 'deep-think marker' }
+  elseif ($ExplicitDiscuss) { $route = $true; $reason = 'explicit discuss request' }
+  elseif ($depth -in @('Deep','High-Stakes')) { $route = $true; $reason = 'smart-router depth=' + $depth }
+  else { $reason = 'standard task stays on normal path' }
+
+  return [pscustomobject][ordered]@{
+    route           = [bool]$route
+    enabled         = [bool]$enabled
+    depth           = [string]$depth
+    judge_task_type = [string]$judgeTaskType
+    rationale       = [string]$rationale
+    reason          = [string]$reason
   }
 }

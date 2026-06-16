@@ -35,6 +35,7 @@ function Get-AgentStatusText {
   $topic = if ($TaskText) { Get-TaskTopic $TaskText } else { '' }
   if ($topic) {
     if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return "Claude исследует источники: «$topic»" }
+    if ($Speaker -eq 'claude' -and $Mode -eq 'synthesis') { return "Decision Synthesis принимает решение: «$topic»" }
     if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return "Claude обдумывает план: «$topic»" }
     if ($Speaker -eq 'claude' -and $Mode -eq 'study') { return "Claude изучает и синтезирует: «$topic»" }
     if ($Speaker -eq 'claude') { return "Claude планирует: «$topic»" }
@@ -43,6 +44,7 @@ function Get-AgentStatusText {
     if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
   }
   if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return 'Claude ищет и сверяет внешние источники без Bash.' }
+  if ($Speaker -eq 'claude' -and $Mode -eq 'synthesis') { return 'Decision Synthesis строит контракт, предложения, судью и итоговое решение.' }
   if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет следующий шаг.' }
   if ($Speaker -eq 'claude' -and $Mode -eq 'study') { return 'Claude ведёт web-трек study и готовит синтез.' }
   if ($Speaker -eq 'claude') { return 'Claude анализирует задачу и выбирает следующий шаг.' }
@@ -62,6 +64,7 @@ function Get-AgentPhaseStatusText {
     'invoke'  {
       if ($topic) {
         if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return "Claude ищет внешние источники: «$topic»" }
+        if ($Speaker -eq 'claude' -and $Mode -eq 'synthesis') { return "Decision Synthesis строит multi-model решение: «$topic»" }
         if ($Speaker -eq 'codex' -and $Mode -eq 'discuss') { return "Codex оценивает идею: «$topic»" }
         if ($Speaker -eq 'codex' -and $Mode -eq 'study') { return "Codex изучает локальный проект: «$topic»" }
         if ($Speaker -eq 'codex') { return "Codex реализует: «$topic»" }
@@ -73,6 +76,7 @@ function Get-AgentPhaseStatusText {
       if ($Speaker -eq 'codex' -and $Mode -eq 'study') { return 'Codex собирает локальные FINDING-находки.' }
       if ($Speaker -eq 'codex') { return 'Codex работает с файлами и командами.' }
       if ($Speaker -eq 'claude' -and $Mode -eq 'research') { return 'Claude проверяет внешние источники без Bash.' }
+      if ($Speaker -eq 'claude' -and $Mode -eq 'synthesis') { return 'Decision Synthesis вызывает модели и пишет артефакты решения.' }
       if ($Speaker -eq 'claude' -and $Mode -eq 'discuss') { return 'Claude сводит обсуждение и уточняет план.' }
       if ($Speaker -eq 'claude' -and $Mode -eq 'study') { return 'Claude ведёт study-исследование и синтезирует отчёт.' }
       return 'Claude анализирует задачу и выбирает следующий шаг.'

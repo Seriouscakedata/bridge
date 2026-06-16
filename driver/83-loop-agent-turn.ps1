@@ -120,6 +120,21 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
   }
   try {
     if ($turnResult) { }  # already produced by the deterministic dispatch above -> skip planner
+    elseif ($speaker -eq 'claude' -and $mode -eq 'synthesis') {
+      $synthState = Read-State
+      $synthDepth = ''
+      $synthDecisionId = ''
+      try { $synthDepth = [string]$synthState.synthesis_depth } catch {}
+      try { $synthDecisionId = [string]$synthState.synthesis_decision_id } catch {}
+      if ([string]::IsNullOrWhiteSpace($synthDepth)) {
+        try {
+          $sd = Get-SynthesisDepthDecision -Text $task
+          if ($sd -is [hashtable]) { $synthDepth = [string]$sd['depth'] } else { $synthDepth = [string]$sd.depth }
+        } catch {}
+      }
+      Add-Message -From system -Text ("🧠 Decision Synthesis: запускаю pipeline depth=" + $(if([string]::IsNullOrWhiteSpace($synthDepth)){'smart'}else{$synthDepth}) + $(if([string]::IsNullOrWhiteSpace($synthDecisionId)){''}else{" id=$synthDecisionId"})) -Kind event | Out-Null
+      $turnResult = Invoke-SynthesisDriverTurn -Task $task -Channel $Channel -Depth $synthDepth -DecisionId $synthDecisionId
+    }
     elseif ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
     else {
       $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode
