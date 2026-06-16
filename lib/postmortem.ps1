@@ -252,6 +252,158 @@ function Get-PostMortemGitContext {
   }
 }
 
+function ConvertTo-PostMortemJsonArray {
+  param([AllowNull()][string[]]$Values)
+  $items = New-Object 'System.Collections.Generic.List[string]'
+  if ($Values) {
+    foreach ($value in $Values) {
+      if ($null -eq $value) { continue }
+      [void]$items.Add((ConvertTo-PostMortemJsonString -Value ([string]$value)))
+    }
+  }
+  return ('[' + [string]::Join(',', $items.ToArray()) + ']')
+}
+
+function Get-PostMortemChangedFiles {
+  param(
+    [string]$CommitSha,
+    [string]$RepoRoot
+  )
+  $files = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    if ([string]::IsNullOrWhiteSpace($CommitSha) -or [string]::IsNullOrWhiteSpace($RepoRoot)) { return @() }
+    $text = ''
+    if (Test-PostMortemGitSuccess -RepoRoot $RepoRoot -Arguments @('rev-parse', "$CommitSha^")) {
+      $text = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('diff', '--name-only', "$CommitSha^..$CommitSha")
+    } else {
+      $text = Invoke-PostMortemGitText -RepoRoot $RepoRoot -Arguments @('show', '--name-only', '--format=', $CommitSha)
+    }
+    $seen = @{}
+    foreach ($raw in (([string]$text) -split "`r?`n")) {
+      $file = ([string]$raw).Trim()
+      if ([string]::IsNullOrWhiteSpace($file)) { continue }
+      if ($seen.ContainsKey($file)) { continue }
+      $seen[$file] = $true
+      [void]$files.Add($file)
+    }
+  } catch {
+    return @()
+  }
+  return @($files.ToArray())
+}
+
+function Get-PostMortemFailureTraceText {
+  param(
+    [AllowNull()][object]$State,
+    [AllowNull()][string]$TraceText = ''
+  )
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  if (-not [string]::IsNullOrWhiteSpace($TraceText)) { [void]$parts.Add([string]$TraceText) }
+  try {
+    if ($State -and ($State.PSObject.Properties.Name -contains 'task_last_failure') -and $null -ne $State.task_last_failure) {
+      $failure = $State.task_last_failure
+      foreach ($name in @('trace','stack','stack_trace','script_stack_trace','text','message','error')) {
+        if (($failure.PSObject.Properties.Name -contains $name) -and -not [string]::IsNullOrWhiteSpace([string]$failure.$name)) {
+          [void]$parts.Add([string]$failure.$name)
+        }
+      }
+    }
+    foreach ($name in @('last_error_trace','error_trace','stack_trace','script_stack_trace','last_error','context')) {
+      if ($State -and ($State.PSObject.Properties.Name -contains $name) -and -not [string]::IsNullOrWhiteSpace([string]$State.$name)) {
+        [void]$parts.Add([string]$State.$name)
+      }
+    }
+  } catch {
+    return ([string]::Join("`n", $parts.ToArray()))
+  }
+  return ([string]::Join("`n", $parts.ToArray()))
+}
+
+function Get-PostMortemCallChain {
+  param([AllowNull()][string]$TraceText)
+  $items = New-Object 'System.Collections.Generic.List[string]'
+  if ([string]::IsNullOrWhiteSpace($TraceText)) { return @() }
+  $seen = @{}
+  foreach ($raw in (([string]$TraceText) -split "`r?`n")) {
+    $line = ([string]$raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $candidate = ''
+    $m = [regex]::Match($line, '^\s*(?:at|в)\s+(.+)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($m.Success) {
+      $candidate = $m.Groups[1].Value.Trim()
+    } elseif ($line -match '(?i)\.ps1\b.*\b(line|строка)\s*:?\s*\d+') {
+      $candidate = $line
+    } elseif ($line -match '(?i)\b(line|строка)\s*:?\s*\d+\b') {
+      $candidate = $line
+    } elseif ($line -match '^\s*(?:>>|\+)\s*(.+)$') {
+      $candidate = $Matches[1].Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    if ($candidate.Length -gt 300) { $candidate = $candidate.Substring(0, 300).Trim() }
+    if ($seen.ContainsKey($candidate)) { continue }
+    $seen[$candidate] = $true
+    [void]$items.Add($candidate)
+    if ($items.Count -ge 20) { break }
+  }
+  return @($items.ToArray())
+}
+
+function Get-PostMortemFailurePoint {
+  param(
+    [AllowNull()][string]$TraceText,
+    [AllowNull()][string[]]$CallChain
+  )
+  try {
+    if ($CallChain -and $CallChain.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$CallChain[0])) {
+      return (Limit-PostMortemText -Value ([string]$CallChain[0]) -MaxChars 500)
+    }
+    foreach ($raw in (([string]$TraceText) -split "`r?`n")) {
+      $line = ([string]$raw).Trim()
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      return (Limit-PostMortemText -Value $line -MaxChars 500)
+    }
+  } catch {
+    return ''
+  }
+  return ''
+}
+
+function New-PostMortemCausalMap {
+  param(
+    [string]$CommitSha,
+    [AllowNull()][object]$State,
+    [string]$RepoRoot,
+    [string]$DecisionsDir,
+    [AllowNull()][string]$TraceText = ''
+  )
+  try {
+    if ([string]::IsNullOrWhiteSpace($CommitSha)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($DecisionsDir)) { $DecisionsDir = Join-Path $RepoRoot 'decisions' }
+    $files = @(Get-PostMortemChangedFiles -CommitSha $CommitSha -RepoRoot $RepoRoot)
+    if ($files.Count -eq 0) { return $null }
+    $trace = Get-PostMortemFailureTraceText -State $State -TraceText $TraceText
+    $callChain = @(Get-PostMortemCallChain -TraceText $trace)
+    $failurePoint = Get-PostMortemFailurePoint -TraceText $trace -CallChain $callChain
+    if ([string]::IsNullOrWhiteSpace($failurePoint)) { return $null }
+    if (-not (Test-Path -LiteralPath $DecisionsDir)) { New-Item -ItemType Directory -Path $DecisionsDir -Force | Out-Null }
+    $ts = (Get-Date).ToString('yyyyMMdd_HHmmss_fff')
+    $outPath = Join-Path $DecisionsDir ("causal-map-$ts.json")
+    $pairs = New-Object 'System.Collections.Generic.List[string]'
+    [void]$pairs.Add('"ts":' + (ConvertTo-PostMortemJsonString -Value (Get-Date).ToString('o')))
+    [void]$pairs.Add('"sha":' + (ConvertTo-PostMortemJsonString -Value $CommitSha))
+    [void]$pairs.Add('"files":' + (ConvertTo-PostMortemJsonArray -Values $files))
+    [void]$pairs.Add('"call_chain":' + (ConvertTo-PostMortemJsonArray -Values $callChain))
+    [void]$pairs.Add('"failure_point":' + (ConvertTo-PostMortemJsonString -Value $failurePoint))
+    $json = "{`n  " + [string]::Join(",`n  ", $pairs.ToArray()) + "`n}"
+    $u8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($outPath, $json + [Environment]::NewLine, $u8NoBom)
+    return $outPath
+  } catch {
+    return $null
+  }
+}
+
 function Invoke-GeminiPostMortem {
   param(
     [string]$Prompt,
@@ -339,7 +491,10 @@ function Invoke-RepairCommitPostMortem {
   $decisionsDir = Join-Path $RepoRoot 'decisions'
   if (-not (Test-Path -LiteralPath $decisionsDir)) { New-Item -ItemType Directory -Path $decisionsDir -Force | Out-Null }
   $outPath = Join-Path $decisionsDir ("post-mortem-$sha8.md")
-  if (Test-Path -LiteralPath $outPath) { return $outPath }
+  if (Test-Path -LiteralPath $outPath) {
+    [void](New-PostMortemCausalMap -CommitSha $fullSha -State $State -RepoRoot $RepoRoot -DecisionsDir $decisionsDir)
+    return $outPath
+  }
 
   $gitCtx = Get-PostMortemGitContext -CommitSha $fullSha -RepoRoot $RepoRoot
   $failure = Get-PostMortemFailureInfo -State $State
@@ -386,6 +541,7 @@ $llmResponse
 "@
   $u8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($outPath, $content, $u8NoBom)
+  [void](New-PostMortemCausalMap -CommitSha $fullSha -State $State -RepoRoot $RepoRoot -DecisionsDir $decisionsDir)
   Add-PostMortemLedgerEvent -CommitSha $fullSha -RelativePath ("decisions/post-mortem-$sha8.md") -FailureKind ([string]$failure.kind) -State $State -RepoRoot $RepoRoot
   return $outPath
 }
