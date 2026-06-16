@@ -653,7 +653,7 @@
                           "proposerModels":  {
                                                  "A":  "codex",
                                                  "B":  "claude",
-                                                 "C":  "gemini-2.5-flash"
+                                                 "C":  "deepseek-v4-pro"
                                              },
                           "judgeByTaskType":  {
                                                   "architecture":  "claude",
