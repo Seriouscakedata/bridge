@@ -2,6 +2,9 @@
 param(
   [string]$BridgePath = $null,
   [int]$ScenarioTimeoutSec = 60,
+  [switch]$DoneGateE2E,
+  [string]$DoneGateSha = '',
+  [string]$DoneGateScenario = 'smoke',
   [switch]$Force,
   [switch]$NoChat
 )
@@ -96,6 +99,14 @@ function Get-FeatureVerifierScenarioOutcome {
       if ($parsed.PSObject -and $parsed.PSObject.Properties['error'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.error)) {
         [void]$errParts.Add([string]$parsed.error)
       }
+      if ($parsed.PSObject -and $parsed.PSObject.Properties['fallback'] -and [string]$parsed.fallback -eq 'http-browser-infra') {
+        $okResult = $false
+        if ($parsed.PSObject.Properties['reason'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.reason)) {
+          [void]$errParts.Add([string]$parsed.reason)
+        } else {
+          [void]$errParts.Add('browser failed before DOM/debug marker; HTTP fallback is not live UI E2E')
+        }
+      }
       $err = ([string]::Join('; ', @($errParts.ToArray())))
     } catch {
       $err = 'unparseable result json'
@@ -110,6 +121,103 @@ function Get-FeatureVerifierScenarioOutcome {
     error = $err
     inconclusive = ((-not $okResult) -and (Test-FeatureVerifierInconclusiveScenarioError -ErrorText $err))
   }
+}
+
+function Resolve-DoneGateE2ECommitSha {
+  param([string]$Sha)
+  $safeDirArg = 'safe.directory=' + $BridgePath
+  if (-not [string]::IsNullOrWhiteSpace($Sha)) {
+    return ([string](& git -c $safeDirArg -C $BridgePath rev-parse --verify ($Sha.Trim() + '^{commit}') 2>$null | Out-String)).Trim()
+  }
+  return ([string](& git -c $safeDirArg -C $BridgePath log --all --grep=done_qa_pass_commit --format=%H -n 1 2>$null | Out-String)).Trim()
+}
+
+function Test-DoneGateE2ECommitMarker {
+  param([string]$Sha)
+  if ([string]::IsNullOrWhiteSpace($Sha)) { return $false }
+  try {
+    $safeDirArg = 'safe.directory=' + $BridgePath
+    $msg = [string](& git -c $safeDirArg -C $BridgePath show -s --format=%B $Sha 2>$null | Out-String)
+    return ($msg -match 'done_qa_pass_commit')
+  } catch {
+    return $false
+  }
+}
+
+function Write-DoneGateE2EEvidence {
+  param(
+    [string]$Sha,
+    [string]$Scenario,
+    $Passed,
+    [string]$Detail
+  )
+  $decisionsDir = Join-Path $BridgePath 'decisions'
+  if (-not (Test-Path -LiteralPath $decisionsDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $decisionsDir -Force | Out-Null
+  }
+  $safeSha = ([string]$Sha) -replace '[^0-9a-fA-F]', ''
+  if ([string]::IsNullOrWhiteSpace($safeSha)) { $safeSha = 'unknown' }
+  $path = Join-Path $decisionsDir ("done-gate-e2e-$safeSha.json")
+  $record = [ordered]@{
+    sha = [string]$Sha
+    scenario = [string]$Scenario
+    passed = $Passed
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    detail = [string]$Detail
+  }
+  [System.IO.File]::WriteAllText($path, ($record | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($true)))
+  return $path
+}
+
+function Invoke-DoneGateE2E {
+  $sha = Resolve-DoneGateE2ECommitSha -Sha $DoneGateSha
+  if ([string]::IsNullOrWhiteSpace($sha)) {
+    $path = Write-DoneGateE2EEvidence -Sha ([string]$DoneGateSha) -Scenario $DoneGateScenario -Passed 'inconclusive' -Detail 'done_qa_pass_commit commit not found'
+    Write-Host "[done-gate-e2e] evidence written: $path"
+    return 0
+  }
+  if (-not (Test-DoneGateE2ECommitMarker -Sha $sha)) {
+    $path = Write-DoneGateE2EEvidence -Sha $sha -Scenario $DoneGateScenario -Passed 'inconclusive' -Detail 'commit does not contain done_qa_pass_commit marker'
+    Write-Host "[done-gate-e2e] evidence written: $path"
+    return 0
+  }
+
+  $runnerPath = Join-Path $BridgePath 'tools\scenario.ps1'
+  if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
+    $path = Write-DoneGateE2EEvidence -Sha $sha -Scenario $DoneGateScenario -Passed 'inconclusive' -Detail 'scenario.ps1 missing'
+    Write-Host "[done-gate-e2e] evidence written: $path"
+    return 0
+  }
+
+  $stdout = ''
+  $exitCode = 99
+  try {
+    if (Get-Command Invoke-WithChannelEnv -ErrorAction SilentlyContinue) {
+      $stdout = Invoke-WithChannelEnv -Slug (Get-EffectiveChannel) -Action {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerPath -Name $DoneGateScenario -TimeoutSec $ScenarioTimeoutSec 2>&1 | Out-String
+      }
+    } else {
+      $stdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerPath -Name $DoneGateScenario -TimeoutSec $ScenarioTimeoutSec 2>&1 | Out-String
+    }
+    $exitCode = $LASTEXITCODE
+  } catch {
+    $stdout = $_.Exception.Message
+    $exitCode = 99
+  }
+
+  $outcome = Get-FeatureVerifierScenarioOutcome -Stdout ([string]$stdout) -ExitCode ([int]$exitCode)
+  $passed = $false
+  if ([bool]$outcome.ok) {
+    $passed = $true
+  } elseif ([bool]$outcome.inconclusive) {
+    $passed = 'inconclusive'
+  }
+  $detail = if (-not [string]::IsNullOrWhiteSpace([string]$outcome.error)) { [string]$outcome.error } else { 'scenario passed' }
+  $path = Write-DoneGateE2EEvidence -Sha $sha -Scenario $DoneGateScenario -Passed $passed -Detail $detail
+  Write-Host "[done-gate-e2e] evidence written: $path"
+  if ($passed -eq $true) { return 0 }
+  if ([string]$passed -eq 'inconclusive') { return 0 }
+  return 1
 }
 
 function ConvertTo-FeatureVerifierRegistryList {
@@ -199,6 +307,10 @@ function Repair-FeatureVerifierState {
     $removed++
   }
   return $removed
+}
+
+if ($DoneGateE2E) {
+  exit (Invoke-DoneGateE2E)
 }
 
 $scope = $null
