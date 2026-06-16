@@ -102,15 +102,45 @@ function Get-RestartRootCauseClass {
   param($BootState, [bool]$IsTrustedApply, [string]$StampReason = '')
   if ($IsTrustedApply) { return 'operator' }
 
+  $reasonCandidates = @()
+  if ($BootState) {
+    foreach ($name in @('last_restart_reason','restart_flag_reason')) {
+      try {
+        if ($BootState.PSObject.Properties.Name -contains $name) {
+          $reasonCandidates += [string]$BootState.$name
+        }
+      } catch {
+        $reasonCandidates += ''
+      }
+    }
+  }
+  $reasonCandidates += [string]$StampReason
+  foreach ($reasonText in $reasonCandidates) {
+    $reason = ([string]$reasonText).Trim()
+    if ([string]::IsNullOrWhiteSpace($reason)) { continue }
+    if ($reason -match '(?i)timeout|timed[ -]?out|soft_timeout|hard_timeout') { return 'timeout' }
+    if ($reason -match '(?i)zombie|orphan|stale') { return 'zombie' }
+    if ($reason -match '(?i)killed|kill|terminated|dead|process[ -]?exit|agent[ -]?exit') { return 'killed' }
+    if ($reason -match '(?i)operator|manual|verified-ps1-diff|apply|restart\.flag|flag') { return 'operator' }
+    if ($reason -match '(?i)crash|exception|fault|panic|unhandled') { return 'crash' }
+    if ($reason -match '(?i)unknown|missing-stamp|untrusted') { return 'unknown' }
+  }
+
   if ($BootState) {
     $prevStatus = [string]$BootState.status
     $prevStatusText = [string]$BootState.status_text
-    if ($prevStatus -match '(?i)timeout|timed.out' -or $prevStatusText -match '(?i)timeout|timed.out') {
+    if ($prevStatus -match '(?i)timeout|timed[ -]?out' -or $prevStatusText -match '(?i)timeout|timed[ -]?out') {
       return 'timeout'
+    }
+    if ($prevStatus -match '(?i)zombie|orphan|stale' -or $prevStatusText -match '(?i)zombie|orphan|stale') {
+      return 'zombie'
     }
 
     $agentPid = 0
     try { $agentPid = [int]$BootState.agent_pid } catch { $agentPid = 0 }
+    if ($agentPid -le 0) {
+      try { $agentPid = [int]$BootState.current_agent_pid } catch { $agentPid = 0 }
+    }
     if ($agentPid -gt 0) {
       $alive = $false
       try {
@@ -120,10 +150,12 @@ function Get-RestartRootCauseClass {
         $alive = $false
       }
       if (-not $alive) { return 'killed' }
+      if ($prevStatus -match '(?i)working|running') { return 'zombie' }
     }
+    if ($prevStatus -match '(?i)working|running') { return 'crash' }
   }
 
-  return 'crash'
+  return 'unknown'
 }
 
 Sweep-AgentOrphans
@@ -258,6 +290,7 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
         class = $restartRootCauseClass
         kind = if ($isTrustedApplyRestart) { 'apply' } else { 'hard' }
         stamp_reason = if ($applyStamp -and $applyStamp.reason) { [string]$applyStamp.reason } else { '' }
+        stamp_root_cause_class = if ($applyStamp -and ($applyStamp.PSObject.Properties.Name -contains 'restart_root_cause_class')) { [string]$applyStamp.restart_root_cause_class } else { '' }
         apply_count = $newApplyRestartCount
         hard_count = $newHardRestartCount
         total_count = $newTotalRestartCount

@@ -481,10 +481,63 @@ function Get-ApplyRestartStampPath {
   return (Join-Path (Join-Path $Root 'control') 'apply-stamp.json')
 }
 
+function ConvertTo-ApplyRestartRootCauseClass {
+  param([string]$Reason)
+  $text = ([string]$Reason).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return 'unknown' }
+  if ($text -match '(?i)timeout|timed[ -]?out|soft_timeout|hard_timeout') { return 'timeout' }
+  if ($text -match '(?i)zombie|orphan|stale') { return 'zombie' }
+  if ($text -match '(?i)killed|kill|terminated|dead|process[ -]?exit|agent[ -]?exit') { return 'killed' }
+  if ($text -match '(?i)operator|manual|verified-ps1-diff|apply|restart\.flag|flag') { return 'operator' }
+  if ($text -match '(?i)crash|exception|fault|panic|unhandled') { return 'crash' }
+  if ($text -match '(?i)unknown|missing-stamp|untrusted') { return 'unknown' }
+  return 'unknown'
+}
+
+function Get-ApplyRestartRootCauseClassFromState {
+  param([string]$Root = $null, [string]$FallbackReason = '')
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  $statePath = Join-Path (Join-Path $Root 'channels\main') 'state.json'
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    $fallbackClass = ConvertTo-ApplyRestartRootCauseClass -Reason $FallbackReason
+    if ($fallbackClass -ne 'unknown') { return $fallbackClass }
+    return 'operator'
+  }
+
+  $state = $null
+  try {
+    $raw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+    if (-not [string]::IsNullOrWhiteSpace($raw)) { $state = $raw | ConvertFrom-Json }
+  } catch {
+    $state = $null
+  }
+
+  $candidates = @()
+  if ($state) {
+    foreach ($name in @('last_restart_reason','restart_flag_reason')) {
+      try {
+        if ($state.PSObject.Properties.Name -contains $name) {
+          $candidates += [string]$state.$name
+        }
+      } catch {
+        $candidates += ''
+      }
+    }
+  }
+  $candidates += [string]$FallbackReason
+  foreach ($candidate in $candidates) {
+    $class = ConvertTo-ApplyRestartRootCauseClass -Reason $candidate
+    if ($class -ne 'unknown') { return $class }
+  }
+  return 'operator'
+}
+
 function New-ApplyRestartStamp {
   param(
     [Parameter(Mandatory=$true)][string]$TaskId,
     [string]$Reason = 'verified-ps1-diff',
+    [ValidateSet('','timeout','crash','operator','killed','zombie','unknown')]
+    [string]$RootCauseClass = '',
     [string[]]$Touched = @(),
     [string]$Root = $null,
     [int]$TtlMinutes = 90,
@@ -503,16 +556,21 @@ function New-ApplyRestartStamp {
   )
   $ps1Touched = @($cleanTouched | Where-Object { $_ -match '(?i)\.ps1$' })
   if ($ps1Touched.Count -lt 1) { throw 'New-ApplyRestartStamp: evidence.touched must include at least one .ps1 path' }
+  if ([string]::IsNullOrWhiteSpace($RootCauseClass)) {
+    $RootCauseClass = Get-ApplyRestartRootCauseClassFromState -Root $Root -FallbackReason $Reason
+  }
+  if ([string]::IsNullOrWhiteSpace($RootCauseClass)) { $RootCauseClass = 'unknown' }
 
   $controlDir = Join-Path $Root 'control'
   if (-not (Test-Path -LiteralPath $controlDir)) { New-Item -ItemType Directory -Path $controlDir -Force | Out-Null }
   $stampPath = Get-ApplyRestartStampPath -Root $Root
   $stamp = [ordered]@{
-    task_id        = [string]$TaskId
-    created_at_utc = $CreatedAtUtc.UtcDateTime.ToString('o')
-    ttl_minutes    = [int]$TtlMinutes
-    reason         = [string]$Reason
-    evidence       = [ordered]@{
+    task_id                  = [string]$TaskId
+    created_at_utc           = $CreatedAtUtc.UtcDateTime.ToString('o')
+    ttl_minutes              = [int]$TtlMinutes
+    reason                   = [string]$Reason
+    restart_root_cause_class = [string]$RootCauseClass
+    evidence                 = [ordered]@{
       touched = @($cleanTouched)
     }
   }
@@ -523,6 +581,7 @@ function New-ApplyRestartStamp {
     path       = $stampPath
     task_id    = [string]$TaskId
     ttl_minutes = [int]$TtlMinutes
+    restart_root_cause_class = [string]$RootCauseClass
   }
 }
 
@@ -590,13 +649,24 @@ function Consume-ApplyRestartStamp {
     return [pscustomobject][ordered]@{ ok = $false; reason = 'missing-ps1-evidence'; path = $stampPath; consumed_path = $consumedPath; touched = @($touched) }
   }
 
+  $rootCauseClass = 'unknown'
+  try {
+    if ($stamp.PSObject.Properties.Name -contains 'restart_root_cause_class') {
+      $rootCauseClass = [string]$stamp.restart_root_cause_class
+    }
+  } catch {
+    $rootCauseClass = 'unknown'
+  }
+  if (@('timeout','crash','operator','killed','zombie','unknown') -notcontains $rootCauseClass) { $rootCauseClass = 'unknown' }
+
   return [pscustomobject][ordered]@{
-    ok            = $true
-    reason        = 'consumed'
-    path          = $stampPath
-    consumed_path = $consumedPath
-    task_id       = $stampTaskId
-    touched       = @($touched)
+    ok                       = $true
+    reason                   = 'consumed'
+    path                     = $stampPath
+    consumed_path            = $consumedPath
+    task_id                  = $stampTaskId
+    restart_root_cause_class = $rootCauseClass
+    touched                  = @($touched)
   }
 }
 

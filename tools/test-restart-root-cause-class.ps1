@@ -34,7 +34,7 @@ Assert-Eq $r 'timeout' 'status timeout'
 
 $fakeState2 = [pscustomobject]@{ status='idle'; status_text=''; agent_pid=0 }
 $r = Get-RestartRootCauseClass -BootState $fakeState2 -IsTrustedApply $false
-Assert-Eq $r 'crash' 'idle no pid'
+Assert-Eq $r 'unknown' 'idle no pid'
 
 $deadPid = 999999
 $fakeState3 = [pscustomobject]@{ status='working'; status_text=''; agent_pid=$deadPid }
@@ -45,8 +45,20 @@ $fakeState4 = [pscustomobject]@{ status='working'; status_text='timed out waitin
 $r = Get-RestartRootCauseClass -BootState $fakeState4 -IsTrustedApply $false
 Assert-Eq $r 'timeout' 'status text timeout'
 
+$fakeState5 = [pscustomobject]@{ status='idle'; status_text=''; agent_pid=0; last_restart_reason='zombie-reaper recovered stale owner' }
+$r = Get-RestartRootCauseClass -BootState $fakeState5 -IsTrustedApply $false
+Assert-Eq $r 'zombie' 'last_restart_reason zombie'
+
+$fakeState6 = [pscustomobject]@{ status='idle'; status_text=''; agent_pid=0; restart_flag_reason='operator requested restart' }
+$r = Get-RestartRootCauseClass -BootState $fakeState6 -IsTrustedApply $false
+Assert-Eq $r 'operator' 'restart_flag_reason operator'
+
+$fakeState7 = [pscustomobject]@{ status='working'; status_text=''; agent_pid=$PID }
+$r = Get-RestartRootCauseClass -BootState $fakeState7 -IsTrustedApply $false
+Assert-Eq $r 'zombie' 'live previous worker pid'
+
 $r = Get-RestartRootCauseClass -BootState $null -IsTrustedApply $false
-Assert-Eq $r 'crash' 'null state'
+Assert-Eq $r 'unknown' 'null state'
 
 Write-Host "Results: $pass passed, $fail failed"
 if ($fail -gt 0) { exit 1 }

@@ -24,6 +24,7 @@ function Check {
 function New-TestRoot {
   $p = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-apply-stamp-test-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path (Join-Path $p 'control') -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $p 'channels\main') -Force | Out-Null
   return $p
 }
 
@@ -38,12 +39,13 @@ $testRoots = New-Object System.Collections.ArrayList
 
 try {
   $r1 = New-TestRoot; [void]$testRoots.Add($r1)
-  $created = New-ApplyRestartStamp -Root $r1 -TaskId 'task-a' -Touched @('driver.ps1','config.json') -Reason 'test'
+  $created = New-ApplyRestartStamp -Root $r1 -TaskId 'task-a' -Touched @('driver.ps1','config.json') -Reason 'test' -RootCauseClass 'timeout'
   $createdPathExists = Test-Path -LiteralPath $created.path
   $first = Consume-ApplyRestartStamp -Root $r1 -TaskId 'task-a'
   $second = Consume-ApplyRestartStamp -Root $r1 -TaskId 'task-a'
   Check 'happy create returns ok' ([bool]$created.ok -and $createdPathExists) $created
   Check 'happy consume ok' ([bool]$first.ok -and [string]$first.task_id -eq 'task-a' -and @($first.touched).Count -ge 1) $first
+  Check 'root cause class is persisted' ([string]$created.restart_root_cause_class -eq 'timeout' -and [string]$first.restart_root_cause_class -eq 'timeout') $first
   Check 'one-shot second consume rejected' (-not [bool]$second.ok -and [string]$second.reason -eq 'missing-stamp') $second
 
   $r2 = New-TestRoot; [void]$testRoots.Add($r2)
@@ -71,6 +73,13 @@ try {
   $overwrite = New-ApplyRestartStamp -Root $r7 -TaskId 'task-b' -Touched @('lib\common.ps1') -Reason 'overwrite'
   $overwroteExists = Test-Path -LiteralPath $overwrite.path
   Check 'overwrite existing stamp succeeds' ([bool]$overwrite.ok -and $overwroteExists) $overwrite
+
+  $r8 = New-TestRoot; [void]$testRoots.Add($r8)
+  $statePath = Join-Path (Join-Path $r8 'channels\main') 'state.json'
+  [System.IO.File]::WriteAllText($statePath, (@{ restart_flag_reason = 'zombie owner recovered' } | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+  $stateBacked = New-ApplyRestartStamp -Root $r8 -TaskId 'task-a' -Touched @('driver.ps1') -Reason 'verified-ps1-diff'
+  $stateBackedConsumed = Consume-ApplyRestartStamp -Root $r8 -TaskId 'task-a'
+  Check 'root cause class can come from state restart_flag_reason' ([string]$stateBacked.restart_root_cause_class -eq 'zombie' -and [string]$stateBackedConsumed.restart_root_cause_class -eq 'zombie') $stateBackedConsumed
 
   $r6 = New-TestRoot; [void]$testRoots.Add($r6)
   try {
