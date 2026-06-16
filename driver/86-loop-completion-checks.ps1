@@ -556,10 +556,28 @@ $script:DriverDoneGateSmokeJob = {
   [pscustomobject]$result
 }
 
+function Test-DriverDoneGateRegressionTimeoutInconclusive {
+  param([AllowNull()][object]$GateResult)
+
+  if ($null -eq $GateResult) { return $false }
+  try {
+    if ([bool]$GateResult.Ok) { return $false }
+  } catch {}
+  try {
+    if (-not [string]::IsNullOrWhiteSpace([string]$GateResult.RuntimeError)) { return $false }
+  } catch {}
+
+  $timedOut = $false
+  $exitCode = 0
+  try { $timedOut = [bool]$GateResult.TimedOut } catch {}
+  try { $exitCode = [int]$GateResult.ExitCode } catch {}
+  return ($timedOut -or $exitCode -eq 124)
+}
+
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope }
+  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutInconclusive=$false }
   try {
     $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
     $inProcessSuite = $script:DriverDoneGateInProcessSuiteOverride
@@ -578,6 +596,7 @@ $script:DriverDoneGateRegressionJob = {
       $gateAttempt = $gateIndex + 1
       $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
       $result.Attempts = $gateAttempt
+      $result.TimeoutSchedule = @($result.TimeoutSchedule + $gateTimeoutSec)
       if ($UseChangedPathScope) {
         if ($inProcessSuite) {
           $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($changedPathList)
@@ -604,8 +623,10 @@ $script:DriverDoneGateRegressionJob = {
       if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
       if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
         [void]$gateTimeoutSchedule.Add(360)
+        $result.TimeoutRetryAdded = $true
       }
     }
+    $result.TimeoutInconclusive = ((-not [bool]$result.Ok) -and [string]::IsNullOrWhiteSpace([string]$result.RuntimeError) -and ([bool]$result.TimedOut -or [int]$result.ExitCode -eq 124))
   } catch {
     $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
@@ -670,6 +691,9 @@ function New-DriverDoneGateMissingResult {
         RuntimeError = 'background job completed without a gate-regression result'
         Scope = @()
         ScopeApplied = $false
+        TimeoutSchedule = @()
+        TimeoutRetryAdded = $false
+        TimeoutInconclusive = $false
       }
     }
     'integrity' {
@@ -717,7 +741,7 @@ function Invoke-DriverDoneGateChecksSequential {
   }
   if ([bool]$Plan.GateSuiteNeeded) {
     $useScope = [string]::IsNullOrWhiteSpace([string]$Plan.GateScopeError)
-    $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope }
+    $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutInconclusive=$false }
     try {
       $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
       if ($null -eq $GateRegressionSuiteScriptBlock -and -not (Get-Command Invoke-GateRegressionSuite -ErrorAction SilentlyContinue)) {
@@ -736,6 +760,7 @@ function Invoke-DriverDoneGateChecksSequential {
         $gateAttempt = $gateIndex + 1
         $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
         $gateResult.Attempts = $gateAttempt
+        $gateResult.TimeoutSchedule = @($gateResult.TimeoutSchedule + $gateTimeoutSec)
         if ($useScope) {
           if ($GateRegressionSuiteScriptBlock) {
             $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($Plan.ChangedPaths)
@@ -762,8 +787,10 @@ function Invoke-DriverDoneGateChecksSequential {
         if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
         if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
           [void]$gateTimeoutSchedule.Add(360)
+          $gateResult.TimeoutRetryAdded = $true
         }
       }
+      $gateResult.TimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]$gateResult)
     } catch {
       $gateResult.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
     }
@@ -1538,28 +1565,43 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             if ($gateChecks.Plan.GateScopeError) {
               $failReason = ("scope error: {0}; suite: {1}" -f $gateChecks.Plan.GateScopeError, $failReason)
             }
-            try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
-            # 2-strike cap (2026-06-10, mirror auto-smoke above): the suite re-runs on EVERY
-            # DONE attempt with task-lifetime scope and no cache, so a slow/over-broad suite
-            # (exit=124 kill at the time budget) flipped CONTINUE forever — the COVERED-loop.
-            # A timeout is INCONCLUSIVE evidence, not a proven regression; after 2 consecutive
-            # failures close as-is and page the operator instead of looping.
-            $gateFails = 0
-            try { $gateFails = [int](Read-State).gate_regression_fail_count } catch {}
-            if ($gateFails -lt 2) {
-              Update-State {
-                param($s)
-                if ($null -eq $s.PSObject.Properties['gate_regression_fail_count']) {
-                  $s | Add-Member -NotePropertyName gate_regression_fail_count -NotePropertyValue 0 -Force
-                }
-                $s.gate_regression_fail_count = [int]$s.gate_regression_fail_count + 1
-              } | Out-Null
-              Add-Message -From system -Text ("🚨 Gate-regression FAILED (попытка $($gateFails+1)/2: {0}). Возвращаю задачу на CONTINUE." -f $failReason) -Kind event | Out-Null
-              $plannerStatus = 'CONTINUE'
-            } else {
+            $gateTimeoutInconclusive = $false
+            try { $gateTimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $gateResult } catch {}
+            if ($gateTimeoutInconclusive) {
               try { Clear-TaskLastFailureKind -Kind gate_regression_failed } catch {}
-              Add-Message -From system -Text ("⚠️ Gate-regression провалился 2× ({0}) — закрываю как есть; нужно внимание оператора. Таймаут suite = inconclusive, не доказанная регрессия." -f $failReason) -Kind event | Out-Null
-              try { Send-PushEvent -Kind need_you -Text "Gate-regression 2x FAIL: $(Get-PushSnippet -Text $task)" } catch {}
+              try { Update-State { param($s) if ($null -ne $s.PSObject.Properties['gate_regression_fail_count']) { $s.gate_regression_fail_count = 0 } } | Out-Null } catch {}
+              $attemptsText = ''
+              try {
+                if ([int]$gateResult.Attempts -gt 0) { $attemptsText = (" after {0} attempt(s)" -f [int]$gateResult.Attempts) }
+              } catch {}
+              $budgetText = ''
+              try {
+                $budget = @($gateResult.TimeoutSchedule | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($budget.Count -gt 0) { $budgetText = ("; budgets={0}" -f ($budget -join ',')) }
+              } catch {}
+              Add-Message -From system -Text ("⚠️ Gate-regression timeout inconclusive{0} ({1}{2}) — закрываю как есть; timeout не является доказанной регрессией." -f $attemptsText, $failReason, $budgetText) -Kind event | Out-Null
+            } else {
+              try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
+              # 2-strike cap (2026-06-10, mirror auto-smoke above): the suite re-runs on EVERY
+              # DONE attempt with task-lifetime scope and no cache. Non-timeout failures still
+              # get a bounded retry loop; timeout/exit=124 is handled above as inconclusive.
+              $gateFails = 0
+              try { $gateFails = [int](Read-State).gate_regression_fail_count } catch {}
+              if ($gateFails -lt 2) {
+                Update-State {
+                  param($s)
+                  if ($null -eq $s.PSObject.Properties['gate_regression_fail_count']) {
+                    $s | Add-Member -NotePropertyName gate_regression_fail_count -NotePropertyValue 0 -Force
+                  }
+                  $s.gate_regression_fail_count = [int]$s.gate_regression_fail_count + 1
+                } | Out-Null
+                Add-Message -From system -Text ("🚨 Gate-regression FAILED (попытка $($gateFails+1)/2: {0}). Возвращаю задачу на CONTINUE." -f $failReason) -Kind event | Out-Null
+                $plannerStatus = 'CONTINUE'
+              } else {
+                try { Clear-TaskLastFailureKind -Kind gate_regression_failed } catch {}
+                Add-Message -From system -Text ("⚠️ Gate-regression провалился 2× ({0}) — закрываю как есть; нужно внимание оператора." -f $failReason) -Kind event | Out-Null
+                try { Send-PushEvent -Kind need_you -Text "Gate-regression 2x FAIL: $(Get-PushSnippet -Text $task)" } catch {}
+              }
             }
           }
         }

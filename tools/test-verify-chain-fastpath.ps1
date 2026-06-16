@@ -129,6 +129,17 @@ STATUS: DONE
   $timeoutRetryRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutRetrySuite
   Check 'Gate regression timeout retry: third attempt is scheduled after two 124 timeouts' (@($script:GateTimeoutRetryTimeouts) -join ',' -eq '180,180,360') $script:GateTimeoutRetryTimeouts
   Check 'Gate regression timeout retry: third attempt can pass DONE gate' ([bool]$timeoutRetryRuntime.GateRegression.Ok -and [int]$timeoutRetryRuntime.GateRegression.Attempts -eq 3) $timeoutRetryRuntime.GateRegression
+
+  $script:GateTimeoutInconclusiveTimeouts = @()
+  $timeoutInconclusiveSuite = {
+    param([string]$BridgeRoot, [int]$TimeoutSec, [string[]]$ChangedPaths)
+    $script:GateTimeoutInconclusiveTimeouts = @($script:GateTimeoutInconclusiveTimeouts + $TimeoutSec)
+    return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
+  }
+  $timeoutInconclusiveRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutInconclusiveSuite
+  Check 'Gate regression timeout inconclusive: exhausted retry schedule is 180,180,360' (@($script:GateTimeoutInconclusiveTimeouts) -join ',' -eq '180,180,360') $script:GateTimeoutInconclusiveTimeouts
+  Check 'Gate regression timeout inconclusive: result is classified non-blocking' ([bool]$timeoutInconclusiveRuntime.GateRegression.TimeoutInconclusive -and (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $timeoutInconclusiveRuntime.GateRegression)) $timeoutInconclusiveRuntime.GateRegression
+  Check 'Gate regression timeout inconclusive: non-timeout failure remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=1; TimedOut=$false; RuntimeError='' }))) $null
 }
 
 function Invoke-BridgeCoreCoverageChecks {
