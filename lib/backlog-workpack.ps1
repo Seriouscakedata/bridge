@@ -233,6 +233,12 @@ function Test-BacklogPackItemUnpacked {
 
 function Test-BacklogPackItemAuditSource {
   param($Item)
+  # 2026-06-16 (operator queue-fix): operator-seeded atoms are human-vetted; never route them
+  # through audit gates (cross_file_causal_map hold / audit-burst rate-limit). The 'workflow-audit'
+  # tag was substring-matching 'audit' below and orphaning operator atoms. Real audits use from=audit*.
+  $from0 = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'from' -Default '')).ToLowerInvariant()
+  if ($from0 -eq 'operator') { return $false }
+  try { if (@(Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @()) -contains 'operator') { return $false } } catch {}
   $from = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'from' -Default '')).ToLowerInvariant()
   if ($from -match 'audit') { return $true }
   $text = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')).ToLowerInvariant()

@@ -558,8 +558,8 @@ function Get-BacklogMentionedFiles {
     # and project dirs (src/app/components/pages/api/prisma...) so PROJECT-channel tasks get their
     # touched files extracted -> per-file conflict groups -> independent tasks batch in PARALLEL.
     # Bridge extensions/dirs preserved, so bridge classification is unchanged.
-    '(?i)(?:[\w.-]+[\\/])*[\w.-]+\.(?:jsonl|json|psm1|ps1|html|css|scss|sass|less|js|jsx|ts|tsx|mjs|cjs|vue|svelte|prisma|sql|yaml|yml|md|txt|env)',
-    '(?i)(?:lib|web|memory|control|tools|docs|channels|src|app|components|pages|api|prisma|config|content|public|styles|server|hooks|utils)[\\/][\w.\\/:-]*'
+    '(?i)(?:[\w.-]+[\\/])*[\w.-]+\.(?:jsonl|json|psm1|ps1|html|css|scss|sass|less|js|jsx|ts|tsx|mjs|cjs|vue|svelte|prisma|sql|yaml|yml|md|txt|env|py|pyi|pyw)',
+    '(?i)(?:lib|web|memory|control|tools|docs|channels|src|app|components|pages|api|prisma|config|content|public|styles|server|hooks|utils|layers|tests|scripts)[\\/][\w.\\/:-]*'
   )
   foreach ($pat in $patterns) {
     foreach ($m in [regex]::Matches([string]$Text, $pat)) {
