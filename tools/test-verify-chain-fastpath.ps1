@@ -139,7 +139,21 @@ STATUS: DONE
   $timeoutInconclusiveRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutInconclusiveSuite
   Check 'Gate regression timeout inconclusive: exhausted retry schedule is 180,180,360' (@($script:GateTimeoutInconclusiveTimeouts) -join ',' -eq '180,180,360') $script:GateTimeoutInconclusiveTimeouts
   Check 'Gate regression timeout inconclusive: result is classified non-blocking' ([bool]$timeoutInconclusiveRuntime.GateRegression.TimeoutInconclusive -and (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $timeoutInconclusiveRuntime.GateRegression)) $timeoutInconclusiveRuntime.GateRegression
+  Check 'Gate regression timeout inconclusive: early timeout without retry remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; RuntimeError=''; Attempts=1; TimeoutRetryAdded=$false; TimeoutSchedule=@(180) }))) $null
   Check 'Gate regression timeout inconclusive: non-timeout failure remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=1; TimedOut=$false; RuntimeError='' }))) $null
+
+  $script:GateMixedFailureTimeouts = @()
+  $mixedFailureThenTimeoutSuite = {
+    param([string]$BridgeRoot, [int]$TimeoutSec, [string[]]$ChangedPaths)
+    $script:GateMixedFailureTimeouts = @($script:GateMixedFailureTimeouts + $TimeoutSec)
+    if ($script:GateMixedFailureTimeouts.Count -eq 1) {
+      return [pscustomobject]@{ Ok=$false; ExitCode=1; TimedOut=$false; Scope=@($ChangedPaths) }
+    }
+    return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
+  }
+  $mixedFailureThenTimeoutRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $mixedFailureThenTimeoutSuite
+  Check 'Gate regression timeout inconclusive: mixed failure then timeout does not add retry' (@($script:GateMixedFailureTimeouts) -join ',' -eq '180,180') $script:GateMixedFailureTimeouts
+  Check 'Gate regression timeout inconclusive: mixed failure then timeout remains blocking' (-not [bool]$mixedFailureThenTimeoutRuntime.GateRegression.TimeoutInconclusive) $mixedFailureThenTimeoutRuntime.GateRegression
 }
 
 function Invoke-BridgeCoreCoverageChecks {

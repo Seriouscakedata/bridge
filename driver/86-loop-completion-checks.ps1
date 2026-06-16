@@ -571,7 +571,26 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   $exitCode = 0
   try { $timedOut = [bool]$GateResult.TimedOut } catch {}
   try { $exitCode = [int]$GateResult.ExitCode } catch {}
-  return ($timedOut -or $exitCode -eq 124)
+  if (-not ($timedOut -or $exitCode -eq 124)) { return $false }
+
+  $attempts = 0
+  $retryAdded = $false
+  $timeoutSchedule = @()
+  try { $attempts = [int]$GateResult.Attempts } catch {}
+  try { $retryAdded = [bool]$GateResult.TimeoutRetryAdded } catch {}
+  try { $timeoutSchedule = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $timeoutSchedule = @() }
+
+  if ($attempts -lt 3) { return $false }
+  if (-not $retryAdded) { return $false }
+  if ($timeoutSchedule.Count -lt 3) { return $false }
+
+  $firstBudget = [int]$timeoutSchedule[0]
+  $secondBudget = [int]$timeoutSchedule[1]
+  $retryBudget = [int]$timeoutSchedule[2]
+  if ($firstBudget -le 0 -or $secondBudget -le 0) { return $false }
+  if ($retryBudget -lt (2 * [Math]::Max($firstBudget, $secondBudget))) { return $false }
+
+  return $true
 }
 
 $script:DriverDoneGateRegressionJob = {
@@ -626,7 +645,15 @@ $script:DriverDoneGateRegressionJob = {
         $result.TimeoutRetryAdded = $true
       }
     }
-    $result.TimeoutInconclusive = ((-not [bool]$result.Ok) -and [string]::IsNullOrWhiteSpace([string]$result.RuntimeError) -and ([bool]$result.TimedOut -or [int]$result.ExitCode -eq 124))
+    $timeoutSchedule = @($result.TimeoutSchedule | ForEach-Object { [int]$_ })
+    $retryBudgetConfirmed = $false
+    if ($timeoutSchedule.Count -ge 3) {
+      $firstBudget = [int]$timeoutSchedule[0]
+      $secondBudget = [int]$timeoutSchedule[1]
+      $retryBudget = [int]$timeoutSchedule[2]
+      $retryBudgetConfirmed = ($firstBudget -gt 0 -and $secondBudget -gt 0 -and $retryBudget -ge (2 * [Math]::Max($firstBudget, $secondBudget)))
+    }
+    $result.TimeoutInconclusive = ((-not [bool]$result.Ok) -and [string]::IsNullOrWhiteSpace([string]$result.RuntimeError) -and ([bool]$result.TimedOut -or [int]$result.ExitCode -eq 124) -and [int]$result.Attempts -ge 3 -and [bool]$result.TimeoutRetryAdded -and $retryBudgetConfirmed)
   } catch {
     $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
