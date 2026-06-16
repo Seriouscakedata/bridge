@@ -340,6 +340,15 @@ $script:DriverLoopIdleClaimBlock = {
       try { $fastLaneSafe = [bool](Test-IsSafeOsFastLaneTask -TaskText $taskMsg) } catch { $fastLaneSafe = $false }
       if (-not $fastLaneSafe) { $intentForcedFastLane = $false; $intentLowComplexity = $false }
 
+      # 2026-06-16 Decision Synthesis depth-router SHADOW (Ch12, log-only — NO routing yet).
+      # Records which depth the synthesis router WOULD pick, for promotion evidence. Behavior-neutral.
+      if (Get-Command Get-SynthesisDepthDecision -ErrorAction SilentlyContinue) {
+        try {
+          $synthDepth = Get-SynthesisDepthDecision -Text $taskMsg -Intent $taskIntent
+          Write-DepthShadow -Text $taskMsg -Decision $synthDepth
+        } catch {}
+      }
+
       $taskProjectRoot = Get-ActiveProjectRoot
       if ([string]::IsNullOrWhiteSpace($taskProjectRoot)) { $taskProjectRoot = $bridgeRoot }
       $baseCommit = try { (& git -C $taskProjectRoot rev-parse HEAD 2>$null).Trim() } catch { '' }
