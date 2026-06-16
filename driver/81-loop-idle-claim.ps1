@@ -21,6 +21,81 @@ function Get-DriverDirtyDeferDecision {
   }
 }
 
+function Get-DriverRuntimeMetricDirtyPaths {
+  param([AllowNull()][string[]]$DirtyLines)
+  $paths = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in @($DirtyLines)) {
+    $line = [string]$entry
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 4) { continue }
+    $path = $line.Substring(3).Trim()
+    if ($path.StartsWith('"') -and $path.EndsWith('"') -and $path.Length -ge 2) {
+      $path = $path.Substring(1, $path.Length - 2)
+    }
+    $normalized = $path.Replace('\','/')
+    if ($normalized -match '^metrics\.jsonl\.[^/]+$') {
+      if (-not $paths.Contains($path)) { [void]$paths.Add($path) }
+    }
+  }
+  return @($paths)
+}
+
+function Invoke-DriverRuntimeMetricDirtyCleanup {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [AllowNull()][string[]]$DirtyLines
+  )
+  $metricPaths = @(Get-DriverRuntimeMetricDirtyPaths -DirtyLines $DirtyLines)
+  if ($metricPaths.Count -eq 0) {
+    return [pscustomobject][ordered]@{ attempted=$false; cleaned=$false; paths=@(); error='' }
+  }
+
+  $errorText = ''
+  $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+  try {
+    $stashMsg = "bridge runtime metrics cleanup before claim ($stamp)"
+    & git -C $RepoRoot stash push -u -m $stashMsg -- @metricPaths 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      $errorText = "stash-exit=$LASTEXITCODE"
+    }
+  } catch {
+    $errorText = "stash-error: $($_.Exception.Message)"
+  }
+
+  $remaining = @()
+  try {
+    $remainingDirty = @(& git -C $RepoRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $remaining = @(Get-DriverRuntimeMetricDirtyPaths -DirtyLines $remainingDirty)
+  } catch {
+    if ([string]::IsNullOrWhiteSpace($errorText)) { $errorText = "status-error: $($_.Exception.Message)" }
+  }
+
+  if ($remaining.Count -gt 0) {
+    try {
+      & git -C $RepoRoot checkout -- @remaining 2>$null | Out-Null
+      if ($LASTEXITCODE -ne 0 -and [string]::IsNullOrWhiteSpace($errorText)) {
+        $errorText = "checkout-exit=$LASTEXITCODE"
+      }
+    } catch {
+      if ([string]::IsNullOrWhiteSpace($errorText)) { $errorText = "checkout-error: $($_.Exception.Message)" }
+    }
+  }
+
+  $stillDirty = @()
+  try {
+    $afterDirty = @(& git -C $RepoRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $stillDirty = @(Get-DriverRuntimeMetricDirtyPaths -DirtyLines $afterDirty)
+  } catch {
+    if ([string]::IsNullOrWhiteSpace($errorText)) { $errorText = "verify-error: $($_.Exception.Message)" }
+  }
+
+  return [pscustomobject][ordered]@{
+    attempted = $true
+    cleaned   = ($stillDirty.Count -eq 0)
+    paths     = @($metricPaths)
+    error     = $errorText
+  }
+}
+
 function Get-DriverSerialClaimStrikeDecision {
   param([AllowNull()]$State, [string]$ItemId = '', [int]$Threshold = 4)
   $prev = 0
@@ -1197,6 +1272,21 @@ $script:DriverLoopIdleClaimBlock = {
               $line = ([string]$_).Substring(3).Trim()
               $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
             })
+            $metricCleanup = Invoke-DriverRuntimeMetricDirtyCleanup -RepoRoot $guardRoot -DirtyLines $dirty
+            if ([bool]$metricCleanup.attempted) {
+              if ([bool]$metricCleanup.cleaned) {
+                $metricPreview = (@($metricCleanup.paths) -join ', ')
+                Add-Message -From system -Text ("🧹 Runtime metrics cleanup: убраны $(@($metricCleanup.paths).Count) metrics.jsonl.* перед claim ($metricPreview).") -Kind event | Out-Null
+                try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='runtime-metrics-cleanup-before-claim'; files=@($metricCleanup.paths); root=$guardRoot }) } catch {}
+              } else {
+                Add-Message -From system -Text ("⚠️ Runtime metrics cleanup failed before claim: $([string]$metricCleanup.error)") -Kind event | Out-Null
+              }
+              $dirty = @(& git -C $guardRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+              $dirty = @($dirty | Where-Object {
+                $line = ([string]$_).Substring(3).Trim()
+                $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
+              })
+            }
           }
           if ($dirty.Count -gt 0) {
             # Dirty tree is a TRANSIENT condition (uncommitted edits), so do NOT change the idea's

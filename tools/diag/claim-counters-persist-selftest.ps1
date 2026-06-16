@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # VERIFY-COVERS: driver/81-loop-idle-claim.ps1
 # Tests the persisted claim-guard escape counters (freeze-audit wave1 atom3):
 # Get-DriverDirtyDeferDecision and Get-DriverSerialClaimStrikeDecision. Both used to live in
@@ -39,6 +39,53 @@ Assert 'DD3 no autostash' (-not $d.autostash)
 Write-Host "[DD4] null state -> streak 1, no crash"
 $d = Get-DriverDirtyDeferDecision -State $null -IdeaId 'idea-Z'
 Assert 'DD4 streak=1' ($d.streak -eq 1)
+
+Write-Host "[RM1] metrics dirty parser only selects root metrics.jsonl.*"
+$metricPaths = @(Get-DriverRuntimeMetricDirtyPaths -DirtyLines @(
+  ' M metrics.jsonl.1',
+  '?? metrics.jsonl.2',
+  ' M metrics.jsonl',
+  ' M sub/metrics.jsonl.3',
+  ' M driver/81-loop-idle-claim.ps1'
+))
+Assert 'RM1 count=2' ($metricPaths.Count -eq 2)
+Assert 'RM1 includes metrics.jsonl.1' ($metricPaths -contains 'metrics.jsonl.1')
+Assert 'RM1 includes metrics.jsonl.2' ($metricPaths -contains 'metrics.jsonl.2')
+
+Write-Host "[RM2] cleanup stashes/reverts runtime metric files in a real git repo"
+$tmpBase = Join-Path $root 'tmp'
+$tmp = Join-Path $tmpBase ("bridge-metrics-cleanup-test-" + [guid]::NewGuid().ToString('N'))
+try {
+  New-Item -ItemType Directory -Path $tmpBase -Force | Out-Null
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  & git -C $tmp init -q | Out-Null
+  & git -C $tmp config user.email bridge-test@example.invalid | Out-Null
+  & git -C $tmp config user.name bridge-test | Out-Null
+  Set-Content -LiteralPath (Join-Path $tmp 'metrics.jsonl.1') -Value 'base' -Encoding ASCII
+  & git -C $tmp add metrics.jsonl.1 | Out-Null
+  & git -C $tmp commit -q -m init | Out-Null
+  Set-Content -LiteralPath (Join-Path $tmp 'metrics.jsonl.1') -Value 'dirty' -Encoding ASCII
+  Set-Content -LiteralPath (Join-Path $tmp 'metrics.jsonl.2') -Value 'new' -Encoding ASCII
+  $dirtyLines = @(& git -C $tmp status --porcelain | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $cleanup = Invoke-DriverRuntimeMetricDirtyCleanup -RepoRoot $tmp -DirtyLines $dirtyLines
+  $afterMetric = @(Get-DriverRuntimeMetricDirtyPaths -DirtyLines @(& git -C $tmp status --porcelain))
+  $stashLines = @(& git -C $tmp stash list)
+  Assert 'RM2 attempted' ([bool]$cleanup.attempted)
+  Assert 'RM2 cleaned' ([bool]$cleanup.cleaned)
+  Assert 'RM2 no metrics dirty after cleanup' ($afterMetric.Count -eq 0)
+  Assert 'RM2 stash created' ($stashLines.Count -ge 1)
+} catch {
+  Write-Host "  FAIL: RM2 exception $($_.Exception.Message)"
+  $script:fails++
+} finally {
+  try {
+    $resolvedTmp = [System.IO.Path]::GetFullPath($tmp)
+    $resolvedBase = [System.IO.Path]::GetFullPath($tmpBase)
+    if ($resolvedTmp.StartsWith($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedTmp).StartsWith('bridge-metrics-cleanup-test-', [System.StringComparison]::OrdinalIgnoreCase)) {
+      Remove-Item -LiteralPath $resolvedTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
+}
 
 Write-Host "[SC1] fresh state -> strike 1, no hold"
 $d = Get-DriverSerialClaimStrikeDecision -State ([pscustomobject]@{}) -ItemId 'item-A'
