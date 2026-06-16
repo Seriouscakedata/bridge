@@ -952,7 +952,7 @@ function Get-BacklogTaskTargetFile {
   param([string]$Text)
   $t = [string]$Text
   if ([string]::IsNullOrWhiteSpace($t)) { return '' }
-  $rx = '(?im)(?:перепиши|создай|реализуй|оформлени[ея]|приведи|измени|изменить|исправь|исправить|обнови|обновить|добавь|добавить|доработай|доработать|change|modify|update|edit|fix)[^\n]{0,90}?((?:src|app|content|public|prisma|config|styles|components|pages|api|lib|driver)[\\/][\w./\-\[\]]+\.\w{1,5})'
+  $rx = '(?im)(?:перепиши|создай|реализуй|оформлени[ея]|приведи|измени|изменить|исправь|исправить|обнови|обновить|добавь|добавить|доработай|доработать|change|modify|update|edit|fix)[^\n]{0,90}?((?:src|app|content|public|prisma|config|styles|components|pages|api|lib|driver|layers|tests|core)[\\/][\w./\-\[\]]+\.\w{1,5})'
   $m = [regex]::Match($t, $rx)
   if ($m.Success) { return ($m.Groups[1].Value -replace '\\', '/') }
   return ''
