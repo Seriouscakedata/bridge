@@ -646,5 +646,33 @@
                                                           }
                                      }
                      },
-    "radarEveryHours":  720
+    "radarEveryHours":  720,
+    "synthesisMode":  {
+                          "enabled":  false,
+                          "defaultDepth":  "smart",
+                          "proposerModels":  {
+                                                 "A":  "codex",
+                                                 "B":  "claude",
+                                                 "C":  "gemini-2.5-flash"
+                                             },
+                          "judgeByTaskType":  {
+                                                  "architecture":  "claude",
+                                                  "bugfix":  "codex",
+                                                  "refactor":  "codex",
+                                                  "infra":  "codex",
+                                                  "research":  "gemini-2.5-flash",
+                                                  "creative":  "gemini-2.5-flash"
+                                              },
+                          "maxDebateTopics":  3,
+                          "maxDebateRounds":  2,
+                          "rubricWeights":  {
+                                                "correctness":  0.25,
+                                                "feasibility":  0.20,
+                                                "impact":  0.20,
+                                                "simplicity":  0.15,
+                                                "risk_reduction":  0.10,
+                                                "specificity":  0.10
+                                            },
+                          "promoteAfterShadowRuns":  5
+                      }
 }

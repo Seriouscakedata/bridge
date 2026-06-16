@@ -61,3 +61,15 @@ synthesize decisions not texts; every important decision carries a test.
 A Deep architecture task runs contract→proposals→atoms→matrix→review→judge→(debate)→synthesis→red-team→record,
 producing all artifacts + an approved atom; flag OFF → identical task uses legacy discuss unchanged; a High-Stakes
 task halts at the human-approval gate. After Ch13: legacy role-based prompts/ping-pong/convergence-gate are gone.
+
+## BUILD STATUS (2026-06-16) — operator-built, bridge stays on CC
+- DONE + committed + PS5.1-tested independently:
+  - Ch1 `lib/decision-depth.ps1` (depth router + shadow) — 6/6 cases. (57a2fcb)
+  - Ch2 `lib/decision-artifacts.ps1` (7 schemas+validators + Get-ChannelDecisionsDir) — 14/14.
+  - Ch3-10 `lib/decision-synthesis.ps1` (full pipeline engine + Invoke-SynthesisPipeline) — 38/38 mock test (Standard+Deep). DORMANT (no driver wiring).
+  - config.json `synthesisMode` block (enabled=false).
+- REMAINING (the live integration — touches the running driver, do carefully with full smoke):
+  - Ch11 record/recall wiring (Save-Decision mirror + Add-Idea harvest on the synthesis-close branch; driver/86 + common.ps1 session-ledger enum).
+  - Ch12 driver routing behind `synthesisMode.enabled` (driver/81 route Deep/High-Stakes -> task_mode='synthesis'; 82/83 dispatch to Invoke-SynthesisPipeline; 85/86 close; handle task_mode='synthesis' as pass-through in ALL branches incl doctor.ps1). Flip flag only after shadow proof.
+  - Ch13 legacy cutover (remove role-based prompt suffixes / Next-Speaker ping-pong / convergence regex gate) AFTER promotion. Hard cutover per user.
+  - Acceptance: a real-LLM Deep run from the bridge env (needs secrets-bootstrap, not operator context) producing all artifacts + a Decision Record.
