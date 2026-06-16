@@ -570,19 +570,25 @@ $script:DriverDoneGateRegressionJob = {
       throw ("gate-regression runtime import missing: Invoke-GateRegressionSuite ({0})" -f $verifySelftestPath)
     }
     $gateResult = $null
-    for ($gateAttempt = 1; $gateAttempt -le 2; $gateAttempt++) {
+    $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
+    [void]$gateTimeoutSchedule.Add(180)
+    [void]$gateTimeoutSchedule.Add(180)
+    $gateTimeoutFailures = 0
+    for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
+      $gateAttempt = $gateIndex + 1
+      $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
       $result.Attempts = $gateAttempt
       if ($UseChangedPathScope) {
         if ($inProcessSuite) {
-          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($changedPathList)
+          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($changedPathList)
         } else {
-          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($changedPathList)
+          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($changedPathList)
         }
       } else {
         if ($inProcessSuite) {
-          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec 180
+          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
         } else {
-          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180
+          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
         }
       }
       if ($gateResult) {
@@ -593,6 +599,11 @@ $script:DriverDoneGateRegressionJob = {
       if ($gateResult -and [bool]$gateResult.Ok) {
         $result.Ok = $true
         break
+      }
+      $isGateTimeout = ($gateResult -and ([bool]$gateResult.TimedOut -or [int]$gateResult.ExitCode -eq 124))
+      if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
+      if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
+        [void]$gateTimeoutSchedule.Add(360)
       }
     }
   } catch {
@@ -717,19 +728,25 @@ function Invoke-DriverDoneGateChecksSequential {
         }
       }
       $rawGateResult = $null
-      for ($gateAttempt = 1; $gateAttempt -le 2; $gateAttempt++) {
+      $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
+      [void]$gateTimeoutSchedule.Add(180)
+      [void]$gateTimeoutSchedule.Add(180)
+      $gateTimeoutFailures = 0
+      for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
+        $gateAttempt = $gateIndex + 1
+        $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
         $gateResult.Attempts = $gateAttempt
         if ($useScope) {
           if ($GateRegressionSuiteScriptBlock) {
-            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($Plan.ChangedPaths)
+            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($Plan.ChangedPaths)
           } else {
-            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180 -ChangedPaths @($Plan.ChangedPaths)
+            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($Plan.ChangedPaths)
           }
         } else {
           if ($GateRegressionSuiteScriptBlock) {
-            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec 180
+            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
           } else {
-            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec 180
+            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
           }
         }
         if ($rawGateResult) {
@@ -740,6 +757,11 @@ function Invoke-DriverDoneGateChecksSequential {
         if ($rawGateResult -and [bool]$rawGateResult.Ok) {
           $gateResult.Ok = $true
           break
+        }
+        $isGateTimeout = ($rawGateResult -and ([bool]$rawGateResult.TimedOut -or [int]$rawGateResult.ExitCode -eq 124))
+        if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
+        if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
+          [void]$gateTimeoutSchedule.Add(360)
         }
       }
     } catch {

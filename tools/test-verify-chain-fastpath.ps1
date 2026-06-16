@@ -115,6 +115,20 @@ STATUS: DONE
     -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'tools\run-tests.ps1'),'-NoSnapshot','-TimeoutSec','20','-OnlyCsv','test-project-acceptance-contract.ps1','-Quiet') `
     -WorkingDirectory $root -TimeoutSec 45
   Check 'Gate regression runner: selected test with server grandchildren completes' ([int]$runner.ExitCode -eq 0 -and -not [bool]$runner.TimedOut) $runner
+
+  $script:GateTimeoutRetryTimeouts = @()
+  $timeoutRetryPlan = New-DriverDoneGatePlan -BridgeRoot $root -TaskBaseCommit '' -Reply $verifiedReply -ChangedPathsOverride @('driver/86-loop-completion-checks.ps1')
+  $timeoutRetrySuite = {
+    param([string]$BridgeRoot, [int]$TimeoutSec, [string[]]$ChangedPaths)
+    $script:GateTimeoutRetryTimeouts = @($script:GateTimeoutRetryTimeouts + $TimeoutSec)
+    if ($script:GateTimeoutRetryTimeouts.Count -le 2) {
+      return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
+    }
+    return [pscustomobject]@{ Ok=$true; ExitCode=0; TimedOut=$false; Scope=@($ChangedPaths) }
+  }
+  $timeoutRetryRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutRetrySuite
+  Check 'Gate regression timeout retry: third attempt is scheduled after two 124 timeouts' (@($script:GateTimeoutRetryTimeouts) -join ',' -eq '180,180,360') $script:GateTimeoutRetryTimeouts
+  Check 'Gate regression timeout retry: third attempt can pass DONE gate' ([bool]$timeoutRetryRuntime.GateRegression.Ok -and [int]$timeoutRetryRuntime.GateRegression.Attempts -eq 3) $timeoutRetryRuntime.GateRegression
 }
 
 function Invoke-BridgeCoreCoverageChecks {
