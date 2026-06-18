@@ -255,6 +255,17 @@ if (Test-Path $backlogLib) {
     $failed += "FEATURE-VERIFIER-CANARY: lib\backlog.ps1 not found"
 }
 
+# 14. Backlog curator autonomous approval contract -- no silent drops on uncertainty,
+# deterministic approval-risk override, and structured goal-linked rationale.
+$curatorApprovalScript = Join-Path $b 'tools\test-backlog-curator-autonomous-approval.ps1'
+if (Test-Path $curatorApprovalScript) {
+    $caRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $curatorApprovalScript 2>&1
+    $caCode = $LASTEXITCODE
+    if ($caCode -ne 0) { $failed += ("BACKLOG-CURATOR-APPROVAL (exit=$caCode): " + (($caRaw -join '; ') -replace '\s+',' ').Trim()) }
+} else {
+    $failed += "BACKLOG-CURATOR-APPROVAL: tools\test-backlog-curator-autonomous-approval.ps1 not found"
+}
+
 # Result
 if ($failed.Count -eq 0) {
     Write-Output "SMOKE OK ($($ps1s.Count) ps1 ok, endpoints 200)"

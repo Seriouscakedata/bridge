@@ -1,0 +1,28 @@
+{
+    "task":  "[DISCUSS] Обсуди и спроектируй автономный сервис ОДОБРЕНИЯ идей в бэклоге, чтобы идеи не висели в ожидании ручного одобрения оператора.",
+    "goal":  "Design an autonomous service that reviews each new idea, deeply understands the bridge system and its goals (goals.md), judges its relevance, utility, and effectiveness for achieving bridge goals, and autonomously decides to APPROVE or REJECT it (with a written reason), thereby preventing ideas from accumulating in the backlog awaiting manual operator approval.",
+    "constraints":  [
+                        "DO NOT create a new, conflicting gate. First, consider if this can be achieved by EXTENDING the existing idea intake path: Add-Idea / Invoke-BacklogIntakeGate / curator (lib/backlog-crud.ps1, lib/backlog-core.ps1, tools/backlog-curator-backfill.ps1), rather than adding a parallel mechanism. Prefer consolidation and simplification of existing processes.",
+                        "Judge ideas based on goals from goals.md: relevance + utility + effectiveness towards goals (reliability, autonomy, speed, quality, self-development, service improvement). Strictly reject: junk, duplicates, gate-clutter, ideas for dead projects, anything that does not advance goals.",
+                        "SAFETY (critical, fail-closed): The service MUST NOT auto-approve dangerous ideas. Ideas touching control-plane (driver/supervisor/watchdog/secrets/circuit-breaker), irreversible changes, security, architectural pivots – must be left to the OPERATOR (held/operator-required), NOT auto-approved. Auto-approve ONLY safe, clear, goal-beneficial ideas.",
+                        "Transparency: Every decision (approve/reject/operator-required) must have a written reason, linked to a goal, visible in chat/logs."
+                    ],
+    "known_context":  [
+                          "Bridge goals are defined in goals.md.",
+                          "Existing idea intake path: Add-Idea / Invoke-BacklogIntakeGate / curator.",
+                          "Existing curator files: lib/backlog-crud.ps1, lib/backlog-core.ps1, tools/backlog-curator-backfill.ps1.",
+                          "Past lesson: The bridge has spawned conflicting gates, this service must simplify the idea flow, not add another contentious gate."
+                      ],
+    "output_format":  "A design solution and plan, detailing how to integrate into the existing curator (not a separate mechanism), specifying the judging model, evaluation rubric (relevance/utility/effectiveness against goals + risk boundary), and the precise boundary between \u0027auto-decision\u0027 and \u0027operator-required\u0027. The design must simplify the idea flow, not add another conflicting gate. No implementation is required at this stage; only the design for review and approval.",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The design solution clearly outlines how the autonomous approval service integrates into the *existing* `Add-Idea / Invoke-BacklogIntakeGate / curator` flow, without creating a new, conflicting gate.",
+                          "The design specifies the model or mechanism responsible for judging ideas.",
+                          "The design defines a clear evaluation rubric, including criteria for relevance, utility, and effectiveness against `goals.md`, along with a risk boundary.",
+                          "The design precisely defines the boundary for \u0027auto-approve/reject\u0027 versus \u0027operator-required\u0027 decisions, adhering to the \u0027fail-closed\u0027 principle for critical/dangerous ideas.",
+                          "The design includes a plan for how each decision (approve/reject/operator-required) will generate a written, goal-linked reason visible in chat/logs.",
+                          "The output is strictly a design solution and plan, with no implementation details."
+                      ]
+}

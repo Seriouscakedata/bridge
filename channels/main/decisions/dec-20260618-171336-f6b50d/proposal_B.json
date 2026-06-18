@@ -1,0 +1,86 @@
+{
+    "proposer":  "B",
+    "understanding":  "The bridge already has an autonomous idea judge — Invoke-BacklogCurator (lib/backlog-core.ps1:793) — invoked per-idea from Add-Idea via Start-BacklogCuratorJob, using the cheap gemini-2.5-flash-lite model; it already maps approve-\u003eapproved, hold-\u003eheld, drop-\u003eauto-dropped and writes an auto_curator block plus a \u0027judge\u0027 jsonl line. The real problem is not a missing service but three gaps in this existing one: (1) the approve path has NO safety guard, so it could auto-approve a control-plane/security/irreversible/architectural idea, violating fail-closed; (2) it never reads goals.md, so relevance/utility/effectiveness are not measured against the 9 priorities and reasons are not goal-linked; (3) confidence\u003c0.6 forces a silent drop, discarding uncertain-but-good ideas and under-guarding approve. Operator pile-up = the \u0027new\u0027/\u0027held\u0027 set plus an unguarded approve. The mandate (goals.md \u0027simplicity over gate-clutter\u0027, the conflicting-gates lesson) is to HARDEN this one curator in place, not add a parallel approval gate.",
+    "summary":  "Make the EXISTING Invoke-BacklogCurator the autonomous approval service by hardening it: (a) own SAFETY in a deterministic, fail-closed risk classifier that clamps any dangerous idea to \u0027held/operator-required\u0027 and can only ever DOWNGRADE the LLM verdict, never upgrade it; (b) inject goals.md\u0027s priorities into the LLM judge and require a goal_ref + relevance/utility/effectiveness rubric on every decision; (c) use asymmetric thresholds so auto-approve needs a strictly higher bar than auto-reject and all doubt routes to held; (d) emit a written, goal-linked reason on the item (auto_curator), in the \u0027judge\u0027 log, and to chat for held items. No new status, no new jsonl stream, no new gate; tools/backlog-curator-backfill.ps1 re-runs the same hardened curator once to drain the existing pile-up.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The autonomous approval service IS the existing Invoke-BacklogCurator, hardened in place — not a new component or gate.",
+                               "reason":  "The curator already auto-decides approve/hold/drop and writes auto_curator + judge logs; the capability exists and only lacks safety + goal-grounding. goals.md explicitly forbids adding mechanisms that duplicate/conflict with existing ones and demands hardening what exists.",
+                               "tradeoff":  "Editing lib/backlog-core.ps1 (itself control-plane) carries regression risk versus an isolated new module, but an isolated module would be exactly the conflicting parallel gate the lesson warns against.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "SAFETY is owned by a DETERMINISTIC fail-closed risk classifier that runs around the LLM and can only downgrade its verdict to \u0027held/operator_required\u0027, never upgrade to \u0027approved\u0027.",
+                               "reason":  "An LLM verdict is probabilistic and prompt-injectable; a control-plane/secrets/irreversible/architectural match must clamp to held regardless of the model, and any missing/errored/malformed signal must default to held. Safety must never be delegated to a probabilistic judge.",
+                               "tradeoff":  "A keyword/path taxonomy will over-hold some genuinely-safe borderline ideas (false positives -\u003e more operator load), but over-holding is the safe direction for a critical-risk decision.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use asymmetric thresholds: tau_approve \u003e tau_reject; uncertainty routes to held, never to approved.",
+                               "reason":  "Auto-approve commits autonomous work on the bridge itself (high blast radius); auto-reject merely declines work (low blast radius). Today\u0027s flat 0.6-\u003edrop both under-guards approve and silently loses good ideas.",
+                               "tradeoff":  "A higher approve bar means fewer auto-approvals and a larger operator queue initially, until thresholds are calibrated from outcomes.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Inject goals.md into the judge prompt and require a goal_ref plus a relevance/utility/effectiveness rubric on every decision.",
+                               "reason":  "The rubric must measure ideas against the actual 9 priorities (reliability, safety, autonomy, speed, quality, self-development, service-optimization, usefulness, economy); goal_ref makes every reason auditable and feeds later self-learning calibration (goal #6).",
+                               "tradeoff":  "A larger prompt adds marginal token cost, but on gemini-2.5-flash-lite this is negligible and consistent with the economy goal.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Route low-confidence APPROVE to held; keep auto-drop only for clearly-classified junk/dup/out-of-scope/dead-project/gate-clutter/already-done.",
+                               "reason":  "The current confidence\u003c0.6-\u003edrop rule silently discards uncertain-but-possibly-valuable ideas; splitting protects good ideas (escalate to operator) while still auto-draining unambiguous junk.",
+                               "tradeoff":  "Produces slightly more held items than a blanket drop, trading queue size for not losing good ideas.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Reuse existing artifacts only: no new status, no new jsonl stream, no new gate; extend auto_curator/judge/held and drain the backlog with tools/backlog-curator-backfill.ps1.",
+                               "reason":  "Consolidation and fewer moving parts directly serve the simplicity/speed/reliability priorities; the intake gate (Invoke-BacklogIntakeGate) keeps its deterministic dedup/hold role unchanged so the two are not duplicated.",
+                               "tradeoff":  "The \u0027held\u0027 status now carries an operator_required flag whose semantics must be documented for the operator/UI so held items are read as a decision queue, not a graveyard.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Validate the new boundary in shadow/dry-run against historical operator decisions before enabling live auto-approve.",
+                               "reason":  "This is a critical-risk change; scoring the proposed boundary against the recorded history of operator approve/reject decisions measures precision/recall and prevents a single bad auto-approve on the control plane.",
+                               "tradeoff":  "Delays full autonomy by one calibration cycle, but a wrong auto-approve on the bridge itself is far costlier than a short delay.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "Invoke-BacklogCurator already runs per-idea (via Start-BacklogCuratorJob) and already maps approve-\u003eapproved; the operator pile-up is the \u0027new\u0027/\u0027held\u0027 set plus the currently-unguarded approve path.",
+                        "goals.md is the single canonical source of bridge goals and is readable at judge time.",
+                        "Invoke-LLM with the cheap gemini-2.5-flash-lite tier is the intended judging model (economy goal #9); the deterministic safety layer must work even when the LLM is unavailable.",
+                        "Control-plane policy is centralized in lib/policy.ps1 (Test-PolicyControlPlanePath) and is the safety source of truth, complemented by a text/keyword taxonomy because raw intake ideas often have no resolved file list yet.",
+                        "task-outcome-ledger.ps1 exists and can later attribute approved-idea outcomes (done vs reverted/failed) for threshold calibration.",
+                        "Operator-required items remain visible through the existing held-reason / chat surfaces, so escalation does not require new UI."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The LLM auto-approves a disguised dangerous idea whose text hides control-plane/security intent, because at intake there is no resolved file list to classify.",
+                      "severity":  "high",
+                      "mitigation":  "Deterministic danger taxonomy over BOTH text/keywords AND any declared files; fail-closed default to held on any danger signal or sub-tau_approve confidence; re-check Test-IdeaTouchesControlPlanePath again at workpack time before execution as a second fail-closed barrier."
+                  },
+                  {
+                      "risk":  "Over-holding (too conservative) recreates the very pile-up the task wants to eliminate.",
+                      "severity":  "medium",
+                      "mitigation":  "Calibrate tau thresholds and the taxonomy from the outcome ledger; add a held-aging digest to chat; periodically review held false-positives and narrow the taxonomy where outcomes prove an area safe."
+                  },
+                  {
+                      "risk":  "Regression introduced into lib/backlog-core.ps1, which is itself control-plane and high-traffic.",
+                      "severity":  "high",
+                      "mitigation":  "UTF-8 BOM + parse-check before applying (goals.md hard constraint), keep the change git-revertable, run the shadow/dry-run pass before going live, and leave Invoke-BacklogIntakeGate untouched."
+                  },
+                  {
+                      "risk":  "Prompt-injection inside an idea\u0027s text steers the LLM toward \u0027approve\u0027.",
+                      "severity":  "medium",
+                      "mitigation":  "Safety is deterministic and post-clamps the LLM verdict: the risk layer can only DOWNGRADE to held, never upgrade to approved, so a successful injection at most yields a held item, never an auto-approve."
+                  },
+                  {
+                      "risk":  "The judge spuriously cites a goal_ref to justify an approve (goal-link gaming).",
+                      "severity":  "low",
+                      "mitigation":  "goal_ref is logged and periodically sampled/audited; outcome-based calibration detects systematic mis-citation and tightens thresholds for the affected category."
+                  }
+              ],
+    "minimal_version":  "Inside the existing Invoke-BacklogCurator only: (1) load goals.md\u0027s priority list into the prompt and require the JSON to include goal_ref and a self risk-assessment plus relevance/utility/effectiveness sub-scores; (2) add a deterministic, fail-closed risk clamp — a control-plane/secrets/irreversible/architectural-pivot taxonomy evaluated over the idea text and any declared files — that forces verdict-\u003eheld with operator_required=true and overrides any \u0027approve\u0027 the LLM returns (and defaults to held on LLM error/malformed JSON); (3) make tau_approve strictly higher than tau_reject and route low-confidence APPROVE to held instead of drop, keeping auto-drop only for clearly junk/dup/out-of-scope/dead-project/gate-clutter/already-done; (4) extend the existing auto_curator block and the \u0027judge\u0027 jsonl line with goal_ref, risk_class and operator_required, and surface a one-line \u0027HELD: \u003creason\u003e (goal:\u003cref\u003e, risk:\u003cclass\u003e)\u0027 to chat for operator-required items. Run tools/backlog-curator-backfill.ps1 once over the existing \u0027new\u0027/\u0027held\u0027 items to drain the pile-up. No new status, no new file, no new gate.",
+    "advanced_version":  "Add self-learning calibration (goal #6): attribute each auto-approved idea\u0027s outcome via task-outcome-ledger.ps1 (done vs reverted/failed) and auto-tune tau_approve and the danger taxonomy from that signal; ship a held-aging digest pushed to chat so operator-required items never rot silently; run a shadow/dry-run mode (in the spirit of the existing depth-shadow.jsonl) that scores the new auto/operator boundary against the historical record of operator approve/reject decisions to measure precision/recall before enabling live auto-approve; and, only for approve-near-threshold items, take a second cheap-model cross-check vote where disagreement forces held — all still inside the one curator, adding zero new gates."
+}

@@ -1,0 +1,140 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_1",
+                      "statement":  "Integrate the autonomous approval logic by extending existing components within the current intake flow (e.g., Invoke-BacklogCurator, Invoke-BacklogIntakeGate), avoiding new parallel services or gates.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify no new daemon/gate processes are created, and the logic is implemented as an extension of `Invoke-BacklogCurator` or `Invoke-BacklogIntakeGate` within the existing `Add-Idea` flow.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_2",
+                      "statement":  "Implement a deterministic, fail-closed risk classifier (e.g., deny-list based) that identifies high-risk ideas (e.g., control-plane, security, irreversible operations, architectural pivots) and mandates an \u0027operator-required\u0027 outcome, overriding any LLM auto-approval.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety",
+                      "test":  "Verify a deterministic risk classifier runs before/around the LLM, identifies high-risk categories (control-plane, security, irreversible, architectural pivots), and forces `operator-required` regardless of LLM verdict.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_3",
+                      "statement":  "Utilize a structured rubric to evaluate ideas based on relevance, utility, and effectiveness, explicitly measured against the goals defined in goals.md.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Decision Logic",
+                      "test":  "Verify the LLM output (or internal evaluation) includes scores for `relevance`, `utility`, and `effectiveness` that are linked to `goals.md`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_4",
+                      "statement":  "The main judging LLM (e.g., BacklogCurator LLM) must be provided with comprehensive context including goals.md, compact bridge profile, current status, recent commits, similar/open/done/rejected ideas, and risk verdict from policy.ps1.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "LLM Configuration",
+                      "test":  "Verify the LLM prompt includes `goals.md`, `bridge profile`, `status`, `commits`, `similar ideas`, and `risk verdict`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_5",
+                      "statement":  "Establish a unified decision vocabulary (approve, reject, operator-required) and map these to existing backlog statuses (approved, auto-dropped, held) without introducing new status types.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Standardization",
+                      "test":  "Verify the system uses `approve`, `reject`, `operator-required` internally and maps them to `approved`, `auto-dropped`, `held` externally, with no new statuses.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_6",
+                      "statement":  "Auto-approve decisions must be strictly limited to low-risk ideas with clear scope, demonstrable benefit to goals.md, a clear causal path, high model confidence, and passing all safety checks and score thresholds.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Decision Logic",
+                      "test":  "Verify auto-approval logic checks for low-risk, clear scope, goal benefit, clear path, high model confidence, and passes the deterministic safety classifier.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_7",
+                      "statement":  "Auto-reject decisions should apply to clearly identified junk, duplicates, dead/out-of-scope projects, gate-clutter, already completed tasks, or ideas lacking a clear link to goals.md.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Decision Logic",
+                      "test":  "Verify auto-rejection logic targets junk, duplicates, out-of-scope, already done, and ideas without goal links.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_8",
+                      "statement":  "Implement asymmetric decision thresholds where the bar for auto-approval is strictly higher than for auto-rejection, and all uncertain or low-confidence decisions (including low-confidence approvals and model errors) are routed to \u0027operator-required\u0027 rather than auto-approved or silently dropped.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Decision Logic",
+                      "test":  "Verify `tau_approve` \u003e `tau_reject`, low-confidence approvals route to `held`, and any model error/ambiguity results in `operator-required`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_9",
+                      "statement":  "Every decision must generate and record a structured rationale, including verdict, confidence, linked goals, rubric scores, risk tier, risk reason, model used, judged_at_sha, timestamp, and a short human-readable reason, extending existing logging mechanisms like auto_curator and judge jsonl lines.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Transparency/Logging",
+                      "test":  "Verify `auto_curator` and `curator-decisions.jsonl` (or equivalent) contain all specified structured rationale fields, including a goal-linked reason.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Preserve Invoke-BacklogIntakeGate as a fast, deterministic, fail-closed layer for initial checks (e.g., dedup, evidence, hard policy checks) that runs before the LLM-based decision.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Flow Control",
+                      "test":  "Verify `Invoke-BacklogIntakeGate` remains unchanged in its core deterministic fail-closed functions and executes *before* the LLM judge.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Validate the new decision boundaries and logic in a shadow/dry-run mode against historical operator decisions to measure precision and recall before enabling live auto-approval.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Validation/Testing",
+                      "test":  "Verify a shadow/dry-run mode is implemented and used to compare automated decisions against historical operator decisions.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}

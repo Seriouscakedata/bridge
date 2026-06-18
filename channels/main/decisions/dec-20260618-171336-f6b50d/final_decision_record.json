@@ -1,0 +1,250 @@
+{
+    "final_answer":  "Deliver the autonomous idea-approval capability by EXTENDING the existing intake path, not as a new gate or daemon. Add-Idea keeps calling the fast, deterministic, fail-closed Invoke-BacklogIntakeGate (lib/backlog.ps1) first for dedup / evidence / hard-policy checks; ideas that survive are judged inside the existing Invoke-BacklogCurator (lib/backlog-core.ps1). The curator wraps its existing LLM judge (Claude on the prepaid plan, per the goals.md economy priority) with a deterministic, fail-closed risk classifier in lib/policy.ps1: any idea touching the control plane (driver/supervisor/watchdog/secrets/circuit-breaker), security, irreversible operations, or architectural pivots is forced to operator-required regardless of the LLM verdict. The LLM scores each surviving idea against goals.md on relevance, utility, and effectiveness — each score citing the concrete goal line it advances, so the rubric is auditable rather than a vibe check. The curator then applies asymmetric thresholds (tau_approve \u003e\u003e tau_reject): auto-approve is the narrow path requiring low-risk + clear scope + demonstrable goal benefit + clear causal path + high confidence + a pass from the deterministic classifier; clearly-identified junk/duplicates/already-done/out-of-scope is auto-rejected; and everything uncertain, low-confidence, erroring, or merely lacking an obvious goal link under low confidence routes to operator-required — never silently dropped. The three internal verbs (approve/reject/operator-required) map onto the three existing statuses (approved/auto-dropped/held) with no new status types, keeping downstream tooling and dashboards intact. Every decision writes a structured, goal-linked rationale (verdict, confidence, linked goals, rubric scores, risk tier + reason, model, judged_at_sha, timestamp, human-readable reason) to the existing curator/judge jsonl logs. Before any live auto-approve is switched on, the whole pipeline runs in shadow/dry-run against historical operator decisions to measure precision and recall. Net effect: the idea flow is consolidated and simplified, not forked into a competing gate.",
+    "decisions":  [
+                      {
+                          "decision":  "Implement autonomous approval as an extension of Invoke-BacklogCurator + Invoke-BacklogIntakeGate inside the existing Add-Idea flow — no new daemon, service, or parallel gate. (atom_1)",
+                          "rationale":  "Minimizes new surface area, reuses proven plumbing, and directly satisfies the consolidation constraint and the goals.md lesson that conflicting gates falsely block autonomy. Triple-proposal consensus; judge total 0.845.",
+                          "alternatives_considered":  [
+                                                          "A standalone autonomous-approval daemon polling the backlog",
+                                                          "A new dedicated approval gate parallel to the intake gate"
+                                                      ],
+                          "risk":  "Curator\u0027s responsibility grows; mitigated by keeping the deterministic gate and risk classifier as separate, independently testable layers.",
+                          "test":  "No new daemon/gate process exists; the approval logic lives inside Invoke-BacklogCurator / Invoke-BacklogIntakeGate within the existing Add-Idea path."
+                      },
+                      {
+                          "decision":  "Add a deterministic, fail-closed risk classifier in lib/policy.ps1 that flags control-plane, security, irreversible, and architectural-pivot ideas and forces operator-required, overriding any LLM auto-approval. (atom_2)",
+                          "rationale":  "This is the central safety control: it makes the catastrophic failure mode (LLM auto-approving a control-plane/security/irreversible change) structurally impossible. Cheap, high-leverage, named categories give a precise test. Highest-scoring atom (0.8875).",
+                          "alternatives_considered":  [
+                                                          "Trusting the LLM\u0027s own self-assessed risk",
+                                                          "A soft LLM-advisory risk hint with no hard override"
+                                                      ],
+                          "risk":  "Deny-list may over-block (false operator-required); acceptable under fail-closed posture and tunable from shadow-run data.",
+                          "test":  "A deterministic classifier runs before/around the LLM, detects the four high-risk categories, and forces operator-required regardless of the LLM verdict."
+                      },
+                      {
+                          "decision":  "Score each idea with a goals.md-anchored rubric on relevance, utility, and effectiveness — MODIFIED so each dimension has an explicit operational definition and each score must cite the specific goal line it is measured against. (atom_3, judge: modify)",
+                          "rationale":  "A goals-anchored rubric is correct, but the three dimensions overlap and are under-operationalized; without crisp, citable definitions the LLM can hand-wave scores. Operationalizing makes it auditable. Judge total 0.7775 with a 0.05 penalty for fuzziness, resolved by this modification.",
+                          "alternatives_considered":  [
+                                                          "Three free-form qualitative scores with no goal citation",
+                                                          "A single blended goal-fit score"
+                                                      ],
+                          "risk":  "Rubric still partly subjective; mitigated by requiring goal-line citations and logging scores for shadow audit.",
+                          "test":  "LLM output includes relevance/utility/effectiveness scores, each with an operational definition and an explicit citation to the goals.md goal it is measured against."
+                      },
+                      {
+                          "decision":  "Feed the curator LLM a compact, lazily-assembled context bundle: goals.md, a compact bridge profile, current status, recent commits, similar/open/done/rejected ideas, and the policy.ps1 risk verdict. (atom_4)",
+                          "rationale":  "Gives the judge what it needs for grounded, dedup-aware decisions; the enumerated list is precisely testable. Judge total 0.7575, dinged on simplicity/feasibility for assembly cost and token bloat — hence the compact, lazy-assembly requirement.",
+                          "alternatives_considered":  [
+                                                          "Judging on the idea text alone",
+                                                          "Always loading full history regardless of relevance"
+                                                      ],
+                          "risk":  "Token bloat / latency and assembly cost; mitigated by compact summaries and lazy loading of similar/done/rejected ideas.",
+                          "test":  "The curator prompt demonstrably includes goals.md, bridge profile, status, commits, similar ideas, and the policy.ps1 risk verdict."
+                      },
+                      {
+                          "decision":  "Use a unified internal vocabulary (approve / reject / operator-required) mapped onto existing statuses approved / auto-dropped / held — no new status types. (atom_5)",
+                          "rationale":  "Low-cost, high-clarity standardization that keeps downstream tooling, claim pickers, and dashboards intact. Confirmed against lib/backlog-crud.ps1 which already handles approved/auto-dropped/held. Judge total 0.8425.",
+                          "alternatives_considered":  [
+                                                          "Introducing new auto-approved / auto-held statuses",
+                                                          "Reusing \u0027approved\u0027 for both auto and manual with no distinguishing field"
+                                                      ],
+                          "risk":  "Loss of provenance (auto vs operator) inside a shared status; mitigated by the structured rationale fields (model, judged_at_sha) in atom_9.",
+                          "test":  "System uses approve/reject/operator-required internally and maps them to approved/auto-dropped/held with no new statuses introduced."
+                      },
+                      {
+                          "decision":  "Gate auto-approve on a conjunction: low-risk AND clear scope AND demonstrable goal benefit AND clear causal path AND high confidence AND passing the deterministic classifier. (atom_6)",
+                          "rationale":  "Correctly conservative — makes auto-approve the narrow, well-justified path that an autonomous approver needs. The multiple AND-conditions cost some simplicity but that strictness is the point. Judge total 0.8475.",
+                          "alternatives_considered":  [
+                                                          "Auto-approving on a single high goal-fit score",
+                                                          "Approving anything not explicitly flagged risky"
+                                                      ],
+                          "risk":  "May route many borderline-good ideas to operator-required (lower auto-approve recall); acceptable and preferable to false approvals.",
+                          "test":  "Auto-approval logic verifies low-risk, clear scope, goal benefit, clear path, high confidence, and a pass from the deterministic safety classifier before approving."
+                      },
+                      {
+                          "decision":  "Auto-reject only clearly-identified junk, duplicates, dead/out-of-scope, already-done, and gate-clutter ideas — MODIFIED so absence of a goal link under LOW confidence routes to operator-required (per atom_8), not auto-drop. (atom_7, judge: modify)",
+                          "rationale":  "Auto-rejecting unambiguous waste is safe and valuable, but auto-dropping ideas merely \u0027lacking a clear goal link\u0027 risks silently discarding good-but-poorly-phrased ideas. Deferring weak-signal cases to the operator protects recall. Judge total 0.785 with a 0.05 recall penalty resolved by this modification.",
+                          "alternatives_considered":  [
+                                                          "Auto-rejecting any idea without an explicit goals.md link",
+                                                          "Never auto-rejecting and sending all rejects to the operator"
+                                                      ],
+                          "risk":  "Some junk reaches the operator queue; acceptable trade for not losing salvageable ideas.",
+                          "test":  "Auto-rejection fires only on clearly-identified junk/duplicates/out-of-scope/done; low-confidence no-goal-link cases land in held (operator-required), not auto-dropped."
+                      },
+                      {
+                          "decision":  "Apply asymmetric thresholds (tau_approve \u003e tau_reject) and route all uncertainty, low-confidence approvals, and model errors to operator-required — ban silent drops. (atom_8)",
+                          "rationale":  "Makes false-approve far harder than false-reject and forbids silent loss of ideas — the correct risk posture for an autonomous approver and a strong safety multiplier. Judge total 0.8475.",
+                          "alternatives_considered":  [
+                                                          "Symmetric thresholds",
+                                                          "Defaulting errors/ambiguity to auto-reject for queue cleanliness"
+                                                      ],
+                          "risk":  "Operator queue may grow under model uncertainty; surfaced and tunable via shadow metrics.",
+                          "test":  "tau_approve \u003e tau_reject is enforced; low-confidence approvals and any model error/ambiguity result in held (operator-required), never auto-drop or auto-approve."
+                      },
+                      {
+                          "decision":  "Record a structured rationale for every decision (verdict, confidence, linked goals, rubric scores, risk tier, risk reason, model, judged_at_sha, timestamp, human-readable reason) by extending the existing auto_curator / judge jsonl logs. (atom_9)",
+                          "rationale":  "Gives full auditability, enables shadow evaluation and post-hoc rollback, and is cheap because it reuses current logging. Fully enumerated fields are directly testable and satisfy the transparency constraint. Judge total 0.8425.",
+                          "alternatives_considered":  [
+                                                          "Logging only the final status",
+                                                          "A free-text reason with no structured fields"
+                                                      ],
+                          "risk":  "Log growth and PII/secret leakage in reasons; mitigated by structured fields and the secrets constraint from goals.md.",
+                          "test":  "auto_curator / curator-decisions.jsonl entries contain every listed field, including a goal-linked human-readable reason visible in chat/logs."
+                      },
+                      {
+                          "decision":  "Preserve Invoke-BacklogIntakeGate as the fast, deterministic, fail-closed pre-filter (dedup, evidence, hard policy) that runs BEFORE the LLM judge. (atom_10)",
+                          "rationale":  "Defense-in-depth: stops bad inputs from ever reaching the probabilistic judge, keeps cost down, and complements the atom_2 classifier at essentially no added cost. Judge total 0.86.",
+                          "alternatives_considered":  [
+                                                          "Folding all checks into the LLM judge",
+                                                          "Running the gate after the LLM"
+                                                      ],
+                          "risk":  "Two safety layers could diverge; mitigated by keeping the gate\u0027s core deterministic functions unchanged and the classifier as a distinct policy.ps1 layer.",
+                          "test":  "Invoke-BacklogIntakeGate retains its deterministic fail-closed functions and executes before the LLM judge in the flow."
+                      },
+                      {
+                          "decision":  "Validate the full decision logic in shadow/dry-run mode against historical operator decisions, measuring precision and recall, as a GATING PREREQUISITE before enabling any live auto-approve. (atom_11)",
+                          "rationale":  "Best-practice de-risking and the natural payoff of atom_9\u0027s logging — measure before flipping on autonomy. Scored lower on feasibility/simplicity (0.785) due to cost and dependence on a labeled historical corpus, but the pre-go-live risk reduction is decisive.",
+                          "alternatives_considered":  [
+                                                          "Enabling live auto-approve immediately",
+                                                          "Validating only on synthetic ideas"
+                                                      ],
+                          "risk":  "Insufficient labeled history may weaken statistics; surfaced as an open question and mitigated by starting in pure-shadow with operator still deciding.",
+                          "test":  "A shadow/dry-run mode runs the classifier+LLM without acting, logs verdicts, and its decisions are compared against historical operator decisions to compute precision/recall before live auto-approve is enabled."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Build a new standalone autonomous-approval service / daemon / gate separate from the curator.",
+                         "why":  "Directly violates the consolidation constraint and the goals.md lesson (priority: simplicity over accretion). More moving parts = slower, less reliable, and the historical cause of conflicting gates that falsely blocked autonomy. The capability must extend the existing curator/intake path instead."
+                     },
+                     {
+                         "decision":  "Let the LLM judge auto-approve based solely on its own confidence, with no deterministic safety override.",
+                         "why":  "Fails the critical fail-closed safety constraint — an LLM hallucination or jailbreak could auto-approve a control-plane/security/irreversible/architectural-pivot change. The deterministic policy.ps1 classifier (atom_2) must be able to override the LLM to operator-required."
+                     },
+                     {
+                         "decision":  "Introduce new backlog status types for autonomous decisions (e.g. auto-approved, auto-held).",
+                         "why":  "Breaks downstream tooling, claim pickers, and dashboards and re-adds complexity. The three internal verbs map cleanly onto the existing approved/auto-dropped/held statuses (atom_5); provenance is captured via structured rationale fields instead."
+                     },
+                     {
+                         "decision":  "Auto-reject any idea that lacks an explicit goals.md link.",
+                         "why":  "Risks silently dropping good-but-poorly-phrased ideas, hurting recall. Per the atom_7 modification, low-confidence no-goal-link cases must route to operator-required (held), not auto-dropped."
+                     },
+                     {
+                         "decision":  "Enable live auto-approve immediately on rollout without shadow validation.",
+                         "why":  "No measured precision/recall means unknown false-approve rate on a critical-risk control. Atom_11 makes shadow/dry-run against historical decisions a gating prerequisite before any live auto-approve."
+                     }
+                 ],
+    "open_questions":  [
+                           "Is there a sufficient corpus of labeled historical operator decisions (approve/reject/held) to compute statistically meaningful precision/recall in shadow mode (atom_11 feasibility)?",
+                           "What concrete numeric values for tau_approve and tau_reject, and what confidence definition, balance autonomy (fewer ideas stuck) against the fail-closed posture? To be calibrated from the shadow run, not guessed.",
+                           "Does the \u0027held\u0027 status already surface clearly to the operator (e.g. via tools/operator-pulse.ps1 / web dashboard), or does the operator-required queue need a dedicated view so held ideas don\u0027t become a new silent backlog?",
+                           "What is the exact, maintainable source of the deny-list categories in policy.ps1 (control-plane/security/irreversible/architectural-pivot), and how is it kept in sync with the goals.md hard constraints (watchdog.ps1, supervisor.ps1, .git, secrets.json, scheduler tasks)?",
+                           "What token/context budget cap applies to the compact context bundle (atom_4) so curator latency and cost stay within the speed and economy priorities?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "0. Operator review",
+                                    "atoms":  [
+                                                  "all"
+                                              ],
+                                    "detail":  "Submit this design record for operator approval. No code changes until sign-off (task is design-only)."
+                                },
+                                {
+                                    "phase":  "1. Deterministic safety layer",
+                                    "atoms":  [
+                                                  "atom_2",
+                                                  "atom_10"
+                                              ],
+                                    "detail":  "Add the fail-closed risk classifier to lib/policy.ps1 (deny-list: control-plane/security/irreversible/architectural-pivot, sourced from goals.md hard constraints). Confirm Invoke-BacklogIntakeGate (lib/backlog.ps1) keeps its deterministic pre-filter unchanged and runs first. Unit-test that any high-risk category forces operator-required."
+                                },
+                                {
+                                    "phase":  "2. Rationale logging (shadow-ready)",
+                                    "atoms":  [
+                                                  "atom_9",
+                                                  "atom_5"
+                                              ],
+                                    "detail":  "Extend the existing auto_curator / judge jsonl logging with the full structured rationale schema and the approve/reject/operator-required → approved/auto-dropped/held mapping. Logging must work before any decision is acted on."
+                                },
+                                {
+                                    "phase":  "3. Rubric + curator judge wiring",
+                                    "atoms":  [
+                                                  "atom_3",
+                                                  "atom_4",
+                                                  "atom_6",
+                                                  "atom_7",
+                                                  "atom_8"
+                                              ],
+                                    "detail":  "Inside Invoke-BacklogCurator (lib/backlog-core.ps1), assemble the compact context bundle, prompt the existing LLM judge for the operationalized goals.md-cited rubric scores + confidence, and implement asymmetric thresholds and the auto-approve conjunction / narrow auto-reject / route-uncertainty-to-held logic."
+                                },
+                                {
+                                    "phase":  "4. Shadow validation (go-live gate)",
+                                    "atoms":  [
+                                                  "atom_11"
+                                              ],
+                                    "detail":  "Run the full pipeline in dry-run: it logs verdicts but the operator still decides. Replay historical decisions, compute precision/recall, tune tau_approve/tau_reject and the deny-list. Do NOT enable live auto-approve until precision on the safety boundary meets the agreed bar."
+                                },
+                                {
+                                    "phase":  "5. Staged go-live",
+                                    "atoms":  [
+                                                  "atom_1",
+                                                  "atom_8"
+                                              ],
+                                    "detail":  "Flip on live auto-reject and auto-approve behind a config flag, with operator-required (held) as the default sink for anything uncertain. Monitor logs and keep the flag reversible (git-rollback per goals.md safety constraint)."
+                                }
+                            ],
+    "next_step":  "Submit this design for operator approval; upon sign-off, implement Phase 1 (atom_2 deterministic risk classifier in lib/policy.ps1) plus Phase 2 (atom_9 structured rationale logging), since the fail-closed classifier is the highest-value safety control and logging is the prerequisite for the atom_11 shadow validation that gates any live auto-approve.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The deterministic deny-list classifier is specified to run on the idea\u0027s free TEXT, but lib/policy.ps1 documents (lines 4-13) that exactly this free-text control-plane matching was REMOVED because it false-flagged safe work (\u0027a task that merely MENTIONED driver.ps1/supervisor/secret ... was classified control-plane\u0027). The surviving correct classifier (lines 115-122) inspects EDIT TARGETS — \u0027explicit edit targets, none protected =\u003e NOT control-plane (whatever the text says).\u0027 A backlog idea has no edit targets yet, so the design\u0027s risk gate must either revert to the abandoned free-text matching (reintroducing the documented false-positive failure that \u0027ЛОЖНО блокировало автономию\u0027 per goals.md) or it cannot classify ideas at all.",
+                                  "why":  "The single load-bearing safety atom is built on a detection method the codebase already proved broken and deliberately retired. It cannot be \u0027sourced from policy.ps1\u0027 as claimed without resurrecting the exact anti-pattern policy.ps1 exists to kill."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The design asserts the boundary is fail-CLOSED and \u0027sourced from policy.ps1 so they cannot diverge,\u0027 but policy.ps1\u0027s danger scan explicitly fails OPEN: line 174 — `if (-not $danger) { ... safe = $true; risk = \u0027unknown\u0027; reason = \u0027danger scan unavailable (fail-open)\u0027 }` — and Test-PolicyAutotaskExecutionBlocked then returns blocked=$false for safe=true. If Test-AutonomousTaskSafe is unavailable or throws, the upstream policy defaults to NOT blocked.",
+                                  "why":  "Directly violates the contract\u0027s critical fail-closed safety constraint. Reusing policy.ps1 as the risk source inherits a fail-open default, so a missing/erroring classifier (or one that can\u0027t reason about a text-only idea) lets a dangerous idea pass rather than routing to operator-required."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Approval is not backlog hygiene — \u0027approved\u0027 ideas are autonomously claimed and IMPLEMENTED by the driver (driver/20-context.ps1:56-61 \u0027will claim next runnable/approved idea\u0027; driver/81-loop-idle-claim.ps1; recent commits show \u0027Автозадача из бэклога\u0027). The deny-list keys on a short idea title, which cannot reveal an implementation\u0027s blast radius. A goal-aligned, safe-sounding idea (\u0027ускорить главный цикл\u0027 / speed up the main loop — maps to goal #4 speed) passes every auto-approve conjunct yet its implementation necessarily edits the supervisor/driver, which goals.md line 42 forbids (\u0027НЕ трогать watchdog.ps1, supervisor.ps1\u0027).",
+                                  "why":  "Auto-approve directly triggers autonomous code changes to the control plane, but the safety check runs on text that never names the control plane. This is a fail-OPEN on the central mandate — the most dangerous ideas are precisely those whose danger is in the implementation, not the title."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The deny-list categories (control-plane, security, irreversible, architectural pivot) omit META-changes to the safety machinery itself: ideas that modify the curator, policy.ps1/deny-list, goals.md, or the approval thresholds. Bridge goals #6 (self-development) and #7 (\u0027Оптимизация и улучшение СВОИХ сервисов\u0027) explicitly drive the bridge to generate ideas like \u0027improve the backlog curator\u0027 or \u0027relax the over-strict risk classifier.\u0027",
+                                  "why":  "The system\u0027s own north-star incentivizes ideas that target its safety boundary, and those ideas are not on the deny-list, so the curator could autonomously approve weakening of its own guardrails — an unbounded self-modification hole on a critical-risk control."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Routing everything dangerous/uncertain/low-confidence/erroring to \u0027held\u0027 (operator-required) recreates the exact stall the task exists to eliminate. For a self-improving bridge, a large fraction of generated ideas touch its own code/services (control-plane-adjacent → deny-listed → held), plus all low-confidence/ambiguous cases. The design provides no throughput floor or operator SLA — open_questions even admits \u0027is there an SLA so they do not re-accumulate.\u0027",
+                                  "why":  "The stated goal is to stop ideas accumulating awaiting manual approval. Under realistic load a conservative conjunction + broad deny-list pushes the majority to held, reproducing the original backlog-stall problem with extra steps."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The design contradicts the behavior of the very function it claims to merely \u0027extend.\u0027 The existing Invoke-BacklogCurator (lib/backlog-core.ps1:844-853) routes confidence\u003c0.6 to \u0027drop\u0027 (→ auto-dropped) and any invalid/non-JSON verdict to \u0027drop\u0027 (line 837), i.e. it SILENTLY DROPS under uncertainty. atom_8 explicitly rejects silent drop and mandates uncertainty→held. The design narrative does not flag that honoring atom_8 requires inverting the existing low-confidence and parse-failure paths.",
+                                  "why":  "An unacknowledged behavioral delta means a literal \u0027extension\u0027 inherits the opposite of the intended safety policy — borderline-good and ambiguous ideas get auto-dropped and lost rather than escalated, violating atom_8 and the \u0027never silently drop\u0027 rejected-option."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The design and decision record never acknowledge that Invoke-BacklogCurator ALREADY implements autonomous approve/hold/drop with model confidence, goals/status/git context, status mapping (approve→approved, hold→held, drop→auto-dropped), and a logged judge jsonl line (backlog-core.ps1:793-889). Much of the \u0027design\u0027 re-describes shipped behavior without specifying the actual delta versus what exists.",
+                                  "why":  "Failing to scope what is NEW vs existing invites duplicate/parallel implementation — the precise documented failure mode (goals.md lines 26-31; policy.ps1 lines 4-13 \u00276-7 DIFFERENT detectors\u0027) the whole task is meant to avoid."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Shadow-validation\u0027s oracle is contaminated, not just sparse. The existing curator already auto-judges ideas, so \u0027historical operator decisions\u0027 in the backlog are largely the OLD LLM\u0027s own auto-verdicts, not human ground truth. Measuring precision/recall against them validates new-LLM-vs-old-LLM agreement.",
+                                  "why":  "It yields false confidence in the boundary before go-live. The open_question flags data sparsity but not the deeper problem that the labels themselves are machine-generated, so the go-live gate (atom_11) can pass while still being miscalibrated against real operator judgment."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Auto-approve hinges on \u0027high model confidence,\u0027 which the existing code and the design take from the model\u0027s self-reported probability (backlog-core.ps1 reads obj.confidence; open_question admits the computation is undefined). LLM self-reported confidence is poorly calibrated and trivially inflatable by adversarial or self-generated idea text (the bridge authors its own ideas; an idea body could assert low risk / high benefit to nudge the judge).",
+                                  "why":  "The auto-approve gate\u0027s strength rests on an unreliable, manipulable signal with no defined calibration, undermining the conjunction that is supposed to make auto-approval the safe exception."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Invoke-BacklogIntakeGate is defined twice in the loaded libs (lib/backlog.ps1:266 and lib/backlog-workpack.ps1:585). The design treats it as the single deterministic \u0027front door,\u0027 but which definition wins depends on dot-source order and they can silently diverge.",
+                                  "why":  "Undercuts the consolidation/\u0027single decision point\u0027 thesis and the \u0027gate remains unchanged in its core fail-closed functions\u0027 test (atom_2): there isn\u0027t one canonical gate, so the fail-closed front door is ambiguous and a maintenance hazard."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

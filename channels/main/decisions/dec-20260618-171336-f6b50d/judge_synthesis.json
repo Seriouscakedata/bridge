@@ -1,0 +1,197 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_1",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Extending Invoke-BacklogCurator/Invoke-BacklogIntakeGate inside the existing Add-Idea flow is the architecturally sound choice: it minimizes new surface area, avoids parallel daemons/gates, and reuses proven plumbing. Triple-proposal consensus and a concrete, testable boundary. No deductions.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "atom_2",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A deterministic, fail-closed deny-list classifier that overrides any LLM auto-approval is the central safety control of the whole design. It makes the dangerous failure mode (LLM auto-approving a control-plane/security/irreversible change) structurally impossible. Cheap to build, high leverage, named categories give a clear test. Highest-value atom.",
+                      "total":  0.8875
+                  },
+                  {
+                      "atom_id":  "atom_3",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "relevance/utility/effectiveness overlap and are under-operationalized; without crisp, measurable definitions tied to specific goals.md lines the LLM can hand-wave scores",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "A goals.md-anchored rubric is the right idea, but the three dimensions are fuzzy and partially redundant. Modify to give each criterion an explicit operational definition and require each score to cite the concrete goal it is measured against, so the rubric is auditable rather than a vibe check.",
+                      "total":  0.7775
+                  },
+                  {
+                      "atom_id":  "atom_4",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.7,
+                                     "impact":  0.8,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Feeding goals.md, profile, status, commits, similar/open/done/rejected ideas, and the policy.ps1 risk verdict gives the judge the context needed for grounded, dedup-aware decisions, and the enumerated list is precisely testable. Accepted, but simplicity/feasibility are dinged for context-assembly cost and token bloat — should be assembled compactly and lazily.",
+                      "total":  0.7575
+                  },
+                  {
+                      "atom_id":  "atom_5",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Mapping approve/reject/operator-required onto existing approved/auto-dropped/held with no new status types is low-cost, high-clarity standardization that keeps downstream tooling and dashboards intact. Clean, cheap, unambiguous mapping.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "atom_6",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Gating auto-approval on low-risk + clear scope + demonstrable goal benefit + clear causal path + high confidence + passing the deterministic classifier is correctly conservative; it makes auto-approve the narrow, well-justified path. Multiple AND-conditions cost some simplicity but that strictness is exactly what an autonomous approver needs.",
+                      "total":  0.8475
+                  },
+                  {
+                      "atom_id":  "atom_7",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "auto-rejecting ideas merely \u0027lacking a clear link to goals.md\u0027 risks silently dropping good-but-poorly-phrased ideas; weak-signal cases should defer to operator-required rather than be auto-dropped",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Auto-rejecting unambiguous junk/duplicates/done/out-of-scope items is safe and valuable. Modify so that only clearly-identified cases are auto-rejected; absence of a goal link under low confidence should route to operator-required (per atom_8) instead of auto-drop, to protect recall on borderline ideas.",
+                      "total":  0.785
+                  },
+                  {
+                      "atom_id":  "atom_8",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Asymmetric thresholds (tau_approve \u003e tau_reject) with all uncertainty, low-confidence approvals, and model errors routed to operator-required is the correct risk posture: it makes false-approve far harder than false-reject and bans silent drops. Explicit, testable, and a strong safety multiplier.",
+                      "total":  0.8475
+                  },
+                  {
+                      "atom_id":  "atom_9",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Recording a structured rationale (verdict, confidence, linked goals, rubric scores, risk tier/reason, model, judged_at_sha, timestamp, human reason) by extending existing jsonl logs gives full auditability, enables shadow evaluation and post-hoc rollback, and is cheap because it reuses current logging. Fully enumerated fields make it directly testable.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Preserving Invoke-BacklogIntakeGate as a fast deterministic fail-closed pre-filter (dedup, evidence, hard policy) before the LLM keeps cost down and stops bad inputs from ever reaching the probabilistic judge. Defense-in-depth that complements atom_2 at essentially no added cost.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.6,
+                                     "impact":  0.85,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Shadow/dry-run validation against historical operator decisions to measure precision/recall before enabling live auto-approve is best-practice de-risking and the natural payoff of atom_9\u0027s logging. Scored lower on feasibility/simplicity because it is high-cost and depends on a sufficient corpus of labeled historical decisions, but the risk reduction before flipping on autonomy is decisive — accept as a gating prerequisite for go-live.",
+                      "total":  0.785
+                  }
+              ]
+}

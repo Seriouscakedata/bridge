@@ -1,0 +1,109 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно не строить новый gate, а превратить уже существующий путь Add-Idea -\u003e Invoke-BacklogIntakeGate -\u003e Invoke-BacklogCurator в единый автономный контур принятия решений по идеям. Обычные безопасные и полезные идеи должны быстро получать approved или auto-dropped/rejected с причиной, а опасные или архитектурно спорные идеи должны fail-closed уходить в held/operator-required, а не зависать как new и не получать авто-approval.",
+    "summary":  "Решение: расширить существующий curator до Autonomous Idea Approval внутри текущего intake flow. Add-Idea остается единой точкой входа: сначала выполняет текущий dedup/recent-reject фильтр, затем единый intake gate делает детерминированные проверки источника, дубликатов, доказательств и protected-surface риска, после чего Invoke-BacklogCurator выполняет goal-aware LLM-оценку по goals.md и выносит один из трех исходов: approve -\u003e status=approved, reject -\u003e status=auto-dropped с reason, operator-required -\u003e status=held с held_reason. Отдельный новый gate не нужен; старые curator/intake записи и логи становятся единственным местом видимости решений.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Интегрировать сервис как расширение Invoke-BacklogCurator, вызываемое из существующего Add-Idea flow, а не как отдельный daemon/gate.",
+                               "reason":  "В репозитории уже есть Add-Idea, Test-IdeaShouldKeep, Invoke-BacklogIntakeGate, Start-BacklogCuratorJob и auto_curator; новый параллельный механизм повторит прошлую ошибку конфликтующих gates.",
+                               "tradeoff":  "Curator станет ответственнее и сложнее, зато поток идей останется единым и понятным.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Сохранить Invoke-BacklogIntakeGate как быстрый детерминированный fail-closed слой перед LLM-решением.",
+                               "reason":  "Он уже умеет делать intake-dedup, hold/drop по evidence и fail-closed; туда естественно добавить только жесткие policy checks, не создавая новый gate.",
+                               "tradeoff":  "Часть решений будет приниматься без глубокого LLM-суждения, но только для очевидных duplicate/junk/risk-boundary случаев.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Главный judging model: текущий BacklogCurator LLM с обязательным контекстом goals.md, compact bridge profile, текущим статусом, recent commits, similar/open/done/rejected ideas и risk verdict из policy.ps1.",
+                               "reason":  "Цель требует глубокого понимания bridge и goals.md; LLM должен судить не просто текст идеи, а ее связь с надежностью, автономией, скоростью, качеством, self-development и улучшением сервисов.",
+                               "tradeoff":  "LLM-вызов дороже детерминированных regex, поэтому дубликаты и явный мусор надо отсеивать до него.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Ввести единый decision vocabulary: approve, reject, operator-required; маппинг в существующие статусы: approved, auto-dropped, held.",
+                               "reason":  "Так сохраняются текущие статусы и потребители backlog, но причины становятся понятными в терминах approval service.",
+                               "tradeoff":  "Внутренний status auto-dropped не буквально называется rejected, поэтому в auto_curator/log должен быть явный decision=\u0027reject\u0027.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Auto-approve разрешать только для low-risk идей с ясным scope, конкретной пользой для goals.md, понятным causal path и высокой уверенностью модели.",
+                               "reason":  "Fail-closed безопасность важнее скорости; одобрять можно только обратимые, локальные, goal-beneficial задачи без protected-surface риска.",
+                               "tradeoff":  "Некоторые хорошие, но широкие идеи попадут оператору, зато опасные идеи не проскочат автоматически.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Operator-required является обязательным исходом для control-plane, secrets/security, irreversible operations, billing, architectural pivots, новых gates/subsystems и любых low-confidence/ambiguous решений.",
+                               "reason":  "Контракт прямо требует не авто-одобрять опасные идеи и оставлять их оператору; policy.ps1 уже является single source of truth для control-plane риска.",
+                               "tradeoff":  "Held очередь не исчезнет полностью, но будет состоять из настоящих операторских решений, а не обычных безопасных идей.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Auto-reject применять к junk, duplicates, dead/out-of-scope projects, gate-clutter, уже сделанным задачам, текстовой каше и идеям без связи с goals.md.",
+                               "reason":  "Это прямо разгружает backlog и соответствует goals.md: меньше лишних движущихся частей, меньше ручных блокировок, выше скорость и качество.",
+                               "tradeoff":  "Нужна прозрачная причина и возможность последующего operator override, чтобы false reject не терял полезные идеи навсегда.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Рубрика должна оценивать relevance, utility, effectiveness, freshness/duplicate и risk boundary, а не только общий score.",
+                               "reason":  "Обычный score не объясняет, почему идея помогает bridge; goal-linked rubric делает решения проверяемыми и пригодными для аудита.",
+                               "tradeoff":  "Решение станет чуть более многословным, но это окупается прозрачностью.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Каждое решение должно записывать structured rationale: verdict, confidence, linked_goals, rubric scores, risk_tier, risk_reason, model, judged_at_sha, timestamp и short human reason.",
+                               "reason":  "Контракт требует письменную причину, привязанную к цели, видимую в chat/logs; текущий auto_curator и Write-BacklogJsonLine уже дают место для этого.",
+                               "tradeoff":  "Больше данных в backlog.jsonl/control logs, но это небольшая цена за auditability.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "При ошибке модели, невалидном JSON, недоступном goals.md или конфликте сигналов решение должно быть operator-required, не approve.",
+                               "reason":  "Fail-closed означает, что отсутствие надежного суждения не может превращаться в авто-approval.",
+                               "tradeoff":  "Временные сбои LLM могут создавать held items; это лучше, чем опасное авто-одобрение.",
+                               "confidence":  0.98
+                           }
+                       ],
+    "assumptions":  [
+                        "goals.md остается каноническим источником целей bridge.",
+                        "Все новые идеи проходят через Add-Idea или должны быть приведены к этому пути.",
+                        "Существующие статусы approved, held и auto-dropped сохраняются, чтобы не ломать picker/self-exec/curator consumers.",
+                        "lib/policy.ps1 остается единственным источником protected control-plane классификации.",
+                        "Оператор может вручную переоткрыть или одобрить rejected/held идею, но автономный сервис сам этого не делает.",
+                        "На этом этапе требуется только дизайн; кодовые изменения и миграции не выполняются."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "LLM может ошибочно auto-approve опасную идею.",
+                      "severity":  "high",
+                      "mitigation":  "Детерминированный risk boundary из policy.ps1 должен выполняться до LLM и иметь veto: protected/control/security/irreversible/architecture =\u003e held/operator-required независимо от LLM."
+                  },
+                  {
+                      "risk":  "Расширение превратится в еще один конфликтующий gate.",
+                      "severity":  "high",
+                      "mitigation":  "Не добавлять новый entrypoint или daemon; переиспользовать Add-Idea, Invoke-BacklogIntakeGate, Invoke-BacklogCurator, auto_curator и curator-decisions.jsonl как единый контур."
+                  },
+                  {
+                      "risk":  "Auto-reject может удалить полезную, но плохо сформулированную идею.",
+                      "severity":  "medium",
+                      "mitigation":  "Reject только при высокой уверенности и четкой причине: duplicate/junk/out-of-scope/already-done/no-goal-link; ambiguous полезные идеи отправлять в operator-required."
+                  },
+                  {
+                      "risk":  "Held/operator-required очередь снова станет ручной свалкой.",
+                      "severity":  "medium",
+                      "mitigation":  "Held reason должен быть точным: risk class, missing evidence, ambiguity, requested operator decision; operator batch/reporting должен группировать такие items по причине."
+                  },
+                  {
+                      "risk":  "goals.md может быть слишком длинным или испорченным для prompt context.",
+                      "severity":  "medium",
+                      "mitigation":  "Curator должен использовать стабильный compact goals digest с checksum/source timestamp; при невозможности прочитать goals.md fail-closed в held."
+                  },
+                  {
+                      "risk":  "Дубликаты и уже сделанные идеи будут расходовать LLM budget.",
+                      "severity":  "low",
+                      "mitigation":  "Оставить Test-IdeaShouldKeep, embedding dedup, recent rejected suppression и freshness checks до или вокруг LLM judgement."
+                  }
+              ],
+    "minimal_version":  "Минимальная версия: оставить Add-Idea единой точкой входа; после текущего dedup и Invoke-BacklogIntakeGate запускать существующий Invoke-BacklogCurator для всех новых безопасных candidates. Curator получает goals.md digest и выдает strict JSON: decision approve|reject|operator-required, confidence, linked_goals, relevance/utility/effectiveness scores, risk_tier, reason. Threshold: approve только если relevance/utility/effectiveness положительные, confidence \u003e= 0.75, no duplicate/already-done, risk=low; reject если duplicate/junk/out-of-scope/dead/gate-clutter/no goal link with confidence \u003e= 0.70; otherwise operator-required. Status mapping: approved, auto-dropped, held. Every outcome writes auto_curator and curator-decisions.jsonl with goal-linked reason.",
+    "advanced_version":  "Продвинутая версия: добавить cached bridge profile из goals.md, PROJECT_MAP/ARCHITECTURE summaries, recent outcome metrics and rejected/done patterns; использовать двухступенчатое суждение deterministic policy + LLM rubric; вести shadow audit of decisions, false reject/false approve counters, periodic calibration against operator overrides, and backlog-curator-backfill для legacy new items. Также добавить operator batch summaries по held/operator-required причинам и quality dashboard: approve rate, reject reasons, held risk classes, duplicates avoided, LLM failures, goal coverage."
+}

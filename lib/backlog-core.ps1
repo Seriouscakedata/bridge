@@ -790,18 +790,190 @@ function Start-BacklogPrioritizerIfDue {
   return $updated
 }
 
+function Get-BacklogCuratorGoalsExcerpt {
+  param([int]$MaxChars = 4500)
+  try {
+    $path = Join-Path (Get-BacklogFallbackBridgeRoot) 'goals.md'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '(goals.md missing)' }
+    $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+    if ($raw.Length -gt $MaxChars) { return $raw.Substring(0, $MaxChars) }
+    return $raw
+  } catch {
+    return '(goals.md unavailable: ' + [string]$_.Exception.Message + ')'
+  }
+}
+
+function Get-BacklogCuratorItemText {
+  param($Item)
+  if (-not $Item) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @('title','text','task','description')) {
+    try {
+      $value = Get-BacklogPackObjectValue -Obj $Item -Name $name -Default ''
+      if (-not [string]::IsNullOrWhiteSpace([string]$value)) { [void]$parts.Add([string]$value) }
+    } catch {}
+  }
+  return (($parts.ToArray()) -join "`n").Trim()
+}
+
+function Get-BacklogCuratorBoolean {
+  param($Object, [string]$Name, [bool]$Default = $false)
+  try {
+    $value = Get-BacklogPackObjectValue -Obj $Object -Name $Name -Default $null
+    if ($null -eq $value) { return $Default }
+    if ($value -is [bool]) { return [bool]$value }
+    $s = ([string]$value).Trim().ToLowerInvariant()
+    return (@('1','true','yes','y','ok') -contains $s)
+  } catch {
+    return $Default
+  }
+}
+
+function Get-BacklogCuratorRubricEntry {
+  param($Object, [string]$Name)
+  $score = 0.0
+  $goal = ''
+  $reason = ''
+  try {
+    $rubric = Get-BacklogPackObjectValue -Obj $Object -Name 'rubric' -Default $null
+    $entry = $null
+    if ($rubric) { $entry = Get-BacklogPackObjectValue -Obj $rubric -Name $Name -Default $null }
+    if ($entry) {
+      try { $score = [double](Get-BacklogPackObjectValue -Obj $entry -Name 'score' -Default 0.0) } catch { $score = 0.0 }
+      $goal = [string](Get-BacklogPackObjectValue -Obj $entry -Name 'goal' -Default '')
+      if ([string]::IsNullOrWhiteSpace($goal)) { $goal = [string](Get-BacklogPackObjectValue -Obj $entry -Name 'goal_citation' -Default '') }
+      $reason = [string](Get-BacklogPackObjectValue -Obj $entry -Name 'reason' -Default '')
+    } else {
+      try { $score = [double](Get-BacklogPackObjectValue -Obj $Object -Name $Name -Default 0.0) } catch { $score = 0.0 }
+      $goal = [string](Get-BacklogPackObjectValue -Obj $Object -Name ($Name + '_goal') -Default '')
+      $reason = [string](Get-BacklogPackObjectValue -Obj $Object -Name ($Name + '_reason') -Default '')
+    }
+  } catch {}
+  if ($score -lt 0) { $score = 0.0 }
+  if ($score -gt 5) { $score = 5.0 }
+  return [pscustomobject][ordered]@{ score=$score; goal=$goal; reason=$reason }
+}
+
+function Get-BacklogCuratorSimilarItems {
+  param($Item, [object[]]$Items, [int]$MaxItems = 8)
+  $text = (Get-BacklogCuratorItemText -Item $Item).ToLowerInvariant()
+  $words = @($text -split '[^\p{L}\p{Nd}]+' | Where-Object { ([string]$_).Length -ge 5 } | Select-Object -Unique)
+  $rows = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($candidate in @($Items)) {
+    if (-not $candidate) { continue }
+    try { if ([string]$candidate.id -eq [string]$Item.id) { continue } } catch {}
+    $ct = (Get-BacklogCuratorItemText -Item $candidate).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($ct)) { continue }
+    $hits = 0
+    foreach ($w in $words) { if ($ct.Contains([string]$w)) { $hits++ } }
+    if ($hits -le 0) { continue }
+    [void]$rows.Add([pscustomobject][ordered]@{
+      id = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'id' -Default '')
+      status = [string](Get-BacklogPackObjectValue -Obj $candidate -Name 'status' -Default '')
+      text = ((Get-BacklogCuratorItemText -Item $candidate) -replace '\s+', ' ').Trim()
+      overlap = $hits
+    })
+  }
+  return @($rows.ToArray() | Sort-Object @{Expression={ -[int]$_.overlap }}, @{Expression={ [string]$_.status }} | Select-Object -First $MaxItems)
+}
+
+function Test-BacklogCuratorRejectCategory {
+  param([string]$Category, [string]$Reason)
+  $c = ([string]$Category).Trim().ToLowerInvariant()
+  if ($c -in @('junk','duplicate','already_done','already-done','out_of_scope','out-of-scope','dead_project','dead-project','gate_clutter','gate-clutter','no_goal_link','no-goal-link')) { return $true }
+  $r = ([string]$Reason).ToLowerInvariant()
+  return [bool]($r -match '(junk|мусор|duplicate|дубл|already done|уже сдел|out[- ]of[- ]scope|нерелевант|dead project|м[её]ртв\w+ проект|gate[- ]clutter|нагроможд|no goal|не движ)')
+}
+
+function Set-BacklogCuratorDecision {
+  param(
+    [object[]]$Items,
+    $Item,
+    [string]$Decision,
+    [double]$Confidence,
+    [string]$Reason,
+    $PolicyRisk,
+    $Rubric = $null,
+    [string]$Model = '',
+    [string]$RawDecision = '',
+    [string]$AlreadyDoneSha = ''
+  )
+
+  $d = ([string]$Decision).Trim().ToLowerInvariant()
+  if ($d -notin @('approve','reject','operator-required')) { $d = 'operator-required' }
+  if ($Confidence -lt 0) { $Confidence = 0.0 }
+  if ($Confidence -gt 1) { $Confidence = 1.0 }
+  if ([string]::IsNullOrWhiteSpace($Reason)) { $Reason = 'no reason' }
+  if ([string]::IsNullOrWhiteSpace($Model)) { $Model = [string]$script:BacklogCuratorModel }
+
+  $mapped = switch ($d) {
+    'approve' { 'approved' }
+    'reject' { 'auto-dropped' }
+    default { 'held' }
+  }
+  $curator = [ordered]@{
+    verdict = $d
+    decision = $d
+    confidence = $Confidence
+    reason = $Reason
+    model = $Model
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    judged_at_sha = (Get-BacklogCurrentSha)
+    mapped_status = $mapped
+    risk = $PolicyRisk
+    rubric = $Rubric
+  }
+  if (-not [string]::IsNullOrWhiteSpace($RawDecision)) { $curator.raw_decision = $RawDecision }
+  if (-not [string]::IsNullOrWhiteSpace($AlreadyDoneSha)) { $curator.already_done_sha = $AlreadyDoneSha }
+
+  $itemId = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'id' -Default '')
+  $Item | Add-Member -NotePropertyName auto_curator -NotePropertyValue ([pscustomobject]$curator) -Force
+  $Item | Add-Member -NotePropertyName status -NotePropertyValue $mapped -Force
+  if ($d -eq 'operator-required') {
+    $Item | Add-Member -NotePropertyName held_reason -NotePropertyValue $Reason -Force
+  }
+  Save-Backlog $Items
+
+  Write-BacklogJsonLine ([ordered]@{
+    ts = (Get-Date).ToUniversalTime().ToString('o')
+    action = 'judge'
+    item_id = $itemId
+    text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+    verdict = $d
+    decision = $d
+    mapped_status = $mapped
+    confidence = $Confidence
+    reason = $Reason
+    model = $Model
+    risk = $PolicyRisk
+    rubric = $Rubric
+  })
+  return [pscustomobject]@{ verdict = $d; decision = $d; status = $mapped; confidence = $Confidence; reason = $Reason; risk = $PolicyRisk; rubric = $Rubric }
+}
+
 function Invoke-BacklogCurator {
   param([string]$ItemId)
   if ([string]::IsNullOrWhiteSpace($ItemId)) { return $null }
   Ensure-BacklogPathFunction
   $now = (Get-Date).ToUniversalTime().ToString('o')
+  $items = @()
+  $item = $null
+  $policyRisk = $null
   try {
     $items = @(Get-Backlog)
-    $item = $null
     foreach ($i in $items) {
       if ([string]$i.id -eq $ItemId) { $item = $i; break }
     }
     if (-not $item) { return $null }
+
+    if (Get-Command Get-PolicyIdeaApprovalRisk -ErrorAction SilentlyContinue) {
+      $policyRisk = Get-PolicyIdeaApprovalRisk -Item $item
+    } else {
+      $policyRisk = [pscustomobject]@{ operator_required=$true; auto_approve_allowed=$false; risk='unknown'; category='policy-unavailable'; reason='idea approval risk classifier unavailable'; evidence=@() }
+    }
+    if ([bool](Get-BacklogPackObjectValue -Obj $policyRisk -Name 'operator_required' -Default $true)) {
+      return (Set-BacklogCuratorDecision -Items $items -Item $item -Decision 'operator-required' -Confidence 1.0 -Reason ([string]$policyRisk.reason) -PolicyRisk $policyRisk -Rubric $null -Model 'deterministic-approval-risk-v1')
+    }
 
     Ensure-BacklogLLMLoaded
     if (-not (Get-Command Invoke-LLM -ErrorAction SilentlyContinue)) { throw 'Invoke-LLM unavailable' }
@@ -809,81 +981,115 @@ function Invoke-BacklogCurator {
     $gitLog = Get-BacklogGitOutput -GitArgs @('log', '-5', '--oneline')
     if ([string]::IsNullOrWhiteSpace($gitLog)) { $gitLog = '(no git log)' }
     $status = Get-BacklogStatusSummary
+    $similar = @(Get-BacklogCuratorSimilarItems -Item $item -Items $items)
+    $context = [ordered]@{
+      goals_md = (Get-BacklogCuratorGoalsExcerpt)
+      bridge_profile = 'Windows PowerShell bridge: scheduler -> supervisor -> server + channel drivers; main channel improves the bridge itself; avoid new conflicting gates; prefer hardening existing services.'
+      current_status = $status
+      recent_commits = $gitLog
+      similar_open_done_rejected_ideas = @($similar)
+      policy_risk = $policyRisk
+    }
+    $contextJson = $context | ConvertTo-Json -Compress -Depth 8
     $prompt = @"
-Ты куратор беклога автономного ИИ-моста (Claude+Codex, PowerShell, web UI).
-Компоненты: driver.ps1, server.ps1, lib/*.ps1, web/index.html, memory/.
+Ты куратор беклога автономного ИИ-моста.
 
-Item: $([string]$item.text)
-Создан: $([string]$item.from)
+IDEA:
+$([string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default ''))
 
-Последние 5 коммитов:
-$gitLog
+SOURCE: $([string](Get-BacklogPackObjectValue -Obj $item -Name 'from' -Default ''))
 
-Текущий статус моста: $status
+CONTEXT_JSON:
+$contextJson
 
-Реши: approve / hold / drop.
-Критерии:
-- approve: ясный scope, понятная польза для моста, нет признаков что уже сделано
-- drop: дубль, out-of-scope (personal/нерелевантно), текст-каша, признаки что уже сделано
-- hold: нужно решение пользователя (architectural ambiguity, выбор)
+Реши строго одним из внутренних решений:
+- approve: только low-risk, ясный scope, видимая польза к goals.md, понятный причинный путь, высокая уверенность.
+- reject: только явный мусор, дубль, already-done, out-of-scope/dead project, gate-clutter, либо уверенно не связан с goals.md.
+- operator-required: всё опасное, неоднозначное, низкоуверенное, security/control-plane/irreversible/architecture, ошибки или выбор оператора.
 
-Верни СТРОГО JSON: {"verdict":"approve|hold|drop","confidence":0.0-1.0,"reason":"короткая фраза","already_done_sha":null или "<sha>"}
+Рубрика обязательна:
+- relevance.score 0..5: насколько идея актуальна текущему состоянию моста; relevance.goal = конкретная строка/цель из goals.md.
+- utility.score 0..5: какую полезность даёт мосту; utility.goal = конкретная строка/цель из goals.md.
+- effectiveness.score 0..5: насколько прямой и эффективный путь от идеи к цели; effectiveness.goal = конкретная строка/цель из goals.md.
+
+Верни СТРОГО JSON:
+{"decision":"approve|reject|operator-required","confidence":0.0-1.0,"reason":"короткая цель-связанная причина","clear_scope":true|false,"clear_causal_path":true|false,"reject_category":"junk|duplicate|already_done|out_of_scope|dead_project|gate_clutter|no_goal_link|","rubric":{"relevance":{"score":0-5,"goal":"...","reason":"..."},"utility":{"score":0-5,"goal":"...","reason":"..."},"effectiveness":{"score":0-5,"goal":"...","reason":"..."}},"already_done_sha":null или "<sha>"}
 "@
     $raw = Invoke-LLM -Purpose 'backlog-curator' -Model $script:BacklogCuratorModel -Prompt $prompt -TimeoutSec 70 -Temperature 0.1
     $obj = ConvertFrom-BacklogStrictJson -Text ([string]$raw)
-    if (-not $obj) { throw 'curator returned non-json' }
+    if (-not $obj) {
+      return (Set-BacklogCuratorDecision -Items $items -Item $item -Decision 'operator-required' -Confidence 0.0 -Reason 'curator returned non-json; fail closed to operator-required' -PolicyRisk $policyRisk -Rubric $null -Model $script:BacklogCuratorModel -RawDecision 'parse-error')
+    }
 
-    $verdict = ([string]$obj.verdict).ToLowerInvariant()
-    if ($verdict -notin @('approve', 'hold', 'drop')) { $verdict = 'drop' }
+    $decision = ([string](Get-BacklogPackObjectValue -Obj $obj -Name 'decision' -Default '')).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($decision)) { $decision = ([string](Get-BacklogPackObjectValue -Obj $obj -Name 'verdict' -Default '')).Trim().ToLowerInvariant() }
+    if ($decision -eq 'hold') { $decision = 'operator-required' }
+    if ($decision -eq 'drop') { $decision = 'reject' }
+    if ($decision -notin @('approve','reject','operator-required')) { $decision = 'operator-required' }
+
     $confidence = 0.0
-    try { $confidence = [double]$obj.confidence } catch { $confidence = 0.0 }
+    try { $confidence = [double](Get-BacklogPackObjectValue -Obj $obj -Name 'confidence' -Default 0.0) } catch { $confidence = 0.0 }
     if ($confidence -lt 0) { $confidence = 0.0 }
     if ($confidence -gt 1) { $confidence = 1.0 }
-    $reason = ([string]$obj.reason).Trim()
+    $reason = ([string](Get-BacklogPackObjectValue -Obj $obj -Name 'reason' -Default '')).Trim()
     if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'no reason' }
-    if ($confidence -lt 0.6) {
-      $verdict = 'drop'
-      $reason = "$reason (low confidence)"
+
+    $relevance = Get-BacklogCuratorRubricEntry -Object $obj -Name 'relevance'
+    $utility = Get-BacklogCuratorRubricEntry -Object $obj -Name 'utility'
+    $effectiveness = Get-BacklogCuratorRubricEntry -Object $obj -Name 'effectiveness'
+    $rubric = [ordered]@{
+      relevance = $relevance
+      utility = $utility
+      effectiveness = $effectiveness
+    }
+    $hasGoalCitation = (-not [string]::IsNullOrWhiteSpace([string]$relevance.goal)) -and (-not [string]::IsNullOrWhiteSpace([string]$utility.goal)) -and (-not [string]::IsNullOrWhiteSpace([string]$effectiveness.goal))
+    $clearScope = Get-BacklogCuratorBoolean -Object $obj -Name 'clear_scope' -Default $false
+    $clearCausalPath = Get-BacklogCuratorBoolean -Object $obj -Name 'clear_causal_path' -Default $false
+    $rejectCategory = [string](Get-BacklogPackObjectValue -Obj $obj -Name 'reject_category' -Default '')
+    $alreadyDoneSha = [string](Get-BacklogPackObjectValue -Obj $obj -Name 'already_done_sha' -Default '')
+
+    $tauApprove = 0.85
+    $tauReject = 0.70
+    $finalDecision = 'operator-required'
+    $finalReason = $reason
+    if ($decision -eq 'approve') {
+      $scoresOk = ([double]$relevance.score -ge 4.0 -and [double]$utility.score -ge 4.0 -and [double]$effectiveness.score -ge 4.0)
+      $riskOk = [bool](Get-BacklogPackObjectValue -Obj $policyRisk -Name 'auto_approve_allowed' -Default $false)
+      if ($riskOk -and $clearScope -and $clearCausalPath -and $hasGoalCitation -and $scoresOk -and $confidence -ge $tauApprove) {
+        $finalDecision = 'approve'
+      } else {
+        $finalReason = $reason + ' (auto-approve blocked: requires low-risk, clear scope/path, goals citations, rubric scores >=4, confidence >=0.85)'
+      }
+    } elseif ($decision -eq 'reject') {
+      if (($confidence -ge $tauReject) -and (Test-BacklogCuratorRejectCategory -Category $rejectCategory -Reason $reason)) {
+        $finalDecision = 'reject'
+      } else {
+        $finalReason = $reason + ' (reject blocked: uncertainty routes to operator-required)'
+      }
+    } else {
+      $finalReason = $reason
     }
 
-    $mapped = switch ($verdict) {
-      'approve' { 'approved' }
-      'hold' { 'held' }
-      default { 'auto-dropped' }
+    if (($finalDecision -eq 'reject') -and (-not $hasGoalCitation) -and ($confidence -lt $tauReject)) {
+      $finalDecision = 'operator-required'
+      $finalReason = $reason + ' (no goals.md link at low confidence routes to operator-required)'
     }
-    $curator = [ordered]@{
-      verdict = $verdict
-      confidence = $confidence
-      reason = $reason
-      model = $script:BacklogCuratorModel
-      ts = (Get-Date).ToUniversalTime().ToString('o')
-      judged_at_sha = (Get-BacklogCurrentSha)
-    }
-    if ($obj.PSObject.Properties.Name -contains 'already_done_sha') {
-      $curator.already_done_sha = $obj.already_done_sha
-    }
-    $item | Add-Member -NotePropertyName auto_curator -NotePropertyValue ([pscustomobject]$curator) -Force
-    $item | Add-Member -NotePropertyName status -NotePropertyValue $mapped -Force
-    Save-Backlog $items
 
-    Write-BacklogJsonLine ([ordered]@{
-      ts = (Get-Date).ToUniversalTime().ToString('o')
-      action = 'judge'
-      item_id = $ItemId
-      text = [string]$item.text
-      verdict = $verdict
-      confidence = $confidence
-      reason = $reason
-      model = $script:BacklogCuratorModel
-    })
-    return [pscustomobject]@{ verdict = $verdict; confidence = $confidence; reason = $reason }
+    return (Set-BacklogCuratorDecision -Items $items -Item $item -Decision $finalDecision -Confidence $confidence -Reason $finalReason -PolicyRisk $policyRisk -Rubric $rubric -Model $script:BacklogCuratorModel -RawDecision $decision -AlreadyDoneSha $alreadyDoneSha)
   } catch {
+    $err = [string]$_.Exception.Message
     Write-BacklogJsonLine ([ordered]@{
       ts = $now
       action = 'judge-error'
       item_id = $ItemId
-      error = [string]$_.Exception.Message
+      error = $err
     })
+    if ($item -and $items.Count -gt 0) {
+      try {
+        if (-not $policyRisk) { $policyRisk = [pscustomobject]@{ operator_required=$true; auto_approve_allowed=$false; risk='unknown'; category='curator-error'; reason='curator error'; evidence=@() } }
+        return (Set-BacklogCuratorDecision -Items $items -Item $item -Decision 'operator-required' -Confidence 0.0 -Reason ('curator failed closed: ' + $err) -PolicyRisk $policyRisk -Rubric $null -Model $script:BacklogCuratorModel -RawDecision 'error')
+      } catch {}
+    }
     return $null
   }
 }
