@@ -220,30 +220,79 @@ function Start-FeatureVerifierIfDue {
 function Invoke-DriverComputerActionFastLane {
   param(
     [string]$TaskText,
-    [string]$ChannelName = ''
+    [string]$ChannelName = '',
+    [string]$LapaSkill = '',
+    [hashtable]$LapaParams = @{}
   )
-  $toolPath = Join-Path $bridgeRoot 'tools\computer-use.ps1'
-  if (-not (Test-Path -LiteralPath $toolPath)) {
-    Add-Message -From system -Text "🖱 Computer-action fast-lane недоступен: tools\computer-use.ps1 не найден." -Kind event | Out-Null
-    return $false
-  }
-  Add-Message -From system -Text "🖱 Computer-action fast-lane: выполняю локальное UI-действие без planner/coder/critic." -Kind event | Out-Null
+  # 2026-06-18: лапа as the bridge's PRIMARY hands. When the intent classifier named a
+  # structured лапа skill (open-app/type — validated upstream against the allow-list),
+  # route the computer_action straight into лапа with its own generous per-skill
+  # --timeout, instead of the weak tools\computer-use.ps1 click/vision path. Mirrors the
+  # proven in-driver pattern (driver/84-loop-reply-markers.ps1): tmp\lapa-disabled.flag
+  # kill-switch, 10-min recent-run dedup (no double-fire), default stop_flag, Invoke-LapaSkill
+  # (never throws). A hard PS-side kill backstop lives in Invoke-PythonCapture so a wedged
+  # python cannot block the single-threaded driver loop. Clicks/close-window keep LapaSkill=''
+  # and fall through to computer-use.ps1 unchanged. Sends to humans are NOT routed here
+  # (allow-list is open-app/type only) — they stay on the explicit [[ЛАПА]] marker path.
   $started = [DateTime]::UtcNow
   $output = ''
   $ok = $false
-  try {
-    $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $toolPath -Task $TaskText -TimeoutMs 5000 2>&1)
-    $output = (($lines | ForEach-Object { [string]$_ }) -join "`n").Trim()
-    $ok = ($LASTEXITCODE -eq 0)
-  } catch {
-    $output = $_.Exception.Message
-    $ok = $false
+  $viaLapa = $false
+  $lapaActive = ((-not [string]::IsNullOrWhiteSpace($LapaSkill)) -and -not (Test-Path -LiteralPath (Join-Path $bridgeRoot 'tmp\lapa-disabled.flag')))
+  if ($lapaActive) {
+    $viaLapa = $true
+    if ($null -eq $LapaParams) { $LapaParams = @{} }
+    $lkey = ($LapaSkill + '|' + ((($LapaParams.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Name + '=' + $_.Value }) -join '|'))).ToLowerInvariant()
+    $lapaLogDir = Join-Path $bridgeRoot 'tmp\lapa-marker-log'
+    $lapaDup = $false
+    try {
+      if (Test-Path -LiteralPath $lapaLogDir) {
+        $lcut = (Get-Date).AddMinutes(-10)
+        foreach ($lf in @(Get-ChildItem $lapaLogDir -Filter '*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $lcut })) {
+          if ((([string]([System.IO.File]::ReadAllText($lf.FullName))).Trim().ToLowerInvariant()) -eq $lkey) { $lapaDup = $true; break }
+        }
+      }
+    } catch {}
+    if ($lapaDup) {
+      $output = "лапа/${LapaSkill}: то же действие уже выполнялось за 10 мин — пропущено."
+      $ok = $true
+    } else {
+      if (-not $LapaParams.ContainsKey('stop_flag')) { $LapaParams['stop_flag'] = (Join-Path $bridgeRoot 'tmp\lapa-stop.flag') }
+      if (-not $LapaParams.ContainsKey('timeout')) { $LapaParams['timeout'] = $(if ($LapaSkill -like 'telegram*') { '60' } else { '40' }) }
+      try {
+        . (Join-Path $bridgeRoot 'tools\lapa-control.ps1')
+        $r = Invoke-LapaSkill -Skill $LapaSkill -Params $LapaParams
+        $ok = [bool]$r.ok
+        $output = "лапа/$LapaSkill → " + ([string]$r.status)
+        if ((-not $r.ok) -and $r.error) { $output += " — " + ([string]$r.error) }
+        if ($r.proof_path) { $output += " (пруф: " + ([string]$r.proof_path) + ")" }
+        try { New-Item -ItemType Directory -Force -Path $lapaLogDir | Out-Null; [System.IO.File]::WriteAllText((Join-Path $lapaLogDir ((Get-Date -Format 'yyyyMMddHHmmssfff') + '.txt')), $lkey) } catch {}
+      } catch {
+        $ok = $false
+        $output = "лапа/$LapaSkill → ошибка вызова: " + $_.Exception.Message
+      }
+    }
+  } else {
+    $toolPath = Join-Path $bridgeRoot 'tools\computer-use.ps1'
+    if (-not (Test-Path -LiteralPath $toolPath)) {
+      Add-Message -From system -Text "🖱 Computer-action fast-lane недоступен: tools\computer-use.ps1 не найден." -Kind event | Out-Null
+      return $false
+    }
+    Add-Message -From system -Text "🖱 Computer-action fast-lane: выполняю локальное UI-действие без planner/coder/critic." -Kind event | Out-Null
+    try {
+      $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $toolPath -Task $TaskText -TimeoutMs 5000 2>&1)
+      $output = (($lines | ForEach-Object { [string]$_ }) -join "`n").Trim()
+      $ok = ($LASTEXITCODE -eq 0)
+    } catch {
+      $output = $_.Exception.Message
+      $ok = $false
+    }
   }
   $elapsedMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
   $summary = $output
   if ($summary.Length -gt 1200) { $summary = $summary.Substring(0, 1200) + '...' }
-  if ([string]::IsNullOrWhiteSpace($summary)) { $summary = if ($ok) { 'computer-use completed' } else { 'computer-use failed without output' } }
-  $prefix = if ($ok) { "✅ Computer-action выполнен" } else { "⚠ Computer-action не выполнен" }
+  if ([string]::IsNullOrWhiteSpace($summary)) { $summary = if ($ok) { 'completed' } else { 'failed without output' } }
+  $prefix = if ($viaLapa) { if ($ok) { "🎛 Computer-action через лапу выполнен" } else { "⚠ Computer-action через лапу не выполнен" } } else { if ($ok) { "✅ Computer-action выполнен" } else { "⚠ Computer-action не выполнен" } }
   Add-Message -From system -Text ($prefix + " (" + $elapsedMs + " ms).`n" + $summary) -Kind event | Out-Null
   Update-State ({ param($s)
     try { Complete-TaskAgentDuration $s } catch {}

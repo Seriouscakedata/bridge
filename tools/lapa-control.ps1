@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   lapa-control.ps1 -- a STANDALONE bridge tool that invokes лапа (the desktop
   controller at C:\Users\rafie\bridge-projects\lapa) as a callable GUI-task tool.
@@ -37,7 +37,14 @@
   weaken any лапа gate; it only marshals arguments and parses the report.
 #>
 
-Set-StrictMode -Version Latest
+# NOTE: do NOT `Set-StrictMode` at module scope here. This file is dot-sourced INTO
+# the driver loop (driver/84-loop-reply-markers.ps1 and the driver.ps1 fast-lane), and
+# a module-scope Set-StrictMode LEAKS into the caller's scope — turning every later
+# $obj.missingProp / uninitialized-var access in the driver into a thrown error
+# ("property cannot be found" / "variable cannot be retrieved"; this was the root of the
+# $plannerStatus/$turnResult.fallback/preflightBlocked driver errors). Verified 2026-06-18.
+# The functions below are already fully defensive (PSObject.Properties.Name guards,
+# try/catch, never-throw contract), so they do not need StrictMode.
 
 # The лапа project root -- the cwd `python -m lapa.cli` must run from so the
 # `lapa` package is importable. Overridable via $env:LAPA_ROOT for relocation.
@@ -179,7 +186,8 @@ function Invoke-PythonCapture {
     param(
         [Parameter(Mandatory)][string[]]$ArgumentList,
         [Parameter(Mandatory)][string]$WorkingDirectory,
-        [string]$PythonExe = $script:LapaPython
+        [string]$PythonExe = $script:LapaPython,
+        [int]$TimeoutSec = 120
     )
     if (-not (Test-Path -LiteralPath $WorkingDirectory)) {
         return [pscustomobject]@{
@@ -190,9 +198,25 @@ function Invoke-PythonCapture {
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
     try {
+        # 2026-06-18 HARD KILL BACKSTOP: start WITHOUT -Wait, then WaitForExit($TimeoutSec).
+        # лапа enforces its OWN --timeout for a clean abort, but Start-Process -Wait has NO
+        # outer kill, so a wedged python (COM/UIA deadlock, interpreter not exiting) would
+        # block the SINGLE-THREADED driver loop forever. WaitForExit + Stop-Process guarantees
+        # the loop is always released even when лапа's internal timeout fails to fire.
         $proc = Start-Process -FilePath $PythonExe -ArgumentList $ArgumentList `
-            -WorkingDirectory $WorkingDirectory -NoNewWindow -Wait -PassThru `
+            -WorkingDirectory $WorkingDirectory -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        if ($TimeoutSec -lt 1) { $TimeoutSec = 1 }
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+            try { [void]$proc.WaitForExit(3000) } catch {}
+            $errPartial = if (Test-Path -LiteralPath $errFile) { [System.IO.File]::ReadAllText($errFile) } else { '' }
+            return [pscustomobject]@{
+                ok = $false; exit_code = 124; stdout = ''; stderr = $errPartial
+                error = ("лапа hard-timeout: python did not exit within {0}s — killed (driver protected)" -f $TimeoutSec)
+            }
+        }
         $out = if (Test-Path -LiteralPath $outFile) { [System.IO.File]::ReadAllText($outFile) } else { '' }
         $err = if (Test-Path -LiteralPath $errFile) { [System.IO.File]::ReadAllText($errFile) } else { '' }
         return [pscustomobject]@{

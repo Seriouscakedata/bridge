@@ -22,6 +22,14 @@
 # on the 2.5-line, reverted. Operator can override via config.json llm.intent.
 $script:IntentDefaultModel = 'gemini-2.5-flash-lite'
 
+# 2026-06-18: лапа as the bridge's PRIMARY hands for computer_action. The intent
+# classifier may emit a structured лапа skill (validated against this allow-list)
+# that the computer_action fast-lane routes straight into Invoke-LapaSkill. ONLY
+# open-app / type are auto-routable from INFERRED intent — sending to a human
+# (telegram-send/-sticker) stays on the explicit [[ЛАПА]] marker path (driver/84),
+# never auto-fired from a fuzzy classification. Mirrors tools\lapa-control.ps1 keys.
+$script:LapaSkillNames = @('open-app','type')
+
 function Get-IntentModel {
   # Lets operator override via config.json -> llm.intent. Default flash-lite.
   $cfg = $null
@@ -125,9 +133,9 @@ function Test-TaskIntent {
 РЕЖИМЫ (выбери ровно ОДИН):
 - "discuss"  — пользователь явно хочет обсуждение/диалог между Claude и Codex перед реализацией. Признаки: «обсуди», «посоветуйся», «подумайте вместе», «согласуйте», «давайте обсудим», «прежде чем делать — обсудите». Также если пользователь спрашивает архитектурное мнение или просит «проанализируй и предложи». Diскуссия = синтез до согласия, потом реализация.
 - "study"    — пользователь хочет ИЗУЧЕНИЕ темы (внешней / внутренней) без немедленной реализации. Признаки: «изучи», «разберись как работает», «исследуй», «найди в интернете», «прочитай эти статьи».
-- "fast"     — простая безопасная императивная команда (одно обратимое OS/UI/read-действие): «запусти X», «открой файл Y», «покажи логи», «сделай скриншот», «найди программу». НЕ удаление/форматирование/kill/push.
+- "fast"     — простая безопасная команда МОСТУ (НЕ GUI рабочего стола): «запусти аудит», «покажи логи», «сделай скриншот экрана», «статус», «найди программу». НЕ удаление/форматирование/kill/push. (Открыть desktop-приложение или напечатать в нём — это computer_action, не fast.)
 - "chat"     — пользователь задаёт вопрос/просит объяснение БЕЗ изменения файлов: «что такое X?», «как работает Y?», «расскажи про Z», «простыми словами объясни». Ответ — текстом в чат.
-- "computer_action" — пользователь просит управлять мышью/окном прямо сейчас: «нажми OK», «кликни по кнопке», «закрой это окно», «press button», «click», «move mouse». Это отдельный быстрый локальный путь без planner/coder/critic.
+- "computer_action" — пользователь просит ДЕЙСТВИЕ на рабочем столе ПРЯМО СЕЙЧАС: открыть приложение («открой/запусти <приложение>»), напечатать текст в поле приложения, нажать кнопку, кликнуть, закрыть окно. Это локальный путь через «руки» (лапа) без planner/coder/critic. ПРАВИЛО lapa_skill: если действие = открыть приложение → lapa_skill="open-app", lapa_params={"name":"<приложение>"}; если = напечатать текст в приложении → lapa_skill="type", lapa_params={"app":"<приложение>","text":"<текст>"}; для кликов/нажатий/закрытия окна оставь lapa_skill="" (это пойдёт другим путём).
 - "normal"   — обычная задача на реализацию: «сделай X», «добавь Y», «почини Z». БЕЗ явного намерения обсуждать или исследовать. Это default.
 
 ПОДЗАДАЧИ: разложи задачу на 1-5 атомарных шагов. Для каждого укажи action (discuss|implement|fix|research|configure|answer) и object (что именно).
@@ -143,7 +151,8 @@ function Test-TaskIntent {
 $taskForLLM
 
 Верни СТРОГО JSON без markdown:
-{"primary_mode":"...","confidence":0.0-1.0,"reasoning":"короткое объяснение","subtasks":[{"action":"...","object":"..."}],"user_wants_dialogue":true|false,"complexity":"...","estimated_turns":1-10}
+{"primary_mode":"...","confidence":0.0-1.0,"reasoning":"короткое объяснение","subtasks":[{"action":"...","object":"..."}],"user_wants_dialogue":true|false,"complexity":"...","estimated_turns":1-10,"lapa_skill":"","lapa_params":{}}
+(lapa_skill заполняй ТОЛЬКО при primary_mode="computer_action" и только значением "open-app" или "type"; во всех остальных случаях lapa_skill="" и lapa_params={}.)
 "@
 
   $raw = $null
@@ -193,6 +202,24 @@ $taskForLLM
   if ($turns -lt 1) { $turns = 1 }
   if ($turns -gt 20) { $turns = 20 }
 
+  # 2026-06-18: structured лапа routing for computer_action. The classifier may name
+  # a лапа skill; VALIDATE it against the allow-list (never trust the LLM to name a
+  # skill that does not exist) and ONLY honour it when primary_mode=computer_action.
+  $lapaSkill = ''
+  if ($obj.PSObject.Properties.Name -contains 'lapa_skill') {
+    try { $lapaSkill = ([string]$obj.lapa_skill).Trim().ToLowerInvariant() } catch { $lapaSkill = '' }
+  }
+  if ($lapaSkill -notin $script:LapaSkillNames) { $lapaSkill = '' }
+  $lapaParams = @{}
+  if ($lapaSkill -and ($obj.PSObject.Properties.Name -contains 'lapa_params') -and $obj.lapa_params) {
+    try {
+      foreach ($p in $obj.lapa_params.PSObject.Properties) {
+        if ($null -ne $p.Value) { $lapaParams[[string]$p.Name] = [string]$p.Value }
+      }
+    } catch { $lapaParams = @{} }
+  }
+  if ($mode -ne 'computer_action') { $lapaSkill = ''; $lapaParams = @{} }
+
   return [pscustomobject]@{
     primary_mode = $mode
     confidence = $conf
@@ -201,6 +228,8 @@ $taskForLLM
     user_wants_dialogue = $wantsDialogue
     complexity = $complexity
     estimated_turns = $turns
+    lapa_skill = $lapaSkill
+    lapa_params = $lapaParams
     raw = $raw
     source = 'llm'
     model = $Model

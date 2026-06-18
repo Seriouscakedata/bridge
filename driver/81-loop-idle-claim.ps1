@@ -403,6 +403,8 @@ $script:DriverLoopIdleClaimBlock = {
           estimated_turns = [int]$taskIntent.estimated_turns
           subtasks = @($taskIntent.subtasks)
           model = [string]$taskIntent.model
+          lapa_skill = $(if ($taskIntent.PSObject.Properties.Name -contains 'lapa_skill') { [string]$taskIntent.lapa_skill } else { '' })
+          lapa_params = $(if (($taskIntent.PSObject.Properties.Name -contains 'lapa_params') -and $taskIntent.lapa_params) { $taskIntent.lapa_params } else { @{} })
           ts = (Get-Date).ToUniversalTime().ToString('o')
         }
       }
@@ -410,6 +412,8 @@ $script:DriverLoopIdleClaimBlock = {
       $intentForcedDiscussClosure  = $intentForcedDiscuss
       $intentForcedStudyClosure    = $intentForcedStudy
       $intentComputerActionClosure  = $intentComputerAction
+      $intentLapaSkillClosure  = if ($taskIntent -and ($taskIntent.PSObject.Properties.Name -contains 'lapa_skill')) { [string]$taskIntent.lapa_skill } else { '' }
+      $intentLapaParamsClosure = if ($taskIntent -and ($taskIntent.PSObject.Properties.Name -contains 'lapa_params') -and $taskIntent.lapa_params) { $taskIntent.lapa_params } else { @{} }
       $discussVerbClosure          = $discussVerbMark
       $intentLowComplexityClosure  = $intentLowComplexity
       $synthesisRouteClosure       = [bool]($synthRoute -and [bool]$synthRoute.route)
@@ -526,14 +530,14 @@ $script:DriverLoopIdleClaimBlock = {
         elseif ($synthesisRouteClosure) { $verdictText += "`n   → режим: synthesis (multi-model decision)" }
         elseif ($intentForcedDiscuss) { $verdictText += "`n   → режим: discuss (Claude↔Codex)" }
         elseif ($intentForcedStudy) { $verdictText += "`n   → режим: study" }
-        elseif ($intentComputerAction) { $verdictText += "`n   → режим: computer_action (локальный mouse/window fast-lane, без planner/coder/critic)" }
+        elseif ($intentComputerAction) { if (-not [string]::IsNullOrWhiteSpace($intentLapaSkillClosure)) { $verdictText += "`n   → режим: computer_action через лапу/$intentLapaSkillClosure (структурный навык, без planner/coder/critic)" } else { $verdictText += "`n   → режим: computer_action (локальный mouse/window fast-lane, без planner/coder/critic)" } }
         elseif ($intentForcedFastLane) { $verdictText += "`n   → режим: fast-lane (skip planner)" }
         elseif ([double]$taskIntent.confidence -lt 0.7) { $verdictText += "`n   (confidence < 70% → не применён, режим normal)" }
         Add-Message -From system -Text $verdictText -Kind event | Out-Null
       }
       if ($intentComputerAction -and -not $deepThinkMark -and -not $fastLaneReason -and -not $normalOverride) {
         try {
-          [void](Invoke-DriverComputerActionFastLane -TaskText $taskMsg -ChannelName $Channel)
+          [void](Invoke-DriverComputerActionFastLane -TaskText $taskMsg -ChannelName $Channel -LapaSkill $intentLapaSkillClosure -LapaParams $intentLapaParamsClosure)
         } catch {
           Add-Message -From system -Text ("⚠ Computer-action fast-lane error: " + $_.Exception.Message) -Kind event | Out-Null
           Update-State { param($s) $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; Clear-FastLaneFlags $s; Clear-ChunkingState $s } | Out-Null
