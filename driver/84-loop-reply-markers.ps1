@@ -468,6 +468,58 @@
   if ($speaker -eq 'claude' -or [string]$turnResult.fallback -eq 'claude_as_coder' -or $fastLaneActiveForTurn) {
     $visibleReply = [regex]::Replace($visibleReply, '(?im)^\s*STATUS:\s*\w+\s*$', '')
   }
+  # ── [[ЛАПА: skill | key=val | key=val]] — лапа as a first-class bridge SERVICE ──
+  # An agent delegates a GUI / manual-input / visual-confirm / send-to-human action to лапа
+  # (the operator's hands). The bridge invokes it AUTONOMOUSLY — the operator authorized full
+  # autonomy, no per-action confirmation; лапа keeps its OWN fail-closed gates (chat-identity
+  # wrong-contact safety, risk ladder, STOP). Safeguards here: a file kill-switch
+  # (tmp/lapa-disabled.flag) disables the whole channel; an in-reply + 10-min recent-run dedup
+  # stops a RE-EMITTED marker from firing the same action twice (critical so a re-emit never
+  # double-sends to a human). Never throws — лапа-control returns a typed result, not exceptions.
+  $lapaPattern = '(?m)^\s*\[\[(?:ЛАПА|LAPA(?:-SKILL)?)\s*:\s*(.+?)\s*\]\]\s*$'
+  $lapaDisabled = Test-Path -LiteralPath (Join-Path $bridgeRoot 'tmp\lapa-disabled.flag')
+  $lapaSeen = @{}
+  foreach ($lm in [regex]::Matches($reply, $lapaPattern)) {
+    $lspec = $lm.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($lspec)) { continue }
+    $lparts = $lspec -split '\s*\|\s*'
+    $lskill = ([string]$lparts[0]).Trim()
+    if ([string]::IsNullOrWhiteSpace($lskill)) { continue }
+    $lparams = @{}
+    for ($li = 1; $li -lt $lparts.Count; $li++) {
+      $kv = [string]$lparts[$li]; $eq = $kv.IndexOf('=')
+      if ($eq -lt 1) { continue }
+      $lparams[$kv.Substring(0, $eq).Trim()] = $kv.Substring($eq + 1).Trim()
+    }
+    $lkey = ($lskill + '|' + (($lparams.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Name + '=' + $_.Value }) -join '|')).ToLowerInvariant()
+    if ($lapaSeen.ContainsKey($lkey)) { continue }
+    $lapaSeen[$lkey] = $true
+    if ($lapaDisabled) { try { Add-Message -From system -Text "🎛 лапа выключена (tmp/lapa-disabled.flag) — маркер пропущен: $lskill" -Kind event | Out-Null } catch {}; continue }
+    $lapaLogDir = Join-Path $bridgeRoot 'tmp\lapa-marker-log'
+    $lapaDup = $false
+    try {
+      if (Test-Path -LiteralPath $lapaLogDir) {
+        $lcut = (Get-Date).AddMinutes(-10)
+        foreach ($lf in @(Get-ChildItem $lapaLogDir -Filter '*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $lcut })) {
+          if ((([string]([System.IO.File]::ReadAllText($lf.FullName))).Trim().ToLowerInvariant()) -eq $lkey) { $lapaDup = $true; break }
+        }
+      }
+    } catch {}
+    if ($lapaDup) { try { Add-Message -From system -Text "🎛 лапа: то же действие уже выполнялось за 10 мин — пропущено ($lskill)." -Kind event | Out-Null } catch {}; continue }
+    try {
+      if (-not $lparams.ContainsKey('stop_flag')) { $lparams['stop_flag'] = (Join-Path $bridgeRoot 'tmp\lapa-stop.flag') }
+      . (Join-Path $bridgeRoot 'tools\lapa-control.ps1')
+      $lres = Invoke-LapaSkill -Skill $lskill -Params $lparams
+      try { New-Item -ItemType Directory -Force -Path $lapaLogDir | Out-Null; [System.IO.File]::WriteAllText((Join-Path $lapaLogDir ((Get-Date -Format 'yyyyMMddHHmmssfff') + '.txt')), $lkey) } catch {}
+      $ltxt = "🎛 лапа/$lskill → " + ([string]$lres.status)
+      if ((-not $lres.ok) -and $lres.error) { $ltxt += " — " + ([string]$lres.error) }
+      if ($lres.proof_path) { $ltxt += " (пруф: " + ([string]$lres.proof_path) + ")" }
+      Add-Message -From system -Text $ltxt -Kind event | Out-Null
+    } catch {
+      try { Add-Message -From system -Text ("⚠ лапа: вызов не удался — " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+  }
+
   $visibleReply = $visibleReply.Trim()
   if ($failedAttachmentPaths.Count -gt 0) {
     $failLines = ($failedAttachmentPaths | ForEach-Object { "- $_" }) -join "`n"
