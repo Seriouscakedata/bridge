@@ -126,6 +126,141 @@ function Test-PolicyItemTouchesControlPlane {
   return [bool](Test-PolicyTextSignalsControlPlaneEdit -Text $txt)
 }
 
+function Get-PolicyObjectValue {
+  param($Object, [string]$Name, $Default = $null)
+  if (-not $Object -or [string]::IsNullOrWhiteSpace($Name)) { return $Default }
+  try {
+    if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) { return $Object[$Name] }
+  } catch {}
+  try {
+    if ($Object.PSObject -and $Object.PSObject.Properties[$Name]) { return $Object.$Name }
+  } catch {}
+  return $Default
+}
+
+function Get-PolicyIdeaApprovalRisk {
+  # Deterministic fail-closed classifier for backlog idea APPROVAL.
+  # It is intentionally separate from Test-PolicyAutotaskExecutionBlocked:
+  # approval happens before a concrete implementation exists, so high-risk
+  # ideas are routed to the operator instead of being auto-approved.
+  param($Item)
+  try {
+    if (-not $Item) {
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'unknown'
+        category = 'missing_item'
+        reason = 'idea approval risk classifier received no item'
+        evidence = @()
+      }
+    }
+
+    $text = ([string](Get-PolicyObjectValue -Object $Item -Name 'title' -Default '') + ' ' + [string](Get-PolicyObjectValue -Object $Item -Name 'text' -Default '')).Trim()
+    $lower = $text.ToLowerInvariant()
+    $evidence = New-Object 'System.Collections.Generic.List[string]'
+
+    if (Test-PolicyItemTouchesControlPlane -Item $Item) {
+      [void]$evidence.Add('control-plane edit signal')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'control-plane'
+        reason = 'idea appears to edit the bridge control plane; operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    $metaSafety = '(?i)(approval|curator|auto[-_ ]?approve|auto[-_ ]?approval|intake gate|backlog curator|policy\.ps1|goals\.md|threshold|deny[-_ ]?list|risk classifier|selfexecute|self[-_ ]?execute|operator[-_ ]?required)'
+    $metaVerb = '(?i)(relax|loosen|raise|lower|change|modify|edit|bypass|disable|remove|delete|rewrite|refactor|implement|wire|integrat|tune|настро|измен|ослаб|отключ|обойт|обход|удал|перепис|внедр|добав)'
+    if (($lower -match $metaSafety) -and ($lower -match $metaVerb)) {
+      [void]$evidence.Add('approval/safety machinery change signal')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'approval-safety-meta'
+        reason = 'idea changes approval, policy, goals, thresholds, or safety machinery; operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    $security = '(?i)(secret|credential|api[-_ ]?key|auth\.json|password|пароль|token\b(?![-\s]?(?:burn|usage|count|budget|spent|cost|drain|throughput|per\b|/))|permission|sandbox|security|auth bypass|encrypt|decrypt|шифр|разрешени|безопасност)'
+    if ($lower -match $security) {
+      [void]$evidence.Add('security-sensitive keyword')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'security'
+        reason = 'idea is security-sensitive; operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    $irreversible = '(?i)(force[-_ ]?push|reset --hard|rm\s+-rf|drop\s+table|permanent|irreversible|delete\s+.+(history|data|repo|backlog)|удалить\s+.+(истори|данн|репозитор|бэклог)|необрат)'
+    if ($lower -match $irreversible) {
+      [void]$evidence.Add('irreversible/destructive operation signal')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'irreversible'
+        reason = 'idea proposes destructive or irreversible work; operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    # 2026-06-19 (operator-confirmed boundary): irreversible EXTERNAL actions — a message to a real
+    # human or spending money — cannot be undone by Doctor/rollback (the action already happened), so
+    # they always go to the operator. Deliberately narrow patterns to avoid flagging system logs/notes.
+    $externalAction = '(?i)(telegram[-_ ]?send|send\s+.{0,25}(message|msg|email|sms|dm)\b.{0,20}(to\s+)?(a\s+)?(human|person|user|contact|client|оператор|человек)|отправ\w*\s+.{0,30}(человек|пользовател|оператор|клиент|в\s+телеграм|сообщени\w*\s+(в\s+)?(телеграм|человек|люд))|\bpayment\b|\bpurchase\b|\bcheckout\b|потрат\w*\s+.{0,15}(деньг|средств|рубл|доллар)|оплат\w+|перевод\w*\s+.{0,15}(деньг|средств|funds)|spend\s+(money|деньг)|charge\s+(the\s+)?card|купи\w+|оплати\w+)'
+    if ($lower -match $externalAction) {
+      [void]$evidence.Add('irreversible external action (message-to-human / payment) signal')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'irreversible-external'
+        reason = 'idea proposes an irreversible external action (message to a human / spending money); operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    $archPivot = '(?i)(rewrite architecture|replace architecture|architectural pivot|new gate|parallel mechanism|new daemon|new service|новый гейт|параллельн\w+ механизм|архитектурн\w+ разворот|перепис\w+ архитектур|замен\w+ архитектур)'
+    if ($lower -match $archPivot) {
+      [void]$evidence.Add('architecture-pivot/gate-clutter signal')
+      return [pscustomobject]@{
+        operator_required = $true
+        auto_approve_allowed = $false
+        risk = 'high'
+        category = 'architecture-pivot'
+        reason = 'idea proposes an architectural pivot or a new competing gate; operator approval required'
+        evidence = @($evidence.ToArray())
+      }
+    }
+
+    return [pscustomobject]@{
+      operator_required = $false
+      auto_approve_allowed = $true
+      risk = 'low'
+      category = 'ordinary'
+      reason = 'no deterministic high-risk approval signals'
+      evidence = @()
+    }
+  } catch {
+    return [pscustomobject]@{
+      operator_required = $true
+      auto_approve_allowed = $false
+      risk = 'unknown'
+      category = 'classifier-error'
+      reason = 'idea approval risk classifier failed closed: ' + [string]$_.Exception.Message
+      evidence = @()
+    }
+  }
+}
+
 function Get-PolicyItemAuthorization {
   # ONE trust model for every gate:
   #   operator   - human-authorized (from=operator or tag 'operator'); gates advise, never veto

@@ -11,6 +11,7 @@ function Assert {
   else { Write-Host "FAIL: $Name"; $script:fail++ }
 }
 
+. (Join-Path $BridgeRoot 'lib\policy.ps1')
 . (Join-Path $BridgeRoot 'lib\backlog-core.ps1')
 
 $controlPlane = [pscustomobject]@{
@@ -49,6 +50,18 @@ $junk = [pscustomobject]@{
 $junkDecision = Test-BacklogAutoTriageDecision -Item $junk
 Assert 'junk without files rejects' ([string]$junkDecision.decision -eq 'reject')
 Assert 'junk risk low' ([string]$junkDecision.risk -eq 'low')
+
+$approvalRisk = Get-PolicyIdeaApprovalRisk -Item ([pscustomobject]@{
+  text = 'Task: relax backlog curator auto-approve threshold so more ideas pass.'
+})
+Assert 'approval safety meta requires operator' ([bool]$approvalRisk.operator_required)
+Assert 'approval safety meta cannot auto-approve' (-not [bool]$approvalRisk.auto_approve_allowed)
+
+$ordinaryRisk = Get-PolicyIdeaApprovalRisk -Item ([pscustomobject]@{
+  text = 'Task: update docs. Files: docs/triage.md Acceptance: docs mention deterministic triage.'
+})
+Assert 'ordinary idea can be judged by curator' (-not [bool]$ordinaryRisk.operator_required)
+Assert 'ordinary idea risk low' ([string]$ordinaryRisk.risk -eq 'low')
 
 Write-Host "RESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }
