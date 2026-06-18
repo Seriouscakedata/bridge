@@ -1,0 +1,92 @@
+{
+    "proposer":  "B",
+    "understanding":  "The \u0027blocks 83/85/86\u0027 are the scriptblocks $script:DriverLoopAgentTurnBlock (driver/83-loop-agent-turn.ps1), $script:DriverLoopModeTransitionBlock (driver/85-loop-mode-transitions.ps1) and $script:DriverLoopCompletionBlock + its fragments (driver/86-loop-completion*.ps1). driver/90-main-loop.ps1 dot-sources them in order inside a `:mainDriverLoop while($true)` so they share the loop scope and use `continue`/`continue mainDriverLoop`. The StrictMode hazard: block 85 line 12 (`if ((($speaker -eq \u0027claude\u0027) -or $fastLaneDone) -and $plannerStatus -eq \u0027DONE\u0027 -and $modeBeforeIncrement -eq \u0027normal\u0027)`) and the parallel guards in block 86 (lines ~20/70/557/1345) reference $fastLaneDone/$plannerStatus/$modeBeforeIncrement, which on the first loop iteration of a fresh process are UNSET. Today the driver runs without StrictMode, so these coerce to $null and the guards harmlessly short-circuit; under a future `Set-StrictMode -Version Latest` leak they throw \u0027variable not set\u0027. The same applies to incomplete $turnResult: block 83 reads $turnResult.text/.status/.fallback/.duration/.preflightBlocked (e.g. line 149) and a missing property throws under StrictMode. The \u0027action-evidence guard\u0027 is the DONE-\u003eCONTINUE flip that calls Read-State + Get-TaskActionEvidence/Get-TaskActionEvidenceContext and rejects STATUS:DONE when the current backlog task has no fresh commit/diff evidence; note that block 85 sets $modeBeforeIncrement=$mode only at line 187 (AFTER the line-12 guard), so line 12 actually reads the PRIOR turn\u0027s mode — the \u0027stale, not current\u0027 smell the task calls out. The deliverable is a new tools/test-driver-loop-strictmode.ps1 wired into smoke.ps1 that runs these blocks under StrictMode with (i) incomplete $turnResult and (ii) unset flag vars, asserting no-throw AND that the guard evaluates the CURRENT turn\u0027s Read-State, with Read-State/Update-State mocked for isolation.",
+    "summary":  "Add a child-process regression test tools/test-driver-loop-strictmode.ps1 (run under Set-StrictMode -Version Latest) that isolates the driver via a temp $bridgeRoot of stub libs plus stubbed Read-State/Update-State/Add-Message/git helpers, dot-sources driver/83,85,86, drives them inside a real :mainDriverLoop-labelled loop (capped to 1-2 iterations) with an incomplete $turnResult and unset $plannerStatus/$fastLaneDone/$modeBeforeIncrement, and asserts (a) no terminating error and (b) the action-evidence guard flips DONE-\u003eCONTINUE when the CURRENT stubbed state reports no evidence and allows DONE when it does. To make \u0027no throw\u0027 true (rather than merely characterizing today\u0027s throw), apply the minimal defensive change of initializing $modeBeforeIncrement=$mode and $plannerStatus/$fastLaneDone at the top of blocks 85/86 and making $turnResult reads null-safe in 83 — initializing $modeBeforeIncrement at the top additionally fixes the stale-vs-current guard. Wire the test as a new numbered step in smoke.ps1 (mirroring steps 10-12) so it triggers in smoke/CI. Scope is strictly these three blocks + test + smoke; audit-security.ps1 and repo-wide StrictMode cleanup are explicitly left untouched.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement as a standalone child-process test tools/test-driver-loop-strictmode.ps1 invoked from smoke.ps1 with `\u0026 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, returning exit 0/1, mirroring smoke steps 10-12.",
+                               "reason":  "smoke.ps1 already integrates regression tests exactly this way (steps 10/11/12), and \u0027fresh-process unset\u0027 semantics are only honest in a brand-new powershell child where no prior variable assignments leak in. A child also lets us enable Set-StrictMode -Version Latest without affecting the smoke host.",
+                               "tradeoff":  "A child process adds ~1-2s of startup to smoke and cannot share in-memory fixtures with the host; but it guarantees the fresh-process precondition and matches the existing convention.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Isolate by creating a temp directory used as $bridgeRoot that contains stub lib/task-action-evidence.ps1 and lib/auto-commit-worthiness.ps1, and define stubs for Read-State, Update-State, Add-Message, Set-TaskLastFailure, Write-TurnLog and the git/evidence helpers the blocks call.",
+                               "reason":  "Blocks 83/85 unconditionally dot-source lib/task-action-evidence.ps1 and lib/auto-commit-worthiness.ps1 (e.g. 85:2, 83:3-5) and they shell out to git and call Read-State/Update-State. Pointing $bridgeRoot at a temp stub tree means those dot-sources load OUR deterministic helpers instead of the real ones, giving full isolation without monkey-patching the live libs.",
+                               "tradeoff":  "Stubs can drift from the real Read-State/Update-State contract and give a false green; mitigated by keeping stubs minimal and asserting the real helper commands\u0027 presence/shape (param($s) closure for Update-State, property-bag for Read-State).",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Drive the blocks through a genuine `:mainDriverLoop while/for` loop that breaks after 1 (advanced: 2) iteration(s), invoking the scriptblocks with `. $script:DriverLoop...Block`.",
+                               "reason":  "The blocks contain `continue` and `continue mainDriverLoop` (83:261/282/370/383/399/505); dot-sourcing them outside a loop carrying that label is a runtime error unrelated to the bug under test. A capped labelled loop reproduces the real execution context safely.",
+                               "tradeoff":  "Slightly more harness scaffolding and a hard iteration cap to prevent an accidental infinite loop, versus calling fragments in isolation (which would not exercise the real control flow).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "To satisfy the \u0027no throw\u0027 constraint under unset flag vars, add the minimal defensive initialization to the production blocks: set $modeBeforeIncrement=$mode and default $plannerStatus/$fastLaneDone at the TOP of block 85 (and ensure block 86 reads of $modeBeforeIncrement are guarded), and make $turnResult property reads null-safe in block 83. The test then locks this in.",
+                               "reason":  "Today these vars are unset on the first iteration and only survive because StrictMode is off; a pure characterization test would have to assert a throw, contradicting the explicit success test \u0027asserts no exceptions are thrown\u0027. Initializing $modeBeforeIncrement=$mode at block-85 top is the same one-line change that makes the line-12 guard read the CURRENT turn\u0027s mode instead of the prior turn\u0027s — directly satisfying \u0027evaluated against the current turn, not stale\u0027.",
+                               "tradeoff":  "Touching the live driver loop is higher risk than a test-only change, but it is the only way to make \u0027no throw\u0027 genuinely true and to fix the stale-vs-current guard; risk is bounded by keeping edits additive (defensive init only, no logic removed) and gating behind driver -SelfTest + full smoke.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Prove \u0027current not stale\u0027 by stubbing Read-State/Get-TaskActionEvidence to represent the CURRENT turn and asserting opposite guard outcomes: when has_actions=$false the guard flips $plannerStatus DONE-\u003eCONTINUE (DONE rejected), and when has_actions=$true DONE is allowed.",
+                               "reason":  "Two opposite decisions driven solely by the value the CURRENT stub returns demonstrate the guard consults this-turn state rather than a cached/previous value. The advanced version strengthens this with a two-iteration run that changes mode between turns and asserts the guard keys off the current turn\u0027s mode.",
+                               "tradeoff":  "Single-iteration opposite-outcome check is simpler but only indirectly proves non-staleness; the two-iteration proof is stronger but adds harness complexity and another iteration of ambient setup.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Strictly scope changes to driver/83,85,86 + the new test + smoke.ps1 wiring; do not modify audit-security.ps1 or perform any repo-wide StrictMode cleanup.",
+                               "reason":  "An explicit constraint (\u0027audit-security.ps1:1 и пр. чистить НЕ надо\u0027). Broadening scope would inflate risk and review surface for no metric gain — the metric is regression coverage of the two mechanisms, not global StrictMode compliance.",
+                               "tradeoff":  "Other latent StrictMode-unsafe sites remain unfixed, but they are out of scope and can be filed as separate backlog items.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Follow the sibling test conventions (UTF-8 BOM, a ParseFile + BOM self-check, Write-TestResult/PassCount/FailCount harness, RESULT line, exit 0/1) as used by tools/test-loop-completion-decompose.ps1.",
+                               "reason":  "smoke.ps1 step 1 parse-checks every tracked .ps1 and several tests assert UTF-8 BOM; a file that deviates would fail smoke for the wrong reason. Reusing the established harness keeps output legible to the smoke runner and reviewers.",
+                               "tradeoff":  "Minor boilerplate duplication versus a shared test helper module, but the repo\u0027s tests favor self-contained files.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "The live driver currently runs WITHOUT Set-StrictMode, so the unset-var/missing-property references are latent and only fire under a future StrictMode leak — which is why \u0027no throw\u0027 requires a small hardening change, not just a characterization test.",
+                        "\u0027blocks 83/85/86\u0027 refers to the $script:DriverLoopAgentTurnBlock / $script:DriverLoopModeTransitionBlock / $script:DriverLoopCompletionBlock scriptblocks defined in driver/83-,85-,86-*.ps1.",
+                        "$mode is not reassigned inside block 85, so moving the $modeBeforeIncrement=$mode initialization to the top of the block is behavior-equivalent for the post-line-187 uses while additionally making the line-12 guard current-turn-correct.",
+                        "Block 86\u0027s guards (lines ~70/557/1345, with $plannerStatus/$fastLaneDone reset at 928-929) are the authoritative DONE gate; block 85\u0027s line-12 guard is a secondary early check, so aligning it to the current turn is safe.",
+                        "smoke.ps1 (delegated to by tools/smoke.ps1) is the CI smoke entrypoint, and adding a numbered child-process step there is the accepted way to trigger a test in smoke/CI.",
+                        "A temp $bridgeRoot containing stub lib/task-action-evidence.ps1 and lib/auto-commit-worthiness.ps1 will be picked up by the blocks\u0027 unconditional dot-sources, fully isolating the test from real state and git.",
+                        "Read-State returns a property-bag (PSCustomObject) and Update-State takes a `param($s)` mutator closure, matching how the blocks consume them; the stubs can faithfully mirror this contract."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Editing the live driver loop blocks (83/85/86) to add defensive inits / current-turn alignment regresses the running bridge\u0027s DONE-gating or loop control.",
+                      "severity":  "high",
+                      "mitigation":  "Keep edits strictly additive (initialize-if-unset and null-safe reads only; remove no logic); leave block-86\u0027s authoritative guard untouched; gate the change behind driver.ps1 -SelfTest (smoke step 9), the full smoke suite, and the new test; describe the driver-code change explicitly in the PR for review."
+                  },
+                  {
+                      "risk":  "Executing the real blocks pulls in heavy ambient dependencies (git invocations, many helper functions, `continue mainDriverLoop`), making the test flaky or hard to isolate.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a temp $bridgeRoot stub tree for the dot-sourced libs, comprehensive function stubs for Read-State/Update-State/Add-Message/Set-TaskLastFailure/Write-TurnLog and git wrappers, a hard iteration cap inside the :mainDriverLoop harness, and run everything in a dedicated child process."
+                  },
+                  {
+                      "risk":  "Interpretation gap: reviewers may have intended a pure characterization test (assert the current throw) rather than hardening the blocks, making the driver-code change unexpected.",
+                      "severity":  "medium",
+                      "mitigation":  "The success_tests explicitly require \u0027asserts that no exceptions are thrown\u0027, which is only achievable by hardening; call this out prominently in the PR and keep the production change to the smallest possible defensive footprint so it is easy to accept or revert."
+                  },
+                  {
+                      "risk":  "Changing block-85\u0027s line-12 guard from the prior-turn mode to the current-turn mode alters its early-exit behavior in some edge cases.",
+                      "severity":  "medium",
+                      "mitigation":  "Rely on block-86\u0027s unchanged authoritative DONE gate; add a test assertion that block 86 still rejects a no-evidence DONE; validate against the real driver self-test and full smoke before promote."
+                  },
+                  {
+                      "risk":  "Stub drift — the mocked Read-State/Update-State or evidence helpers diverge from the real signatures, yielding a false-green test.",
+                      "severity":  "low",
+                      "mitigation":  "Mirror the param($s) mutator contract and the property shape the blocks actually read; assert that the required helper commands resolve (Get-Command) and fail loudly if a stub is missing a member the blocks touch."
+                  },
+                  {
+                      "risk":  "New test file written without a UTF-8 BOM or with a parse error trips smoke step 1 or the BOM self-check for unrelated reasons.",
+                      "severity":  "low",
+                      "mitigation":  "Write the file with a UTF-8 BOM and include a ParseFile + BOM self-check (as tools/test-loop-completion-decompose.ps1 does)."
+                  }
+              ],
+    "minimal_version":  "Create tools/test-driver-loop-strictmode.ps1 (UTF-8 BOM; Write-TestResult/PassCount harness; ParseFile+BOM self-check; exit 0/1). The body: (1) `Set-StrictMode -Version Latest`; (2) build a temp $bridgeRoot with stub lib/task-action-evidence.ps1 (Get-TaskActionEvidence, Get-TaskActionEvidenceContext, Test-TaskCoveredVerifiedDoneEvidence, Test-TaskDoneQaPassCommitEvidence, Get-TaskDoneEvidenceDecision) and lib/auto-commit-worthiness.ps1, and define stubs Read-State/Update-State/Add-Message/Set-TaskLastFailure/Write-TurnLog/Get-TaskRepoRoot plus benign git shims; (3) dot-source driver/83-,85-,86-loop-*.ps1 to load the $script:DriverLoop*Block scriptblocks; (4) inside a `:mainDriverLoop` loop capped to one iteration, invoke block 85 then block 86 with an incomplete $turnResult (e.g. [pscustomobject]@{status=\u0027ok\u0027} lacking .text/.fallback/.duration) and WITHOUT pre-setting $plannerStatus/$fastLaneDone/$modeBeforeIncrement, asserting the invocation completes with no terminating error; (5) assert the action-evidence guard flips $plannerStatus DONE-\u003eCONTINUE when the current stubbed Read-State/Get-TaskActionEvidence report no evidence, and allows DONE when they report has_actions=$true. Apply the minimal defensive change needed for step 4/5 to pass: initialize $modeBeforeIncrement=$mode (and default $plannerStatus/$fastLaneDone) at the top of block 85, guard block-86 $modeBeforeIncrement reads, and make $turnResult property reads null-safe in block 83. Finally, add a new numbered step to smoke.ps1 that runs the test in a child process and appends \u0027SMOKE FAIL: STRICTMODE-DRIVER-LOOP ...\u0027 on non-zero exit.",
+    "advanced_version":  "On top of the minimal version: (a) parameterize a matrix over speaker∈{claude,codex} × mode∈{normal,discuss,study,research,synthesis} × fastLaneDone∈{unset,$true,$false} × turnResult∈{complete,incomplete,$null}, asserting no-throw and guard correctness across every combination; (b) add a two-iteration harness that sets a different $mode on turn 1 vs turn 2 and asserts the guard keys off the CURRENT turn\u0027s mode — a direct stale-vs-current proof rather than the single-iteration opposite-outcome check; (c) add a static lint sentinel that scans driver/83-,85-,86-*.ps1 for references to $plannerStatus/$fastLaneDone/$modeBeforeIncrement or $turnResult.\u003cprop\u003e that occur before their defensive initialization, so the class cannot silently reappear via a future edit even if the runtime path changes; (d) add an explicit assertion that block 86\u0027s authoritative DONE gate still rejects a no-evidence DONE (regression guard for decision atom 4\u0027s behavior change); and (e) emit a metrics line (append to metrics.jsonl) recording StrictMode-regression coverage for both mechanisms so the trend is visible in dashboards."
+}

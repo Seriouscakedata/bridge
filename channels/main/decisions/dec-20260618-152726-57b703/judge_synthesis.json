@@ -1,0 +1,203 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "test_integration_separate_file",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Best matches the requested regression-test shape: a fresh child PowerShell process gives real StrictMode isolation and mirrors existing smoke-test conventions.",
+                      "total":  0.87
+                  },
+                  {
+                      "atom_id":  "test_integration_inline_function",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.45,
+                                     "feasibility":  0.9,
+                                     "impact":  0.45,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.35,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "conflicts_with_preferred_separate_file_strategy",
+                                            "amount":  0.15
+                                        }
+                                    ],
+                      "reason":  "Although easy to implement, inline execution weakens isolation and directly conflicts with the stronger standalone child-process approach.",
+                      "total":  0.62
+                  },
+                  {
+                      "atom_id":  "test_env_strictmode_unset_vars",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.98,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This is the core regression condition: StrictMode must expose uninitialized variables in a clean scope.",
+                      "total":  0.9225
+                  },
+                  {
+                      "atom_id":  "test_env_incomplete_turnresult",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A minimal incomplete turnResult directly exercises the missing-property failure mode without overbuilding the fixture.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "test_env_mock_read_update_state",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Mocking state I/O inside the test scope is appropriate and gives observable assertions without touching real state.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "test_logic_action_evidence_guard",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.7,
+                                     "impact":  0.75,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "requires_careful_fixture_design_to_avoid_testing_mocks_instead_of_behavior",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Valuable assertion, but it should be narrowly scoped to the stale-vs-current evidence bug and avoid broad behavioral simulation.",
+                      "total":  0.7275
+                  },
+                  {
+                      "atom_id":  "test_env_execute_specific_blocks",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Executing the actual target blocks is necessary for a meaningful regression test, even if the harness needs some careful setup for loop-control behavior.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "prod_code_defensive_initialization",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "production_change_requires_minimal_scope_and_review",
+                                            "amount":  0.04
+                                        }
+                                    ],
+                      "reason":  "Defensive initialization is likely needed, but it should be limited to proven StrictMode failures in blocks 83, 85, and 86 rather than broad null-safety churn.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "scope_no_audit_security_modification",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.98,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This keeps the task bounded and prevents unrelated StrictMode or audit-security changes from increasing review risk.",
+                      "total":  0.921
+                  },
+                  {
+                      "atom_id":  "test_env_comprehensive_isolation",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.7,
+                                     "impact":  0.75,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "fixture_complexity_may_exceed_regression_scope",
+                                            "amount":  0.06
+                                        }
+                                    ],
+                      "reason":  "Isolation is useful, but creating a full temporary bridge root and many stubs should be used only where needed to run the target blocks reliably.",
+                      "total":  0.7225
+                  },
+                  {
+                      "atom_id":  "test_conventions_adherence",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Following sibling test conventions improves maintainability and smoke-suite consistency at low cost.",
+                      "total":  0.8425
+                  }
+              ]
+}

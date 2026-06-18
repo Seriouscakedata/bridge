@@ -1,0 +1,33 @@
+{
+    "task":  "[Автозадача из бэклога] `tools/test-driver-loop-strictmode.ps1` — dot-source блоков 83/85/86 под `Set-StrictMode -Version Latest` на (i) неполном `$turnResult`, (ii) fresh-process unset `$plannerStatus`/`$fastLaneDone`/`$modeBeforeIncrement`; assert «нет throw» И «action-evidence guard оценивается против ТЕКУЩЕГО turn, не stale»; добавить в `smoke.ps1` · триггерится в smoke/CI · метрика: регресс-покрытие обоих механизмов — класс не воскреснет от будущего StrictMode-leak (`audit-security.ps1:1` и пр. чистить НЕ надо) · риск: тест должен мокать `Read-State`/`Update-State` для изоляции — аккуратный стаб",
+    "goal":  "To add a new regression test to `smoke.ps1` that verifies the robustness of blocks 83, 85, and 86 in `tools/test-driver-loop-strictmode.ps1` when executed under `Set-StrictMode -Version Latest` with specific edge-case initial states (incomplete `$turnResult`, unset `$plannerStatus`/`$fastLaneDone`/`$modeBeforeIncrement`). The test must assert no exceptions are thrown and that the `action-evidence guard` correctly evaluates against the current turn\u0027s state, thereby preventing future `StrictMode` leaks and ensuring proper state handling.",
+    "constraints":  [
+                        "No exceptions (`throw`) must occur during the execution of the specified blocks under the given conditions.",
+                        "The `action-evidence guard` must evaluate against the *current* turn\u0027s state, not a stale one.",
+                        "Files like `audit-security.ps1:1` must *not* be cleaned or modified.",
+                        "The test must mock `Read-State` and `Update-State` for isolation."
+                    ],
+    "known_context":  [
+                          "The target script is `tools/test-driver-loop-strictmode.ps1`.",
+                          "Specific blocks 83, 85, and 86 within the script are the focus of the test.",
+                          "The test environment requires `Set-StrictMode -Version Latest`.",
+                          "Initial states to test include an incomplete `$turnResult` and unset `$plannerStatus`, `$fastLaneDone`, `$modeBeforeIncrement` (simulating a fresh process).",
+                          "The `action-evidence guard` is a relevant system mechanism that needs verification.",
+                          "The new test will be integrated into `smoke.ps1` and triggered by the CI pipeline.",
+                          "`Read-State` and `Update-State` are state management functions that require mocking for test isolation."
+                      ],
+    "output_format":  "A pull request containing modifications to `smoke.ps1` (or a new test file included by it) and potentially minor adjustments to `tools/test-driver-loop-strictmode.ps1` if necessary to facilitate testing.",
+    "task_type":  "infra",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "A new test case is successfully integrated into `smoke.ps1` (or a file included by it).",
+                          "The new test case executes blocks 83, 85, and 86 of `tools/test-driver-loop-strictmode.ps1` under `Set-StrictMode -Version Latest`.",
+                          "The test case initializes the environment with an incomplete `$turnResult` and unset `$plannerStatus`, `$fastLaneDone`, `$modeBeforeIncrement`.",
+                          "The test case asserts that no exceptions are thrown during the execution of the specified blocks under these conditions.",
+                          "The test case includes assertions that verify the `action-evidence guard` correctly evaluates against the *current* turn\u0027s state, not a stale one, under the specified conditions.",
+                          "The test case successfully mocks `Read-State` and `Update-State` to ensure isolated execution.",
+                          "The new test passes when executed as part of the `smoke.ps1` suite.",
+                          "The new test passes when triggered in the CI pipeline."
+                      ]
+}

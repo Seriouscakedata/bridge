@@ -1,0 +1,68 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires creating a regression test integrated into smoke.ps1 that validates blocks 83, 85, and 86 of tools/test-driver-loop-strictmode.ps1 under Set-StrictMode -Version Latest. The test must simulate edge-case initial states: incomplete $turnResult and unset $plannerStatus/$fastLaneDone/$modeBeforeIncrement (fresh process). It must assert no exceptions occur and that the action-evidence guard evaluates against the current turn\u0027s state (not stale). Read-State and Update-State must be mocked for isolation. The test must not modify audit-security.ps1 or similar files. The goal is to prevent future StrictMode leaks and ensure state handling robustness.",
+    "summary":  "Add a new test to smoke.ps1 that dot-sources blocks 83, 85, and 86 from tools/test-driver-loop-strictmode.ps1 under Set-StrictMode -Version Latest with mocked Read-State/Update-State. The test initializes an incomplete $turnResult and unsets $plannerStatus, $fastLaneDone, $modeBeforeIncrement, then asserts no throws and verifies the action-evidence guard uses current turn state. This provides regression coverage against StrictMode leaks and stale state evaluation.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The test will be added as a new function in smoke.ps1 rather than a separate file, to ensure seamless CI integration.",
+                               "reason":  "The task explicitly states the test should be integrated into smoke.ps1 and triggered in smoke/CI. Adding it directly avoids additional file inclusion complexity.",
+                               "tradeoff":  "Increases smoke.ps1 size but avoids dependency on external test file loading and ensures the test runs with the existing smoke suite infrastructure.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Mocking of Read-State and Update-State will be done using in-script function redefinition within the test scope, not external mocking frameworks.",
+                               "reason":  "PowerShell allows function redefinition in child scopes. This keeps the test self-contained without external dependencies, matching the \u0027careful stub\u0027 requirement.",
+                               "tradeoff":  "Less sophisticated than module-based mocking but simpler, more portable, and sufficient for the required isolation.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "The test will dot-source only the specific blocks 83, 85, 86 from the target script, not the entire file.",
+                               "reason":  "The task specifies dot-sourcing these specific blocks under StrictMode. Executing the entire script could introduce unwanted side effects or dependencies.",
+                               "tradeoff":  "Requires parsing/extracting the blocks, which adds complexity, but isolates the test precisely to the target code paths.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "The action-evidence guard assertion will capture the turn state before and after guard evaluation to verify it uses current (not stale) state.",
+                               "reason":  "The task requires asserting the guard evaluates against the current turn\u0027s state. Comparing state snapshots or injecting a detectable state change before guard execution provides this verification.",
+                               "tradeoff":  "Adds test logic complexity but directly addresses the core regression requirement.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "The test will not modify or clean audit-security.ps1 or any other files outside the test scope.",
+                               "reason":  "Explicit constraint in the task: \u0027audit-security.ps1:1 и пр. чистить НЕ надо\u0027.",
+                               "tradeoff":  "None; this is a strict constraint.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "Blocks 83, 85, and 86 in tools/test-driver-loop-strictmode.ps1 can be extracted and dot-sourced independently without breaking dependencies on earlier script state (aside from the mocked functions and test-initialized variables).",
+                        "The action-evidence guard is a function or code path within those blocks that references turn state; it can be intercepted or observed via the mocked Read-State/Update-State.",
+                        "The smoke.ps1 test suite already has a structure that allows adding new test functions without breaking existing tests.",
+                        "Set-StrictMode -Version Latest is not already globally set in smoke.ps1 in a way that would conflict with the test\u0027s own scoped StrictMode.",
+                        "The CI pipeline executes smoke.ps1 and will pick up the new test automatically once added."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Dot-sourcing isolated blocks may fail if they depend on variables or functions defined elsewhere in the script that are not mocked.",
+                      "severity":  "medium",
+                      "mitigation":  "Carefully analyze blocks 83, 85, 86 for external dependencies; mock all required functions/variables beyond Read-State and Update-State; test incrementally."
+                  },
+                  {
+                      "risk":  "The action-evidence guard assertion may be difficult to implement if the guard\u0027s internal state evaluation is not easily observable.",
+                      "severity":  "medium",
+                      "mitigation":  "Use the mocked Update-State to capture the state passed to it, or inject a proxy function that logs the state at guard evaluation time."
+                  },
+                  {
+                      "risk":  "StrictMode may reveal pre-existing issues in the blocks that cause test failures unrelated to the target regression.",
+                      "severity":  "low",
+                      "mitigation":  "Document any discovered issues separately; the test itself should focus on the specified edge cases and may need try/catch to diagnose failures."
+                  },
+                  {
+                      "risk":  "Mocking functions in PowerShell may inadvertently affect other tests if not properly scoped.",
+                      "severity":  "low",
+                      "mitigation":  "Define mocks inside the test function\u0027s scope and use Remove-Item or scope cleanup to prevent leakage."
+                  }
+              ],
+    "minimal_version":  "Add a single test function to smoke.ps1 that: (1) sets Set-StrictMode -Version Latest, (2) mocks Read-State and Update-State with simple stubs, (3) initializes incomplete $turnResult and unsets $plannerStatus/$fastLaneDone/$modeBeforeIncrement, (4) dot-sources extracted blocks 83,85,86, (5) asserts no exceptions, (6) asserts action-evidence guard used current turn state via mock-captured parameters.",
+    "advanced_version":  "In addition to the minimal version: (1) implement a helper function to extract blocks by line number from the target script, (2) create parameterized test cases for multiple incomplete $turnResult shapes, (3) add detailed logging of state transitions for debugging, (4) integrate with CI pipeline configuration to ensure the test is part of the mandatory smoke suite, (5) add a comment linking to the specific regression issue for traceability."
+}

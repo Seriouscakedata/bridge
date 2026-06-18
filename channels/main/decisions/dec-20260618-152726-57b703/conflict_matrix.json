@@ -1,0 +1,24 @@
+{
+    "consensus_atoms":  [
+                            "test_integration_separate_file",
+                            "test_env_strictmode_unset_vars",
+                            "test_env_incomplete_turnresult",
+                            "test_env_mock_read_update_state",
+                            "test_logic_action_evidence_guard",
+                            "test_env_execute_specific_blocks",
+                            "scope_no_audit_security_modification"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "test_integration_separate_file",
+                                           "test_integration_inline_function"
+                                       ],
+                          "axis":  "Test Integration Strategy",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+
+                ]
+}

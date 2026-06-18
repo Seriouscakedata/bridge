@@ -1,0 +1,170 @@
+{
+    "final_answer":  "Build the regression test as a standalone, UTF-8-BOM script `tools/test-driver-loop-strictmode.ps1` that `smoke.ps1` invokes in a fresh child PowerShell process under `Set-StrictMode -Version Latest`. A child process is the only way to get genuine isolation: `$plannerStatus`, `$fastLaneDone`, and `$modeBeforeIncrement` start truly unset and `$turnResult` is a minimal/incomplete object, reproducing the exact StrictMode-leak conditions that blocks 83/85/86 must survive. The test redefines `Read-State`/`Update-State` as in-scope mocks (capturing `Update-State` calls for assertions) plus only the helper stubs actually needed to run the real production blocks inside a simulated `:mainDriverLoop` context, then makes the two mandated assertions: (1) the blocks throw nothing, and (2) the action-evidence guard decides against the CURRENT turn\u0027s evidence rather than stale data — scoped narrowly to that one stale-vs-current distinction so it tests behavior, not mock plumbing. If StrictMode genuinely throws, apply surgical defensive initialization to the three blocks ONLY where proven necessary (e.g. seed `$modeBeforeIncrement=$mode`, default `$plannerStatus`/`$fastLaneDone`, null-safe `$turnResult` reads) — no broad null-safety churn. Stay strictly in scope: no `audit-security.ps1` edits and no repo-wide StrictMode cleanup, following sibling smoke-test conventions (ParseFile + BOM self-check, `Write-TestResult`, `RESULT` line, `exit 0/1`). The inline-function-inside-`smoke.ps1` alternative is rejected because it cannot guarantee the clean unset-variable scope the regression depends on.",
+    "decisions":  [
+                      {
+                          "decision":  "Implement the regression test as a standalone script `tools/test-driver-loop-strictmode.ps1` invoked from `smoke.ps1` as a fresh child PowerShell process.",
+                          "rationale":  "A fresh child process is the only way to obtain genuine `Set-StrictMode -Version Latest` isolation with truly unset variables and a clean scope, and it mirrors existing smoke-test conventions (judge 0.87, consensus).",
+                          "alternatives_considered":  [
+                                                          "Inline function inside smoke.ps1 (rejected: weaker isolation, cannot guarantee unset-variable scope)"
+                                                      ],
+                          "risk":  "medium — the child-process harness must faithfully reproduce the `:mainDriverLoop` scope; mitigated by mirroring sibling tests.",
+                          "test":  "smoke.ps1 invokes the new script in a fresh pwsh process with StrictMode Latest and asserts on its RESULT line and exit code (0/1)."
+                      },
+                      {
+                          "decision":  "Run the tested blocks in a fresh scope with `Set-StrictMode -Version Latest` and `$plannerStatus`/`$fastLaneDone`/`$modeBeforeIncrement` left unset before the blocks execute.",
+                          "rationale":  "This is the exact regression trigger — StrictMode turns reads of uninitialized variables into terminating errors; the test must reproduce it, not paper over it (judge 0.9225, highest-scoring atom).",
+                          "alternatives_considered":  [
+                                                          "Pre-initialize the three variables (rejected: masks the very bug under test)"
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "Accessing the three variables before assignment throws under StrictMode unless the blocks defensively initialize them; the test asserts no throw occurs."
+                      },
+                      {
+                          "decision":  "Feed the blocks a minimal/incomplete `$turnResult` containing only the fields required to reach blocks 83/85/86, leaving other properties absent.",
+                          "rationale":  "Directly exercises the missing-property failure mode under StrictMode without overbuilding the fixture (judge 0.8625, consensus).",
+                          "alternatives_considered":  [
+                                                          "A full realistic turnResult (rejected: would not exercise the missing-property path)"
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "Blocks read absent `$turnResult` properties and the test asserts null-safe handling / no throw."
+                      },
+                      {
+                          "decision":  "Redefine `Read-State` and `Update-State` as in-scope mock functions, capturing `Update-State` calls for later assertion.",
+                          "rationale":  "Isolates the test from real state I/O and yields observable assertions on the state transitions the blocks attempt (judge 0.85, consensus; satisfies the explicit mocking constraint).",
+                          "alternatives_considered":  [
+                                                          "Real state functions against a temp file (rejected: slower, non-hermetic, less observable)"
+                                                      ],
+                          "risk":  "low — mock signatures must match the real functions invoked in the blocks.",
+                          "test":  "Verify the blocks\u0027 Read-State/Update-State calls are intercepted by the mocks and the captured Update-State parameters reflect the expected transitions."
+                      },
+                      {
+                          "decision":  "Assert that the action-evidence guard evaluates against the current turn\u0027s evidence, narrowly scoped to the stale-vs-current distinction rather than a broad behavioral simulation.",
+                          "rationale":  "This is the second mandated assertion. The judge\u0027s \u0027modify\u0027 verdict requires keeping the fixture minimal so it tests behavior, not mock plumbing — set current vs. prior evidence to differ and assert the guard follows current (judge 0.7275, modify).",
+                          "alternatives_considered":  [
+                                                          "Broad behavioral simulation of the whole guard (rejected: risks testing the mock rather than the real behavior)"
+                                                      ],
+                          "risk":  "medium — the fixture must isolate the stale-vs-current distinction so the assertion is meaningful.",
+                          "test":  "Mock current vs. stale evidence to differ, then assert the guard\u0027s decision (e.g. plannerStatus transition / captured Update-State) reflects the current turn\u0027s evidence."
+                      },
+                      {
+                          "decision":  "Extract and execute the real production blocks 83/85/86 within a simulated `:mainDriverLoop` context, adding a test-only hook/extraction so loop-control statements like `continue mainDriverLoop` behave.",
+                          "rationale":  "Executing the actual production blocks (not a copy) is what makes this a meaningful regression guard that survives future StrictMode leaks (judge 0.81, consensus).",
+                          "alternatives_considered":  [
+                                                          "Copy/paste the block bodies into the test (rejected: drifts from production and defeats the regression purpose)"
+                                                      ],
+                          "risk":  "medium — `continue mainDriverLoop` needs a labelled-loop harness or extraction mechanism to be valid inside the test.",
+                          "test":  "Blocks load and execute inside the harness and their loop-control statements function correctly."
+                      },
+                      {
+                          "decision":  "Apply minimal defensive initialization to blocks 83/85/86 ONLY where StrictMode actually throws (e.g. seed `$modeBeforeIncrement=$mode`, default `$plannerStatus`/`$fastLaneDone`, null-safe `$turnResult` reads) — no broad null-safety churn.",
+                          "rationale":  "The \u0027no throw\u0027 contract cannot be met without fixing the real leaks, but the production change must be surgical and limited to proven failures to keep review risk low (judge 0.805, modify).",
+                          "alternatives_considered":  [
+                                                          "Make the test tolerate throws (rejected: contradicts the \u0027no throw\u0027 contract)",
+                                                          "Repo-wide null-safety sweep (rejected: out of scope, increases review risk)"
+                                                      ],
+                          "risk":  "low-medium — production change; mitigated by limiting edits to the exact lines the test proves fail and keeping the diff reviewable.",
+                          "test":  "Blocks run under StrictMode with unset variables and an incomplete `$turnResult` and throw nothing."
+                      },
+                      {
+                          "decision":  "Strictly scope changes to the new test, `smoke.ps1` wiring, and the three driver blocks; do not modify `audit-security.ps1` or perform any repo-wide StrictMode cleanup.",
+                          "rationale":  "Keeps the PR bounded and review risk low; the task explicitly forbids cleaning `audit-security.ps1` (judge 0.921, consensus).",
+                          "alternatives_considered":  [
+                                                          "Opportunistic repo-wide StrictMode hardening (rejected: out of scope and raises risk)"
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "A changed-files review confirms `audit-security.ps1` and all other unrelated files remain untouched."
+                      },
+                      {
+                          "decision":  "Follow sibling smoke-test conventions for the new file: UTF-8 BOM, ParseFile + BOM self-check, `Write-TestResult` harness, `RESULT` line, and `exit 0/1`.",
+                          "rationale":  "Consistency and maintainability within the smoke suite at low cost (judge 0.8425, accept).",
+                          "alternatives_considered":  [
+                                                          "Ad-hoc test format (rejected: inconsistent with the rest of the suite)"
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "The new file passes ParseFile, contains a UTF-8 BOM, and its output format matches the other smoke tests."
+                      },
+                      {
+                          "decision":  "Provide isolation stubs (e.g. stubbed `lib/task-action-evidence.ps1`, helpers for `Add-Message`/`Set-TaskLastFailure`/`Write-TurnLog`/git/evidence) only to the extent needed to run blocks 83/85/86 reliably — not a full temporary `$bridgeRoot` tree unless the blocks genuinely require it.",
+                          "rationale":  "Some stubbing is necessary for hermetic execution, but a full temp bridge root plus many stubs risks fixture complexity exceeding the regression scope; add stubs incrementally driven by the blocks\u0027 actual dependencies (judge 0.7225, modify).",
+                          "alternatives_considered":  [
+                                                          "Full temporary `$bridgeRoot` with a complete stub tree (deferred: adopt only if the blocks cannot otherwise run)",
+                                                          "No stubbing / real dependencies (rejected: non-hermetic, touches real state and git)"
+                                                      ],
+                          "risk":  "medium — under-stubbing breaks execution while over-stubbing tests scaffolding; mitigate by stubbing only the helpers the blocks actually call.",
+                          "test":  "Blocks run with no dependency on real `lib` files or git, and only the helpers the blocks actually invoke are stubbed."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Integrate the regression test as an inline function directly within `smoke.ps1` (test_integration_inline_function).",
+                         "why":  "Inline execution shares smoke.ps1\u0027s existing scope and cannot guarantee genuinely unset `$plannerStatus`/`$fastLaneDone`/`$modeBeforeIncrement` or a clean StrictMode scope, weakening the very isolation the regression depends on. It directly conflicts with — and lost to — the stronger standalone child-process approach (judge reject 0.62 vs. 0.87; conflict resolved for the separate file)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact identity of \u0027blocks 83/85/86\u0027: which production driver-loop script they live in and whether they are already named script-blocks (e.g. `$script:DriverLoopAgentTurnBlock`) or inline regions needing a test-only extraction hook — this gates the dot-source vs. extraction mechanism.",
+                           "Whether `continue mainDriverLoop` can execute inside a dot-sourced/extracted block in the child harness without a real labelled loop, or whether a test-only wrapper loop is required.",
+                           "Whether the action-evidence guard reads evidence via `Read-State` or via a separate helper (e.g. `Get-TaskActionEvidence`) — determines which function to mock for the stale-vs-current assertion.",
+                           "The minimal field set of `$turnResult` required to reach each of blocks 83, 85, and 86."
+                       ],
+    "implementation_plan":  [
+                                "Locate the production driver-loop script and identify blocks 83/85/86 and their variable/function touch-points ($plannerStatus, $fastLaneDone, $modeBeforeIncrement, $turnResult reads, the action-evidence guard, and Read-State/Update-State calls).",
+                                "Determine the extraction mechanism: confirm whether the blocks are already `$script:`-scoped script blocks or need a test-only hook to expose them, and ensure `continue mainDriverLoop` is satisfiable in the harness.",
+                                "Create `tools/test-driver-loop-strictmode.ps1` with a UTF-8 BOM, ParseFile + BOM self-check, the `Write-TestResult` harness, a `RESULT` line, and `exit 0/1`.",
+                                "In the test: enable `Set-StrictMode -Version Latest`; define mock `Read-State`/`Update-State` (capturing calls) plus only the minimal helper stubs the blocks require; build an incomplete `$turnResult`; leave `$plannerStatus`/`$fastLaneDone`/`$modeBeforeIncrement` unset.",
+                                "Execute blocks 83/85/86 in the simulated `:mainDriverLoop` context and assert no exception is thrown.",
+                                "Add the stale-vs-current evidence fixture and assert the action-evidence guard follows the current turn\u0027s evidence (verified via the captured Update-State call / plannerStatus transition), scoped narrowly to that distinction.",
+                                "Only if StrictMode genuinely throws, apply minimal surgical defensive initialization to the three production blocks, then re-run to confirm no throw.",
+                                "Wire the new test into `smoke.ps1` as a child-process invocation following sibling conventions.",
+                                "Run `smoke.ps1` locally to confirm the new test passes, verify `audit-security.ps1` and unrelated files are untouched, and confirm the test triggers in CI."
+                            ],
+    "next_step":  "Locate the production driver-loop script and pin down exactly what blocks 83/85/86 are (named script-blocks vs. inline regions) and which variables/functions they touch — this gates both the extraction mechanism and the minimal defensive-init set.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision tests \u0027current vs stale\u0027 by mocking Read-State to return differing current/stale evidence, but the actual staleness vector is PowerShell script-scope VARIABLE CARRYOVER across loop iterations, not Read-State data. $plannerStatus/$fastLaneDone are assigned only in 86-loop-completion-checks.ps1:928-1027 and $modeBeforeIncrement only at 85:187 — all DOWNSTREAM of where block 85 reads them at 85:12 (block 85 runs before block 86 per 90-main-loop.ps1:10-11). So block 85\u0027s guard inherently evaluates against the PRIOR iteration\u0027s values.",
+                                  "why":  "The central assertion is aimed at the wrong data source. Mocking Read-State cannot reproduce or detect cross-iteration scope-variable staleness, so the test could pass green while the real stale-state regression (guard deciding from last turn\u0027s $plannerStatus/$fastLaneDone) remains completely uncovered — directly violating constraint #2 and success_test #5."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The prescribed fix (\u0027apply minimal defensive default to $plannerStatus/$fastLaneDone/$modeBeforeIncrement inside blocks 83/85/86\u0027) is self-defeating. Placed AFTER the faulting read it doesn\u0027t prevent the StrictMode error (e.g. $modeBeforeIncrement=$mode at 85:187 is after the read at 85:12). Placed BEFORE the read, it overwrites the meaningful carried-over prior-iteration value on every iteration, so the DONE-evidence guard at 85:12 can never fire — silently DISABLING the guard. The only semantics-preserving StrictMode fix is one-time initialization before the `while` loop in 90-main-loop.ps1, which is outside the decision\u0027s declared \u0027blocks 83/85/86\u0027 change scope.",
+                                  "why":  "This breaks both core constraints at once: either \u0027no throw\u0027 is unmet (fix too late) or the guard\u0027s behavior is changed/masked (fix too early), contradicting the judge-mandated \u0027must not alter observable behavior / must not mask invalid setup\u0027. The correct change location isn\u0027t even in the decision\u0027s scope."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "A single dot-source pass of the three blocks structurally cannot reproduce the stale-carryover path. Reproducing it requires ≥2 simulated iterations: iteration N-1\u0027s block 86 must set $plannerStatus=\u0027DONE\u0027/$fastLaneDone=$true (86-checks:960-1021), then iteration N\u0027s block 85 must read those leftovers at 85:12. The decision\u0027s design (\u0027execute the three real blocks\u0027 once, with vars left unset) only exercises the first-iteration UNSET case, never the stale-but-set case.",
+                                  "why":  "Success_test #5 (\u0027guard evaluates against current, not stale, under the specified conditions\u0027) cannot be satisfied by the chosen one-shot harness. Worse, the \u0027unset\u0027 scenario and the \u0027stale\u0027 scenario are mutually exclusive in a single run: after defensive defaulting the guard condition at 85:12 is false and the guard body (85:13-95) is skipped entirely, so the current-vs-stale behavior is never executed in the very scenario the task specifies."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Blocks 83 and 85 UNCONDITIONALLY dot-source lib\\task-action-evidence.ps1 from $bridgeRoot (83:5, 85:2), re-defining Get-TaskActionEvidence / Get-TaskActionEvidenceContext at block-execution time. This overwrites any in-script stub of those helpers that the test defines beforehand.",
+                                  "why":  "The decision\u0027s mocking strategy (\u0027stub the evidence helper in-script; do NOT build a temp $bridgeRoot with stubbed lib files — that over-isolates\u0027) is internally contradictory with the code. To control the evidence helpers (needed for the current-vs-stale assertion AND for isolation from real git), you MUST point $bridgeRoot at a fake tree containing a stub lib\\task-action-evidence.ps1 — i.e., precisely the temp-$bridgeRoot-with-stub-libs approach the decision explicitly REJECTED. As written, the test either hits real git (violates the isolation constraint) or is infeasible."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Severe scope underestimate of \u0027no throw under StrictMode Latest\u0027. Beyond the 3 named vars + incomplete $turnResult, block 85 reads $speaker, $reply, $mode, $task, $projectBacklogCreated, $attachmentMetas, $evidenceSources, $studyMaxTurns, $workRoot, $bridgeRoot (each faults if unset under Latest). Block 83 has many UNGUARDED missing-property reads beyond the try/catch — $turnResult.fallback (155, 201, 229, 331, 484, 517), $turnResult.preflightBlocked (405), $turnResult.reason (406) — each throwing PropertyNotFound under Latest. Block 86 is not one block: it fans into 5 nested scriptblocks across 3 files (86-loop-completion-checks/actions/cleanup) invoking critic/runtime/project-acceptance/cleanup.",
+                                  "why":  "\u0027Minimal, narrowly-scoped defensive initialization\u0027 and \u0027minimal stub set\u0027 are not achievable as scoped. Making all three blocks throw-free requires either a large harness defining ~10+ context variables or broad production edits across dozens of property reads and 3 extra files — contradicting the decision\u0027s repeated \u0027minimal\u0027 framing and the \u0027medium\u0027 allowed_complexity."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Control-flow hazard from continue. The blocks contain `continue mainDriverLoop` (83:261, 282, 370, 383, 399) and bare `continue` (83:183, 403, 414, 432, 462, 479; 85:278; 86-checks:947). Dot-sourcing them outside an enclosing `:mainDriverLoop while {}` raises a \u0027label not found\u0027 / continue-outside-loop runtime error, and when a continue fires it skips all code after the block.",
+                                  "why":  "A naive harness produces a terminating error that masquerades as a StrictMode failure (false \u0027throw\u0027 assertion) or, once wrapped in a fake :mainDriverLoop loop, the continue paths skip any post-block assertions — so the guard decision must be captured via Update-State side-effects BEFORE the continue. The decision flags this only as an open question and never resolves the assertion mechanism, leaving the harness\u0027s feasibility unproven at \u0027final decision\u0027 time."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The headline metric (\u0027класс не воскреснет от будущего StrictMode-leak\u0027) is overclaimed by the chosen design. Pinning 3 specific variables on a hand-picked path catches only regressions of those exact variables on that path; a future StrictMode leak via any newly-added unset variable elsewhere in the loop goes undetected. The robust guard would be executing a full loop turn under StrictMode, but driver.ps1 -SelfTest (90-main-loop.ps1:550-621) only PARSES files and checks function/scriptblock PRESENCE — it never runs a loop turn under Set-StrictMode.",
+                                  "why":  "The success metric (\u0027регресс-покрытие обоих механизмов — класс не воскреснет\u0027) is not delivered by the narrow design. The decision presents the test as preventing the class from resurrecting when it only prevents these three named leaks on one path."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Ambiguous smoke wiring target. Two smoke harnesses exist: repo-root smoke.ps1 and tools\\smoke.ps1. driver.ps1\u0027s self-test references `.\\smoke.ps1` (root). The decision says \u0027invoke from smoke.ps1\u0027 / \u0027follow sibling test conventions\u0027 without disambiguating which one, while the sibling test files (tools\\test-*.ps1) live under tools\\.",
+                                  "why":  "Wiring the new test into the wrong harness risks it not triggering in the CI path the task requires (success_test #8 \u0027passes when triggered in the CI pipeline\u0027). The file location (tools\\) and the wiring target (root smoke.ps1) may be inconsistent and need explicit resolution before implementation."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Isolation feasibility is unverified at decision time. Block 86\u0027s completion sub-blocks call real side-effecting helpers — Set-DriverCompletionFinalizing→Update-State (86:6-14), Invoke-QAAgentPostCommit, project-acceptance, cleanup, and git via Invoke-DriverDoneGateGitLines (86-checks:3-32) — and block 83 makes real `git` calls (rev-parse/log/status at 157, 203-205, 231-233, 249, 325) outside the stubbable helper layer.",
+                                  "why":  "The \u0027no real git calls, no real state writes\u0027 isolation constraint requires stubbing a large, not-yet-enumerated helper set (listed as an unresolved open_question) plus intercepting direct `git` invocations that aren\u0027t behind a mockable function. Whether the isolation constraint is even achievable without the rejected full-$bridgeRoot sandbox was not established before finalizing."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

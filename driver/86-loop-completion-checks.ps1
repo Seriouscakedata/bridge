@@ -927,6 +927,15 @@ function Invoke-DriverDoneGateChecks {
 $script:DriverLoopCompletionInitialChecksBlock = {
   $plannerStatus = 'CONTINUE'
   $fastLaneDone = $false
+  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+    . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+  }
+  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+    throw 'Missing task-action-evidence helper: Get-TaskActionEvidence'
+  }
+  if (-not (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue)) {
+    throw 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext'
+  }
   if ($speaker -eq 'codex') {
     $chunkSettings = Get-ChunkingSettings
     $cm = [regex]::Match($reply, '(?im)^\s*STATUS:\s*CONTINUE-CHUNK\s*:\s*(\d+)\s*/\s*(\d+)\s*$')
@@ -1279,6 +1288,90 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     }
     if ($modeBeforeIncrement -eq 'research' -and $plannerStatus -ne 'DONE' -and $plannerStatus -ne 'CHAT') {
       Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot='' } | Out-Null
+    }
+  }
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    $noopHasBacklogId = $true
+    $noopTask = ''
+    $noopHasEvidence = $false
+    $noopHasCoveredVerifiedEvidence = $false
+    $noopHasDoneQaPassCommit = $false
+    $noopEvidenceChecked = $false
+    $noopGuardError = ''
+    try {
+      $stNoop = Read-State
+      $noopBacklogId = [string]$stNoop.current_backlog_id
+      $noopHasBacklogId = -not [string]::IsNullOrWhiteSpace($noopBacklogId)
+      $noopTask = [string]$stNoop.current_task
+      $repoNoopRoot = Get-TaskRepoRoot
+      $noopEvidenceContext = Get-TaskActionEvidenceContext -State $stNoop -DefaultRepoRoot $repoNoopRoot -BridgeRoot $bridgeRoot
+      $noopEvidence = Get-TaskActionEvidence -RepoRoot ([string]$noopEvidenceContext.repo_root) -BaseCommit ([string]$noopEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($noopEvidenceContext.base_dirty_paths)
+      $noopEvidenceChecked = $true
+      if ($noopEvidence -and [bool]$noopEvidence.has_actions) {
+        $noopHasEvidence = $true
+        Update-State {
+          param($s)
+          $s.task_did_actions = $true
+          $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+        } | Out-Null
+      }
+      $noopHasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
+      if ($noopHasBacklogId) {
+        $noopHasDoneQaPassCommit = [bool](Test-TaskDoneQaPassCommitEvidence -BacklogId $noopBacklogId -BridgeRoot $bridgeRoot)
+      }
+    } catch {
+      $noopGuardError = $_.Exception.Message
+      $noopHasEvidence = $false
+      $noopHasCoveredVerifiedEvidence = $false
+      $noopHasDoneQaPassCommit = $false
+      $noopEvidenceChecked = $false
+    }
+    try {
+      $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
+      $noopDecision = Get-TaskDoneEvidenceDecision -HasBacklogId $noopHasBacklogId -ProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated) -EvidenceChecked $noopEvidenceChecked -HasEvidence $noopHasEvidence -HasCoveredVerifiedEvidence $noopHasCoveredVerifiedEvidence -HasDoneQaPassCommit $noopHasDoneQaPassCommit
+      $noopAllowDone = [bool]$noopDecision.allow
+      $noopRejectReason = [string]$noopDecision.reason
+
+      if (-not $noopAllowDone) {
+        $plannerStatus = 'CONTINUE'
+        $noopBaseRejectReason = $noopRejectReason
+        if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
+        $noopFailureText = 'DONE rejected by action evidence guard: ' + $noopRejectReason
+        $noopForceCoderRecovery = ($noopBaseRejectReason -eq 'missing_action_evidence')
+        $noopRecoveryMessage = "Codex: создай реальный commit/diff evidence для текущей backlog-задачи, затем проверки и DONE."
+        $noopFailureRecord = [pscustomobject]@{
+          kind = 'test_failed'
+          reason = $noopBaseRejectReason
+          text = $noopFailureText
+          ts = (Get-Date).ToString('o')
+        }
+        Update-State ({
+          param($s)
+          $s.task_did_actions = $false
+          $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName task_failure_record -NotePropertyValue $noopFailureRecord -Force
+          if ($noopForceCoderRecovery) {
+            $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $true -Force
+            $s.force_planner = $false
+          }
+        }.GetNewClosure()) | Out-Null
+        try { Set-TaskLastFailure -Kind test_failed -Text $noopFailureText } catch {}
+        if ($noopForceCoderRecovery) {
+          Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). " + $noopRecoveryMessage + " Нельзя планировщику снова закрывать задачу без commit/diff evidence.") -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
+        }
+      }
+    } catch {
+      $plannerStatus = 'CONTINUE'
+      $noopDecisionError = $_.Exception.Message
+      Update-State {
+        param($s)
+        $s.task_did_actions = $false
+        $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+      } | Out-Null
+      try { Set-TaskLastFailure -Kind test_failed -Text ('DONE evidence guard crashed: ' + $noopDecisionError) } catch {}
+      Add-Message -From system -Text ("🚫 DONE evidence guard failed closed: " + $noopDecisionError + ". Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
     }
   }
   if ($speaker -eq 'claude' -and $plannerStatus -eq 'CHAT') {

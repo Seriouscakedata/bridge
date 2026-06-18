@@ -1,0 +1,74 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно добавить регрессионный smoke/CI-тест для `tools/test-driver-loop-strictmode.ps1`, который под `Set-StrictMode -Version Latest` напрямую исполняет блоки 83/85/86 в изолированном тестовом окружении: с неполным `$turnResult`, без заранее заданных `$plannerStatus`, `$fastLaneDone`, `$modeBeforeIncrement`, и с замоканными `Read-State`/`Update-State`. Тест должен ловить два класса регрессий: StrictMode-утечки из-за неинициализированных/отсутствующих полей и использование stale-состояния в action-evidence guard вместо состояния текущего turn.",
+    "summary":  "Предлагаю добавить отдельный lightweight regression script, например `tools/tests/test-driver-loop-strictmode-regression.ps1`, подключаемый из `smoke.ps1`. Он будет создавать fresh script scope, включать StrictMode Latest, мокать `Read-State` и `Update-State`, dot-source-ить/экспортировать только нужные блоки 83/85/86 через минимальный test hook в `tools/test-driver-loop-strictmode.ps1` при необходимости, затем выполнять два сценария: неполный `$turnResult` без fresh-process переменных и stale/current mismatch для action-evidence guard.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Разместить основную проверку в отдельном regression script и вызывать его из `smoke.ps1`.",
+                               "reason":  "Так smoke остается читаемым, а новая проверка автоматически попадает в локальный smoke и CI без разрастания основного файла.",
+                               "tradeoff":  "Появится еще один тестовый файл, но изоляция и поддерживаемость лучше, чем большой inline-блок в `smoke.ps1`.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Выполнять тест в новом script scope с `Set-StrictMode -Version Latest` и предварительно удаленными `$plannerStatus`, `$fastLaneDone`, `$modeBeforeIncrement`.",
+                               "reason":  "Это максимально близко воспроизводит fresh-process StrictMode leak, где обращение к неинициализированной переменной должно было бы падать.",
+                               "tradeoff":  "Тест более чувствителен к именам локальных переменных в целевом скрипте, но это именно проверяемый контракт.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Использовать неполный `$turnResult`, содержащий только минимальные поля, необходимые для достижения блоков 83/85/86.",
+                               "reason":  "Цель регрессии — убедиться, что код не предполагает наличие всех свойств результата turn под StrictMode.",
+                               "tradeoff":  "Если поток целевого скрипта изменится, fixture придется обновить, но тест останется точным и недорогим.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Мокать `Read-State` и `Update-State` внутри тестового scope, сохраняя все записи `Update-State` для assert-ов.",
+                               "reason":  "Контракт требует изоляции от реального состояния, а captured updates позволяют проверить поведение action-evidence guard без побочных эффектов.",
+                               "tradeoff":  "Моки должны точно повторять минимальный shape состояния, иначе можно получить ложный отказ теста.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Для action-evidence guard использовать stale/current mismatch: stale state содержит evidence, текущий `$turnResult` не содержит, и тест assert-ит, что guard не проходит по stale данным.",
+                               "reason":  "Это напрямую проверяет требование: оценка должна идти против текущего turn, а не против ранее прочитанного состояния.",
+                               "tradeoff":  "Одного негативного сценария может быть недостаточно для полной спецификации; расширенная версия добавит обратный позитивный сценарий.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Если блоки 83/85/86 сейчас нельзя надежно dot-source-ить отдельно, добавить минимальный test-only hook в `tools/test-driver-loop-strictmode.ps1`.",
+                               "reason":  "Лучше иметь явный экспорт внутренних scriptblock-ов под env/param-флагом, чем копировать код блоков в тест и получить невалидную регрессию.",
+                               "tradeoff":  "Небольшое изменение production script, но оно не должно влиять на обычный runtime путь.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "`smoke.ps1` уже является частью CI или вызывается CI job-ом, поэтому достаточно добавить туда вызов нового regression script.",
+                        "Блоки 83/85/86 можно либо dot-source-ить существующим механизмом, либо безопасно открыть через test-only export без изменения runtime поведения.",
+                        "`Read-State` и `Update-State` являются функциями PowerShell, которые можно переопределить в тестовом scope до исполнения проверяемых блоков.",
+                        "Action-evidence guard имеет наблюдаемый результат через вызовы `Update-State`, измененное in-memory state или возвращаемое значение блока.",
+                        "Файлы вроде `audit-security.ps1` не нужны для решения и не должны меняться."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Тест может стать хрупким, если он привяжется к номерам блоков вместо стабильного test hook/API.",
+                      "severity":  "medium",
+                      "mitigation":  "Экспортировать блоки под стабильными именами вроде `block83`, `block85`, `block86` только в тестовом режиме и оставить номерные комментарии как traceability."
+                  },
+                  {
+                      "risk":  "Моки состояния могут не совпасть с реальным минимальным state shape и тест будет проверять искусственный сценарий.",
+                      "severity":  "medium",
+                      "mitigation":  "Собрать fixture из минимальных реально используемых полей целевого скрипта и добавить assert, что `Read-State`/`Update-State` действительно вызывались."
+                  },
+                  {
+                      "risk":  "No-throw проверка может скрыть неправильное поведение guard, если тест ограничится только try/catch.",
+                      "severity":  "medium",
+                      "mitigation":  "Помимо assert no throw, обязательно проверять captured `Update-State`/guard-result на stale/current mismatch."
+                  },
+                  {
+                      "risk":  "Test-only hook может случайно повлиять на production запуск.",
+                      "severity":  "low",
+                      "mitigation":  "Активировать hook только через явный env var или параметр, по умолчанию не меняющий обычный execution path."
+                  }
+              ],
+    "minimal_version":  "Добавить один regression script, подключить его из `smoke.ps1`, включить StrictMode Latest, замокать `Read-State`/`Update-State`, выполнить блоки 83/85/86 с неполным `$turnResult` и unset fresh-process переменными, assert no throw, затем проверить один stale/current mismatch: stale state имеет action evidence, current turn не имеет, guard не должен проходить по stale данным.",
+    "advanced_version":  "Сделать минимальный test-only export внутренних блоков из `tools/test-driver-loop-strictmode.ps1`, добавить table-driven тесты для двух направлений stale/current mismatch: stale has evidence/current lacks evidence и stale lacks evidence/current has evidence. Проверять не только отсутствие throw, но и точный payload `Update-State`, количество вызовов моков, отсутствие записи в реальные state-файлы и запуск через `smoke.ps1` с понятным fail message для CI."
+}

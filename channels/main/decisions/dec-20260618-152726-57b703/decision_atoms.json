@@ -1,0 +1,138 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "test_integration_separate_file",
+                      "statement":  "Integrate the regression test as a standalone script file (e.g., `tools/test-driver-loop-strictmode.ps1`) invoked from `smoke.ps1` in a child process, mirroring existing smoke test conventions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Test Structure/Integration",
+                      "test":  "The `smoke.ps1` script successfully calls the new test script, and the test script executes in a fresh PowerShell child process with `Set-StrictMode -Version Latest` enabled, returning an appropriate exit code.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "test_integration_inline_function",
+                      "statement":  "Integrate the regression test as a new function directly within `smoke.ps1`.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Test Structure/Integration",
+                      "test":  "The new function within `smoke.ps1` executes as part of the smoke suite, enabling `Set-StrictMode -Version Latest` within its scope.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "test_env_strictmode_unset_vars",
+                      "statement":  "Execute the test in a fresh script scope or child process with `Set-StrictMode -Version Latest` enabled, ensuring `$plannerStatus`, `$fastLaneDone`, and `$modeBeforeIncrement` are initially unset.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Test Environment/Setup",
+                      "test":  "The test environment starts with `Set-StrictMode -Version Latest` active, and attempts to access `$plannerStatus`, `$fastLaneDone`, or `$modeBeforeIncrement` before their first assignment within the tested blocks result in a terminating error (if not defensively initialized).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "test_env_incomplete_turnresult",
+                      "statement":  "Utilize an incomplete `$turnResult` object, containing only the minimal fields required to reach the target blocks (83, 85, 86), to simulate missing properties.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Test Environment/Setup",
+                      "test":  "The test passes an incomplete `$turnResult` object to the tested blocks, and assertions confirm that the blocks handle missing properties gracefully (or as expected after defensive changes).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "test_env_mock_read_update_state",
+                      "statement":  "Mock `Read-State` and `Update-State` within the test scope using in-script function redefinition, capturing `Update-State` calls for subsequent assertions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Test Environment/Setup",
+                      "test":  "The test verifies that `Read-State` and `Update-State` calls within the tested blocks are intercepted by the mock functions, and that the captured `Update-State` parameters reflect the expected state changes.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "test_logic_action_evidence_guard",
+                      "statement":  "Assert that the action-evidence guard evaluates against the current turn\u0027s state, not stale data, by simulating scenarios where current and prior states differ regarding evidence.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Test Logic/Assertions",
+                      "test":  "The test sets up mock `Read-State` (and potentially `Get-TaskActionEvidence`) to return specific evidence states for \u0027current\u0027 vs. \u0027stale\u0027 scenarios, then asserts that the guard\u0027s decision (e.g., `plannerStatus` transition) correctly reflects the \u0027current\u0027 state.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "test_env_execute_specific_blocks",
+                      "statement":  "Execute the specific script blocks 83, 85, and 86 (e.g., `$script:DriverLoopAgentTurnBlock`, etc.) within a simulated `:mainDriverLoop` context, potentially requiring a test-only hook or extraction mechanism if direct dot-sourcing is not feasible.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Test Environment/Setup",
+                      "test":  "The test successfully loads and executes the specified blocks, ensuring that internal control flow statements like `continue mainDriverLoop` function correctly within the test harness.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "prod_code_defensive_initialization",
+                      "statement":  "Apply minimal defensive initialization to production blocks 83, 85, and 86 (e.g., setting `$modeBeforeIncrement=$mode`, defaulting `$plannerStatus`/`$fastLaneDone`, and making `$turnResult` property reads null-safe) to enable the test to pass without exceptions under `Set-StrictMode -Version Latest`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Production Code Changes",
+                      "test":  "The test executes the blocks under `Set-StrictMode -Version Latest` with unset variables and incomplete `$turnResult`, asserting that no terminating errors occur.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "scope_no_audit_security_modification",
+                      "statement":  "Strictly scope changes to the specified driver blocks, the new test, and `smoke.ps1` wiring; do not modify `audit-security.ps1` or perform any repo-wide StrictMode cleanup.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Scope/Constraints",
+                      "test":  "A review of changed files confirms that `audit-security.ps1` and other unrelated files remain untouched.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "test_env_comprehensive_isolation",
+                      "statement":  "Achieve comprehensive test isolation by creating a temporary `$bridgeRoot` containing stubbed `lib/task-action-evidence.ps1` and `lib/auto-commit-worthiness.ps1`, and defining stubs for `Add-Message`, `Set-TaskLastFailure`, `Write-TurnLog`, and git/evidence helpers.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Test Environment/Setup",
+                      "test":  "The test runs without external dependencies on the real `lib` files or actual git commands, and all calls to these helpers are intercepted by the defined stubs.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "test_conventions_adherence",
+                      "statement":  "Adhere to existing sibling test conventions for the new test file, including UTF-8 BOM, ParseFile + BOM self-check, `Write-TestResult` harness, `RESULT` line, and `exit 0/1`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Test Conventions",
+                      "test":  "The new test file passes `ParseFile` checks, includes a UTF-8 BOM, and its output format matches other smoke tests.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

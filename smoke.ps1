@@ -193,7 +193,20 @@ if (Test-Path $claimabilityDeadlockScript) {
     $failed += "CLAIMABILITY-DEADLOCK: tools\test-claimability-deadlock.ps1 not found"
 }
 
-# 12. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
+# 12. Driver loop StrictMode hardening -- blocks 83/85/86 must tolerate leaked StrictMode and use current-turn DONE evidence.
+$driverLoopStrictModeScript = Join-Path $b 'tools\test-driver-loop-strictmode.ps1'
+if (Test-Path $driverLoopStrictModeScript) {
+    $dlsRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $driverLoopStrictModeScript 2>&1
+    $dlsCode = $LASTEXITCODE
+    $dlsText = ($dlsRaw | ForEach-Object { [string]$_ }) -join "`n"
+    if ($dlsCode -ne 0 -or $dlsText -notmatch 'RESULT\s+passed=\d+\s+failed=0') {
+        $failed += ("DRIVER-LOOP-STRICTMODE (exit=$dlsCode): " + (($dlsText -replace '\s+',' ').Trim()))
+    }
+} else {
+    $failed += "DRIVER-LOOP-STRICTMODE: tools\test-driver-loop-strictmode.ps1 not found"
+}
+
+# 13. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
 $backlogLib = Join-Path $b 'lib\backlog.ps1'
 if (Test-Path $backlogLib) {
     $blArg = $backlogLib -replace "'","''"

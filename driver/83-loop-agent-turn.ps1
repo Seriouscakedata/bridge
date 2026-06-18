@@ -13,6 +13,32 @@
     throw 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext'
   }
 
+  function Normalize-TurnResultContract {
+    param([AllowNull()][object]$Result)
+    if ($null -eq $Result) { $Result = [pscustomobject]@{} }
+    $defaults = [ordered]@{
+      status           = 'ok'
+      text             = ''
+      duration         = 0
+      errorType        = ''
+      fallback         = ''
+      preflightBlocked = $false
+      reason           = ''
+    }
+    $names = @($Result.PSObject.Properties.Name)
+    foreach ($name in $defaults.Keys) {
+      if ($names -notcontains $name) {
+        $Result | Add-Member -NotePropertyName $name -NotePropertyValue $defaults[$name] -Force
+        $names += $name
+      }
+    }
+    return $Result
+  }
+
+  if (-not (Get-Variable -Name turnResult -Scope 0 -ErrorAction SilentlyContinue)) {
+    $turnResult = $null
+  }
+
   if ($speaker -eq 'claude' -and ($mode -eq 'normal')) {
     $wpActive = $false; try { $wpActive = [bool](Read-State).workpack_batch_active } catch {}
     # 2026-06-01 ERR-006 fix: a workpack-batch must be dispatched to the worker pool EXACTLY ONCE.
@@ -133,11 +159,11 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
         } catch {}
       }
       Add-Message -From system -Text ("🧠 Decision Synthesis: запускаю pipeline depth=" + $(if([string]::IsNullOrWhiteSpace($synthDepth)){'smart'}else{$synthDepth}) + $(if([string]::IsNullOrWhiteSpace($synthDecisionId)){''}else{" id=$synthDecisionId"})) -Kind event | Out-Null
-      $turnResult = Invoke-SynthesisDriverTurn -Task $task -Channel $Channel -Depth $synthDepth -DecisionId $synthDecisionId
+      $turnResult = Normalize-TurnResultContract (Invoke-SynthesisDriverTurn -Task $task -Channel $Channel -Depth $synthDepth -DecisionId $synthDecisionId)
     }
-    elseif ($speaker -eq 'claude') { $turnResult = Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode }
+    elseif ($speaker -eq 'claude') { $turnResult = Normalize-TurnResultContract (Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode) }
     else {
-      $turnResult = Invoke-Coder -Prompt $prompt -Mode $mode
+      $turnResult = Normalize-TurnResultContract (Invoke-Coder -Prompt $prompt -Mode $mode)
       # Track that the coder role actually ran for this task. A Claude fallback counts as
       # the coder for this turn because it has write tools and is not merely advisory.
       if ($turnResult.status -eq 'ok') { Update-State { param($s) $s.coder_fired = $true } | Out-Null }
@@ -146,6 +172,7 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
     Write-TurnLog -Speaker $speaker -Model $activeModel -Mode $mode -StartedAtUtc $turnStart -Reply $_.Exception.Message -Status 'error' -FastLane:$fastLaneTurn
     throw
   }
+  $turnResult = Normalize-TurnResultContract $turnResult
   $reply = [string]$turnResult.text
   $replySafetyGatePattern = '(?m)^\s*\[\[SAFETY:\s*(.+?)\s*\]\]\s*$'
   $replySafetyGateMatch = [regex]::Match([string]$reply, $replySafetyGatePattern)
