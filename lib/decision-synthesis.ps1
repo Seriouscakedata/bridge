@@ -140,7 +140,7 @@ function Write-SynthesisArtifact {
   param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)]$Obj)
   if (-not (Test-Path -LiteralPath $Dir)) { New-Item -Force -ItemType Directory -Path $Dir | Out-Null }
   $path = Join-Path $Dir $Name
-  $json = $Obj | ConvertTo-Json -Depth 12
+  $json = $Obj | ConvertTo-Json -Depth 10
   [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
   return $path
 }
