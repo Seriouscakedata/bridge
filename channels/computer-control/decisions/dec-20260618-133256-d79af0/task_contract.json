@@ -1,0 +1,32 @@
+{
+    "task":  "Продолжаем чинить распознавание окон в лапе (C:\\Users\\rafie\\bridge-projects\\lapa, lapa/skills.py, _find_window). Твой прошлый фикс (точный exe-матч + UWP через ApplicationFrameHost) РАБОТАЕТ и закоммичен (5b93532) — Калькулятор (UWP) открывается, Notepad++ больше не матчится ложно. Я проверил живьём.\n\nНО живая проверка вскрыла ТРЕТИЙ случай (тот же класс — поиск окна):\n- open-app «Блокнот»: лапа РЕАЛЬНО запустила приложение (Notepad.exe появился в процессах!), но _find_window окно НЕ нашёл → честный abort.\n- Причина: на русской Windows Пуск-имя = «Блокнот», а exe = notepad.exe. Stage 1 сравнивает exe-basename («notepad») с первым токеном имени («блокнот») → не совпадает. И это НЕ ApplicationFrameHost → Stage 2 тоже пропускает. Итог: классическое Win32-окно, у которого отображаемое/Пуск-имя ≠ имя exe, запускается, но не находится.\n\nЗАДАЧА: добавить в _find_window матч по ЗАГОЛОВКУ ОКНА и для классических (не-ApplicationFrameHost) окон тоже — сравнивая needle (resolved_name = Пуск-имя, напр. «Блокнот») с заголовком окна. Тогда окно «Безымянный — Блокнот» найдётся по «Блокнот».\n\nКРИТИЧЕСКАЯ ТОНКОСТЬ (не сломай Bug 1 обратно!): матч заголовка должен быть ПО ГРАНИЦЕ СЛОВА, а НЕ подстрокой. Окно «new 1 - Notepad++» НЕ должно матчиться на needle «Notepad» (иначе вернётся ложный матч Notepad++). А «Безымянный — Блокнот» должно матчиться на «Блокнот». То есть needle как ЦЕЛОЕ СЛОВО в заголовке (граница слова/токен), не substring.\n\nОГРАНИЧЕНИЯ: не ослаблять 5 ворот лапы; пусть pure-функция матча заголовка будет testable (юнит-тесты на: «Блокнот»↔«Безымянный — Блокнот»=match; «Notepad»↔«new 1 - Notepad++»=NO match; «Калькулятор»↔«Калькулятор»=match); прогнать весь pytest (должен остаться зелёным). Приоритет результатов оставь: классический exe-матч → классический title-матч → UWP-title-матч.\n\nВАЖНО: финальную приёмку (реально ли «открой Блокнот» теперь даёт completed на настоящем окне Блокнота, и Notepad++ всё ещё НЕ матчится) делает ОПЕРАТОР живьём. Твоя часть: код-фикс + юнит-тесты + pytest + отчёт. Коммит сделает оператор после живой проверки (не коммить сам).",
+    "goal":  "Improve the reliability of `_find_window` to correctly identify classic Win32 applications (like Notepad) whose display name differs from their executable name, by adding a word-boundary-aware window title matching mechanism, without reintroducing previous bugs or weakening existing checks.",
+    "constraints":  [
+                        "The title match must be by word boundary, not substring.",
+                        "Do not reintroduce the Bug 1 (false positive match for Notepad++).",
+                        "Do not weaken any of the \u00275 gates\u0027 (existing checks) in lapa.",
+                        "The title matching logic must be implemented as a testable pure function.",
+                        "All existing `pytest` tests must pass and remain green.",
+                        "Maintain the specified matching priority: classic exe-match → classic title-match → UWP-title-match.",
+                        "Do not commit the changes yourself; the operator will commit after live verification."
+                    ],
+    "known_context":  [
+                          "The previous fix (exact exe match + UWP via ApplicationFrameHost, commit 5b93532) is working and committed.",
+                          "The current `_find_window` fails for classic Win32 apps where the display name (e.g., \u0027Блокнот\u0027) differs from the exe name (e.g., \u0027notepad.exe\u0027).",
+                          "The failure occurs because Stage 1 (exe-basename vs. first token of name) fails, and Stage 2 (ApplicationFrameHost) is not applicable.",
+                          "The `needle` for the new title matching will be `resolved_name` (e.g., \u0027Блокнот\u0027).",
+                          "The relevant file is `lapa/skills.py` and the function is `_find_window`."
+                      ],
+    "output_format":  "Code fix + unit tests + pytest results + report.",
+    "task_type":  "bugfix",
+    "risk":  "high",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Unit test: `title_matcher(\"Блокнот\", \"Безымянный — Блокнот\")` returns `True`.",
+                          "Unit test: `title_matcher(\"Notepad\", \"new 1 - Notepad++\")` returns `False`.",
+                          "Unit test: `title_matcher(\"Калькулятор\", \"Калькулятор\")` returns `True`.",
+                          "Automated test: The entire `pytest` suite runs successfully and remains green.",
+                          "Live test (operator): `open-app \"Блокнот\"` successfully finds the Notepad window.",
+                          "Live test (operator): `open-app \"Notepad\"` does NOT falsely match a Notepad++ window if Notepad++ is open."
+                      ]
+}

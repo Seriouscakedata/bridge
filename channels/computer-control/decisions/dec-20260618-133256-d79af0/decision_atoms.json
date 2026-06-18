@@ -1,0 +1,113 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "A1_B2_C2_PureFunction",
+                      "statement":  "Implement title matching as a new pure function (e.g., `_window_title_matches_name`, `_title_word_matches_want`, or `_title_contains_word`).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Function Design",
+                      "test":  "Add unit tests for the new pure function covering required cases (e.g., \u0027Блокнот\u0027 vs \u0027Безымянный — Блокнот\u0027).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A3_B1_TokenizationMatch",
+                      "statement":  "Implement comparison using casefold() normalization and tokenization of the title, where alphanumeric characters, \u0027_\u0027, and symbols like \u0027+\u0027/\u0027#\u0027 remain part of the token, and the needle\u0027s tokens are matched as a contiguous sublist of the title\u0027s tokens.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Matcher Logic",
+                      "test":  "Assert `_title_word_matches_want(\u0027new 1 - Notepad++\u0027, \u0027Notepad\u0027) is False` and `_title_word_matches_want(\u0027Блокнот\u0027, \u0027Безымянный — Блокнот\u0027) is True`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "C3_RegexWordBoundary",
+                      "statement":  "Use regex with `\\b` word boundaries for the word match.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Matcher Logic",
+                      "test":  "Assert `re.search(r\u0027\\b\u0027 + re.escape(\u0027Блокнот\u0027) + r\u0027\\b\u0027, \u0027Безымянный — Блокнот\u0027, re.IGNORECASE)` returns a match.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A2_B_NotepadPlusPlusGuard",
+                      "statement":  "Do not use a simple regex `\\bneedle\\b` for word boundary matching, as it incorrectly matches \u0027Notepad\u0027 against \u0027Notepad++\u0027.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Matcher Logic Constraint",
+                      "test":  "Add unit test `_window_title_matches_name(\u0027Notepad\u0027, \u0027new 1 - Notepad++\u0027) is False`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A4_B5_MultiWordNeedle",
+                      "statement":  "Support multi-word needles by matching them as a contiguous sequence of tokens.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Matcher Logic",
+                      "test":  "Assert `_title_word_matches_want(\u0027Visual Studio Code\u0027, \u0027file - Visual Studio Code\u0027) is True`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A5_B3_C1_C4_IntegrationPriority",
+                      "statement":  "Add the new classic title-match stage in `_find_window` after the existing classic exe-match and before the UWP ApplicationFrameHost title-match, ensuring the priority: classic exe-match → classic title-match → UWP-title-match.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Integration",
+                      "test":  "Integration test asserting `_find_window` returns handles in the order: classic exe-match, then classic title-match, then UWP-title-match.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A6_B_C5_PreserveUWP",
+                      "statement":  "Preserve the existing UWP ApplicationFrameHost title-match logic and its priority as a separate, subsequent stage, without modification.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Existing Behavior",
+                      "test":  "All existing UWP title-match tests (e.g., `test_title_matches_want_*`) must remain green.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "B4_ArgOrderConvention",
+                      "statement":  "Maintain the module\u0027s internal `(title, want)` argument order for the new matcher function, consistent with existing functions, and document the difference from the contract\u0027s `(needle, title)` signature.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Function Signature",
+                      "test":  "Unit tests for the new matcher function use `(title, want)` argument order.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "B_C5_PreserveExeMatch",
+                      "statement":  "Do not modify the existing classic exe-match logic.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Existing Behavior",
+                      "test":  "All existing exe-match tests must remain green.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

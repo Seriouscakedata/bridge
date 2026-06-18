@@ -1,0 +1,68 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to fix `_find_window` in `lapa/skills.py` so that it can find classic Win32 windows (like Notepad) whose display name (e.g., \u0027Блокнот\u0027) differs from their executable name (e.g., \u0027notepad.exe\u0027). The current logic fails because Stage 1 compares exe basename to the first token of the resolved name, and Stage 2 only handles UWP (ApplicationFrameHost) windows. The fix must add a title-matching stage for classic windows, using word-boundary matching (not substring) to avoid false positives like matching \u0027Notepad\u0027 against \u0027new 1 - Notepad++\u0027. The matching priority must be: classic exe-match → classic title-match → UWP-title-match. The title-matching logic must be a testable pure function. All existing pytest tests must stay green. The operator will commit after live verification.",
+    "summary":  "Add a word-boundary-aware window title matching stage to `_find_window` for classic Win32 windows, placed after the existing exe-match and before the UWP ApplicationFrameHost check. Implement the title matching as a pure function `_title_contains_word` that checks if the needle appears as a whole word (token) in the window title, using regex with word boundaries or tokenization. Add unit tests for this function covering the required cases. Ensure the matching priority and existing gates are preserved.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a new matching stage for classic windows based on window title, placed after exe-match and before UWP check.",
+                               "reason":  "The exe-match fails when display name and exe name differ (e.g., \u0027Блокнот\u0027 vs \u0027notepad\u0027). UWP check is not applicable. Title matching is the natural fallback.",
+                               "tradeoff":  "Increases matching surface slightly, but word-boundary constraint prevents regression on Notepad++ false positive.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement title matching as a pure function `_title_contains_word(needle: str, title: str) -\u003e bool` using word-boundary logic.",
+                               "reason":  "Pure function is testable, reusable, and isolates the matching logic from window enumeration. Word boundary prevents substring false matches.",
+                               "tradeoff":  "Requires careful definition of \u0027word boundary\u0027 for non-ASCII characters like Cyrillic; regex `\\b` works for Unicode in Python 3.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Use regex with `\\b` word boundaries for the word match.",
+                               "reason":  "Python\u0027s `\\b` in regex with `re.IGNORECASE` handles Unicode word boundaries correctly and is concise.",
+                               "tradeoff":  "Regex `\\b` depends on Unicode word character definition (`\\w`), which includes Cyrillic letters, so it works for \u0027Блокнот\u0027. Hyphens and special chars in titles are non-word, forming natural boundaries.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Insert the new title-match stage for classic windows (non-ApplicationFrameHost) after the existing exe-match and before the UWP ApplicationFrameHost check.",
+                               "reason":  "Preserves the specified priority: classic exe-match → classic title-match → UWP-title-match. The exe-match is most specific and should remain first.",
+                               "tradeoff":  "Adds one more check per window, but window enumeration is already O(n) and this is a lightweight string operation.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Do not modify the existing exe-match or UWP-match logic.",
+                               "reason":  "The previous fix (commit 5b93532) works and must not be weakened. The new stage is purely additive.",
+                               "tradeoff":  "None; purely additive change.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "The `resolved_name` (e.g., \u0027Блокнот\u0027) is available in the scope where title matching will be applied.",
+                        "Python\u0027s `re.IGNORECASE` and `\\b` work correctly with Cyrillic characters in the runtime environment (standard CPython 3.x).",
+                        "Window titles are retrieved via Win32 API in a way that provides accurate UTF-8/Unicode strings.",
+                        "The existing `_find_window` function structure allows insertion of a new conditional branch without major refactoring.",
+                        "The operator will run live tests with Russian Windows locale where \u0027Блокнот\u0027 is the Start menu name for notepad.exe."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Word boundary regex `\\b` may not work as expected for all Unicode edge cases (e.g., titles with punctuation attached to words).",
+                      "severity":  "medium",
+                      "mitigation":  "Add unit tests with various title formats; if `\\b` proves insufficient, implement custom tokenization by splitting on whitespace/punctuation and comparing tokens case-insensitively."
+                  },
+                  {
+                      "risk":  "The new title match could cause false positives for other applications with similar display names.",
+                      "severity":  "low",
+                      "mitigation":  "The word-boundary constraint limits matches to whole tokens. Priority order (exe-match first) ensures exact matches still win. Live testing will catch regressions."
+                  },
+                  {
+                      "risk":  "Performance impact from regex matching on every window title.",
+                      "severity":  "low",
+                      "mitigation":  "Regex is compiled once or used inline; window enumeration is typically small (\u003c100 windows). Negligible overhead."
+                  },
+                  {
+                      "risk":  "Existing pytest tests might have hidden dependencies on the exact behavior of `_find_window` that could break.",
+                      "severity":  "medium",
+                      "mitigation":  "Run full pytest suite after changes; if any tests fail, adjust the implementation while preserving the new functionality."
+                  }
+              ],
+    "minimal_version":  "Add a pure function `_title_contains_word(needle, title)` using `re.search(r\u0027\\b\u0027 + re.escape(needle) + r\u0027\\b\u0027, title, re.IGNORECASE)`. In `_find_window`, after the existing exe-match block and before the UWP ApplicationFrameHost block, add a condition: if the window is not ApplicationFrameHost and the title matches `resolved_name` via `_title_contains_word`, return the window handle. Add 3 unit tests for `_title_contains_word` covering the required cases.",
+    "advanced_version":  "In addition to the minimal version: (1) Pre-compile the regex pattern for performance. (2) Add a fallback tokenization approach if regex `\\b` fails edge cases: split title on non-alphanumeric characters, normalize case, and check if needle is in the token list. (3) Add more comprehensive unit tests for `_title_contains_word` covering edge cases (e.g., needle at start/end of title, needle with punctuation, empty strings). (4) Add an integration test in the pytest suite that mocks window enumeration and verifies the priority order (exe-match \u003e title-match \u003e UWP). (5) Log a debug message when title match is used, to aid future debugging."
+}

@@ -1,0 +1,104 @@
+{
+    "final_answer":  "Accept a word-boundary title match implemented via tokenization (not regex \\b). Add a single pure function — recommended name `_title_word_matches_want(title, want)` following the module\u0027s existing `(title, want)` convention — that casefolds both strings, tokenizes each with a class that keeps alphanumerics, \u0027_\u0027, \u0027+\u0027 and \u0027#\u0027 inside tokens while treating whitespace, \u0027-\u0027 and the em-dash \u0027—\u0027 as separators, and returns True iff the needle\u0027s token list appears as a CONTIGUOUS sublist of the title\u0027s token list. This yields the required behavior: \u0027Блокнот\u0027 matches in \u0027Безымянный — Блокнот\u0027 (separators split the em-dash), \u0027Notepad\u0027 does NOT match \u0027new 1 - Notepad++\u0027 (the \u0027+\u0027 stays in-token so \u0027notepad++\u0027 ≠ \u0027notepad\u0027), \u0027Калькулятор\u0027 matches \u0027Калькулятор\u0027, and multi-word names like \u0027Visual Studio Code\u0027 match \u0027file - Visual Studio Code\u0027. Wire this in as a NEW classic title-match stage in `_find_window`, placed strictly AFTER the existing classic exe-match and BEFORE the UWP ApplicationFrameHost title-match, preserving the priority classic-exe → classic-title → UWP-title. Do not touch the exe-match or UWP paths. Reject the naive regex `\\bneedle\\b` approach: because \u0027+\u0027 is a non-word character, `\\bNotepad\\b` matches inside \u0027Notepad++\u0027 and would reintroduce Bug 1. Add unit tests for the pure function plus an ordering/integration check, run the full pytest suite to green, write the report, and do NOT commit — the operator commits after live verification.",
+    "decisions":  [
+                      {
+                          "decision":  "Implement title matching as a dedicated, pure, side-effect-free function (recommended `_title_word_matches_want`).",
+                          "rationale":  "Isolating match logic from window enumeration makes it unit-testable, lets localized-title regressions be covered directly, and keeps the change additive. Judge accepted at 0.905.",
+                          "alternatives_considered":  [
+                                                          "Inline the matching inside the _find_window enumeration loop (not unit-testable, mixes concerns).",
+                                                          "Reuse the existing UWP title matcher directly for classic windows (couples classic and UWP logic and risks the Bug 1 / Calculator fix)."
+                                                      ],
+                          "risk":  "low — additive and fully reversible; no impact on existing matchers.",
+                          "test":  "Unit tests on the new pure function covering all required cases."
+                      },
+                      {
+                          "decision":  "Match by casefold + tokenization with contiguous-sublist semantics: tokenize via a char class that keeps [\\w+#] inside tokens (so \u0027+\u0027/\u0027#\u0027/\u0027_\u0027 bind) and treats whitespace, \u0027-\u0027 and \u0027—\u0027 as separators; require the needle\u0027s tokens to be a contiguous run within the title\u0027s tokens.",
+                          "rationale":  "Gives true whole-token semantics. Because \u0027+\u0027 stays in-token, \u0027Notepad++\u0027 tokenizes to a single token \u0027notepad++\u0027 that is not equal to \u0027notepad\u0027, preventing the false positive; meanwhile dashes/em-dash act as separators so \u0027Блокнот\u0027 is its own token inside \u0027Безымянный — Блокнот\u0027. casefold() handles Cyrillic and ASCII case-insensitivity. Judge: modify at 0.778 (modification = align argument order to module convention).",
+                          "alternatives_considered":  [
+                                                          "Plain substring containment (this is exactly what reintroduces Bug 1).",
+                                                          "Regex \\b word boundaries (rejected — see rejected list).",
+                                                          "Unordered set-membership of tokens (too loose; would match scrambled or partial overlaps)."
+                                                      ],
+                          "risk":  "medium — the kept-character class must cover real app titles; names containing \u0027.\u0027, \u0027(\u0027, \u0027)\u0027 etc. (e.g. \u0027Node.js\u0027) may need the class extended. Mitigated by tests and an easy one-line class edit; empty/whitespace-only needle must return False.",
+                          "test":  "Assert match(\u0027new 1 - Notepad++\u0027,\u0027Notepad\u0027) is False and match(\u0027Безымянный — Блокнот\u0027,\u0027Блокнот\u0027) is True (module (title, want) order)."
+                      },
+                      {
+                          "decision":  "Explicitly forbid the naive `\\bneedle\\b` regex implementation and lock it with a regression test.",
+                          "rationale":  "Documents the precise trap that defeats the whole change: regex word boundaries treat \u0027+\u0027 as a non-word character, so `\\bNotepad\\b` matches inside \u0027Notepad++\u0027. Judge accepted at 0.96.",
+                          "alternatives_considered":  [
+                                                          "Allow regex but special-case \u0027+\u0027/\u0027#\u0027 (fragile; tokenization is cleaner and complete)."
+                                                      ],
+                          "risk":  "low — a guardrail constraint, not new behavior.",
+                          "test":  "Unit test asserting the matcher returns False for \u0027Notepad\u0027 vs \u0027new 1 - Notepad++\u0027."
+                      },
+                      {
+                          "decision":  "Support multi-word needles by matching them as a contiguous ordered token sequence.",
+                          "rationale":  "App display names are frequently multi-word (\u0027Visual Studio Code\u0027); contiguous matching captures them without the looseness of any-token matching. Judge accepted at 0.88.",
+                          "alternatives_considered":  [
+                                                          "Single-token needles only (would fail multi-word app names).",
+                                                          "Match if any needle token appears (over-broad; spurious matches)."
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "Assert match(\u0027file - Visual Studio Code\u0027,\u0027Visual Studio Code\u0027) is True."
+                      },
+                      {
+                          "decision":  "Insert the new classic title-match as a separate stage in `_find_window` AFTER the classic exe-match and BEFORE the UWP ApplicationFrameHost title-match, comparing resolved_name (Пуск-имя) against each non-AFH window title.",
+                          "rationale":  "Preserves the strongest signal (exact exe) first, adds the missing classic fallback for windows whose display name differs from the exe, and keeps UWP matching last. Maintains the required priority classic-exe → classic-title → UWP-title. Judge accepted at 0.9025.",
+                          "alternatives_considered":  [
+                                                          "Place title-match before exe-match (weakens precision; could shadow exact exe hits).",
+                                                          "Collapse exe and title into one stage (harder to reason about and to test ordering)."
+                                                      ],
+                          "risk":  "medium — ordering is behaviorally significant; must not let a classic title hit pre-empt an exe hit, and must not let it leak into the UWP path. Covered by an ordering/integration test and by not modifying the other stages.",
+                          "test":  "Behavioral test asserting `_find_window` resolves in order: classic exe-match, then classic title-match, then UWP title-match."
+                      },
+                      {
+                          "decision":  "Preserve the existing UWP ApplicationFrameHost title-match path and its priority unchanged.",
+                          "rationale":  "Keeps the working Calculator/UWP fix (commit 5b93532) intact and limits regression surface; the new behavior is added as a separate, earlier stage. Judge accepted at 0.925.",
+                          "alternatives_considered":  [
+                                                          "Refactor the UWP path to share the new tokenized matcher (defers no benefit and risks the verified UWP behavior)."
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "All existing UWP title-match tests (test_title_matches_want_*) remain green."
+                      },
+                      {
+                          "decision":  "Use the module\u0027s internal `(title, want)` argument order for the new matcher and document that this differs from the contract\u0027s conceptual `title_matcher(needle, title)` signature.",
+                          "rationale":  "Consistency with the existing `_title_matches_want(title, want)` style prevents accidental argument reversal in callers and tests; the divergence from the contract wording is purely cosmetic (same semantics). Judge accepted at 0.8625; this is also the modification noted for the tokenization atom.",
+                          "alternatives_considered":  [
+                                                          "Follow the contract literally with (needle, title) order (inconsistent with the module; invites reversal bugs)."
+                                                      ],
+                          "risk":  "low — must be documented in a docstring/comment so the contract\u0027s (needle, title) examples are not transcribed in the wrong order.",
+                          "test":  "All new unit tests are written in (title, want) order and pass."
+                      },
+                      {
+                          "decision":  "Do not modify the existing classic exe-match logic.",
+                          "rationale":  "Exact exe match remains the highest-priority classic signal; leaving it untouched avoids behavioral churn and keeps current exe-match tests meaningful. Judge accepted at 0.935.",
+                          "alternatives_considered":  [
+                                                          "Fold exe-match and title-match into a single combined matcher (unnecessary risk to a working path)."
+                                                      ],
+                          "risk":  "low.",
+                          "test":  "All existing exe-match tests remain green."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "C3_RegexWordBoundary — use `re.search(r\u0027\\b\u0027 + re.escape(needle) + r\u0027\\b\u0027, title, re.IGNORECASE)` for the word match.",
+                         "why":  "Regex word boundaries treat \u0027+\u0027 (and \u0027#\u0027) as non-word characters, so a boundary exists immediately after \u0027Notepad\u0027 in \u0027Notepad++\u0027. `\\bNotepad\\b` therefore MATCHES inside \u0027Notepad++ \u0027, reintroducing exactly the Bug 1 false positive this change must prevent. It also relies on re.IGNORECASE rather than casefold, which is less robust for some locales. Judge rejected at 0.43 (correctness 0.35, risk_reduction 0.25). Tokenization with \u0027+\u0027/\u0027#\u0027 kept in-token is the correct boundary mechanism."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact name and tokenizer of the existing UWP matcher (`_title_matches_want` or similar) — confirm at implementation time and mirror its style/char-class so classic and UWP tokenization stay consistent.",
+                           "Whether the kept-character token class `[\\w+#]` covers all real classic-app titles, or whether characters like \u0027.\u0027, \u0027(\u0027, \u0027)\u0027 (e.g. \u0027Node.js\u0027, app titles with version parens) should also be retained or treated as separators — decide via tests; the class is a trivial one-line edit if a gap appears.",
+                           "Confirm resolved_name (Пуск-имя) is the correct needle source for the classic title stage in all open-app paths (the contract states it is).",
+                           "Final live operator verification remains the gating acceptance: \u0027открой Блокнот\u0027 must reach completed on a real Notepad window, and \u0027Notepad\u0027 must still NOT match an open Notepad++ window."
+                       ],
+    "implementation_plan":  [
+                                "1. In lapa/skills.py, locate `_find_window` and the existing UWP title matcher (e.g. `_title_matches_want`) to confirm the exact (title, want) convention, casefold/tokenization style, and the current stage boundaries (classic exe-match, then UWP ApplicationFrameHost title-match).",
+                                "2. Add a pure function `_title_word_matches_want(title, want)`: return False for empty/whitespace-only want; casefold both; tokenize each with `re.findall(r\u0027[\\w+#]+\u0027, s.casefold())` (Unicode \\w covers Cyrillic + digits + \u0027_\u0027, plus \u0027+\u0027/\u0027#\u0027; whitespace, \u0027-\u0027 and \u0027—\u0027 separate); return True iff the want token list is a contiguous sublist of the title token list. Add a docstring noting the (title, want) order vs the contract\u0027s conceptual title_matcher(needle, title).",
+                                "3. In `_find_window`, add a new classic title-match stage that runs AFTER the classic exe-match loop and BEFORE the UWP ApplicationFrameHost title-match: for each non-ApplicationFrameHost top-level window, call `_title_word_matches_want(window_title, resolved_name)` and return that handle on first match. Do not alter exe-match or UWP code.",
+                                "4. Add unit tests for the pure function: (\u0027Безымянный — Блокнот\u0027,\u0027Блокнот\u0027)→True; (\u0027new 1 - Notepad++\u0027,\u0027Notepad\u0027)→False; (\u0027Калькулятор\u0027,\u0027Калькулятор\u0027)→True; (\u0027file - Visual Studio Code\u0027,\u0027Visual Studio Code\u0027)→True; plus edge cases (\u0027\u0027,\u0027Блокнот\u0027)→False, (\u0027Блокнот\u0027,\u0027\u0027)→False, and a case-insensitivity check.",
+                                "5. Add a behavioral/ordering check (mock or fixture) asserting `_find_window` priority is classic-exe → classic-title → UWP-title, and that an exe hit still pre-empts a title hit.",
+                                "6. Run the full `pytest` suite; confirm all existing UWP and exe-match tests stay green and the new tests pass. If the tokenizer char-class misses a real title shape, extend `[\\w+#]` minimally and re-run.",
+                                "7. Write the report (problem, fix, tokenization rationale, test results). Do NOT commit — hand off to the operator for live verification and commit; the 5 gates and exe/UWP paths are left untouched."
+                            ],
+    "next_step":  "Open lapa/skills.py, read `_find_window` and the existing UWP `_title_matches_want` to confirm the (title, want) convention and stage boundaries, then implement the pure `_title_word_matches_want` tokenized matcher."
+}

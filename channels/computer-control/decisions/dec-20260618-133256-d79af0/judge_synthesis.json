@@ -1,0 +1,157 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "A1_B2_C2_PureFunction",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  1,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A pure matcher is the right design boundary: it is easy to unit test, keeps matching behavior isolated from window enumeration, and directly supports regression coverage for localized titles.",
+                      "total":  0.905
+                  },
+                  {
+                      "atom_id":  "A3_B1_TokenizationMatch",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.78
+                                 },
+                      "penalties":  [
+                                        0.05
+                                    ],
+                      "reason":  "Tokenized contiguous matching with casefold is a strong approach and avoids Notepad/Notepad++ false positives. Modify because the stated Cyrillic test appears to use inconsistent argument order; it should align with the module convention, likely title first and want second.",
+                      "total":  0.778
+                  },
+                  {
+                      "atom_id":  "C3_RegexWordBoundary",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.35,
+                                     "feasibility":  0.95,
+                                     "impact":  0.35,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.25,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        0.15
+                                    ],
+                      "reason":  "Regex word boundaries may pass the Cyrillic example, but they incorrectly match names like Notepad against Notepad++, because + is treated as a non-word boundary. That creates the specific false positive this change is meant to prevent.",
+                      "total":  0.43
+                  },
+                  {
+                      "atom_id":  "A2_B_NotepadPlusPlusGuard",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  1,
+                                     "feasibility":  1,
+                                     "impact":  0.85,
+                                     "simplicity":  1,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This constraint captures an important real false-positive case and gives a precise regression test. It directly rules out the weaker regex boundary implementation.",
+                      "total":  0.96
+                  },
+                  {
+                      "atom_id":  "A4_B5_MultiWordNeedle",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Contiguous token matching naturally supports multi-word app names such as Visual Studio Code while avoiding loose unordered matching. The behavior is specific and testable.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "A5_B3_C1_C4_IntegrationPriority",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.95,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The proposed ordering preserves the strongest existing signal first, adds the needed classic title fallback, and keeps UWP title matching behind classic matching. The integration test target is appropriately behavioral.",
+                      "total":  0.9025
+                  },
+                  {
+                      "atom_id":  "A6_B_C5_PreserveUWP",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  1,
+                                     "feasibility":  1,
+                                     "impact":  0.75,
+                                     "simplicity":  1,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Keeping the UWP ApplicationFrameHost path unchanged limits regression risk and preserves existing behavior while the new classic title stage is added separately.",
+                      "total":  0.925
+                  },
+                  {
+                      "atom_id":  "B4_ArgOrderConvention",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  1,
+                                     "impact":  0.65,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Following the module\u0027s internal title/want convention reduces local confusion and keeps tests consistent. Documenting the distinction from any external contract prevents accidental argument reversal.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "B_C5_PreserveExeMatch",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  1,
+                                     "feasibility":  1,
+                                     "impact":  0.8,
+                                     "simplicity":  1,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Existing exe matching should remain the highest-priority classic signal. Preserving it avoids unnecessary behavioral churn and keeps current exe-match tests meaningful.",
+                      "total":  0.935
+                  }
+              ]
+}

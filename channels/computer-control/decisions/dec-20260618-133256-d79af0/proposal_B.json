@@ -1,0 +1,75 @@
+{
+    "proposer":  "B",
+    "understanding":  "In lapa/skills.py, `_find_window` finds an app\u0027s hwnd in two stages: Stage 1 matches a classic Win32 window by exe-basename exact-first-token (`_exe_matches_want`), Stage 2 matches a UWP window owned by ApplicationFrameHost by EXACT title (`_title_matches_want`). The newly-discovered third case is a classic Win32 app whose Пуск/display name differs from its exe: «Блокнот» launches notepad.exe, so Stage 1 fails (exe-base \u0027notepad\u0027 ≠ first token \u0027блокнот\u0027) and Stage 2 is skipped (exe is NOT ApplicationFrameHost). The window «Безымянный — Блокнот» therefore launches but is never found → honest abort. Fix: add a third, classic (non-AFH) title match that compares needle=resolved_name (e.g. «Блокнот») to the window title BY WORD/TOKEN BOUNDARY — never substring — so «Безымянный — Блокнот» matches «Блокнот» while «new 1 - Notepad++» must NOT match «Notepad» (Bug 1 must not return). The matcher must be a pure, testable function; the result priority must stay classic-exe → classic-title → UWP-title; the existing UWP exact-match and all current pytest tests must remain untouched/green; the 5 core-loop gates must not be weakened; and I do NOT commit — the operator commits after live verification.",
+    "summary":  "Add one pure module-level function `_title_word_matches_want(title, want)` that casefolds both, splits the title on WHITESPACE into tokens, and returns True iff want\u0027s whitespace-token sequence occurs as a contiguous sublist of the title\u0027s tokens (empty want → False). This deliberately rejects the `\\b`-regex/substring approach: a `\\b` boundary treats \u0027+\u0027 as a separator, so `\\bNotepad\\b` would wrongly match \u0027Notepad++\u0027 — token-equality keeps \u0027Notepad++\u0027 atomic. Wire it into `_find_window` as Stage 3: in `_cb`, for a non-ApplicationFrameHost window that did NOT exe-match, append the hwnd to a new `title_found` list when `_title_word_matches_want(GetWindowText(hwnd), needle)`. Return `(found + title_found + uwp_found or [None])[0]` to preserve the required priority. Leave `_title_matches_want` (UWP exact) and the AFH branch completely unchanged. Add unit tests for the three mandated cases plus empty-needle, run the full pytest suite to green, write a report, and leave the commit to the operator.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Match by whitespace-token equality (needle\u0027s casefolded tokens as a contiguous sublist of the title\u0027s casefolded tokens), NOT a `\\b` word-boundary regex and NOT substring.",
+                               "reason":  "This is the crux of not re-introducing Bug 1. Python\u0027s `\\b` is a transition between a \\w and a non-\\w char, and \u0027+\u0027 is non-\\w, so `\\bNotepad\\b` MATCHES \u0027Notepad++\u0027 — exactly the false positive we must avoid. A plain substring is even worse. Whitespace-tokenisation keeps \u0027Notepad++\u0027 as one atomic token that is ≠ \u0027Notepad\u0027, while «Безымянный — Блокнот» tokenises to [\u0027безымянный\u0027,\u0027—\u0027,\u0027блокнот\u0027] so «Блокнот» matches as a whole token.",
+                               "tradeoff":  "A title where the separator is glued to the word with no surrounding space (e.g. «Файл—Блокнот») would not split and would miss. The task itself states the real title is «Безымянный — Блокнот» with a spaced em-dash, so this is acceptable for the minimal version; the advanced version strips edge-separator punctuation to cover glued cases.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Implement a NEW pure function `_title_word_matches_want(title, want)` rather than loosening the existing `_title_matches_want` UWP exact-matcher.",
+                               "reason":  "UWP requires EXACT full-title equality and classic requires word-boundary tokens — two distinct semantics. A separate function keeps the UWP path and its passing tests (test_title_matches_want_*) byte-for-byte unchanged, guaranteeing no UWP regression and no weakening of existing behaviour.",
+                               "tradeoff":  "A third matcher to maintain alongside `_exe_matches_want` and `_title_matches_want`, with some conceptual overlap.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Add Stage 3 only in the non-ApplicationFrameHost branch of `_cb`, collecting hits into a dedicated `title_found` list, and return `found + title_found + uwp_found`.",
+                               "reason":  "Keeps the mandated priority classic-exe → classic-title → UWP-title literally encoded in the concatenation order, restricts the new logic to classic windows (AFH/UWP keeps exact-match), and never disturbs the existing exe-match (`found`) or UWP (`uwp_found`) paths.",
+                               "tradeoff":  "Slightly more branching inside the enumeration callback; one more list to thread through.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Keep the module\u0027s `(title, want)` argument order (matching `_title_matches_want`) and assert the three required LOGICAL cases in tests, documenting that the contract\u0027s `title_matcher(needle, title)` is the same semantic with reversed arg order.",
+                               "reason":  "Consistency within skills.py (all matchers take the observed value first, the wanted value second) avoids a footgun; the success_tests\u0027 `title_matcher` name/order is illustrative of the behaviour, not a binding signature.",
+                               "tradeoff":  "The literal function name/arg-order differs from the contract\u0027s `title_matcher(needle, title)`; the report must explicitly map the two so the operator isn\u0027t surprised. (If the operator prefers the literal signature, a thin `title_matcher(needle, title)` alias can wrap it.)",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Support multi-word needles via contiguous-sublist matching, not single-token equality.",
+                               "reason":  "resolved_name can be multi-word (e.g. «Visual Studio Code», «Telegram Desktop»); contiguous-sublist matching handles those for free and still treats each token atomically, so it never loosens the Notepad++ guard.",
+                               "tradeoff":  "A few extra lines versus a single `in` membership check; negligible.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "The real Russian Notepad window title is «Безымянный — Блокнот» (stated in the contract) with a SPACED em-dash, so whitespace tokenisation isolates «Блокнот».",
+                        "Get-StartApps resolves «Блокнот» to resolved_name «Блокнот», which `open_app` passes as `resolved_name` and `_find_window` uses as `needle` (confirmed by `test_open_app_passes_resolved_name_to_find_window`).",
+                        "The \u00275 gates\u0027 are лапа\u0027s core loop gates (identity/safety/etc.), not the window-finder; `_find_window` is a real-desktop seam (pragma: no cover) that feeds the loop, so improving it does not touch or weaken those gates.",
+                        "pytest is run from the lapa repo root (`python -m pytest`) and is currently green; the new unit tests live alongside the existing `_exe_matches_want`/`_title_matches_want` tests in tests/test_skills.py.",
+                        "UWP/ApplicationFrameHost matching must remain EXACT and unchanged; only classic (non-AFH) windows get the new title path.",
+                        "Existing conservative pre-filters in `_cb` (IsWindowVisible, non-empty title, width \u003e 300px) stay in place and still apply before the new Stage 3 match.",
+                        "Casefold (as used by the Telegram matcher) is acceptable for the case-insensitive compare; for Cyrillic/Latin it behaves like lower()."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Re-introducing Bug 1: an implementation that uses `\\b` regex or substring would let needle «Notepad» match a Notepad++ window («new 1 - Notepad++»).",
+                      "severity":  "high",
+                      "mitigation":  "Use whitespace-token equality (atomic \u0027Notepad++\u0027 token ≠ \u0027Notepad\u0027), explicitly NOT `\\b`/substring; add the mandated unit test `_title_word_matches_want(\u0027new 1 - Notepad++\u0027, \u0027Notepad\u0027) is False` and an end-to-end note for the operator\u0027s live Notepad++ check."
+                  },
+                  {
+                      "risk":  "Classic title-match picks the wrong window when an unrelated window\u0027s title contains the needle token (e.g. some other window with «Блокнот» in its title).",
+                      "severity":  "medium",
+                      "mitigation":  "Keep title-match strictly below exe-match in priority (exe hits win), require whole-token (not substring) match, keep the visibility/width pre-filters, and rely on the operator\u0027s live acceptance for the final word; behaviour is no worse than today\u0027s honest-abort."
+                  },
+                  {
+                      "risk":  "Titles with a glued dash («Файл—Блокнот», no spaces) or a leading Unicode bidi mark could miss the token.",
+                      "severity":  "low",
+                      "mitigation":  "Real Notepad uses a spaced em-dash so the minimal version already works; the advanced version strips edge-separator punctuation (— – - | : « » \" \u0027 ( ) [ ]) and leading bidi marks (reusing the Telegram bidi-mark set) WITHOUT stripping \u0027+\u0027/\u0027#\u0027/\u0027.\u0027, preserving the Notepad++ guard."
+                  },
+                  {
+                      "risk":  "Changing `_find_window`\u0027s return-list assembly could subtly alter ordering or behaviour relied on elsewhere.",
+                      "severity":  "low",
+                      "mitigation":  "Only insert `title_found` between `found` and `uwp_found`; `found` (exe-match) stays first so all current behaviour is a strict superset. `_find_window` is monkeypatched in tests (pragma: no cover), so unit tests target the pure matcher; optionally add a regression test that drives `_find_window` via a faked win32 enumeration to lock the exe→title→UWP ordering."
+                  },
+                  {
+                      "risk":  "Accidentally altering the UWP exact-match semantics or its passing tests.",
+                      "severity":  "medium",
+                      "mitigation":  "Do not touch `_title_matches_want` or the ApplicationFrameHost branch at all; the new function and the new `title_found` list are purely additive in the non-AFH branch."
+                  }
+              ],
+    "minimal_version":  "1) Add a pure module-level function in lapa/skills.py: `_title_word_matches_want(title: str, want: str) -\u003e bool` — casefold both; `want_tokens = want.split()`; if empty → return False; `title_tokens = title.casefold().split()`; return True iff `want_tokens` (casefolded) appears as a contiguous sublist of `title_tokens` (single-word needle = simple membership). Docstring states the rule and the explicit anti-`\\b` rationale (it must NOT match \u0027Notepad\u0027 against \u0027Notepad++\u0027). 2) In `_find_window`, add `title_found: List[int] = []`. In `_cb`, after the Stage-1 exe-match, restructure the AFH check so that: if exe IS ApplicationFrameHost → keep the unchanged Stage-2 UWP exact-match; ELSE (classic, non-matched) → if `_title_word_matches_want(win32gui.GetWindowText(hwnd) or \u0027\u0027, needle)` then `title_found.append(hwnd)`. Change the final return to `(found + title_found + uwp_found or [None])[0]`. 3) Add unit tests in tests/test_skills.py asserting the three mandated cases — `_title_word_matches_want(\u0027Безымянный — Блокнот\u0027, \u0027Блокнот\u0027) is True`, `_title_word_matches_want(\u0027new 1 - Notepad++\u0027, \u0027Notepad\u0027) is False`, `_title_word_matches_want(\u0027Калькулятор\u0027, \u0027Калькулятор\u0027) is True` — plus empty-needle (`\u0027\u0027, \u0027foo\u0027` style) → False and a case-insensitive case. 4) Run `python -m pytest` from the lapa root to confirm full green. 5) Write the report (root cause, fix, unit results, full pytest output, the exe→title→UWP priority, and the explicit operator live-acceptance steps for «Блокнот» and Notepad++). 6) Do NOT commit — leave that to the operator.",
+    "advanced_version":  "Everything in the minimal version, plus hardening of the pure matcher and tests: (a) Before tokenising, strip leading/trailing edge-separator punctuation from each title token (— – - | : · « » \" \u0027 ` ( ) [ ] { }) so glued-dash titles still split, while NEVER stripping \u0027+\u0027/\u0027#\u0027/\u0027.\u0027 so \u0027Notepad++\u0027, \u0027C#\u0027, \u0027node.js\u0027 stay atomic and the Bug-1 guard holds; (b) strip leading Unicode bidi marks by reusing the existing `_TITLE_BIDI_MARKS` set, so a directional-mark-prefixed title still matches; (c) expand unit tests: file-open title «doc.txt — Блокнот»=True, bracketed «[Блокнот]»=True, glued «Файл—Блокнот»=True, multi-word needle «Visual Studio Code» against «file - Visual Studio Code»=True, leading-bidi-mark positive, and additional negatives (\u0027Notepad\u0027 vs \u0027Notepad Pro\u0027=False, \u0027pad\u0027 vs \u0027Notepad\u0027=False) to lock the boundary semantics; (d) add a `_find_window` ordering regression test that monkeypatches the win32 enumeration with synthetic windows (one exe-match, one classic title-match, one AFH UWP-match) and asserts the returned hwnd follows exe→classic-title→UWP priority; (e) optionally expose a thin `title_matcher(needle, title)` alias matching the contract\u0027s literal signature for operator convenience, delegating to `_title_word_matches_want`. Then run the full pytest suite green and deliver the report; still no self-commit."
+}
