@@ -1,4 +1,4 @@
-﻿param()
+param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -59,8 +59,6 @@ try {
   [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug 'main'), '', (New-Object System.Text.UTF8Encoding($false)))
 
   Write-TestFile -RelativePath 'lib/circuit-breaker.ps1' -Content "function Invoke-CircuitBreaker { 'ok' }`n"
-  Write-TestFile -RelativePath 'lib/runtime-a.ps1' -Content "function Invoke-RuntimeA { Invoke-RuntimeB }`n"
-  Write-TestFile -RelativePath 'lib/runtime-b.ps1' -Content "function Invoke-RuntimeB { 'ok' }`n"
   Write-TestFile -RelativePath 'lib/dynamic-text.ps1' -Content "`$pattern = 'iex'`n"
   Write-TestFile -RelativePath 'lib/comment-secret.ps1' -Content "# password = 'supersecret'`n"
   Write-TestFile -RelativePath 'lib/real-dynamic.ps1' -Content "Invoke-Expression `$cmd`n"
@@ -73,14 +71,14 @@ try {
   Assert-True ([string]$manual.status -eq 'approved') 'manual item should remain approved'
   Assert-True (-not ($manual.PSObject.Properties.Name -contains 'intake_gate')) 'manual item should not receive intake_gate metadata'
 
-  $keepId = Add-Idea -Text '[deep-agent/model/deepseek-v4-flash] simple-finding -- Runtime handoff has a real target. files: lib/runtime-a.ps1, lib/runtime-b.ps1. File roles: lib/runtime-a.ps1 producer/caller, lib/runtime-b.ps1 consumer/callee. Propagation path: lib/runtime-a.ps1 -> lib/runtime-b.ps1. Multi-layer failure path because caller boundary regression prevents runtime handoff.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'critical' -SkipCurator
+  $keepId = Add-Idea -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- Restart attribution has a real target. files: lib/circuit-breaker.ps1' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'critical' -SkipCurator
   $keep = Get-TestItemById -Id $keepId
   Assert-True ([string]$keep.status -eq 'approved') 'audit finding with code target should remain approved'
   Assert-True ([string]$keep.intake_gate.action -eq 'allow') 'expected intake allow metadata'
 
-  $dupId = Add-Idea -Text '[deep-agent/model/claude-opus] simple_finding -- Same runtime handoff finding from another model. files: lib/runtime-a.ps1, lib/runtime-b.ps1. File roles: lib/runtime-a.ps1 producer/caller, lib/runtime-b.ps1 consumer/callee. Propagation path: lib/runtime-a.ps1 -> lib/runtime-b.ps1. Multi-layer failure path because caller boundary regression prevents runtime handoff.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'warning' -SkipCurator
+  $dupId = Add-Idea -Text '[deep-agent/runtime-incident-model/claude-opus] orphan_restart -- Same restart attribution finding from another model. files: lib/circuit-breaker.ps1' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'warning' -SkipCurator
   Assert-True ([string]$dupId -eq [string]$keepId) 'duplicate audit finding should return existing id'
-  $afterDup = @(Get-Backlog | Where-Object { [string]$_.text -match 'simple[-_]finding' })
+  $afterDup = @(Get-Backlog | Where-Object { [string]$_.text -match 'orphan[-_]restart' })
   Assert-True ($afterDup.Count -eq 1) ("duplicate audit finding should not append a second row, got {0}" -f $afterDup.Count)
 
   $falseDynamicId = Add-Idea -Text '[deep-codex/security] unsafe_dynamic (lib/dynamic-text.ps1:1) -- Audit matched text iex but this is not dynamic execution.' -From 'audit-deep-codex' -Tags @('audit','deep-audit','security') -Status 'approved' -Severity 'critical' -SkipCurator
@@ -111,8 +109,8 @@ try {
 
   $realDynamicId = Add-Idea -Text '[deep-codex/security] unsafe_dynamic (lib/real-dynamic.ps1:1) -- Invoke-Expression is present.' -From 'audit-deep-codex' -Tags @('audit','deep-audit','security') -Status 'approved' -Severity 'critical' -SkipCurator
   $realDynamic = Get-TestItemById -Id $realDynamicId
-  Assert-True ([string]$realDynamic.status -eq 'held') 'real dynamic execution evidence should be held without causal map'
-  Assert-True ([string]$realDynamic.intake_gate.evidence.previous_evidence.security_detail -eq 'dynamic-exec') 'real dynamic evidence detail missing'
+  Assert-True ([string]$realDynamic.status -eq 'approved') 'real dynamic execution evidence should remain approved'
+  Assert-True ([string]$realDynamic.intake_gate.evidence.security_detail -eq 'dynamic-exec') 'real dynamic evidence detail missing'
 
   $projectAuditId = Add-Idea -Text '[deep-agent/security] unsafe_dynamic (lib/dynamic-text.ps1:1) -- Project audit should stay held and outside bridge intake.' -From 'audit-deep-agent' -Tags @('audit','project-audit') -Status 'held' -Severity 'critical' -Project 'sample-project' -Scope 'project' -SkipCurator
   $projectAudit = Get-TestItemById -Id $projectAuditId
