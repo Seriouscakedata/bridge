@@ -1,0 +1,155 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "The five-gate loop (PERCEIVE, RESOLVE, PROVE, ACT, VERIFY) is the foundational control flow and should be implemented as a strict state machine with explicit transitions and abort states.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that all actions pass through all five gates in sequence, with explicit state transitions and abort paths at each gate boundary, and no gate can be implicitly skipped.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Vision must be perception-only, lazy, and used solely as a selector refinement engine when UIA fails, never for direct coordinate clicks, and its output must re-resolve via UIA.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Perception/Vision",
+                      "test":  "Demonstrate that vision is only invoked when UIA fails, and that its output is always a UIA-resolvable selector, never raw coordinates, verified by successful UIA re-resolution.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "A multi-tiered safety risk-ladder must be implemented, classifying actions based on element metadata (e.g., Name, ControlType) and a policy matrix, checked at the PROVE gate, to auto-confirm low-risk, prompt for medium-risk, and abort high-risk (e.g., passwords).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety",
+                      "test":  "Verify that actions classified as \u0027send\u0027 or \u0027delete\u0027 trigger a user confirmation prompt, and actions targeting password fields are always aborted, with the classification occurring at the PROVE gate.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "A global STOP hotkey must be implemented as a low-level Win32 keyboard hook that sets an atomic abort flag, checked at every gate boundary/transition for immediate termination.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety/Control",
+                      "test":  "Pressing the configured STOP hotkey during any gate (PERCEIVE, RESOLVE, PROVE, ACT, VERIFY) must immediately abort the current action sequence and return control to the operator.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "Keystrokes should be replaced entirely by clipboard-paste for text input, with identity verification before paste.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Input",
+                      "test":  "Verify that text input operations use clipboard paste with pre-paste identity verification and post-paste content verification, and raw keystrokes are avoided for text input.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "A pre-action \u0027context freeze\u0027 (snapshot generation tag + window handle lock) must be acquired before RESOLVE and held through VERIFY.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Reliability/Concurrency",
+                      "test":  "Demonstrate that the target window\u0027s state (e.g., position, visibility) is stable and locked from RESOLVE through VERIFY, preventing race conditions or actions on a changed window.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Element identity should be tracked via a persistent cache keyed by UIA generation-tagged snapshot, not just re-read at action time.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Performance/Reliability",
+                      "test":  "Verify that element identity is consistently maintained across gate transitions using a generation-tagged cache, reducing re-resolution and preventing actions on stale elements.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "A \u0027pre-ACT sanity cross-check\u0027 should compare the resolved element\u0027s bounding rectangle against the last known window position and size.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Verification/Reliability",
+                      "test":  "Before ACT, verify that the resolved element\u0027s bounding rectangle is within the expected bounds of its parent window; if not, abort the action.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Implement the RESOLVE gate to strictly require a declarative selector to identify *exactly one* unique UIA element within the current window snapshot; any ambiguity or zero matches results in an immediate abort.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Resolution/Targeting",
+                      "test":  "Provide a selector that matches multiple elements or no elements; verify that the RESOLVE gate immediately aborts the action, preventing ambiguous targeting.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Strengthen the PROVE gate to include a live re-read of element properties, `ElementFromPoint` hit-test at the intended action coordinates, and explicit focus assertion for keystroke actions, all against the *resolved element\u0027s identity*.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Verification",
+                      "test":  "Before ACT, verify that the PROVE gate performs a live re-read of element properties, a hit-test at the action coordinates, and asserts focus for keystroke actions, aborting if any check fails.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Prioritize UIA patterns (SetValue, Invoke, Toggle, Select) for the ACT gate. Restrict keystroke actions to only those scenarios where UIA patterns are unavailable or ineffective, and *only* after passing the PROVE gate with identity and focus assertions.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Action Execution",
+                      "test":  "Verify that for elements supporting UIA patterns (e.g., a button with InvokePattern), the InvokePattern is used. For text input, verify that keystrokes are only used if clipboard paste fails and after explicit focus assertion.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "statement":  "Enforce idempotency by reading the current state before acting and skipping if the desired state is already achieved. Verify success by re-reading the *actual post-action state* (e.g., actual value, last message in chat) in the VERIFY gate.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Verification/Reliability",
+                      "test":  "Perform an action that sets a value; verify that if the value is already set, the action is skipped (idempotency). After any action, verify that the VERIFY gate reads the actual UI state to confirm the desired outcome.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_13",
+                      "statement":  "Maintain the dedicated long-lived STA worker thread that owns COM/UIA.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Architecture/Stability",
+                      "test":  "Verify that all COM/UIA interactions occur on a single, dedicated, long-lived STA worker thread, preventing cross-apartment issues.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

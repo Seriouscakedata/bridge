@@ -1,0 +1,50 @@
+{
+    "consensus_atoms":  [
+                            "atom_01",
+                            "atom_02",
+                            "atom_03",
+                            "atom_04"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_05",
+                                           "atom_10",
+                                           "atom_11"
+                                       ],
+                          "axis":  "Input Method Strategy / Keystroke Usage",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "atom_07",
+                                           "atom_10"
+                                       ],
+                          "axis":  "Element State Freshness / Caching Strategy",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_05",
+                        "severity":  "major",
+                        "why":  "This atom states that keystrokes should be \u0027replaced entirely by clipboard-paste for text input\u0027. This creates a direct conflict with atom_11, which allows for restricted keystroke actions as a fallback when UIA patterns are unavailable or ineffective. An absolute prohibition on keystrokes for text input may be too rigid and reduce system robustness in edge cases where clipboard paste or UIA patterns fail.",
+                        "fix":  "Reconcile with atom_11. Either modify atom_05 to allow for controlled keystroke fallbacks as described in atom_11, or explicitly state why such fallbacks are undesirable and how all text input scenarios will be reliably handled without them. Given the need for robustness, atom_11\u0027s approach of a controlled fallback seems more practical.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "atom_10",
+                        "severity":  "minor",
+                        "why":  "The phrase \u0027live re-read of element properties\u0027 is ambiguous. It could imply bypassing the \u0027context freeze\u0027 (atom_06) or the \u0027persistent cache keyed by UIA generation-tagged snapshot\u0027 (atom_07), which would introduce race conditions or stale data issues. It needs to be clarified whether this re-read operates *within* the frozen snapshot/cached identity or directly queries the live UI outside of the established context.",
+                        "fix":  "Clarify the statement to specify that the \u0027live re-read\u0027 must occur against the *current frozen snapshot* or cached identity, ensuring consistency with atom_06 and atom_07. For example, \u0027re-read of element properties from the current generation-tagged snapshot\u0027.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "atom_11",
+                        "severity":  "major",
+                        "why":  "This atom proposes restricting keystroke actions to scenarios where UIA patterns are unavailable or ineffective, allowing them as a controlled fallback. This directly conflicts with atom_05, which states that keystrokes should be \u0027replaced entirely by clipboard-paste for text input\u0027. The two atoms present fundamentally different strategies for handling text input and need to be reconciled.",
+                        "fix":  "Reconcile with atom_05. Atom_11\u0027s approach of allowing restricted keystroke fallbacks (after PROVE gate checks) provides a more robust and pragmatic solution for real-world UI automation. Atom_05 should be adjusted to align with this strategy, allowing keystrokes as a last resort under strict conditions.",
+                        "cost":  "medium"
+                    }
+                ]
+}

@@ -1,0 +1,50 @@
+{
+    "task":  "LAPA - REDESIGN DELIBERATION",
+    "goal":  "lapa\" is a general controller of the Windows desktop. It must reliably operate ANY window and ANY field in ANY app: perceive the screen, target the RIGHT element, act, and verify the REAL outcome. Telegram is ONLY a test surface - no app-specific APIs, no special-casing. Reliability strictly dominates coverage: a clean abort beats a wrong action. The goal is to PERMANENTLY and FULLY solve desktop control for the operator.",
+    "constraints":  [
+                        "Must reliably operate ANY window and ANY field in ANY app.",
+                        "No app-specific APIs or special-casing; Telegram is ONLY a test surface.",
+                        "Reliability strictly dominates coverage; a clean abort beats a wrong action.",
+                        "The solution must PERMANENTLY and FULLY solve desktop control for the operator.",
+                        "All \u0027PROVEN WINS\u0027 must be maintained.",
+                        "All \u0027BURNS\u0027 must be avoided.",
+                        "Fail-closed on any uncertainty.",
+                        "Vision is perception-only, lazy (only on UIA-miss), single-call, and returns a selector REFINEMENT that must re-resolve and pass every gate; it NEVER clicks coordinates.",
+                        "A safety risk-ladder must be implemented: low actions auto; send/delete/publish/buy -\u003e confirm with the user; passwords/2FA/payment -\u003e never.",
+                        "A STOP hotkey must be implemented.",
+                        "No reintroduction of blind escalation, blind coordinate-clicks, flag-based success, or app-special-casing.",
+                        "Acceptable speed must be achieved."
+                    ],
+    "known_context":  [
+                          "**PROVEN WINS (must keep):**",
+                          "- A dedicated long-lived STA worker thread that OWNS COM/UIA (fixed a cross-apartment segfault).",
+                          "- Verify-or-abort by ELEMENT IDENTITY before acting (hit-test ElementFromPoint + focus check before any blind keystroke; never type into an unverified field).",
+                          "- Verify success on REAL STATE (re-read the actual value / last message), never a success flag or a log line.",
+                          "- Idempotency: read current state before acting; skip if already done (no duplicate sends).",
+                          "**BURNS (must avoid):**",
+                          "- Fragile tiered escalation uia-\u003evision-\u003ebrowser as a blind fallback chain (slow ~27s/run, each tier a new failure surface).",
+                          "- Blind typing into \"the active field/chat\" without verifying identity (the root of wrong-contact and mistype).",
+                          "- False-success (reporting done when nothing, or the wrong thing, happened).",
+                          "- Over-layering / unpredictable complexity (the user explicitly called the old design fragile and one-sided).",
+                          "**CURRENT PLAN (to be vetted and improved):**",
+                          "- ONE deterministic loop, not a ladder.",
+                          "- Five gates per action: PERCEIVE (one window-scoped UIA snapshot, generation-tagged) -\u003e RESOLVE (a declarative selector to EXACTLY-ONE element, or abort - never first-match) -\u003e PROVE (identity at the action point: live re-read + ElementFromPoint hit-test + focus assertion for keystrokes) -\u003e ACT (via the element\u0027s own UIA pattern: SetValue/Invoke/Toggle/Select; keystrokes only as an identity+focus-gated last resort) -\u003e VERIFY (real post-state read + foreground-context recheck).",
+                          "- Vision is perception-only, lazy (only on a UIA-miss), single-call, and returns a selector REFINEMENT that must re-resolve and pass every gate - it NEVER clicks coordinates.",
+                          "- Additions being folded in: app-launcher (open apps by system call, not by hunting an icon), window-manager (focus/move/resize by Win32 command), clipboard-paste for long text, a safety risk-ladder, a STOP hotkey, a task-contract in / evidence-report out, and a metrics+benchmark that PROVES reliability (tracking wrong-window-actions and irreversible-errors)."
+                      ],
+    "output_format":  "{ \"added\": [\"string\"], \"changed\": [\"string\"], \"removed\": [\"string\"], \"gaps\": [\"string\"], \"hidden_risks\": [\"string\"], \"better_approaches\": [\"string\"] }",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The proposed solution demonstrably operates ANY window and ANY field in ANY app without app-specific APIs or special-casing.",
+                          "Reliability metrics (e.g., wrong-window-actions, irreversible-errors) from the benchmark show near-zero critical failures.",
+                          "The system consistently performs clean aborts instead of wrong actions when uncertainty is detected.",
+                          "All \u0027PROVEN WINS\u0027 are verifiably maintained in the new design.",
+                          "All \u0027BURNS\u0027 are structurally prevented and not reintroduced in any form.",
+                          "The safety risk-ladder and STOP hotkey are fully implemented and function as specified.",
+                          "The system achieves acceptable speed for common desktop automation tasks.",
+                          "The proposed changes generalize across arbitrary applications without requiring app-specific hacks.",
+                          "The solution provides a clear evidence-report for each task execution, detailing actions and verification steps."
+                      ]
+}

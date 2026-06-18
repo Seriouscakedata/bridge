@@ -1,0 +1,157 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus atom, clear and testable, low cost, medium reversibility. No conflicts.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus atom, high impact for robustness, but high implementation cost and low reversibility. Testable via inspection.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus atom, critical for learning validation, medium cost, low reversibility. Strong risk reduction.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus atom, well-specified composite key, medium cost and reversibility. No conflicts.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Only in proposal A, but no conflict. Low cost, high reversibility, adds valuable failure analysis. Testable.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.7,
+                                     "impact":  0.8,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Conflicts with DA007. Per review fix, modify to clarify that re-learning is flagged but only triggered on next explicit failure. Adjust wording to avoid proactive trigger.",
+                      "total":  0.7
+                  },
+                  {
+                      "atom_id":  "DA007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Clear, low cost, high reversibility. Conflict with DA006 resolved by modifying DA006 to align with this strict reactive trigger.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "DA008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Only in proposal B, no conflict. Low cost, medium reversibility, ensures only verified recipes are stored.",
+                      "total":  0.87
+                  },
+                  {
+                      "atom_id":  "DA009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Only in proposal B, no conflict. High risk reduction, medium cost, testable with dangerous action example.",
+                      "total":  0.805
+                  }
+              ]
+}

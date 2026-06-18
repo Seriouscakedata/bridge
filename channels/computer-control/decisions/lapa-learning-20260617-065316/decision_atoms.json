@@ -1,0 +1,107 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "statement":  "The learning mechanism must use Gemini-2.5-flash for interface analysis and recipe generation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "AI Model Integration",
+                      "test":  "Verify that all interface analysis and recipe generation logic calls the Gemini-2.5-flash API.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "statement":  "Learned knowledge/recipes must be represented as a sequence of semantic steps with relative/semantic locators, not absolute coordinates.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Recipe Representation",
+                      "test":  "Inspect generated recipes to ensure no absolute pixel coordinates are used; verify locators are UIA-based or relative to other elements.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "statement":  "Every learned recipe must pass lapa\u0027s full five-gate sequence (including VERIFY) before being committed to memory.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Learning Validation",
+                      "test":  "Observe the learning loop; ensure recipes are only stored after successful execution through all five gates, especially VERIFY.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "statement":  "The knowledge base must be keyed by a composite fingerprint: app identifier (e.g., executable hash + window class) + interface-region structural hash + task type.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Knowledge Management",
+                      "test":  "Verify that stored recipes use the specified composite key for lookup and storage.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "statement":  "The learning loop must include a failure analysis step where Gemini produces a structured explanation of why the failure occurred and what the correct approach should be.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Learning Process",
+                      "test":  "On failure, verify that Gemini is prompted to provide a structured explanation of the failure cause and proposed solution, and that this explanation is logged.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "statement":  "Learned recipes must include a confidence score and success history, and be subject to decay and re-learning if success rate drops below a threshold.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Knowledge Management",
+                      "test":  "Verify that recipes store success/failure counts, and that a mechanism exists to trigger re-learning or deprecation based on these metrics.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA007",
+                      "statement":  "The learning mechanism must be triggered only on explicit failure (lapa cannot complete a task), not on success.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Learning Process",
+                      "test":  "Observe the system; ensure the learning loop is only initiated when lapa reports a task failure.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA008",
+                      "statement":  "Failed recipes (those that pass initial generation but fail VERIFY) must be discarded and optionally logged for debugging, not stored with a low confidence.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Learning Validation",
+                      "test":  "Verify that any recipe failing the VERIFY gate is not committed to the knowledge base.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA009",
+                      "statement":  "The learning loop must include a \u0027safety pre-check\u0027 before executing a generated recipe to ensure it does not contain actions that violate lapa\u0027s risk ladder or user policy.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Safety \u0026 Security",
+                      "test":  "Generate a recipe with a known dangerous action (e.g., `shutdown.exe`); verify the safety pre-check rejects it or prompts the user.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

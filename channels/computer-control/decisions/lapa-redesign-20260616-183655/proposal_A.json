@@ -1,0 +1,81 @@
+{
+    "proposer":  "A",
+    "understanding":  "The task is to design a permanent, fully reliable desktop control system (LAPA) that operates any window and any field in any Windows app using only generic UIA and vision-as-perception-only, with strict reliability over coverage, a safety risk-ladder, a STOP hotkey, and no app-specific special-casing. The current plan proposes a single deterministic five-gate loop (PERCEIVE, RESOLVE, PROVE, ACT, VERIFY) with vision as a lazy refinement source. I must preserve proven wins (STA thread, identity verification, real-state verification, idempotency) and avoid burns (tiered escalation, blind typing, false success, over-layering).",
+    "summary":  "I propose to adopt the five-gate loop as the core architecture, but tighten it with a mandatory pre-action \u0027context freeze\u0027 (snapshot generation tag + window handle lock) to prevent race conditions, replace the \u0027keystrokes as last resort\u0027 with a clipboard-paste-only fallback for text input (never raw keystrokes without identity), and add a \u0027state diff\u0027 verification step that compares pre- and post-action UIA snapshots to detect side effects. The safety risk-ladder is embedded as a pre-ACT gate that classifies action type via element metadata (e.g., Name contains \u0027Send\u0027 -\u003e confirm). The STOP hotkey is implemented as a Win32 keyboard hook that sets a global atomic flag checked at every gate boundary.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The five-gate loop (PERCEIVE, RESOLVE, PROVE, ACT, VERIFY) is the correct core architecture.",
+                               "reason":  "It enforces deterministic, verifiable steps and eliminates the fragile tiered escalation of the old design. Each gate is a hard abort point, ensuring reliability.",
+                               "tradeoff":  "Slightly more code complexity than a simpler two-step approach, but necessary for fail-closed safety.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Vision must remain perception-only, lazy, and return a selector refinement, never click coordinates.",
+                               "reason":  "This prevents blind coordinate clicks (a burn) and keeps vision as a fallback that re-enters the deterministic loop, maintaining full gate verification.",
+                               "tradeoff":  "Vision-based refinement may fail on highly dynamic UIs (e.g., games), but the abort is safer than a blind click.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Keystrokes should be replaced entirely by clipboard-paste for text input, with identity verification before paste.",
+                               "reason":  "Raw keystrokes are inherently risky even with focus assertion; clipboard paste is deterministic and verifiable (check clipboard content after paste). This eliminates the last blind-action vector.",
+                               "tradeoff":  "Clipboard paste may not work in password fields or some custom controls; in those cases, abort is correct (password fields are in the \u0027never\u0027 risk tier).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "A pre-action \u0027context freeze\u0027 (snapshot generation tag + window handle lock) must be acquired before RESOLVE and held through VERIFY.",
+                               "reason":  "Without a freeze, a window could be closed or changed between PERCEIVE and ACT, causing a wrong-action. The lock ensures the target window is stable throughout the gate sequence.",
+                               "tradeoff":  "Adds a small latency overhead (acquire/release lock) but prevents race-condition-induced failures.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "The safety risk-ladder must be implemented as a pre-ACT classifier using element metadata (Name, ControlType, patterns) and a hardcoded tier list, not user prompts for every action.",
+                               "reason":  "User prompts for every send/delete/publish would kill acceptable speed; a metadata-based classifier (e.g., Name contains \u0027Send\u0027 or \u0027Delete\u0027) can auto-confirm low-risk and prompt only for ambiguous medium-risk. Passwords/2FA/payment are detected by pattern (e.g., IsPassword=True) and always abort.",
+                               "tradeoff":  "Classifier may misclassify some actions (e.g., a button named \u0027Send\u0027 that actually does something else), but the VERIFY gate catches real-state mismatches.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "The STOP hotkey must be a low-level Win32 keyboard hook that sets a global atomic flag checked at every gate boundary, not just between actions.",
+                               "reason":  "Checking only between actions could allow a dangerous ACT to proceed if the hotkey is pressed during ACT. Gate-boundary checking ensures abort before any irreversible step.",
+                               "tradeoff":  "Slightly more overhead per gate check, but negligible (atomic read).",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "UIA is available and reliable for all target applications (Windows desktop apps, including modern UWP and classic Win32).",
+                        "Vision (e.g., OCR or image matching) is only used when UIA fails to find an element, and returns a selector refinement that can be resolved by UIA.",
+                        "Clipboard operations are allowed and not blocked by security policies (e.g., in remote desktop or sandboxed apps).",
+                        "The system runs on a single Windows desktop with a single user session; multi-monitor is supported but not multi-desktop.",
+                        "The operator has administrative rights to install the global keyboard hook for the STOP hotkey.",
+                        "All target applications are responsive within a reasonable timeout (e.g., 5 seconds) for UIA queries.",
+                        "The \u0027context freeze\u0027 lock does not cause deadlocks because it is acquired with a timeout and released on abort."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "UIA may fail or return stale data on highly dynamic or custom-drawn UIs (e.g., games, some Java apps).",
+                      "severity":  "high",
+                      "mitigation":  "Vision refinement as fallback; if both fail, abort cleanly. Log the failure for evidence report."
+                  },
+                  {
+                      "risk":  "Clipboard paste may be intercepted or blocked by security software, causing silent failure.",
+                      "severity":  "medium",
+                      "mitigation":  "Verify clipboard content after paste (read back and compare). If mismatch, abort and log. Provide a config option to disable clipboard fallback and use keystrokes with extra identity checks."
+                  },
+                  {
+                      "risk":  "The safety risk-ladder classifier may misclassify a high-risk action as medium-risk, leading to an unwanted confirmation bypass.",
+                      "severity":  "high",
+                      "mitigation":  "The VERIFY gate must detect real-state changes (e.g., message sent, payment processed) and abort if the outcome is unexpected. Additionally, the classifier is conservative: any ambiguous metadata (e.g., Name contains \u0027Buy\u0027 or \u0027Purchase\u0027) triggers a user prompt."
+                  },
+                  {
+                      "risk":  "The context freeze lock may cause a deadlock if the target window is destroyed while the lock is held.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a timeout (e.g., 2 seconds) on lock acquisition; if timeout, abort. Monitor window handle validity at each gate step; release lock immediately on abort."
+                  },
+                  {
+                      "risk":  "The STOP hotkey hook may conflict with other applications\u0027 hotkeys or be blocked by security software.",
+                      "severity":  "low",
+                      "mitigation":  "Use a rarely-used hotkey combination (e.g., Ctrl+Alt+Shift+Esc). Provide a configuration option to change the hotkey. Log if hook installation fails."
+                  }
+              ],
+    "minimal_version":  "Implement the five-gate loop with UIA-only (no vision), context freeze, clipboard-paste fallback for text, safety risk-ladder with hardcoded tier list (no user prompts for low-risk), and STOP hotkey as a global atomic flag checked at each gate. Verification is real-state read only. No vision integration yet. This version can handle most standard Windows apps (Notepad, File Explorer, common dialogs) and proves the core reliability.",
+    "advanced_version":  "Add vision-as-perception-only (lazy, single-call, returns selector refinement) for apps where UIA misses elements (e.g., custom-drawn controls, some web-based UIs). Integrate a state-diff verification that compares pre- and post-action UIA snapshots to detect side effects beyond the target element (e.g., a dialog that appeared). Add a metrics/benchmark module that logs wrong-window-actions, irreversible-errors, and abort reasons. Implement a user prompt system for medium-risk actions (send/delete/publish) with a timeout (e.g., 10 seconds) and auto-abort on timeout. Add multi-monitor support and window-manager commands (focus/move/resize via Win32)."
+}

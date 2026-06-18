@@ -1,0 +1,27 @@
+{
+    "consensus_atoms":  [
+                            "DA001",
+                            "DA002",
+                            "DA003",
+                            "DA004"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA006",
+                                           "DA007"
+                                       ],
+                          "axis":  "Learning Trigger Conditions",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA006",
+                        "severity":  "major",
+                        "why":  "This atom states that recipes should be \u0027subject to decay and re-learning if success rate drops below a threshold.\u0027 This implies a proactive mechanism to trigger re-learning based on performance metrics. However, it conflicts with DA007, which states that \u0027The learning mechanism must be triggered *only* on explicit failure... not on success.\u0027 If a recipe\u0027s success rate drops below the threshold (triggering DA006\u0027s re-learning condition) but the current execution *succeeds*, DA007 would prevent the learning mechanism from being triggered. This makes the proactive re-learning implied by DA006 impossible in scenarios where a recipe is degrading but not yet consistently failing, potentially leading to prolonged use of suboptimal or unreliable recipes.",
+                        "fix":  "Clarify DA006 to explicitly state that while recipes are *flagged* for re-learning when their success rate drops, the *initiation* of the re-learning process itself still adheres to DA007\u0027s condition (i.e., it will only happen the *next time* that recipe explicitly fails). This resolves the conflict by interpreting DA006 as defining a state or candidacy for re-learning, rather than an immediate action trigger, aligning it with the strict reactive trigger of DA007.",
+                        "cost":  "medium"
+                    }
+                ]
+}

@@ -1,0 +1,37 @@
+{
+    "task":  "LAPA SELF-LEARNING MECHANISM - DELIBERATION",
+    "goal":  "Design a UNIVERSAL self-learning mechanism for \"lapa\", a Windows desktop controller. When lapa CANNOT do a task (a typed failure: target not found, ambiguous, cannot verify, a canvas element not selectable, etc.), it must: (1) capture the situation (screenshot + the UIA snapshot + the failed intent/goal), (2) FIGURE OUT how this interface actually works and what the correct approach is (using vision + reasoning), (3) LEARN and REMEMBER the correct approach as reusable knowledge, so future attempts on the SAME interface/task SUCCEED. It must be UNIVERSAL - NOT tailored to any specific program; the LEARNING MECHANISM is general even though what it learns is app-specific data.",
+    "constraints":  [
+                        "The learning mechanism must be universal, not requiring per-app code.",
+                        "Learned knowledge must be reusable and generalizable, explicitly avoiding brittle absolute coordinates that break on window move/resize/theme/relayout.",
+                        "Learned approaches must be validated and pass lapa\u0027s existing gates (PERCEIVE-\u003eRESOLVE-\u003ePROVE-\u003eACT-\u003eVERIFY) and verification before being trusted.",
+                        "The system must remain safe; no learning to do dangerous things; lapa\u0027s STOP + risk-ladder still apply.",
+                        "The system must remain honest; never learn a \u0027false success\u0027; a learned recipe that fails verification must be discarded or relearned.",
+                        "The design must uphold lapa\u0027s core principles: \u0027reliability \u003e coverage, never fake success\u0027.",
+                        "The only allowed vision/reasoning model is Gemini-2.5-flash (Gemini Pro is banned by policy).",
+                        "The design must not allow any learned memory to bypass the VERIFY gate."
+                    ],
+    "known_context":  [
+                          "lapa operates on a deterministic FIVE-GATE loop: PERCEIVE (window-scoped UIA snapshot) -\u003e RESOLVE (declarative selector to exactly-one element or abort) -\u003e PROVE (identity gate: live re-read + hit-test + focus) -\u003e ACT (UIA patterns; clipboard; guarded keystrokes) -\u003e VERIFY (real-state read-back). Reliability strictly dominates coverage; fail-closed; NEVER fabricates success.",
+                          "lapa has a CANVAS MODE fallback: when a target is not in the UIA tree (custom-drawn: sticker panels, canvas apps), it uses vision (Gemini) to locate + a guarded coordinate click + post-click screenshot-diff verify (no verified change -\u003e honest \u0027unverifiable\u0027, never fake success).",
+                          "lapa has the CONCEPT of \u0027soft skills\u0027 (reusable trajectories with semantic selectors + app-fingerprint + success_rate) from an earlier deliberation, but NO learning loop yet.",
+                          "Available tools: Gemini vision/reasoning model (gemini-2.5-flash), the UIA tree, screenshots, a typed failure taxonomy, a CLI + skills layer.",
+                          "Motivating LIVE FAILURE: lapa could not select a specific sticker in Telegram (sticker panel is custom-drawn, zero UIA nodes; vision-locating tiny stickers was unreliable). Canvas-mode reported \u0027could not confirm\u0027. The user wants lapa to learn the panel\u0027s structure and interaction sequence (e.g., \u0027click pack P then sticker S\u0027) for future success."
+                      ],
+    "output_format":  "a single JSON object matching this TaskContract schema (field -\u003e description)",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The design must detail a concrete learning loop, including what data is captured on failure, how Gemini-2.5-flash is used for interface analysis, and the steps for generating a potential solution.",
+                          "The design must propose a knowledge representation schema that is semantic, reusable, generalizable, and explicitly avoids brittle absolute coordinates, including how it\u0027s keyed (e.g., app-fingerprint, task-type, interface-region).",
+                          "The design must describe the mechanism for recalling relevant learned knowledge based on current context and how a recalled recipe is applied through lapa\u0027s full PERCEIVE-\u003eRESOLVE-\u003ePROVE-\u003eACT-\u003eVERIFY gate sequence.",
+                          "The design must include a clear validation step where any newly \u0027figured out\u0027 approach is tested against lapa\u0027s full gate sequence (including VERIFY) before being committed to memory.",
+                          "The design must explicitly address how safety and honesty are maintained, detailing how learned recipes are subject to lapa\u0027s risk-ladder/STOP conditions and how a recipe failing VERIFY is handled (e.g., discarded, re-learned, marked unreliable).",
+                          "The design must articulate how the learning mechanism itself is universal, not requiring custom code for new applications, even if the learned data is app-specific.",
+                          "The design must identify and propose concrete mitigations for the top risks: learning a wrong/coincidental recipe, brittle coordinates, memory bloat, security/privacy of stored screenshots, and vision hallucination poisoning memory.",
+                          "The design must illustrate how it would specifically handle the Telegram sticker panel failure, demonstrating how the interface structure and interaction sequence would be learned, represented, and applied to successfully select a sticker.",
+                          "The design must explicitly confirm that no learned recipe can bypass lapa\u0027s VERIFY gate, and that all actions, learned or otherwise, are subject to real-state read-back verification.",
+                          "The design must detail how it avoids storing brittle absolute coordinates, instead relying on semantic or relative locators derived from vision/UIA analysis for learned actions."
+                      ]
+}
