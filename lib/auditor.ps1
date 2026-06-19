@@ -493,6 +493,47 @@ function New-AuditorTrigger {
   [pscustomobject]@{ name = $Name; detail = $Detail; channel = $Channel }
 }
 
+function Get-StaleAuditLaunchInfo {
+  param(
+    [Parameter(Mandatory=$true)][string]$AuditDir,
+    [int]$WindowHours = 36
+  )
+  $reportAgeHours = [double]999
+  $recentDenies   = 0
+  $recentStarts   = 0
+  try {
+    $markerPath = Join-Path $AuditDir 'audit.last'
+    if (Test-Path -LiteralPath $markerPath) {
+      $raw = [System.IO.File]::ReadAllText($markerPath).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        $last = [datetime]::Parse($raw, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+        $reportAgeHours = ((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalHours
+      }
+    }
+  } catch {}
+  try {
+    $ledgerPath = Join-Path $AuditDir 'audit.launches.jsonl'
+    if (Test-Path -LiteralPath $ledgerPath) {
+      $cutoff = (Get-Date).ToUniversalTime().AddHours(-[Math]::Abs($WindowHours))
+      $lines = @()
+      try { $lines = [System.IO.File]::ReadAllLines($ledgerPath) } catch {}
+      foreach ($line in @($lines)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+          $entry = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+          if (-not $entry) { continue }
+          $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+          if ($ts -lt $cutoff) { continue }
+          $dec = [string]$entry.decision
+          if ($dec -eq 'denied')  { $recentDenies++ }
+          elseif ($dec -eq 'started') { $recentStarts++ }
+        } catch {}
+      }
+    }
+  } catch {}
+  return [pscustomobject]@{ report_age_hours = $reportAgeHours; recent_denies = $recentDenies; recent_starts = $recentStarts }
+}
+
 function Test-AuditorTriggers {
   param($Snapshot)
   if (-not $Snapshot) { $Snapshot = Get-AuditorSnapshot }
@@ -582,6 +623,18 @@ function Test-AuditorTriggers {
       [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}, last_seq_age_min={3}, progress_fingerprint_repeats={4}, live_agent={5}, paused={6}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min, $seqAgeForFreshness, $repeatForFreshness, $liveAgentRunning, [bool]$c.paused)))
     }
   }
+
+  # stale_audit: audit has not produced a report in >30h while launch ledger shows recent denied/started.
+  # Threshold 30h = slightly more than one day - a missed night becomes visible.
+  try {
+    $staleAuditDir = Join-Path (Get-BridgeRoot) 'audit'
+    $staleInfo = Get-StaleAuditLaunchInfo -AuditDir $staleAuditDir -WindowHours 36
+    $staleThresholdHours = 30
+    $hasRecentActivity = ([int]$staleInfo.recent_denies -gt 0 -or [int]$staleInfo.recent_starts -gt 0)
+    if ([double]$staleInfo.report_age_hours -ge $staleThresholdHours -and $hasRecentActivity) {
+      [void]$items.Add((New-AuditorTrigger -Name 'stale_audit' -Detail ("report_age_hours={0:F1}, recent_denies={1}, recent_starts={2}" -f [double]$staleInfo.report_age_hours, [int]$staleInfo.recent_denies, [int]$staleInfo.recent_starts)))
+    }
+  } catch { Write-AuditorLog ("stale_audit check error: {0}" -f $_.Exception.Message) }
 
   if ([int]$Snapshot.git.working_tree_lines -gt 500) {
     [void]$items.Add((New-AuditorTrigger -Name 'working_tree_drift' -Detail ("working_tree_lines={0}" -f [int]$Snapshot.git.working_tree_lines)))
