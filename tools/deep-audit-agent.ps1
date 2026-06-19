@@ -610,6 +610,7 @@ function New-AgentPrompt {
     prompt_chars = $promptChars
     prompt_truncated = $promptTruncated
     truncated_sections = @($context.truncated_sections | Select-Object -Unique)
+    coverage_gap = @($context.truncated_sections | Select-Object -Unique)
     context_policy = $contextPolicy
   }
 }
@@ -669,6 +670,7 @@ $result = [pscustomobject]@{
   prompt_chars = [int]$promptContext.prompt_chars
   prompt_truncated = [bool]$promptContext.prompt_truncated
   truncated_sections = @($promptContext.truncated_sections)
+  coverage_gap = @($promptContext.coverage_gap)
   context_policy = [string]$promptContext.context_policy
 }
 

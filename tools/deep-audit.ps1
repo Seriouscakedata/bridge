@@ -588,7 +588,10 @@ function New-DeepAuditAgentResult {
     findings = @()
     errors = @($Errors)
     coverage = @()
+    coverage_gap = @()
     confidence = 0.0
+    prompt_truncated = $false
+    truncated_sections = @()
   }
 }
 
@@ -694,7 +697,10 @@ function Complete-DeepAuditAgentProcess {
       findings = @($parsed.findings)
       errors = @($parsed.errors)
       coverage = @($parsed.coverage)
+      coverage_gap = @($parsed.coverage_gap)
       confidence = [double]$parsed.confidence
+      prompt_truncated = [bool]$parsed.prompt_truncated
+      truncated_sections = @($parsed.truncated_sections)
     }
   } catch {
     return (New-DeepAuditAgentResult -Role $role -Model $model -Status 'error' -Errors @($_.Exception.Message) -RuntimeSec $runtime)
