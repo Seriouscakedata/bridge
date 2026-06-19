@@ -1,0 +1,76 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires relocating the \u0027action-evidence DONE-guard\u0027 logic from driver/85-loop-mode-transitions.ps1 (lines 12-95) into driver/86-loop-completion-checks.ps1, placing it immediately after the status-parse block (after line 1027), within the cluster of DONE∧normal-guards, and before the done-gate at line 1433. This guard must trigger on every driver-turn. The goal is to eliminate spurious \u0027property/variable not found\u0027 errors (currently ~6 per session) and false \u0027DONE rejected\u0027 messages that occur on turns after a DONE has been accepted. The change is a control-plane edit affecting two driver files, requiring bridge_self_canary, operator authorization, canary testing with driver.ps1 -SelfTest and smoke.ps1, and rollback notes.",
+    "summary":  "Relocate the action-evidence DONE-guard from 85-loop-mode-transitions.ps1 (lines 12-95) to 86-loop-completion-checks.ps1, inserting it after status-parse (post line 1027) within the DONE∧normal-guard cluster and before the done-gate (line 1433). This ensures the guard evaluates on every driver-turn with correct variable scope, eliminating \u0027property/variable not found\u0027 errors and spurious DONE rejections. Deployment uses bridge_self_canary with operator authorization, includes SelfTest and smoke tests, and provides rollback instructions.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Extract the action-evidence DONE-guard block from driver/85-loop-mode-transitions.ps1 (lines 12-95) and remove it entirely from that file.",
+                               "reason":  "The guard currently resides in a file that handles loop mode transitions, where it may execute before necessary variables are populated, causing \u0027property/variable not found\u0027 errors. Relocation is required by the task constraints.",
+                               "tradeoff":  "Removing the guard from 85-loop-mode-transitions.ps1 temporarily removes that check from the transition path until the new placement is active; this is acceptable because the guard will be immediately re-inserted in 86-loop-completion-checks.ps1 during the same deployment.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Insert the extracted DONE-guard code into driver/86-loop-completion-checks.ps1 immediately after the status-parse block (after line 1027) and before the done-gate (line 1433), within the DONE∧normal-guard cluster.",
+                               "reason":  "Placing the guard after status-parse ensures all status variables are populated. Positioning it within the DONE∧normal-guard cluster and before the done-gate ensures correct ordering relative to other done-logic, preventing spurious \u0027DONE rejected\u0027 messages.",
+                               "tradeoff":  "The exact insertion point must be carefully chosen to not disrupt existing guard logic; a minor risk of ordering issues with adjacent guards exists but is mitigated by testing.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Ensure the relocated guard triggers on every driver-turn by placing it in the main loop completion path of 86-loop-completion-checks.ps1, not inside a conditional branch that might skip execution.",
+                               "reason":  "The task requires the guard to trigger on every driver-turn. The loop completion checks file is invoked each turn, and placing the guard in the unconditional flow guarantees per-turn evaluation.",
+                               "tradeoff":  "This adds a small overhead to every driver-turn, but the guard logic is lightweight and the benefit of eliminating errors outweighs the cost.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Deploy the change using bridge_self_canary with operator authorization, running driver.ps1 -SelfTest and smoke.ps1 as canary tests.",
+                               "reason":  "The task constraints require canary evidence and operator authorization due to the control-plane nature of the edit. SelfTest and smoke tests validate basic functionality before full rollout.",
+                               "tradeoff":  "Canary deployment adds procedural overhead but is necessary for safety given the high-risk classification.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Monitor the metrics \u0027property/variable not found\u0027 errors per session and \u0027spurious DONE rejected\u0027 events post-deployment to confirm they drop to zero.",
+                               "reason":  "These are the success criteria defined in the task. Continuous monitoring ensures the fix is effective and no regressions occur.",
+                               "tradeoff":  "Requires active monitoring for at least one full session; this is standard practice for high-risk changes.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The action-evidence DONE-guard code in lines 12-95 of 85-loop-mode-transitions.ps1 is a contiguous, self-contained block that can be cleanly extracted.",
+                        "Line 1027 in 86-loop-completion-checks.ps1 marks the end of the status-parse block.",
+                        "Line 1433 in 86-loop-completion-checks.ps1 marks the done-gate.",
+                        "The DONE∧normal-guard cluster exists between status-parse and done-gate and has a logical insertion point for the relocated guard.",
+                        "driver.ps1 -SelfTest and smoke.ps1 are available and functional for canary testing.",
+                        "bridge_self_canary is a known deployment mechanism with operator authorization workflow.",
+                        "The \u0027property/variable not found\u0027 errors are caused by the guard executing before status variables are initialized in the transition file.",
+                        "No other code in 85-loop-mode-transitions.ps1 depends on the DONE-guard being present there."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Incorrect insertion point disrupts ordering of DONE-guard evaluations, causing new spurious rejections or missed DONE detections.",
+                      "severity":  "high",
+                      "mitigation":  "Carefully review the DONE∧normal-guard cluster structure before insertion. Use canary testing with driver.ps1 -SelfTest and smoke.ps1 to validate guard ordering. Have rollback notes ready."
+                  },
+                  {
+                      "risk":  "Residual references to the moved guard in 85-loop-mode-transitions.ps1 cause syntax errors or broken dependencies.",
+                      "severity":  "medium",
+                      "mitigation":  "Perform a full-text search for cross-references to the guard code before removal. Validate with PowerShell syntax check and SelfTest."
+                  },
+                  {
+                      "risk":  "The guard code uses variables that are not in scope at the new insertion point in 86-loop-completion-checks.ps1.",
+                      "severity":  "high",
+                      "mitigation":  "Analyze variable dependencies of the extracted guard code. Verify all required variables are populated by status-parse (line 1027). If scope issues exist, adjust variable passing or guard code accordingly before deployment."
+                  },
+                  {
+                      "risk":  "Canary deployment fails due to bridge_self_canary issues or operator unavailability, delaying the fix.",
+                      "severity":  "low",
+                      "mitigation":  "Coordinate operator availability in advance. Have a fallback manual deployment procedure documented."
+                  },
+                  {
+                      "risk":  "The change inadvertently affects other control-plane logic relying on the original guard timing or location.",
+                      "severity":  "medium",
+                      "mitigation":  "Run full regression suite (smoke.ps1) and monitor for unexpected behavior in related components post-deployment."
+                  }
+              ],
+    "minimal_version":  "Extract lines 12-95 from driver/85-loop-mode-transitions.ps1. Insert the extracted block into driver/86-loop-completion-checks.ps1 immediately after the line containing the end of status-parse (after line 1027), adding a comment marker \u0027# relocated action-evidence DONE-guard\u0027. Ensure the block is placed before the done-gate at line 1433 and within the DONE∧normal-guard cluster. No other changes. Deploy via bridge_self_canary with operator auth, run driver.ps1 -SelfTest and smoke.ps1. Rollback: reverse the patch by removing the inserted block from 86 and restoring lines 12-95 in 85.",
+    "advanced_version":  "In addition to the minimal relocation, add a canary feature flag that allows toggling between old and new guard locations for A/B testing. Instrument the guard with telemetry to count evaluations, \u0027property/variable not found\u0027 errors, and DONE rejections per turn. Implement an automatic rollback trigger if error metrics exceed threshold during canary. After successful canary, remove the feature flag and old code path. Update documentation for both driver files to reflect the new guard location and ordering rationale. Extend smoke.ps1 with a specific test case that verifies the guard triggers on every driver-turn and correctly handles edge cases (e.g., missing action-evidence, malformed status)."
+}

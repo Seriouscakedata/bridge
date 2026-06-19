@@ -1,0 +1,89 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Move the action-evidence DONE-guard from driver/85-loop-mode-transitions.ps1 to driver/86-loop-completion-checks.ps1, placing it immediately after status-parse.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Relocation",
+                      "test":  "Verify the diff shows the guard block removed from driver/85-loop-mode-transitions.ps1 and inserted into driver/86-loop-completion-checks.ps1 immediately after the status-parse anchor.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Anchor the guard\u0027s insertion semantically after status-parse and strictly before the done-gate, within the DONE∧normal-guard cluster, ensuring it executes on every driver-turn.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Placement \u0026 Anchoring",
+                      "test":  "Runtime trace confirms guard execution after status-parse and before done-gate on every driver-turn. A regression test should verify a no-evidence DONE is downgraded to CONTINUE.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Identify the *correct* action-evidence DONE-guard block to move, treating contract line numbers as approximate, and avoid changing its core business logic beyond necessary relocation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Semantic Preservation \u0026 Identification",
+                      "test":  "Operator confirms the exact target guard block against live code. Code review confirms no new business logic is introduced within the guard itself (excluding the short-circuit from DA-004).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Add an explicit \u0027already-accepted DONE\u0027 short-circuit to the guard to prevent spurious rejections on turns following an accepted DONE.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Behavioral Refinement",
+                      "test":  "Canary run includes a scenario with an accepted DONE followed by a next turn, asserting zero spurious DONE rejected/force_coder. A replay test for completed tasks should also pass.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Deploy the change only after bridge_self_canary admission and operator sign-off, with green driver.ps1 -SelfTest and smoke.ps1, and concrete canary evidence demonstrating the target metric improvements.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Deployment \u0026 Validation",
+                      "test":  "Canary run artifacts (logs, metrics.jsonl deltas) show successful execution of driver.ps1 -SelfTest and smoke.ps1 (root and tools/), and before/after metric evidence proving 6→0 \u0027property not found\u0027 and 0 spurious DONE-rejections. Operator sign-off is recorded.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "The canary must include a scenario with an accepted DONE followed by a next turn without spurious rejections, and post-deployment monitoring must confirm zero \u0027property/variable not found\u0027 errors and \u0027spurious DONE rejected\u0027 events.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Canary \u0026 Monitoring",
+                      "test":  "Canary logs confirm the scenario of an accepted DONE followed by a next turn runs without \u0027property/variable not found\u0027 errors or spurious DONE rejected/force_coder. Post-deployment monitoring confirms these metrics remain at zero.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Implement the relocation as a single atomic commit (removal from origin + insertion at destination) to maintain a single source of truth for the guard.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Implementation Strategy",
+                      "test":  "Git history shows a single commit for the guard\u0027s relocation. Code review confirms no duplicate guard logic exists in either driver/85-loop-mode-transitions.ps1 or driver/86-loop-completion-checks.ps1.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

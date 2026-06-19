@@ -1,0 +1,123 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.86,
+                                     "impact":  0.82,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Relocation to the completion checks block is the right ownership boundary and reduces missed DONE-guard execution. Implementation should use the live semantic status-parse anchor rather than stale line numbers.",
+                      "total":  0.829
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.86,
+                                     "feasibility":  0.82,
+                                     "impact":  0.9,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.78
+                                 },
+                      "penalties":  [
+                                        0.02
+                                    ],
+                      "reason":  "The semantic placement after status parsing and before DONE-gate checks is correct. Modify \u0027every driver-turn\u0027 to \u0027every applicable normal DONE attempt\u0027 because some earlier control-flow exits are legitimate.",
+                      "total":  0.813
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.84,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This is necessary to avoid moving the wrong action-evidence logic or changing behavior during relocation. Treating contract line numbers as approximate is correct.",
+                      "total":  0.8885
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.84,
+                                     "feasibility":  0.78,
+                                     "impact":  0.82,
+                                     "simplicity":  0.62,
+                                     "risk_reduction":  0.86,
+                                     "specificity":  0.58
+                                 },
+                      "penalties":  [
+                                        0.03
+                                    ],
+                      "reason":  "The short-circuit addresses a real false-rejection risk, but \u0027already-accepted DONE\u0027 must be defined narrowly using durable same-task acceptance evidence such as a validated QA-pass commit, not a broad bypass.",
+                      "total":  0.737
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.65,
+                                     "impact":  0.92,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.84
+                                 },
+                      "penalties":  [
+                                        0.02
+                                    ],
+                      "reason":  "Strong validation gate, but the metric target should be framed as observed before/after evidence rather than hard-coded if the baseline changes. Operator sign-off and green selftest/smoke remain appropriate.",
+                      "total":  0.7555
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.72,
+                                     "impact":  0.9,
+                                     "simplicity":  0.62,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.76
+                                 },
+                      "penalties":  [
+                                        0.02
+                                    ],
+                      "reason":  "The canary scenario is important and directly covers the regression risk. Add a bounded monitoring window and exact event/log names for the zero-error assertions.",
+                      "total":  0.79
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.58,
+                                     "impact":  0.62,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.68,
+                                     "specificity":  0.72
+                                 },
+                      "penalties":  [
+                                        0.04
+                                    ],
+                      "reason":  "A single logical changeset is desirable for single source of truth, but requiring a literal git commit may not fit the sandbox/driver auto-commit flow. Modify to require one atomic patch or final commit with no duplicate guard logic.",
+                      "total":  0.674
+                  }
+              ]
+}

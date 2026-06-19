@@ -1,0 +1,33 @@
+{
+    "task":  "[Автозадача из бэклога] Bridge-self canary gate/admission for approved control-plane backlog task [parent:80b4478fcc5a4b1e9778878666a120ad]. Operator-authorized child task: run the parent only with canary evidence, driver.ps1 -SelfTest, smoke.ps1, and rollback notes. Parent task: relocate action-evidence DONE-guard из `driver/85-loop-mode-transitions.ps1:12-95` в `driver/86-loop-completion-checks.ps1` сразу после status-parse (после `:1027`, в кластер DONE∧normal-guard\u0027ов, ДО done-gate `:1433`) · триггерится на каждом driver-turn · метрика: driver «property/variable not found» ×6/сессия → 0 И spurious «DONE отклонён»/`force_coder` на turn после принятого DONE → 0 · риск: control-plane edit (85/86) → нужен bridge_self_canary + operator; неверный порядок относительно done-...",
+    "goal":  "To eliminate spurious \u0027property/variable not found\u0027 errors and \u0027DONE rejected\u0027 messages by correctly relocating the \u0027action-evidence DONE-guard\u0027 within the driver\u0027s loop completion checks, ensuring proper state transitions and reducing operational noise.",
+    "constraints":  [
+                        "The parent task must be executed only with canary evidence.",
+                        "Execution must include `driver.ps1 -SelfTest` and `smoke.ps1`.",
+                        "Rollback notes must be provided.",
+                        "The \u0027action-evidence DONE-guard\u0027 must be relocated from `driver/85-loop-mode-transitions.ps1` (lines 12-95) to `driver/86-loop-completion-checks.ps1`.",
+                        "The relocated guard must be placed immediately after `status-parse` (after line 1027) within the cluster of `DONE∧normal-guard`s, and before `done-gate` (line 1433).",
+                        "The guard must trigger on every driver-turn.",
+                        "The change involves a control-plane edit (files 85/86) and requires `bridge_self_canary` and operator authorization.",
+                        "The order of the guard relative to other \u0027done-\u0027 logic must be correct to avoid issues."
+                    ],
+    "known_context":  [
+                          "This is an automated backlog task.",
+                          "The task has a parent task with ID `80b4478fcc5a4b1e9778878666a120ad`.",
+                          "The task is operator-authorized.",
+                          "The system uses PowerShell scripts `driver/85-loop-mode-transitions.ps1` and `driver/86-loop-completion-checks.ps1`.",
+                          "Specific components mentioned include `status-parse`, `DONE∧normal-guard`s, and `done-gate`."
+                      ],
+    "output_format":  "Code changes (diff) to specified PowerShell scripts, along with a deployment plan including canary testing instructions and rollback notes.",
+    "task_type":  "refactor",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "Verify the \u0027action-evidence DONE-guard\u0027 code has been moved from `driver/85-loop-mode-transitions.ps1` (lines 12-95) to `driver/86-loop-completion-checks.ps1`.",
+                          "Verify the relocated guard is positioned immediately after `status-parse` (after line 1027) and within the `DONE∧normal-guard` cluster, before `done-gate` (line 1433).",
+                          "Confirm through testing that the `DONE-guard` correctly triggers on every `driver-turn`.",
+                          "Monitor and confirm that the metric \u0027driver «property/variable not found» ×6/сессия\u0027 drops to 0.",
+                          "Monitor and confirm that the metric \u0027spurious «DONE отклонён»/`force_coder` на turn после принятого DONE\u0027 drops to 0.",
+                          "Successful completion of canary deployment and testing (`driver.ps1 -SelfTest`, `smoke.ps1`) without introducing regressions or new errors."
+                      ]
+}

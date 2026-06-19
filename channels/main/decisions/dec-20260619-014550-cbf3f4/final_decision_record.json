@@ -1,0 +1,177 @@
+{
+    "final_answer":  "Proceed with relocating the action-evidence DONE-guard from driver/85-loop-mode-transitions.ps1 into driver/86-loop-completion-checks.ps1, anchored semantically immediately after status-parse and strictly before the done-gate, inside the DONE∧normal-guard cluster. All seven decision atoms survive the judge — five accepted as-is or by consensus (DA-001, DA-002, DA-003, DA-005, DA-006) and the remainder accepted with bounded modifications (DA-002, DA-004, DA-005, DA-006, DA-007); none are rejected wholesale. The relocation moves DONE-guard execution into the correct ownership boundary so it runs on every applicable normal DONE attempt (not literally every driver-turn, since some earlier control-flow exits are legitimate), eliminating both the ×6/session \u0027property/variable not found\u0027 noise (the guard currently reads state that is only reliably populated after status-parse) and the spurious \u0027DONE отклонён\u0027/force_coder events on the turn following an accepted DONE. The guard gains a narrowly-scoped \u0027already-accepted DONE\u0027 short-circuit keyed on durable same-task acceptance evidence (e.g. a validated QA-pass commit for the same task), not a broad bypass. Because this is a high-risk control-plane edit, it ships only behind bridge_self_canary admission plus operator sign-off, with green driver.ps1 -SelfTest and smoke.ps1 (root and tools/), a canary scenario that exercises accepted-DONE→next-turn, before/after metric evidence rather than a hard-coded 6→0 assertion, and a single logical changeset with no duplicate guard logic left behind in either file. Rollback is a straight revert of the single changeset; the original block location is preserved in history.",
+    "decisions":  [
+                      {
+                          "decision":  "Move the action-evidence DONE-guard out of driver/85-loop-mode-transitions.ps1 and into driver/86-loop-completion-checks.ps1, inserted immediately after the status-parse anchor.",
+                          "rationale":  "DA-001 (accept, 0.829). The completion-checks file is the correct ownership boundary for DONE adjudication; placing the guard there ensures it is not skipped by mode-transition control flow. The guard depends on parsed status fields, so it must run after status-parse — which is exactly the \u0027property/variable not found\u0027 root cause when it runs too early in file 85.",
+                          "alternatives_considered":  [
+                                                          "Leave the guard in 85 and add the missing state reads there (rejected: does not fix the ownership/skip problem and risks duplicating status-parse).",
+                                                          "Duplicate the guard in both files (rejected: violates single-source-of-truth, DA-007)."
+                                                      ],
+                          "risk":  "Mis-identifying the guard block or relocating it to the wrong relative position could reorder DONE adjudication semantics on a control-plane path.",
+                          "test":  "Diff shows the guard block removed from driver/85-loop-mode-transitions.ps1 and inserted into driver/86-loop-completion-checks.ps1 immediately after the live status-parse anchor; driver.ps1 -SelfTest and smoke.ps1 stay green."
+                      },
+                      {
+                          "decision":  "Anchor the guard semantically after status-parse and strictly before the done-gate within the DONE∧normal-guard cluster, executing on every applicable normal DONE attempt.",
+                          "rationale":  "DA-002 (modify, 0.813). Placement after parsing guarantees the fields the guard reads are populated; placement before the done-gate guarantees a no-evidence DONE is downgraded before it is accepted. Per the judge, the trigger is scoped to \u0027every applicable normal DONE attempt\u0027 rather than literally every driver-turn, because some earlier control-flow exits (errors, non-normal modes) are legitimate and should not be forced through the guard.",
+                          "alternatives_considered":  [
+                                                          "Trigger on every driver-turn unconditionally (rejected per judge: would force legitimate early exits through the guard).",
+                                                          "Place after the done-gate (rejected: too late to prevent an unevidenced DONE from being accepted)."
+                                                      ],
+                          "risk":  "Wrong relative order vs. done-gate or other DONE-guards could either let unevidenced DONE through or double-reject a valid DONE.",
+                          "test":  "Runtime trace confirms guard runs after status-parse and before done-gate on normal DONE attempts; regression test confirms a no-evidence DONE is downgraded to CONTINUE while legitimate early exits are untouched."
+                      },
+                      {
+                          "decision":  "Identify the correct action-evidence DONE-guard block against live code (treating contract line numbers 12-95/1027/1433 as approximate) and relocate it without altering its core business logic.",
+                          "rationale":  "DA-003 (accept, 0.8885 — highest). Line numbers in the contract are stale relative to the live tree; anchoring on stale numbers risks moving the wrong block or corrupting the cluster. Operator confirmation of the exact block before editing is the cheapest way to prevent a wrong-block relocation on a control-plane file.",
+                          "alternatives_considered":  [
+                                                          "Trust the contract line numbers literally (rejected: judge and DA-003 both flag them as approximate).",
+                                                          "Refactor the guard logic during the move (rejected: relocation and behavior change must not be conflated, except the scoped DA-004 short-circuit)."
+                                                      ],
+                          "risk":  "Low if confirmed against live code; high if the wrong block is moved silently.",
+                          "test":  "Operator confirms the exact target guard block against live code; code review confirms no new business logic is introduced beyond the DA-004 short-circuit."
+                      },
+                      {
+                          "decision":  "Add a narrowly-scoped \u0027already-accepted DONE\u0027 short-circuit to the relocated guard, keyed on durable same-task acceptance evidence (e.g. a validated QA-pass commit for the same task), not a broad bypass.",
+                          "rationale":  "DA-004 (modify, 0.737). The spurious \u0027DONE отклонён\u0027/force_coder on the turn after an accepted DONE is a real false-rejection; the short-circuit suppresses it. Per the judge, \u0027already-accepted\u0027 must be defined narrowly using durable, same-task acceptance evidence so the short-circuit cannot be abused to skip the guard for a different or unverified task.",
+                          "alternatives_considered":  [
+                                                          "Broad bypass on any prior DONE (rejected per judge: too permissive, defeats the guard).",
+                                                          "No short-circuit, rely only on relocation (rejected: relocation alone does not address the next-turn re-evaluation of an already-accepted task)."
+                                                      ],
+                          "risk":  "An over-broad acceptance signal could mask genuinely-unevidenced DONEs; a too-narrow signal could fail to suppress the spurious rejection.",
+                          "test":  "Canary includes accepted-DONE→next-turn asserting zero spurious DONE-rejected/force_coder; a replay test over already-completed tasks passes; review confirms the short-circuit keys only on durable same-task evidence."
+                      },
+                      {
+                          "decision":  "Gate deployment behind bridge_self_canary admission and operator sign-off, with green driver.ps1 -SelfTest and smoke.ps1 (root and tools/), and before/after metric evidence rather than a hard-coded 6→0 pass condition.",
+                          "rationale":  "DA-005 (modify, 0.7555). This is a high-risk control-plane edit, so the canary+operator gate is mandatory. Per the judge, the success criterion is framed as observed before/after deltas (baseline \u0027property/variable not found\u0027 count → post-change count, and spurious-DONE count → 0) so the gate stays valid even if the baseline shifts, instead of asserting a brittle literal 6→0.",
+                          "alternatives_considered":  [
+                                                          "Hard-code the 6→0 / 0 metric thresholds as the pass condition (rejected per judge: brittle if baseline changes).",
+                                                          "Deploy without canary because tests pass (rejected: control-plane risk requires canary + operator)."
+                                                      ],
+                          "risk":  "If the baseline is not captured immediately before the canary, the before/after delta is unverifiable.",
+                          "test":  "Canary artifacts (logs, metrics.jsonl deltas) show green SelfTest and smoke (root + tools/), captured baseline vs. post-change counts proving the \u0027property/variable not found\u0027 drop and zero spurious DONE-rejections; operator sign-off recorded."
+                      },
+                      {
+                          "decision":  "Require a canary scenario covering accepted-DONE→next-turn with no spurious rejection, plus a bounded post-deployment monitoring window asserting zero \u0027property/variable not found\u0027 and zero \u0027spurious DONE rejected\u0027/force_coder events using exact event/log names.",
+                          "rationale":  "DA-006 (modify, 0.79). This scenario directly exercises the regression that motivated DA-004. Per the judge, the assertion must name the exact metrics.jsonl event/log identifiers and run for a bounded, defined monitoring window so \u0027zero errors\u0027 is a concrete, falsifiable claim rather than an open-ended promise.",
+                          "alternatives_considered":  [
+                                                          "Indefinite monitoring (rejected: not actionable/closable).",
+                                                          "Generic \u0027no errors\u0027 assertion without named events (rejected per judge: not falsifiable)."
+                                                      ],
+                          "risk":  "If event names are wrong or the window is too short, a real regression could pass the gate undetected.",
+                          "test":  "Canary logs confirm accepted-DONE→next-turn runs clean; post-deploy monitoring over the defined window confirms the named events remain at zero."
+                      },
+                      {
+                          "decision":  "Land the relocation as a single logical changeset (removal at origin + insertion at destination together) with no duplicate guard logic, rather than mandating a single literal git commit.",
+                          "rationale":  "DA-007 (modify, 0.674 — lowest). Single-source-of-truth is the goal: the guard must exist in exactly one place after the change. Per the judge, requiring a literal single git commit does not fit the sandbox/driver auto-commit flow, so the requirement is relaxed to one atomic patch / final commit state with no leftover duplicate guard logic in either file.",
+                          "alternatives_considered":  [
+                                                          "Mandate exactly one git commit (rejected per judge: incompatible with driver auto-commit flow).",
+                                                          "Two-step commit (remove, then add) (rejected: leaves an intermediate state with the guard missing entirely)."
+                                                      ],
+                          "risk":  "A non-atomic application could transiently disable the guard or leave duplicate guard logic across files 85 and 86.",
+                          "test":  "Final tree state shows the guard in driver/86 only; code review confirms no residual guard logic in driver/85 and no duplication; the change is applied as one logical patch."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Trigger the relocated guard on literally every driver-turn.",
+                         "why":  "Judge modification to DA-002: some earlier control-flow exits (errors, non-normal modes) are legitimate; the guard is scoped to every applicable normal DONE attempt instead."
+                     },
+                     {
+                         "decision":  "Broad \u0027already-accepted DONE\u0027 bypass keyed on any prior DONE signal.",
+                         "why":  "Judge modification to DA-004: too permissive; would let the guard be skipped for a different or unverified task. Must key on durable same-task acceptance evidence (e.g. validated QA-pass commit)."
+                     },
+                     {
+                         "decision":  "Hard-code a literal 6→0 \u0027property/variable not found\u0027 pass/fail threshold as the deployment gate.",
+                         "why":  "Judge modification to DA-005: brittle if the baseline shifts; replaced by observed before/after evidence captured at canary time."
+                     },
+                     {
+                         "decision":  "Require exactly one literal git commit for the relocation.",
+                         "why":  "Judge modification to DA-007: incompatible with the sandbox/driver auto-commit flow; replaced by a single atomic patch / final commit state with no duplicate guard logic."
+                     },
+                     {
+                         "decision":  "Trust contract line numbers (12-95, 1027, 1433) as exact insertion targets.",
+                         "why":  "DA-003 and judge: line numbers are stale/approximate relative to live code; anchor on semantic markers (status-parse, done-gate, DONE∧normal-guard cluster) confirmed against the live tree."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact identity of the live action-evidence DONE-guard block in driver/85-loop-mode-transitions.ps1 — requires operator confirmation against current code before any edit, since contract line numbers are approximate.",
+                           "Exact metrics.jsonl event/log identifiers for \u0027property/variable not found\u0027 and \u0027spurious DONE rejected\u0027/force_coder, and the precise length of the bounded post-deployment monitoring window.",
+                           "What durable same-task acceptance evidence the codebase actually exposes (e.g. a validated QA-pass commit marker) to key the DA-004 short-circuit on.",
+                           "The baseline metric values captured immediately before the canary, needed for the before/after deltas now that 6→0 is not a hard-coded threshold.",
+                           "The exact relative ordering of the relocated guard among the other DONE∧normal-guards already in the cluster after :1027."
+                       ],
+    "implementation_plan":  [
+                                "1. With the operator, locate and confirm the exact action-evidence DONE-guard block in driver/85-loop-mode-transitions.ps1 against live code (do not rely on lines 12-95).",
+                                "2. Identify the live semantic anchors in driver/86-loop-completion-checks.ps1: the status-parse point (~:1027), the DONE∧normal-guard cluster, and the done-gate (~:1433).",
+                                "3. Capture baseline metrics: current per-session \u0027property/variable not found\u0027 count and spurious \u0027DONE отклонён\u0027/force_coder count, with their exact metrics.jsonl event names.",
+                                "4. As a single logical changeset: remove the guard from driver/85 and insert it into driver/86 immediately after status-parse, before done-gate, within the DONE∧normal-guard cluster; scope its trigger to applicable normal DONE attempts.",
+                                "5. Add the narrow \u0027already-accepted DONE\u0027 short-circuit keyed on durable same-task acceptance evidence; do not alter the guard\u0027s other business logic.",
+                                "6. Verify no duplicate guard logic remains in driver/85 or driver/86 (single source of truth).",
+                                "7. Run driver.ps1 -SelfTest and smoke.ps1 (root and tools/); confirm green.",
+                                "8. Submit to bridge_self_canary; run the canary including the accepted-DONE→next-turn scenario; collect logs and metrics.jsonl before/after deltas.",
+                                "9. Obtain operator sign-off on the canary evidence and the confirmed block identity.",
+                                "10. Deploy, then monitor the named events over the bounded window to confirm \u0027property/variable not found\u0027 drop and zero spurious DONE-rejections.",
+                                "11. Record rollback notes: revert is a single revert of the changeset, restoring the guard to its original location in driver/85 from history."
+                            ],
+    "next_step":  "Locate and confirm the exact action-evidence DONE-guard block in driver/85-loop-mode-transitions.ps1 against the live code with the operator (treating contract line numbers as approximate) before making any edit.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The task is already implemented; the decision re-does completed work. The action-evidence DONE-guard already lives in driver/86-loop-completion-checks.ps1 (lines 1293-1396), already after the status-parse anchor (~:1024) and inside the DONE∧normal cluster, and file 85 already no longer mutates task_did_actions (string absent). An authoritative passing regression test, tools/test-driver-done-guard-relocation.ps1, already pins this exact design.",
+                                  "why":  "The decision\u0027s final_answer commits to \u0027Proceed with the relocation as scoped... moves from driver/85 into driver/86\u0027 with no branch for \u0027already done / already at destination.\u0027 Re-inserting the guard into 86 would create a duplicate guard (double-fire), directly violating DA-007\u0027s anti-duplication goal, and the success_tests requiring a diff that removes the guard from 85 are unsatisfiable because there is no such guard in 85 to remove."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Source-block misidentification. Contract/DA-001/DA-003 treat driver/85-loop-mode-transitions.ps1:12-95 as the \u0027action-evidence DONE-guard,\u0027 but that range is the PARALLEL dispatch handler (lines 8-38) plus the stagnation/no-progress detector (lines 40-95) that feeds no_progress_count and Activate-Doctor. There is no DONE-gate or \u0027DONE rejected\u0027 logic anywhere in file 85.",
+                                  "why":  "Following DA-001/DA-007 literally (\u0027remove the guard from 85... no residual guard logic remains in 85\u0027) would delete the no-progress→Doctor mechanism and the PARALLEL-dispatch feature. This is a destructive control-plane regression, not the intended relocation."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision directly contradicts the existing authoritative regression test. tools/test-driver-done-guard-relocation.ps1 asserts file 85 must KEEP the PARALLEL handler (\u002785 keeps PARALLEL handler\u0027), KEEP the stagnation detector (\u002785 keeps stagnation detector\u0027), KEEP action-evidence as read-only stagnation input, and ONLY stop mutating task_did_actions. DA-001/DA-007 instead demand \u0027no residual guard logic remains in 85.\u0027",
+                                  "why":  "DA-005\u0027s deployment gate requires green tests, but executing DA-001/DA-007 as written would FAIL \u002785 keeps PARALLEL handler\u0027 and \u002785 keeps stagnation detector\u0027 in that very test. The decision was made without consulting the single most authoritative artifact describing the real design, so its plan and its own test gate are mutually exclusive."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The \u0027done-gate\u0027 anchor (~:1433) is wrong and crosses a scriptblock boundary. Line 1433 is the deep-think IDEA-harvest loop (discuss path). The guard lives in $script:DriverLoopCompletionInitialChecksBlock (927-1536); the verify-gate is ~:1459 and the heavy done-gate Invoke-DriverDoneGateChecks is at :1618, inside a SEPARATE scriptblock $script:DriverLoopCompletionRuntimeChecksBlock (1537+).",
+                                  "why":  "DA-002 anchors insertion \u0027strictly before the done-gate\u0027 as if guard and done-gate share one linear region. They do not — they are different dot-sourced scriptblocks invoked at different points. Pinning to the wrong anchor, or moving code across the block boundary, changes which $script:/local variables are in scope and can reintroduce the very \u0027variable/property not found\u0027 errors the task aims to kill."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027triggers on every driver-turn\u0027 success criterion is false and unsatisfiable for the correct placement. The guard is and must be gated: `if ((($speaker -eq \u0027claude\u0027) -or $fastLaneDone) -and $plannerStatus -eq \u0027DONE\u0027 -and $modeBeforeIncrement -eq \u0027normal\u0027)` (86:1293). Furthermore the enclosing completion block can `continue` early (e.g., CHAT path at 86:1400) before reaching it.",
+                                  "why":  "Contract success_test #3 and DA-002\u0027s \u0027executing on every driver-turn\u0027 / \u0027Runtime trace confirms guard execution... on every driver-turn\u0027 cannot be satisfied without removing the DONE/normal gating — which would itself be a behavior-changing regression (running evidence rejection on CONTINUE/CHAT/DISCUSS turns)."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-004\u0027s \u0027accepted-DONE marker\u0027 is treated as undefined (open question) but is already implemented and tested as: real action-evidence (has_actions) for the identity-matched backlog id plus a [[VERIFIED:]] marker (test scenario r3 \u0027accepted DONE clears stale force_coder without rejection\u0027; live code 86:1322-1330, 1379-1384, 1314-1316).",
+                                  "why":  "Re-deriving a new, broader \u0027accepted-DONE marker\u0027 from scratch (as the open question invites) risks an over-broad short-circuit that suppresses legitimate later DONE rejections — exactly the failure the judge penalized DA-004 for. The safer, already-shipped keying (identity-matched has_actions) is ignored, so the \u0027modification\u0027 could regress rather than preserve behavior."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027property/variable not found ×6/session → 0\u0027 metric assumes a single guard is the source. Under StrictMode (tools/test-driver-loop-strictmode.ps1 dot-sources these blocks with Set-StrictMode -Version Latest), unguarded property reads exist in multiple places, e.g. 85:80 `$npc = [int](Read-State).no_progress_count` (outside try/catch) and the loop detector reads. The live fix used defensive `-contains` checks (86:1308-1317), not relocation.",
+                                  "why":  "DA-003 forbids \u0027any business-logic change beyond relocation.\u0027 Pure relocation will not zero the not-found errors unless the defensive PSObject.Properties.Name -contains guards are added — which is exactly the logic change DA-003 prohibits. So the metric target conflicts with the stated no-logic-change constraint."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Fail-closed amplification risk. The guard\u0027s catch block converts ANY exception into plannerStatus=\u0027CONTINUE\u0027 plus a \u0027DONE evidence guard failed closed\u0027 message (86:1385-1395). If relocation introduces a scope/variable error (moved code referencing a var not in 86\u0027s scope) or corrupts the Cyrillic match strings, the guard fails closed on every accepted DONE.",
+                                  "why":  "This is the opposite of the goal (spurious DONE rejection → 0) and would not be caught by the DA-005 gate: driver.ps1 -SelfTest and smoke.ps1 do not drive a live accepted-DONE-then-next-turn turn with real state, so they can stay green while production regresses. The decision\u0027s canary scenario depends on a correctly-defined accepted-DONE marker that is still an open question."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-007\u0027s \u0027single atomic commit\u0027 and DA-005/step-9\u0027s \u0027git revert \u003ccommit\u003e\u0027 rollback are not enforceable through the actual commit pathway. Commits are made by the driver auto-commit (\u0027coder sandbox cannot reach .git\u0027), and git log already shows FOUR separate auto-commits for this same task title and parent (b7dd954, daede46, 2a32c6a, plus the current one).",
+                                  "why":  "The executor cannot guarantee a single atomic commit, so the clean single-commit bisect/revert assurance DA-007 relies on is already violated in practice. Rollback via a single `git revert` may not cleanly undo a multi-commit, partially-applied control-plane change, and the very loop being edited is what performs subsequent commits."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Encoding hazard on a Windows PowerShell edit. The guard\u0027s user-facing strings and the target metric are Cyrillic (\u0027🚫 DONE отклонён\u0027, \u0027DONE rejected by action evidence guard\u0027), and the regression test matches on `-match \u0027DONE отклон\u0027`.",
+                                  "why":  "Editing/rewriting these files on win32 without preserving UTF-8 can corrupt the Cyrillic literals, silently breaking both the operator-facing message and the test\u0027s match assertion — making the gate pass/fail for the wrong reason. The decision does not call out encoding preservation for a file full of non-ASCII control-plane strings."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "smoke.ps1 scope is left as an open question while the done-gate already pins it. The done-gate smoke job runs the ROOT smoke.ps1 specifically (86:763, 86:873 — Join-Path $BridgeRoot \u0027smoke.ps1\u0027), yet DA-005 demands \u0027smoke.ps1 (root and tools/)\u0027 and the open questions still ask whether both are required.",
+                                  "why":  "A control-plane change should be validated by the same smoke the gate actually executes (root smoke.ps1). Leaving root-vs-tools/ as an unresolved gate criterion makes DA-005\u0027s \u0027green smoke\u0027 bar nominal rather than verifiable, the exact weakness the judge flagged when modifying DA-005."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

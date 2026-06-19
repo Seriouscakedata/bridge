@@ -1,0 +1,85 @@
+{
+    "proposer":  "B",
+    "understanding":  "The parent task wants to relocate an \u0027action-evidence DONE-guard\u0027 from driver/85-loop-mode-transitions.ps1 (claimed lines 12-95) into driver/86-loop-completion-checks.ps1, placed immediately after the STATUS status-parse and inside the existing DONE∧normal-guard cluster, before the done-gate. The intent is behavioral: kill ~6 \u0027property/variable not found\u0027 driver errors per session (caused by a guard referencing variables that only exist after status-parse) and eliminate spurious \u0027DONE отклонён\u0027/force_coder firings on the planner turn after an already-accepted DONE. This is a high-risk control-plane edit to the driver loop and is gated on bridge_self_canary admission plus operator sign-off, with driver.ps1 -SelfTest, smoke.ps1, and rollback notes mandatory. My direct inspection of the live files shows the contract\u0027s line numbers do not match current code: 85:12-95 is the [[PARALLEL]] handler plus the no-progress/stagnation detector (action-evidence is only consumed at 58-79, not a standalone DONE-guard); 86:1433 sits inside the Deep-think harvest foreach loop; and the actual action-evidence DONE-rejection/force_coder logic already lives in 86 at ~1297-1396 with status-parse at ~1034-1036. The task is therefore really about correctly ordering/consolidating that guard after status-parse and before the terminal done-gate, not a literal cut-and-paste of line ranges.",
+    "summary":  "Do not execute this as a literal line-number relocation. Re-anchor on semantic markers in the live code, confirm WHICH block the parent means (the 85 stagnation detector vs. the existing 86 action-evidence guard vs. a duplicate), make a single atomic edit that places the guard strictly between status-parse and the done-gate so it reads populated variables and downgrades a rejected DONE to CONTINUE before close, add an already-accepted short-circuit to stop post-DONE misfires, and ship only behind bridge_self_canary + operator with -SelfTest, smoke.ps1, and before/after metric evidence proving 6→0 \u0027property not found\u0027 and 0 spurious DONE-rejections. Rollback is a one-commit git revert plus reset of any state flags it touches.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Treat the contract\u0027s line numbers (85:12-95, after :1027, before :1433) as approximate and re-derive the true target/anchors from the live code before any edit.",
+                               "reason":  "Direct inspection shows 85:12-95 is the [[PARALLEL]] handler + stagnation detector (not a DONE-guard), and 86:1433 is inside the Deep-think harvest foreach loop. A literal cut/insert at these offsets would extract the wrong code and inject a statement mid-loop, breaking the file.",
+                               "tradeoff":  "Slower than a blind patch; requires a code-reading pass and operator confirmation, but is the only way to avoid a control-plane syntax break.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Anchor the insertion on the status-parse assignment ($plannerStatus at ~86:1034-1036 / fastLane DONE at ~1027) and on the existing done-gate, NOT on numeric offsets, and place the guard strictly between them inside the DONE∧normal cluster.",
+                               "reason":  "The guard must execute after $plannerStatus/$modeBeforeIncrement are populated (root cause of \u0027property/variable not found\u0027 is running before that) and before the terminal done-gate so a rejected DONE can be downgraded to CONTINUE prior to close.",
+                               "tradeoff":  "Semantic anchoring is more verbose and needs a regression test to lock ordering, but is robust to line-number drift in a frequently-edited file.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Resolve the ambiguity of which block is the \u0027action-evidence DONE-guard\u0027 before editing: the 85 stagnation/no_progress detector and the 86 noop action-evidence guard (~1297-1396) are distinct concerns.",
+                               "reason":  "86 already produces \u0027🚫 DONE отклонён\u0027 and sets force_coder. If we relocate the 85 stagnation detector by mistake, the metrics won\u0027t move; if we duplicate the 86 guard, DONE gets evaluated twice and may create NEW spurious rejections.",
+                               "tradeoff":  "Requires an explicit operator decision and a reproduction step up front, delaying the edit, but prevents a wrong-target fix that passes tests yet fails the metric goals.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Add an explicit \u0027already-accepted DONE\u0027 short-circuit so the guard is a no-op on the planner turn following an accepted/closed DONE.",
+                               "reason":  "Metric-2 (\u0027spurious DONE отклонён/force_coder on the turn after an accepted DONE\u0027) indicates the guard fires when the task is already converged; gating on prior-turn acceptance / current_backlog_id identity stops the misfire and the force_coder loop.",
+                               "tradeoff":  "Adds state-coupling and a small risk of masking a genuine re-open; mitigated by keeping the existing identity checks (current_backlog_id/current_task_id) and covering it with a replay test.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "The change ships only behind bridge_self_canary admission + operator sign-off, with green driver.ps1 -SelfTest and smoke.ps1 (root and tools/), and canary evidence that demonstrates the two target metrics — not merely that tests pass.",
+                               "reason":  "This is a control-plane edit to 85/86; a regression can wedge the entire driver loop. The constraints make the canary/operator/test/rollback envelope non-negotiable, and only before/after behavioral evidence proves the metric goals were met.",
+                               "tradeoff":  "Higher process cost and latency than a direct commit, but proportionate to a high-risk self-modification of the loop.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Make the edit a single atomic commit (origin removal + destination insertion together) and keep one source of truth for the guard.",
+                               "reason":  "Splitting the move across commits risks an intermediate state with either no guard (un-evidenced DONE leaks through) or two guards (double rejection). Atomicity also makes rollback a clean single revert.",
+                               "tradeoff":  "A larger single diff to review, but far safer state transitions and trivial rollback.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "The contract\u0027s line references reflect an earlier revision; current file state differs (verified live: 85:12-95 = PARALLEL + stagnation detector; 86:1433 = inside Deep-think foreach; real noop action-evidence guard ~1297-1396; status-parse ~1034-1036).",
+                        "\u0027action-evidence DONE-guard\u0027 means the admission logic that emits \u0027🚫 DONE отклонён\u0027 and sets force_coder (86:~1351-1378), not the 85 no_progress/stagnation detector.",
+                        "bridge_self_canary is the existing self-canary admission path (e.g., tools/test-approve-via-canary.ps1) that gates control-plane edits, and the operator authorization in the contract authorizes running the parent UNDER that canary, not bypassing it.",
+                        "driver.ps1 -SelfTest and smoke.ps1 are runnable from the repo root and currently green on master before the change (so any new red is attributable to this edit).",
+                        "The 6 \u0027property/variable not found\u0027 errors per session originate from guard code referencing variables that are only defined after status-parse; relocating after status-parse removes the undefined-reference condition.",
+                        "PowerShell tool blocks git/nested powershell in this repo, so all git and -SelfTest/smoke invocations run via the Bash tool (per existing project memory)."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Literal line-number edit inserts code mid-foreach/mid-function (e.g., at 86:1433) or extracts the wrong block, producing a parse error so the driver fails to load — full loop outage.",
+                      "severity":  "high",
+                      "mitigation":  "Semantic anchoring instead of offsets; gate on driver.ps1 -SelfTest (parse + load) and canary before promote; never promote on a red SelfTest."
+                  },
+                  {
+                      "risk":  "Relocating the 85 stagnation detector instead of the real 86 action-evidence guard — tests pass but the two metrics do not move (wrong-target fix).",
+                      "severity":  "high",
+                      "mitigation":  "Reproduce both symptoms first (grep session logs/metrics.jsonl for \u0027property/variable not found\u0027 and post-DONE force_coder), and confirm the exact target block with the operator against live code before editing."
+                  },
+                  {
+                      "risk":  "Duplicated guard: a copy left in 85 plus a new copy in 86 evaluates DONE twice, creating new spurious rejections or force_coder loops.",
+                      "severity":  "medium",
+                      "mitigation":  "Atomic single-commit move with one source of truth; assert via test that only one action-evidence DONE admission path runs per turn."
+                  },
+                  {
+                      "risk":  "Ordering regression: guard ends up after the done-gate, letting un-evidenced DONE close the task (worse than the current false-positive).",
+                      "severity":  "medium",
+                      "mitigation":  "Assert insertion is strictly between status-parse and done-gate; add a regression test that a no-evidence DONE is downgraded to CONTINUE."
+                  },
+                  {
+                      "risk":  "State-flag side effects (force_coder, task_did_actions=false, task_failure_record) firing on a post-DONE turn re-open a completed task into a re-coding loop.",
+                      "severity":  "medium",
+                      "mitigation":  "Add the already-accepted short-circuit; run a completed-task replay under canary and watch for zero force_coder after accepted DONE."
+                  },
+                  {
+                      "risk":  "Canary/operator review latency stalls the fix while the 6/session noise persists.",
+                      "severity":  "low",
+                      "mitigation":  "Prepare the full evidence bundle (diff, SelfTest+smoke output, before/after metric deltas, rollback notes) up front so operator review is single-pass."
+                  }
+              ],
+    "minimal_version":  "Reproduce-then-relocate, smallest safe change. (1) Confirm the exact origin of the 6 \u0027property/variable not found\u0027 errors and the post-DONE spurious rejection by grepping session logs / metrics.jsonl. (2) If the cause is a guard fragment referencing post-status-parse variables before status-parse, move ONLY that offending block to immediately after the $plannerStatus assignment (~86:1036), inside the existing DONE∧normal cluster, ahead of the done-gate — leaving the 85 stagnation/no_progress detector intact if it is a separate concern. (3) One atomic commit. (4) Verify via Bash: driver.ps1 -SelfTest green, root smoke.ps1 + tools/smoke.ps1 green, and capture before/after metric counts under the bridge_self_canary run (expect 6→0 and 0 spurious DONE-rejections). (5) Rollback = git revert of the single commit; if state flags were touched on a live task, reset force_coder/task_did_actions to pre-change values. Promote only after operator sign-off on the canary evidence.",
+    "advanced_version":  "Consolidate + guardrail. (1) Extract the action-evidence DONE admission into one named helper (e.g., Invoke-DoneActionEvidenceGuard) under lib/, invoked exactly once from the correct point in 86 (right after status-parse, before the done-gate); delete any duplicate/misplaced inline copies in 85/86 so there is a single source of truth. (2) Add an already-accepted/idempotency short-circuit keyed on prior-turn acceptance and current_backlog_id identity to stop post-DONE misfires. (3) Add a regression test (tools/test-*.ps1) that drives a synthetic accepted-DONE turn and asserts zero spurious rejection and zero \u0027property/variable not found\u0027, plus a no-evidence-DONE case that must downgrade to CONTINUE. (4) Wire a metric assertion into smoke so future regressions are caught. (5) Stage the rollout: shadow-run first using the existing depth-shadow.jsonl pattern (guard computes but does not act, logging would-be decisions), compare against live behavior, then promote behind bridge_self_canary + operator in a single reviewed commit. (6) Attach structured canary evidence (before/after metrics.jsonl deltas, SelfTest+smoke logs) to the decision record, with rollback notes documenting the one-commit revert and the exact state flags to reset."
+}

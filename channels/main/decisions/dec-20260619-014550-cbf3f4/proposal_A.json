@@ -1,0 +1,73 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно выполнить control-plane refactor: убрать action-evidence DONE-guard из раннего файла переходов режима driver/85-loop-mode-transitions.ps1 и перенести его в driver/86-loop-completion-checks.ps1 сразу после status-parse, до done-gate и внутри кластера DONE∧normal-guard проверок. Цель — чтобы guard запускался на каждом driver-turn уже после разбора статуса и не ссылался на ещё несуществующие свойства/переменные, устраняя ложные ошибки и spurious DONE rejected/force_coder после уже принятого DONE.",
+    "summary":  "Минимальное решение: механически перенести существующий guard без изменения его бизнес-логики, разместить его непосредственно после status-parse в 86-м файле, удалить исходное выполнение из 85-го файла, затем подтвердить порядок и поведение через bridge_self_canary, driver.ps1 -SelfTest, smoke.ps1 и canary-прогон с accepted DONE followed by next turn. Деплой разрешать только при наличии canary evidence и rollback notes.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Перенести action-evidence DONE-guard из driver/85-loop-mode-transitions.ps1 в driver/86-loop-completion-checks.ps1 сразу после status-parse.",
+                               "reason":  "Guard зависит от данных, которые корректно доступны только после status-parse; раннее выполнение в 85-м файле создаёт риск property/variable not found.",
+                               "tradeoff":  "Изменяется порядок выполнения control-plane логики, поэтому требуется строгая проверка расположения относительно остальных done-* guard-ов.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Не менять семантику guard-а сверх необходимого переноса.",
+                               "reason":  "Задача формулирует проблему как неверное место исполнения, а не как необходимость переписать правила admission.",
+                               "tradeoff":  "Если внутри guard-а есть самостоятельные null-safety дефекты, они могут остаться и потребовать отдельного последующего патча.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Разместить guard до done-gate и рядом с DONE∧normal-guard cluster.",
+                               "reason":  "Guard должен успевать отклонить или подтвердить DONE до финального done-gate решения, но после нормализации статуса.",
+                               "tradeoff":  "Слишком ранняя вставка вернёт текущую ошибку, слишком поздняя вставка сделает guard неэффективным.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Canary должен включать минимум один driver-turn с принятым DONE и следующий turn без ложного force_coder/DONE rejected.",
+                               "reason":  "Именно этот сценарий указан как целевая операционная метрика.",
+                               "tradeoff":  "Canary будет чуть длиннее простого smoke-прогона, но даст доказательство по реальному failure mode.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Перед merge/deploy обязательно выполнить bridge_self_canary, driver.ps1 -SelfTest и smoke.ps1.",
+                               "reason":  "Это прямо заданное ограничение для control-plane edit в 85/86.",
+                               "tradeoff":  "Увеличивает время проверки, но снижает риск регрессии в driver loop.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "Операторская авторизация child task уже действительна для этого изменения, но фактический запуск parent допускается только после canary evidence.",
+                        "Текущие untracked/dirty файлы из runtime context не конфликтуют с driver/85-loop-mode-transitions.ps1 и driver/86-loop-completion-checks.ps1.",
+                        "Строки 1027 и 1433 являются ориентировочными якорями; финальная проверка должна искать реальные anchors status-parse и done-gate в текущем файле.",
+                        "Существующий action-evidence DONE-guard можно перенести как единый блок без изменения внешнего контракта переменных.",
+                        "Метрики property/variable not found и spurious DONE rejected/force_coder доступны через driver logs или стандартный canary output."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Guard будет вставлен после done-gate и перестанет влиять на admission.",
+                      "severity":  "high",
+                      "mitigation":  "Проверить diff и runtime trace: status-parse -\u003e relocated action-evidence DONE-guard -\u003e остальные DONE normal guards -\u003e done-gate."
+                  },
+                  {
+                      "risk":  "Перенос изменит область видимости переменных или имена локальных значений.",
+                      "severity":  "high",
+                      "mitigation":  "Перед патчем сверить все referenced variables/properties guard-а с данными, создаваемыми status-parse; после патча прогнать driver.ps1 -SelfTest."
+                  },
+                  {
+                      "risk":  "Guard начнёт срабатывать не на каждом driver-turn из-за вложения в условный блок.",
+                      "severity":  "high",
+                      "mitigation":  "Вставить его в общий post-status-parse path, а не внутрь branch-а конкретного DONE outcome; подтвердить canary trace."
+                  },
+                  {
+                      "risk":  "Будет удалён слишком большой фрагмент из 85-го файла и нарушатся mode transitions.",
+                      "severity":  "medium",
+                      "mitigation":  "Удалять только action-evidence DONE-guard block; сохранить соседнюю transition логику без рефакторинга."
+                  },
+                  {
+                      "risk":  "Canary не покроет сценарий accepted DONE followed by next turn.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавить явный сценарий в canary checklist и проверять отсутствие force_coder/DONE rejected на следующем turn."
+                  }
+              ],
+    "minimal_version":  "Patch: 1) найти action-evidence DONE-guard в driver/85-loop-mode-transitions.ps1 lines ~12-95; 2) удалить только этот guard/call из 85-го файла; 3) вставить тот же блок в driver/86-loop-completion-checks.ps1 непосредственно после status-parse anchor, до любых done-gate решений; 4) проверить diff на порядок; 5) выполнить bridge_self_canary, .\\driver.ps1 -SelfTest, .\\smoke.ps1; 6) canary-доказательство: один accepted DONE turn и следующий turn без property/variable not found, без spurious DONE rejected и без force_coder. Rollback: revert this patch or move the guard back to its previous location in 85 and remove the inserted block from 86.",
+    "advanced_version":  "После минимального переноса дополнительно добавить lightweight trace markers вокруг relocated guard для canary evidence, если в проекте уже есть такой logging pattern; зафиксировать проверку порядка anchors в тесте или script assertion; собрать до/после метрики по driver logs за canary session: property/variable not found = 0, spurious DONE rejected/force_coder after accepted DONE = 0. Не добавлять новые абстракции, если существующий driver style использует inline guard clusters."
+}
