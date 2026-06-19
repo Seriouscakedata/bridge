@@ -309,6 +309,12 @@ function New-ClaudePromptSuffix {
     [string]$TaskText,
     [string[]]$TaskTags = @(),
     [string]$CurrentTaskId,
+    [string]$Channel = '',
+    [string]$Scope = '',
+    [int]$AcceptanceCount = 0,
+    [int]$SubsystemCount = 0,
+    [int]$EstimatedTurns = 0,
+    [string[]]$Files = @(),
     [string]$ClaudeToolHint,
     [string]$ClaudeActionBlock
   )
@@ -382,8 +388,16 @@ $ClaudeActionBlock
 "@
 
   $plannerInstructions = $claudeBase
-  if (Test-IsLargeTask -TaskText $TaskText -Tags $TaskTags) {
-    $decomposeInstruction = @"
+  if (Test-IsLargeTask -TaskText $TaskText -Tags $TaskTags -Channel $Channel -Scope $Scope -AcceptanceCount $AcceptanceCount -SubsystemCount $SubsystemCount -EstimatedTurns $EstimatedTurns -Files $Files) {
+    if ($Channel -eq 'main' -and $Scope -eq 'bridge') {
+      $decomposeInstruction = @"
+
+🔴 КРУПНАЯ ЗАДАЧА — ДЕКОМПОЗИЦИЯ ОБЯЗАТЕЛЬНА:
+Эта bridge-self задача КРУПНАЯ. Ты НЕ должен вызывать кодера напрямую.
+ТВОЙ ЕДИНСТВЕННЫЙ ХОД: emit [[PROJECT_BACKLOG]] JSON array. Каждый atom ОБЯЗАН: slug, title, task, chapter, wave, parallel_group, files (ровно ОДИН файл), depends_on, acceptance (конкретные проверяемые), checks, severity, serial_reason, source_task_id=<parent-id>. Для атомов трогающих driver/*.ps1/lib/backlog*.ps1: добавь bridge_self_admission {admitted:true,mode:bridge_self_canary,canary_required:true,checks:[...],rollback_plan:"..."}. Затем отдельной строкой: [[DECOMPOSED: N атомов]].
+"@
+    } else {
+      $decomposeInstruction = @"
 
 🔴 КРУПНАЯ ЗАДАЧА — ОБЯЗАТЕЛЬНАЯ ДЕКОМПОЗИЦИЯ:
 Эта задача помечена как КРУПНАЯ (≥3 файла / [ФИЧА] / >1200 символов). Ты НЕ должен вызывать кодера напрямую.
@@ -399,6 +413,7 @@ $ClaudeActionBlock
 где N = число добавленных атомов.
 НЕ пиши код, НЕ пиши STATUS: CONTINUE — только атомы и [[DECOMPOSED: N атомов]].
 "@
+    }
     $plannerInstructions = $decomposeInstruction + "`n" + $plannerInstructions
   }
 
@@ -536,9 +551,21 @@ $restartReminder
 }
 
 function Test-IsLargeTask {
-  param([string]$TaskText, [string[]]$Tags = @())
+  param(
+    [string]$TaskText,
+    [string[]]$Tags = @(),
+    [string]$Channel = '',
+    [string]$Scope = '',
+    [int]$AcceptanceCount = 0,
+    [int]$SubsystemCount = 0,
+    [int]$EstimatedTurns = 0,
+    [string[]]$Files = @()
+  )
 
   if ($Tags -contains 'atom' -or $Tags -contains 'decomposed-child') { return $false }
+  if ($Channel -eq 'main' -and $Scope -eq 'bridge') {
+    return ($AcceptanceCount -ge 5 -or $SubsystemCount -ge 3 -or $EstimatedTurns -ge 3 -or ($Files.Count -ge 3 -and $Files.Count -gt 0))
+  }
   if ($TaskText -match '\[ФИЧА\]|feature|КРУПНАЯ') { return $true }
   if ($TaskText.Length -gt 1200) { return $true }
   $fileMatches = ([regex]::Matches(
@@ -569,6 +596,7 @@ function Invoke-PromptBuilder {
     $currentTaskId = [string]$promptState.current_task_id
   }
   $taskTags = @()
+  $currentIdea = $null
   try {
     if (-not [string]::IsNullOrWhiteSpace($currentTaskId) -and (Get-Command Get-IdeaById -ErrorAction SilentlyContinue)) {
       $currentIdea = Get-IdeaById -Id $currentTaskId
@@ -577,6 +605,37 @@ function Invoke-PromptBuilder {
       }
     }
   } catch {}
+  $currentScope = if ($currentIdea) { [string]$currentIdea.scope } else { '' }
+  $currentFiles = @()
+  $currentAcceptanceCount = 0
+  $currentSubsystemCount = 0
+  $currentEstimatedTurns = 0
+  if ($currentIdea) {
+    try {
+      if ($currentIdea.files) {
+        $currentFiles = @($currentIdea.files | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      }
+    } catch {}
+    try {
+      if ($currentIdea.acceptance) {
+        $currentAcceptanceCount = @($currentIdea.acceptance | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+      }
+    } catch {}
+    try {
+      if ($currentIdea.subsystems) {
+        $currentSubsystemCount = @($currentIdea.subsystems | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+      } elseif ($currentIdea.subsystem_count) {
+        $currentSubsystemCount = [int]$currentIdea.subsystem_count
+      }
+    } catch {}
+    try {
+      if ($currentIdea.estimated_turns) {
+        $currentEstimatedTurns = [int]$currentIdea.estimated_turns
+      } elseif ($currentIdea.intent -and $currentIdea.intent.estimated_turns) {
+        $currentEstimatedTurns = [int]$currentIdea.intent.estimated_turns
+      }
+    } catch {}
+  }
   $autoScopeLine = Get-PromptAutoScopeLine -PromptState $promptState -Context $context
   $progressBlocks = Get-PromptProgressBlocks -Role $Role
   $shared = New-SharedPromptBlock -Task $Task -Transcript $transcript -AutoScopeLine $autoScopeLine -Context $context -ProgressBlocks $progressBlocks
@@ -590,6 +649,12 @@ function Invoke-PromptBuilder {
       -TaskText $Task `
       -TaskTags $taskTags `
       -CurrentTaskId $currentTaskId `
+      -Channel $script:Channel `
+      -Scope $currentScope `
+      -AcceptanceCount $currentAcceptanceCount `
+      -SubsystemCount $currentSubsystemCount `
+      -EstimatedTurns $currentEstimatedTurns `
+      -Files $currentFiles `
       -ClaudeToolHint (Get-ClaudeToolHint -Mode $Mode) `
       -ClaudeActionBlock (Get-ClaudeActionBlock -Mode $Mode -BridgeRoot $script:bridgeRoot)
   } else {
