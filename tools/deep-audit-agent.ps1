@@ -130,6 +130,11 @@ function Get-AgentFileContentCapped {
   }
 }
 
+function Test-AgentContentTruncated {
+  param([string]$Content)
+  return ([bool]($Content -match '\.\.\.\[truncated'))
+}
+
 function Get-AgentConfidence {
   param([string]$RoleName)
   if ($RoleName -eq 'security-model') { return 0.85 }
@@ -287,7 +292,8 @@ function Get-AgentPromptFileSections {
     [string]$Root,
     [string[]]$RelativePaths,
     [int]$Cap,
-    $Coverage
+    $Coverage,
+    [System.Collections.Generic.List[string]]$TruncatedSections = $null
   )
 
   $sections = New-Object System.Collections.Generic.List[object]
@@ -295,7 +301,11 @@ function Get-AgentPromptFileSections {
     $full = Join-Path $Root $p
     if (Test-Path -LiteralPath $full -PathType Leaf) {
       $Coverage.Add($p)
-      [void]$sections.Add((New-AgentPromptSection -Header "=== $p ===" -Content (Get-AgentFileContentCapped -Path $full -Cap $Cap)))
+      $content = Get-AgentFileContentCapped -Path $full -Cap $Cap
+      if ($null -ne $TruncatedSections -and (Test-AgentContentTruncated -Content $content)) {
+        [void]$TruncatedSections.Add($p)
+      }
+      [void]$sections.Add((New-AgentPromptSection -Header "=== $p ===" -Content $content))
     }
   }
   return $sections.ToArray()
@@ -454,20 +464,23 @@ function Get-AgentPromptContext {
 
   $coverage = New-Object System.Collections.Generic.List[string]
   $sections = New-Object System.Collections.Generic.List[object]
+  $truncatedSections = New-Object System.Collections.Generic.List[string]
 
   if ($Role -eq 'security-model') {
     $rankedFiles = @(Get-AgentRiskRankedFiles -Root $ProjRoot -MaxFiles 30)
     foreach ($fullPath in $rankedFiles) {
       $rel = Get-AgentRelativePath -Root $ProjRoot -Path $fullPath
       $coverage.Add($rel)
-      [void]$sections.Add((New-AgentPromptSection -Header "=== $rel ===" -Content (Get-AgentFileContentCapped -Path $fullPath -Cap 5000)))
+      $content = Get-AgentFileContentCapped -Path $fullPath -Cap 5000
+      if (Test-AgentContentTruncated -Content $content) { [void]$truncatedSections.Add($rel) }
+      [void]$sections.Add((New-AgentPromptSection -Header "=== $rel ===" -Content $content))
     }
   } elseif ($Role -eq 'functional-model') {
-    foreach ($section in @(Get-AgentPromptFileSections -Root $BridgeRoot -RelativePaths @('features\registry.json','features\state.json','audit\audit.log','turns.jsonl') -Cap 20000 -Coverage $coverage)) {
+    foreach ($section in @(Get-AgentPromptFileSections -Root $BridgeRoot -RelativePaths @('features\registry.json','features\state.json','audit\audit.log','turns.jsonl') -Cap 20000 -Coverage $coverage -TruncatedSections $truncatedSections)) {
       [void]$sections.Add($section)
     }
   } elseif ($Role -eq 'reliability-model') {
-    foreach ($section in @(Get-AgentPromptFileSections -Root $ProjRoot -RelativePaths @('driver.ps1','server.ps1','supervisor.ps1','watchdog.ps1','lib\jobs.ps1','lib\circuit-breaker.ps1') -Cap 10000 -Coverage $coverage)) {
+    foreach ($section in @(Get-AgentPromptFileSections -Root $ProjRoot -RelativePaths @('driver.ps1','server.ps1','supervisor.ps1','watchdog.ps1','lib\jobs.ps1','lib\circuit-breaker.ps1') -Cap 10000 -Coverage $coverage -TruncatedSections $truncatedSections)) {
       [void]$sections.Add($section)
     }
   } elseif ($Role -eq 'runtime-incident-model') {
@@ -482,7 +495,10 @@ function Get-AgentPromptContext {
     $statePath = Join-Path $BridgeRoot 'state.json'
     $stateSnippet = ''
     try {
-      if (Test-Path -LiteralPath $statePath -PathType Leaf) { $stateSnippet = Get-AgentFileContentCapped -Path $statePath -Cap 2000 }
+      if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        $stateSnippet = Get-AgentFileContentCapped -Path $statePath -Cap 2000
+        if (Test-AgentContentTruncated -Content $stateSnippet) { [void]$truncatedSections.Add('state.json') }
+      }
     } catch {}
     [void]$sections.Add((New-AgentPromptSection -Header '=== incident-bundle/state (current task) ===' -Content $(if ([string]::IsNullOrWhiteSpace($stateSnippet)) { '(empty)' } else { $stateSnippet }) -BlankAfter))
     $cbSnippet = Get-AgentCircuitBreakerSnippet -RuntimeRoot $runtimeRoot -MaxItems 5 -MaxDiffFiles 10
@@ -494,7 +510,9 @@ function Get-AgentPromptContext {
     if (Test-Path -LiteralPath $signalsPath -PathType Leaf) {
       try {
         $sigJson = [System.IO.File]::ReadAllText($signalsPath, [System.Text.Encoding]::UTF8)
-        [void]$sections.Add((New-AgentPromptSection -Header '=== audit/signals/speed.json (overall stats) ===' -Content $(if ($sigJson.Length -gt 4000) { $sigJson.Substring(0,4000) + '...[truncated]' } else { $sigJson }) -BlankAfter))
+        $sigCapped = if ($sigJson.Length -gt 4000) { $sigJson.Substring(0,4000) + '...[truncated]' } else { $sigJson }
+        if (Test-AgentContentTruncated -Content $sigCapped) { [void]$truncatedSections.Add('audit/signals/speed.json') }
+        [void]$sections.Add((New-AgentPromptSection -Header '=== audit/signals/speed.json (overall stats) ===' -Content $sigCapped -BlankAfter))
       } catch {}
     }
     $phaseStatsTxt = Get-AgentLatencyPhaseStatsText -TurnsPath (Join-Path $BridgeRoot 'turns.jsonl')
@@ -506,7 +524,9 @@ function Get-AgentPromptContext {
     if (Test-Path -LiteralPath $costSignalPath -PathType Leaf) {
       try {
         $cJson = [System.IO.File]::ReadAllText($costSignalPath, [System.Text.Encoding]::UTF8)
-        [void]$sections.Add((New-AgentPromptSection -Header '=== audit/signals/cost.json (pre-computed cost breakdown) ===' -Content $(if ($cJson.Length -gt 4000) { $cJson.Substring(0,4000) + '...[truncated]' } else { $cJson }) -BlankAfter))
+        $cCapped = if ($cJson.Length -gt 4000) { $cJson.Substring(0,4000) + '...[truncated]' } else { $cJson }
+        if (Test-AgentContentTruncated -Content $cCapped) { [void]$truncatedSections.Add('audit/signals/cost.json') }
+        [void]$sections.Add((New-AgentPromptSection -Header '=== audit/signals/cost.json (pre-computed cost breakdown) ===' -Content $cCapped -BlankAfter))
       } catch {}
     }
     $costContext = Get-AgentCostBurnContextSummary -UsageRawPath (Join-Path $BridgeRoot 'usage.jsonl')
@@ -526,7 +546,9 @@ function Get-AgentPromptContext {
     $configPath = Join-Path $BridgeRoot 'config.json'
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
       $coverage.Add('config.json')
-      [void]$sections.Add((New-AgentPromptSection -Header '=== config.json ===' -Content (Get-AgentFileContentCapped -Path $configPath -Cap 30000)))
+      $configContent = Get-AgentFileContentCapped -Path $configPath -Cap 30000
+      if (Test-AgentContentTruncated -Content $configContent) { [void]$truncatedSections.Add('config.json') }
+      [void]$sections.Add((New-AgentPromptSection -Header '=== config.json ===' -Content $configContent))
     }
     $tools = @(Get-ChildItem -LiteralPath (Join-Path $BridgeRoot 'tools') -Filter *.ps1 -File -ErrorAction SilentlyContinue | Sort-Object Name)
     foreach ($t in $tools) { $coverage.Add((Get-AgentRelativePath -Root $BridgeRoot -Path $t.FullName)) }
@@ -548,6 +570,7 @@ function Get-AgentPromptContext {
   return [pscustomobject]@{
     coverage = $coverage.ToArray()
     sections = $sections.ToArray()
+    truncated_sections = $truncatedSections.ToArray()
   }
 }
 
@@ -576,7 +599,7 @@ function New-AgentPrompt {
   $context = Get-AgentPromptContext -Role $Role -BridgeRoot $BridgeRoot -ProjRoot $ProjRoot
   $promptText = Format-AgentPrompt -TemplateLines $templateLines -Sections $context.sections
   $promptChars = $promptText.Length
-  $promptTruncated = $false
+  $promptTruncated = ($context.truncated_sections.Count -gt 0)
   $contextPolicy = 'default'
   if ($Role -eq 'security-model') { $contextPolicy = 'risk_ranked' }
   elseif ($Role -in @('architecture-model','dependency-model')) { $contextPolicy = 'source_only_excluded' }
@@ -586,6 +609,7 @@ function New-AgentPrompt {
     coverage = @($context.coverage | Select-Object -Unique)
     prompt_chars = $promptChars
     prompt_truncated = $promptTruncated
+    truncated_sections = @($context.truncated_sections | Select-Object -Unique)
     context_policy = $contextPolicy
   }
 }
@@ -643,6 +667,8 @@ $result = [pscustomobject]@{
   coverage = @($promptContext.coverage)
   confidence = [double](Get-AgentConfidence -RoleName $Role)
   prompt_chars = [int]$promptContext.prompt_chars
+  prompt_truncated = [bool]$promptContext.prompt_truncated
+  truncated_sections = @($promptContext.truncated_sections)
   context_policy = [string]$promptContext.context_policy
 }
 
