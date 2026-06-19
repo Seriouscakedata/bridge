@@ -706,8 +706,22 @@ function Restore-StateFromBackup {
   try {
     $json = $bak | ConvertTo-Json -Depth 10
     Write-AtomicFile -Path $statePath -Content $json
+    try {
+      $sha256Path = $statePath + '.sha256'
+      $hash = Get-StateContentHash -Content $json
+      [System.IO.File]::WriteAllText($sha256Path, $hash, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {}
   } catch { return $null }
   return $bak
+}
+
+function Get-StateContentHash {
+  # Compute SHA256 hex-digest of a UTF-8 string (no BOM). Used for state.json integrity sidecar.
+  param([string]$Content)
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { $hash = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+  return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
 function Read-State {
@@ -717,6 +731,29 @@ function Read-State {
   #   Protects all ~40 call-sites, not only driver:3178.
   $p = Get-StatePath
   if (-not (Test-Path $p)) { return $null }
+  # SHA256 integrity check — detect torn files before wasting retry cycles.
+  $sha256Path = $p + '.sha256'
+  if (Test-Path -LiteralPath $sha256Path) {
+    try {
+      $expected = ([System.IO.File]::ReadAllText($sha256Path, [System.Text.Encoding]::UTF8)).Trim()
+      $rawBytes = [System.IO.File]::ReadAllBytes($p)
+      $actual = Get-StateContentHash -Content ([System.Text.Encoding]::UTF8.GetString($rawBytes))
+      if ($expected -ne $actual -and $expected -ne '') {
+        try {
+          $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
+          Add-Content -LiteralPath $alog -Value ("{0}  SHA256-MISMATCH expected=$expected actual=$actual — quarantine+restore" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8 -ErrorAction SilentlyContinue
+          $qDir = Join-Path (Get-BridgeRoot) 'control\quarantine'
+          if (-not (Test-Path -LiteralPath $qDir)) { New-Item -ItemType Directory -Path $qDir -Force | Out-Null }
+          $qFile = Join-Path $qDir ("state-torn-$(Get-Date -Format 'yyyyMMdd-HHmmss').json")
+          Copy-Item -LiteralPath $p -Destination $qFile -Force -ErrorAction SilentlyContinue
+        } catch {}
+        $restored = Restore-StateFromBackup
+        if ($null -ne $restored) { return $restored }
+        return $null
+      }
+    } catch {}
+    # If sidecar unreadable or comparison throws — fall through to normal retry path (no false positive).
+  }
   $state = $null
   $maxRetry = 3; $retryMs = 50
   for ($attempt = 1; $attempt -le $maxRetry; $attempt++) {
@@ -795,6 +832,12 @@ function Write-State {
   $json = $State | ConvertTo-Json -Depth 10
   $sp = Get-StatePath
   Write-AtomicFile -Path $sp -Content $json
+  # Write SHA256 sidecar for fast torn-file detection on next Read-State.
+  try {
+    $sha256Path = $sp + '.sha256'
+    $hash = Get-StateContentHash -Content $json
+    [System.IO.File]::WriteAllText($sha256Path, $hash, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
   # Write-through backup (best-effort: fail = warning only, not rollback of the main write).
   # M1 (load audit): throttle the .bak to ~10s. It used to be written on EVERY state write -- but
   # heartbeat ticks (~every 5s x N drivers) dominate, doubling the work done INSIDE the bridge lock
@@ -806,7 +849,14 @@ function Write-State {
     if (Test-Path -LiteralPath $bakPath) {
       try { $bakFresh = (((Get-Date) - (Get-Item -LiteralPath $bakPath).LastWriteTime).TotalSeconds -lt 10) } catch {}
     }
-    if (-not $bakFresh) { Write-AtomicFile -Path $bakPath -Content $json }
+    if (-not $bakFresh) {
+      Write-AtomicFile -Path $bakPath -Content $json
+      try {
+        $bak256Path = $bakPath + '.sha256'
+        $bakHash = Get-StateContentHash -Content $json
+        [System.IO.File]::WriteAllText($bak256Path, $bakHash, (New-Object System.Text.UTF8Encoding($false)))
+      } catch {}
+    }
   } catch {
     try {
       $alog = Join-Path (Get-BridgeRoot) 'control\state-guard.log'
