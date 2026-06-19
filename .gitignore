@@ -1,6 +1,8 @@
 # Runtime/state and secrets -- NOT tracked, so rollback never wipes them.
 state.json
 state.json.bak
+state.json.sha256
+state.json.bak.sha256
 features/state.json
 radar/scholar-seen.jsonl
 radar/scholar-knowledge.jsonl
