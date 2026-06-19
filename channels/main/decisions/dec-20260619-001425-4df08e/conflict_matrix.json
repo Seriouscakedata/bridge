@@ -1,0 +1,27 @@
+{
+    "consensus_atoms":  [
+                            "atom_001",
+                            "atom_002",
+                            "atom_003",
+                            "atom_005"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_001",
+                                           "atom_010"
+                                       ],
+                          "axis":  "Relocation Scope Definition (Semantic vs. Literal Line Range)",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_001",
+                        "severity":  "major",
+                        "why":  "Atom \u0027atom_001\u0027 defines the relocation scope for the \u0027DONE-admission action-evidence guard\u0027 as \u0027only the DONE-admission action-evidence guard\u0027 (specifically referencing ~85:67-84). However, atom \u0027atom_010\u0027 from a different proposal defines the scope for the same \u0027action-evidence DONE-guard block\u0027 as \u0027lines 12-95\u0027 from the same file (driver/85-loop-mode-transitions.ps1). These two definitions are mutually exclusive and represent a fundamental disagreement on the exact code block to be relocated, leading to an ambiguous and conflicting implementation plan.",
+                        "fix":  "The proposals (A, B, C) must reconcile their understanding of what constitutes the \u0027DONE-admission action-evidence guard\u0027. A single, precise definition of the code block (either by line numbers or clear semantic boundaries) must be agreed upon, and the conflicting atoms (\u0027atom_001\u0027 and \u0027atom_010\u0027) must be updated to reflect this consensus.",
+                        "cost":  "medium"
+                    }
+                ]
+}

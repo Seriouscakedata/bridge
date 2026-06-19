@@ -1,0 +1,79 @@
+{
+    "proposer":  "A",
+    "understanding":  "The parent change is a control-plane refactor: the action-evidence admission guard for normal-mode DONE must stop running from the early mode-transition script and instead run in driver/86-loop-completion-checks.ps1 after planner status parsing and before the DONE gate. The safety child task is to allow that parent change only after bridge_self_canary evidence, operator authorization, driver.ps1 -SelfTest, smoke.ps1, and rollback notes.",
+    "summary":  "Make a surgical two-file relocation: remove the DONE rejection/force_coder action-evidence guard from driver/85-loop-mode-transitions.ps1, keep 85 focused on turn bookkeeping/stagnation, and insert the guard in driver/86-loop-completion-checks.ps1 immediately after status parse in the normal-mode DONE guard cluster before the full done-gate. The relocated block must initialize all local variables defensively, run only for an active normal DONE admission, and set force_coder only for a current missing-action-evidence rejection, preventing post-acceptance spurious rejections.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Relocate only the DONE-admission action-evidence guard, not unrelated mode-transition or stagnation logic.",
+                               "reason":  "The observed failure is caused by DONE admission being evaluated too early, before status-parse and normal DONE gate context are stable.",
+                               "tradeoff":  "Leaves some evidence-related helper usage in earlier driver phases if it is genuinely for stagnation, but avoids a wider behavioral rewrite.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Place the relocated guard in driver/86-loop-completion-checks.ps1 directly after plannerStatus status parsing and before full DONE-gate checks.",
+                               "reason":  "At that point plannerStatus, modeBeforeIncrement, speaker, fastLaneDone, and task state are available, while the final DONE gate has not yet executed.",
+                               "tradeoff":  "The guard becomes tightly coupled to completion-check ordering, so future status synthesis paths must be reviewed when added.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Initialize every guard-local value before try/catch use and treat helper failures as fail-closed CONTINUE with an explicit failure record.",
+                               "reason":  "This targets the property/variable-not-found class directly and preserves conservative DONE admission behavior.",
+                               "tradeoff":  "A real helper regression can still block DONE, but it will produce a controlled error instead of an unbound variable/property crash.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Only set force_coder when the current active normal backlog task is rejected for missing_action_evidence.",
+                               "reason":  "This prevents the next turn after an accepted DONE from being pushed back to coder by stale action-evidence state.",
+                               "tradeoff":  "Other rejection reasons will rely on planner-visible failure messages rather than forced coder routing.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Use bridge_self_canary as a hard promotion gate for the parent control-plane edit.",
+                               "reason":  "The edited files drive task admission and completion; a bad ordering bug can affect every driver turn.",
+                               "tradeoff":  "Slower rollout, but appropriate for high-risk control-plane code.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Require driver.ps1 -SelfTest and smoke.ps1 to pass on the patched canary before operator promotion.",
+                               "reason":  "The task contract explicitly requires both tests, and they cover driver integrity plus broader bridge smoke behavior.",
+                               "tradeoff":  "These checks may not prove the metric reduction alone, so they must be paired with targeted canary log evidence.",
+                               "confidence":  0.91
+                           }
+                       ],
+    "assumptions":  [
+                        "The operator will provide explicit authorization after reviewing canary evidence and before promoting the parent change.",
+                        "bridge_self_canary can run against an isolated channel or state snapshot without mutating production task state.",
+                        "The existing helper lib/task-action-evidence.ps1 remains the source of Get-TaskActionEvidence, Get-TaskActionEvidenceContext, Get-TaskDoneEvidenceDecision, Test-TaskCoveredVerifiedDoneEvidence, and Test-TaskDoneQaPassCommitEvidence.",
+                        "Existing dirty/untracked files are unrelated and must not be reverted or overwritten.",
+                        "The metric claims will be validated from canary logs rather than inferred from tests alone."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Incorrect ordering relative to status parse, parallel-dispatch DONE synthesis, or done-gate could either skip the guard or reject valid DONE.",
+                      "severity":  "high",
+                      "mitigation":  "Add a focused canary scenario for normal DONE with evidence, normal DONE without evidence, fast-lane DONE, and post-accepted-DONE next turn; inspect logs before promotion."
+                  },
+                  {
+                      "risk":  "Removing too much from driver/85-loop-mode-transitions.ps1 could weaken no-progress detection.",
+                      "severity":  "medium",
+                      "mitigation":  "Move only DONE-admission behavior; keep or replace passive action detection separately if required by stagnation semantics."
+                  },
+                  {
+                      "risk":  "force_coder may still be set from stale state after task closure.",
+                      "severity":  "high",
+                      "mitigation":  "Guard force_coder writes behind active current_task/current_backlog_id checks and only for missing_action_evidence on the current task."
+                  },
+                  {
+                      "risk":  "Canary evidence may be incomplete if it only runs happy-path tests.",
+                      "severity":  "medium",
+                      "mitigation":  "Require negative and recovery canary cases plus log assertions for zero property/variable-not-found and zero post-acceptance DONE rejection."
+                  },
+                  {
+                      "risk":  "Rollback could be complicated by concurrent edits in the same driver files.",
+                      "severity":  "medium",
+                      "mitigation":  "Record pre-change commit/diff, keep the patch limited to driver/85 and driver/86, and prepare a two-file git restore or revert command in rollback notes."
+                  }
+              ],
+    "minimal_version":  "Patch driver/85-loop-mode-transitions.ps1 to remove the early action-evidence DONE-admission/rejection behavior and any force_coder writes tied to it. Patch driver/86-loop-completion-checks.ps1 so the same admission decision runs after status parsing and before the full done-gate, with explicit defaults for all locals and active-task checks before force_coder. Canary sequence: run the patched driver in bridge_self_canary on an isolated channel; capture evidence for missing-evidence rejection, valid-evidence acceptance, and the next turn after accepted DONE; confirm no property/variable-not-found messages and no spurious DONE rejected/force_coder. Then run powershell -NoProfile -ExecutionPolicy Bypass -File .\\driver.ps1 -SelfTest and powershell -NoProfile -ExecutionPolicy Bypass -File .\\smoke.ps1. Promote only after operator authorization. Rollback notes: revert the patch commit or restore driver/85-loop-mode-transitions.ps1 and driver/86-loop-completion-checks.ps1 from the pre-change commit, then rerun SelfTest/smoke.",
+    "advanced_version":  "In addition to the minimal relocation, extract the admission block into a small internal helper such as Invoke-DriverActionEvidenceDoneAdmission inside driver/86-loop-completion-checks.ps1 or a shared driver-local helper, with structured return fields allow, reason, hasEvidence, and shouldForceCoder. Add regression fixtures or script-level tests covering uninitialized/missing state properties, project-repo base commits, covered-after-restart evidence, done-qa-pass commit evidence, fast-lane DONE, and post-closure next-turn behavior. Store canary artifacts under the channel decisions directory with the operator approval, commands, logs, metric checks, and rollback note path."
+}

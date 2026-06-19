@@ -1,0 +1,160 @@
+{
+    "final_answer":  "Relocate ONLY the DONE-admission action-evidence guard — not the PARALLEL handler or the stagnation/no-progress logic — out of driver/85-loop-mode-transitions.ps1 into driver/86-loop-completion-checks.ps1. Insert it on semantic anchors (immediately after plannerStatus status-parse, inside the DONE∧normal-guard cluster, before the done-gate) rather than literal line offsets, because the line numbers (:1027 / :1433) are brittle and will drift. Before extraction, run a dependency analysis to lock the exact slice: the micro-debate left unresolved whether the surgical ~85:67-84 region captures all setup the guard depends on, so the boundary must be confirmed (slightly expanded if a dependency forces it) but kept far narrower than the literal 12-95 range. Harden the relocated block for StrictMode: defensively initialize every guard-local, treat helper failures as fail-closed CONTINUE with an explicit failure record, and keep $s.task_did_actions as the durable state carrier so the existing done-gate and downstream consumers are untouched. Fix the spurious-rejection metric by setting force_coder ONLY when the current active normal backlog task is genuinely rejected for missing_action_evidence (with task/backlog identity matching) and by clearing any stale force_coder on accepted-DONE/closure paths. Recompute evidence at done-gate time primarily from durable, speaker-agnostic signals (git diff / state) while preserving explicitly-supported reply-based exceptions, so codex and claude turns evaluate identically. Validate with a deterministic regression test and a bounded pure-decision shadow stage (decision logged, no side effects) before live cutover, then gate the cutover through bridge_self_canary in an isolated worktree, requiring driver.ps1 -SelfTest and smoke.ps1 to pass, explicit operator authorization, and single-commit rollback notes. Reject the literal lines-12-95 extraction: it is the wrong scope, conflicts with the surgical consensus, and would drag unrelated PARALLEL/stagnation logic out of 85.",
+    "decisions":  [
+                      {
+                          "decision":  "Relocate only the DONE-admission action-evidence guard from driver/85-loop-mode-transitions.ps1, leaving the PARALLEL handler and stagnation/no-progress logic in place (atom_001).",
+                          "rationale":  "Judge accept 0.898. The semantic scope is the correct unit of change: only the DONE-admission evidence check belongs in the completion-checks file. PARALLEL handling and stagnation detection are owned by 85 and are unrelated to the done path; moving them would expand the blast radius of a high-risk control-plane edit for no benefit.",
+                          "alternatives_considered":  [
+                                                          "Extract the literal block lines 12-95 as-is (atom_010, rejected)",
+                                                          "Move the entire loop-mode-transitions DONE/PARALLEL cluster wholesale"
+                                                      ],
+                          "risk":  "Mis-drawing the boundary could leave behind setup the guard depends on (incomplete relocation) or split interdependent logic — the unresolved micro-debate round-2 concern.",
+                          "test":  "Diff confirms only the action-evidence/DONE portion moved; PARALLEL handler and stagnation detector still resolve and fire from 85 under driver.ps1 -SelfTest; no dangling references to moved symbols remain in 85."
+                      },
+                      {
+                          "decision":  "Insert the relocated guard in driver/86-loop-completion-checks.ps1 after plannerStatus status-parse and before the full DONE-gate, anchored on semantic markers (status-parse regex; DONE∧normal gate condition) rather than literal line numbers (atom_002).",
+                          "rationale":  "Judge accept 0.8985. The guard must run after planner status is known but before DONE verification/closure. Semantic anchoring survives edits that shift :1027/:1433; literal-offset insertion is brittle and would silently land in the wrong place after any prior change.",
+                          "alternatives_considered":  [
+                                                          "Insert at literal line :1027/:1433 offsets",
+                                                          "Place before status-parse (would evaluate evidence without a known planner status)"
+                                                      ],
+                          "risk":  "Wrong ordering relative to status-parse or done-gate reintroduces \u0027property/variable not found\u0027 or evaluates on stale status.",
+                          "test":  "Execution-order assertion: guard runs after status parse and before the DONE gate in 86; insertion point sits inside the DONE∧normal-guard cluster; regression test confirms ordering on a real driver turn."
+                      },
+                      {
+                          "decision":  "Defensively initialize every guard-local value and treat helper failures as fail-closed CONTINUE with an explicit failure record (atom_003).",
+                          "rationale":  "Judge accept 0.856. The ×6/session \u0027property/variable not found\u0027 metric is a StrictMode symptom of uninitialized locals on the done path. Defaulting all locals and recording (not swallowing) helper failures makes the guard StrictMode-safe and keeps failures diagnosable instead of producing silent CONTINUE loops.",
+                          "alternatives_considered":  [
+                                                          "Relax Set-StrictMode on the done path (hides the real defect)",
+                                                          "Wrap in a broad try/catch that swallows errors silently"
+                                                      ],
+                          "risk":  "Fail-closed CONTINUE could mask a genuine DONE if helpers fail systematically; the explicit failure record mitigates by surfacing the cause.",
+                          "test":  "Canary scenarios with missing/uninitialized state assert zero StrictMode throws on the 86 done path and that a failure record is emitted on induced helper failure while behavior stays fail-closed."
+                      },
+                      {
+                          "decision":  "Set force_coder only when the current ACTIVE normal backlog task is rejected for missing_action_evidence, with explicit task/backlog identity matching, and clear any stale force_coder on accepted-DONE/closure paths (atom_004, modified per judge).",
+                          "rationale":  "Judge modify 0.823 (penalty 0.04). Direction is correct but under-specified: scoping force_coder to a real missing_action_evidence rejection eliminates spurious rejections, and the modification adds task-identity matching plus stale-flag clearing so a force_coder set on a prior task cannot survive into the turn after an accepted DONE — the exact spurious-flip metric.",
+                          "alternatives_considered":  [
+                                                          "Set force_coder on any DONE rejection regardless of task identity (original atom_004)",
+                                                          "Leave force_coder lifecycle untouched"
+                                                      ],
+                          "risk":  "Identity check must use the durable task id; a mismatch in how active-task identity is derived could either fail to clear a stale flag or clear a legitimately-needed one.",
+                          "test":  "Canary: accepted DONE then next turn asserts no force_coder/CONTINUE flip; rejection on a non-active or mismatched-identity task does not raise force_coder; stale force_coder is cleared on the accepted-DONE/closure path."
+                      },
+                      {
+                          "decision":  "Make durable, speaker-agnostic signals (git diff / state) the primary evidence source at done-gate time, while preserving explicitly-supported reply-based exceptions and the existing state contract (atom_006, modified per judge).",
+                          "rationale":  "Judge modify 0.668 (penalty 0.05). Recomputing evidence from durable signals removes the speaker-context mismatch (codex vs claude turn) that drives wrong evidence. As written the atom was too broad and risked discarding intentional verified/covered reply paths and implying a costly redesign; the modification keeps it scoped to refreshing the evidence value, not re-architecting the evidence model.",
+                          "alternatives_considered":  [
+                                                          "Full redesign replacing all reply-based evidence (original atom_006)",
+                                                          "Keep turn-specific reply evidence as primary (status quo, causes mismatch)"
+                                                      ],
+                          "risk":  "Higher implementation cost and feasibility risk (judge feasibility 0.58); over-reach could drop legitimate reply-verified evidence paths.",
+                          "test":  "Evidence computed for both codex and claude turns is identical for the same durable state; explicitly-supported reply exceptions still pass; no change to the $s.task_did_actions read/write contract."
+                      },
+                      {
+                          "decision":  "Preserve $s.task_did_actions as the durable carrier read/written by the done-gate and other consumers; evidence recomputation refreshes this value rather than replacing the contract (atom_007).",
+                          "rationale":  "Judge accept 0.87. Keeping the established state contract avoids breaking the done-gate and downstream consumers, and lets atom_006\u0027s recomputation slot in by updating the existing field instead of introducing a parallel state channel.",
+                          "alternatives_considered":  [
+                                                          "Introduce a new evidence state field and migrate consumers",
+                                                          "Compute evidence inline at each consumer"
+                                                      ],
+                          "risk":  "Low; if recomputation writes the field at the wrong phase, a consumer could read a stale value.",
+                          "test":  "Assert $s.task_did_actions is written before and read correctly by the done-gate and every other consumer; value reflects the recomputed durable evidence."
+                      },
+                      {
+                          "decision":  "Add a deterministic regression test (e.g. test-driver-done-guard-relocation.ps1) asserting no StrictMode throws and no spurious force_coder flips after an accepted DONE, and integrate it into the control-plane gate (atom_009).",
+                          "rationale":  "Judge accept 0.799 (penalty 0.02). This test directly covers the two target metrics (property/variable-not-found → 0; spurious force_coder → 0) and the relocation\u0027s specific failure mode, turning the success criteria into an automated guard against regression.",
+                          "alternatives_considered":  [
+                                                          "Rely only on smoke.ps1 / -SelfTest coverage",
+                                                          "Manual canary observation without a committed regression test"
+                                                      ],
+                          "risk":  "Control-plane gate integration adds maintenance cost; a flaky or under-specified test could block legitimate changes.",
+                          "test":  "Run test-driver-done-guard-relocation.ps1; assert pass for both the StrictMode-safety and post-accepted-DONE force_coder conditions; confirm it is wired into the control-plane gate."
+                      },
+                      {
+                          "decision":  "Run a bounded pure-decision observe-only/shadow stage before live cutover: refactor the guard into a side-effect-free decision function, log the new-location decision alongside the old for K sessions, and compare (atom_008, modified per judge).",
+                          "rationale":  "Judge modify 0.614 (penalty 0.06). Shadow validation is valuable but unsafe if it runs two live guards with side effects (duplicate mutations / double CONTINUE). The modification requires first extracting a pure decision path so only logging differs, making old≡new comparison safe and meaningful.",
+                          "alternatives_considered":  [
+                                                          "Run old and new live guards side-by-side without isolation (rejected as risky)",
+                                                          "Skip shadowing and cut over directly behind the canary gate"
+                                                      ],
+                          "risk":  "Refactor-to-pure adds work; if side effects aren\u0027t fully isolated, shadowing duplicates mutations. K must be chosen large enough to be representative.",
+                          "test":  "For K sessions, shadow log shows new-location decision == old-location decision with zero target-metric occurrences and zero duplicated side effects."
+                      },
+                      {
+                          "decision":  "Gate the cutover through bridge_self_canary in an isolated worktree, requiring driver.ps1 -SelfTest and smoke.ps1 to pass, explicit operator authorization, and comprehensive single-commit rollback notes (atom_005).",
+                          "rationale":  "Judge accept 0.84 (penalty 0.02). This is a high-risk control-plane edit to 85/86; canary + SelfTest + smoke + explicit operator sign-off + a one-commit revert path materially reduce cutover risk and satisfy the task\u0027s hard safety constraints.",
+                          "alternatives_considered":  [
+                                                          "Direct commit to master without canary",
+                                                          "Multi-commit change that complicates revert"
+                                                      ],
+                          "risk":  "Operator authorization is external to automated gating and cannot be self-granted; isolated-worktree setup is not zero-cost in every environment.",
+                          "test":  "Execute bridge_self_canary; SelfTest and smoke both pass; operator authorization is recorded; a single-commit revert is prepared and dry-run verified."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Extract literal lines 12-95 from driver/85-loop-mode-transitions.ps1 as the action-evidence DONE-guard block (atom_010).",
+                         "why":  "Judge reject 0.35 (correctness 0.05, penalties 0.15 + 0.08). The 12-95 range is overbroad and includes unrelated PARALLEL and stagnation/no-progress logic, directly conflicting with the surgical-relocation consensus (atom_001). The micro-debate resolved in favor of minimal, targeted change; moving the whole literal block would relocate unrelated behavior out of 85 and sharply increase regression risk on a control-plane edit."
+                     }
+                 ],
+    "open_questions":  [
+                           "What is the exact semantic boundary of the DONE-admission action-evidence guard within 85:12-95? Micro-debate round 2 left unresolved whether the ~85:67-84 slice captures all setup/related checks or must be slightly (but still narrowly) expanded — a dependency analysis must confirm before extraction.",
+                           "Which specific reply-based evidence exceptions are \u0027explicitly supported\u0027 and must be preserved when durable speaker-agnostic evidence becomes primary (atom_006 modify)?",
+                           "How many shadow sessions K are required for the observe-only stage to be representative before live cutover (atom_008)?",
+                           "Is operator authorization scoped to this single cutover, or standing for the parent control-plane change family — and who is the authorizing operator of record?",
+                           "Exactly how is \u0027active normal backlog task identity\u0027 derived for the force_coder identity match (which durable task id field), to ensure stale-flag clearing is reliable (atom_004 modify)?"
+                       ],
+    "implementation_plan":  [
+                                "1. In an isolated worktree (bridge_self_canary), run a dependency analysis over 85:12-95 to lock the exact surgical slice of the DONE-admission action-evidence guard, confirming the PARALLEL handler and stagnation/no-progress logic are excluded and any required setup is included (resolves atom_001 vs atom_010 conflict and the micro-debate round-2 question).",
+                                "2. Refactor the guard into a side-effect-free pure decision function so its CONTINUE/force_coder/evidence decision can be evaluated without mutating state (prerequisite for safe shadowing — atom_008).",
+                                "3. Harden the function for StrictMode: defensively initialize all guard-locals; treat helper failures as fail-closed CONTINUE with an explicit failure record (atom_003).",
+                                "4. Constrain force_coder: set it only on a real missing_action_evidence rejection of the active normal backlog task with explicit task/backlog identity matching, and clear stale force_coder on accepted-DONE/closure paths (atom_004 modified).",
+                                "5. Recompute action evidence from durable speaker-agnostic signals (git diff/state) as primary, preserving explicitly-supported reply-based exceptions; continue writing/reading $s.task_did_actions as the durable carrier (atom_006 modified + atom_007).",
+                                "6. Insert the hardened guard into driver/86-loop-completion-checks.ps1 anchored on semantic markers — after plannerStatus status-parse, inside the DONE∧normal-guard cluster, before the done-gate — not on literal line offsets (atom_002).",
+                                "7. Add deterministic regression test test-driver-done-guard-relocation.ps1 (zero StrictMode throws; no spurious force_coder flip after accepted DONE) and wire it into the control-plane gate (atom_009).",
+                                "8. Run the bounded pure-decision shadow stage for K sessions, logging new-location decision alongside old; require old≡new and zero target-metric occurrences before proceeding (atom_008 modified).",
+                                "9. Execute the bridge_self_canary gate: driver.ps1 -SelfTest and smoke.ps1 must pass; collect canary evidence; verify the two target metrics (property/variable-not-found and spurious force_coder) are both 0 (atom_005).",
+                                "10. Prepare single-commit rollback notes and dry-run the revert; obtain explicit operator authorization; only then cut over to live (atom_005)."
+                            ],
+    "next_step":  "In an isolated bridge_self_canary worktree, run the dependency analysis over driver/85-loop-mode-transitions.ps1:12-95 to lock the exact surgical boundary of the DONE-admission action-evidence guard (confirming PARALLEL and stagnation logic are excluded) — this unblocks the extraction and resolves the atom_001 vs atom_010 scope conflict.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The action-evidence block (85:67-84) is NOT separable from the stagnation/no-progress detector; the decision\u0027s core claim that it can be surgically moved while \u0027leaving stagnation in place\u0027 is contradicted by the code.",
+                                  "why":  "In driver/85-loop-mode-transitions.ps1 the evidence computation lives inside the `if ($speaker -eq \u0027codex\u0027 -and $mode -ne \u0027discuss\u0027)` stagnation block (line 52). It reads `$hasChanges` (set at 66) and sets `$hasChanges=$true` at lines 76 and 81 from Get-TaskActionEvidence and Test-TaskCoveredVerifiedDoneEvidence. The no-progress branch at 86-100 (`if ($hasChanges) {reset} else {increment + Activate-Doctor}`) DEPENDS on those augmentations. Extracting ~67-84 strips the action-evidence and covered-verified contributions from `$hasChanges`, so stagnation falls back to only the cruder `git -C $bridgeRoot diff --stat HEAD` (line 53) and will false-positive \u0027no progress\u0027 on turns where real work exists in the effective project repo — spuriously firing Activate-Doctor/Doctor. Both the rejected 12-95 boundary AND the accepted ~67-84 boundary are wrong; a correct fix must duplicate or restructure the shared signal, which the plan does not budget for and the \u0027dependency analysis\u0027 open question has not resolved."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "atom_003\u0027s \u0027fail-closed CONTINUE\u0027 inverts the current fail-OPEN behavior and creates a livelock risk that can brick the autonomous loop, with hard recovery.",
+                                  "why":  "Today, evidence computation is wrapped in `try {...} catch {}` with a SILENT empty catch (85:69-83): a helper failure leaves task_did_actions unset, so the done-gate (86:1439) sees didActions=false and the task CLOSES (fail-open). The decision flips this to \u0027fail-closed CONTINUE with a failure record\u0027 — meaning a persistent helper fault now REJECTS every DONE and forces CONTINUE forever, never closing a genuinely-finished task. Because the driver loop runs the agent, this is a self-inflicted livelock. proposal_B explicitly warned a control-plane edit can \u0027deadlock or infinite force_coder\u0027 the autopilot. The shadow stage runs ON the driver being modified, and per repo memory the coder sandbox cannot reach .git, so automated rollback of a livelocked driver is non-trivial. The decision presents fail-closed as unambiguously \u0027safe\u0027 without acknowledging it changes the failure semantics from close-anyway to never-close."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The contract\u0027s literal anchors are wrong AND there is no insertion point that satisfies both \u0027after planner status-parse\u0027 and \u0027triggered on every driver turn\u0027.",
+                                  "why":  "In 86: `:1027` is inside the fast-lane `if ($coderStatus -eq \u0027DONE\u0027)` block (1024-1032), not \u0027immediately after status-parse\u0027; the planner status is parsed at 1036 inside `if ($speaker -eq \u0027claude\u0027)`; `:1433` is the STUDY gate, while the real normal action-evidence done-gate is 1438-1463. More importantly: the original write fires on CODEX turns (85:52), but the only place \u0027after status-parse\u0027 that has `$plannerStatus` for the planner decision is inside the claude-only block (1034+), which never runs on codex turns. Placing the guard before 1034 means plannerStatus isn\u0027t parsed yet; placing it after means it won\u0027t run on codex turns — violating the \u0027every driver turn\u0027 constraint and success_test #10. The decision\u0027s \u0027semantic anchoring\u0027 hand-waves this speaker/every-turn contradiction rather than resolving it, and also short-circuits exist between the proposed point and the gate (decomposition `continue` at 1043, parallel dispatch at 1050+)."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The \u0027spurious force_coder\u0027 success metric is likely unfixable within the stated 85→86 relocation scope; its source is never identified.",
+                                  "why":  "force_coder is written in 7 sites in driver/83-loop-agent-turn.ps1 (287,308,390,405,422,528,538) and 4 in 86 (955,976,1216,1354). The task contract scopes the authorized control-plane change to relocating the guard from 85 to 86. atom_004 narrows force_coder to \u0027active normal task rejected for missing_action_evidence\u0027 but never pins WHICH write produces the post-accepted-DONE flip. If the spurious flip originates in 83 (the most active force_coder writer, out of the relocation scope), then (a) the relocation cannot move the metric to 0, and (b) fixing it expands the blast radius to a third control-plane file that the canary/operator-authorization/regression plan was scoped around 85/86 only. proposal_A even flags \u0027force_coder may still be set from stale state after task closure\u0027 — left unmitigated here."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Moving the task_did_actions producer from very-early 85 to mid-86 (after ~1027) reorders it relative to ~18 consumers/writers, with the affected set explicitly unanalyzed.",
+                                  "why":  "task_did_actions is read/written at 86:967,977,990,1193,1314,1350,1370,1439,1455,1503,1529,1551,1573,1759,1841, plus 86-loop-completion-cleanup (768,792,808), 86-loop-completion-actions (75), and 87. The current write at 85:84 happens before the turn increment, so all of 86 sees it. After relocation to \u003e1027, consumers/writers at 86:967-990 run BEFORE the new write, and the covered-after-restart reset (1455) sets it false within the same gate. The decision (atom_007) and open_question #5 admit a stale-read/write-ordering hazard \u0027whose read-ordering could be affected\u0027 but defer it — shipping a high-risk reordering across a self-modifying control plane on a \u0027verify later\u0027 basis."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "SelfTest/smoke are relied on as the safety evidence but are not shown to exercise the relocated guard\u0027s runtime paths (StrictMode, missing-state, post-DONE force_coder).",
+                                  "why":  "smoke.ps1 step 9 (line 164) runs `driver.ps1 -SelfTest` as a ParseFile + child-process load check and references canary checks; there is no evidence either drives a real normal-DONE turn through the moved guard. atom_005\u0027s own risk note concedes a canary \u0027that does not exercise the StrictMode/force_coder paths could pass while latent defects ship.\u0027 The plan\u0027s primary gates (SelfTest+smoke pass) are therefore weak/possibly-vacuous evidence for THIS change. The compensating regression test (atom_009) is authored by the same change and wired into the very gate it must itself pass — a bootstrap with no independent validation that it actually triggers the StrictMode throw / force_coder flip it claims to assert against."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The decision is a plan, so the output_format and the execution-dependent success_tests are unmet as delivered.",
+                                  "why":  "output_format requires \u0027implemented code changes ... evidence of successful canary execution, results from driver.ps1 -SelfTest and smoke.ps1, and prepared rollback notes,\u0027 and next_step is still \u0027run the dependency analysis ... before any code is moved.\u0027 No code is moved, no canary evidence, no SelfTest/smoke results, no operator authorization, no rollback notes exist yet. Success_tests requiring executed proof (SelfTest passes, smoke passes, canary completes with positive evidence, operator authorization obtained, rollback notes documented, both metrics→0) are all forward-looking promises, none satisfiable by the record itself. Additionally, two metric-critical implementation parameters remain open questions — the exact guard boundary and the shadow session count K / equivalence threshold — meaning the \u0027final\u0027 decision cannot yet be executed deterministically."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

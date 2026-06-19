@@ -1,15 +1,4 @@
 ﻿$script:DriverLoopModeTransitionBlock = {
-  . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
-  if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
-    throw 'Missing task-action-evidence helper: Get-TaskActionEvidence'
-  }
-  if (-not (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue)) {
-    throw 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext'
-  }
-  if (-not (Get-Command Test-BridgeAutoCommitWorthPath -ErrorAction SilentlyContinue)) {
-    . (Join-Path $bridgeRoot 'lib\auto-commit-worthiness.ps1')
-  }
-
   # [[PARALLEL: <repo> || подзадача1 ;; подзадача2 ;; ...]] -> планировщик запускает
   # независимые под-задачи ПАРАЛЛЕЛЬНО (каждая в своём worktree), затем мерж. Блокирует
   # ход на время выполнения (heartbeat обновляется), потом постит сводку.
@@ -64,24 +53,6 @@
       }
     }
     $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
-    $hasActionEvidence = ($attachmentMetas.Count -gt 0)
-    $hasCoveredVerifiedEvidence = $false
-    try {
-      $stEvidence = Read-State
-      $repoEvidenceRoot = Get-TaskRepoRoot
-      $evidenceContext = Get-TaskActionEvidenceContext -State $stEvidence -DefaultRepoRoot $repoEvidenceRoot -BridgeRoot $bridgeRoot
-      $actionEvidence = Get-TaskActionEvidence -RepoRoot ([string]$evidenceContext.repo_root) -BaseCommit ([string]$evidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($evidenceContext.base_dirty_paths)
-      if ($actionEvidence -and [bool]$actionEvidence.has_actions) {
-        $hasActionEvidence = $true
-        $hasChanges = $true
-      }
-      $hasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
-      if ($hasCoveredVerifiedEvidence) {
-        $hasActionEvidence = $true
-        $hasChanges = $true
-      }
-    } catch {}
-    if ($mode -eq 'normal' -and $hasActionEvidence) { Update-State { param($s) $s.task_did_actions=$true } | Out-Null }
     $npc = [int](Read-State).no_progress_count
     if ($hasChanges) {
       Update-State { param($s) $s.no_progress_count=0 } | Out-Null

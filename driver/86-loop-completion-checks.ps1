@@ -1298,10 +1298,18 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     $noopHasDoneQaPassCommit = $false
     $noopEvidenceChecked = $false
     $noopGuardError = ''
+    $noopBacklogId = ''
+    $noopCurrentTaskId = ''
+    $noopActiveBacklogIdentityMatched = $false
     try {
       $stNoop = Read-State
       $noopBacklogId = [string]$stNoop.current_backlog_id
+      $noopCurrentTaskId = [string]$stNoop.current_task_id
       $noopHasBacklogId = -not [string]::IsNullOrWhiteSpace($noopBacklogId)
+      $noopActiveBacklogIdentityMatched = $noopHasBacklogId
+      if ($noopActiveBacklogIdentityMatched -and -not [string]::IsNullOrWhiteSpace($noopCurrentTaskId) -and $noopCurrentTaskId -ne $noopBacklogId) {
+        $noopActiveBacklogIdentityMatched = $false
+      }
       $noopTask = [string]$stNoop.current_task
       $repoNoopRoot = Get-TaskRepoRoot
       $noopEvidenceContext = Get-TaskActionEvidenceContext -State $stNoop -DefaultRepoRoot $repoNoopRoot -BridgeRoot $bridgeRoot
@@ -1337,12 +1345,15 @@ $script:DriverLoopCompletionInitialChecksBlock = {
         $noopBaseRejectReason = $noopRejectReason
         if (-not [string]::IsNullOrWhiteSpace($noopGuardError)) { $noopRejectReason = $noopRejectReason + ': ' + $noopGuardError }
         $noopFailureText = 'DONE rejected by action evidence guard: ' + $noopRejectReason
-        $noopForceCoderRecovery = ($noopBaseRejectReason -eq 'missing_action_evidence')
+        $noopForceCoderRecovery = ($noopBaseRejectReason -eq 'missing_action_evidence' -and $noopActiveBacklogIdentityMatched)
         $noopRecoveryMessage = "Codex: создай реальный commit/diff evidence для текущей backlog-задачи, затем проверки и DONE."
         $noopFailureRecord = [pscustomobject]@{
           kind = 'test_failed'
           reason = $noopBaseRejectReason
           text = $noopFailureText
+          current_backlog_id = $noopBacklogId
+          current_task_id = $noopCurrentTaskId
+          force_coder_recovery = $noopForceCoderRecovery
           ts = (Get-Date).ToString('o')
         }
         Update-State ({
@@ -1361,6 +1372,11 @@ $script:DriverLoopCompletionInitialChecksBlock = {
         } else {
           Add-Message -From system -Text ("🚫 DONE отклонён: backlog-задача не имеет свежего commit/diff evidence перед переключением режима (reason=" + $noopRejectReason + "). Нельзя закрывать реализационную задачу планом. Продолжай: реализуй изменения, запусти проверки и только потом STATUS: DONE.") -Kind event | Out-Null
         }
+      } else {
+        Update-State {
+          param($s)
+          $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+        } | Out-Null
       }
     } catch {
       $plannerStatus = 'CONTINUE'

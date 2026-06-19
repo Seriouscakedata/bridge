@@ -1,0 +1,196 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.9,
+                                     "impact":  0.86,
+                                     "simplicity":  0.88,
+                                     "risk_reduction":  0.89,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct semantic scope: move only the DONE-admission action-evidence guard while leaving PARALLEL handling and stagnation/no-progress logic owned by 85. This directly resolves the high-impact conflict with the literal broad extraction.",
+                      "total":  0.898
+                  },
+                  {
+                      "atom_id":  "atom_002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.88,
+                                     "impact":  0.9,
+                                     "simplicity":  0.82,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct placement: the guard belongs after planner status is known and before the normal DONE verification/closure gates. Semantic anchoring is preferable to brittle line-number insertion.",
+                      "total":  0.8985
+                  },
+                  {
+                      "atom_id":  "atom_003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.82,
+                                     "impact":  0.87,
+                                     "simplicity":  0.76,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.84
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Defensive initialization and fail-closed behavior are necessary for StrictMode safety. Explicit failure recording also makes guard failures diagnosable instead of creating silent CONTINUE loops.",
+                      "total":  0.856
+                  },
+                  {
+                      "atom_id":  "atom_004",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.84,
+                                     "feasibility":  0.88,
+                                     "impact":  0.8,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.84,
+                                     "specificity":  0.76
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Needs explicit task identity check and stale force_coder clearing on accepted DONE/closure paths.",
+                                            "value":  0.04
+                                        }
+                                    ],
+                      "reason":  "The direction is correct: force_coder should only be set for a real missing_action_evidence rejection on the active normal backlog task. Modify to require current task/backlog identity matching and to prevent stale force_coder from surviving an accepted DONE.",
+                      "total":  0.823
+                  },
+                  {
+                      "atom_id":  "atom_005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.78,
+                                     "impact":  0.84,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Operator authorization is external to automated gating and isolated worktree setup is not truly low-cost in all environments.",
+                                            "value":  0.02
+                                        }
+                                    ],
+                      "reason":  "Strong deployment safety atom. Canary, SelfTest, smoke, explicit authorization, and single-commit rollback notes materially reduce cutover risk.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "atom_006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.58,
+                                     "impact":  0.82,
+                                     "simplicity":  0.34,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.64
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Too broad as written; may discard intentional verified/covered reply paths and implies a higher-cost redesign.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Durable speaker-agnostic evidence should be the primary source at DONE-gate time, but this should be modified to preserve explicitly supported reply-based exceptions and the existing state contract.",
+                      "total":  0.668
+                  },
+                  {
+                      "atom_id":  "atom_007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.74,
+                                     "simplicity":  0.94,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Preserving $s.task_did_actions avoids breaking existing DONE-gate and downstream consumers while still allowing evidence recomputation to refresh the value.",
+                      "total":  0.87
+                  },
+                  {
+                      "atom_id":  "atom_008",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.55,
+                                     "impact":  0.65,
+                                     "simplicity":  0.34,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Shadowing an old guard with side effects can duplicate mutations or continue behavior unless first refactored into a pure decision path.",
+                                            "value":  0.06
+                                        }
+                                    ],
+                      "reason":  "Observe-only validation is useful, but the atom needs a bounded pure-decision shadow design. Running old and new live guard logic side by side is risky unless side effects are isolated.",
+                      "total":  0.614
+                  },
+                  {
+                      "atom_id":  "atom_009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.7,
+                                     "impact":  0.88,
+                                     "simplicity":  0.48,
+                                     "risk_reduction":  0.93,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Control-plane gate integration adds nontrivial maintenance cost.",
+                                            "value":  0.02
+                                        }
+                                    ],
+                      "reason":  "A deterministic regression for StrictMode safety and post-accepted-DONE force_coder behavior is high value and directly covers the relocation failure mode.",
+                      "total":  0.799
+                  },
+                  {
+                      "atom_id":  "atom_010",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.05,
+                                     "feasibility":  0.72,
+                                     "impact":  0.12,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.02,
+                                     "specificity":  0.55
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Major conflict with atom_001 semantic scope.",
+                                            "value":  0.15
+                                        },
+                                        {
+                                            "reason":  "Literal lines 12-95 are overbroad and include unrelated PARALLEL/stagnation logic rather than only the DONE guard.",
+                                            "value":  0.08
+                                        }
+                                    ],
+                      "reason":  "The literal line-range extraction is the wrong scope and conflicts with the consensus surgical relocation. It would likely move unrelated behavior out of 85 and increase regression risk.",
+                      "total":  0.35
+                  }
+              ]
+}

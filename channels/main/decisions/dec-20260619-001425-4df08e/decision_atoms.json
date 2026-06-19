@@ -1,0 +1,120 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_001",
+                      "statement":  "Surgically relocate only the DONE-admission action-evidence guard from driver/85-loop-mode-transitions.ps1, leaving unrelated PARALLEL handler and stagnation/no-progress logic in place.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Relocation Scope",
+                      "test":  "Verify only the action-evidence/DONE portion (~85:67-84) is moved; confirm PARALLEL handler and stagnation detector remain functional in 85.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_002",
+                      "statement":  "Place the relocated guard in driver/86-loop-completion-checks.ps1 after plannerStatus status parsing and before the full DONE-gate checks, anchoring the insertion on semantic markers rather than literal line numbers.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Relocation Placement",
+                      "test":  "Verify guard execution order: after status parse, before DONE gate in 86; confirm insertion point is semantically correct (e.g., after status-parse regex, before `DONE∧normal` gate condition).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_003",
+                      "statement":  "Initialize every guard-local value defensively and treat helper failures as fail-closed CONTINUE with an explicit failure record, addressing StrictMode-triggered \u0027property/variable not found\u0027 errors.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Robustness/Error Handling",
+                      "test":  "Run canary scenarios with missing/uninitialized state; assert no variable-not-found errors and fail-closed behavior; confirm zero StrictMode throws on the 86 done path.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_004",
+                      "statement":  "Only set force_coder when the current active normal backlog task is rejected for missing_action_evidence, preventing spurious rejections after an accepted DONE.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Logic/Behavior",
+                      "test":  "Run canary scenario: accepted DONE, then next turn; assert no force_coder/CONTINUE flip.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_005",
+                      "statement":  "Gate the cutover through bridge_self_canary in an isolated worktree, requiring driver.ps1 -SelfTest and smoke.ps1 to pass, explicit operator authorization, and comprehensive rollback notes for a single-commit revert.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Deployment/Safety",
+                      "test":  "Execute bridge_self_canary; run SelfTest+smoke and assert pass; obtain operator authorization; confirm single-commit revert notes are prepared.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_006",
+                      "statement":  "Recompute action evidence from durable, speaker-agnostic signals (e.g., git diff, state) at the done-gate phase, rather than relying on turn-specific replies, to avoid speaker-context mismatches.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Logic/Redesign",
+                      "test":  "Verify evidence computation uses durable, speaker-agnostic signals; assert correct evidence for both codex and claude turns.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_007",
+                      "statement":  "Preserve the existing state contract by continuing to use $s.task_did_actions as the durable carrier for the done-gate and other consumers.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "State Management",
+                      "test":  "Verify $s.task_did_actions is still written/read correctly by done-gate and other consumers.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_008",
+                      "statement":  "Implement an observe-only / shadow stage before live cutover, logging new-location decisions alongside old for comparison and metric validation.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Deployment/Safety",
+                      "test":  "Verify shadow logging of new-location decision alongside old for K sessions; assert old≡new and zero target metrics.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_009",
+                      "statement":  "Add a deterministic regression test specifically for the done-guard relocation, asserting no StrictMode throws and no spurious force_coder flips after an accepted DONE, and integrate it into the control-plane gate.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Testing/Validation",
+                      "test":  "Run the new regression test (e.g., `test-driver-done-guard-relocation.ps1`); assert pass for both StrictMode and force_coder conditions.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_010",
+                      "statement":  "Extract lines 12-95 from driver/85-loop-mode-transitions.ps1 as the action-evidence DONE-guard block.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Relocation Scope",
+                      "test":  "Verify lines 12-95 are extracted from driver/85-loop-mode-transitions.ps1.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

@@ -1,0 +1,99 @@
+{
+    "proposer":  "B",
+    "understanding":  "A control-plane refactor of the self-hosting Bridge driver loop. The \u0027action-evidence DONE-guard\u0027 currently lives in driver/85-loop-mode-transitions.ps1 (~lines 12-95): it computes action evidence (Get-TaskActionEvidence + Test-TaskCoveredVerifiedDoneEvidence) and writes $s.task_did_actions. That write happens on the CODER turn ($speaker -eq \u0027codex\u0027), BEFORE status is parsed in 86. The consuming done-gate is in driver/86-loop-completion-checks.ps1 at ~line 1438 (the DONE∧normal cluster): it reads (Read-State).task_did_actions and, if didActions but no [[VERIFIED]], forces the coder back (force_coder). Status-parse is ~1023-1036. Under the newly-enforced StrictMode (per recent commit on blocks 83/85/86), evaluating the guard before status/decision variables exist throws \u0027property/variable not found\u0027 ~6x/session, and evaluating evidence at the wrong phase produces spurious \u0027DONE отклонён\u0027/force_coder right after an accepted DONE. The fix relocates the guard into 86 immediately after status-parse (after ~:1027) and before the done-gate (before ~:1433), so all referenced variables are populated and the evidence reflects the decision actually being gated. Because this edits the loop that runs the agent, it must ship via bridge_self_canary + operator authorization + driver.ps1 -SelfTest + smoke.ps1 + rollback notes.",
+    "summary":  "Relocate ONLY the action-evidence→task_did_actions computation (not the whole 85:12-95 block, which also contains the unrelated PARALLEL handler and no-progress/Activate-Doctor detector) into 86 between status-parse and the normal-DONE done-gate. Treat it as a redesign, not a cut-paste, because the source is codex-guarded while the gate is claude/fastLaneDone-guarded — recompute evidence from durable git/state signals at the gate phase. Validate first in shadow/observe-only mode (reusing the existing depth-shadow / delivery-gate-shadow pattern), then cut over only after a canary in an isolated worktree shows both target metrics at 0, SelfTest+smoke green, and the operator authorizes. Rollback = single-commit revert.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Root cause is StrictMode-triggered references in the 85 guard to status/decision state that only exists after status-parse in 86; relocating after status-parse (~:1036) resolves the 6 \u0027property/variable not found\u0027 throws.",
+                               "reason":  "A recent commit enforces Set-StrictMode -Version Latest on dot-sourced blocks 83/85/86; under strict mode, reading a not-yet-populated variable/property throws, and the guard currently runs before status-parse.",
+                               "tradeoff":  "Inferred from the StrictMode commit and execution order rather than a captured stack trace; the exact 6 references should be confirmed from session logs before claiming the metric is fully addressed.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "This is NOT a pure cut-paste: the source block is guarded by ($speaker -eq \u0027codex\u0027), but the done-gate fires on (($speaker -eq \u0027claude\u0027) -or $fastLaneDone). The relocated evidence must be recomputed from durable, speaker-agnostic signals (git diff vs base commit via Get-TaskActionEvidence, and state), NOT from the current turn\u0027s reply.",
+                               "reason":  "Get-TaskActionEvidence reads repo/git ground truth (speaker-independent), whereas Test-TaskCoveredVerifiedDoneEvidence -Reply reads the reply; naively running codex-guarded logic at the claude-phase would evaluate the wrong reply and break the cross-turn task_did_actions contract.",
+                               "tradeoff":  "Recomputing at the gate adds one git evidence read per DONE turn (minor latency) but removes the cross-turn coupling that causes the spurious force_coder.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Preserve the existing state contract: keep $s.task_did_actions as the durable carrier the done-gate consumes (Read-State.task_did_actions at ~:1439), so covered-after-restart and other consumers keep working.",
+                               "reason":  "The done-gate and Test-CoveredAfterRestart already key off task_did_actions; changing the carrier would widen blast radius beyond this task.",
+                               "tradeoff":  "Stays within the proven state model but means the relocation must still write/read the same flag, not introduce a new variable.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Scope the move precisely to the action-evidence/DONE portion (~85:67-84); leave the PARALLEL handler (~13-49) and the stagnation/no-progress + Activate-Doctor detector (~51-101) in place in 85.",
+                               "reason":  "Lines 12-95 of 85 bundle three concerns; the no-progress detector and PARALLEL dispatch are unrelated to the DONE-gate and have their own side effects (no_progress_count, Activate-Doctor).",
+                               "tradeoff":  "Requires surgical extraction and careful dependency tracing rather than moving a contiguous block, but avoids dragging unrelated control flow into the done-gate cluster.",
+                               "confidence":  0.68
+                           },
+                           {
+                               "statement":  "Ship behind an observe-only / shadow stage before live cutover, reusing the existing shadow pattern (depth-shadow.jsonl / lib/delivery-gate-shadow.ps1).",
+                               "reason":  "Shadow logging the new-location decision alongside the old for K sessions proves the two target metrics reach 0 without risking the live loop; the infra already exists in-repo.",
+                               "tradeoff":  "Delays the cutover by several sessions of evidence collection but is the cheapest insurance for a self-modifying control-plane change.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Gate the cutover through bridge_self_canary in an isolated git worktree, with driver.ps1 -SelfTest + smoke.ps1 as merge prerequisites, an explicit operator authorization step, and a single-commit revert as rollback.",
+                               "reason":  "Editing 85/86 edits the loop currently executing the agent; canary infra (lib/canary.ps1, tools/test-autopilot-controlplane-gate.ps1, test-canary-* tools) exists exactly for this class of change.",
+                               "tradeoff":  "Higher process overhead per change, but a broken done-gate could deadlock or infinitely force_coder the whole autopilot — the overhead is justified.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Anchor the insertion on semantic markers (the planner status-parse regex block and the `plannerStatus -eq \u0027DONE\u0027 -and modeBeforeIncrement -eq \u0027normal\u0027` gate), not on the literal line numbers :1027/:1433.",
+                               "reason":  "The contract\u0027s line numbers are a snapshot; 86 is large and actively edited, so raw offsets drift and risk pasting into the wrong cluster.",
+                               "tradeoff":  "Slightly more work to locate the anchors at edit time, but removes the most likely silent-failure mode (correct file, wrong position).",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Add a deterministic regression test (e.g. tools/test-driver-done-guard-relocation.ps1) asserting (a) no StrictMode throw across the 86 done path and (b) no force_coder/CONTINUE flip on the turn after an accepted normal DONE, and wire it into the control-plane gate.",
+                               "reason":  "The success criteria are metric-based (×6→0, spurious→0); a unit/regression test converts them into a repeatable gate rather than relying solely on live session observation.",
+                               "tradeoff":  "Test authoring effort up front, but it is the only durable guard against regression on a control-plane edit.",
+                               "confidence":  0.83
+                           }
+                       ],
+    "assumptions":  [
+                        "Set-StrictMode -Version Latest is active for dot-sourced blocks 85/86 (implied by the recent test-driver-loop-strictmode commit), so undefined variable/property access throws.",
+                        "Get-TaskActionEvidence/Get-TaskActionEvidenceContext read git/state ground truth and are speaker-agnostic; Test-TaskCoveredVerifiedDoneEvidence reads the reply text.",
+                        "The done-gate referenced as \u0027:1433\u0027 is the normal-DONE gate at ~:1438 that reads task_did_actions and can flip plannerStatus to CONTINUE (the \u0027force_coder\u0027 mechanism).",
+                        "The contract\u0027s line numbers (12-95, :1027, :1433) are approximate snapshots and will drift; semantic anchors are authoritative.",
+                        "bridge_self_canary is the in-repo canary mechanism (lib/canary.ps1 / canary.ps1) and tools/test-autopilot-controlplane-gate.ps1 is the control-plane gate it integrates with.",
+                        "\u0027Operator authorization\u0027 means a human approval step that must precede live cutover, separate from the autonomous backlog approval.",
+                        "The shadow/observe-only pattern (depth-shadow.jsonl, delivery-gate-shadow) can be reused to dual-run the old vs new decision without affecting live flow.",
+                        "The action-evidence guard is only one of three concerns colocated in 85:12-95; the PARALLEL handler and no-progress detector are out of scope and stay put."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Wrong ordering relative to the done-gate — the relocated guard ends up after the gate has already decided, making it a no-op and leaving both metrics unchanged (the contract\u0027s truncated \u0027неверный порядок относительно done-...\u0027 risk).",
+                      "severity":  "high",
+                      "mitigation":  "Insert strictly between the status-parse block and the normal-DONE gate, anchored on semantic markers; add the regression test asserting decision order and run it in the control-plane gate."
+                  },
+                  {
+                      "risk":  "Speaker-context mismatch: codex-guarded evidence logic moved to the claude/fastLaneDone phase evaluates the wrong reply/turn, introducing NEW spurious DONE rejections instead of removing them.",
+                      "severity":  "high",
+                      "mitigation":  "Recompute evidence from durable git/state signals at the gate; keep $s.task_did_actions as the carrier; shadow-compare old vs new decisions for K sessions before cutover."
+                  },
+                  {
+                      "risk":  "Self-modifying control-plane edit bricks the driver loop (deadlock or infinite force_coder), and because the loop runs the agent, recovery is hard.",
+                      "severity":  "high",
+                      "mitigation":  "Canary in an isolated worktree; driver.ps1 -SelfTest + smoke.ps1 as merge prerequisites; operator authorization gate; single-commit revert documented and pre-staged as rollback."
+                  },
+                  {
+                      "risk":  "Over-broad extraction: moving the whole 85:12-95 block drags the PARALLEL handler and no-progress/Activate-Doctor detector into the done cluster, corrupting unrelated control flow.",
+                      "severity":  "high",
+                      "mitigation":  "Surgically extract only the action-evidence→task_did_actions lines; trace all consumers of the moved code (no_progress_count, Activate-Doctor) and confirm they remain in 85."
+                  },
+                  {
+                      "risk":  "Line-number drift: 86 is large and actively edited, so :1027/:1433 no longer point where the contract assumes, causing a paste into the wrong cluster that passes review by line number.",
+                      "severity":  "medium",
+                      "mitigation":  "Locate anchors by code pattern (status-parse regex, the DONE∧normal gate condition) at edit time; verify the surrounding cluster before committing."
+                  },
+                  {
+                      "risk":  "Metric verification is hard to prove to 0 from a short canary window — the errors are intermittent (×6/session), so a clean canary may be luck rather than a fix.",
+                      "severity":  "medium",
+                      "mitigation":  "Require both the deterministic regression test (proving no StrictMode throw / no spurious flip) AND a multi-session shadow window showing 0 occurrences before declaring success."
+                  }
+              ],
+    "minimal_version":  "Surgically extract the action-evidence/DONE portion (~85:67-84) and place a recomputed, speaker-agnostic evidence evaluation in 86 between the planner status-parse (~:1036) and the normal-DONE gate (~:1438), still writing/reading $s.task_did_actions so the gate logic is unchanged. Leave the PARALLEL handler and no-progress detector in 85. Confirm no StrictMode throws on the done path, then run driver.ps1 -SelfTest and smoke.ps1, capture their output as canary evidence, get operator authorization, and document a one-commit `git revert` as rollback. Anchor edits on code patterns, not raw line numbers.",
+    "advanced_version":  "Land the relocation behind an observe-only shadow stage first: the new-location guard logs its DONE decision to depth-shadow.jsonl alongside the still-live old-location decision (reusing the delivery-gate-shadow pattern) for K sessions, with a small comparator asserting old≡new and counting StrictMode-throw and spurious-force_coder occurrences. Add tools/test-driver-done-guard-relocation.ps1 asserting (a) zero \u0027property/variable not found\u0027 on the 86 done path and (b) zero CONTINUE/force_coder flip on the turn after an accepted normal DONE, and wire it into tools/test-autopilot-controlplane-gate.ps1. Then cut over via bridge_self_canary in an isolated worktree with automatic rollback if either target metric is non-zero, gated on SelfTest+smoke green and explicit operator sign-off. Rollback notes cover both the single-commit revert and the shadow-flag kill-switch so the change can be disabled without a redeploy."
+}
