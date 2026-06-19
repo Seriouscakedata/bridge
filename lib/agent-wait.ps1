@@ -58,9 +58,13 @@ function Wait-AgentProcess {
     $elapsedMs = $sw.ElapsedMilliseconds
     $elapsedSec = [int]($elapsedMs / 1000)
 
-    # Liveness signal: total bytes written to out+err. Growth means progress.
+    # Liveness signal: total bytes written to out+err+msg. Growth means progress.
+    # 2026-06-19 FIX: include the coder's -o MESSAGE file (MsgFile). Codex writes its
+    # real reply to msgF (driver/40-agent-invoke.ps1 -o $msgF), and a turn that produces
+    # only to msgF was previously indistinguishable from a dead one -> false "zero output"
+    # / stall label. Empty for planner/summary callers (skipped by the guard below).
     $totLen = [long]0
-    foreach ($fp in @($OutFile, $ErrFile)) {
+    foreach ($fp in @($OutFile, $ErrFile, $MsgFile)) {
       if (-not [string]::IsNullOrWhiteSpace($fp)) {
         $fi = Get-Item -LiteralPath $fp -ErrorAction SilentlyContinue
         if ($fi) { $totLen += [long]$fi.Length }
@@ -118,7 +122,7 @@ function Wait-AgentProcess {
           }
         } elseif (-not $sawAnyOutput -and -not $announcedZero) {
           $announcedZero = $true
-          try { Add-Message -From system -Text ("⚠ Agent past soft timeout (${elapsedSec}s) with ZERO output so far (0 bytes in out+err). This is a stall, not progress — process is alive but silent; it will hit the stall-grace / hard ceiling if it stays silent.") -Kind event | Out-Null } catch {}
+          try { Add-Message -From system -Text ("Agent past soft timeout (${elapsedSec}s), still silent (0 bytes in out+err+msg). Usually thinking or mid tool-call, not necessarily stuck; watching for the stall-grace window before any action.") -Kind event | Out-Null } catch {}
         }
       }
     }

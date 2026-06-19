@@ -474,6 +474,7 @@ function Get-AuditorSnapshot {
       status_text = $statusText
       active_jobs_count = [int]$activeJobsCount
       active_agent = $activeAgent
+      paused = if ($st -and $st.PSObject.Properties.Name -contains 'paused') { [bool]$st.paused } else { $false }
     }
   }
 
@@ -547,8 +548,16 @@ function Test-AuditorTriggers {
     $lastCommitSha = [string]$c.head_full
     if ([string]::IsNullOrWhiteSpace($lastCommitSha)) { $lastCommitSha = [string]$c.head }
     $doctorQaOk = if ($lastCommitIsDoctor) { Test-AuditorDoctorQaPass -MaxMinutes 360 -CommitSha $lastCommitSha -QaVerdictCache $c.qa_verdict_cache } else { $false }
-    if ($active -and -not $inDiscussion -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
-      [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min)))
+    # 2026-06-19 FIX: progress-aware commit_famine. The old gate was purely time + dirty-tree
+    # with NO progress check, so a big task that is genuinely progressing but legitimately needs
+    # >30 min before its first atomic commit looked identical to a dead one and got suspended into
+    # the Doctor (held/failed with edits abandoned). Now exempt a task when a LIVE agent is
+    # actively working it, or when the channel is operator-paused. Degenerate in-turn loops are
+    # still caught by the loop detector (3x identical progress fingerprint) and by Wait-AgentProcess
+    # stagnation/timeout, so this only narrows commit_famine to truly abandoned dirty work.
+    $liveAgentRunning = (-not [string]::IsNullOrWhiteSpace([string]$c.active_agent)) -and [bool]$c.agent_pid_alive
+    if ($active -and -not $inDiscussion -and -not $liveAgentRunning -and -not [bool]$c.paused -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
+      [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}, live_agent={3}, paused={4}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min, $liveAgentRunning, [bool]$c.paused)))
     }
   }
 
