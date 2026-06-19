@@ -146,6 +146,60 @@ function Get-CliHelpText {
   return $text
 }
 
+function Test-CliFlagDiffLineLooksLikeInvocation {
+  # The flag checker validates executable CLI calls, not prose inside JSON,
+  # markdown, or critic artifacts. Keep this narrow enough to avoid treating
+  # words like "codex" near unrelated commands (for example git --stat) as
+  # a codex.exe invocation.
+  param(
+    [string]$Line,
+    [string]$Cli
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Line) -or [string]::IsNullOrWhiteSpace($Cli)) { return $false }
+  $trim = ([string]$Line).Trim()
+  if ([string]::IsNullOrWhiteSpace($trim)) { return $false }
+
+  # JSON/YAML/markdown artifact text is not an executable invocation.
+  if ($trim -match '^\s*["'']?[A-Za-z0-9_.-]+["'']?\s*:\s*["'']') { return $false }
+  if ($trim -match '^\s*[-*]\s+') { return $false }
+
+  $direct = ''
+  $varOrResolver = ''
+  $wrapper = ''
+  if ($Cli -eq 'claude') {
+    $direct = 'claude(?:\.exe)?'
+    $varOrResolver = '\$claude\b|\$claudeExe\b|claudeExe|Resolve-ClaudeExe|Invoke-ParallelClaudeCli'
+    $wrapper = 'Invoke-ParallelClaudeCli'
+  } elseif ($Cli -eq 'codex') {
+    $direct = 'codex(?:\.exe)?'
+    $varOrResolver = '\$codex\b|\$codexExe\b|codexExe|Resolve-CodexExe|Invoke-ParallelCodexCli'
+    $wrapper = 'Invoke-ParallelCodexCli'
+  } else {
+    return $false
+  }
+
+  $target = '(?:' + $direct + '|' + $varOrResolver + ')'
+
+  # Direct shell/PowerShell execution: codex ..., & codex ..., ; & $codex ...
+  if ($trim -match ('(?i)^\s*(?:&\s*)?' + $direct + '\b')) { return $true }
+  if ($trim -match ('(?i)(?:^|[;&|({]\s*)&\s*' + $target + '\b')) { return $true }
+
+  # Process-launch APIs that name the CLI on the same line.
+  if ($trim -match ('(?i)\bStart-Process\b.*(?:-FilePath\s+)?' + $target + '\b')) { return $true }
+  if ($trim -match ('(?i)\b(?:FileName|FilePath)\s*=\s*["'']?' + $target + '\b')) { return $true }
+
+  # String-built commands are executable only when assigned to an invocation-ish
+  # variable/property, not when embedded as arbitrary prose.
+  if ($trim -match ('(?i)\b(?:cmd|command|commandline|cliargs|argumentlist|arguments)\b\s*(?:=|:).*\b' + $direct + '\b')) { return $true }
+
+  # Wrapper calls are executable bridge code; resolver mentions alone are not
+  # CLI invocations and must not make unrelated flags look like CLI args.
+  if ($trim -match ('(?i)^\s*(?:&\s*)?' + $wrapper + '\b')) { return $true }
+
+  return $false
+}
+
 function Test-CliFlagsInDiff {
   # Deterministic pre-critic check: scan ADDED lines in a git diff for
   # claude.exe / codex.exe invocations and verify every --flag actually
@@ -193,6 +247,7 @@ function Test-CliFlagsInDiff {
 
     foreach ($det in $cliDetectors) {
       if ($line -notmatch $det.linePattern) { continue }
+      if (-not (Test-CliFlagDiffLineLooksLikeInvocation -Line $line -Cli $det.name)) { continue }
       foreach ($fm in $flagRegex.Matches($line)) {
         $flag = $fm.Groups[1].Value
         if ($seen[$det.name].ContainsKey($flag)) { continue }
