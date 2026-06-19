@@ -1,0 +1,46 @@
+{
+    "task":  "[Автозадача из бэклога] Реализуй ДРОБИЛКУ для крупных bridge-self задач по УЖЕ УТВЕРЖДЁННОМУ дизайну (синтез не нужен — он сделан). Дизайн лежит в channels/main/decisions/dec-20260619-022835-fbf041/: durable документ bridge_self_decomposition_map_plan.md + decision_atoms.json (11 атомов). ПРОЧТИ их и реализуй ВСЕ 11 атомов В ПОРЯДКЕ, коммить КАЖДЫЙ атом отдельным коммитом (инкрементально — не копи один огромный незакоммиченный кусок; ParseFile/smoke после каждого).\n\n11 атомов (кратко):\n1. Заменить эвристику Test-IsLargeTask на scope-профиль (acceptance_count, число подсистем, intent.estimated_turns) — мерить по СМЫСЛУ, не по длине.\n2. Переиспользовать Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) как ЕДИНСТВЕННЫЙ путь atom-ingest для bridge-self.\n3. Декомпозиция ОБЯЗАТЕЛЬНА: если крупный bridge-self родитель без валидного split — драйвер блокирует кодер-ход и форсирует decompose-retry, не кодит монолит.\n4. Дети одобренного раздробленного родителя создаются СРАЗУ approved, тег bridge-self.\n5. Весь механизм огорожен channel==\u0027main\u0027/scope==\u0027bridge\u0027; PROJECT-каналы НЕ затронуты (анти-франкенштейн гейт цел).\n6. \u0027Валидный split\u0027 определяется ДЕТЕРМИНИРОВАННО по возврату ingest (created\u003e=2, нет ошибок).\n7. Bounded decompose-retry (2-3 попытки), ошибки ingest скармливать обратно планировщику.\n8. Консолидация: ОДНА largeness-функция, ОДИН ingest-путь, ОДИН gate-сайт; переиспользовать существующее (Foundation #2 — не плодить механизмы).\n9. Вывод планировщика для крупного bridge-self родителя обязан содержать [[PROJECT_BACKLOG]] JSON.\n10. Перед авто-одобрением+диспатчем дочерних атомов — gate обзора (как в дизайне).\n11. ОБЯЗАТЕЛЬНЫЕ regression-тесты для PROJECT-каналов (доказать неинтерференцию).\n\nВАЖНО: каждый атом = отдельный коммит за минуты; не ломать PROJECT-каналы; переиспользовать, не плодить гейты. Это control-plane ядро — аккуратно, с verify/critic после каждого шага.",
+    "goal":  "Implement a \u0027CRUSHER\u0027 mechanism for large bridge-self tasks, ensuring mandatory decomposition, controlled ingestion, and proper lifecycle management for decomposed sub-tasks, strictly adhering to an approved design and maintaining system integrity.",
+    "constraints":  [
+                        "Implement ALL 11 atoms in the specified order.",
+                        "Commit EACH atom as a separate, incremental commit.",
+                        "Perform ParseFile/smoke tests after each commit.",
+                        "Do NOT break PROJECT-channels.",
+                        "Reuse existing mechanisms and avoid creating new gates/functions where possible (Foundation #2).",
+                        "Implement carefully, with verify/critic steps after each change.",
+                        "The mechanism must be confined to `channel==\u0027main\u0027` and `scope==\u0027bridge\u0027`.",
+                        "PROJECT-channels must NOT be affected by this mechanism.",
+                        "Decomposition retry must be bounded (2-3 attempts).",
+                        "A gate review must be present before auto-approval and dispatch of child atoms.",
+                        "Mandatory regression tests for PROJECT-channels must be implemented."
+                    ],
+    "known_context":  [
+                          "The design is already approved; no synthesis is required.",
+                          "Design documents are located at `channels/main/decisions/dec-20260619-022835-fbf041/`: `bridge_self_decomposition_map_plan.md` and `decision_atoms.json` (containing 11 atoms).",
+                          "An existing heuristic `Test-IsLargeTask` is to be replaced.",
+                          "An existing function `Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027)` is available for reuse.",
+                          "The task involves core control-plane logic.",
+                          "The system has \u0027PROJECT-channels\u0027 that must remain untouched."
+                      ],
+    "output_format":  "Implemented code, unit/integration tests, and a commit history demonstrating incremental development according to the design, along with updated documentation if necessary.",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "All 11 atoms from `decision_atoms.json` are implemented and deployed.",
+                          "Each atom is implemented in a distinct, separate commit.",
+                          "The `Test-IsLargeTask` heuristic is replaced by a scope-profile using `acceptance_count`, `number of subsystems`, and `intent.estimated_turns`.",
+                          "`Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027)` is the *sole* atom-ingest path for bridge-self tasks.",
+                          "A large bridge-self parent without a valid split (created\u003e=2, no errors from ingest) blocks the coder and forces a decompose-retry.",
+                          "Children of approved, decomposed parents are created with `approved` status and tagged `bridge-self`.",
+                          "The entire mechanism is active ONLY when `channel==\u0027main\u0027` AND `scope==\u0027bridge\u0027`.",
+                          "Regression tests confirm that PROJECT-channels are completely unaffected by the new mechanism.",
+                          "The \u0027valid split\u0027 condition is deterministically met when `ingest` returns `created\u003e=2` and no errors.",
+                          "The decompose-retry mechanism attempts 2-3 retries, feeding ingest errors back to the planner.",
+                          "The system uses only ONE largeness-function, ONE ingest-path, and ONE gate-site for this mechanism, reusing existing components.",
+                          "The planner\u0027s output for a large bridge-self parent includes `[[PROJECT_BACKLOG]] JSON`.",
+                          "A gate review step is present before the auto-approval and dispatch of child atoms.",
+                          "Mandatory regression tests for PROJECT-channels are implemented and pass.",
+                          "Each commit passes `ParseFile/smoke` tests."
+                      ]
+}

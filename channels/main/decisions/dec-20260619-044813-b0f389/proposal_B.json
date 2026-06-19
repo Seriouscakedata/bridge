@@ -1,0 +1,127 @@
+{
+    "proposer":  "B",
+    "understanding":  "The design is already approved (dec-20260619-022835-fbf041); my job is the implementation approach, not synthesis. The mechanism must force large bridge-self parents (channel==\u0027main\u0027 AND scope==\u0027bridge\u0027, tags lacking atom/decomposed-child) through MANDATORY deterministic decomposition into single-file, independently-green, approved atoms via the EXISTING [[PROJECT_BACKLOG]] -\u003e Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) path. It must block monolith coding when no valid split exists, retry decomposition a bounded number of times feeding ingest errors back to the planner, and fall to operator-hold (never monolith) on exhaustion. Critically it must NOT touch PROJECT channels (F1-F4 PROJECT_PLAN approval stays), must reuse ONE largeness classifier + ONE ingest path + ONE gate site (Foundation #2), and approval of children must NOT bypass the existing control-plane canary admission gate (lib/backlog.ps1:445-522). The contract\u0027s 11 decision atoms are realized through the durable MAP/PLAN\u0027s 8 file-level implementation atoms (atom_01..atom_08).",
+    "summary":  "Implement the durable MAP/PLAN\u0027s 8 file-level atoms in order, one commit each, with Parser.ParseFile + focused test + driver -SelfTest (for driver/control-plane atoms) + smoke after every commit. (1) Replace Test-IsLargeTask internals with a scope profile (acceptance_count\u003e=5 | subsystem_count\u003e=3 | estimated_turns\u003e=3 | files\u003e=3 from structured metadata), keeping atom/decomposed-child early-return and adding OPTIONAL Channel/Scope params with neutral defaults; rewrite the planner decompose instruction to require [[PROJECT_BACKLOG]] JSON (not raw Add-Idea). (2) Add a Channel==\u0027main\u0027 bridge-self validation mode to Add-ProjectBacklogFromMarker that is ADDITIVE (keeps created/skipped/errors/ids/slugs) and returns per-atom records with valid_for_split, enforcing exactly-one-file, concrete acceptance/checks, parent linkage, control-plane admission, and retry-safe skipped-existing accounting. (3) Persist the ingest result to driver state in 84-loop-reply-markers.ps1 only when a [[PROJECT_BACKLOG]] marker is present. (4) Add ONE mandatory gate in 86-loop-completion-actions.ps1 that reads persisted evidence: valid split (\u003e=2 valid incl. same-parent skipped, errors empty) -\u003e mark parent decomposed/blocked-from-monolith and do NOT dispatch coder; otherwise block STATUS: CONTINUE, force a decompose-retry (first invalid + 2 repairs = 3 total) with deterministic ingest errors fed back, then operator-hold reason \u0027bridge-self-decomposition-invalid\u0027. (5-8) Mandatory regressions: approved bridge-self control-plane child unclaimable without admission / claimable with it; PROJECT channel still gated by F1-F4 and never auto-split; retry/dedup counts same-parent skipped atoms; end-to-end short-but-wide decompose smoke. Everything fenced on channel==\u0027main\u0027 \u0026\u0026 scope==\u0027bridge\u0027.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Adopt the durable MAP/PLAN\u0027s 8 file-level atoms (atom_01..atom_08) as the authoritative commit sequence (one commit per file-atom), and trace which of the 11 contract decision-atoms each commit satisfies in the commit message, rather than forcing 11 commits including no-op/invariant-only ones.",
+                               "reason":  "The contract says \u0027read and implement the durable doc\u0027 AND \u0027commit each of 11 atoms separately\u0027 — these conflict because decision-atoms 5 (fence), 8 (consolidation), 10 (operator review) are cross-cutting invariants with no standalone diff. The durable MAP/PLAN is the approved, file-grounded plan; mapping decisions onto its 8 atoms is deterministic and avoids empty commits.",
+                               "tradeoff":  "A strict literal reading of \u0027each atom = a commit\u0027 wants exactly 11 commits; I trade that literalism for engineering honesty and surface the mismatch to the operator (advanced_version offers a literal 11-commit split if required).",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Replace Test-IsLargeTask internals with a scope profile but add Channel/Scope/AcceptanceCount/SubsystemCount/EstimatedTurns/Files as OPTIONAL params with neutral defaults, keep the atom/decomposed-child early-return, and only enable mandatory bridge-self decomposition when Channel==\u0027main\u0027 \u0026\u0026 Scope==\u0027bridge\u0027.",
+                               "reason":  "The sole current caller (prompt-builder.ps1:385) passes only TaskText+Tags; optional params preserve every existing call. Fencing on main/bridge keeps non-bridge and PROJECT tasks on their existing behavior, satisfying the anti-Frankenstein invariant at the classifier layer.",
+                               "tradeoff":  "With optional signals, EstimatedTurns/metadata may be absent; absence must be NEUTRAL (not false) so a short-but-wide task with high acceptance/subsystems still classifies large — never fail-open into monolith coding.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Make the bridge-self validation and per-atom return-record extension to Add-ProjectBacklogFromMarker strictly ADDITIVE and branched on Channel==\u0027main\u0027: keep created/skipped/errors/ids/slugs/chapters, add an atoms[] array with valid_for_split, files, source_task_id, action, errors.",
+                               "reason":  "The function is shared with PROJECT autopilot; tightening validation unconditionally would break PROJECT batches and existing tests (test-backlog-packer reads .created/.skipped). Additive shape keeps all callers and tests green while giving the gate deterministic per-atom evidence.",
+                               "tradeoff":  "More branch complexity inside one function vs. a clean second function — but Foundation #2 mandates ONE ingest path, so the conditional branch is the correct cost.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Define \u0027valid split\u0027 deterministically as (created_valid + skipped_existing_valid) \u003e= 2 with errors empty, where a skipped atom counts ONLY if it has the same slug AND same autopilot_source_task AND non-terminal status AND still passes bridge-self atom validation; atoms from another parent never count.",
+                               "reason":  "Naive created\u003e=2 strands children on retries (a repair call legitimately skips atoms created last attempt) and lets cross-parent atoms falsely satisfy the split. Re-validating same-parent skipped atoms makes retries converge instead of looping or duplicating.",
+                               "tradeoff":  "Requires re-reading the backlog and re-validating existing items each retry (extra work) versus a cheap counter — accuracy is worth the cost on a control-plane gate.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Persist the ingest result (parent_id, created, skipped, errors, atoms[], valid_split_count, ts) to driver state in 84-loop-reply-markers.ps1 ONLY when a [[PROJECT_BACKLOG]] marker is present, keyed by current parent task id; the gate reads this evidence and never rescans tags or [[DECOMPOSED:N]].",
+                               "reason":  "Invariant 4 makes JSON ingest the source of truth; decoupling the gate decision from re-derivation removes a class of races and trusts deterministic output. Writing only on marker-present keeps PROJECT marker behavior unchanged.",
+                               "tradeoff":  "Adds a state field that must be keyed per-parent and cleared on task resolution to avoid stale cross-task reads.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Implement exactly ONE mandatory gate in driver/86-loop-completion-actions.ps1, after marker processing and before coder dispatch: predicate = channel==\u0027main\u0027 \u0026\u0026 scope==\u0027bridge\u0027 \u0026\u0026 Test-IsLargeTask==large \u0026\u0026 tags lack atom/decomposed-child. Valid split -\u003e block monolith, mark parent decomposed, let approved children run. Invalid -\u003e block STATUS: CONTINUE, force decompose-retry (first invalid + 2 repairs) with ingest errors fed back; on exhaustion operator-hold \u0027bridge-self-decomposition-invalid\u0027.",
+                               "reason":  "Consolidates contract atoms 3+7+10 into one gate site (Foundation #2). A tight predicate plus the classifier\u0027s early-return for child atoms ensures small tasks and decomposed children are unaffected.",
+                               "tradeoff":  "Driver flow is critical-risk; an over-broad predicate could block legitimate dispatch, so the gate must be guarded by driver.ps1 -SelfTest + smoke and key its retry counter per parent id.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "Treat \u0027children created approved + bridge-self\u0027 (contract atom 4) as VERIFICATION, not new mutation — Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) already sets status=\u0027approved\u0027, scope=\u0027bridge\u0027, tag \u0027bridge-self\u0027, autopilot_source_task (backlog-autopilot.ps1:1444-1451) — and explicitly preserve the existing control-plane admission gate so approval bypasses only re-approval of the parent decomposition, never claimability/canary.",
+                               "reason":  "Reuse over re-implementation (Foundation #2); the red-team risk is a fast-path that lets approved children skip lib/backlog.ps1:445-522 admission. The regression in atom_05 proves approval alone does not bypass control-plane safety.",
+                               "tradeoff":  "Tempting to auto-attach bridge_self_admission to children for convenience; resisting that keeps the safety gate authoritative at the cost of some children remaining unclaimable until admission is valid.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Rewrite the planner decompose instruction (prompt-builder.ps1:386-401) to REQUIRE a [[PROJECT_BACKLOG]]...[[/PROJECT_BACKLOG]] JSON array (slug,title,task,files=exactly 1, acceptance, checks, depends_on, chapter, wave, risk/severity, serial_reason, and bridge_self_admission for control-plane atoms) and demote [[DECOMPOSED:N]] to an informational signal; stop instructing raw Add-Idea on this path.",
+                               "reason":  "The chosen ingest path consumes [[PROJECT_BACKLOG]], not Add-Idea — the current prompt is mismatched and would never produce a machine-valid split. Requiring the full atom schema lets ingest validate deterministically.",
+                               "tradeoff":  "Stricter/longer planner output raises the chance of an omitted field (e.g., admission), but bounded retry + ingest-error feedback is designed to repair exactly that.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Make PROJECT-channel non-interference the acceptance backbone: gate every change on channel==\u0027main\u0027/scope==\u0027bridge\u0027, leave Start-ProjectAutopilotIfNeeded and the F1-F4 PROJECT_PLAN path (backlog-autopilot.ps1:965-985) untouched, and ship mandatory regressions in tools/test-project-autopilot-stop.ps1 and tools/test-autopilot-controlplane-gate.ps1 proving PROJECT stays gated and unadmitted children stay unclaimable.",
+                               "reason":  "This is the critical-risk surface; the only durable proof that the new mechanism does not become a Frankenstein gate is regression tests asserting PROJECT behavior is byte-for-byte unchanged and that control-plane safety still holds.",
+                               "tradeoff":  "More test surface and wall-clock per atom, but non-negotiable for a critical control-plane core.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Dogfood the feature\u0027s own discipline: commit each file-atom within minutes, run Parser.ParseFile on touched .ps1 + the atom\u0027s focused tool test + driver.ps1 -SelfTest (driver/control-plane atoms) + tools/smoke.ps1 after each commit, and canary for atoms carrying bridge_self_admission; never accumulate one large uncommitted change.",
+                               "reason":  "The whole point of the CRUSHER is to prevent commit famine and monolith coding; the implementation must follow the same incremental, independently-green rule it enforces, which also catches regressions at the smallest blast radius.",
+                               "tradeoff":  "Per-atom verification adds wall-clock vs. a single big-bang change, but it is exactly the trade the design exists to make.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "The durable MAP/PLAN\u0027s 8 file-level atoms (atom_01..atom_08) are the authoritative implementation/commit sequence; the contract\u0027s \u002711 atoms\u0027 are design decisions realized across those commits. I will commit per file-atom, trace decision coverage in messages, and surface the 11-vs-8 count mismatch to the operator.",
+                        "Test-IsLargeTask\u0027s only current caller passes TaskText+Tags (prompt-builder.ps1:385); new scope params are optional with neutral defaults so all existing callers keep working.",
+                        "Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) already yields approved/bridge-self/scope=bridge/source-linked children (backlog-autopilot.ps1:1444-1451), so contract atom 4 is verification + admission-safety rather than new mutation.",
+                        "The existing control-plane admission gate (lib/backlog.ps1:445-522) remains the claimability authority; \u0027approved\u0027 status does not bypass it.",
+                        "Approved default thresholds are acceptance_count\u003e=5, subsystem_count\u003e=3, estimated_turns\u003e=3, files\u003e=3 (operator review Q1); absent estimated_turns/metadata is neutral, not small.",
+                        "Approved retry cap is first invalid split + 2 repair attempts (3 total), then operator-hold (operator review Q2).",
+                        "The single gate lives in driver/86-loop-completion-actions.ps1, after marker processing in 84 and before any coder dispatch; channel/scope/tags for the current parent are reliably available in driver state at gate time.",
+                        "\u0027main\u0027 (channel) and \u0027bridge\u0027 (scope) are the canonical fence constants used elsewhere in the codebase.",
+                        "[[PROJECT_BACKLOG]] is the source of truth; [[DECOMPOSED:N]] is informational only and must not be trusted over ingest results (Invariant 4)."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Tightening Add-ProjectBacklogFromMarker validation leaks into PROJECT autopilot batches and breaks PROJECT decomposition.",
+                      "severity":  "high",
+                      "mitigation":  "Branch ALL new bridge-self validation strictly on Channel==\u0027main\u0027; keep the PROJECT path bytes-unchanged; add a before/after regression in test-backlog-packer and test-project-autopilot-stop asserting PROJECT batch behavior is unchanged."
+                  },
+                  {
+                      "risk":  "Approved decomposed children bypass the control-plane canary admission gate (red-team finding), shipping unverified control-plane edits.",
+                      "severity":  "high",
+                      "mitigation":  "Approval bypasses only re-approval of the parent decomposition, never claimability; keep lib/backlog.ps1:445-522 authoritative; ship atom_05 regression proving an approved bridge-self control-plane child without valid bridge_self_admission is unclaimable, and claimable only with it."
+                  },
+                  {
+                      "risk":  "Retry logic using naive created\u003e=2 strands already-created children or never converges (repair calls legitimately skip prior atoms; cross-parent atoms falsely satisfy split).",
+                      "severity":  "high",
+                      "mitigation":  "Define valid split as created_valid + same-parent skipped_existing_valid (re-validated, non-terminal), excluding other parents\u0027 atoms; bound to 3 attempts; feed deterministic ingest errors into the retry prompt; operator-hold on exhaustion (never monolith)."
+                  },
+                  {
+                      "risk":  "The mandatory gate\u0027s predicate is over-broad and blocks legitimate non-bridge-self dispatch or re-decomposes child atoms.",
+                      "severity":  "high",
+                      "mitigation":  "Predicate = channel==\u0027main\u0027 \u0026\u0026 scope==\u0027bridge\u0027 \u0026\u0026 large \u0026\u0026 tags lack atom/decomposed-child; classifier early-returns false for child atoms; guard with driver.ps1 -SelfTest + smoke + the end-to-end decompose test covering non-large-child bypass."
+                  },
+                  {
+                      "risk":  "Classifier fails open to monolith when estimated_turns / structured metadata are absent.",
+                      "severity":  "medium",
+                      "mitigation":  "Treat absence as neutral, not small; any single strong signal (acceptance\u003e=5 | subsystems\u003e=3 | files\u003e=3) still classifies large; never code the monolith on missing signals — hold instead."
+                  },
+                  {
+                      "risk":  "Changing Add-ProjectBacklogFromMarker\u0027s return shape breaks existing callers/tests that read .created/.skipped/.slugs.",
+                      "severity":  "medium",
+                      "mitigation":  "Strictly additive: preserve every existing field and add atoms[]/valid_split_count alongside; assert backward compatibility in test-backlog-packer before relying on new fields."
+                  },
+                  {
+                      "risk":  "Persisted ingest result or retry counter is read stale across different parents/tasks, corrupting a later gate decision.",
+                      "severity":  "medium",
+                      "mitigation":  "Key both the persisted ingest result and the retry counter by the current parent task id; write only when a [[PROJECT_BACKLOG]] marker is present; clear on parent resolution / new task."
+                  },
+                  {
+                      "risk":  "Planner repeatedly omits bridge_self_admission or emits multi-file atoms, causing ingest rejection and burning the retry budget without a valid split.",
+                      "severity":  "medium",
+                      "mitigation":  "Rewrite the planner instruction to demand the exact atom schema (one file, acceptance, checks, admission for control-plane); feed the deterministic per-atom ingest errors back each retry so the planner repairs rather than re-emits; on exhaustion operator-hold with the explicit reason."
+                  },
+                  {
+                      "risk":  "The contract\u0027s \u002711 separate commits\u0027 vs the durable plan\u0027s 8 file-atoms creates audit ambiguity about whether the work is \u0027complete\u0027.",
+                      "severity":  "low",
+                      "mitigation":  "Commit per durable file-atom and explicitly trace decision-atom coverage in each commit message; surface the reconciliation to the operator; offer a literal 11-commit split (extra test/invariant-assertion commits) in advanced_version if required."
+                  }
+              ],
+    "minimal_version":  "Implement the durable MAP/PLAN\u0027s 8 file-atoms in order, one commit each, fenced on channel==\u0027main\u0027 \u0026\u0026 scope==\u0027bridge\u0027. atom_01: replace Test-IsLargeTask internals with the scope profile (acceptance\u003e=5 | subsystems\u003e=3 | estimated_turns\u003e=3 | files\u003e=3 from structured metadata) keeping atom/decomposed-child early-return and OPTIONAL params; rewrite the decompose instruction to require [[PROJECT_BACKLOG]] JSON instead of raw Add-Idea. atom_02: add Channel==\u0027main\u0027 bridge-self validation + additive per-atom return records (valid_for_split) to Add-ProjectBacklogFromMarker (exactly-one-file, acceptance\u003e0, checks\u003e0, parent linkage, control-plane admission, retry-safe skipped-existing accounting). atom_03: persist the ingest result to driver state in 84-loop-reply-markers.ps1 only on [[PROJECT_BACKLOG]] marker present. atom_04: add ONE mandatory gate in 86-loop-completion-actions.ps1 reading persisted evidence — valid split (\u003e=2 valid incl. same-parent skipped, errors empty) blocks monolith and runs approved children; invalid blocks STATUS: CONTINUE and forces bounded decompose-retry (first invalid + 2 repairs) with ingest errors fed back, then operator-hold \u0027bridge-self-decomposition-invalid\u0027. atoms 05-08: mandatory regressions — approved control-plane child unclaimable without admission / claimable with it; PROJECT channel still F1-F4-gated and never auto-split; retry/dedup counts same-parent skipped; end-to-end short-but-wide decompose smoke. Per atom: Parser.ParseFile + focused tool test + driver -SelfTest (driver/control-plane atoms) + tools/smoke.ps1. Reuse ONE classifier, ONE ingest path, ONE gate; add no new goals.md or parallel approval gate.",
+    "advanced_version":  "On top of the minimal plan: (1) if the operator requires literal contract reading, split the test atoms and add a dedicated invariant-assertion/docs commit so each of the 11 decision-atoms maps to a distinct commit. (2) Execute canary (not just smoke) per control-plane atom carrying bridge_self_admission, gating the commit on canary green. (3) Derive estimated_turns from acceptance/subsystem counts when absent, so classification degrades gracefully without metadata. (4) Emit per-decision telemetry to metrics.jsonl (split-validity outcome, retry count, exhaustion/hold events) and keep an idempotent \u0027decomposition ledger\u0027 entry per parent in state for observability. (5) Add an explicit operator-review surface (contract atom 10) that presents the MAP/PLAN + atom list with a one-line approval marker before auto-dispatch of children. (6) Run an adversarial refute-style critic pass after the gate atom that diff-asserts no PROJECT-scope backlog item changed status as a result of the bridge-self path, hard-proving non-interference beyond the unit regressions."
+}

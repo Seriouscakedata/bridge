@@ -1,0 +1,109 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно реализовать уже утвержденный механизм дробления крупных bridge-self задач в control-plane: крупные main/bridge задачи не должны попадать кодеру монолитом, а обязаны пройти планирование с [[PROJECT_BACKLOG]], ingest через существующий Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027), deterministic validation split и gated auto-approval/dispatch дочерних атомов. PROJECT-каналы должны остаться неизменными.",
+    "summary":  "Предлагаю внедрять строго по 11 атомам, с одним источником определения крупности, одним ingest-путем и одним gate-site. Каждый атом оформляется отдельным коммитом, после каждого выполняется ParseFile/smoke. Основной поток: определить bridge-self large по scope-profile, запросить у планировщика backlog JSON, прогнать ingest, считать split валидным только при created\u003e=2 и отсутствии errors, перед auto-approval/dispatch пройти review gate, иначе bounded decompose-retry с передачей ошибок обратно планировщику.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Заменить Test-IsLargeTask на единую scope-profile функцию, оценивающую acceptance_count, число затронутых подсистем и intent.estimated_turns.",
+                               "reason":  "Крупность должна определяться смысловой сложностью, а не длиной текста.",
+                               "tradeoff":  "Пороговая логика станет более явной, но потребует аккуратной нормализации отсутствующих полей.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Для bridge-self atom ingest использовать только Add-ProjectBacklogFromMarker с Channel=\u0027main\u0027.",
+                               "reason":  "Это сохраняет Foundation #2: переиспользование существующего механизма вместо параллельного ingest-пути.",
+                               "tradeoff":  "Нужно адаптировать входные данные к существующему API, не расширяя его без необходимости.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Добавить обязательный decomposition gate: крупный main/bridge родитель без валидного split блокирует coder dispatch.",
+                               "reason":  "Главный инвариант CRUSHER: монолитная реализация крупных bridge-self задач запрещена.",
+                               "tradeoff":  "Некоторые задачи будут задерживаться до успешного split, зато исключается риск огромного coder-хода.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Дочерние атомы валидного split создавать сразу approved и помечать тегом bridge-self.",
+                               "reason":  "Дизайн требует, чтобы approved decomposed parent сразу порождал исполняемые атомы без ручного повторного одобрения каждого ребенка.",
+                               "tradeoff":  "Нужен надежный pre-dispatch review gate, иначе auto-approval может ускорить ошибочную декомпозицию.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Ограничить весь механизм условием channel==\u0027main\u0027 и scope==\u0027bridge\u0027.",
+                               "reason":  "PROJECT-каналы не должны менять поведение, включая анти-франкенштейн gate.",
+                               "tradeoff":  "Часть похожих задач вне main/bridge не получит новую защиту, но это намеренное ограничение blast radius.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Определять валидный split строго по результату ingest: created\u003e=2 и отсутствие errors.",
+                               "reason":  "Детерминированное правило упрощает тестирование и исключает неявные эвристики качества split.",
+                               "tradeoff":  "Семантическое качество детей не оценивается этим правилом и остается зоной review gate.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "Сделать bounded decompose-retry на 2-3 попытки с передачей ingest errors обратно планировщику.",
+                               "reason":  "Планировщик должен иметь возможность исправить формат или структуру backlog, но цикл не должен быть бесконечным.",
+                               "tradeoff":  "После исчерпания retry задача останется заблокированной с диагностикой, требуя ручного вмешательства.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "Сконсолидировать реализацию: одна largeness-функция, один ingest-путь, один gate-site.",
+                               "reason":  "Это снижает риск расхождения поведения и поддерживает требование не плодить механизмы.",
+                               "tradeoff":  "Существующий gate-site может потребовать осторожного расширения параметрами bridge-self контекста.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Для крупного bridge-self родителя требовать от planner output наличие [[PROJECT_BACKLOG]] JSON.",
+                               "reason":  "Без структурированного backlog ingest не может детерминированно создать атомы.",
+                               "tradeoff":  "Планировщик должен соблюдать более строгий контракт вывода.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Перед auto-approval и dispatch дочерних атомов выполнить review gate, как указано в дизайне.",
+                               "reason":  "Auto-approval безопасен только после централизованной проверки split и соответствия policy.",
+                               "tradeoff":  "Добавляется один обязательный control-plane шаг перед запуском детей.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Добавить regression-тесты PROJECT-каналов, доказывающие отсутствие влияния CRUSHER.",
+                               "reason":  "Неинтерференция PROJECT-каналов является явным success criterion и главным риском изменения control-plane.",
+                               "tradeoff":  "Тестовый набор станет шире, но это оправдано критичностью ядра.",
+                               "confidence":  0.96
+                           }
+                       ],
+    "assumptions":  [
+                        "Файлы bridge_self_decomposition_map_plan.md и decision_atoms.json являются финальным источником деталей дизайна.",
+                        "В кодовой базе уже есть Add-ProjectBacklogFromMarker и текущий dispatch/gate path, который можно расширить без создания параллельного механизма.",
+                        "ParseFile/smoke команды уже существуют в репозитории или описаны в локальных инструкциях.",
+                        "Тег bridge-self и статус approved либо уже поддерживаются моделью backlog, либо могут быть добавлены минимально совместимым способом.",
+                        "Ошибки ingest доступны в структурированном виде или могут быть возвращены вызывающему коду без парсинга логов."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Непреднамеренное изменение поведения PROJECT-каналов.",
+                      "severity":  "high",
+                      "mitigation":  "Жесткий guard channel==\u0027main\u0027 \u0026\u0026 scope==\u0027bridge\u0027 на единственном gate-site плюс обязательные regression-тесты PROJECT flow."
+                  },
+                  {
+                      "risk":  "Planner выдаст невалидный или неполный [[PROJECT_BACKLOG]] JSON.",
+                      "severity":  "high",
+                      "mitigation":  "Bounded retry с передачей ingest errors в planner и явным blocked state после исчерпания попыток."
+                  },
+                  {
+                      "risk":  "Дублирование ingest или largeness логики при поспешной реализации.",
+                      "severity":  "medium",
+                      "mitigation":  "Сначала найти существующие call sites, затем централизовать изменения вокруг одного helper и одного gate path."
+                  },
+                  {
+                      "risk":  "Auto-approved дети могут быть некачественно нарезаны семантически, хотя created\u003e=2 выполнен.",
+                      "severity":  "medium",
+                      "mitigation":  "Сохранить обязательный review gate перед approval/dispatch и тестировать негативные сценарии split."
+                  },
+                  {
+                      "risk":  "Инкрементальные коммиты могут временно оставлять систему в несовместимом состоянии.",
+                      "severity":  "medium",
+                      "mitigation":  "Каждый атом делать вертикально минимальным, запускать ParseFile/smoke после каждого коммита и не накапливать незакоммиченные изменения."
+                  }
+              ],
+    "minimal_version":  "Реализовать только обязательный CRUSHER path для main/bridge: единая scope-profile largeness функция, требование [[PROJECT_BACKLOG]], ingest через Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027), deterministic split validation, bounded retry, review gate перед auto-approval/dispatch, теги bridge-self и regression-тесты PROJECT неинтерференции.",
+    "advanced_version":  "Дополнительно добавить расширенную диагностику decomposition attempts, структурированные audit events для parent/children lifecycle, метрики по retry/failure причинам, тесты на поврежденный JSON и частичный ingest, а также документацию control-plane инвариантов для будущих изменений."
+}

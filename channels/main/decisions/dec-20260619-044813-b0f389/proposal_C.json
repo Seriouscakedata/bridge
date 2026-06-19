@@ -1,0 +1,112 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to implement a \u0027CRUSHER\u0027 mechanism for large bridge-self tasks in the main channel, following an already-approved design. The design specifies 11 atomic changes that must be implemented incrementally, each in its own commit, with smoke tests after each. The core idea is to replace a heuristic task-size check with a scope-profile, enforce mandatory decomposition of large bridge-self tasks via a single ingest path, gate the mechanism strictly to channel==\u0027main\u0027 and scope==\u0027bridge\u0027, and ensure PROJECT-channels are completely unaffected. The implementation must reuse existing components (Foundation #2), use deterministic valid-split criteria, bound retries, include a gate review before auto-approval of children, and provide regression tests for non-interference.",
+    "summary":  "Implement 11 design atoms for the CRUSHER mechanism: replace Test-IsLargeTask with scope-profile; unify ingest via Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027); enforce mandatory decomposition with bounded retry; auto-approve children of valid splits; confine to main/bridge; define valid split deterministically; feed ingest errors to planner; consolidate to one largeness function, one ingest path, one gate site; require [[PROJECT_BACKLOG]] JSON in planner output; add gate review before child dispatch; and implement PROJECT-channel regression tests. Each atom is a separate commit with verification.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Replace Test-IsLargeTask heuristic with scope-profile using acceptance_count, number of subsystems, and intent.estimated_turns.",
+                               "reason":  "The existing heuristic is based on task length, which does not reliably capture semantic largeness. The design mandates a semantic measure.",
+                               "tradeoff":  "Scope-profile may require more metadata to be maintained, but provides a more accurate and deterministic largeness signal.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) as the sole atom-ingest path for bridge-self tasks.",
+                               "reason":  "Foundation #2 requires reusing existing mechanisms. A single ingest path simplifies control and avoids fragmentation.",
+                               "tradeoff":  "Couples bridge-self ingestion to this specific function, but reduces maintenance burden and potential for divergent behavior.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Mandatory decomposition: if a large bridge-self parent lacks a valid split, block the coder and force decompose-retry.",
+                               "reason":  "Prevents monolithic coding of large tasks, enforcing the CRUSHER design principle.",
+                               "tradeoff":  "Adds latency for large tasks that fail initial decomposition, but ensures system scalability and manageability.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Children of an approved decomposed parent are created immediately with approved status and tagged bridge-self.",
+                               "reason":  "Eliminates redundant approval steps for pre-validated splits, streamlining the workflow.",
+                               "tradeoff":  "Bypasses normal approval for these children, which is safe because the parent split was already validated.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Confine the entire mechanism to channel==\u0027main\u0027 and scope==\u0027bridge\u0027; PROJECT-channels must not be affected.",
+                               "reason":  "Anti-Frankenstein gate: prevents unintended side effects on other channels and scopes.",
+                               "tradeoff":  "Adds conditional checks but isolates risk and preserves existing behavior for PROJECT workflows.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Define \u0027valid split\u0027 deterministically as ingest returning created\u003e=2 and no errors.",
+                               "reason":  "Deterministic criteria are essential for automated control-plane decisions without ambiguity.",
+                               "tradeoff":  "May reject splits that are semantically valid but fail the strict numeric/error criteria; retry mechanism mitigates this.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement bounded decompose-retry (2-3 attempts) and feed ingest errors back to the planner.",
+                               "reason":  "Provides resilience against transient ingest failures while preventing infinite loops.",
+                               "tradeoff":  "Adds complexity in the retry loop, but necessary for robustness in automated decomposition.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Consolidate to one largeness-function, one ingest-path, and one gate-site; reuse existing components.",
+                               "reason":  "Foundation #2: avoid proliferating mechanisms, reduce maintenance surface, and ensure consistency.",
+                               "tradeoff":  "Requires refactoring if multiple largeness checks existed, but results in a cleaner, more maintainable codebase.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Planner output for large bridge-self parent must include [[PROJECT_BACKLOG]] JSON.",
+                               "reason":  "Ensures downstream tooling can parse and act on the decomposition plan in a standardized format.",
+                               "tradeoff":  "Adds a formatting requirement to the planner, but enables seamless integration with the ingest pipeline.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Implement a gate review step before auto-approval and dispatch of child atoms.",
+                               "reason":  "Provides a final safety check to catch any anomalies in the decomposed children before they enter the backlog.",
+                               "tradeoff":  "Adds a synchronous step, but significantly reduces risk of propagating invalid tasks.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Implement mandatory regression tests for PROJECT-channels to prove non-interference.",
+                               "reason":  "Explicit requirement to ensure the CRUSHER mechanism does not alter PROJECT-channel behavior.",
+                               "tradeoff":  "Increases test suite size, but provides critical safety net for a high-risk control-plane change.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "The design documents in channels/main/decisions/dec-20260619-022835-fbf041/ are complete and correct.",
+                        "Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) exists and is functional.",
+                        "The codebase has a mechanism for ParseFile/smoke tests that can be run after each commit.",
+                        "The planner component can be modified to output [[PROJECT_BACKLOG]] JSON.",
+                        "There is an existing gate review mechanism that can be extended or reused.",
+                        "PROJECT-channels have a distinct identifier or scope that can be checked in code.",
+                        "The system supports bounded retry loops without adverse side effects.",
+                        "Metadata fields like acceptance_count, number of subsystems, and intent.estimated_turns are available on tasks."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Breaking PROJECT-channel workflows due to incorrect conditional gating.",
+                      "severity":  "high",
+                      "mitigation":  "Implement comprehensive regression tests for PROJECT-channels; use strict channel/scope checks; perform manual code review of all conditionals."
+                  },
+                  {
+                      "risk":  "Infinite retry loops if ingest errors are not properly propagated or bounded.",
+                      "severity":  "medium",
+                      "mitigation":  "Enforce hard limit of 3 retries with exponential backoff; log all attempts; add circuit-breaker if error rate exceeds threshold."
+                  },
+                  {
+                      "risk":  "Scope-profile largeness check misclassifies tasks, causing unnecessary decomposition or missing large tasks.",
+                      "severity":  "medium",
+                      "mitigation":  "Thoroughly test with historical task data; allow manual override flag; monitor classification accuracy post-deployment."
+                  },
+                  {
+                      "risk":  "Race conditions in auto-approval and dispatch of child atoms.",
+                      "severity":  "low",
+                      "mitigation":  "Use transactional database operations; ensure idempotency of ingest; gate review step adds a synchronous checkpoint."
+                  },
+                  {
+                      "risk":  "Performance degradation due to synchronous decompose-retry and gate review.",
+                      "severity":  "low",
+                      "mitigation":  "Profile the new code path; consider async gate review if latency becomes an issue; keep retry attempts minimal."
+                  }
+              ],
+    "minimal_version":  "Implement atoms 1-6 and 11: scope-profile, unified ingest, mandatory decomposition, auto-approve children, channel/scope gating, valid split definition, and PROJECT regression tests. This delivers the core CRUSHER functionality with safety guarantees.",
+    "advanced_version":  "Full implementation of all 11 atoms including bounded retry with planner feedback, consolidation refactoring, [[PROJECT_BACKLOG]] JSON output, and gate review step. This provides a complete, robust, and maintainable CRUSHER mechanism."
+}

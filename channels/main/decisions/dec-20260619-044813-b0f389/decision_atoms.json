@@ -1,0 +1,154 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Replace Test-IsLargeTask internals with a scope profile (acceptance_count, number of subsystems, estimated_turns, files) with optional params and early-return for child atoms, enabling mandatory bridge-self decomposition only when Channel==\u0027main\u0027 AND Scope==\u0027bridge\u0027.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Largeness Definition / Scope Restriction",
+                      "test":  "Verify Test-IsLargeTask uses scope profile metrics (acceptance_count, subsystems, estimated_turns, files) with optional params, early-returns for child atoms, and activates only for main/bridge.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Use Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) as the sole atom-ingest path, extending it with additive bridge-self validation and per-atom return records (valid_for_split, files, source_task_id, action, errors) branched on Channel==\u0027main\u0027.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Ingest Path / Validation",
+                      "test":  "Verify Add-ProjectBacklogFromMarker is the sole ingest path for bridge-self (Channel=\u0027main\u0027), and it includes additive bridge-self validation and per-atom return records.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Implement exactly one mandatory gate in driver/86-loop-completion-actions.ps1, with a predicate (channel==\u0027main\u0027, scope==\u0027bridge\u0027, large, not child atom), to block monolith coding for invalid splits, mark parent decomposed for valid splits, force bounded decompose-retry with ingest errors, and operator-hold on exhaustion.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Gating Logic / Mandatory Decomposition / Retry Logic",
+                      "test":  "Verify the single mandatory gate in 86-loop-completion-actions.ps1 correctly applies its predicate, blocks monolith for invalid splits, forces bounded retry, and holds on exhaustion.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Children of an approved decomposed parent are created with approved status and tagged bridge-self, verifying existing Add-ProjectBacklogFromMarker behavior, and explicitly preserving the existing control-plane admission gate (approval bypasses only parent decomposition re-approval, not claimability/canary).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Child Atom Properties / Safety",
+                      "test":  "Verify Add-ProjectBacklogFromMarker sets approved/bridge-self for children, and that existing control-plane admission gate is preserved (approval does not bypass claimability).",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Confine the entire mechanism to channel==\u0027main\u0027 and scope==\u0027bridge\u0027; PROJECT-channels must not be affected.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Scope Restriction / Non-Interference",
+                      "test":  "Verify the mechanism only activates when channel=\u0027main\u0027 AND scope=\u0027bridge\u0027, and has no effect on PROJECT-channels.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Define \u0027valid split\u0027 deterministically as (created_valid + same-parent skipped_existing_valid) \u003e= 2 with errors empty, where skipped atoms are re-validated (same slug, source_task, non-terminal status) and cross-parent atoms never count.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Split Validation",
+                      "test":  "Verify valid split is defined as (created_valid + same-parent skipped_existing_valid \u003e= 2) with no errors, including re-validation of skipped atoms and exclusion of cross-parent atoms.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Implement bounded decompose-retry (2-3 attempts) with ingest errors fed back to the planner.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Operational Resilience / Retry Logic",
+                      "test":  "Verify bounded retry (2-3 attempts) occurs on ingest errors, with errors fed back to planner.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Consolidate implementation to one largeness-function, one ingest-path, and one gate-site, reusing existing components.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Consolidation / Architecture",
+                      "test":  "Verify the system uses a single largeness function, single ingest path, and single gate site for bridge-self decomposition.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Rewrite the planner decompose instruction to require a [[PROJECT_BACKLOG]] JSON array with full atom schema (single file, acceptance, checks, admission for control-plane), demoting [[DECOMPOSED:N]] to informational, and stopping raw Add-Idea instructions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Planner Contract",
+                      "test":  "Verify planner decompose instruction requires [[PROJECT_BACKLOG]] JSON with full atom schema (single file, admission for control-plane), and Add-Idea is no longer instructed.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "statement":  "Implement a mandatory review gate step before auto-approval and dispatch of child atoms.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Safety / Review Gate",
+                      "test":  "Verify a mandatory review gate is performed before auto-approval and dispatch of child atoms.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "statement":  "Make PROJECT-channel non-interference the acceptance backbone, gating every change on channel==\u0027main\u0027/scope==\u0027bridge\u0027, leaving PROJECT_PLAN path untouched, and shipping mandatory regressions (test-project-autopilot-stop.ps1, test-autopilot-controlplane-gate.ps1) proving PROJECT stays gated and unadmitted children unclaimable.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing / Non-Interference",
+                      "test":  "Verify PROJECT-channel non-interference via strict main/bridge gating and mandatory regressions (test-project-autopilot-stop.ps1, test-autopilot-controlplane-gate.ps1) proving PROJECT is untouched and unadmitted children are unclaimable.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-012",
+                      "statement":  "Adopt the durable MAP/PLAN\u0027s 8 file-level atoms as the authoritative commit sequence (one commit per file-atom), tracing contract decision-atoms in commit messages, and dogfood the feature\u0027s discipline: commit each file-atom incrementally, run Parser.ParseFile, focused tool test, driver -SelfTest, and smoke after each commit, including canary for control-plane atoms.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Implementation Process",
+                      "test":  "Verify implementation adheres to the 8 file-level atom commit sequence, with decision-atom tracing, and performs ParseFile/focused test/SelfTest/smoke/canary after each commit.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

@@ -1,0 +1,43 @@
+{
+    "consensus_atoms":  [
+                            "DA-001",
+                            "DA-002",
+                            "DA-003",
+                            "DA-004",
+                            "DA-005",
+                            "DA-006",
+                            "DA-007",
+                            "DA-008",
+                            "DA-009",
+                            "DA-010",
+                            "DA-011"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA-003",
+                                           "DA-008",
+                                           "DA-010"
+                                       ],
+                          "axis":  "Number and Consolidation of Mandatory Gates",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "DA-004",
+                                           "DA-010"
+                                       ],
+                          "axis":  "Child Atom Approval Process",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA-010",
+                        "severity":  "major",
+                        "why":  "DA-010 requires a \u0027mandatory review gate step before auto-approval and dispatch of child atoms\u0027. However, DA-004 states that \u0027Children of an approved decomposed parent are created with approved status\u0027. This creates a direct contradiction: if children are created with an approved status, they are already (auto-)approved at creation, making a \u0027review gate step before auto-approval\u0027 logically impossible. This ambiguity impacts the fundamental safety and workflow of child atom processing, as it\u0027s unclear when human review occurs relative to the initial approval status.",
+                        "fix":  "Clarify the definition and timing of \u0027approved status\u0027 in DA-004 and \u0027auto-approval\u0027 in DA-010. If DA-004\u0027s \u0027approved status\u0027 is a preliminary state (e.g., \u0027decomposition-valid\u0027 but not \u0027dispatch-approved\u0027), DA-010 should be rephrased to specify the review occurs *after* creation with this preliminary status but *before final dispatch approval*. For example, \u0027Implement a mandatory review gate step after initial creation status but before final auto-approval and dispatch of child atoms.\u0027 Alternatively, if DA-004 implies final auto-approval, then DA-010 must be removed or significantly altered to reflect a review *after* auto-approval, potentially allowing for reversal.",
+                        "cost":  "medium"
+                    }
+                ]
+}

@@ -1,0 +1,356 @@
+{
+    "final_answer":  "Accept the decomposition design essentially as scored: implement a single \u0027CRUSHER\u0027 mechanism for large bridge-self tasks confined to channel==\u0027main\u0027 AND scope==\u0027bridge\u0027, built from ONE largeness-function, ONE ingest-path, and ONE mandatory gate-site, with deterministic split validation, bounded decompose-retry, and PROJECT-channel non-interference as the acceptance backbone. All atoms DA-001..DA-009, DA-011, DA-012 are accepted as written. The two high-impact conflicts resolve in favor of consolidation and safety simultaneously: (1) the gate-count conflict (DA-003 vs DA-008 vs DA-010) resolves toward EXACTLY ONE mandatory gate in driver/86-loop-completion-actions.ps1 — no second distinct gate is added; (2) the child-approval conflict (DA-004 vs DA-010) resolves by reading DA-004\u0027s \u0027approved\u0027 as \u0027parent-decomposition-approved\u0027 only, which bypasses re-approval of the parent split but NOT claimability/canary/control-plane admission. DA-010\u0027s safety intent is therefore ACCEPTED but MODIFIED: the \u0027review before dispatch\u0027 requirement is folded into the already-preserved control-plane admission gate (DA-004) rather than implemented as a separate mandatory gate — this removes the logical contradiction the judge flagged (children cannot be both \u0027approved at creation\u0027 and \u0027reviewed before auto-approval\u0027) while keeping human/automated review before child atoms actually dispatch. Net: children are created with a preliminary decomposition-approved + bridge-self status, become claimable only after passing the existing admission/canary gate, and PROJECT-channels remain entirely untouched and gated. Implementation follows DA-012: 8 file-level atoms, one commit each, tracing contract decision-atoms in messages, with Parser.ParseFile + focused tool test + driver -SelfTest + smoke (and canary for control-plane atoms) after every commit.",
+    "decisions":  [
+                      {
+                          "decision":  "DA-001 — Replace Test-IsLargeTask internals with a scope profile (acceptance_count, number of subsystems, intent.estimated_turns, files) with optional params and an early-return for child atoms; activate largeness only when Channel==\u0027main\u0027 AND Scope==\u0027bridge\u0027.",
+                          "rationale":  "Full consensus (A,B,C), highest-tier scores (total 0.8525). Measuring largeness by meaning (scope) rather than text length is precise, measurable, and foundational. The child-atom early-return is the critical guard against recursive/infinite decomposition; main/bridge gating keeps blast radius small.",
+                          "alternatives_considered":  [
+                                                          "Keep the length/heuristic-based Test-IsLargeTask (rejected: measures form not meaning)",
+                                                          "Largeness without child-atom early-return (rejected: enables recursive decomposition of already-split atoms)"
+                                                      ],
+                          "risk":  "Medium reversibility; thresholds for acceptance_count/subsystems/estimated_turns may need tuning and could mis-classify borderline tasks. Mitigated by optional params and main/bridge confinement.",
+                          "test":  "Test-IsLargeTask uses scope-profile metrics, early-returns for child atoms, and returns large only for main/bridge; unit test borderline acceptance_count/subsystem/turn counts and confirm PROJECT-channel inputs are never marked large by this path."
+                      },
+                      {
+                          "decision":  "DA-002 — Use Add-ProjectBacklogFromMarker(Channel==\u0027main\u0027) as the SOLE atom-ingest path for bridge-self, extended additively with bridge-self validation and per-atom return records (valid_for_split, files, source_task_id, action, errors), branched on Channel==\u0027main\u0027.",
+                          "rationale":  "Full consensus (total 0.86). One ingest path avoids divergent code paths and is the natural seam for the gate. The \u0027additive\u0027 framing protects existing PROJECT behavior; the per-atom return records give the downstream gate exactly the data it needs to decide valid-split deterministically.",
+                          "alternatives_considered":  [
+                                                          "A new dedicated bridge-self ingest function (rejected: violates Foundation #2 / DA-008 consolidation)",
+                                                          "Raw Add-Idea instructions for atoms (rejected per DA-009)"
+                                                      ],
+                          "risk":  "Medium reversibility; changes to a shared function risk touching PROJECT behavior. Mitigated by Channel==\u0027main\u0027 branching that leaves the PROJECT path byte-for-byte unchanged.",
+                          "test":  "Confirm bridge-self atoms ingest only through Add-ProjectBacklogFromMarker; assert per-atom return records are populated; assert PROJECT-channel ingest output is unchanged (regression)."
+                      },
+                      {
+                          "decision":  "DA-003 — Implement EXACTLY ONE mandatory gate in driver/86-loop-completion-actions.ps1 with predicate (channel==\u0027main\u0027 AND scope==\u0027bridge\u0027 AND large AND not-child-atom): block monolith coding on invalid split, mark parent decomposed on valid split, force bounded decompose-retry feeding ingest errors back, operator-hold on exhaustion.",
+                          "rationale":  "Full consensus and the load-bearing control point (total 0.85, impact 0.95, risk_reduction 0.90). A single crisp choke point both blocks monolith coding and marks decomposition; consolidating here resolves the gate-count conflict in its favor over a second gate (DA-010).",
+                          "alternatives_considered":  [
+                                                          "Scatter enforcement across planner + driver + ingest (rejected: un-auditable, violates DA-008)",
+                                                          "Add a second mandatory review gate (DA-010 as written; rejected — folded into admission gate instead)"
+                                                      ],
+                          "risk":  "Low reversibility, high cost, complex branching lower feasibility/simplicity. A bug here can block all bridge-self progress. Mitigated by -SelfTest + canary + the operator-hold escape hatch.",
+                          "test":  "Drive a synthetic large bridge-self parent: invalid split blocks coder and triggers retry; valid split marks parent decomposed and proceeds; retry exhaustion produces operator-hold; predicate-miss (PROJECT or child or small) passes through untouched."
+                      },
+                      {
+                          "decision":  "DA-004 — Children of an approved decomposed parent are created with \u0027approved\u0027 status and tagged bridge-self, where \u0027approved\u0027 means parent-decomposition-approved ONLY and explicitly does NOT bypass claimability/canary/control-plane admission.",
+                          "rationale":  "Full consensus and the safety keystone (total 0.8475, risk_reduction 0.90). Children gaining approved status at creation is coherent precisely because the separate admission gate still governs whether they are claimable/dispatched. This closes the most dangerous loophole.",
+                          "alternatives_considered":  [
+                                                          "Children require fresh manual re-approval per atom (rejected: redundant friction, negates decomposition value)",
+                                                          "Children fully auto-dispatched bypassing admission/canary (rejected: critical vulnerability)"
+                                                      ],
+                          "risk":  "Low reversibility; misreading \u0027approved\u0027 as \u0027dispatch-approved\u0027 would let unvetted children run. Mitigated by explicit preservation and regression test of the admission gate.",
+                          "test":  "Confirm children are created approved + bridge-self; assert an unadmitted child remains UNCLAIMABLE until it passes the existing control-plane admission/canary gate (test-autopilot-controlplane-gate.ps1)."
+                      },
+                      {
+                          "decision":  "DA-005 — Confine the entire mechanism to channel==\u0027main\u0027 AND scope==\u0027bridge\u0027; PROJECT-channels must not be affected.",
+                          "rationale":  "Supported by A,C and consistent with the consensus predicate (highest total in set, 0.885). Cheap to enforce, high-value non-interference; the anti-frankenstein gate stays intact.",
+                          "alternatives_considered":  [
+                                                          "Apply decomposition to all channels (rejected: breaks PROJECT autopilot, violates contract)",
+                                                          "Gate only on channel without scope (rejected: scope==\u0027bridge\u0027 is required to avoid catching non-bridge main work)"
+                                                      ],
+                          "risk":  "Low. Primary risk is an un-gated code path leaking into PROJECT; mitigated by making the predicate the first check in every new branch and by DA-011 regressions.",
+                          "test":  "Every new branch is unreachable unless channel==\u0027main\u0027 AND scope==\u0027bridge\u0027; PROJECT-channel and non-bridge-main inputs exercise zero new behavior."
+                      },
+                      {
+                          "decision":  "DA-006 — Define \u0027valid split\u0027 deterministically as (created_valid + same-parent skipped_existing_valid) \u003e= 2 with errors empty, where skipped atoms are re-validated (same slug, same source_task, non-terminal status) and cross-parent atoms never count.",
+                          "rationale":  "Full consensus, highest specificity (0.95). Prevents gaming the \u003e=2 threshold with stale or foreign atoms; makes the gate decision purely mechanical and reproducible.",
+                          "alternatives_considered":  [
+                                                          "Count any created\u003e=2 regardless of provenance (rejected: stale/cross-parent atoms could fake a valid split)",
+                                                          "Count skipped atoms without re-validation (rejected: terminal/foreign atoms would pass)"
+                                                      ],
+                          "risk":  "Low reversibility, high edge-case density (re-validation, cross-parent exclusion). Mitigated by exhaustive unit tests of the counting predicate.",
+                          "test":  "Table-test the predicate: 2 fresh valid → valid; 1 fresh + 1 same-parent non-terminal skipped → valid; same-parent terminal/cross-parent/slug-mismatch skipped → NOT counted; any error present → invalid."
+                      },
+                      {
+                          "decision":  "DA-007 — Implement bounded decompose-retry (2-3 attempts) with ingest errors fed back to the planner, realized as the concrete sub-spec of DA-003\u0027s retry clause (not a separate mechanism).",
+                          "rationale":  "Supported by A,C (total 0.8175). Prevents both infinite loops and silent failure. Judge docked 0.02 for overlap with DA-003; resolved by implementing it inside the single gate\u0027s retry branch.",
+                          "alternatives_considered":  [
+                                                          "Unbounded retry (rejected: infinite loop risk)",
+                                                          "No retry / immediate operator-hold (rejected: wastes recoverable transient planner mistakes)",
+                                                          "Separate retry mechanism outside the gate (rejected: duplicates DA-003)"
+                                                      ],
+                          "risk":  "Medium. Retry budget (2 vs 3) is mildly underspecified; pick a constant (default 3, configurable) and surface errors on each attempt.",
+                          "test":  "Force ingest errors: confirm at most N attempts (N in 2..3), each attempt receives prior errors as planner input, and exhaustion yields operator-hold rather than monolith coding."
+                      },
+                      {
+                          "decision":  "DA-008 — Consolidate to ONE largeness-function, ONE ingest-path, ONE gate-site, reusing existing components (Foundation #2).",
+                          "rationale":  "Supported by A,C, highest simplicity (0.95). Minimizing surface area directly reduces maintenance and interference risk; this is the architectural rationale that decides the gate-count conflict against adding a second gate (DA-010).",
+                          "alternatives_considered":  [
+                                                          "Multiple specialized gates/functions per concern (rejected: more surface area, harder to audit, more PROJECT-interference risk)"
+                                                      ],
+                          "risk":  "Medium. Over-consolidation could overload the single gate; mitigated by keeping each concern (largeness, ingest, gating) in its own function but each exactly once.",
+                          "test":  "Static/grep audit: exactly one largeness function, one ingest entry for bridge-self, one gate site in 86-loop-completion-actions.ps1; no duplicate decomposition mechanisms."
+                      },
+                      {
+                          "decision":  "DA-009 — Rewrite the planner decompose instruction to require a [[PROJECT_BACKLOG]] JSON array with full atom schema (single file, acceptance, checks, control-plane admission), demote [[DECOMPOSED:N]] to informational, and stop emitting raw Add-Idea instructions.",
+                          "rationale":  "Full consensus (total 0.8525). Gives the deterministic ingest path machine-checkable input; this is the contract that makes DA-002/DA-006 enforceable.",
+                          "alternatives_considered":  [
+                                                          "Keep [[DECOMPOSED:N]] as authoritative (rejected: not machine-checkable per-atom)",
+                                                          "Keep raw Add-Idea (rejected: bypasses the sole ingest path / validation)"
+                                                      ],
+                          "risk":  "Medium reversibility / migration friction; planner may emit malformed JSON. Mitigated by ingest validation returning errors that feed the bounded retry (DA-007).",
+                          "test":  "Planner output for a large bridge-self parent contains a parseable [[PROJECT_BACKLOG]] JSON array conforming to the atom schema; [[DECOMPOSED:N]] is treated as informational; no Add-Idea instruction is produced."
+                      },
+                      {
+                          "decision":  "DA-010 (MODIFIED) — Do NOT add a second mandatory gate. Fold the \u0027review before dispatch\u0027 safety intent into the already-preserved control-plane admission gate (DA-004): children carry a preliminary decomposition-approved status at creation and become claimable/dispatched only after passing the existing admission/canary review.",
+                          "rationale":  "Judge verdict \u0027modify\u0027 (total 0.6275): as written, DA-010 contradicts DA-004 (\u0027approved at creation\u0027 vs \u0027review before auto-approval\u0027) and conflicts with the single-gate consolidation (DA-003/DA-008). The safety goal (high risk_reduction) is retained by relocating review to the existing admission gate rather than fragmenting control with a distinct second mandatory gate.",
+                          "alternatives_considered":  [
+                                                          "Separate mandatory review gate before auto-approval (rejected: logically inconsistent with DA-004, violates DA-008 single-gate)",
+                                                          "Remove review entirely and fully auto-dispatch children (rejected: loses the safety check)",
+                                                          "Re-scope DA-004 status to non-approved pending manual review (rejected: reintroduces friction the design explicitly removes)"
+                                                      ],
+                          "risk":  "Low reversibility; ambiguity if \u0027approved\u0027 is later misread as dispatch-approved. Mitigated by DA-004\u0027s explicit statement that approval bypasses only parent re-approval, plus the DA-011 regression proving unadmitted children are unclaimable.",
+                          "test":  "A decomposition-approved child does NOT dispatch until it passes the control-plane admission/canary gate; no second distinct gate exists; review happens at the admission gate before claimability (test-autopilot-controlplane-gate.ps1)."
+                      },
+                      {
+                          "decision":  "DA-011 — Make PROJECT-channel non-interference the acceptance backbone: gate every change on channel==\u0027main\u0027/scope==\u0027bridge\u0027, leave the PROJECT_PLAN path untouched, and ship mandatory regressions (test-project-autopilot-stop.ps1, test-autopilot-controlplane-gate.ps1) proving PROJECT stays gated and unadmitted children stay unclaimable.",
+                          "rationale":  "Full consensus, strongest risk_reduction in set (0.95, total 0.855). Concrete, falsifiable acceptance gates for a control-plane change; non-negotiable coverage.",
+                          "alternatives_considered":  [
+                                                          "Manual/ad-hoc verification only (rejected: not falsifiable, regressions can silently break PROJECT)",
+                                                          "Test only the new bridge-self path (rejected: misses the interference dimension that is the core risk)"
+                                                      ],
+                          "risk":  "High reversibility (tests are additive), high authoring cost lowers simplicity but coverage is mandatory. Risk is false-green tests; mitigated by asserting both positive (PROJECT still works) and negative (unadmitted child unclaimable) cases.",
+                          "test":  "test-project-autopilot-stop.ps1 and test-autopilot-controlplane-gate.ps1 pass, demonstrating PROJECT autopilot/admission behavior is identical pre/post change and unadmitted bridge-self children cannot be claimed."
+                      },
+                      {
+                          "decision":  "DA-012 — Adopt the durable MAP/PLAN\u0027s 8 file-level atoms as the authoritative commit sequence (one commit per file-atom), trace contract decision-atoms in commit messages, and dogfood the discipline: run Parser.ParseFile + focused tool test + driver -SelfTest + smoke (and canary for control-plane atoms) after each commit.",
+                          "rationale":  "Single-source (B) but low-cost, high-value process guidance (total 0.8225). Produces incremental, verifiable progress and dogfoods the very decomposition discipline being built. Judge docked 0.02: the concrete \u00278 atoms\u0027 count tracks the durable MAP/PLAN and should follow it rather than be fixed.",
+                          "alternatives_considered":  [
+                                                          "One large uncommitted change (rejected: violates incrementality, no per-step verification)",
+                                                          "Commit per decision-atom regardless of file (rejected: file-level atoms map cleaner to ParseFile/smoke boundaries)"
+                                                      ],
+                          "risk":  "Low. Risk is the \u00278\u0027 figure drifting from the final MAP/PLAN; treat the file-atom list as authoritative and the count as derived.",
+                          "test":  "Commit history shows one commit per file-atom with decision-atom traceability in messages; each commit passes ParseFile + focused test + -SelfTest + smoke; control-plane commits additionally pass canary."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "DA-010 as originally worded — a separate, distinct \u0027mandatory review gate step before auto-approval and dispatch of child atoms\u0027.",
+                         "why":  "Logically contradicts DA-004 (children are created with approved status, so a review \u0027before auto-approval\u0027 is impossible as stated) and violates the single-gate consolidation of DA-003/DA-008 by introducing a second mandatory gate. The safety intent is preserved by folding review into the existing control-plane admission gate (see DA-010 MODIFIED), so the standalone second gate is rejected."
+                     },
+                     {
+                         "decision":  "Raw Add-Idea instructions and [[DECOMPOSED:N]] as the authoritative atom-creation contract.",
+                         "why":  "Not machine-checkable per atom and bypass the sole validated ingest path; replaced by the [[PROJECT_BACKLOG]] JSON contract (DA-009) so DA-002/DA-006 validation can be enforced deterministically. [[DECOMPOSED:N]] is demoted to informational only."
+                     },
+                     {
+                         "decision":  "Treating children\u0027s \u0027approved\u0027 status as dispatch-approval that bypasses claimability/canary/control-plane admission.",
+                         "why":  "Would open the most dangerous loophole — unvetted child atoms entering the system. DA-004 restricts \u0027approved\u0027 to parent-decomposition re-approval only; the existing admission/canary gate must still govern dispatch."
+                     },
+                     {
+                         "decision":  "Separate or duplicated largeness functions, ingest paths, or gate sites.",
+                         "why":  "Violates Foundation #2 / DA-008 consolidation; increases surface area, audit burden, and PROJECT-interference risk. Exactly one of each is required, reusing existing components."
+                     },
+                     {
+                         "decision":  "Applying the decomposition mechanism to any channel/scope beyond main/bridge.",
+                         "why":  "Breaks the PROJECT non-interference acceptance backbone (DA-005/DA-011) and the anti-frankenstein gate; every new branch must be gated on channel==\u0027main\u0027 AND scope==\u0027bridge\u0027."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact retry budget: 2 vs 3 decompose-retry attempts — pick a single constant (proposed default 3, configurable) since DA-007\u0027s \u00272-3\u0027 range is underspecified.",
+                           "The concrete enumeration of the durable MAP/PLAN\u0027s \u00278 file-level atoms\u0027 is referenced (DA-012) but not pinned here; confirm the file list and count against bridge_self_decomposition_map_plan.md at implementation time, since the count may drift.",
+                           "Precise thresholds for the scope profile (acceptance_count, subsystem count, estimated_turns) that flip Test-IsLargeTask to \u0027large\u0027 — to be calibrated from existing bridge-self task history.",
+                           "Whether the admission-gate-folded review (DA-010 MODIFIED) requires any human-in-the-loop signal for control-plane children, or whether the existing canary/admission automation is sufficient on its own."
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "step":  1,
+                                    "commit":  "feat(largeness): replace Test-IsLargeTask internals with scope profile, gated main/bridge, child-atom early-return",
+                                    "decision_atoms":  [
+                                                           "DA-001",
+                                                           "DA-005",
+                                                           "DA-008"
+                                                       ],
+                                    "files":  [
+                                                  "Test-IsLargeTask host module"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "focused tool test for Test-IsLargeTask",
+                                                   "driver -SelfTest",
+                                                   "smoke"
+                                               ]
+                                },
+                                {
+                                    "step":  2,
+                                    "commit":  "feat(ingest): extend Add-ProjectBacklogFromMarker(Channel==\u0027main\u0027) with additive bridge-self validation and per-atom return records",
+                                    "decision_atoms":  [
+                                                           "DA-002",
+                                                           "DA-008"
+                                                       ],
+                                    "files":  [
+                                                  "Add-ProjectBacklogFromMarker host module"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "focused ingest test (bridge-self records populated; PROJECT output unchanged)",
+                                                   "driver -SelfTest",
+                                                   "smoke"
+                                               ]
+                                },
+                                {
+                                    "step":  3,
+                                    "commit":  "feat(split): deterministic valid-split predicate (created_valid + same-parent skipped_existing_valid \u003e= 2, errors empty, re-validate skipped, exclude cross-parent)",
+                                    "decision_atoms":  [
+                                                           "DA-006"
+                                                       ],
+                                    "files":  [
+                                                  "split-validation helper (co-located with ingest)"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "table-test the predicate across edge cases",
+                                                   "driver -SelfTest",
+                                                   "smoke"
+                                               ]
+                                },
+                                {
+                                    "step":  4,
+                                    "commit":  "feat(planner): require [[PROJECT_BACKLOG]] JSON atom schema for bridge-self decompose; demote [[DECOMPOSED:N]] to informational; stop raw Add-Idea",
+                                    "decision_atoms":  [
+                                                           "DA-009"
+                                                       ],
+                                    "files":  [
+                                                  "planner decompose instruction"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "planner-output contract test (JSON parses to schema)",
+                                                   "driver -SelfTest",
+                                                   "smoke"
+                                               ]
+                                },
+                                {
+                                    "step":  5,
+                                    "commit":  "feat(gate): single mandatory gate in driver/86-loop-completion-actions.ps1 (predicate main+bridge+large+not-child); block monolith on invalid split, mark decomposed on valid",
+                                    "decision_atoms":  [
+                                                           "DA-003",
+                                                           "DA-005",
+                                                           "DA-008"
+                                                       ],
+                                    "files":  [
+                                                  "driver/86-loop-completion-actions.ps1"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "gate behavior test (block/mark/passthrough)",
+                                                   "driver -SelfTest",
+                                                   "smoke",
+                                                   "canary (control-plane atom)"
+                                               ]
+                                },
+                                {
+                                    "step":  6,
+                                    "commit":  "feat(gate): bounded decompose-retry (default 3) feeding ingest errors back to planner; operator-hold on exhaustion",
+                                    "decision_atoms":  [
+                                                           "DA-007",
+                                                           "DA-003"
+                                                       ],
+                                    "files":  [
+                                                  "driver/86-loop-completion-actions.ps1"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "retry-bound + error-feedback + operator-hold test",
+                                                   "driver -SelfTest",
+                                                   "smoke",
+                                                   "canary"
+                                               ]
+                                },
+                                {
+                                    "step":  7,
+                                    "commit":  "feat(children): create children approved+bridge-self (parent-decomposition-approved only); fold review-before-dispatch into preserved control-plane admission gate (no second gate)",
+                                    "decision_atoms":  [
+                                                           "DA-004",
+                                                           "DA-010"
+                                                       ],
+                                    "files":  [
+                                                  "Add-ProjectBacklogFromMarker child-creation path",
+                                                  "control-plane admission gate (preserved, not duplicated)"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "test child status + admission-gate-governs-dispatch (unadmitted child unclaimable)",
+                                                   "driver -SelfTest",
+                                                   "smoke",
+                                                   "canary"
+                                               ]
+                                },
+                                {
+                                    "step":  8,
+                                    "commit":  "test(regression): PROJECT non-interference — test-project-autopilot-stop.ps1 and test-autopilot-controlplane-gate.ps1 prove PROJECT untouched and unadmitted children unclaimable",
+                                    "decision_atoms":  [
+                                                           "DA-011",
+                                                           "DA-012"
+                                                       ],
+                                    "files":  [
+                                                  "test-project-autopilot-stop.ps1",
+                                                  "test-autopilot-controlplane-gate.ps1"
+                                              ],
+                                    "verify":  [
+                                                   "Parser.ParseFile",
+                                                   "run both regressions (PROJECT identical pre/post; unadmitted child unclaimable)",
+                                                   "driver -SelfTest",
+                                                   "smoke",
+                                                   "canary"
+                                               ]
+                                },
+                                {
+                                    "note":  "Process discipline (DA-012): one commit per file-atom in order, decision-atom IDs traced in each commit message; reconcile the 8-atom sequence against bridge_self_decomposition_map_plan.md before starting and adjust the count to match the durable MAP/PLAN; never accumulate a large uncommitted monolith."
+                                }
+                            ],
+    "next_step":  "Begin commit 1 (DA-001/DA-005/DA-008): read bridge_self_decomposition_map_plan.md and decision_atoms.json to confirm the file-atom sequence and thresholds, then replace Test-IsLargeTask internals with the scope profile (acceptance_count, subsystems, intent.estimated_turns, files) gated on channel==\u0027main\u0027 AND scope==\u0027bridge\u0027 with a child-atom early-return; run Parser.ParseFile + the focused Test-IsLargeTask test + driver -SelfTest + smoke, then commit before proceeding to commit 2.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-003/DA-008 assert EXACTLY ONE gate hosted in driver/86-loop-completion-actions.ps1, but the live decomposition enforcement is in a DIFFERENT file. Test-PlannerDecomposed (checks.ps1:135) and Invoke-DriverDecomposedMarker (checks.ps1:147) are invoked from driver/86-loop-completion-checks.ps1:1040-1042. driver/86-loop-completion-actions.ps1 contains only Invoke-PostTaskSelfModelRefresh (self-model refresh, unrelated to decomposition).",
+                                  "why":  "Building the gate in actions.ps1 (as the decision repeatedly insists) while the existing handler keeps firing in checks.ps1 produces TWO enforcement sites — directly violating the \u0027one gate-site\u0027 consolidation (DA-008) and Foundation #2. The \u0027exactly one mandatory gate\u0027 claim is already false against current code, and the implementation_plan never migrates or removes the checks.ps1 handler."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Tag mismatch makes the reused ingest path invisible to the reused [[DECOMPOSED]] handler. Invoke-DriverDecomposedMarker counts children by tag \u0027decomposed-child\u0027 and text-matching parentId (checks.ps1:182-185). But Add-ProjectBacklogFromMarker (the DA-002 ingest path) creates children tagged @(\u0027project-autopilot\u0027,\u0027auto-generated\u0027,\u0027atom\u0027,\u0027bridge-self\u0027) with status \u0027approved\u0027 (backlog-autopilot.ps1:1445-1449) — never \u0027decomposed-child\u0027.",
+                                  "why":  "DA-009 stops raw Add-Idea and routes decomposition through [[PROJECT_BACKLOG]] ingest, while atom_08 mandates \u0027reuse the existing [[DECOMPOSED]] handler.\u0027 After the change, the handler finds zero \u0027decomposed-child\u0027 children → emits \u0027DECOMPOSE FAILED\u0027 and keeps the parent open → forces decompose-retry → operator-hold — on a split that actually succeeded. The two reused mechanisms key on incompatible tags; the decision treats them as composable without reconciling them."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-004 \u0027children created approved at ingest\u0027 vs DA-010-modified \u0027children sit in preliminary decomposition-valid, get reviewed, THEN become dispatch-eligible\u0027 is irreconcilable in the actual code path. The reused ingest (DA-002 → Add-Idea -Status \u0027approved\u0027, backlog-autopilot.ps1:1449) materializes runnable approved children immediately, before any gate review stage can run. The new status values \u0027decomposition-valid\u0027/\u0027dispatch-eligible\u0027 do not exist in the schema and contradict DA-004\u0027s \u0027approved\u0027.",
+                                  "why":  "The decision claims to dissolve the DA-004/DA-010 conflict by inventing a preliminary state, but the ingest path it mandates reusing creates \u0027approved\u0027 children up front, so \u0027review BEFORE dispatch-eligible\u0027 ordering cannot hold without rewriting the very ingest behavior the design (plan line 16) says is already done and must be reused. The conceptual resolution does not survive contact with the code."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Atoms DA-002 (bridge-self ingest branching) and DA-004 (children created approved + bridge-self + linked) are ALREADY implemented. The design doc admits it verbatim: \u0027lib/backlog-autopilot.ps1:1373-1465 already has the reusable atom ingest path. For Channel==\u0027main\u0027 it marks children scope=bridge, project=main, tags bridge-self, creates status=approved\u0027 (plan line 16). Code at backlog-autopilot.ps1:1383,1444-1449 confirms it.",
+                                  "why":  "The decision lists these as build work (Commit 3, Commit 6) and never re-baselines against current state. Re-implementing live behavior risks regression and contradicts the \u0027reuse, don\u0027t duplicate\u0027 through-line it champions. The success-test \u0027all 11 atoms implemented\u0027 is ambiguous when several atoms are already-live no-ops."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-009 deviates from the approved design atom_09 while being marked \u0027accepted as-written / consensus.\u0027 atom_09 requires planner output to contain BOTH [[PROJECT_BACKLOG]] JSON AND [[DECOMPOSED:N]] markers; DA-009 demotes [[DECOMPOSED:N]] to informational.",
+                                  "why":  "The task mandates implementing the APPROVED atoms; silently changing atom_09\u0027s contract under the \u0027accepted\u0027 banner is an unflagged scope deviation. Worse, this exact demotion is what disconnects the existing parent-closing handler (see the tag/marker-mismatch finding), so the deviation has a concrete breaking consequence, not just a paperwork one."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The planner decompose instruction is NOT channel-gated today (prompt-builder.ps1:385 keys only on Test-IsLargeTask, with no ChannelIsMain check), yet Commit 1 (DA-009) rewrites it and the plan adds no main/bridge confinement. The PROJECT non-interference regressions (DA-011) are scheduled LAST (Commit 8).",
+                                  "why":  "Rewriting this shared instruction can change PROJECT-channel planner behavior, violating the DA-005/DA-011 non-interference backbone. Because the proving regressions land only at Commit 8, a leak introduced at Commit 1 stays undetected through seven commits — defeating the \u0027verify after each step\u0027 discipline precisely for the most safety-critical property."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-001\u0027s scope-profile inputs (acceptance_count, subsystem_count, intent.estimated_turns) are not available where the check fires. Test-IsLargeTask is called at prompt-build time with only TaskText/Tags (prompt-builder.ps1:385), before any decomposition or analysis exists. The design itself concedes estimated_turns \u0027may be absent\u0027 and \u0027must not fail open into monolith coding\u0027 (plan line 56), and thresholds are left as an open question.",
+                                  "why":  "Replacing a text heuristic with semantic metrics that don\u0027t exist at the call site risks fail-open (monoliths slip through with neutral/absent signals) or requires undefined new plumbing the plan doesn\u0027t specify. Shipping with admittedly un-calibrated thresholds can over-trigger (forcing decomposition on medium tasks) or under-trigger."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Unresolved open question — the review-stage actor (automated vs human) — gates the entire autonomous flow. This is an autonomous backlog task (\u0027Автозадача из бэклога\u0027). DA-010-modified folds in a MANDATORY review stage before children become dispatch-eligible but never defines who performs it.",
+                                  "why":  "If review requires a human approver, every decomposed bridge-self parent stalls waiting for a human before children can dispatch — a hard deadlock that defeats the autopilot purpose. The decision accepts the mandatory review gate without resolving the very question that determines whether dispatch can ever proceed unattended."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "DA-006\u0027s \u0027valid split \u003e= 2\u0027 forces a minimum of two children, and uses a different rule than the existing handler. A large-by-profile but genuinely single-unit task can never reach created_valid\u003e=2 and loops to operator-hold with no escape. Separately, Invoke-DriverDecomposedMarker already uses minChildren = ceil(N/2) (checks.ps1:186), a threshold the decision neither adopts nor reconciles.",
+                                  "why":  "An unhandled edge case (atomic-but-large task can\u0027t pass the gate) plus two coexisting, divergent valid-split thresholds under a plan that claims a single deterministic predicate."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Process constraints are violated by the implementation_plan. The task says implement all 11 atoms IN ORDER (\u0027В ПОРЯДКЕ\u0027) and commit EACH atom separately; the plan reorders (Commit 1 = atom_09, then 1, 2, 6, ...) and bundles atoms (Commit 5 = DA-003+DA-007, Commit 6 = DA-004+DA-010, Commit 7 = DA-005+DA-008). It also adds a 12th atom (DA-012) beyond the approved 11.",
+                                  "why":  "Defensible as engineering, but it is a literal deviation from the explicit ordering constraint and the success-test \u0027each atom is implemented in a distinct, separate commit,\u0027 and from \u0027all 11 atoms from decision_atoms.json\u0027 (the design has exactly atom_01..atom_11; DA-012 is sourced only from proposal B). Operator-hold also has no defined release/timeout policy, so exhausted parents can accumulate as permanently stuck state."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

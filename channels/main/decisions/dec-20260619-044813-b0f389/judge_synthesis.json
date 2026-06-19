@@ -1,0 +1,217 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C). Replacing Test-IsLargeTask internals with a concrete scope profile (acceptance_count, subsystems, estimated_turns, files) is precise and measurable, and the child-atom early-return is a critical guard against recursive decomposition. Gating activation on main/bridge keeps blast radius small. Adds modest complexity but is well-bounded and foundational.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus. A single ingest path (Add-ProjectBacklogFromMarker) with additive, Channel-branched bridge-self validation avoids divergent code paths and is the natural seam for the gate. Per-atom return records (valid_for_split, files, source_task_id, action, errors) give the downstream gate the exact data it needs. \u0027Additive\u0027 framing protects existing PROJECT behavior.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.95,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus and the load-bearing control point. \u0027Exactly one mandatory gate\u0027 at 86-loop-completion-actions.ps1 with a crisp predicate (main + bridge + large + not-child) is the right consolidation; it both blocks monolith coding on invalid splits and marks the parent decomposed on valid ones, with operator-hold on retry exhaustion. High implementation cost and inherently complex branching lower feasibility/simplicity, but this is the canonical gate that resolves the gate-count conflict in its favor over DA-010.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus and the safety keystone: explicitly stating that auto-approval bypasses only parent decomposition re-approval — NOT claimability/canary/control-plane admission — closes the most dangerous loophole. This is the correct side of the DA-004/DA-010 conflict; children gaining \u0027approved\u0027 status at creation is coherent precisely because the separate admission gate still governs dispatch. Strong risk_reduction.",
+                      "total":  0.8475
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Supported by A,C and entirely consistent with the consensus gating predicate. Low-cost, low-reversibility-risk non-interference constraint: confining the whole mechanism to main/bridge and asserting zero PROJECT-channel effect is cheap to enforce and high-value for safety. Highest total in the set on the strength of feasibility and simplicity.",
+                      "total":  0.885
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus. A deterministic \u0027valid split\u0027 definition — (created_valid + same-parent skipped_existing_valid) \u003e= 2, errors empty, skipped atoms re-validated by slug/source_task/non-terminal status, cross-parent excluded — is essential to prevent gaming the threshold via stale or foreign atoms. Highest specificity in the set. High implementation cost and edge-case density (re-validation, cross-parent exclusion) lower feasibility and simplicity.",
+                      "total":  0.835
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Overlaps with retry/operator-hold logic already specified inside DA-003; partial redundancy unless treated as the detailed sub-spec of that gate.",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "Supported by A,C. Bounded decompose-retry with ingest errors fed back to the planner is a sound resilience pattern that prevents both infinite loops and silent failure. Docked slightly for overlapping with the retry behavior already named in DA-003, and the \u00272-3 attempts\u0027 range is mildly underspecified. Best implemented as the concrete realization of DA-003\u0027s retry clause rather than a separate mechanism.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Supported by A,C and embodies the simplicity principle: one largeness-function, one ingest-path, one gate-site, reusing existing components. Highest simplicity score. This is the architectural rationale that resolves the gate-count conflict against adding a second mandatory gate (DA-010); minimizing surface area directly reduces maintenance and interference risk.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus. Forcing the planner to emit a [[PROJECT_BACKLOG]] JSON array with a full atom schema (single file, acceptance, checks, control-plane admission), demoting [[DECOMPOSED:N]] to informational, and eliminating raw Add-Idea instructions gives the deterministic ingest path machine-checkable input. This is the contract that makes DA-002/DA-006 enforceable. Replacing the existing planner instruction carries some migration friction.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.5,
+                                     "feasibility":  0.7,
+                                     "impact":  0.7,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.6
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Major contradiction flagged in review: DA-004 creates children with \u0027approved\u0027 status at creation, making a \u0027review gate before auto-approval\u0027 logically inconsistent as written; timing of human review vs. approval status is ambiguous.",
+                                            "amount":  0.1
+                                        }
+                                    ],
+                      "reason":  "Supported by A,C and well-intentioned for safety, but as stated it both contradicts DA-004 (children already approved at creation) and conflicts with the single-gate consolidation in DA-003/DA-008 by introducing a second mandatory gate. Modify per the review fix: either re-scope DA-004\u0027s status to a preliminary \u0027decomposition-valid\u0027 state with review occurring before FINAL dispatch approval, or fold the review intent into the existing single gate / the already-preserved control-plane admission gate (DA-004) rather than adding a distinct step. The safety goal is valuable (high risk_reduction) but the current wording is logically inconsistent and low-specificity on timing.",
+                      "total":  0.6275
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus and the testing backbone. Making PROJECT-channel non-interference the acceptance criterion — every change gated on main/bridge, PROJECT_PLAN untouched, with named mandatory regressions (test-project-autopilot-stop.ps1, test-autopilot-controlplane-gate.ps1) proving PROJECT stays gated and unadmitted children remain unclaimable — gives the strongest risk_reduction in the set and concrete, falsifiable acceptance gates. High test cost lowers simplicity, but the coverage is non-negotiable for a control-plane change.",
+                      "total":  0.855
+                  },
+                  {
+                      "atom_id":  "DA-012",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Single-source (B only); the specific \u00278 file-level atoms\u0027 count is plan-dependent and may drift from the final design, so it should be treated as guidance rather than a hard contract.",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "Single-proposal (B) implementation-process recommendation, but low-cost and high-value: one commit per file-atom with decision-atom tracing in messages, plus ParseFile / focused tool test / driver -SelfTest / smoke (and canary for control-plane atoms) after each commit, dogfoods the very discipline being built and yields incremental, verifiable progress. Accepted as process guidance; docked slightly because the concrete \u00278 atoms\u0027 figure is tied to the durable MAP/PLAN and should track it rather than be fixed.",
+                      "total":  0.8225
+                  }
+              ]
+}
