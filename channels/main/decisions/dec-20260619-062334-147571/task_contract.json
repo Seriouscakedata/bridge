@@ -1,0 +1,29 @@
+{
+    "task":  "[Автозадача из бэклога] Добавь zombie-reaper\u0027у проверку «задача уже раздроблена», чтобы он не возвращал раздроблённого родителя в очередь целым.\n\nГДЕ: lib/backlog-state-reaper.ps1, функция Invoke-BacklogStateReaper, в месте где осиротевшая \u0027running\u0027/\u0027working\u0027 задача (мёртвый agent_pid + нет свежего heartbeat) восстанавливается (recoverTo = approved/held, ~строки 263-295).\n\nЧТО: ПЕРЕД восстановлением проверь — есть ли у этой задачи ДЕТИ (другие backlog-items, у которых parent_id == id этой задачи) ИЛИ у неё уже стоит маркер decomposed. Если ДА — её работа (декомпозиция) уже сделана: пометь САМУ задачу status=\u0027decomposed\u0027 (с recovered_reason), НЕ возвращай в очередь целой и НЕ форсируй повторный claim. Если детей нет (обычный leaf-атом) — текущее поведение без изменений (recover в approved/held).\n\nПОЧЕМУ: reaper вернул раздроблённого родителя (была \u0027running\u0027 без живого владельца) в approved, хотя 8 детей-атомов уже созданы. Целый родитель при повторном claim заново прогнал бы тяжёлый синтез и наплодил дублирующих детей.\n\nВАЖНО: 1 файл, маленькое изменение, ParseFile/smoke + юнит-тест: (а) осиротевший parent-с-детьми → decomposed (НЕ approved); (б) осиротевший leaf-атом без детей → recover как раньше. Переиспользовать существующие helper\u0027ы (Get-Backlog для поиска детей по parent_id), не плодить механизмы (Foundation #2). Control-plane — аккуратно, с verify/critic.",
+    "goal":  "Prevent the zombie-reaper from recovering an already decomposed parent task (one with children or a \u0027decomposed\u0027 marker) back into the active queue as a \u0027whole\u0027 task. This avoids redundant re-processing, heavy synthesis, and the creation of duplicate child tasks.",
+    "constraints":  [
+                        "The change must be contained within a single file: lib/backlog-state-reaper.ps1.",
+                        "The change should be small.",
+                        "Existing helper functions (e.g., Get-Backlog for finding children by parent_id) must be reused; no new mechanisms should be introduced (Foundation #2).",
+                        "Control-plane changes must be handled carefully, with verification and criticism.",
+                        "The solution must include ParseFile/smoke tests and unit tests."
+                    ],
+    "known_context":  [
+                          "The problem occurs in the `Invoke-BacklogStateReaper` function within `lib/backlog-state-reaper.ps1`, specifically in the task recovery logic (approx. lines 263-295).",
+                          "The reaper currently recovers orphaned \u0027running\u0027/\u0027working\u0027 tasks (dead agent_pid + no fresh heartbeat) to `approved` or `held` status.",
+                          "An orphaned task can be a \u0027parent\u0027 if it has other backlog-items with `parent_id == id` of the task, or if it has a `decomposed` marker.",
+                          "The current behavior incorrectly returns decomposed parent tasks to `approved`, leading to duplicate child task creation upon re-claim.",
+                          "Tasks can have `status`, `id`, `parent_id`, and a `decomposed` marker.",
+                          "A `recovered_reason` field can be set during recovery."
+                      ],
+    "output_format":  "JSON object matching the provided TaskContract schema.",
+    "task_type":  "bugfix",
+    "risk":  "medium",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "Verify that an orphaned task, which has existing child tasks (where `parent_id` matches the task\u0027s `id`), is recovered to `status=\u0027decomposed\u0027` with an appropriate `recovered_reason`, and is NOT set to `approved` or `held`.",
+                          "Verify that an orphaned task, which has the `decomposed` marker set, is recovered to `status=\u0027decomposed\u0027` with an appropriate `recovered_reason`, and is NOT set to `approved` or `held`.",
+                          "Verify that an orphaned leaf task (one without children and without a `decomposed` marker) is recovered to `status=\u0027approved\u0027` or `status=\u0027held\u0027` as per the existing logic.",
+                          "Verify that if a task that *would* have been incorrectly recovered to `approved` (but is now correctly `decomposed`) is attempted to be re-claimed, no new, duplicate child tasks are created."
+                      ]
+}

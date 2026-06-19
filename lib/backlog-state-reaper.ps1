@@ -117,6 +117,67 @@ function Get-BacklogStateReaperItemId {
   return ''
 }
 
+function Test-BacklogStateReaperTruthy {
+  param([Parameter(Mandatory=$false)]$Value)
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [bool]) { return [bool]$Value }
+  $raw = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+  return (@('0','false','no','off','none','null') -notcontains $raw.ToLowerInvariant())
+}
+
+function Test-BacklogStateReaperDecomposedMarker {
+  param([Parameter(Mandatory=$false)]$Item)
+  foreach ($name in @('decomposed','is_decomposed','decomposed_at')) {
+    if (Test-BacklogStateReaperTruthy -Value (Get-BacklogStateReaperObjectValue -Object $Item -Names @($name))) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Get-BacklogStateReaperParentRefs {
+  param([Parameter(Mandatory=$false)]$Item)
+  $refs = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @('parent_id','canary_gate_parent_id')) {
+    $raw = [string](Get-BacklogStateReaperObjectValue -Object $Item -Names @($name) -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($raw)) { [void]$refs.Add($raw.Trim()) }
+  }
+  $text = [string](Get-BacklogStateReaperObjectValue -Object $Item -Names @('text','task','description') -Default '')
+  if (-not [string]::IsNullOrWhiteSpace($text)) {
+    foreach ($m in [regex]::Matches($text, '\[parent:([^\]]+)\]', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+      $parentId = ([string]$m.Groups[1].Value).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($parentId)) { [void]$refs.Add($parentId) }
+    }
+  }
+  return @($refs.ToArray())
+}
+
+function Get-BacklogStateReaperAllItems {
+  param([Parameter(Mandatory=$false)]$FallbackItems = @())
+  if (Get-Command Get-Backlog -ErrorAction SilentlyContinue) {
+    try {
+      $all = @(Get-Backlog)
+      if (@($all).Count -gt 0) { return @($all) }
+    } catch {}
+  }
+  return @(ConvertTo-BacklogStateReaperItemArray -Value $FallbackItems)
+}
+
+function New-BacklogStateReaperParentIdSet {
+  param([Parameter(Mandatory=$false)]$Items = @())
+  $set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($candidate in @(ConvertTo-BacklogStateReaperItemArray -Value $Items)) {
+    $childId = Get-BacklogStateReaperItemId -Item $candidate
+    foreach ($parentId in @(Get-BacklogStateReaperParentRefs -Item $candidate)) {
+      if ([string]::IsNullOrWhiteSpace($parentId)) { continue }
+      if (-not [string]::IsNullOrWhiteSpace($childId) -and [string]::Equals($childId, $parentId, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+      [void]$set.Add($parentId)
+    }
+  }
+  return ,$set
+}
+
 function Get-BacklogStateReaperRecordIds {
   param([Parameter(Mandatory=$false)]$Record)
   $ids = @()
@@ -254,6 +315,7 @@ function Invoke-BacklogStateReaper {
   $resultItems = New-Object 'System.Collections.Generic.List[object]'
   $recovered = New-Object 'System.Collections.Generic.List[object]'
   $preserved = New-Object 'System.Collections.Generic.List[object]'
+  $parentIdSet = New-BacklogStateReaperParentIdSet -Items (Get-BacklogStateReaperAllItems -FallbackItems $Items)
 
   foreach ($item in @(ConvertTo-BacklogStateReaperItemArray -Value $Items)) {
     $copy = Copy-BacklogStateReaperItem -Item $item
@@ -276,6 +338,25 @@ function Invoke-BacklogStateReaper {
         id = $id
         status = $status
         reason = $(if ($livePid) { 'live-agent-pid' } elseif ($freshWorkerHeartbeat) { 'fresh-worker-heartbeat' } else { 'matching-runtime-state' })
+      })
+      continue
+    }
+
+    $hasDecomposedChildren = (-not [string]::IsNullOrWhiteSpace($id) -and $parentIdSet.Contains($id))
+    $hasDecomposedMarker = Test-BacklogStateReaperDecomposedMarker -Item $copy
+    if ($hasDecomposedChildren -or $hasDecomposedMarker) {
+      $reason = ("orphaned-parent-already-decomposed: no live agent_pid, no fresh worker heartbeat, no active runtime state; children={0}; marker={1}" -f $hasDecomposedChildren, $hasDecomposedMarker)
+      Set-BacklogStateReaperObjectValue -Object $copy -Name 'status' -Value 'decomposed'
+      Set-BacklogStateReaperObjectValue -Object $copy -Name 'recovered_reason' -Value $reason
+      Set-BacklogStateReaperObjectValue -Object $copy -Name 'recovered_at' -Value ($now.ToString('o'))
+      [void]$resultItems.Add($copy)
+      [void]$recovered.Add([pscustomobject][ordered]@{
+        id = $id
+        from_status = $status
+        to_status = 'decomposed'
+        recovery_count = $null
+        recovered_reason = $reason
+        recovered_at = $now.ToString('o')
       })
       continue
     }

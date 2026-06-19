@@ -1,0 +1,28 @@
+{
+    "consensus_atoms":  [
+                            "DA-001",
+                            "DA-002",
+                            "DA-004",
+                            "DA-005",
+                            "DA-006"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA-002",
+                                           "DA-003"
+                                       ],
+                          "axis":  "Child Detection Mechanism",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA-003",
+                        "severity":  "blocking",
+                        "why":  "The proposed method of detecting children by precomputing a set of parent IDs *only from the `$Items` array* is fundamentally flawed. If an orphaned parent\u0027s children are present in the overall system backlog but are not included in the specific `$Items` array currently being processed, this atom would incorrectly classify the parent as non-decomposed. This would lead to the parent following the standard recovery path (e.g., to \u0027approved\u0027 or \u0027held\u0027), which is explicitly what DA-005 aims to prevent for decomposed parents, potentially causing duplicate child synthesis or other inconsistencies.",
+                        "fix":  "The child detection mechanism must be able to query the comprehensive system backlog (or a sufficiently broad view of it) to correctly identify all children of a given parent, regardless of whether those children are part of the immediate `$Items` array being processed. If performance is a concern with `Get-Backlog` (as implied by the \u0027Optimized\u0027 category of DA-003), then `Get-Backlog` itself should be optimized for batch queries or an alternative, comprehensive, and performant query mechanism for the backlog should be implemented.",
+                        "cost":  "medium"
+                    }
+                ]
+}

@@ -7,6 +7,11 @@ $bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
 $script:pass = 0
 $script:fail = 0
+$script:MockBacklog = @()
+
+function Get-Backlog {
+  return @($script:MockBacklog)
+}
 
 function Assert-BacklogStateReaper {
   param(
@@ -54,6 +59,7 @@ try {
   $stale = $now.AddMinutes(-30).ToString('o')
 
   $dead = New-ReaperItem -Id 'dead-pid-working' -Status 'working' -AgentPid 424242
+  $script:MockBacklog = @()
   $deadRun = Invoke-BacklogStateReaper -Items @($dead) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @($PID)
   $deadOut = Get-ReaperItemById -Items $deadRun.items -Id 'dead-pid-working'
   Assert-BacklogStateReaper 'dead PID working item recovers to approved for retry (1st death)' (
@@ -62,6 +68,30 @@ try {
   Assert-BacklogStateReaper 'dead PID working item gets recovered_reason' (
     [string]$deadOut.recovered_reason -like 'zombie-working:*no live agent_pid*'
   ) ([string]$deadOut.recovered_reason)
+
+  $decomposedParent = New-ReaperItem -Id 'decomposed-parent' -Status 'running' -AgentPid 919191
+  $decomposedChild = New-ReaperItem -Id 'decomposed-child' -Status 'approved'
+  $decomposedChild | Add-Member -NotePropertyName parent_id -NotePropertyValue 'decomposed-parent' -Force
+  $script:MockBacklog = @($decomposedParent,$decomposedChild)
+  $decomposedRun = Invoke-BacklogStateReaper -Items @($decomposedParent) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @()
+  $decomposedOut = Get-ReaperItemById -Items $decomposedRun.items -Id 'decomposed-parent'
+  $decomposedRec = @($decomposedRun.recovered | Where-Object { [string]$_.id -eq 'decomposed-parent' } | Select-Object -First 1)[0]
+  Assert-BacklogStateReaper 'orphaned parent with child is marked decomposed, not requeued' (
+    [string]$decomposedOut.status -eq 'decomposed' -and [string]$decomposedOut.status -ne 'approved' -and [string]$decomposedOut.recovered_reason -like 'orphaned-parent-already-decomposed:*'
+  ) ($decomposedRun | ConvertTo-Json -Compress -Depth 8)
+  Assert-BacklogStateReaper 'orphaned parent with child records recovered to_status decomposed' (
+    $null -ne $decomposedRec -and [string]$decomposedRec.to_status -eq 'decomposed'
+  ) ($decomposedRun | ConvertTo-Json -Compress -Depth 8)
+
+  $markerParent = New-ReaperItem -Id 'marker-parent' -Status 'working' -AgentPid 929292
+  $markerParent | Add-Member -NotePropertyName decomposed -NotePropertyValue $true -Force
+  $script:MockBacklog = @($markerParent)
+  $markerRun = Invoke-BacklogStateReaper -Items @($markerParent) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @()
+  $markerOut = Get-ReaperItemById -Items $markerRun.items -Id 'marker-parent'
+  Assert-BacklogStateReaper 'orphaned parent with decomposed marker is marked decomposed' (
+    [string]$markerOut.status -eq 'decomposed' -and [string]$markerOut.recovered_reason -like 'orphaned-parent-already-decomposed:*marker=True*'
+  ) ($markerRun | ConvertTo-Json -Compress -Depth 8)
+  $script:MockBacklog = @()
 
   $live = New-ReaperItem -Id 'live-pid-running' -Status 'running' -AgentPid $PID
   $liveRun = Invoke-BacklogStateReaper -Items @($live) -RuntimeState $null -NowUtc $now -HeartbeatMaxAgeSeconds 120 -LivePids @($PID)

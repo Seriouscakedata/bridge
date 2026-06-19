@@ -62,6 +62,7 @@ channels/*/workpacks/
 channels/*/decision-shadow.jsonl
 channels/*/delivery-gate-shadow.jsonl
 channels/*/task-management-shadow.jsonl
+channels/*/depth-shadow.jsonl
 channels/*/cost.json
 tools/tmp-*.ps1
 /backlog.jsonl

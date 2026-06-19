@@ -1,0 +1,63 @@
+{
+    "proposer":  "C",
+    "understanding":  "The zombie-reaper in lib/backlog-state-reaper.ps1 currently recovers orphaned \u0027running\u0027/\u0027working\u0027 tasks to \u0027approved\u0027 or \u0027held\u0027 without checking if the task is already decomposed. If a parent task has existing children (parent_id == id) or a \u0027decomposed\u0027 marker, recovering it as \u0027approved\u0027 causes it to be re-claimed and re-processed, leading to duplicate child tasks and wasted synthesis. The fix adds a pre-recovery check: if the orphaned task has children or a decomposed marker, set its status to \u0027decomposed\u0027 with a recovered_reason instead of returning it to the active queue. Leaf tasks without children continue to recover as before.",
+    "summary":  "Add a check in Invoke-BacklogStateReaper before recovering orphaned tasks: if the task has children (via Get-Backlog query on parent_id) or has a \u0027decomposed\u0027 marker, set status=\u0027decomposed\u0027 with recovered_reason and skip the normal approved/held recovery. Otherwise, proceed with existing recovery logic. This prevents decomposed parents from re-entering the queue and creating duplicates.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Check for existing children or decomposed marker before recovering an orphaned task",
+                               "reason":  "A parent task that has already been decomposed into children should not be re-processed as a whole task. Recovering it to \u0027approved\u0027 causes duplicate child creation on re-claim.",
+                               "tradeoff":  "Adds one Get-Backlog query per orphaned task recovery, which is a minimal overhead compared to the cost of re-running heavy synthesis and cleaning up duplicate children.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Set status to \u0027decomposed\u0027 with recovered_reason when children or marker exist",
+                               "reason":  "The \u0027decomposed\u0027 status accurately reflects the task\u0027s state — its work is done, children exist. The recovered_reason provides audit trail for why the reaper changed the status.",
+                               "tradeoff":  "The task is removed from active consideration, which is correct. No mechanism exists to \u0027un-decompose\u0027 it, but that matches the intent: decomposition is irreversible.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Reuse existing Get-Backlog helper to find children by parent_id",
+                               "reason":  "Foundation #2 requires reusing existing mechanisms. Get-Backlog already queries backlog items and can filter by parent_id. No new query functions needed.",
+                               "tradeoff":  "Get-Backlog may return all matching items; we only need existence check (count \u003e 0). Could optimize with a limit, but simplicity and reuse outweigh micro-optimization.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Leaf tasks without children and without decomposed marker follow existing recovery path",
+                               "reason":  "The bug only affects decomposed parents. Leaf atoms that were genuinely running and orphaned should still be recovered to approved/held for re-processing.",
+                               "tradeoff":  "No change to leaf behavior, minimizing regression risk.",
+                               "confidence":  0.98
+                           }
+                       ],
+    "assumptions":  [
+                        "Get-Backlog function is available in the same scope and can query by parent_id",
+                        "The \u0027decomposed\u0027 marker is a field on the backlog item (e.g., a boolean or status substring)",
+                        "The recovered_reason field can be set during status update",
+                        "The reaper has write access to update task status to \u0027decomposed\u0027",
+                        "Lines 263-295 contain the recovery logic for orphaned running/working tasks",
+                        "Children are identified by parent_id == task.id in the backlog store"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Get-Backlog query might be expensive if backlog is large and not indexed by parent_id",
+                      "severity":  "low",
+                      "mitigation":  "The reaper runs periodically, not per-request. If performance becomes an issue, add an index on parent_id or cache results. For now, the query is acceptable."
+                  },
+                  {
+                      "risk":  "A task might have children that are themselves orphaned/dead, leading to false positive decomposition",
+                      "severity":  "low",
+                      "mitigation":  "The existence of any child (even orphaned) indicates decomposition already occurred. The parent should not be re-processed regardless of child state. Child orphans are handled separately by the reaper."
+                  },
+                  {
+                      "risk":  "The \u0027decomposed\u0027 marker might be set inconsistently (e.g., set but no children exist)",
+                      "severity":  "medium",
+                      "mitigation":  "The check uses OR logic: if either children exist OR marker is set, treat as decomposed. This handles both cases. If marker is set without children, the task is still correctly marked decomposed and won\u0027t re-enter queue."
+                  },
+                  {
+                      "risk":  "Existing tests may assume orphaned parents recover to \u0027approved\u0027",
+                      "severity":  "medium",
+                      "mitigation":  "Update unit tests to reflect new behavior. Add specific test cases for parent-with-children and leaf-without-children scenarios as specified in success_tests."
+                  }
+              ],
+    "minimal_version":  "In Invoke-BacklogStateReaper, before the existing recovery logic (approx. line 263), add: if ($task.decomposed -or (Get-Backlog -parent_id $task.id | Where-Object { $_.id }).Count -gt 0) { Set-BacklogItem -id $task.id -status \u0027decomposed\u0027 -recovered_reason \u0027Parent already decomposed\u0027 ; continue }. This is ~4 lines, reuses Get-Backlog, and handles both marker and children check.",
+    "advanced_version":  "In addition to the minimal check, add a helper function Test-IsTaskDecomposed that encapsulates the logic (checks decomposed marker, queries children via Get-Backlog with a -First 1 optimization, returns boolean). Use it in the reaper. Add verbose logging when a parent is marked decomposed. Add ParseFile/smoke test that mocks Get-Backlog to return children and verifies status=\u0027decomposed\u0027. Add unit test for leaf task recovery unchanged. Add a test for task with decomposed marker but no children."
+}

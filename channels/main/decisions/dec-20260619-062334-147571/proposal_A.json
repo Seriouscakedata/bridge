@@ -1,0 +1,73 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно точечно изменить ветку восстановления осиротевших running/working backlog-задач в lib/backlog-state-reaper.ps1: если задача уже является раздробленным родителем, reaper не должен возвращать ее в approved/held, а должен зафиксировать саму родительскую задачу как status=\u0027decomposed\u0027 с recovered_reason. Leaf-задачи без детей и без маркера decomposed должны восстанавливаться по прежней логике.",
+    "summary":  "Добавить перед существующим присвоением recoverTo небольшой guard: через существующий Get-Backlog получить backlog и проверить наличие элементов с parent_id == текущий id, а также наличие decomposed-маркера у самой задачи. При hasChildren или decomposed marker выставлять status=\u0027decomposed\u0027, recovered_reason, очищать/обновлять те же recovery-поля, которые безопасно чистятся в текущей ветке, и пропускать обычный recoverTo. Иначе оставить существующее восстановление в approved/held без изменений. Проверить ParseFile/smoke и двумя юнит-сценариями: parent-with-children -\u003e decomposed, leaf -\u003e old recover behavior.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Разместить проверку непосредственно перед текущей веткой восстановления orphaned running/working задачи в recoverTo=approved/held.",
+                               "reason":  "Это сохраняет существующую детекцию zombie/orphan состояния и меняет только финальное решение о том, куда возвращать задачу.",
+                               "tradeoff":  "Нужно аккуратно не задеть соседние сценарии reaper\u0027а, например held recovery или свежий heartbeat.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Для определения раздробленного родителя использовать существующий Get-Backlog и фильтр по parent_id == текущий id.",
+                               "reason":  "Контракт прямо требует переиспользовать существующие helper\u0027ы и не вводить новый механизм индексации или чтения состояния.",
+                               "tradeoff":  "На каждый recovery-кандидат может появиться дополнительный проход по backlog; для маленького control-plane изменения это приемлемо, но лучше переиспользовать уже загруженный список, если он есть в функции.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Считать задачу уже decomposed, если у нее есть хотя бы один child item или truthy marker/property decomposed.",
+                               "reason":  "Это покрывает оба указанных источника истины: фактические дети и явный маркер завершенной декомпозиции.",
+                               "tradeoff":  "Нужно null-safe сравнение parent_id/id и осторожная проверка marker\u0027а, чтобы строковые/булевы значения не дали ложноположительный результат.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "При совпадении guard выставлять только status=\u0027decomposed\u0027 и recovered_reason, не возвращая задачу в approved/held и не форсируя повторный claim.",
+                               "reason":  "Главная цель — не дать повторно забрать целого родителя и не создать дублирующие children.",
+                               "tradeoff":  "Если children были созданы частично или некорректно, родитель уже не вернется в очередь автоматически; это лучше решать отдельной диагностикой, а не zombie-reaper\u0027ом.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Leaf-задачи без детей и без decomposed marker должны проходить через старый код без изменения поведения.",
+                               "reason":  "Контракт требует сохранить существующее восстановление для обычных атомарных задач.",
+                               "tradeoff":  "Тест должен явно зафиксировать старый expected recoverTo, чтобы guard не расширился слишком широко.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "В lib/backlog-state-reaper.ps1 уже есть доступный helper Get-Backlog или он импортирован в области видимости Invoke-BacklogStateReaper.",
+                        "Backlog item имеет поля id, parent_id, status и может иметь property/marker decomposed.",
+                        "Существующая recovery-ветка уже умеет сохранять измененный backlog item обратно в состояние; новый guard должен использовать тот же механизм записи.",
+                        "recovered_reason уже используется или допустим к добавлению в этой recovery-ветке.",
+                        "Юнит-тесты для этого файла уже существуют либо могут быть расширены без изменения production-файлов за пределами указанного файла; если строго запрещены любые другие file edits, тесты выполняются через существующий harness/inline smoke."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Ложное отсутствие детей из-за различий типов id и parent_id, например Guid/string или nullable field.",
+                      "severity":  "medium",
+                      "mitigation":  "Сравнивать null-safe и нормализовать к строке только для сравнения, не меняя исходные значения."
+                  },
+                  {
+                      "risk":  "Truthy decomposed marker может быть представлен строкой \u0027false\u0027 или отсутствующим свойством.",
+                      "severity":  "medium",
+                      "mitigation":  "Проверить существующий формат маркера в файле и использовать такую же интерпретацию, как в остальном backlog-коде."
+                  },
+                  {
+                      "risk":  "Дополнительный вызов Get-Backlog внутри цикла восстановления может быть лишним на больших backlog.",
+                      "severity":  "low",
+                      "mitigation":  "Если в функции уже есть текущий список backlog, переиспользовать его; иначе вызов Get-Backlog оставить как самый маленький и согласованный механизм."
+                  },
+                  {
+                      "risk":  "Статус decomposed может потребовать очистки agent_pid/heartbeat/claim fields, иначе задача останется визуально занятой.",
+                      "severity":  "medium",
+                      "mitigation":  "Скопировать существующую очистку recovery-полей из ветки approved/held, но не менять поля, связанные с очередью/claim, сверх уже принятого поведения."
+                  },
+                  {
+                      "risk":  "Тесты могут быть brittle, если проверяют весь объект целиком.",
+                      "severity":  "low",
+                      "mitigation":  "Проверять только контрактные поля: status, recovered_reason, отсутствие approved/held для parent и сохранение old behavior для leaf."
+                  }
+              ],
+    "minimal_version":  "В одном месте Invoke-BacklogStateReaper перед recoverTo добавить guard: получить backlog через Get-Backlog, вычислить hasChildren по parent_id == item.id, проверить decomposed marker, и если true — выставить item.status=\u0027decomposed\u0027 и item.recovered_reason вроде \u0027orphaned_decomposed_parent_recovered\u0027, применить существующую очистку stale owner/heartbeat полей и skip обычного recoverTo. Добавить/запустить ParseFile, smoke и два unit сценария: parent-with-children -\u003e decomposed; leaf-without-children -\u003e existing approved/held recovery.",
+    "advanced_version":  "Дополнительно сделать guard максимально экономным и диагностичным: переиспользовать уже загруженный backlog список, если он есть; вынести только локальный scriptblock/малую inline-проверку без нового публичного helper\u0027а; добавить отдельный тест для decomposed marker без детей; проверить, что повторный claim decomposed parent не создает children, если такой smoke уже доступен в существующем harness. Не расширять scope за пределы lib/backlog-state-reaper.ps1."
+}

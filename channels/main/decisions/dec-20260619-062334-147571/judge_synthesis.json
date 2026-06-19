@@ -1,0 +1,126 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.96,
+                                     "feasibility":  0.95,
+                                     "impact":  0.9,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.94
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct placement: it limits the decomposed-parent handling to genuinely orphaned tasks after existing safety guards and before normal recovery can requeue them.",
+                      "total":  0.931
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.93,
+                                     "feasibility":  0.88,
+                                     "impact":  0.88,
+                                     "simplicity":  0.82,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.87
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Using the existing backlog helper provides the comprehensive view needed to detect children even when they are not present in the current processing slice.",
+                      "total":  0.8845
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.25,
+                                     "feasibility":  0.75,
+                                     "impact":  0.45,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.25,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.2,
+                                            "reason":  "Blocking correctness flaw: children outside the current $Items array would be missed, causing decomposed parents to be recovered incorrectly."
+                                        }
+                                    ],
+                      "reason":  "The optimization relies on an incomplete input set. It can misclassify decomposed parents as leaves and directly violates the intended duplicate-prevention behavior.",
+                      "total":  0.507
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.92,
+                                     "impact":  0.86,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Combining child presence as the primary signal with a truthy marker fallback covers both structural and explicit decomposition evidence.",
+                      "total":  0.886
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.97,
+                                     "feasibility":  0.93,
+                                     "impact":  0.95,
+                                     "simplicity":  0.88,
+                                     "risk_reduction":  0.96,
+                                     "specificity":  0.94
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This is the core behavioral fix: decomposed orphaned parents are persisted as decomposed and are not returned to claimable queues.",
+                      "total":  0.9405
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.86,
+                                     "simplicity":  0.92,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Preserving existing recovery for true leaf tasks keeps the fix narrow and avoids regressing legitimate orphan recovery behavior.",
+                      "total":  0.9095
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.84,
+                                     "simplicity":  0.82,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.91
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Recording the decomposed status transition in the recovered bucket gives the driver a clear persistence path and preserves auditability with to_status=\u0027decomposed\u0027.",
+                      "total":  0.88
+                  }
+              ]
+}

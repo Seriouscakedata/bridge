@@ -1,0 +1,89 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Place the decomposed-parent check inside the recovery block, after the liveness/heartbeat/runtime guards, and before the approved/held recovery assignment.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Check Placement",
+                      "test":  "Verify the decomposed-parent check is executed only for genuinely orphaned tasks (after liveness/heartbeat/runtime checks) and before they are re-queued to \u0027approved\u0027 or \u0027held\u0027.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Detect children by querying the backlog using the existing Get-Backlog helper, filtering by parent_id == current item\u0027s id.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Child Detection Mechanism",
+                      "test":  "Unit test mocks Get-Backlog to return child items when queried by parent_id, verifying the parent is correctly identified as decomposed.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Detect children by precomputing a case-insensitive set of all parent_id and canary_gate_parent_id values from the already-passed $Items array once before the main loop, and checking if the current item\u0027s id is in this set.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Child Detection Mechanism (Optimized)",
+                      "test":  "Verify a HashSet of parent IDs is built from the input $Items array before the processing loop, and that this set is used for child detection, avoiding internal Get-Backlog calls.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Consider a task decomposed if it has at least one child item (primary signal) OR carries a truthy \u0027decomposed\u0027 marker/property (secondary/fallback signal).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Decomposition Criteria",
+                      "test":  "Unit tests for: (a) an orphaned parent with children is marked \u0027decomposed\u0027; (b) an orphaned parent with a \u0027decomposed\u0027 marker (but no children) is marked \u0027decomposed\u0027.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "When a task is identified as an orphaned and decomposed parent, set its status to \u0027decomposed\u0027 and assign a distinct \u0027recovered_reason\u0027, skipping the normal recovery to \u0027approved\u0027 or \u0027held\u0027 to prevent re-claiming and duplicate child synthesis.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Action on Decomposed Parent",
+                      "test":  "Verify that an orphaned, decomposed parent has its status set to \u0027decomposed\u0027 and a \u0027recovered_reason\u0027, and is NOT returned to \u0027approved\u0027 or \u0027held\u0027 status.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Leaf tasks (without children and without a \u0027decomposed\u0027 marker) must continue to follow the existing recovery path, being returned to \u0027approved\u0027 or \u0027held\u0027 as before.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Leaf Task Behavior",
+                      "test":  "Unit test for an orphaned leaf task (no children, no marker) verifies it is recovered to \u0027approved\u0027 or \u0027held\u0027 status, matching current behavior.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Ensure the status flip from \u0027running\u0027 to \u0027decomposed\u0027 for an orphaned parent is recorded in the \u0027recovered\u0027 bucket (with `to_status=\u0027decomposed\u0027`) to guarantee persistence by the driver and maintain an auditable trail.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Reporting \u0026 Persistence",
+                      "test":  "Unit test asserts that the result object\u0027s \u0027recovered\u0027 list contains an entry for the decomposed parent with `to_status=\u0027decomposed\u0027`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

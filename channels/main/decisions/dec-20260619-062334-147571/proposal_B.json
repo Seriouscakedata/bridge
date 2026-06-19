@@ -1,0 +1,73 @@
+{
+    "proposer":  "B",
+    "understanding":  "Invoke-BacklogStateReaper (lib/backlog-state-reaper.ps1) is a pure read-only proposer that takes an $Items array, finds orphaned \u0027running\u0027/\u0027working\u0027 tasks (dead agent_pid + no fresh heartbeat + no matching runtime state), and recovers them to \u0027approved\u0027 (or \u0027held\u0027 after MaxZombieRetries) at lines ~283-305. The bug: a parent that already finished decomposition (its 8 child-atoms exist) was still \u0027running\u0027 (its worker died before driver/86-loop-completion-checks.ps1 could flip it to status=\u0027decomposed\u0027). The reaper saw \u0027running\u0027 + dead pid and recovered it to \u0027approved\u0027, so on re-claim the whole parent re-runs heavy synthesis and spawns duplicate children. Fix: before recovering an orphan, detect whether it is an already-decomposed parent (has children with parent_id==its id, OR carries a decomposed marker) and, if so, flip it to status=\u0027decomposed\u0027 instead of re-queueing it.",
+    "summary":  "Add a single guard at the top of the recovery block (after the existing liveness/heartbeat/runtime guards, before the approved/held computation). Precompute once, before the foreach, a case-insensitive HashSet of every parent_id (and canary_gate_parent_id) present in the passed-in $Items — which IS the full backlog, since the driver calls the reaper with $items = @(Get-Backlog). For each orphan, if its id is in that set OR it already carries a truthy \u0027decomposed\u0027 marker, set status=\u0027decomposed\u0027 with a recovered_reason, record it in the \u0027recovered\u0027 bucket (so the existing driver\u0027s Save-Backlog persists the flip), and skip the approved/held recovery and zombie_recovery_count bump entirely. Leaf atoms (no children, no marker) keep today\u0027s behavior verbatim. Add a ParseFile/smoke check plus unit tests for (a) orphan-with-children→decomposed, (b) orphan-with-decomposed-marker→decomposed, (c) orphan-leaf→approved as before, and a guard that a live/heartbeat-fresh parent is still preserved untouched.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Detect children by scanning the already-passed $Items array (build a parent-id set once before the loop), NOT by calling Get-Backlog inside the reaper.",
+                               "reason":  "driver.ps1:503 invokes the reaper as $items = @(Get-Backlog) inside Invoke-BacklogLocked, so $Items already contains the full, lock-consistent backlog including every child. Scanning it reuses the data Get-Backlog produced (honoring Foundation #2 \u0027no new mechanism\u0027) while keeping the function pure and testable; calling Get-Backlog internally would break the existing Items-based unit tests, add a hidden global dependency, and risk reentrancy under the held backlog lock.",
+                               "tradeoff":  "Diverges from the literal wording of the contract hint (\u0027use Get-Backlog\u0027). If a future caller ever passes only the single zombie item rather than the whole backlog, the child scan finds nothing — mitigated by the advanced version\u0027s optional Get-Backlog fallback.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Precompute the set of all non-blank parent_id (+ canary_gate_parent_id) values across $Items once, before the foreach, into a HashSet[string] with OrdinalIgnoreCase; ignore self-referential parent_id==own-id.",
+                               "reason":  "Turns an otherwise O(n^2) per-orphan rescan into a single O(n) prepass; case-insensitive ordinal matching mirrors the existing id comparisons in Test-BacklogStateReaperMatchingRuntimeState; excluding self-references prevents a degenerate item from marking itself as its own parent.",
+                               "tradeoff":  "Reads parent linkage from the input items eagerly even in the common case where no orphans exist; negligible for realistic backlog sizes (tens to low hundreds of items).",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Place the decomposed-parent check INSIDE the recovery block, after the $livePid/$freshWorkerHeartbeat/$matchingRuntime guard (the \u0027continue\u0027 at ~line 281), not before it.",
+                               "reason":  "A parent with a live worker still mid-decomposition must not be sidelined; the task\u0027s \u0027before recovery\u0027 means before the approved/held assignment, which is exactly this position. Only genuinely orphaned parents reach this code.",
+                               "tradeoff":  "None of substance — this is the only placement that both fixes the bug and leaves live decomposing workers untouched.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Record the running-\u003edecomposed flip in the \u0027recovered\u0027 bucket (with to_status=\u0027decomposed\u0027 and a distinct recovered_reason), not in \u0027preserved\u0027.",
+                               "reason":  "The driver persists only when @($r.recovered).Count -gt 0 (driver.ps1:506). If the decomposed flip went to \u0027preserved\u0027, Save-Backlog would not run when it is the only change in a cycle, so the item would stay \u0027running\u0027 in backlog.jsonl and be re-evaluated forever. Putting it in \u0027recovered\u0027 guarantees persistence and keeps the action auditable.",
+                               "tradeoff":  "Semantically \u0027recovered\u0027 connotes \u0027requeued for retry\u0027, whereas this is \u0027sidelined as already-done\u0027; the distinct to_status=\u0027decomposed\u0027 and reason string disambiguate it in the evidence/audit trail.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Treat children-existence as the primary, authoritative signal and the \u0027decomposed\u0027 field/tag marker as a secondary OR fallback; use status=\u0027decomposed\u0027 as the resulting status to match the existing convention.",
+                               "reason":  "Physically-present children are unambiguous proof decomposition happened. driver/86-loop-completion-checks.ps1:193 already closes parents via Set-Idea -Status \u0027decomposed\u0027, so reusing that exact status keeps the claim picker (which excludes non-running/approved statuses) from ever re-selecting the task and avoids inventing a new state.",
+                               "tradeoff":  "The exact within-item \u0027marker\u0027 field name is not fully pinned down (status=\u0027decomposed\u0027 parents are already filtered out earlier as \u0027status-not-governed\u0027), so the marker branch is defensive; the children check carries the real weight.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "The reaper is always invoked with the full backlog as $Items (verified at driver.ps1:502-505 where $items = @(Get-Backlog) is passed under the backlog lock).",
+                        "Children link to their parent via a \u0027parent_id\u0027 field equal to the parent\u0027s id; \u0027canary_gate_parent_id\u0027 is a known sibling field worth matching too (lib/backlog-core.ps1, lib/backlog-workpack.ps1).",
+                        "The canonical \u0027decomposed\u0027 marker is status=\u0027decomposed\u0027 (driver/86-loop-completion-checks.ps1:193); since this recovery block only governs \u0027running\u0027/\u0027working\u0027 items, the within-item marker check targets a separate truthy field (e.g. \u0027decomposed\u0027/\u0027decomposed_at\u0027) and is a belt-and-suspenders complement to the children check.",
+                        "An orphan that is itself a parent should be flipped to \u0027decomposed\u0027 regardless of how many children exist (\u003e=1 child is sufficient evidence; the reaper does not need the completion-check\u0027s \u003e= ceil(expected/2) quorum).",
+                        "Flipping to \u0027decomposed\u0027 should NOT increment zombie_recovery_count, since this is not a retry."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Marker field-name mismatch: the within-item \u0027decomposed\u0027 marker may be stored under a different key than assumed, so the marker branch silently never fires.",
+                      "severity":  "medium",
+                      "mitigation":  "Rely on the children-existence check as the primary signal (it does not depend on any marker), and read the marker via the existing Get-BacklogStateReaperObjectValue with a small candidate-name list (\u0027decomposed\u0027,\u0027is_decomposed\u0027,\u0027decomposed_at\u0027) so adding another alias later is trivial."
+                  },
+                  {
+                      "risk":  "Child-detection convention divergence: driver/86-loop-completion-checks.ps1 detects children via the \u0027decomposed-child\u0027 tag + parent_id-in-text, while the crusher/contract uses parent_id; matching only one convention could miss children.",
+                      "severity":  "medium",
+                      "mitigation":  "Match both \u0027parent_id\u0027 and \u0027canary_gate_parent_id\u0027 for the structured link (the reliable machine field); document that the tag/text convention is a recognized alternate and can be added to the prepass if a real case surfaces."
+                  },
+                  {
+                      "risk":  "Persistence regression: if the flip is mis-bucketed into \u0027preserved\u0027, Save-Backlog never runs for a decomposed-only cycle and the \u0027running\u0027 line lingers.",
+                      "severity":  "medium",
+                      "mitigation":  "Explicitly add the item to the \u0027recovered\u0027 list and assert in a unit test that result.recovered contains an entry with to_status=\u0027decomposed\u0027 for the parent."
+                  },
+                  {
+                      "risk":  "Sidelining a live decomposing parent if the check is placed before the liveness guard.",
+                      "severity":  "low",
+                      "mitigation":  "Insert the check strictly after the existing $livePid/$freshWorkerHeartbeat/$matchingRuntime \u0027continue\u0027; add a unit/guard case asserting a live-pid parent-with-children is preserved unchanged."
+                  },
+                  {
+                      "risk":  "Control-plane change to the autonomous queue governor could mis-sideline a legitimately-incomplete parent and strand its work.",
+                      "severity":  "low",
+                      "mitigation":  "Gate the flip on concrete evidence (\u003e=1 actual child item OR explicit marker); leaf atoms are provably untouched; ship with the required ParseFile/smoke + the (a)/(b)/(c) unit tests and a critic pass before wiring."
+                  }
+              ],
+    "minimal_version":  "In Invoke-BacklogStateReaper, before the foreach, build $parentIdsWithChildren = a HashSet[string] (OrdinalIgnoreCase) of every non-blank parent_id/canary_gate_parent_id in $Items, excluding self-references. Inside the recovery block, immediately after the liveness/heartbeat/runtime \u0027continue\u0027 guard, add: if $parentIdsWithChildren.Contains($id) OR the item has a truthy \u0027decomposed\u0027 marker, then Set status=\u0027decomposed\u0027, set recovered_reason=(\"zombie-{status}: already decomposed (children/marker present) -- not re-queued to avoid duplicate synthesis\"), set recovered_at, add the copy to $resultItems, push an entry to $recovered with from_status=$status/to_status=\u0027decomposed\u0027/recovered_reason, and \u0027continue\u0027 (skipping the priorRecoveries/zombie_recovery_count and approved/held logic). Everything else (leaf-atom path) is unchanged. Add a ParseFile/AST smoke check and three unit tests: (a) orphan running parent with a child item (parent_id==parent.id) -\u003e status=\u0027decomposed\u0027, not approved/held, present in recovered with to_status=\u0027decomposed\u0027; (b) orphan with truthy \u0027decomposed\u0027 marker, no children -\u003e status=\u0027decomposed\u0027; (c) orphan leaf, no children/marker -\u003e status=\u0027approved\u0027 (recovery 1/2), exactly as today.",
+    "advanced_version":  "All of the minimal version, plus: (1) add a small private helper Test-BacklogStateReaperHasChildren / Get-BacklogStateReaperParentIdSet that also recognizes the \u0027decomposed-child\u0027 tag + parent-id-in-text convention used by driver/86-loop-completion-checks.ps1, so both linkage styles are covered; (2) add an optional -AllItems (or -Children) parameter that, when supplied, is used for the child scan instead of $Items, with a guarded fallback to Get-Backlog only if both -AllItems is absent AND $Items appears to be a single-item slice and Get-Backlog is available — preserving purity in the common path while staying correct if a future caller passes only the zombie; (3) emit a structured evidence entry (e.g. evidence.decomposed_parents_sidelined with id + child_count) for observability; (4) add the success-test #4 regression as an integration test: reap the orphaned parent, then run the claim picker over result.items and assert it selects none of the sidelined parents and that no duplicate child atoms are created."
+}
