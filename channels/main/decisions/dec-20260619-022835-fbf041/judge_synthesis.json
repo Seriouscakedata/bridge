@@ -1,0 +1,197 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full-proposal consensus (A/B/C). Multi-signal scope profile (acceptance_count, subsystem_count, estimated_turns) is a sounder classifier than a single heuristic, and retaining the atom/decomposed-child early-return preserves idempotency. Slightly more moving parts than the current heuristic costs simplicity, but the named inputs make it concrete and testable.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Routing bridge-self decomposition through the existing Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) as the single ingest path, emitting [[PROJECT_BACKLOG]] JSON instead of raw Add-Idea, reuses a proven path and directly enables the consolidation in atom_08. High specificity (named function, channel, marker) and low integration risk.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Making decomposition mandatory and blocking STATUS: CONTINUE when a large bridge-self parent lacks a valid split is the core safety invariant — it prevents the coder from being handed a monolith. Adds control-flow complexity (lower simplicity) and is low-reversibility, but the risk-reduction payoff is high. Depends on atom_06\u0027s split definition and atom_07\u0027s retry/hold to be complete.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.55,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Unresolved gate-bypass tension with atom_10; \u0027bypassing approval/control-plane gates\u0027 overstates oversight removal",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Consensus on the automated-child mechanism (create approved, tag bridge-self, link via source_task_id). Conflicts head-on with atom_10. Resolve in favor of this atom because it aligns with consensus atom_08\u0027s \u0027no new gates\u0027, but MODIFY the wording: human oversight is not eliminated — it is preserved via atom_07\u0027s operator-hold on retry exhaustion, and the parent was already approved. State that children bypass only the per-decomposition re-approval, not all control-plane safety, which is why risk_reduction is scored moderate.",
+                      "total":  0.7725
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and the strongest atom. Fencing the entire mechanism to channel==\u0027main\u0027/scope==\u0027bridge\u0027 and leaving Start-ProjectAutopilotIfNeeded and F1–F4 untouched is the critical blast-radius control that makes every other atom safe to ship. Low cost, high reversibility, and directly testable via PROJECT-channel non-interference.",
+                      "total":  0.8875
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Strong consensus (A/B). Defining \u0027valid split\u0027 deterministically from the ingest return value (created\u003e=2, empty errors, single target file, concrete acceptance/checks, parent linkage) rather than re-scanning tags removes a fragile, race-prone check and gives atom_03 a precise gate condition. Highly specific; modest validation-logic cost lowers simplicity slightly.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "From B only, but it completes atom_03: a bounded retry (2–3 attempts) that feeds deterministic ingest errors back into the retry prompt, then transitions to operator-hold and never falls back to coding the monolith. This is also the clean reconciliation point for the atom_04/atom_10 conflict — the human touchpoint lives here (hold on exhaustion) instead of a per-decomposition gate. Adds a loop and a hold state, costing simplicity.",
+                      "total":  0.795
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A/B) and the governing architectural principle: one largeness function, one ingest path, one gate site, reuse the existing [[DECOMPOSED]] handler, deprecate the Add-Idea(status=\u0027new\u0027) child path, and add no new goals.md or parallel approval gates. High reversibility, low cost, maximal simplicity. This atom is the explicit basis for rejecting atom_10\u0027s new gate.",
+                      "total":  0.8775
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "From A only, but it specifies the planner contract that atom_02 and atom_06 depend on: emit both [[PROJECT_BACKLOG]] JSON (with required atom metadata) and [[DECOMPOSED:N]] markers. Consistent with atom_08\u0027s reuse of the [[DECOMPOSED]] handler. The dual-marker requirement carries mild redundancy (N is derivable from the JSON), which lowers simplicity; otherwise a necessary and concrete contract.",
+                      "total":  0.7675
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.45,
+                                     "feasibility":  0.85,
+                                     "impact":  0.5,
+                                     "simplicity":  0.4,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.6
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Blocking conflict with consensus atom_04 and atom_08 (introduces a new approval gate, contradicting \u0027no new gates\u0027)",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "From C only and flagged blocking. A mandatory operator review of the MAP/PLAN and atom list before auto-approval directly contradicts consensus atom_04 (children created approved) and violates consensus atom_08\u0027s explicit \u0027no new parallel approval gates\u0027, while defeating the bridge-self autopilot\u0027s purpose. Its legitimate concern — human oversight — is preserved more cheaply by atom_07 (operator-hold on retry exhaustion) and atom_11 (regression coverage). Reject as a standing gate; fold its intent into atom_07. Technically feasible and somewhat risk-reducing, but it loses on correctness, impact, and simplicity against the consensus.",
+                      "total":  0.5725
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "From A only, but it is the verification counterpart to atom_05: mandatory regression tests proving PROJECT-channel non-interference and unchanged F1–F4 behavior. Purely additive, low cost, high reversibility, and high risk-reduction — it converts the isolation guarantee into a continuously checked invariant and partially substitutes for atom_10\u0027s oversight concern. Specificity would improve by naming the exact channels/cases to cover.",
+                      "total":  0.825
+                  }
+              ]
+}

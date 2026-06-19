@@ -1,0 +1,97 @@
+{
+    "proposer":  "B",
+    "understanding":  "Large bridge-self tasks (channel=main) currently reach one coder whole and die before commit (commit_famine / 45-min output-cap; 29/30 \u0027hangs\u0027 are live workers timer-killed on oversized orders). Three root causes: (1) Test-IsLargeTask (prompt-builder.ps1:538-551) measures by char length / file-name regex / \u0027feature\u0027 keyword, so a short-but-wide order (\u0027build service X\u0027) slips through as small; (2) largeness only INJECTS a decompose request into the planner prompt (prompt-builder.ps1:385) which the planner can ignore and call the coder anyway -- [[DECOMPOSED]] asks, never forces; (3) when a split does happen via raw Add-Idea it returns children as status=\u0027new\u0027 (backlog-crud.ps1:74-89) that re-stick on approval+control-plane gates. The fix must be DESIGN-ONLY for now and must reuse the EXISTING approved-atom ingest (Add-ProjectBacklogFromMarker, which already special-cases channel==\u0027main\u0027 at backlog-autopilot.ps1:1383-1449 to emit approved bridge-self atoms), NOT a new parallel path, and must not touch the PROJECT-channel F1-F4 gate (Start-ProjectAutopilotIfNeeded, :977).",
+    "summary":  "MAP/PLAN. Flow for a large bridge-self parent: [picker selects parent on channel=main] -\u003e [scope classifier: Test-IsLargeTask measured by SCOPE] -\u003e if large -\u003e [planner-only decompose turn: emit existing [[PROJECT_BACKLOG]] ingest marker + [[DECOMPOSED:N]]] -\u003e [driver completion-check ingests via Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027, SourceTaskId=parent) -\u003e approved single-file bridge-self atoms] -\u003e [validate split by the ingest RETURN VALUE: created\u003e=2, errors empty, every atom touches exactly 1 file] -\u003e if valid: parent=decomposed, atoms queue as approved; if invalid/missing: HARD GATE blocks the coder turn, force_planner decompose-retry (capped), then operator-hold -- never code the monolith. PROJECT channels are untouched: the whole mechanism is fenced to channel==\u0027main\u0027/scope==\u0027bridge\u0027 (the same $isBridgeSelfBacklog test already in the ingest), so project plans keep going through Start-ProjectAutopilotIfNeeded + Set-ProjectPlanApproved (F1-F4). CONSOLIDATION: exactly one largeness fn, one ingest path, one gate site, reuse the existing [[DECOMPOSED]] handler -- the old Add-Idea(status=\u0027new\u0027) child path is redirected through the ingest, not kept as a second gate. The deliverable for operator review is this design plus the ordered atom list in minimal_version, each a single-file change that passes ParseFile/smoke on its own.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Reuse Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) as the SINGLE atom-ingest path; switch the large-bridge-self decompose instruction to emit the existing [[PROJECT_BACKLOG]] marker instead of raw Add-Idea.",
+                               "reason":  "That function already emits approved, SkipCurator, scope=bridge, bridge_self_admission atoms for channel==\u0027main\u0027 (backlog-autopilot.ps1:1444-1449), which directly satisfies \u0027children of an approved parent are born approved\u0027 and \u0027don\u0027t proliferate a parallel path\u0027. Raw Add-Idea returns status=\u0027new\u0027 (backlog-crud.ps1:74-89) -\u003e re-stuck.",
+                               "tradeoff":  "The planner must emit richer per-atom metadata (slug/title/files/acceptance) that Test-ProjectAutopilotTaskMetadata validates (backlog-autopilot.ps1:1405) and body\u003e=40 chars -- stricter than free-form Add-Idea, so the decompose prompt must teach that schema.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Make decompose MANDATORY by a driver coder-dispatch gate, not by prompt text: large + channel==main + no valid split this turn =\u003e force_planner decompose-retry, never set coder_fired.",
+                               "reason":  "Today largeness only injects a request (prompt-builder.ps1:385) the planner can ignore, and Invoke-DriverDecomposedMarker only fires if the planner volunteered the marker. A hard state-machine gate (reusing force_planner/coder_fired fields already in Update-State, driver/86:217) is the only thing that actually blocks the monolith.",
+                               "tradeoff":  "Adds a branch in the driver loop\u0027s dispatch decision; must be precise or a borderline task could deadlock between \u0027too large to code\u0027 and \u0027can\u0027t be split\u0027.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Define \u0027valid split\u0027 deterministically by the ingest RETURN VALUE (created\u003e=2 AND errors empty AND every created atom has exactly one file), not by re-scanning the decomposed-child tag.",
+                               "reason":  "Invoke-DriverDecomposedMarker currently trusts the marker\u0027s N and finds children by the \u0027decomposed-child\u0027 tag + parentId text match (driver/86:182-188). Ingest atoms carry tags \u0027project-autopilot/auto-generated/atom/bridge-self\u0027, not \u0027decomposed-child\u0027, so the parent would never close. Keying validation on the ingest result removes that coupling and enforces atomicity.",
+                               "tradeoff":  "Couples the gate to the ingest contract\u0027s return shape; the single-file (count==1) check must be enforced at ingest or in the validator, rejecting multi-file \u0027atoms\u0027.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Replace char/regex largeness with a scope profile: large iff max(acceptance_count, distinct subsystem/touch-set count, intent.estimated_turns) \u003e= threshold, keeping the atom/decomposed-child early-return.",
+                               "reason":  "Constraint requires SCOPE not symbols; short-but-wide orders slip the current \u003e1200-chars / 3-file-regex / \u0027feature\u0027 test (prompt-builder.ps1:543-549). Acceptance/subsystem/estimated_turns are true size proxies.",
+                               "tradeoff":  "Needs reliable intent/acceptance metadata on bridge-self items; when absent it must fall back deterministically to today\u0027s signals, and borderline tasks will decompose more often than before.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Fence the entire mechanism to channel==\u0027main\u0027/scope==\u0027bridge\u0027 (mirror the existing $isBridgeSelfBacklog test); PROJECT channels keep Start-ProjectAutopilotIfNeeded + F1-F4 untouched.",
+                               "reason":  "Constraint: do not break the anti-frankenstein gate. Start-ProjectAutopilotIfNeeded already returns not-project-channel for main (:977) and requires an approved PROJECT_PLAN (:984) -- that path must be left exactly as-is.",
+                               "tradeoff":  "Two decompose flavors coexist (project-autopilot vs bridge-self auto-decompose), but they share the same ingest function, so there is no second plumbing -- only one extra entry condition.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Children inherit the parent\u0027s approval at birth (already \u0027approved\u0027 via ingest) and are linked to the parent via source_task_id so lineage and parent-close work.",
+                               "reason":  "Constraint: auto-approve children of an approved parent; avoid re-stick on approval/control-plane gates. The ingest already sets Status=\u0027approved\u0027 + SkipCurator + bridge_self_admission; only the parent linkage (SourceTaskId, already a param at backlog-autopilot.ps1:1378) needs to be surfaced for close/dedup.",
+                               "tradeoff":  "Must verify no downstream curator/admission re-holds approved+bridge_self_admission atoms; if one does, that gate needs a bridge-self exemption (single targeted edit, not a new gate).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Bounded decompose-retry (2-3) feeding the ingest\u0027s deterministic errors[] back into the retry prompt, then operator-hold; never fall back to coding the monolith.",
+                               "reason":  "Constraint says block the coder and force decompose-retry, but unbounded retry burns 45-min turns. Add-ProjectBacklogFromMarker already returns precise errors (missing metadata, too-short, dup slug) to make retries corrective rather than blind.",
+                               "tradeoff":  "A genuinely un-splittable large task parks in \u0027held\u0027 until the operator acts -- intentional, but it stalls that one item rather than risking a frankenstein commit.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Consolidate per goals.md: one largeness fn, one ingest path, one gate site, reuse the existing [[DECOMPOSED]] handler; deprecate/redirect the Add-Idea(status=\u0027new\u0027) child path.",
+                               "reason":  "Constraint: do not proliferate conflicting gates. Editing the existing Test-IsLargeTask / Invoke-DriverDecomposedMarker / Add-ProjectBacklogFromMarker is strictly fewer moving parts than a new subsystem.",
+                               "tradeoff":  "Requires careful surgical diffs to live engine files (bridge-core, full regression suite per driver/86:256) rather than greenfield code -- higher review care, but no coverage gaps.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "Bridge-self backlog items carry (or can cheaply derive) acceptance/intent metadata; intent.estimated_turns may be absent, so a deterministic fallback to acceptance_count and inferred touch-set is mandatory, not optional.",
+                        "Add-ProjectBacklogFromMarker with Channel=\u0027main\u0027 already returns approved bridge-self atoms (verified backlog-autopilot.ps1:1444-1449) and its return object (created/skipped/errors/ids/slugs) is a stable contract usable as the split validator.",
+                        "The driver coder-dispatch decision is reachable from the completion-check pipeline (driver/86-loop-completion-checks.ps1) and force_planner + coder_fired state fields (seen at driver/86:217) are the levers to suppress the coder turn and re-enter the planner.",
+                        "Each atom = exactly one file is the atomicity contract; multi-file atoms are treated as an invalid split and trigger retry, not a coder turn.",
+                        "No separate control-plane admission gate re-holds an \u0027approved\u0027 + bridge_self_admission atom; if one does, it gets a single bridge-self exemption rather than a new gate.",
+                        "This task is design+atom-list only -- the atoms in minimal_version are queued for operator review BEFORE any implementation runs."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Scope classifier misfires when intent metadata is missing, either flooding the decomposer (false large) or letting a monolith through (false small).",
+                      "severity":  "medium",
+                      "mitigation":  "Use max() over acceptance_count / subsystem-count / estimated_turns with conservative thresholds; deterministic fallback to current text signals; log the classifier reason+inputs per decision so thresholds can be tuned from the outcome ledger; keep the atom/decomposed-child early-return so atoms never re-decompose."
+                  },
+                  {
+                      "risk":  "Parent never closes because the existing handler scans for the \u0027decomposed-child\u0027 tag while ingest atoms carry different tags -\u003e decompose loop.",
+                      "severity":  "high",
+                      "mitigation":  "Validate the split by the ingest return value (created\u003e=2, errors empty) and the SourceTaskId linkage rather than the tag scan; optionally have the bridge-self ingest branch also stamp \u0027decomposed-child\u0027+parent so lineage/dashboard keep working -- a single targeted edit, no new path."
+                  },
+                  {
+                      "risk":  "Regression onto PROJECT channels -- auto-decompose accidentally triggers where F1-F4 should govern.",
+                      "severity":  "high",
+                      "mitigation":  "Hard-fence every new branch on channel==\u0027main\u0027/scope==\u0027bridge\u0027 (mirror $isBridgeSelfBacklog) and add a test asserting a large PROJECT-channel task still returns plan-not-approved / requires Set-ProjectPlanApproved and does NOT auto-split."
+                  },
+                  {
+                      "risk":  "Mandatory gate deadlocks a large task the planner cannot validly split (burns turns or parks forever).",
+                      "severity":  "medium",
+                      "mitigation":  "Cap decompose-retries (2-3) with the ingest errors[] fed back into the retry prompt; on exhaustion set status=\u0027held\u0027 for the operator and emit an event -- explicitly never route to the coder."
+                  },
+                  {
+                      "risk":  "Two decompose mechanisms (Add-Idea path + PROJECT_BACKLOG ingest) drift into conflicting gates, violating goals.md.",
+                      "severity":  "medium",
+                      "mitigation":  "Make the ingest the single source of truth; redirect/retire the Add-Idea(status=\u0027new\u0027) child path; document one largeness fn + one gate site; add a test that the raw-Add-Idea decompose route is no longer used for large bridge-self."
+                  },
+                  {
+                      "risk":  "Edits land in bridge-core engine files (prompt-builder.ps1, driver/86, backlog-autopilot.ps1) -\u003e full regression suite per change, slower atoms, syntax-loss risk on large files.",
+                      "severity":  "low",
+                      "mitigation":  "Keep each atom single-file with an explicit Grep anchor + offset/limit Read + point Edit (per the large-file rule, prompt-builder.ps1:531); ship a dedicated test atom; rely on ParseFile + smoke + bridge-core snapshot suite already gating these paths."
+                  }
+              ],
+    "minimal_version":  "Operator-reviewable atom list (each = 1 file, passes ParseFile/smoke alone, ordered):\nATOM 1 (lib/prompt-builder.ps1): Rewrite Test-IsLargeTask to a scope profile -- accept optional acceptance_count / subsystem-or-touchset-count / estimated_turns (threaded from the $currentIdea already fetched at prompt-builder.ps1:573-578), large iff max(...) \u003e= threshold, deterministic fallback to today\u0027s signals, keep atom/decomposed-child early-return, return+log a reason. Acceptance: ParseFile OK; returns true for a short-text/high-acceptance idea, false for atom-tagged. \nATOM 2 (lib/prompt-builder.ps1): Change the large-task planner instruction (currently at :386-401) so that for channel==\u0027main\u0027 it instructs the planner to emit the existing [[PROJECT_BACKLOG]] ingest JSON (slug/title/task/files=1/acceptance) plus [[DECOMPOSED:N]], and forbids STATUS: CONTINUE. Acceptance: prompt for a large main task contains PROJECT_BACKLOG schema; ParseFile OK. (Serial after ATOM 1 -- same file, lane serial:file.)\nATOM 3 (driver/86-loop-completion-checks.ps1): In Invoke-DriverDecomposedMarker, ingest via Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027, SourceTaskId=parentId) and define valid split = created\u003e=2 AND errors empty AND each atom single-file; close parent \u0027decomposed\u0027 only on valid split. Acceptance: with stubbed scriptblocks, parent closes only when ingest reports \u003e=2 single-file approved atoms.\nATOM 4 (driver/86-loop-completion-checks.ps1): Add the mandatory coder gate -- if Test-IsLargeTask \u0026\u0026 channel==main \u0026\u0026 no valid split this turn, set force_planner + suppress coder_fired, increment decompose_retry_count, cap at 3 then status=\u0027held\u0027. Acceptance: large main task with no split does not dispatch coder; after cap it is held. (Serial after ATOM 3.)\nATOM 5 (tools/test-bridge-self-decompose-gate.ps1, NEW): sibling test conventions (UTF-8 BOM, ParseFile self-check, RESULT line, exit 0/1) covering scope classifier true/false, mandatory gate blocks coder, ingest yields approved atoms, PROJECT channel still needs F1-F4, retry-cap -\u003e held. Passes ParseFile/smoke standalone.",
+    "advanced_version":  "On top of minimal: (A) Per-atom pre-flight -- before approving, dry-run ParseFile (and a scoped smoke) on each atom\u0027s single target file so a structurally-broken atom is rejected at decompose time, not at coder time. (B) Dependency/lane awareness -- have the decompose prompt emit depends_on/parallel_group and let the ingest\u0027s existing lane/conflict-group plumbing (backlog-autopilot.ps1:1346-1351) schedule independent atoms via [[PARALLEL:N]] while serializing same-file atoms. (C) Atom-size budgeting -- size the split (2-5 atoms) from intent.estimated_turns so each child is provably a \u0027minutes\u0027 job; emit a per-atom estimated_turns. (D) Telemetry+autotune -- record atom commit latency and decompose outcomes to the outcome ledger and auto-tune the largeness thresholds and atom count from observed \u003c15-min commit rate. (E) Decompose-quality critic -- a lightweight check that the union of atom files/acceptance covers the parent\u0027s acceptance set, blocking \u0027lossy\u0027 splits that silently drop scope. (F) Lineage stamping -- ingest also writes decomposed-child+parent so the dashboard and parent-close lineage reconcile across both the project-autopilot and bridge-self flavors without a second code path."
+}

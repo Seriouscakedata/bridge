@@ -1,0 +1,103 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно спроектировать main/bridge-self-only предкодерную декомпозицию: крупный родитель не должен попадать Codex-у монолитом, а обязан сначала превратиться в approved атомы через уже существующий PROJECT_BACKLOG/Add-ProjectBacklogFromMarker путь. PROJECT-каналы и их Ф1-Ф4 approval должны остаться в текущей модели.",
+    "summary":  "MAP: main bridge-self parent -\u003e scope classifier -\u003e planner-only decompose turn -\u003e [[PROJECT_BACKLOG]] JSON -\u003e Add-ProjectBacklogFromMarker(channel=main, sourceTaskId=parent) -\u003e strict child validation -\u003e parent=decomposed -\u003e approved atom queue. If the split is missing or invalid, the driver retries decomposition and never routes the parent to coder. PROJECT channels keep Start-ProjectAutopilotIfNeeded/F1-F4 behavior unchanged.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Scope-based largeness must be a bridge-self admission decision, not a global project-autopilot decision.",
+                               "reason":  "The failure mode is specific to main/bridge-self parents reaching coder as monoliths; PROJECT channels already have a separate approved-plan coordinator.",
+                               "tradeoff":  "This intentionally leaves large PROJECT tasks under the slower Ф1-Ф4 path instead of giving them the new shortcut.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Replace the current Test-IsLargeTask heuristic with a scope profile using acceptance_count, subsystem_count, and intent.estimated_turns.",
+                               "reason":  "Short-wide tasks like \u0027Build service X\u0027 are large by scope even if they are tiny by text length and list no files.",
+                               "tradeoff":  "Needs reliable intent metadata or conservative deterministic fallbacks; borderline tasks may decompose more often than before.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Planner output for a large bridge-self parent must contain both [[PROJECT_BACKLOG]] JSON and [[DECOMPOSED:N]].",
+                               "reason":  "PROJECT_BACKLOG is the existing durable atom-ingest path; DECOMPOSED is the parent-completion signal.",
+                               "tradeoff":  "The planner prompt becomes stricter, and malformed JSON now blocks progress instead of falling through.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Add-ProjectBacklogFromMarker remains the only atom creation path, with Channel=\u0027main\u0027 for bridge-self decomposition.",
+                               "reason":  "It already creates approved main/bridge atoms and preserves shared metadata/plumbing.",
+                               "tradeoff":  "The function needs small main-specific validation/parent metadata rather than a new subsystem.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Valid bridge-self decomposition children must have exactly one target file, concrete acceptance/checks, and parent linkage.",
+                               "reason":  "The goal is atoms that can be committed in minutes and verified independently.",
+                               "tradeoff":  "Some legitimate two-file changes, such as implementation plus test, must become two dependent atoms.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Children of an approved decomposed parent should be created as approved and tagged/linked as bridge-self atoms.",
+                               "reason":  "Requiring approval again recreates the existing deadlock at approval/control-plane gates.",
+                               "tradeoff":  "Approval is inherited, so safety must come from validation plus existing bridge_self_admission/canary checks for protected paths.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "The DECOMPOSED handler must validate exact valid-child count by parent metadata, not just trust the marker.",
+                               "reason":  "The current marker can close a parent even when atom creation was partial or unrelated.",
+                               "tradeoff":  "Deduped existing children need to count if they match sourceTaskId and pass validation.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "If a large bridge-self parent lacks a valid split, the driver forces decompose-retry and blocks STATUS: CONTINUE to coder.",
+                               "reason":  "Mandatory decomposition must be enforced at the transition point where coder dispatch would otherwise happen.",
+                               "tradeoff":  "A bad planner can spend retry budget; after a cap the parent should be held for operator review, not coded monolithically.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "No new goals.md or parallel approval gate should be introduced.",
+                               "reason":  "The repo already has marker parsing, backlog ingest, claimability, workpack metadata, and bridge-self canary admission.",
+                               "tradeoff":  "The design is less visually separate but avoids conflicting policy sources.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "PROJECT-channel regression tests are mandatory.",
+                               "reason":  "The highest-risk regression is accidentally bypassing Ф1-Ф4 for project channels.",
+                               "tradeoff":  "Adds test work, but it is cheaper than debugging frankenstein-plan admission later.",
+                               "confidence":  0.97
+                           }
+                       ],
+    "assumptions":  [
+                        "main channel represents bridge-self work and can safely call Add-ProjectBacklogFromMarker with Channel=\u0027main\u0027.",
+                        "Existing Add-ProjectBacklogFromMarker approved-child behavior for main should be preserved.",
+                        "task_intent.estimated_turns is available often enough to drive the primary scope signal; deterministic fallbacks cover missing intent.",
+                        "Existing bridge_self_admission and claimability gates remain authoritative for control-plane child atoms.",
+                        "Smoke/ParseFile means each atom must keep PowerShell parsing and current smoke green, while broader behavior tests may be added as separate test atoms."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "False-positive large classification blocks a small bridge-self task behind decomposition.",
+                      "severity":  "medium",
+                      "mitigation":  "Exclude atom/decomposed-child tags, require scope signals rather than text length, and log classifier reasons for tuning."
+                  },
+                  {
+                      "risk":  "False-negative classification lets a short-wide parent reach coder.",
+                      "severity":  "high",
+                      "mitigation":  "Use intent.estimated_turns and subsystem_count as primary signals, with explicit short-wide task fixtures in tests."
+                  },
+                  {
+                      "risk":  "Malformed planner output causes retry loops.",
+                      "severity":  "medium",
+                      "mitigation":  "Cap decompose retries, include deterministic error summaries in the retry prompt, then hold for operator instead of coding monolith."
+                  },
+                  {
+                      "risk":  "PROJECT-channel approval is bypassed accidentally.",
+                      "severity":  "high",
+                      "mitigation":  "Gate the new path on channel == \u0027main\u0027 and add tests proving PROJECT channels still require Ф1-Ф4."
+                  },
+                  {
+                      "risk":  "Approved children touch control-plane files without enough safety evidence.",
+                      "severity":  "high",
+                      "mitigation":  "Require existing bridge_self_admission/canary metadata for protected paths and leave claimability gates unchanged."
+                  }
+              ],
+    "minimal_version":  "MAP/PLAN v1: 1) Entry applies only to channel main/bridge scope. 2) Before any STATUS: CONTINUE to coder, if Test-IsLargeTask(scope) is true and no valid decomposition exists, keep the parent in planner flow. 3) Planner must emit [[PROJECT_BACKLOG]] JSON plus [[DECOMPOSED:N]]. 4) Driver ingests through Add-ProjectBacklogFromMarker -Channel main -SourceTaskId parent. 5) Each child must have exactly one file, acceptance, checks, parent linkage, and bridge_self_admission when protected. 6) Success closes parent as decomposed; children remain approved. 7) Failure increments decompose_retry_count and retries; after cap, hold parent for operator. Implementation atoms for review: A1 lib/prompt-builder.ps1 - scope classifier and strict decomposition prompt; A2 lib/backlog-autopilot.ps1 - main child validation, parent metadata, approved child tags; A3 driver/86-loop-completion-checks.ps1 - mandatory strict DECOMPOSED validation and retry/hold; A4 tools/test-bridge-self-decomposition-gate.ps1 - new coverage for main split, approved children, PROJECT non-interference, short-wide scope, invalid split retry; A5 tools/test-monolith-decompose.ps1 - update legacy expectations to metadata-backed approved children.",
+    "advanced_version":  "Add decomposition quality metrics after MVP: record split latency, atom commit latency, retry reasons, and false-positive/false-negative classifier samples. Later add reusable scope templates for common bridge-self subsystems, but keep them behind the same main-only gate and the same Add-ProjectBacklogFromMarker ingest path."
+}

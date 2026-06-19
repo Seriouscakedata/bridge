@@ -1,0 +1,137 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Replace the current Test-IsLargeTask heuristic with a scope profile using acceptance_count, subsystem_count, and intent.estimated_turns, keeping the atom/decomposed-child early-return.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Classification Heuristic",
+                      "test":  "Test-IsLargeTask returns true for short-text/high-acceptance ideas and false for atom-tagged tasks.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Reuse Add-ProjectBacklogFromMarker(Channel=\u0027main\u0027) as the single atom-ingest path for bridge-self decomposition, emitting [[PROJECT_BACKLOG]] JSON instead of raw Add-Idea.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Atom Ingestion",
+                      "test":  "Verify Add-ProjectBacklogFromMarker is called with Channel=\u0027main\u0027 and [[PROJECT_BACKLOG]] JSON is emitted for large main tasks.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Decomposition must be mandatory: if a large bridge-self parent lacks a valid split, the driver forces decompose-retry and blocks STATUS: CONTINUE to coder.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Flow Control / Error Handling",
+                      "test":  "Verify a large main task with no valid split does not dispatch coder, and after retry cap, it is held for operator review.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Children of an approved decomposed parent must be created as approved, tagged as bridge-self atoms, and linked to the parent via source_task_id, bypassing approval/control-plane gates.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Atom Approval/Status",
+                      "test":  "Verify children are created as approved, tagged bridge-self, and linked to the parent, without re-sticking on approval gates.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "The entire decomposition mechanism must be fenced to channel==\u0027main\u0027/scope==\u0027bridge\u0027; PROJECT channels must remain untouched, keeping Start-ProjectAutopilotIfNeeded and F1-F4 approval unchanged.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Scope / System Isolation",
+                      "test":  "Verify a large PROJECT-channel task still requires F1-F4 approval and does NOT auto-split.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "A \u0027valid split\u0027 must be defined deterministically by the ingest return value (created\u003e=2, errors empty, and each created atom has exactly one target file, concrete acceptance/checks, and parent linkage), not by re-scanning tags.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Atom Validation / Decomposition Completion",
+                      "test":  "Verify parent closes only when ingest reports \u003e=2 single-file approved atoms with acceptance/checks and parent linkage.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Implement bounded decompose-retry (e.g., 2-3 attempts), feeding deterministic ingest errors back into the retry prompt, then transition to operator-hold; never fall back to coding the monolith.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling / Flow Control",
+                      "test":  "Verify decompose-retry is capped (e.g., 3 attempts) and on exhaustion, the parent task is set to \u0027held\u0027 for operator review.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Consolidate to one largeness function, one ingest path, one gate site, and reuse the existing [[DECOMPOSED]] handler, deprecating/redirecting the Add-Idea(status=\u0027new\u0027) child path, and introducing no new goals.md or parallel approval gates.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "System Integration / Consolidation",
+                      "test":  "Verify there is only one largeness function, one ingest path, one gate site, and no new policy documents or approval gates are added.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Planner output for a large bridge-self parent must contain both [[PROJECT_BACKLOG]] JSON (with required atom metadata) and [[DECOMPOSED:N]] markers.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Planner Contract / Output",
+                      "test":  "Verify the planner prompt for a large main task instructs it to emit [[PROJECT_BACKLOG]] JSON with required schema and [[DECOMPOSED:N]] markers.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "The operator must review the MAP/PLAN and the list of atoms before they are auto-approved and dispatched to the coder.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Operator Review / Approval",
+                      "test":  "Verify an explicit operator review step for the decomposed MAP/PLAN and atom list exists before auto-approval.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Mandatory regression tests for PROJECT channels must be added to ensure non-interference.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Verify new regression tests are added to cover PROJECT channel non-interference and F1-F4 behavior.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

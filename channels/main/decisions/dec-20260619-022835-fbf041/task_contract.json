@@ -1,0 +1,33 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] Спроектируй детерминированную ДЕКОМПОЗИЦИЮ крупных задач самоулучшения моста (канал main / bridge-self) на АТОМЫ ПЕРЕД тем как они уходят кодеру. Только дизайн — НЕ реализуй сразу.",
+    "goal":  "крупная bridge-self задача автоматически дробится на атомы (1 файл / маленькое проверяемое изменение, проходит ParseFile/smoke само по себе) ДО кодера, чтобы каждый коммитился за минуты.",
+    "constraints":  [
+                        "НЕ ломать анти-франкенштейн гейт для PROJECT-каналов (их планы по-прежнему через Ф1-Ф4 approval оператора).",
+                        "Переиспользовать существующий плумбинг atom-ingest (Add-ProjectBacklogFromMarker для channel==\u0027main\u0027, lib/backlog-autopilot.ps1:1383), а НЕ плодить новый параллельный путь.",
+                        "Test-IsLargeTask: мерить по SCOPE (число acceptance-пунктов / затронутых подсистем / intent.estimated_turns), а не по длине символов и regex файлов.",
+                        "[[DECOMPOSED]] для крупной bridge-self задачи сделать ОБЯЗАТЕЛЬНЫМ: если задача крупная и планировщик не выдал валидный split — блокировать кодер-ход и форсировать decompose-retry, а не кодить монолит.",
+                        "Дети-атомы одобренного родителя — сразу \u0027approved\u0027 (или авто-одобрять детей approved-родителя), чтобы не застревали заново на approval / control-plane гейтах.",
+                        "НЕ плодить конфликтующие гейты (goals.md): максимум переиспользовать существующее."
+                    ],
+    "known_context":  [
+                          "Большие bridge-self задачи уходят одному кодеру целиком и не доживают до коммита (commit_famine / output-cap на 45-минутных ходах; 29 из 30 «висов» — это живой воркер, убитый таймером на слишком большой задаче).",
+                          "Project-coordinator дробилка ОТКАЗЫВАЕТ не-project каналам: Start-ProjectAutopilotIfNeeded возвращает not-project-channel для main (lib/backlog-autopilot.ps1:977) и требует approved PROJECT_PLAN.",
+                          "Эвристика Test-IsLargeTask (lib/prompt-builder.ps1:538-551) мерит размер по грубым признакам (3+ файла / \u003e1200 символов / \u0027feature\u0027) → короткий-но-широкий приказ («построй сервис X») огромен по смыслу, но крошечен по словам → проскакивает.",
+                          "[[DECOMPOSED]] лишь ПРОСИТ планировщик раздробить, не заставляет.",
+                          "Дети-атомы возвращаются как \u0027new\u0027 (lib/backlog-crud.ps1:74-89) → снова застревают на approval + control-plane гейтах.",
+                          "Ожидаемый результат: durable дизайн-документ (MAP/PLAN) + список АТОМОВ (каждый 1 файл, проходит ParseFile/smoke сам), которые оператор отревьюит ПЕРЕД реализацией. Сначала дизайн + атомы на ревью, потом исполнение."
+                      ],
+    "output_format":  "JSON object containing a durable design document (MAP/PLAN) and a list of atom tasks, where each atom task is a single file change passing ParseFile/smoke tests.",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "Submit a large \u0027bridge-self\u0027 task (e.g., \u0027Implement feature X affecting 3 subsystems with 10 acceptance criteria\u0027). Verify that it is *not* assigned directly to a coder but instead triggers a decomposition process.",
+                          "Verify that the decomposition process for the large \u0027bridge-self\u0027 task produces a list of atom tasks, where each atom task targets a single file and represents a small, independently verifiable change.",
+                          "Verify that these generated atom tasks are automatically marked as \u0027approved\u0027 and bypass initial approval/control-plane gates.",
+                          "Submit a large task to a \u0027PROJECT\u0027 channel. Verify that it still requires F1-F4 operator approval and does *not* trigger the automatic decomposition process designed for \u0027main / bridge-self\u0027.",
+                          "Create a task that is short in text but wide in scope (e.g., \u0027Build service X\u0027 impacting multiple subsystems). Verify that the new \u0027Test-IsLargeTask\u0027 heuristic correctly identifies it as large.",
+                          "Simulate a scenario where a large \u0027bridge-self\u0027 task is submitted and the decomposition process fails to produce valid atoms. Verify that the task is blocked from reaching a coder and a decompose-retry mechanism is activated.",
+                          "After atom tasks are generated and approved, track a few of them through the coder pipeline. Verify that they are committed within minutes (e.g., \u003c 15 minutes)."
+                      ]
+}

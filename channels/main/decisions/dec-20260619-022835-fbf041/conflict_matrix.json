@@ -1,0 +1,37 @@
+{
+    "consensus_atoms":  [
+                            "atom_01",
+                            "atom_02",
+                            "atom_03",
+                            "atom_04",
+                            "atom_05",
+                            "atom_06",
+                            "atom_08"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_04",
+                                           "atom_10"
+                                       ],
+                          "axis":  "Child Atom Approval Flow / Operator Review Requirement",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_04",
+                        "severity":  "major",
+                        "why":  "This atom states that children are \u0027created as approved\u0027 and \u0027bypassing approval/control-plane gates\u0027. This directly conflicts with `atom_10`, which mandates an explicit operator review of the \u0027list of atoms\u0027 (the decomposed children) *before* they are auto-approved and dispatched. If `atom_10` is adopted, `atom_04`\u0027s statement about bypassing gates is inaccurate, as the operator review itself is a critical approval gate. This also creates tension with `atom_08`\u0027s goal of \u0027one gate site\u0027 if `atom_10` introduces a new, distinct gate.",
+                        "fix":  "Reconcile with `atom_10` and `atom_08`. If `atom_10` is accepted, `atom_04` must be modified to reflect that children are created in a \u0027pending operator review\u0027 state, and only *after* that review are they considered approved and bypass *subsequent* control-plane gates for dispatch. If `atom_10` is rejected (perhaps due to its conflict with `atom_08`), then `atom_04` can stand as is, reinforcing an automated flow.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "atom_10",
+                        "severity":  "blocking",
+                        "why":  "This atom introduces a mandatory operator review of the decomposed MAP/PLAN and the \u0027list of atoms\u0027 (the children) before they are auto-approved. This directly conflicts with `atom_04`, which states that children of an approved decomposed parent must be \u0027created as approved\u0027 and \u0027bypassing approval/control-plane gates\u0027. Furthermore, `atom_10` introduces a *new approval gate*, which directly contradicts the consolidation goal of `atom_08` (\u0027introducing no new ... parallel approval gates\u0027). This creates a fundamental disagreement on the automation level and approval flow for decomposed tasks and violates a stated system design principle.",
+                        "fix":  "This atom requires significant reconciliation. If operator oversight is deemed essential, `atom_04` must be revised to incorporate a \u0027pending operator review\u0027 state for children. However, introducing a *new* approval gate also directly contradicts `atom_08`. A clear decision is needed on whether operator review is truly mandatory for *every* decomposition, or if the system should strive for full automation as implied by `atom_04` and `atom_08`. If `atom_10` is accepted, `atom_08` must be re-evaluated for its \u0027no new gates\u0027 constraint.",
+                        "cost":  "high"
+                    }
+                ]
+}
