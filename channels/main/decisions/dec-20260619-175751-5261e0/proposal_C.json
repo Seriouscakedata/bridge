@@ -1,0 +1,58 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires extending the existing audit launch-ledger (audit.launches.jsonl) with terminal state entries so that every audit run has a definitive end record. Currently, audit runs can start but disappear without a trace, causing audits to not complete since 2026-06-05. The solution must modify three PowerShell scripts (driver/10-maintenance.ps1, tools/audit-runner.ps1, tools/test-audit-launch-guard.ps1) to append JSONL entries for terminal states: completed_ok, completed_partial, skipped_not_idle, failed, runner_timeout. Each entry must include pid, channel, report path (if applicable), runtime, and exit reason. The change must be atomic, preserve existing data, and pass all specified tests including synthetic runs that verify each terminal state is recorded.",
+    "summary":  "Add terminal state logging to audit.launches.jsonl by wrapping audit execution in try/catch/finally blocks across the three PowerShell scripts. Each script will record a \u0027started\u0027 entry when an audit begins, then upon completion, failure, skip, or timeout, append a corresponding terminal entry (completed_ok, completed_partial, skipped_not_idle, failed, runner_timeout) with pid, channel, report path, runtime, and exit reason. This ensures no audit run disappears without a trace, directly addressing the root cause of audits not completing since 2026-06-05.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Wrap audit execution logic in try/catch/finally blocks to guarantee terminal state recording.",
+                               "reason":  "This ensures that regardless of how an audit run ends (success, failure, skip, timeout), a terminal entry is always written to the ledger. The finally block can handle cases where the script itself is terminated externally.",
+                               "tradeoff":  "Adds slight overhead to each audit run for JSONL append operations, but this is negligible compared to the benefit of complete audit traceability.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use a consistent JSONL schema for terminal entries: {timestamp, event_type, pid, channel, report_path, runtime, exit_reason}.",
+                               "reason":  "Consistency across all three scripts ensures that downstream consumers of audit.launches.jsonl can reliably parse and analyze audit run outcomes. The schema matches the task requirements exactly.",
+                               "tradeoff":  "Requires coordination across three files, but since the change is atomic and small, this is manageable.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Preserve existing audit.launches.jsonl data by appending only new entries.",
+                               "reason":  "The task constraint explicitly requires preservation of existing data. Appending ensures historical records remain intact while adding the new terminal states.",
+                               "tradeoff":  "The file will grow over time, but JSONL is line-oriented and can be rotated or archived if needed. No data loss risk.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Implement terminal state logging in all three specified scripts (driver/10-maintenance.ps1, tools/audit-runner.ps1, tools/test-audit-launch-guard.ps1).",
+                               "reason":  "The task identifies these three files as the ones needing modification. Each plays a role in audit execution and must independently record terminal states for the runs they manage.",
+                               "tradeoff":  "Some code duplication may occur across scripts, but this is acceptable for an atomic, low-complexity change. Future refactoring can consolidate logging into a shared module.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing audit.launches.jsonl file exists and is writable by the PowerShell scripts.",
+                        "The scripts currently have access to pid, channel, and report path variables during audit execution.",
+                        "Runtime can be calculated by capturing start time and computing elapsed time at termination.",
+                        "Exit reason can be derived from exception messages, exit codes, or skip conditions.",
+                        "The synthetic test runs described in success_tests can be simulated without external dependencies.",
+                        "The approved plan (codex_audit_efficiency_review.md) provides additional context but the core change is as described in the task contract."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "If the PowerShell process is forcefully killed (e.g., via Task Manager), the finally block may not execute, and the terminal entry could still be missed.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement a separate watchdog process or scheduled task that scans for \u0027started\u0027 entries without corresponding terminal entries and marks them as \u0027failed\u0027 with exit reason \u0027process_terminated_externally\u0027. This can be a follow-up improvement."
+                  },
+                  {
+                      "risk":  "Concurrent writes to audit.launches.jsonl from multiple scripts could cause file locking or corruption.",
+                      "severity":  "low",
+                      "mitigation":  "Use file locking mechanisms (e.g., mutex or temporary write-and-rename) when appending to the JSONL file. Since audit runs are typically sequential per channel, this risk is low but should be handled."
+                  },
+                  {
+                      "risk":  "The change might break existing self-tests or smoke tests if they depend on the exact format or absence of terminal entries.",
+                      "severity":  "medium",
+                      "mitigation":  "Run all specified tests (ParseFile, driver.ps1 -SelfTest, smoke.ps1) after making changes and adjust test expectations if necessary. The task requires these tests to pass, so this is a verification step."
+                  }
+              ],
+    "minimal_version":  "Add terminal state logging to audit execution in all three scripts using try/catch/finally. Each script appends a \u0027started\u0027 entry at launch and a terminal entry (completed_ok, completed_partial, skipped_not_idle, failed, runner_timeout) at completion with pid, channel, report_path, runtime, exit_reason. No shared module; minimal code duplication for atomicity.",
+    "advanced_version":  "In addition to minimal version, extract common logging functions into a shared PowerShell module (e.g., tools/audit-ledger.psm1) to reduce duplication. Add a watchdog mechanism to detect and mark abandoned runs. Implement file locking for concurrent write safety. Add runtime and exit reason enrichment from system diagnostics."
+}

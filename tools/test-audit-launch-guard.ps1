@@ -32,6 +32,88 @@ function Check-AuditLaunchGuard {
   }
 }
 
+function Read-AuditLaunchEntries {
+  param([string]$LedgerPath)
+  if (-not (Test-Path -LiteralPath $LedgerPath)) { return @() }
+  return @([System.IO.File]::ReadAllLines($LedgerPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ConvertFrom-AuditLaunchJsonLine -Line $_ })
+}
+
+function New-SyntheticAuditScript {
+  param([ValidateSet('success','not_idle','failed')][string]$Mode)
+  if ($Mode -eq 'not_idle') {
+    return @'
+function Wait-BridgeIdle {
+  param([string]$StateFile, [int]$MaxMinutes = 0, [int]$PollSeconds = 0, [int]$StablePolls = 1)
+  return $false
+}
+function Invoke-BridgeAudit {
+  throw 'Invoke-BridgeAudit should not run when bridge is not idle'
+}
+'@
+  }
+  if ($Mode -eq 'failed') {
+    return @'
+function Wait-BridgeIdle {
+  param([string]$StateFile, [int]$MaxMinutes = 0, [int]$PollSeconds = 0, [int]$StablePolls = 1)
+  return $true
+}
+function Invoke-BridgeAudit {
+  param([string]$BridgePath, [string]$Channel)
+  throw 'synthetic audit failure'
+}
+'@
+  }
+  return @'
+function Wait-BridgeIdle {
+  param([string]$StateFile, [int]$MaxMinutes = 0, [int]$PollSeconds = 0, [int]$StablePolls = 1)
+  return $true
+}
+function Invoke-BridgeAudit {
+  param([string]$BridgePath, [string]$Channel)
+  $dir = Join-Path $BridgePath 'audit'
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $report = Join-Path $dir 'synthetic-ok.json'
+  [System.IO.File]::WriteAllText($report, '{"status":"ok"}', (New-Object System.Text.UTF8Encoding($false)))
+  return [pscustomobject]@{ status = 'ok'; report_json = $report; runtime_sec = 1.25 }
+}
+'@
+}
+
+function Invoke-SyntheticAuditRunnerCase {
+  param(
+    [ValidateSet('success','not_idle','failed')][string]$Mode,
+    [string]$Root,
+    [string]$RunnerPath
+  )
+  $caseRoot = Join-Path $Root ('runner-' + $Mode + '-' + [guid]::NewGuid().ToString('N'))
+  $driverDir = Join-Path $caseRoot 'driver'
+  $toolsDir = Join-Path $caseRoot 'tools'
+  $stateDir = Join-Path (Join-Path $caseRoot 'channels') 'main'
+  New-Item -ItemType Directory -Path $driverDir,$toolsDir,$stateDir -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $bridgeRoot 'driver\10-maintenance.ps1') -Destination (Join-Path $driverDir '10-maintenance.ps1') -Force
+  [System.IO.File]::WriteAllText((Join-Path $toolsDir 'audit.ps1'), (New-SyntheticAuditScript -Mode $Mode), (New-Object System.Text.UTF8Encoding($true)))
+  $statePath = Join-Path $stateDir 'state.json'
+  [System.IO.File]::WriteAllText($statePath, '{"status":"idle","agent_pid":0,"active_jobs":[]}', (New-Object System.Text.UTF8Encoding($false)))
+  $caseAuditDir = Join-Path $caseRoot 'audit'
+  New-Item -ItemType Directory -Path $caseAuditDir -Force | Out-Null
+  $admission = Request-AuditLaunchAdmission -AuditDir $caseAuditDir -Channel 'main' -MaxAttempts 5 -WindowMinutes 60 -LockTtlMinutes 5
+  $waitMarker = Join-Path $caseAuditDir 'audit.waiting'
+  [System.IO.File]::WriteAllText($waitMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+  $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $RunnerPath -BridgePath $caseRoot -StateFile $statePath -MaxWaitMinutes 0 -WaitMarker $waitMarker -Channel 'main' -RunId ([string]$admission.run_id) 2>&1
+  $exitCode = $LASTEXITCODE
+  $ledgerPath = Join-Path $caseAuditDir 'audit.launches.jsonl'
+  $entries = Read-AuditLaunchEntries -LedgerPath $ledgerPath
+  return [pscustomobject]@{
+    mode       = $Mode
+    root       = $caseRoot
+    admission  = $admission
+    exit_code  = $exitCode
+    entries    = @($entries)
+    output     = @($output)
+    ledger     = $ledgerPath
+  }
+}
+
 $tmpRoot = Join-Path (Join-Path $root 'control') ('test-audit-launch-guard-' + [guid]::NewGuid().ToString('N'))
 $auditDir = Join-Path $tmpRoot 'audit'
 
@@ -100,6 +182,37 @@ try {
   $admissionIndex = $source.IndexOf('Request-AuditLaunchAdmission -AuditDir $auditDir')
   $waitWriteIndex = $source.IndexOf('WriteAllText($waitMarker')
   Check-AuditLaunchGuard 'Start-AuditIfDue records launch admission before wait marker write' ($admissionIndex -ge 0 -and $waitWriteIndex -gt $admissionIndex) @{ admissionIndex = $admissionIndex; waitWriteIndex = $waitWriteIndex }
+
+  $runnerPath = Join-Path $root 'tools\audit-runner.ps1'
+  $successCase = Invoke-SyntheticAuditRunnerCase -Mode 'success' -Root $tmpRoot -RunnerPath $runnerPath
+  $successStarted = @($successCase.entries | Where-Object { [string]$_.decision -eq 'started' })
+  $successTerminal = @($successCase.entries | Where-Object { [string]$_.decision -eq 'completed_ok' })
+  Check-AuditLaunchGuard 'synthetic success runner exits cleanly' ([int]$successCase.exit_code -eq 0) $successCase
+  Check-AuditLaunchGuard 'synthetic success writes started to completed_ok' ($successStarted.Count -eq 1 -and $successTerminal.Count -eq 1) $successCase.entries
+  Check-AuditLaunchGuard 'synthetic success pairs run_id' ($successStarted.Count -eq 1 -and $successTerminal.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$successStarted[0].run_id) -and [string]$successStarted[0].run_id -eq [string]$successTerminal[0].run_id) $successCase.entries
+  Check-AuditLaunchGuard 'completed_ok terminal has mandatory fields' ($successTerminal.Count -eq 1 -and [int]$successTerminal[0].pid -gt 0 -and [string]$successTerminal[0].channel -eq 'main' -and -not [string]::IsNullOrWhiteSpace([string]$successTerminal[0].report_path) -and [double]$successTerminal[0].runtime_seconds -gt 0 -and [string]$successTerminal[0].exit_reason -eq 'ok') $successTerminal
+  Check-AuditLaunchGuard 'completed_ok terminal does not inflate attempt count' ((Get-AuditLaunchAttemptCount -AuditDir (Join-Path $successCase.root 'audit') -SinceUtc ((Get-Date).ToUniversalTime().AddHours(-1)) -Channel 'main') -eq 1) $successCase.entries
+
+  $skipCase = Invoke-SyntheticAuditRunnerCase -Mode 'not_idle' -Root $tmpRoot -RunnerPath $runnerPath
+  $skipStarted = @($skipCase.entries | Where-Object { [string]$_.decision -eq 'started' })
+  $skipTerminal = @($skipCase.entries | Where-Object { [string]$_.decision -eq 'skipped_not_idle' })
+  Check-AuditLaunchGuard 'synthetic not-idle runner exits cleanly' ([int]$skipCase.exit_code -eq 0) $skipCase
+  Check-AuditLaunchGuard 'synthetic not-idle writes started to skipped_not_idle' ($skipStarted.Count -eq 1 -and $skipTerminal.Count -eq 1) $skipCase.entries
+  Check-AuditLaunchGuard 'skipped_not_idle pairs run_id and reason' ($skipStarted.Count -eq 1 -and $skipTerminal.Count -eq 1 -and [string]$skipStarted[0].run_id -eq [string]$skipTerminal[0].run_id -and [string]$skipTerminal[0].exit_reason -match '^not_idle_after_') $skipCase.entries
+  Check-AuditLaunchGuard 'skipped_not_idle terminal has mandatory fields' ($skipTerminal.Count -eq 1 -and [int]$skipTerminal[0].pid -gt 0 -and [string]$skipTerminal[0].channel -eq 'main' -and [double]$skipTerminal[0].runtime_seconds -ge 0 -and -not [string]::IsNullOrWhiteSpace([string]$skipTerminal[0].exit_reason)) $skipTerminal
+
+  $failedCase = Invoke-SyntheticAuditRunnerCase -Mode 'failed' -Root $tmpRoot -RunnerPath $runnerPath
+  $failedStarted = @($failedCase.entries | Where-Object { [string]$_.decision -eq 'started' })
+  $failedTerminal = @($failedCase.entries | Where-Object { [string]$_.decision -eq 'failed' })
+  Check-AuditLaunchGuard 'synthetic failed runner exits nonzero' ([int]$failedCase.exit_code -ne 0) $failedCase
+  Check-AuditLaunchGuard 'synthetic failed runner writes started to failed' ($failedStarted.Count -eq 1 -and $failedTerminal.Count -eq 1) $failedCase.entries
+  Check-AuditLaunchGuard 'failed terminal pairs run_id and exception reason' ($failedStarted.Count -eq 1 -and $failedTerminal.Count -eq 1 -and [string]$failedStarted[0].run_id -eq [string]$failedTerminal[0].run_id -and [string]$failedTerminal[0].exit_reason -match 'synthetic audit failure') $failedCase.entries
+  Check-AuditLaunchGuard 'failed terminal has mandatory fields' ($failedTerminal.Count -eq 1 -and [int]$failedTerminal[0].pid -gt 0 -and [string]$failedTerminal[0].channel -eq 'main' -and [double]$failedTerminal[0].runtime_seconds -ge 0 -and -not [string]::IsNullOrWhiteSpace([string]$failedTerminal[0].exit_reason)) $failedTerminal
+
+  $timeoutAuditDir = Join-Path $tmpRoot 'timeout-reserved\audit'
+  Write-AuditLaunchLedgerEntry -AuditDir $timeoutAuditDir -Channel 'main' -Decision 'runner_timeout' -Reason 'reserved_test' -ProcessId $PID -RunId ([guid]::NewGuid().ToString()) -RuntimeSeconds 2 -ExitReason 'reserved_schema_test' | Out-Null
+  $timeoutEntries = Read-AuditLaunchEntries -LedgerPath (Join-Path $timeoutAuditDir 'audit.launches.jsonl')
+  Check-AuditLaunchGuard 'runner_timeout state is accepted by launch ledger schema' (@($timeoutEntries | Where-Object { [string]$_.decision -eq 'runner_timeout' }).Count -eq 1) $timeoutEntries
 } finally {
   if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

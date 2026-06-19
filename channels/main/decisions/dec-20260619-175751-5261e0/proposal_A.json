@@ -1,0 +1,68 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно атомарно расширить существующий audit launch-ledger так, чтобы каждый запуск аудита, уже фиксируемый в audit.launches.jsonl как started, всегда получал терминальную запись. Терминальные состояния должны покрывать успешное завершение, частичный успех, пропуск из-за busy/not idle, ошибку, timeout runner-а и брошенный/оборванный прогон, при этом существующий JSONL не переписывается, а только дополняется.",
+    "summary":  "Предлагаю сохранить текущую модель audit.launches.jsonl как append-only ledger и добавить единый небольшой writer терминальных событий, используемый из driver/10-maintenance.ps1 и tools/audit-runner.ps1. driver отвечает за случаи, когда runner не должен или не смог нормально завершиться: skipped_not_idle, runner_timeout, failed для оборванного/неуспешного процесса. audit-runner отвечает за собственный finally-блок: completed_ok, completed_partial или failed с report path, runtime и exit reason. tools/test-audit-launch-guard.ps1 расширяется синтетическими сценариями started→completed_ok, started→skipped_not_idle и started→failed.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Оставить audit.launches.jsonl append-only и добавлять терминальные записи отдельными JSONL-строками, не изменяя старые записи.",
+                               "reason":  "Это прямо сохраняет существующие данные и делает аудит запусков трассируемым без миграции формата.",
+                               "tradeoff":  "В ledger будет больше строк на один run, а потребителям придется группировать события по run-id/pid/time, но это безопаснее для control-plane scheduler.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Ввести единый helper для записи terminal audit launch event с полями state, pid, channel, reportPath, runtime, exitReason и timestamp.",
+                               "reason":  "Одинаковая структура событий снижает риск расхождения между driver и runner и упрощает тестирование.",
+                               "tradeoff":  "Небольшое дублирование может остаться, если в проекте нет общего PowerShell-модуля для этих файлов; ради атомарности helper лучше держать локально или в уже существующем месте без новой архитектуры.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "В tools/audit-runner.ps1 обернуть основной прогон в try/catch/finally и писать completed_ok, completed_partial или failed по фактическому результату runner-а.",
+                               "reason":  "Runner лучше всех знает report path, частичность результата и собственный exit reason.",
+                               "tradeoff":  "Нужно аккуратно не изменить существующие exit codes и не скрыть исходную ошибку после записи ledger-события.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "В driver/10-maintenance.ps1 писать skipped_not_idle при отказе запускать аудит из-за не-idle состояния, runner_timeout при превышении таймаута и failed при неуспешном/оборванном процессе без терминальной записи runner-а.",
+                               "reason":  "Именно driver видит состояния, когда runner не стартовал полноценно или перестал быть наблюдаемым извне.",
+                               "tradeoff":  "Нужна защита от двойной терминальной записи, например проверка уже записанного terminal event для данного запуска или идемпотентный reason; иначе possible duplicate terminal events при гонке.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Расширить tools/test-audit-launch-guard.ps1 синтетическими сценариями, которые проверяют цепочки started→completed_ok, started→skipped_not_idle и started→failed, а также наличие обязательных полей.",
+                               "reason":  "Acceptance требует именно эти три проверяемых поведения, и тест должен ловить регресс, при котором started остается без финала.",
+                               "tradeoff":  "Синтетика должна быть достаточно изолированной, чтобы не зависеть от реального idle-состояния машины и текущих фоновых процессов.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "В существующем ledger уже есть started-запись с достаточным корреляционным ключом: pid, channel, timestamp или run id; если run id отсутствует, минимальная корреляция будет по pid+channel+близкому времени запуска.",
+                        "Под report path имеется в виду путь к audit report, который runner уже создает или передает в существующих структурах.",
+                        "completed_partial соответствует runner-у, который завершился без hard failure, но имеет частичные/предупреждающие результаты по существующей логике аудита.",
+                        "skipped idle в acceptance означает skipped because not idle, то есть терминальное состояние skipped_not_idle.",
+                        "Проверки ParseFile, driver.ps1 -SelfTest и smoke.ps1 должны выполняться без изменения внешних зависимостей."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Двойные терминальные записи, если runner успеет записать failed/completed, а driver также классифицирует процесс как failed или timeout.",
+                      "severity":  "medium",
+                      "mitigation":  "Перед записью driver-side terminal event проверять ledger на уже существующий terminal state для того же pid/channel/run key либо писать только при отсутствии terminal event."
+                  },
+                  {
+                      "risk":  "Неверная классификация completed_partial против failed может изменить смысл текущих audit exit codes.",
+                      "severity":  "medium",
+                      "mitigation":  "Сохранить текущие exit codes как источник истины, а mapping вынести явно: zero→completed_ok, known partial/warning code→completed_partial, unexpected nonzero/exception→failed."
+                  },
+                  {
+                      "risk":  "Формат runtime может стать нестабильным для тестов и потребителей.",
+                      "severity":  "low",
+                      "mitigation":  "Использовать один формат duration string, например TimeSpan.ToString() или ISO-like invariant value, и проверять presence/parseability в тестах, а не локализованный текст."
+                  },
+                  {
+                      "risk":  "Read/append гонки при одновременных audit-запусках могут повредить JSONL или проверку terminal presence.",
+                      "severity":  "medium",
+                      "mitigation":  "Использовать существующий механизм записи ledger, если он есть; иначе AppendAllText одной JSON-строкой с newline и минимизировать read-after-write окно."
+                  }
+              ],
+    "minimal_version":  "Добавить локальный terminal-event writer, вызвать его в существующих ветках driver и audit-runner, расширить test-audit-launch-guard.ps1 тремя синтетическими сценариями и прогнать ParseFile, self-test и smoke. Без миграций, без изменения схемы started, без новых фоновых сервисов.",
+    "advanced_version":  "Добавить явный auditRunId для started и terminal событий, идемпотентную проверку terminal state по auditRunId, небольшой ledger reader для диагностики orphaned started events и отдельный cleanup/report режим для старых зависших запусков. Это полезно позже, но выходит за рамки атома 1.1."
+}

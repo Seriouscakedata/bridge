@@ -1,0 +1,41 @@
+{
+    "skipped":  false,
+    "topics":  [
+                   {
+                       "atom_ids":  [
+                                        "atom_3",
+                                        "atom_4"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "Atom 3 ensures the `audit-runner.ps1` is solely responsible for classifying and reporting its own terminal state, including `skipped_not_idle` if that decision is made within its execution context, centralizing all runner-specific outcomes.",
+                                          "against":  "Atom 4 correctly places the responsibility for `skipped_not_idle` with the driver (`10-maintenance.ps1`) because the decision not to launch the audit due to a non-idle state is a pre-execution check made by the orchestrator, often before the runner\u0027s main logic even begins.",
+                                          "resolution":  "The driver (Atom 4) should record `skipped_not_idle` when the runner is not fully invoked due to pre-launch conditions, while the runner (Atom 3) handles states once its execution logic starts."
+                                      },
+                                      {
+                                          "for":  "Atom 4 is crucial for comprehensive auditability as the driver acts as a supervisor, capable of detecting and recording external failures like `runner_timeout` or `failed` processes that do not produce a terminal record themselves, which Atom 3\u0027s internal runner logic cannot reliably capture.",
+                                          "against":  "Atom 3\u0027s `try/catch/finally` structure with a `$terminalWritten` flag is designed to ensure the runner always writes exactly one terminal entry for *all* its outcomes, including unanticipated exits, making the runner the single source of truth for its execution lifecycle and avoiding redundant or conflicting driver-side reporting.",
+                                          "resolution":  "The driver (Atom 4) must act as a reconciler for external failures (e.g., timeouts, crashes) where the runner (Atom 3) cannot report, but the runner remains the primary reporter for its internal execution outcomes."
+                                      }
+                                  ]
+                   },
+                   {
+                       "atom_ids":  [
+                                        "atom_4",
+                                        "atom_7"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "Atom 4 provides immediate and pragmatic auditability for `runner_timeout` by placing its detection and recording directly within the driver (`10-maintenance.ps1`), which is already responsible for launching and monitoring the runner process. This ensures critical failure modes are captured without delay.",
+                                          "against":  "Atom 7 correctly identifies that emitting `runner_timeout` from the driver in Atom 1.1 is premature and risks an incomplete reconciliation. A true `runner_timeout` often requires a more sophisticated supervisor (Atom 1.2) to differentiate from other silent failures, ensuring accuracy and avoiding future refactoring.",
+                                          "resolution":  "Atom 4 prioritizes immediate driver-level detection of `runner_timeout`, while Atom 7 advocates for deferring its emission to a more robust, future reconciliation system."
+                                      },
+                                      {
+                                          "for":  "Atom 7\u0027s approach ensures a comprehensive and accurate reconciliation strategy by explicitly delegating `runner_timeout` emission to a dedicated supervisor (Atom 1.2), preventing the current driver from implementing a partial or potentially conflicting mechanism that would need to be refactored later.",
+                                          "against":  "Delaying the recording of `runner_timeout` (as implied by Atom 7\u0027s delegation) leaves a significant and unacceptable gap in audit visibility for a common and critical failure scenario. Even a basic driver-level detection (as per Atom 4) provides valuable, actionable information immediately.",
+                                          "resolution":  "The `runner_timeout` state should be schema-defined now (Atom 7), but its emission from the driver (Atom 4) should be limited to clear, externally-detected timeouts, with a clear plan for full reconciliation by Atom 1.2."
+                                      }
+                                  ]
+                   }
+               ]
+}

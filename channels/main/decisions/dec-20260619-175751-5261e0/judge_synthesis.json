@@ -1,0 +1,136 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_1",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.9,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Append-only JSONL with optional terminal fields preserves compatibility, keeps old records untouched, and gives enough structure for terminal state tracking without changing existing attempt counting semantics.",
+                      "total":  0.9225
+                  },
+                  {
+                      "atom_id":  "atom_2",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.04,
+                                            "reason":  "Schema naming is inconsistent with atom_1/run_id conventions and source-regex parity tests are brittle."
+                                        }
+                                    ],
+                      "reason":  "A canonical terminal-event writer is the right direction, but the schema should use one naming convention and tests should prefer behavior/schema assertions over fragile source-regex checks unless duplication is unavoidable.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "atom_3",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.12,
+                                            "reason":  "Conflicts with atom_4 on skipped_not_idle responsibility and overstates runner coverage for pre-run or externally killed cases."
+                                        }
+                                    ],
+                      "reason":  "Runner-side try/catch/finally and exactly-one terminal entry for controlled paths are valuable, but responsibility must be narrowed to states the runner can observe. Pre-admission idle refusal and hard process death should be owned by the supervising component or later reconciler.",
+                      "total":  0.7775
+                  },
+                  {
+                      "atom_id":  "atom_4",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.4,
+                                     "feasibility":  0.75,
+                                     "impact":  0.7,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.22,
+                                            "reason":  "Blocking conflict with atom_7 on runner_timeout scope."
+                                        },
+                                        {
+                                            "amount":  0.1,
+                                            "reason":  "Conflicts with atom_3 on skipped_not_idle ownership and creates double-write risk."
+                                        }
+                                    ],
+                      "reason":  "As written, this atom mixes driver fallback responsibility with terminal states already assigned elsewhere and directly contradicts the proposed Atom 1.2 delegation for runner_timeout. It should not be accepted unless rewritten as a narrow supervisor/reconciler fallback.",
+                      "total":  0.635
+                  },
+                  {
+                      "atom_id":  "atom_5",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The requested synthetic lifecycle tests cover the main compatibility and correctness risks: terminal state shape, lifecycle pairing, failed paths, and avoiding inflation of launch attempt counts.",
+                      "total":  0.8825
+                  },
+                  {
+                      "atom_id":  "atom_6",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A run_id is the cleanest way to correlate started and terminal entries and substantially reduces ambiguity once both driver and runner can write terminal records.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "atom_7",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This gives a clear scope boundary: support runner_timeout in the schema now, but leave emission for supervisor/reconciler work that can correctly detect silent death, external kills, reboot, or hard hangs.",
+                      "total":  0.875
+                  }
+              ]
+}

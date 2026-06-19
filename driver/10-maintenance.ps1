@@ -328,7 +328,11 @@ function Write-AuditLaunchLedgerEntry {
     [string]$Reason = '',
     [int]$MaxAttempts = 0,
     [int]$WindowMinutes = 0,
-    [int]$ProcessId = 0
+    [int]$ProcessId = 0,
+    [string]$RunId = '',
+    [string]$ReportPath = '',
+    [double]$RuntimeSeconds = 0,
+    [string]$ExitReason = ''
   )
 
   if (-not (Test-Path -LiteralPath $AuditDir)) { New-Item -ItemType Directory -Path $AuditDir -Force | Out-Null }
@@ -341,6 +345,11 @@ function Write-AuditLaunchLedgerEntry {
     max_attempts   = [int]$MaxAttempts
     window_minutes = [int]$WindowMinutes
     pid            = [int]$ProcessId
+    run_id         = [string]$RunId
+    report_path    = [string]$ReportPath
+    runtime_seconds = [math]::Round([double]$RuntimeSeconds, 3)
+    runtime        = [TimeSpan]::FromSeconds([Math]::Max(0, [double]$RuntimeSeconds)).ToString()
+    exit_reason    = [string]$ExitReason
   }
   $line = ConvertTo-AuditLaunchJsonLine -Object $entry
   $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -505,14 +514,15 @@ function Request-AuditLaunchAdmission {
   }
 
   try {
+    $runId = [guid]::NewGuid().ToString()
     $since = (Get-Date).ToUniversalTime().AddMinutes(-1 * $WindowMinutes)
     $count = Get-AuditLaunchAttemptCount -AuditDir $AuditDir -SinceUtc $since -Channel $Channel
     if ($count -ge $MaxAttempts) {
       Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'max_attempts_per_window' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null
       return [pscustomobject]@{ allowed = $false; reason = 'max_attempts_per_window'; count = $count; lock_path = $lockPath }
     }
-    Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'started' -Reason '' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null
-    return [pscustomobject]@{ allowed = $true; reason = ''; count = ($count + 1); lock_path = $lockPath }
+    Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'started' -Reason '' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID -RunId $runId | Out-Null
+    return [pscustomobject]@{ allowed = $true; reason = ''; count = ($count + 1); lock_path = $lockPath; run_id = $runId }
   } catch {
     try { Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'launch_ledger_error' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null } catch {}
     return [pscustomobject]@{ allowed = $false; reason = 'launch_ledger_error'; count = $null; lock_path = $lockPath }
@@ -751,12 +761,17 @@ function Start-AuditIfDue {
   if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) { return }
   $launchAdmission = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel $auditChannel -MaxAttempts $launchMax -WindowMinutes $launchWindow -LockTtlMinutes $launchLockTtl
   if (-not $launchAdmission -or -not [bool]$launchAdmission.allowed) { return }
+  $auditRunId = [string]$launchAdmission.run_id
+  $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
   $waitMarkerWritten = $false
   try {
     if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
     [System.IO.File]::WriteAllText($waitMarker, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
     $waitMarkerWritten = $true
-  } catch { return }
+  } catch {
+    try { Write-AuditLaunchLedgerEntry -AuditDir $auditDir -Channel $auditChannel -Decision 'failed' -Reason 'wait_marker_write_failed' -ProcessId $PID -RunId $auditRunId -RuntimeSeconds $launchStopwatch.Elapsed.TotalSeconds -ExitReason ('wait_marker_write_failed: ' + $_.Exception.Message) | Out-Null } catch {}
+    return
+  }
   if (-not $waitMarkerWritten) { return }
   $stateFile = $null
   try { $stateFile = Get-StatePath } catch {}
@@ -770,7 +785,8 @@ function Start-AuditIfDue {
       '-StateFile', $stateFile,
       '-MaxWaitMinutes', [string]$maxWait,
       '-WaitMarker', $waitMarker,
-      '-Channel', $auditChannel
+      '-Channel', $auditChannel,
+      '-RunId', $auditRunId
     )
     $launch = [pscustomobject]@{ Args = $args; Channel = $auditChannel }
     $auditProc = Invoke-WithChannelEnv -Slug ([string]$launch.Channel) -ArgumentList $launch -Action {
@@ -785,6 +801,7 @@ function Start-AuditIfDue {
     Add-Message -From system -Text ("🔍 Запущен аудит {0} (фоновое задание, ожидание idle до {1} мин)." -f $auditLabel, $maxWait) -Kind event | Out-Null
   } catch {
     try { if (Test-Path -LiteralPath $waitMarker) { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } } catch {}
+    try { Write-AuditLaunchLedgerEntry -AuditDir $auditDir -Channel $auditChannel -Decision 'failed' -Reason 'runner_start_failed' -ProcessId $PID -RunId $auditRunId -RuntimeSeconds $launchStopwatch.Elapsed.TotalSeconds -ExitReason ('runner_start_failed: ' + $_.Exception.Message) | Out-Null } catch {}
   }
 }
 

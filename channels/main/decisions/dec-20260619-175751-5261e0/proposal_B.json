@@ -1,0 +1,86 @@
+{
+    "proposer":  "B",
+    "understanding":  "Audit runs are admitted by the driver: Request-AuditLaunchAdmission in driver/10-maintenance.ps1 writes a \u0027started\u0027 (or \u0027denied\u0027) line to audit/audit.launches.jsonl using the DRIVER\u0027s $PID, then Start-AuditIfDue launches a SEPARATE detached process, tools/audit-runner.ps1, which waits for idle and calls Invoke-BridgeAudit. The runner writes nothing back to the ledger today, so a \u0027started\u0027 line has no terminal counterpart — the run\u0027s outcome (success, partial, idle-skip, error, or death) vanishes. That is the documented root cause of audits not completing since 2026-06-05 (Atom 1.1 of the operator-approved plan dec-20260619-163403-b4ee4c). The fix: keep audit.launches.jsonl, and ADD terminal entries (completed_ok / completed_partial / skipped_not_idle / failed / runner_timeout) carrying pid, channel, report path, runtime, and exit reason, so every admitted run has a durable terminal record. Confirmed from source: Invoke-BridgeAudit returns {status=\u0027ok\u0027|\u0027partial\u0027, report_json, runtime_sec,...} on completion and {status=\u0027locked\u0027,pid} when another audit holds the lock; Wait-BridgeIdle returns $true/$false; Get-AuditLaunchAttemptCount counts only decision==\u0027started\u0027; and the named test test-audit-launch-guard.ps1 dot-sources only 10-maintenance.ps1.",
+    "summary":  "Mint a correlation run_id at admission time and thread it driver-\u003erunner so a \u0027started\u0027 line and its terminal line can be joined (their pids differ — driver vs runner). Extend the existing single writer Write-AuditLaunchLedgerEntry with optional terminal fields (run_id, report_path, runtime_sec, exit_reason) defaulting to empty/0 so \u0027started\u0027/\u0027denied\u0027 lines stay byte-compatible and the storm guard (which filters decision==\u0027started\u0027) is unaffected. Have audit-runner.ps1 classify its own outcome from data it already holds — Wait-BridgeIdle false =\u003e skipped_not_idle; Invoke-BridgeAudit status ok/partial/locked; catch =\u003e failed — and write EXACTLY ONE terminal line (pid=runner $PID, channel, report path, runtime, sanitized single-line exit reason). Add launch-guard test cases for started-\u003ecompleted_ok, skipped_not_idle, and failed, asserting matching run_id and that terminal lines never increment the attempt count. runner_timeout is defined and schema-supported here but is emitted by the supervisor/reconciler (Atom 1.2), since a killed runner cannot self-report; this atom honestly closes only the graceful-exit and caught-error disappearance, leaving silent death (kill/reboot/hang) to 1.2.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Introduce a run_id (GUID) generated in Request-AuditLaunchAdmission, written into the \u0027started\u0027 entry, returned to Start-AuditIfDue, and passed to the runner via a new -RunId parameter; every terminal entry echoes the same run_id.",
+                               "reason":  "The \u0027started\u0027 entry is written by the driver process while the terminal entry is written by the separate detached runner — their $PID values differ, so pid alone cannot satisfy the acceptance criterion \u0027started-\u003ecompleted_ok for that specific run\u0027. A run_id is the only reliable join key, and it also lets reconciliation (Atom 1.2) match dead \u0027started\u0027 lines to missing terminals.",
+                               "tradeoff":  "Adds one parameter and one field plus a small amount of plumbing through three call sites; slightly more surface than a pid-only scheme that would, however, be unreliable.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Make audit-runner.ps1 the writer of its own terminal state, classifying from data it already has: Wait-BridgeIdle==$false =\u003e skipped_not_idle; Invoke-BridgeAudit returns status \u0027ok\u0027 =\u003e completed_ok, \u0027partial\u0027 =\u003e completed_partial, \u0027locked\u0027 =\u003e skipped (audit_lock_held); a thrown exception in the catch =\u003e failed; report path from result.report_json and runtime from a stopwatch.",
+                               "reason":  "Only the runner knows the real outcome, the produced report path, and the wall-clock runtime; the driver only sees an opaque detached process. The audit return contract was verified in tools/audit.ps1 (status/report_json/runtime_sec and the locked shape).",
+                               "tradeoff":  "Requires capturing Invoke-BridgeAudit\u0027s return value (currently piped to Out-Null) and handling the \u0027locked\u0027 branch explicitly, rather than the simpler exit-code-only signalling the driver could observe.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Extend the existing Write-AuditLaunchLedgerEntry with optional terminal fields (RunId, ReportPath, RuntimeSeconds, ExitReason) defaulting to empty/0 — do NOT fork the format or rewrite the file; terminal entries use new decision values only.",
+                               "reason":  "Constraint requires preserving audit.launches.jsonl. Heterogeneous extra fields are valid JSONL, existing readers access by property name, and because Get-AuditLaunchAttemptCount filters decision==\u0027started\u0027, terminal lines cannot inflate the per-window attempt count or trigger false max_attempts_per_window storms.",
+                               "tradeoff":  "Lines become non-uniform (terminal lines have more fields than started/denied); acceptable for append-only JSONL and cheaper than versioning the schema.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Keep the canonical, testable terminal writer in driver/10-maintenance.ps1 (so the named test can call it directly) and have the runner reuse the identical schema; pin the runner\u0027s field set with a source-regex assertion in the launch-guard test, mirroring the existing \u0027FileMode::CreateNew\u0027 source check.",
+                               "reason":  "test-audit-launch-guard.ps1 dot-sources only 10-maintenance.ps1, so the function the acceptance test exercises must live there. The strict 3-file scope rules out a new shared lib, so the runner either reuses the function or carries a minimal mirror; a source-regex guard catches schema drift cheaply and in the existing test idiom.",
+                               "tradeoff":  "If the runner mirrors the writer instead of dot-sourcing it, there is drift risk (mitigated by the regex pin); if the runner dot-sources 10-maintenance.ps1 instead, it imports control-plane side effects into the detached worker, a larger blast radius. I recommend the minimal mirror + regex pin as lowest runtime risk.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Guarantee exactly one terminal entry per run via a $terminalWritten flag (primary writes in the try ok/partial/skip and in the catch failed), a finally fallback that writes failed/unknown_exit if none was written, and routing the existing \u0027tools/audit.ps1 missing -\u003e exit 2\u0027 early-return through the same single write point instead of a bare exit.",
+                               "reason":  "Run truth is corrupted both by missing terminals (the original bug) and by duplicate terminals (would double-count outcomes). A single idempotent write point covers every exit path the runner controls.",
+                               "tradeoff":  "Requires a small restructure of the runner\u0027s try/catch/finally and replacing bare exits with reason-setting; marginally more code for correctness.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Define and schema-support runner_timeout in this atom, but emit it from the supervisor/reconciler (Atom 1.2), not the runner; state plainly that Atom 1.1 closes graceful-exit and caught-error disappearance only, while silent death (external kill, reboot, hard hang) is closed by 1.2\u0027s dead-\u0027started\u0027 TTL reconciliation.",
+                               "reason":  "A killed or hung runner cannot write its own terminal line, and Atom 1.1\u0027s acceptance does not test runner_timeout. Carrying the decision value and fields now keeps 1.2 a thin follow-up and avoids over-scoping an \u0027atomic, commit-in-minutes\u0027 change.",
+                               "tradeoff":  "Atom 1.1 is therefore a partial fix for \u0027runs disappear without a trace\u0027 — the most dangerous case (silent process death) still needs 1.2; honesty here prevents a false sense of completeness.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "Invoke-BridgeAudit\u0027s return contract is stable: {status=\u0027ok\u0027|\u0027partial\u0027, report_json, report_md, runtime_sec, ...} on completion and {status=\u0027locked\u0027, pid} when the audit lock is held (verified in tools/audit.ps1 lines ~1621 and ~1879-1885).",
+                        "Wait-BridgeIdle returns a [bool] ($true idle / $false timeout), per its header comment.",
+                        "PowerShell finally blocks run on normal completion and on caught exceptions, but NOT on external process kill — so the finally fallback covers controlled exits, and uncovered silent death is explicitly delegated to Atom 1.2.",
+                        "tools/test-audit-launch-guard.ps1 is the acceptance harness for this atom and may be extended with synthetic terminal-write cases (it already constructs a temp audit dir and exercises Request-AuditLaunchAdmission directly).",
+                        "No new config keys are required; existing audit.* settings suffice and run_id is an internal correlation token.",
+                        "Adding extra fields to terminal JSONL lines does not break any consumer of audit.launches.jsonl (all observed consumers read by property name and filter by decision).",
+                        "The terminal entry\u0027s pid should be the runner\u0027s $PID (the real worker, registered as Register-ChildProcess label \u0027audit\u0027); the \u0027started\u0027 entry keeps the driver pid, with run_id joining the two."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Schema drift between a runner-side mirror writer and the canonical writer in 10-maintenance.ps1, producing terminal lines the readers/tests don\u0027t expect.",
+                      "severity":  "medium",
+                      "mitigation":  "Prefer reusing the single canonical writer; if mirroring, keep an identical ordered-hashtable field list and pin it with a source-regex assertion in the launch-guard test (same idiom as the existing CreateNew check)."
+                  },
+                  {
+                      "risk":  "Dot-sourcing driver/10-maintenance.ps1 into the detached runner to reuse the writer pulls in control-plane top-level code and $bridgeRoot/$script: dependencies, potentially breaking the audit worker entirely.",
+                      "severity":  "high",
+                      "mitigation":  "Favor the minimal inline mirror in the runner over dot-sourcing the control-plane file; if dot-sourcing is chosen, set $bridgeRoot first, wrap in try/catch, and prove driver.ps1 -SelfTest + smoke.ps1 still pass."
+                  },
+                  {
+                      "risk":  "A terminal entry accidentally written with decision==\u0027started\u0027 (or a change to Get-AuditLaunchAttemptCount) would inflate the per-window count and cause false max_attempts_per_window denials — a launch-starvation regression on control-plane code.",
+                      "severity":  "medium",
+                      "mitigation":  "Use only distinct terminal decision values; leave Get-AuditLaunchAttemptCount\u0027s decision==\u0027started\u0027 filter untouched; add a test asserting that writing terminal entries does not change the admitted attempt count."
+                  },
+                  {
+                      "risk":  "Exception messages used as exit_reason can contain newlines, and ConvertTo-AuditLaunchJsonLine throws on any CR/LF (it enforces single-line JSONL), so a \u0027failed\u0027 write could itself throw and again leave no terminal trace.",
+                      "severity":  "medium",
+                      "mitigation":  "Sanitize exit_reason before writing — collapse all whitespace/newlines to single spaces and truncate to a bounded length; wrap the terminal write in try/catch with a last-resort plain-text fallback to audit.log so failure to record is itself logged."
+                  },
+                  {
+                      "risk":  "Double or missing terminal entries across the try/catch/finally and early-exit paths corrupt run truth.",
+                      "severity":  "medium",
+                      "mitigation":  "Single $terminalWritten guard, one write point reached by every controlled exit (including the audit-missing path), and a finally fallback for unanticipated exits."
+                  },
+                  {
+                      "risk":  "Misclassifying the status==\u0027locked\u0027 return as completed_ok (no report was produced) would falsely mark a non-run as a success.",
+                      "severity":  "low",
+                      "mitigation":  "Branch on \u0027locked\u0027 explicitly and record it as a skip (exit_reason \u0027audit_lock_held\u0027) with no report path, distinct from completed_ok."
+                  }
+              ],
+    "minimal_version":  "1) driver/10-maintenance.ps1: extend Write-AuditLaunchLedgerEntry with optional -RunId/-ReportPath/-RuntimeSeconds/-ExitReason (defaults empty/0, existing started/denied calls unchanged); have Request-AuditLaunchAdmission mint a run_id, include it in the \u0027started\u0027 entry, and return it; thread -RunId from Start-AuditIfDue into the runner\u0027s argument list. 2) tools/audit-runner.ps1: accept -RunId, start a stopwatch on entry, capture Wait-BridgeIdle and the Invoke-BridgeAudit return value, classify (idle false=\u003eskipped_not_idle; ok=\u003ecompleted_ok; partial=\u003ecompleted_partial; locked=\u003eskipped/audit_lock_held; catch=\u003efailed), and write EXACTLY ONE terminal line (pid=runner $PID, channel, report_path from result.report_json, runtime_sec, sanitized single-line exit_reason) via the canonical writer/mirror, with a $terminalWritten guard, a finally fallback, and the audit-missing early-exit routed through the same write point. 3) tools/test-audit-launch-guard.ps1: add synthetic cases proving started-\u003ecompleted_ok (matching run_id; pid/channel/runtime/exit_reason present), skipped_not_idle, and failed, plus an assertion that terminal lines do not increment Get-AuditLaunchAttemptCount; if the runner mirrors the writer, add a source-regex schema-parity check on audit-runner.ps1. Checks: [Parser]::ParseFile on all three .ps1 (zero errors), run tools/test-audit-launch-guard.ps1 green, driver.ps1 -SelfTest, smoke.ps1.",
+    "advanced_version":  "On top of the minimal version: (a) Extract the launch-ledger helpers (ConvertTo/From-AuditLaunchJsonLine, Write-AuditLaunchLedgerEntry incl. terminal, Get-AuditLaunchAttemptCount) into a small shared lib/audit-launch-ledger.ps1 dot-sourced by driver, runner, and test — a single source of truth that eliminates mirror drift entirely (deferred from the atomic change because it adds a 4th file). (b) Wire runner_timeout emission into the driver\u0027s child-process supervision (the path that kills a hung \u0027audit\u0027 child) and into Atom 1.2\u0027s dead-\u0027started\u0027 TTL reconciliation so silent process death finally gets a terminal record, closing the original root cause completely. (c) Maintain an audit.last_run.json snapshot of the most recent terminal state (decision, run_id, runtime, report path, exit reason) so the auditor freshness alert (Atom 1.3) and operators can read current run truth without scanning the whole JSONL. (d) Add a runtime human-readable \u0027runtime\u0027 string alongside numeric runtime_sec to match the contract\u0027s duration-string wording while keeping a machine-joinable field."
+}

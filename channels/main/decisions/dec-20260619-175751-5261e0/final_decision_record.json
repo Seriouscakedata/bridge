@@ -1,0 +1,149 @@
+{
+    "final_answer":  "Adopt a single-owner, append-only design for terminal audit-launch records. Keep audit.launches.jsonl append-only and add terminal states as new JSONL lines with a consistent schema and new decision/event values (completed_ok, completed_partial, skipped_not_idle, failed; runner_timeout reserved but not emitted yet). Introduce one canonical writer in driver/10-maintenance.ps1 and reuse its exact schema from the runner. Generate a GUID run_id in Request-AuditLaunchAdmission, write it into the started entry, thread it to the runner via a new -RunId parameter, and echo it in every terminal entry so started and terminal records correlate unambiguously. The runner (tools/audit-runner.ps1) is the single source of truth for the states it can actually observe — completed_ok/completed_partial from Invoke-BridgeAudit, skipped_not_idle from its own Wait-BridgeIdle check, audit_lock_held→skipped, and failed from a try/catch/finally with a $terminalWritten guard — guaranteeing exactly one terminal record per spawned run. The driver in Atom 1.1 only writes the started entry; it does NOT emit skipped_not_idle for spawned runs (which would break the required started→skipped_not_idle pairing and risk double-writes) and does NOT emit runner_timeout (silent death, external kill, reboot, hard hang are unobservable from a graceful path and are delegated to the supervisor/reconciler in Atom 1.2). Synthetic lifecycle tests in tools/test-audit-launch-guard.ps1 assert started→completed_ok, started→skipped_not_idle, started→failed, mandatory-field presence, run_id pairing, and that terminal entries never inflate Get-AuditLaunchAttemptCount. This makes every audit run leave a terminal trace for the graceful/caught paths now, while cleanly scoping silent-death recovery to Atom 1.2 — directly attacking the \u0027starts vanish without a trace\u0027 root cause behind audits not completing since 2026-06-05.",
+    "decisions":  [
+                      {
+                          "decision":  "Keep audit.launches.jsonl append-only; record terminal states as new JSONL lines using new decision/event values and optional fields (run_id, report_path, runtime_seconds, exit_reason) defaulting to empty/0. Do not modify or fork existing records.",
+                          "rationale":  "Accepted atom_1 (judge 0.92). Append-only preserves all historical entries and existing readers, and new decision values keep attempt-counting semantics intact while giving enough structure to track terminal outcomes.",
+                          "alternatives_considered":  [
+                                                          "Rewriting/migrating existing records to a richer schema",
+                                                          "Creating a separate terminal-events file (format fork)"
+                                                      ],
+                          "risk":  "low — additive change to a control-plane ledger; main hazard is Get-AuditLaunchAttemptCount accidentally counting terminal lines.",
+                          "test":  "Confirm old lines are byte-identical after a run; new terminal lines parse as JSON, carry distinct decision values plus optional fields; Get-AuditLaunchAttemptCount is unchanged by terminal entries."
+                      },
+                      {
+                          "decision":  "Add one canonical terminal-event writer in driver/10-maintenance.ps1 (e.g. Write-AuditLaunchLedgerEntry) with a single, consistently named schema: ts, event/decision, pid, channel, run_id, report_path, runtime_seconds, exit_reason. The runner reuses this identical schema, dot-sourcing the writer where possible.",
+                          "rationale":  "Accepted atom_2 with the judge\u0027s modification (0.81): one writer prevents drift between driver and runner records, and a single naming convention (snake_case, aligned with run_id) removes the cross-atom inconsistency the judge flagged.",
+                          "alternatives_considered":  [
+                                                          "Two independent ad-hoc writers in driver and runner",
+                                                          "Mixed naming (PascalCase fields + snake_case run_id)",
+                                                          "Source-regex parity test as the primary guarantee"
+                                                      ],
+                          "risk":  "medium — if the runner cannot dot-source the driver module it must mirror the writer, reintroducing drift risk.",
+                          "test":  "All terminal entries from both driver and runner conform to the same schema/field names; prefer a behavior/schema assertion in the test suite; add a source-regex parity assertion ONLY if the runner must mirror the writer due to load constraints."
+                      },
+                      {
+                          "decision":  "Make tools/audit-runner.ps1 the single owner of the terminal states it can observe: wrap main logic in try/catch/finally with a $terminalWritten guard and write exactly one terminal entry — completed_ok/completed_partial (Invoke-BridgeAudit result), skipped_not_idle (its own Wait-BridgeIdle returns not-idle), audit_lock_held→skipped, failed (caught exception or finally fallback).",
+                          "rationale":  "Accepted atom_3 with the judge\u0027s narrowing (0.78). Because the started entry is written at admission, the required started→skipped_not_idle pairing forces the skip decision to live inside the spawned runner; the finally fallback guarantees a record even on unanticipated graceful exits.",
+                          "alternatives_considered":  [
+                                                          "Driver records skipped_not_idle (atom_4 — breaks started→skipped_not_idle pairing and double-writes)",
+                                                          "Runner also attempts to record timeouts/external kills (unobservable from inside)"
+                                                      ],
+                          "risk":  "medium — must guarantee exactly-one terminal write across every controlled exit path without duplicating the driver\u0027s started entry.",
+                          "test":  "Runner writes exactly one terminal entry for success, partial, idle-skip, lock-held-skip, caught error, and early/finally exit; verify skipped_not_idle is produced by a forced Wait-BridgeIdle=false and failed by an injected exception."
+                      },
+                      {
+                          "decision":  "Generate a GUID run_id in Request-AuditLaunchAdmission, include it in the started entry, thread it through Start-AuditIfDue to the runner via a new -RunId parameter, and echo it in every terminal entry.",
+                          "rationale":  "Accepted atom_6 (0.85). A run_id is the cleanest correlation key once both driver (started) and runner (terminal) write records, eliminating ambiguity when multiple runs overlap.",
+                          "alternatives_considered":  [
+                                                          "Correlate by pid alone (pids are reused and a refused/early run may have no stable pid)",
+                                                          "Correlate by timestamp proximity (racy under overlap)"
+                                                      ],
+                          "risk":  "medium — requires plumbing a new parameter through driver→runner; a missing/empty run_id silently weakens correlation.",
+                          "test":  "started and its terminal entry share an identical non-empty run_id GUID; verify -RunId is received and echoed by the runner across all terminal paths."
+                      },
+                      {
+                          "decision":  "Reserve/define runner_timeout in the ledger schema now, but do NOT emit it (or any silent-death state) in Atom 1.1. Emission is delegated to the supervisor/reconciler in Atom 1.2.",
+                          "rationale":  "Accepted atom_7 (0.88); this resolves the blocking atom_3/atom_4/atom_7 conflict. runner_timeout, external kill, reboot, and hard hang are not observable from a graceful/caught-error path, so emitting them from the 1.1 driver would be unreliable and would conflict with the runner\u0027s exactly-one-write ownership.",
+                          "alternatives_considered":  [
+                                                          "Driver emits runner_timeout in 1.1 (atom_4 — premature, conflicts with single-owner model, risks double-writes and later refactor)",
+                                                          "Omit runner_timeout from the schema entirely (forces a schema change in 1.2)"
+                                                      ],
+                          "risk":  "low — schema reservation is additive; the residual gap (silent death) is explicitly logged as deferred to 1.2 rather than silently dropped.",
+                          "test":  "runner_timeout is accepted/valid in the writer schema/enum, but audit-runner.ps1 and the 1.1 driver never emit a runner_timeout line in any synthetic scenario."
+                      },
+                      {
+                          "decision":  "Extend tools/test-audit-launch-guard.ps1 with synthetic lifecycle scenarios: started→completed_ok, started→skipped_not_idle, started→failed; assert mandatory fields (pid, channel, runtime_seconds, exit_reason, run_id), run_id pairing, and that terminal entries do not increment Get-AuditLaunchAttemptCount.",
+                          "rationale":  "Accepted atom_5 (0.88). These tests cover the principal compatibility and correctness risks: terminal shape, lifecycle pairing, the failure path, and attempt-count non-inflation.",
+                          "alternatives_considered":  [
+                                                          "Manual/ad-hoc verification only",
+                                                          "Testing only the happy path (completed_ok)"
+                                                      ],
+                          "risk":  "low — test-only change; main hazard is flaky synthetic process control for the failed/abandoned scenario.",
+                          "test":  "All three synthetic scenarios pass; assertions confirm field presence, matching run_id across started/terminal, and a constant Get-AuditLaunchAttemptCount across terminal writes."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "atom_4 (as written): driver/10-maintenance.ps1 records skipped_not_idle, runner_timeout, and failed for spawned runs.",
+                         "why":  "Blocking conflicts. (1) Driver-emitted skipped_not_idle contradicts atom_3\u0027s single-owner model and breaks the required started→skipped_not_idle pairing, since started is written at admission so the skip must occur inside the spawned runner. (2) Driver-emitted runner_timeout in 1.1 directly contradicts atom_7\u0027s delegation to Atom 1.2 and risks double terminal entries for the same run_id. The valid kernel — a supervisor/reconciler fallback for silent death — is preserved but moved to Atom 1.2 (atom_7). In Atom 1.1 the driver only writes the started entry."
+                     },
+                     {
+                         "decision":  "Source-regex schema-parity assertion as the primary guarantee of writer consistency.",
+                         "why":  "Judge-flagged as brittle (penalty on atom_2). Behavior/schema assertions are preferred; a source-regex check is acceptable only as a fallback when the runner is forced to mirror the writer because it cannot load the canonical module."
+                     },
+                     {
+                         "decision":  "Runner attempting to detect and record its own runner_timeout / external kill / hard hang.",
+                         "why":  "A process cannot reliably record its own silent death from a graceful try/catch/finally path; this is structurally the reconciler\u0027s job (Atom 1.2)."
+                     }
+                 ],
+    "open_questions":  [
+                           "What field-naming convention do existing started entries in audit.launches.jsonl actually use? New fields must match it exactly; this record assumes snake_case to align with run_id, but the existing schema must be read before implementing.",
+                           "Runtime representation: output_format specifies a \u0027duration string\u0027 while atom_1 specifies numeric RuntimeSeconds. Recommend storing runtime_seconds (numeric, machine-parseable) and optionally a human-readable string — confirm which downstream readers expect.",
+                           "Can tools/audit-runner.ps1 dot-source the canonical writer from driver/10-maintenance.ps1 in its execution context, or must it mirror the function (which would require the source-parity fallback test)?",
+                           "Does the driver already perform a pre-admission idle check that denies launch without ever spawning the runner? If so, confirm that path uses the existing admission-deny/attempt semantics rather than a started→skipped_not_idle pair, to keep skipped_not_idle solely a runner-owned, post-started state."
+                       ],
+    "implementation_plan":  [
+                                "Read existing audit.launches.jsonl and Get-AuditLaunchAttemptCount in driver/10-maintenance.ps1 to lock the exact field-naming convention and confirm which decision values are counted as attempts.",
+                                "Add canonical writer Write-AuditLaunchLedgerEntry(state, pid, channel, run_id, report_path, runtime_seconds, exit_reason) in driver/10-maintenance.ps1; append exactly one JSONL line per call; ensure Get-AuditLaunchAttemptCount counts only admission/started records, not terminal ones; reserve runner_timeout in the state enum without emitting it.",
+                                "In Request-AuditLaunchAdmission, generate a GUID run_id and include it in the started entry; thread run_id through Start-AuditIfDue to the runner via a new -RunId parameter.",
+                                "In tools/audit-runner.ps1, accept -RunId; wrap main logic in try/catch/finally with a $terminalWritten guard; reuse the canonical writer (dot-source if possible, else mirror + parity assertion) to emit exactly one terminal entry classified as completed_ok/completed_partial (Invoke-BridgeAudit result), skipped_not_idle (Wait-BridgeIdle false), audit_lock_held→skipped, or failed (caught/finally). Do not emit runner_timeout.",
+                                "Extend tools/test-audit-launch-guard.ps1 with synthetic scenarios started→completed_ok, started→skipped_not_idle (forced non-idle), started→failed (injected exception/abandon); assert mandatory fields, run_id pairing across started/terminal, exactly-one terminal write, and no Get-AuditLaunchAttemptCount inflation.",
+                                "Run CHECKS: ParseFile on driver/10-maintenance.ps1, tools/audit-runner.ps1, tools/test-audit-launch-guard.ps1 (no parse errors); tools/test-audit-launch-guard.ps1; driver.ps1 -SelfTest; smoke.ps1. Commit atomically once green."
+                            ],
+    "next_step":  "Read the existing audit.launches.jsonl schema and Get-AuditLaunchAttemptCount in driver/10-maintenance.ps1 to lock field naming and attempt-counting semantics, then add the canonical Write-AuditLaunchLedgerEntry writer plus the run_id GUID in Request-AuditLaunchAdmission as the foundation the runner and tests build on.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "success_test #8 and the contract\u0027s own acceptance (\u0027брошенный аудит→failed\u0027) are NOT satisfiable by Atom 1.1 as designed. The runner writes \u0027failed\u0027 only from a caught exception in try/catch/finally; a true external termination/kill (the literal text of test #8: \u0027by external termination\u0027) prevents the finally block from ever running, so NO terminal entry is produced.",
+                                  "why":  "The decision relies on reinterpreting \u0027fails\u0027 as \u0027a catchable error/early-exit\u0027 and defers genuine silent-death to Atom 1.2 (open_question #2 explicitly asks the operator to confirm this re-interpretation). Until that confirmation, the decision does not meet a stated success_test or the contract acceptance criterion — it ships a known acceptance gap rather than a met one."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The \u0027definitive\u0027 canonical schema in decision #2 names fields \u0027timestamp\u0027 and \u0027event/decision\u0027, but the real ledger uses \u0027ts\u0027 and \u0027decision\u0027, and the reader Get-AuditLaunchAttemptCount keys on $entry.decision -eq \u0027started\u0027 (line 383). If the shared canonical writer is also used for the started entry and renames decision→event (the schema literally says \u0027event/decision\u0027), the started entry stops carrying decision=\u0027started\u0027, Get-AuditLaunchAttemptCount silently returns 0 attempts, max_attempts_per_window never trips, and the launch guard fails open into a launch STORM.",
+                                  "why":  "The schema was specified without reading the actual file (open_question #3 admits the casing is unknown) and is internally inconsistent with atom 1\u0027s append-only/reader-compatibility promise. On a control-plane scheduler (contract risk: medium), an ambiguous \u0027event/decision\u0027 field name plus an unchanged reader is a direct path to disabling storm suppression — the opposite of the guard\u0027s purpose."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Invoke-BridgeAudit can return @{status=\u0027locked\u0027} when another audit already holds tools/audit.ps1\u0027s lock (audit.ps1:1906/1621). The decision maps the runner\u0027s outcome to completed_ok (\u0027ok\u0027) or completed_partial (everything else), so a \u0027locked\u0027 return — meaning the audit DID NOT RUN at all — is recorded as \u0027completed_partial\u0027.",
+                                  "why":  "This writes a definitively false terminal record, corrupting the exact \u0027run truth\u0027 the goal depends on. The observed ledger shows multiple concurrent runner PIDs (45220, 27960) within seconds on 2026-06-10, so the concurrent-lock path is real, not hypothetical. None of the five enumerated terminal states covers \u0027did not run because another audit held the lock\u0027."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Orphaned \u0027started\u0027 with no terminal on driver-side launch failure. Admission writes \u0027started\u0027 (with run_id) at line 514; if the subsequent WaitMarker write fails (line 759 \u0027catch { return }\u0027) or Start-Process throws (line 786 catch), no runner is ever launched, so the runner — the sole owner of terminal entries — never writes one.",
+                                  "why":  "This synchronously-observable failure reproduces the precise symptom the initiative targets (\u0027a run starts and then vanishes without a terminal entry\u0027). The decision forbids driver-side terminal writes (rejects atom 4) and defers all \u0027started-with-no-terminal\u0027 to Atom 1.2\u0027s async reconciler, even though the driver is sitting right in the catch block and could record the failure immediately."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The runner\u0027s PID is never durably recorded before it produces its own terminal entry. The \u0027started\u0027 entry carries the DRIVER\u0027s long-lived $PID (line 514), not the runner\u0027s; the runner\u0027s PID first appears only in the terminal entry the runner writes itself. So for a silently-dying runner (the target failure mode), no ledger entry ever holds that runner\u0027s PID.",
+                                  "why":  "Atom 1.2\u0027s plan (per the approved doc) is to \u0027discount started attempts whose pid is dead\u0027 — impossible here, because the only pid on a started entry is the always-alive driver. 1.2 is therefore forced into TTL-only detection and will need to add a launch/runner-pid entry — a format change that directly contradicts atom 7\u0027s justification that \u0027reserving runner_timeout now keeps the format stable so 1.2 needs no format change.\u0027 The claimed run_id \u0027foundation\u0027 for the reconciler is weaker than stated."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Output-format deviation: the contract\u0027s output_format mandates \u0027runtime (duration string)\u0027, but the decision specifies numeric runtime_seconds and only flags the mismatch as open_question #4 rather than resolving it.",
+                                  "why":  "As written, the decision does not conform to the contract\u0027s stated output_format for the runtime field. Acceptance depends on an unconfirmed operator decision; a downstream reader expecting a duration string (or expecting both) is not guaranteed to be satisfied."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Atom 5\u0027s test ambition (drive the runner through success/partial/idle/error/early-exit paths) conflicts with the atomic/low-complexity constraint. audit-runner.ps1 is a monolithic script that re-dot-sources tools/audit.ps1 at line 57, overwriting any mock of Invoke-BridgeAudit/Wait-BridgeIdle, and executes immediately on load (it\u0027s a script, not a function).",
+                                  "why":  "Deterministically exercising the success path (success_test #6) therefore requires either running a real audit (slow, LLM-dependent, non-deterministic — unfit for a guard test) or refactoring the runner body into a mockable function (scope/complexity beyond \u0027atomic, 1 logical change\u0027). The likely outcome is the test degrades to calling the writer directly, which does NOT actually verify the runner\u0027s classification logic the decision claims to lock in."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Shared-writer file-scope/atomicity tension is unresolved (open_question #5). The runner dot-sources only lib/common.ps1 and tools/audit.ps1, not driver/10-maintenance.ps1 where Write-AuditLaunchLedgerEntry lives.",
+                                  "why":  "The decision\u0027s preferred \u0027one shared dot-sourced writer\u0027 forces one of: (a) a NEW 4th file (e.g. lib/audit-ledger.ps1), which is outside the contract\u0027s strictly-enumerated 3-file output_format and the plan\u0027s Atom 1.1 Files list; (b) making the detached worker dot-source the 54KB control-plane module (heavyweight, couples worker to scheduler internals); or (c) duplicating the writer (the judge\u0027s own rejected/fallback path). None of these is cleanly inside the \u0027atomic, low-complexity, 3-file\u0027 envelope, so the constraint set is not clearly satisfiable as accepted."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Goal phrasing overpromises. The contract goal says this change \u0027addresses the issue of audits not completing since 2026-06-05,\u0027 but Atom 1.1 only adds VISIBILITY of terminal states.",
+                                  "why":  "The actual non-completion cause per the approved plan is deep_failed/empty_llm_reply in the audit itself, and the storm-denial loop (2 \u0027started\u0027 entries pegging the window count) is explicitly left to Atom 1.2. A terminal-record entry neither makes a failing audit complete nor clears the denial loop, so the run-completion problem itself persists after this atom ships."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Adding terminal-entry writing into the runner\u0027s finally block alongside the existing WaitMarker removal (audit-runner.ps1:69-75) risks ordering coupling. Write-AuditLaunchLedgerEntry throws after 5 failed append retries (line 362).",
+                                  "why":  "Under ledger contention (the driver is concurrently storm-writing \u0027denied\u0027 entries with FileShare.Read, observed every few seconds in the ledger), a thrown terminal write inside the same finally could pre-empt WaitMarker cleanup, leaving a stale audit.waiting marker that blocks future runs via Test-AuditMaintenanceBusy (line 751). The terminal write and the marker cleanup need independent try/catch and a defined order."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

@@ -1,0 +1,30 @@
+{
+    "task":  "[Автозадача из бэклога] [operator][audit-improve Глава1 атом1.1] Расширь существующий launch-ledger терминальными состояниями прогонов аудита. ПЛАН: channels/main/decisions/dec-20260619-163403-b4ee4c/codex_audit_efficiency_review.md (одобрен оператором). ФАЙЛЫ: driver/10-maintenance.ps1, tools/audit-runner.ps1, tools/test-audit-launch-guard.ps1. ИЗМЕНЕНИЕ: сохранить audit.launches.jsonl, ДОБАВИТЬ записи completed_ok / completed_partial / skipped_not_idle / failed / runner_timeout с pid, channel, report path (если есть), runtime, exit reason. ЦЕЛЬ: каждый прогон аудита имеет терминальную запись (сейчас старт может пропасть без следа — корень того что аудит не завершается с 2026-06-05). ACCEPTANCE: синтетический успех пишет started→completed_ok; skipped idle→skipped_not_idle; брошенный аудит→failed. CHECKS: ParseFile тронутых .ps1 + tools/test-audit-launch-guard.ps1 + driver.ps1 -SelfTest + smoke.ps1. АТОМАРНО (1 логическое изменение, коммит за минуты), verify+critic. Risk: medium (control-plane scheduler).",
+    "goal":  "Ensure every audit run has a terminal record in the launch-ledger, preventing runs from disappearing without a trace and addressing the issue of audits not completing since 2026-06-05.",
+    "constraints":  [
+                        "Adhere to the approved plan: channels/main/decisions/dec-20260619-163403-b4ee4c/codex_audit_efficiency_review.md.",
+                        "The change must be atomic (1 logical change, commit within minutes).",
+                        "The solution must preserve existing `audit.launches.jsonl` data.",
+                        "New terminal entries in `audit.launches.jsonl` must include: `pid`, `channel`, `report path` (if applicable), `runtime`, and `exit reason`."
+                    ],
+    "known_context":  [
+                          "There is an existing `launch-ledger` for audit runs.",
+                          "Audit runs currently start but can disappear without a trace, leading to audits not completing since 2026-06-05.",
+                          "The task involves modifying `driver/10-maintenance.ps1`, `tools/audit-runner.ps1`, and `tools/test-audit-launch-guard.ps1`.",
+                          "The task is part of an \u0027audit-improve\u0027 initiative, specifically \u0027Глава1 атом1.1\u0027."
+                      ],
+    "output_format":  "Modified PowerShell scripts (`driver/10-maintenance.ps1`, `tools/audit-runner.ps1`, `tools/test-audit-launch-guard.ps1`) that, when executed, append JSONL entries to `audit.launches.jsonl` for terminal audit states (e.g., `completed_ok`, `completed_partial`, `skipped_not_idle`, `failed`, `runner_timeout`). Each terminal entry must contain: `pid` (integer), `channel` (string), `report path` (string, optional), `runtime` (duration string), `exit reason` (string).",
+    "task_type":  "bugfix",
+    "risk":  "medium",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "Run `ParseFile` on `driver/10-maintenance.ps1` and verify no parsing errors.",
+                          "Run `ParseFile` on `tools/audit-runner.ps1` and verify no parsing errors.",
+                          "Run `ParseFile` on `tools/test-audit-launch-guard.ps1` and verify no parsing errors.",
+                          "Execute `driver.ps1 -SelfTest` and verify successful completion.",
+                          "Execute `smoke.ps1` and verify successful completion.",
+                          "Execute a synthetic audit run that completes successfully; verify `audit.launches.jsonl` contains a `started` entry followed by a `completed_ok` entry for that specific run, with `pid`, `channel`, `runtime`, and `exit reason` present.",
+                          "Execute a synthetic audit run that is skipped due to the system not being idle; verify `audit.launches.jsonl` contains a `started` entry followed by a `skipped_not_idle` entry for that specific run, with `pid`, `channel`, `runtime`, and `exit reason` present.",
+                          "Execute a synthetic audit run that is abandoned or fails (e.g., by external termination); verify `audit.launches.jsonl` contains a `started` entry followed by a `failed` entry for that specific run, with `pid`, `channel`, `runtime`, and `exit reason` present."
+                      ]
+}

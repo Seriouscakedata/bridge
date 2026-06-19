@@ -1,0 +1,89 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_1",
+                      "statement":  "Preserve existing audit.launches.jsonl data by appending new terminal entries as separate JSONL-lines, without modifying old records or forking the format. Extend the existing ledger entry with optional terminal fields (RunId, ReportPath, RuntimeSeconds, ExitReason) defaulting to empty/0, using new decision values for terminal states.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Ledger Format",
+                      "test":  "Verify `audit.launches.jsonl` remains append-only, old entries are untouched, and new terminal entries use distinct decision values and include optional fields (RunId, ReportPath, RuntimeSeconds, ExitReason) without breaking existing readers or `Get-AuditLaunchAttemptCount`.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_2",
+                      "statement":  "Introduce a canonical writer for terminal audit launch events, preferably located in driver/10-maintenance.ps1, using a consistent JSONL schema including fields like timestamp, event_type (state), pid, channel, reportPath, runtime, and exitReason. Ensure the runner reuses this identical schema, potentially via a minimal mirror with a source-regex assertion for schema parity in tests.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Ledger Writer \u0026 Schema",
+                      "test":  "Verify all terminal entries conform to the specified schema. If the runner mirrors the writer, assert source-regex for schema parity in `audit-runner.ps1` against the canonical writer in `10-maintenance.ps1`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_3",
+                      "statement":  "Implement terminal state recording within tools/audit-runner.ps1 by wrapping the main execution logic in try/catch/finally blocks. The runner is responsible for classifying its own outcome (e.g., `completed_ok`, `completed_partial`, `skipped_not_idle` from `Wait-BridgeIdle` or `audit_lock_held` from `Invoke-BridgeAudit` status, `failed` from exceptions) and writing exactly one terminal entry per run, using a `$terminalWritten` flag and a `finally` fallback for unanticipated exits.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Runner Logic \u0026 Error Handling",
+                      "test":  "Verify `audit-runner.ps1` always writes exactly one terminal entry for all controlled exit paths (success, partial, skip, caught error, early exit). Test specific classifications like `skipped_not_idle` from `Wait-BridgeIdle` and `completed_ok/partial/skipped` from `Invoke-BridgeAudit` results, and `failed` on exceptions.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_4",
+                      "statement":  "In driver/10-maintenance.ps1, record terminal states such as `skipped_not_idle` when an audit is refused due to a non-idle state, `runner_timeout` if the runner exceeds its timeout, and `failed` for unsuccessful or aborted processes that do not produce a terminal record themselves.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Driver Logic",
+                      "test":  "Verify `driver/10-maintenance.ps1` records `skipped_not_idle` when the idle check fails, and `runner_timeout` when a runner process is externally terminated due to timeout, ensuring protection against double terminal entries for the same run.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_5",
+                      "statement":  "Extend tools/test-audit-launch-guard.ps1 with synthetic scenarios to verify the complete lifecycle of audit runs, specifically `started` → `completed_ok`, `started` → `skipped_not_idle`, and `started` → `failed`, including assertions for the presence of mandatory fields in terminal entries and that terminal entries do not increment the audit attempt count.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Run `tools/test-audit-launch-guard.ps1` and verify new synthetic scenarios pass, asserting correct terminal states, field presence, and no inflation of `Get-AuditLaunchAttemptCount` by terminal entries.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_6",
+                      "statement":  "Introduce a unique `run_id` (GUID) generated in `Request-AuditLaunchAdmission`, included in the `started` entry, passed to `Start-AuditIfDue`, and threaded to the runner via a new `-RunId` parameter, ensuring every terminal entry echoes the same `run_id` for reliable correlation between driver and runner events.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Correlation",
+                      "test":  "Verify `started` and terminal entries for the same audit run share the same `run_id` (GUID) and that `run_id` is correctly passed from driver to runner.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_7",
+                      "statement":  "Define and schema-support the `runner_timeout` terminal state within this atom, but explicitly delegate its emission to the supervisor/reconciler (Atom 1.2), clarifying that Atom 1.1 addresses only graceful exits and caught errors, leaving silent process death (external kill, reboot, hard hang) to be resolved by Atom 1.2\u0027s reconciliation mechanism.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Scope Definition",
+                      "test":  "Verify `runner_timeout` is schema-supported in the ledger writer, but confirm that `audit-runner.ps1` does not emit `runner_timeout` events in Atom 1.1.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

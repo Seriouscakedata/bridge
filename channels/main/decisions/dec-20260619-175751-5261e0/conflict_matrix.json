@@ -1,0 +1,49 @@
+{
+    "consensus_atoms":  [
+                            "atom_1",
+                            "atom_2",
+                            "atom_3",
+                            "atom_5"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_3",
+                                           "atom_4"
+                                       ],
+                          "axis":  "Primary responsibility for terminal state recording and fallback logic",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "atom_4",
+                                           "atom_7"
+                                       ],
+                          "axis":  "Scope and emission of \u0027runner_timeout\u0027 terminal state",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_3",
+                        "severity":  "major",
+                        "why":  "Atom 3 states the runner is responsible for classifying and recording `skipped_not_idle` from `Wait-BridgeIdle`. This directly conflicts with Atom 4, which assigns this responsibility to the driver when an audit is refused due to a non-idle state. This ambiguity creates a high risk of either double-recording or missing this critical state in the audit log, as the `Wait-BridgeIdle` check typically occurs before the runner is fully operational.",
+                        "fix":  "Clarify the primary component (driver or runner) responsible for checking `Wait-BridgeIdle` and definitively assign the recording of `skipped_not_idle` to that single component. Adjust the statement and test accordingly to ensure clear responsibility and prevent conflicting implementations.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "atom_4",
+                        "severity":  "blocking",
+                        "why":  "Atom 4 presents two major conflicts: \n1. It assigns responsibility to the driver for recording `skipped_not_idle` when an audit is refused due to a non-idle state, conflicting with Atom 3\u0027s assignment of this to the runner. \n2. More critically, Atom 4 states the driver will record `runner_timeout` if the runner exceeds its timeout. This directly contradicts Atom 7\u0027s explicit delegation of `runner_timeout` emission to a future supervisor (Atom 1.2), clarifying that it\u0027s outside the current scope (Atom 1.1). This is a fundamental and blocking conflict regarding the scope and implementation responsibility for a critical terminal state.",
+                        "fix":  "Reconcile the `skipped_not_idle` responsibility with Atom 3, assigning it to a single component. For `runner_timeout`, either remove the driver\u0027s responsibility for recording it in Atom 1.1 to align with Atom 7\u0027s delegation to Atom 1.2, or explicitly state that Atom 4 overrides Atom 7\u0027s delegation for this specific state in Atom 1.1, providing a clear rationale for the change in scope.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "atom_7",
+                        "severity":  "blocking",
+                        "why":  "Atom 7 explicitly defines and schema-supports the `runner_timeout` state but delegates its emission to a future supervisor/reconciler (Atom 1.2), clarifying that Atom 1.1 (the current scope) does not address it. This directly conflicts with Atom 4, which states that `driver/10-maintenance.ps1` (a component within Atom 1.1) will record `runner_timeout` if the runner exceeds its timeout. This is a fundamental disagreement on the scope and implementation timeline for a critical state, making both atoms unimplementable as written.",
+                        "fix":  "Reconcile with Atom 4. Either Atom 7\u0027s delegation of `runner_timeout` is removed/modified to allow Atom 4\u0027s driver implementation in Atom 1.1, or Atom 4\u0027s statement about the driver recording it is removed/modified to align with Atom 7\u0027s delegation to Atom 1.2. A clear, unified decision on the handling of `runner_timeout` is required.",
+                        "cost":  "low"
+                    }
+                ]
+}
