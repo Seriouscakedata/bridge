@@ -68,9 +68,18 @@ function Get-SynthesisDepthDecision {
   }
 
   # 2. High risk (explicit -Risk, intent.risk, or high-stakes domain) -> High-Stakes.
+  # 2026-06-19 FIX: the high-stakes DOMAIN keyword match fired on any task merely MENTIONING
+  # control-plane/secret/watchdog/etc., forcing the heaviest pipeline onto SMALL procedural tasks.
+  # Real case: the "Bridge-self canary gate/admission for ... control-plane ..." task is mode=small
+  # yet was routed depth=High-Stakes, then churned through synthesis and FAILED on the restart cap,
+  # wedging the main channel. Explicit risk=high/critical still ALWAYS wins; but a keyword-only
+  # "high-stakes domain" hit no longer forces High-Stakes when the task is small/short (the safety
+  # gates -- claim-gate, approval classifier, critic, rollback -- are independent of synthesis depth).
   $riskVal = if ($Risk) { $Risk.ToLowerInvariant() } else { (& $getIntent 'risk').ToLowerInvariant() }
+  $complexityHint = (& $getIntent 'complexity').ToLowerInvariant()
+  $isSmallTask = ($complexityHint -in @('trivial','simple')) -or ($t.Trim().Length -lt 160)
   $highStakesKw = ($low -match 'secret|watchdog|supervisor|circuit.?breaker|control.?plane|медицин|medical|финанс|finance|деньг|payment|безопасн|security|необратим|irreversible')
-  if ($riskVal -in @('high', 'critical') -or $highStakesKw) {
+  if ($riskVal -in @('high', 'critical') -or ($highStakesKw -and -not $isSmallTask)) {
     $why = if ($riskVal -in @('high', 'critical')) { "risk=$riskVal" } else { 'high-stakes domain' }
     return @{ depth = 'High-Stakes'; judge_task_type = $taskType; rationale = $why }
   }
