@@ -815,6 +815,48 @@ function Invoke-DriverDoneGateChecks {
   }
 }
 
+function Test-DoneGateIsFragmented {
+  # Returns $true when a backlog task was already decomposed into child atoms and must not be
+  # closed as DONE. Checks the item markers and any sibling in AllItems with parent_id = TaskId.
+  param(
+    [Parameter(Mandatory=$false)][string]$TaskId = '',
+    [Parameter(Mandatory=$false)][object[]]$AllItems = @()
+  )
+  if ([string]::IsNullOrWhiteSpace($TaskId)) { return $false }
+  $ownItem = $null
+  foreach ($candidate in @($AllItems)) {
+    if ($null -eq $candidate) { continue }
+    $cid = ''
+    try { $cid = [string]($candidate | Select-Object -ExpandProperty 'id' -ErrorAction SilentlyContinue) } catch {}
+    if ([string]::Equals($cid, $TaskId, [System.StringComparison]::OrdinalIgnoreCase)) { $ownItem = $candidate; break }
+  }
+  if ($null -ne $ownItem) {
+    $ownStatus = ''
+    try { $ownStatus = ([string]($ownItem | Select-Object -ExpandProperty 'status' -ErrorAction SilentlyContinue)).ToLowerInvariant() } catch {}
+    if ($ownStatus -eq 'decomposed') { return $true }
+    foreach ($markerField in @('is_decomposed','is_fragmented','decomposed')) {
+      $markerVal = $null
+      try { $markerVal = $ownItem.$markerField } catch {}
+      if ($null -eq $markerVal) { continue }
+      $markerRaw = [string]$markerVal
+      if (@('','false','0','no','off','null') -notcontains $markerRaw.ToLowerInvariant()) { return $true }
+    }
+    $decompAt = ''
+    try { $decompAt = [string]($ownItem | Select-Object -ExpandProperty 'decomposed_at' -ErrorAction SilentlyContinue) } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($decompAt)) { return $true }
+  }
+  foreach ($candidate in @($AllItems)) {
+    if ($null -eq $candidate) { continue }
+    $cid = ''
+    try { $cid = [string]($candidate | Select-Object -ExpandProperty 'id' -ErrorAction SilentlyContinue) } catch {}
+    if ([string]::Equals($cid, $TaskId, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+    $parentId = ''
+    try { $parentId = ([string]($candidate | Select-Object -ExpandProperty 'parent_id' -ErrorAction SilentlyContinue)).Trim() } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($parentId) -and [string]::Equals($parentId, $TaskId, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
 $script:DriverLoopCompletionInitialChecksBlock = {
   $plannerStatus = 'CONTINUE'
   $fastLaneDone = $false
@@ -1180,6 +1222,37 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     if ($modeBeforeIncrement -eq 'research' -and $plannerStatus -ne 'DONE' -and $plannerStatus -ne 'CHAT') {
       Update-State { param($s) $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot='' } | Out-Null
     }
+  }
+  $fragGuardBlocked = $false
+  if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $fragSt = Read-State
+      $fragTaskId = [string]$fragSt.current_backlog_id
+      if ([string]::IsNullOrWhiteSpace($fragTaskId)) { $fragTaskId = [string]$fragSt.current_task_id }
+      if (-not [string]::IsNullOrWhiteSpace($fragTaskId) -and (Get-Command Get-Backlog -ErrorAction SilentlyContinue)) {
+        $fragAllItems = @(Get-Backlog)
+        if (Test-DoneGateIsFragmented -TaskId $fragTaskId -AllItems $fragAllItems) {
+          $fragGuardBlocked = $true
+          if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+            try { Set-Idea -Id $fragTaskId -Status 'decomposed' -Reason 'done-gate-fragmented-block' | Out-Null } catch {}
+          }
+          Add-Message -From system -Text ("⚠ DONE отклонён: задача $fragTaskId уже раздроблена на дочерние атомы (is_fragmented=true). Zombie-reaper мог ошибочно восстановить её — закрываю как decomposed. Дочерние задачи продолжают работу.") -Kind event | Out-Null
+          Update-State {
+            param($s)
+            $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'; $s.no_progress_count=0
+            $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false
+            $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false
+            $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''
+            $s.study_snapshot=''; $s.research_count=0
+            $s.current_backlog_id=$null; $s.active_agent=$null; $s.active_model=$null
+            $s.status_text=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o')
+          } | Out-Null
+        }
+      }
+    } catch {
+      try { Add-Message -From system -Text ("⚠ DONE-gate fragmented-check failed open: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+    if ($fragGuardBlocked) { continue }
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     $noopHasBacklogId = $true
