@@ -1,0 +1,62 @@
+{
+    "proposer":  "C",
+    "understanding":  "The commit_famine trigger in lib/auditor.ps1 falsely flags tasks that have just completed but haven\u0027t been committed yet, especially between agent cycles. The previous fix (checking liveAgentRunning and paused) missed the gap between cycles. The solution must exempt tasks with a recent commit (last_commit_age_min \u003c 5 min) or recent progress, while still catching genuinely stuck dirty tasks. The fix must be atomic, reuse existing snapshot fields, and not break legitimate famine detection.",
+    "summary":  "Modify the commit_famine trigger condition in Get-AuditorSnapshot to exempt tasks whose last_commit_age_min is below a threshold (e.g., 5 minutes) or whose progress_fingerprint/last_seq indicates recent activity, preventing false positives on freshly completed but uncommitted tasks while preserving detection of truly stuck tasks.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a freshness exemption to commit_famine using last_commit_age_min \u003c 5 minutes",
+                               "reason":  "A task that committed recently is actively progressing and should not be considered in famine. The field already exists in the snapshot, satisfying the constraint against proliferating new fields.",
+                               "tradeoff":  "A threshold that is too low may miss slow-but-genuine famine; too high may exempt truly stuck tasks. 5 minutes balances typical agent cycle times against human-noticeable delays.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Also exempt tasks with recent progress_fingerprint or last_seq change",
+                               "reason":  "A task might be making progress (changing fingerprint/seq) even if a commit hasn\u0027t happened recently. This catches cases where work is ongoing but commits are batched or delayed.",
+                               "tradeoff":  "Adds a secondary check that could be redundant if last_commit_age_min is reliable, but provides defense-in-depth for edge cases where commits lag behind progress.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Keep the existing liveAgentRunning and paused checks",
+                               "reason":  "These checks are still valid for other scenarios and removing them could introduce regressions. The new exemption is additive.",
+                               "tradeoff":  "Slightly more complex condition, but preserves existing behavior while adding the new exemption.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement the change only in lib/auditor.ps1 within Get-AuditorSnapshot",
+                               "reason":  "The task constraints require an atomic, single-file fix. The trigger logic is already localized there, making it the natural and minimal change point.",
+                               "tradeoff":  "No changes to other files or systems, which limits ripple effects but also means any dependent logic elsewhere won\u0027t be updated.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "last_commit_age_min is reliably populated in the snapshot and represents minutes since the last commit",
+                        "The agent cycle gap is typically less than 5 minutes, so a 5-minute threshold safely spans the gap",
+                        "progress_fingerprint or last_seq is updated synchronously with task progress and available in the snapshot",
+                        "The existing liveAgentRunning and paused flags are accurate and should remain part of the condition",
+                        "A threshold of 5 minutes is appropriate for the deployment environment; this may need tuning per instance"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Threshold too high masks legitimate slow famine",
+                      "severity":  "medium",
+                      "mitigation":  "Use a conservative default (5 min) and make it configurable via a parameter or constant; monitor for false negatives after deployment"
+                  },
+                  {
+                      "risk":  "progress_fingerprint/last_seq may not update for certain task types",
+                      "severity":  "low",
+                      "mitigation":  "Make the progress check optional or fall back to last_commit_age_min only if progress fields are unavailable"
+                  },
+                  {
+                      "risk":  "Edge case where a task is truly stuck but had a recent commit due to an automated retry",
+                      "severity":  "medium",
+                      "mitigation":  "Combine with a consecutive-failure or no-progress counter in a future iteration; for now, the 5-minute window limits exposure"
+                  },
+                  {
+                      "risk":  "Regression in legitimate famine detection if exemption logic is too broad",
+                      "severity":  "high",
+                      "mitigation":  "Thorough unit and smoke testing with both fresh-task and stuck-task scenarios; code review and control-plane verification before merge"
+                  }
+              ],
+    "minimal_version":  "Modify the commit_famine condition to add: -and ($snapshot.last_commit_age_min -ge 5) so that tasks with a commit within the last 5 minutes are exempt.",
+    "advanced_version":  "Modify the commit_famine condition to add: -and ($snapshot.last_commit_age_min -ge 5 -or (-not $snapshot.progress_fingerprint_changed -and -not $snapshot.last_seq_changed)) to also exempt tasks showing recent progress even without a commit, with configurable threshold and logging of exemption decisions."
+}

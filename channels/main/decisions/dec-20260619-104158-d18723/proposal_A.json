@@ -1,0 +1,67 @@
+{
+    "proposer":  "A",
+    "understanding":  "The `commit_famine` trigger currently treats a dirty, uncommitted state between agent turns as a stalled task because `liveAgentRunning` is false in that narrow window. The fix should distinguish genuinely abandoned dirty work from fresh progress or a just-finished task, using existing snapshot data rather than adding new control-plane fields.",
+    "summary":  "Modify only `lib/auditor.ps1` in `Get-AuditorSnapshot` so `commit_famine` is suppressed when the snapshot indicates fresh work, primarily via `last_commit_age_min \u003c 5` and, where already available, fresh `progress_fingerprint` or `last_seq` evidence. Preserve the existing dirty/no-agent/not-paused famine conditions and add tests proving both the fresh exemption and the stale-dirty detection path.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a local `freshWork` predicate near the existing `commit_famine` trigger.",
+                               "reason":  "Keeping the logic local to `Get-AuditorSnapshot` satisfies the one-file constraint and avoids adding new snapshot fields or global gates.",
+                               "tradeoff":  "The predicate must be carefully named and scoped so it does not obscure the existing famine condition.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Treat `last_commit_age_min \u003c 5` as sufficient evidence to suppress `commit_famine`.",
+                               "reason":  "A very recent commit/progress boundary is exactly the transient state that caused the false positive after long tasks and apply-restart.",
+                               "tradeoff":  "A real famine that begins within five minutes will be delayed until the threshold expires, but not hidden permanently.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Also allow already-existing progress evidence, such as fresh `progress_fingerprint` or `last_seq`, to suppress the trigger if the current code can determine freshness without new fields.",
+                               "reason":  "This catches the case where useful work happened recently even if commit age alone is not the best signal.",
+                               "tradeoff":  "Only use this if freshness is already derivable; otherwise, forcing it would violate the no-new-fields constraint.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Leave all existing hard famine requirements intact: dirty work, no live agent, not paused, and stale/no progress.",
+                               "reason":  "The fix must reduce false positives without weakening legitimate `commit_famine` detection.",
+                               "tradeoff":  "The trigger remains conservative and may still fire after the freshness window, which is desirable for real stuck states.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Add focused unit coverage for fresh dirty work not firing and stale dirty work still firing.",
+                               "reason":  "The risk is behavioral regression in the control-plane; tests should pin both sides of the boundary.",
+                               "tradeoff":  "The test setup may need small fixture changes, but only in `lib/auditor.ps1` if tests are embedded there per contract.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "`last_commit_age_min` is numeric or safely coercible at the point where `commit_famine` is computed.",
+                        "`commit_famine` currently lives in `Get-AuditorSnapshot` in `lib/auditor.ps1` and can be patched without touching other files.",
+                        "A five-minute freshness threshold is acceptable as the initial operational constant.",
+                        "If `progress_fingerprint` or `last_seq` has no reliable timestamp/age in the existing snapshot, the minimal safe implementation should use `last_commit_age_min` only."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The five-minute exemption could delay a legitimate famine alert.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a strict `\u003c 5` minute threshold and keep all existing famine predicates unchanged so stale cases still fire shortly afterward."
+                  },
+                  {
+                      "risk":  "Type/null handling around `last_commit_age_min` could behave incorrectly in PowerShell.",
+                      "severity":  "medium",
+                      "mitigation":  "Guard for null/empty values and explicitly coerce to a numeric type before comparison."
+                  },
+                  {
+                      "risk":  "Progress freshness may be inferred incorrectly if `progress_fingerprint` or `last_seq` only indicates identity, not recency.",
+                      "severity":  "high",
+                      "mitigation":  "Use progress-based exemption only when existing code already has a trustworthy recency signal; otherwise rely on commit age."
+                  },
+                  {
+                      "risk":  "The fix could accidentally bypass `commit_famine` for paused or live-agent states differently than before.",
+                      "severity":  "medium",
+                      "mitigation":  "Only add `-not $freshWork` to the existing trigger condition and do not reorder or remove the previous `liveAgentRunning` and `paused` checks."
+                  }
+              ],
+    "minimal_version":  "In `lib/auditor.ps1`, compute a local boolean such as `$freshRecentCommit = ($null -ne $last_commit_age_min -and [double]$last_commit_age_min -lt 5)` near the `commit_famine` condition, then require `-not $freshRecentCommit` for the trigger. Add or update focused tests: fresh dirty task with `last_commit_age_min = 1` does not produce `commit_famine`; stale dirty task with `last_commit_age_min = 30` still does. Verify with `ParseFile` and a smoke run.",
+    "advanced_version":  "Extend the local freshness predicate to also consider existing progress recency from `progress_fingerprint` or `last_seq` if the current snapshot already exposes a reliable age/timestamp, still without adding fields. Add boundary tests for `\u003c5`, `=5`, and stale progress, plus a critic-style review of the final boolean expression to confirm legitimate dirty/no-progress famine remains detectable."
+}

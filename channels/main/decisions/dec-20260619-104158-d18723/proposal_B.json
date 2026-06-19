@@ -1,0 +1,73 @@
+{
+    "proposer":  "B",
+    "understanding":  "commit_famine fires in Test-AuditorTriggers (lib/auditor.ps1 ~559) when a channel is active, not in discussion, no live agent process, not paused, task_age_min\u003e30, working_tree_lines\u003e0, last_commit_age_min\u003e30, and the last commit isn\u0027t a QA-passed Doctor commit. The false positive: a long task whose work is FINISHED but not yet committed, observed between agent turns or right after an apply-restart, has no live agent process at that instant. Prior fix 84f797f added (-not liveAgentRunning -and -not paused) but that\u0027s exactly false between turns/after restart, so famine still fires, the Doctor activates on healthy work, and re-fires next tick -\u003e Doctor loop that holds the whole queue (real case: reaper-fix, ~90 min, 2026-06-19). Note: in this scenario last_commit_age_min is by definition \u003e30 (the completed work was never committed), so the literal \u0027last_commit_age_min\u003c5\u0027 idea is already subsumed by the existing \u003e30 guard and does NOT discriminate the bug. The signal that actually moves between turns is lastSeq: the snapshot already exposes last_seq_age_min (minutes since lastSeq advanced) and progress_fingerprint_repeats. A just-finished/just-restarted task has a fresh last_seq_age_min; a genuinely abandoned dirty task has a stale one. So commit_famine should fire only when progress has actually STALLED, not merely when the agent process isn\u0027t live this instant.",
+    "summary":  "Add a single freshness guard to the commit_famine gate in lib/auditor.ps1 using already-present snapshot fields: only fire when progress has stalled, i.e. last_seq_age_min \u003e= ~10 min (lastSeq frozen, no recent turn/restart activity). Advanced form also keeps famine as a backstop for spinning loops (progress_fingerprint_repeats \u003e= 3) so a loop that keeps seq fresh but makes no real progress is still caught. No new fields/gates/config (Foundation #2 honored). Update the trigger Detail string to log last_seq_age_min/repeats for observability. The required unit test must update the existing helper tools/test-doctor-commit-famine-skip.ps1 (whose default last_seq_age_min=0 would otherwise regress the \u0027famine still fires\u0027 scenarios) to use a stale seq for genuinely-stuck cases, and add fresh-seq exemption + spinning-backstop scenarios. Verify with ParseFile, the full test file, and an auditor-tick smoke run against the live repo.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Key the exemption on last_seq_age_min (progress freshness), NOT on last_commit_age_min\u003c5.",
+                               "reason":  "In the actual bug the work is uncommitted, so last_commit_age_min is large (\u003e30) and cannot distinguish \u0027just finished, about to commit\u0027 from \u0027abandoned\u0027. lastSeq is what advances between turns and on re-enqueue after apply-restart, so last_seq_age_min cleanly separates fresh/active work from a frozen abandoned task. It is already in the snapshot (auditor.ps1:473), satisfying the reuse constraint.",
+                               "tradeoff":  "The contract literally suggests a last_commit_age_min\u003c5 clause; keying on seq instead means a reviewer must understand that \u003c5 is already implied by the existing \u003e30 guard. I add a one-line comment to make this explicit and avoid a redundant no-op clause.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Fire famine only when progress is stalled: add `-and [int]$c.last_seq_age_min -ge $freshProgressMin` ($freshProgressMin=10) to the existing condition.",
+                               "reason":  "A just-finished or just-restarted task has last_seq_age_min near 0 -\u003e exempted. A genuinely abandoned dirty task\u0027s seq stays frozen and last_seq_age_min grows unbounded, so it still crosses the threshold and fires (only delayed, never suppressed). 10 min comfortably covers normal between-turn gaps and apply-restart latency without meaningfully weakening real famine detection (which already needs 30+ min of no commit).",
+                               "tradeoff":  "A tighter window (e.g. 5 min) risks re-introducing the false positive if a between-turn/restart gap exceeds it; a looser window delays legitimate famine detection. 10 min is the conservative middle that prioritizes killing the observed queue-blocking loop. Threshold is a local const with a comment, tunable later.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Advanced: do NOT exempt a spinning task — guard the exemption with progress_fingerprint_repeats \u003c 3 so famine remains a backstop for loops that keep seq fresh but make no real progress.",
+                               "reason":  "Pure seq-freshness would permanently exempt a loop that advances seq every turn (the reaper-fix shape). Although the comment claims the 3x-fingerprint loop detector covers this, keeping commit_famine as a secondary backstop for repeats\u003e=3 is cheap, reuses an existing field, and directly hardens against the exact reported failure mode.",
+                               "tradeoff":  "Slightly more logic than a one-liner; minimal version can omit it and rely solely on the loop detector. Including it is safer but must be matched by a test scenario to prevent over-exemption regressions.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "The required unit test must edit tools/test-doctor-commit-famine-skip.ps1: change New-CommitFamineSnapshot\u0027s default last_seq_age_min from 0 to a stale value (e.g. 45) for the genuinely-stuck scenarios, and add fresh-seq + spinning scenarios.",
+                               "reason":  "Scenarios 2/3/6/7 in that file expect commit_famine to FIRE but currently set last_seq_age_min=0 (fresh). Any seq-freshness exemption would silently flip them to pass-as-not-fired, masking a real regression. Making the \u0027stuck\u0027 fixtures use a realistic stale seq keeps them faithful and lets the new fresh fixtures prove the exemption.",
+                               "tradeoff":  "Technically touches a second file beyond lib/auditor.ps1. The \u0027atomic, 1 file\u0027 constraint is interpreted as applying to production code; a behavior change of this trigger MUST come with its test, and the existing test cannot remain valid otherwise. This is surfaced explicitly rather than hidden.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Extend the commit_famine Detail string to include last_seq_age_min and progress_fingerprint_repeats.",
+                               "reason":  "When famine does fire, operators/Doctor need to see the freshness signals that justified it, for post-hoc verification that the exemption logic behaved. Pure observability, no behavior change.",
+                               "tradeoff":  "Marginally longer log line; negligible cost.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "last_seq advances when the agent posts turn output / a completion message and on re-enqueue after apply-restart, so a just-finished or just-restarted task has a small last_seq_age_min (Get-AuditorLastSeqAge tracks the last change to lastSeq).",
+                        "progress_fingerprint_repeats reflects consecutive identical-progress fingerprints (spinning) and is \u003e=3 for degenerate loops, per the existing loop-detector convention.",
+                        "The \u0027single file\u0027 constraint governs the production change (lib/auditor.ps1); updating/extending the existing test harness tools/test-doctor-commit-famine-skip.ps1 is a required test artifact and is acceptable.",
+                        "No persisted state or config plumbing is desired (Foundation #2): a hardcoded, commented threshold local is preferred over a new config key (the advanced version may optionally read an override from Get-AuditorConfig only if already present, with the const as fallback).",
+                        "A genuinely abandoned dirty task keeps its seq frozen, so its last_seq_age_min grows without bound and will always eventually exceed the freshness threshold — the exemption delays, never disables, legitimate famine detection."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Threshold too tight re-introduces the false positive: a normal between-turn or apply-restart gap exceeds $freshProgressMin and famine fires on healthy work again.",
+                      "severity":  "medium",
+                      "mitigation":  "Default to a generous 10-min window (the observed loop is the costlier failure), document the const, and add a fresh-seq test fixture at ~2 min to lock in the exemption margin."
+                  },
+                  {
+                      "risk":  "Threshold too loose lets a real abandoned dirty task linger uncaught longer, or a seq-advancing loop is never caught by commit_famine.",
+                      "severity":  "medium",
+                      "mitigation":  "Real famine is only delayed (frozen seq eventually crosses any threshold). Add the progress_fingerprint_repeats\u003e=3 backstop (advanced version) so spinning loops with fresh seq still fire, plus the pre-existing 3x-fingerprint loop detector and Wait-AgentProcess stagnation remain in force."
+                  },
+                  {
+                      "risk":  "Existing test scenarios 2/3/6/7 silently regress (flip from \u0027fires\u0027 to \u0027not fired\u0027) because the helper defaults last_seq_age_min=0.",
+                      "severity":  "high",
+                      "mitigation":  "Update New-CommitFamineSnapshot default to a stale seq for stuck cases and add explicit fresh/stale/spinning scenarios; run the full test file and assert pass count increased with zero failures before/after."
+                  },
+                  {
+                      "risk":  "Misunderstanding of Get-AuditorLastSeqAge semantics (e.g. it could reset oddly across restarts), making last_seq_age_min not actually fresh right after a real restart.",
+                      "severity":  "medium",
+                      "mitigation":  "Smoke-run auditor-tick / Test-AuditorTriggers against the live repo and inspect the last_seq_age_min values logged in the Detail string; if seq freshness proves unreliable post-restart, fall back to also exempting when progress_fingerprint_repeats==0 AND last_commit_age_min is moderate, keeping the change within auditor.ps1."
+                  },
+                  {
+                      "risk":  "Control-plane change weakens a critical safety trigger if logic is subtly inverted (e.g. accidentally exempting all dirty work).",
+                      "severity":  "high",
+                      "mitigation":  "ParseFile syntax check; verify+critic review of the boolean; a regression test that proves a stale-seq, repeats\u003e=3 dirty task STILL triggers; conservative single-condition minimal version so the blast radius is one boolean term."
+                  }
+              ],
+    "minimal_version":  "In lib/auditor.ps1 immediately before the commit_famine `if` (line ~559), add a brief comment and a single guard term to the condition: `-and [int]$c.last_seq_age_min -ge 10` (i.e. famine fires only when lastSeq has been frozen \u003e= 10 min, meaning no recent turn/restart progress). This alone removes the false positive between turns and after apply-restart because a just-finished task has a fresh last_seq_age_min, while an abandoned dirty task\u0027s seq stays frozen and still fires. Append last_seq_age_min to the Detail string. For the test, update tools/test-doctor-commit-famine-skip.ps1: set New-CommitFamineSnapshot\u0027s default last_seq_age_min to 45 (stale) so the existing \u0027fires\u0027 scenarios remain valid, and add one new scenario with last_seq_age_min=2 asserting commit_famine is suppressed. Validate: powershell ParseFile on auditor.ps1 + run the test file (all pass).",
+    "advanced_version":  "Same production location, but define the freshness explicitly above the `if`: `$freshProgressMin = 10` (optionally overridden from Get-AuditorConfig only if such a key already exists, const as fallback — no new persisted field); `$progressStalled = [int]$c.last_seq_age_min -ge $freshProgressMin`; `$spinning = [int]$c.progress_fingerprint_repeats -ge 3`; `$workFresh = (-not $progressStalled) -and (-not $spinning)`. Add `-and -not $workFresh` to the gate so a recently-progressing, non-spinning task is exempted, but a frozen-seq abandoned task OR a fingerprint-spinning loop still triggers (famine retained as a loop backstop). Expand the Detail string to include last_seq_age_min and progress_fingerprint_repeats. Tests in tools/test-doctor-commit-famine-skip.ps1: (1) fresh exemption — last_seq_age_min=2, repeats=0 -\u003e NOT fired; (2) genuinely stuck — last_seq_age_min=45, repeats=0 -\u003e fired; (3) spinning backstop — last_seq_age_min=1 (fresh) but repeats=4 -\u003e fired; plus parameterize the helper for last_seq_age_min/progress_fingerprint_repeats and keep the existing Doctor-QA scenarios green by giving them a stale seq. Verification: ParseFile; run the full test file asserting 0 failures; an auditor-tick.ps1 smoke pass against the live repo to confirm Test-AuditorTriggers runs clean and emits no spurious commit_famine; verify+critic review of the inverted-boolean risk."
+}

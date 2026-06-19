@@ -1,0 +1,40 @@
+{
+    "consensus_atoms":  [
+                            "atom_02",
+                            "atom_03",
+                            "atom_04",
+                            "atom_11"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_02",
+                                           "atom_03",
+                                           "atom_05",
+                                           "atom_06",
+                                           "atom_07",
+                                           "atom_08",
+                                           "atom_09",
+                                           "atom_10"
+                                       ],
+                          "axis":  "The fundamental metric for defining \u0027freshness\u0027 to exempt tasks from `commit_famine`: whether it\u0027s based on `last_commit_age_min` (commit freshness) or `last_seq_age_min`/`progress_fingerprint` (progress freshness).",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_02",
+                        "severity":  "major",
+                        "why":  "This atom proposes using `last_commit_age_min` as the primary metric for the famine exemption. This directly conflicts with `atom_06` and `atom_07` which propose using `last_seq_age_min`. `last_seq_age_min` is a more accurate indicator of actual task progress (or lack thereof) than `last_commit_age_min`, as a task can be actively working without making commits. Using `last_commit_age_min` could lead to false famine triggers for long-running, non-committing but progressing tasks.",
+                        "fix":  "Reconcile the choice of metric. It is strongly recommended to adopt `last_seq_age_min` as the primary metric for progress-based famine exemptions, as proposed by `atom_06` and `atom_07`. If `last_commit_age_min` is still considered relevant, it should be an *additional* condition rather than the sole freshness indicator.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "atom_05",
+                        "severity":  "major",
+                        "why":  "The test coverage described in this atom is specifically tied to `last_commit_age_min`. If the core logic adopts `last_seq_age_min` (as proposed by `atom_06` and `atom_07`, and which seems more appropriate for \u0027progress famine\u0027), then these tests will be insufficient or incorrect for verifying the new logic. The testing strategy needs to align with the chosen core exemption metric.",
+                        "fix":  "Update the test plan to reflect the chosen core metric for famine exemption. If `last_seq_age_min` is adopted, the tests should focus on verifying its behavior for fresh, stale, and spinning scenarios, potentially merging with or superseding the specific scenarios outlined in `atom_09`.",
+                        "cost":  "low"
+                    }
+                ]
+}

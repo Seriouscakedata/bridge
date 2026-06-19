@@ -552,12 +552,34 @@ function Test-AuditorTriggers {
     # with NO progress check, so a big task that is genuinely progressing but legitimately needs
     # >30 min before its first atomic commit looked identical to a dead one and got suspended into
     # the Doctor (held/failed with edits abandoned). Now exempt a task when a LIVE agent is
-    # actively working it, or when the channel is operator-paused. Degenerate in-turn loops are
-    # still caught by the loop detector (3x identical progress fingerprint) and by Wait-AgentProcess
-    # stagnation/timeout, so this only narrows commit_famine to truly abandoned dirty work.
+    # actively working it, when the channel is operator-paused, or when the channel made fresh
+    # non-spinning progress between turns. Missing seq-age data is treated as stale.
     $liveAgentRunning = (-not [string]::IsNullOrWhiteSpace([string]$c.active_agent)) -and [bool]$c.agent_pid_alive
-    if ($active -and -not $inDiscussion -and -not $liveAgentRunning -and -not [bool]$c.paused -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
-      [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}, live_agent={3}, paused={4}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min, $liveAgentRunning, [bool]$c.paused)))
+    $freshProgressMin = 10
+    $freshRepeatLimit = 3
+    $seqAgeForFreshness = [int]::MaxValue
+    $repeatForFreshness = 0
+    try {
+      $rawSeqAge = $null
+      if ($c -is [System.Collections.IDictionary]) {
+        if ($c.Contains('last_seq_age_min')) { $rawSeqAge = $c['last_seq_age_min'] }
+      } elseif ($c.PSObject.Properties.Name -contains 'last_seq_age_min') {
+        $rawSeqAge = $c.last_seq_age_min
+      }
+      if ($null -ne $rawSeqAge -and -not [string]::IsNullOrWhiteSpace([string]$rawSeqAge)) { $seqAgeForFreshness = [int]$rawSeqAge }
+    } catch { $seqAgeForFreshness = [int]::MaxValue }
+    try {
+      $rawRepeats = $null
+      if ($c -is [System.Collections.IDictionary]) {
+        if ($c.Contains('progress_fingerprint_repeats')) { $rawRepeats = $c['progress_fingerprint_repeats'] }
+      } elseif ($c.PSObject.Properties.Name -contains 'progress_fingerprint_repeats') {
+        $rawRepeats = $c.progress_fingerprint_repeats
+      }
+      if ($null -ne $rawRepeats -and -not [string]::IsNullOrWhiteSpace([string]$rawRepeats)) { $repeatForFreshness = [int]$rawRepeats }
+    } catch { $repeatForFreshness = 0 }
+    $freshWork = ($seqAgeForFreshness -lt $freshProgressMin -and $repeatForFreshness -lt $freshRepeatLimit)
+    if ($active -and -not $inDiscussion -and -not $liveAgentRunning -and -not [bool]$c.paused -and -not $freshWork -and [int]$c.task_age_min -gt 30 -and [int]$c.working_tree_lines -gt 0 -and [int]$c.last_commit_age_min -gt 30 -and -not ($lastCommitIsDoctor -and $doctorQaOk)) {
+      [void]$items.Add((New-AuditorTrigger -Name 'commit_famine' -Channel $slug -Detail ("task_age_min={0}, working_tree_lines={1}, last_commit_age_min={2}, last_seq_age_min={3}, progress_fingerprint_repeats={4}, live_agent={5}, paused={6}" -f [int]$c.task_age_min, [int]$c.working_tree_lines, [int]$c.last_commit_age_min, $seqAgeForFreshness, $repeatForFreshness, $liveAgentRunning, [bool]$c.paused)))
     }
   }
 

@@ -1,0 +1,155 @@
+{
+    "final_answer":  "Fix `commit_famine` by exempting work that is FRESH BY PROGRESS, not by commit age. The judge, conflict matrix, and micro-debate all resolve the central axis decisively against `last_commit_age_min` (atom_02, rejected): commit age does not measure whether a task is doing anything, so it both mislabels active non-committing work as famine and lets a stuck-dirty task look fine just because it happened to commit recently. The adopted signal is `last_seq_age_min` (atom_06, accept 0.90): famine should fire only when progress is genuinely stalled. Concretely, suppress `commit_famine` only when `last_seq_age_min \u003c freshProgressMin` (~10 min) AND the work is not spinning, i.e. `progress_fingerprint_repeats \u003c 3` (atom_07 modified + atom_08 accept) — this keeps famine as a backstop against the real 2026-06-19 reaper-fix loop, which would have presented as fresh sequence activity with a repeating fingerprint. Missing `last_seq_age_min` MUST be treated as stale (never cast to 0), so the fail-safe direction is toward detection. All existing hard gates stay intact: dirty work AND no live agent AND not paused (atom_04, accept 0.94). The exemption lives in a small local `freshWork` predicate beside the trigger (atom_01), the Detail string is extended with `last_seq_age_min` and `progress_fingerprint_repeats` for diagnosis (atom_10), and the production change stays confined to `lib/auditor.ps1` while the companion test file `tools/test-doctor-commit-famine-skip.ps1` is updated to cover stale/fresh/spinning by sequence age (atoms 05 modified, 09, 11 modified). Before coding, two facts must be confirmed against the repo: that `last_seq_age_min` and `progress_fingerprint_repeats` already exist in the snapshot (so the \u0027no new fields\u0027 constraint holds) and that the trigger truly sits in `Get-AuditorSnapshot`.",
+    "decisions":  [
+                      {
+                          "decision":  "Use `last_seq_age_min` (progress freshness) as the primary signal for exempting a task from `commit_famine`, not `last_commit_age_min`.",
+                          "rationale":  "A long task can make real internal progress for a long time without committing; commit age cannot distinguish \u0027working but uncommitted\u0027 from \u0027stuck and dirty\u0027. `last_seq_age_min` tracks actual progress and is the metric the judge (0.90), conflict matrix, and both micro-debate rounds converge on. This is the root cause of the false positive between turns / after apply-restart.",
+                          "alternatives_considered":  [
+                                                          "atom_02: `last_commit_age_min \u003c 5` as the sole/primary freshness gate (rejected — measures commits, not progress; still flags active non-committing work)",
+                                                          "Combine commit age AND seq age as joint conditions (declined — adds a redundant gate, violates \u0027don\u0027t proliferate gates\u0027; seq age already captures the needed signal)"
+                                                      ],
+                          "risk":  "If `last_seq_age_min` is not actually populated/reliable in the snapshot, the exemption could behave unexpectedly. Mitigated by the missing-field fallback decision (treat missing as stale) and by pre-implementation verification.",
+                          "test":  "Fresh-by-progress dirty task (`last_seq_age_min=2`, no live agent, not paused) does NOT produce `commit_famine`; stale dirty task (`last_seq_age_min=45`) still does."
+                      },
+                      {
+                          "decision":  "Add a freshness exemption: suppress `commit_famine` only when `last_seq_age_min \u003c freshProgressMin` (default ~10 min). Equivalently, fire famine when `[int]$last_seq_age_min -ge $freshProgressMin` (with safe handling of missing values).",
+                          "rationale":  "Implements the progress-stalled condition from atom_07 (modified, 0.8625) and gives atom_03\u0027s \u0027progress-derived freshness\u0027 a concrete metric and threshold. A 10-minute stalled-progress window is long enough to avoid flagging between-turn / post-restart gaps but short enough to still catch genuine stalls.",
+                          "alternatives_considered":  [
+                                                          "atom_03 as written (ambiguous metric/threshold — needs concretization)",
+                                                          "Smaller window (~5 min) — risk of re-introducing false positives across longer between-turn gaps",
+                                                          "Larger window (~30 min) — delays legitimate famine detection unnecessarily"
+                                                      ],
+                          "risk":  "Threshold mis-calibration. 10 min is a starting value and may need tuning against the real 90-min reaper-fix loop telemetry.",
+                          "test":  "Boundary tests at `last_seq_age_min` = 9 (exempt), 10 (fires), 11 (fires); plus the stale=45 case fires."
+                      },
+                      {
+                          "decision":  "Guard the exemption against spinning: a task is fresh ONLY if `progress_fingerprint_repeats \u003c 3`. If the same fingerprint is repeating (\u003e=3), do NOT exempt — famine remains the backstop.",
+                          "rationale":  "atom_08 (accept 0.825). Fresh sequence activity alone is insufficient — a looping task keeps bumping `last_seq` while making no real progress, which is exactly the reaper-fix failure mode. The repeat guard prevents a new false-negative class introduced by the seq-based exemption.",
+                          "alternatives_considered":  [
+                                                          "Exempt on seq freshness alone (rejected — re-opens the loop hole the task is meant to close)",
+                                                          "Different repeat threshold — kept at \u003c3 pending confirmation of existing repeat-counting semantics"
+                                                      ],
+                          "risk":  "Depends on existing `progress_fingerprint_repeats` semantics (when/how it increments). Penalty noted by judge. Confirm semantics before locking threshold.",
+                          "test":  "Spinning backstop: `last_seq_age_min=1` (fresh) but `progress_fingerprint_repeats=4` STILL triggers `commit_famine`."
+                      },
+                      {
+                          "decision":  "Handle missing/null `last_seq_age_min` (and `progress_fingerprint_repeats`) defensively: treat a missing seq age as STALE (e.g. coerce to a large/max value), never as 0/fresh.",
+                          "rationale":  "Judge penalty on atom_07: casting a missing value to 0 would make every snapshot lacking the field look \u0027fresh\u0027 and silently disable famine. Fail-safe direction must be toward detection, preserving atom_04\u0027s guarantees.",
+                          "alternatives_considered":  [
+                                                          "`[int]$c.last_seq_age_min` directly (rejected — null coerces to 0 in PowerShell, i.e. \u0027fresh\u0027, which disables the trigger)"
+                                                      ],
+                          "risk":  "Over-firing if the field is legitimately absent for valid fresh work; acceptable because the existing dirty/no-agent/not-paused gates still bound it, and over-detection is safer than the looping regression.",
+                          "test":  "Snapshot with `last_seq_age_min` absent + dirty + no live agent + not paused STILL triggers `commit_famine`."
+                      },
+                      {
+                          "decision":  "Preserve all existing hard famine requirements unchanged: dirty work AND `-not liveAgentRunning` AND `-not paused`. The freshness logic is composed as an ADDITIONAL `-and -not $freshWork` term.",
+                          "rationale":  "atom_04 (accept 0.9385). Keeps the trigger scoped to true unattended, unpaused, dirty famine and does not weaken the prior 84f797f fix.",
+                          "alternatives_considered":  [
+                                                          "Replace any existing gate with the freshness check (rejected — would broaden or break the trigger)"
+                                                      ],
+                          "risk":  "Low. Logic-composition error only; covered by critic review of the final boolean.",
+                          "test":  "Critic review of the final boolean expression confirms `liveAgentRunning` and `paused` checks are preserved; legitimate dirty/no-progress famine remains detectable."
+                      },
+                      {
+                          "decision":  "Isolate the new condition in a small local `freshWork` predicate defined immediately beside the `commit_famine` trigger.",
+                          "rationale":  "atom_01 (accept 0.8325). Low-cost readability/locality; keeps the (now multi-term) freshness logic auditable in one place rather than inlined into a long boolean.",
+                          "alternatives_considered":  [
+                                                          "Inline the whole expression into the trigger boolean (rejected — harder to read/verify with the spinning guard and null handling)"
+                                                      ],
+                          "risk":  "None material.",
+                          "test":  "ParseFile passes; predicate value is reflected in the Detail string for inspection."
+                      },
+                      {
+                          "decision":  "Extend the `commit_famine` Detail string to include `last_seq_age_min` and `progress_fingerprint_repeats`.",
+                          "rationale":  "atom_10 (accept 0.84). Makes the new, more nuanced suppression/firing decision diagnosable in the live audit log — important for a critical control-plane trigger.",
+                          "alternatives_considered":  [
+                                                          "Leave Detail unchanged (rejected — loses the ability to explain why famine did/didn\u0027t fire)"
+                                                      ],
+                          "risk":  "Negligible.",
+                          "test":  "Smoke-run auditor-tick / Test-AuditorTriggers and confirm both values appear and are correct in the Detail string."
+                      },
+                      {
+                          "decision":  "Update `tools/test-doctor-commit-famine-skip.ps1` to drive scenarios off `last_seq_age_min`: default stuck scenarios to a stale seq age (e.g. 45), and add fresh-seq and fresh-seq-but-spinning scenarios. Retire/repoint any test cases that asserted on `last_commit_age_min`.",
+                          "rationale":  "atoms 09 (accept 0.82) and 05 (modified, 0.685). Tests must verify the chosen metric, not the rejected one; coverage must include fresh (exempt), stale (fires), and spinning (fires) cases.",
+                          "alternatives_considered":  [
+                                                          "Keep `last_commit_age_min`-based assertions (rejected per atom_05 modify — would test the wrong metric)"
+                                                      ],
+                          "risk":  "Test/production drift if helper defaults aren\u0027t updated consistently (`New-CommitFamineSnapshot` default `last_seq_age_min`).",
+                          "test":  "Full test file runs with zero failures; scenarios 2/3/6/7 show expected `fires` behavior after defaulting `last_seq_age_min` to stale; new fresh and spinning scenarios assert suppression and firing respectively."
+                      },
+                      {
+                          "decision":  "Keep the production change confined to `lib/auditor.ps1`, while permitting the companion test-file edit. Confirm the trigger actually resides in `Get-AuditorSnapshot` before scoping the edit there.",
+                          "rationale":  "atom_11 (modified, 0.755) + atom_11 consensus on localization. Honors the single-file production constraint without the over-strict reading that would block necessary test updates or assume a trigger location that may be elsewhere.",
+                          "alternatives_considered":  [
+                                                          "Hard-limit ALL edits to `lib/auditor.ps1` including tests (rejected — would prevent required test coverage)",
+                                                          "Assume trigger is in `Get-AuditorSnapshot` without checking (rejected — judge flagged verifying location first)"
+                                                      ],
+                          "risk":  "If the trigger logic is partly outside `Get-AuditorSnapshot`, scoping must follow the real location.",
+                          "test":  "ParseFile + grep confirm only `lib/auditor.ps1` (production) and `tools/test-doctor-commit-famine-skip.ps1` (tests) changed; trigger location verified before edit."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "atom_02 — Use `last_commit_age_min \u003c 5` as the primary freshness signal to exempt tasks from `commit_famine`.",
+                         "why":  "Wrong primary metric (judge reject 0.595; conflict-matrix major severity; both micro-debate rounds resolved against it). Commit age measures commits, not progress: it still flags active non-committing work as famine and can mask a genuinely stuck-dirty task that merely committed recently. Superseded by `last_seq_age_min` (atom_06). Commit age is not re-added even as a secondary gate, to avoid proliferating gates (Foundation #2)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Are `last_seq_age_min` and `progress_fingerprint_repeats` already present and reliably populated in the snapshot produced by `Get-AuditorSnapshot`? If either is missing, the \u0027no new fields\u0027 constraint requires deriving it from existing data (e.g. last_seq timestamp) rather than adding a field — this must be confirmed before implementation.",
+                           "What are the correct calibrated thresholds: `freshProgressMin` (proposed 10 min) and the spinning guard `progress_fingerprint_repeats` cutoff (proposed 3)? Should be validated against the real 2026-06-19 reaper-fix ~90-min loop telemetry.",
+                           "What are the exact increment semantics of `progress_fingerprint_repeats` (when does it bump, does it reset)? The spinning-guard threshold depends on this.",
+                           "Is the entire `commit_famine` trigger logic inside `Get-AuditorSnapshot`, or is part of it elsewhere (atom_11 location caveat)?"
+                       ],
+    "implementation_plan":  [
+                                "Verify in `lib/auditor.ps1` that the `commit_famine` trigger is in `Get-AuditorSnapshot` (~lines 550-559) and confirm `last_seq_age_min` and `progress_fingerprint_repeats` exist in the snapshot object; if absent, derive them from existing data without adding new fields.",
+                                "Introduce a local `freshWork` predicate beside the trigger: compute `$seqAge` from `last_seq_age_min` with a missing-value fallback to a large/stale value (never 0); compute `$repeats` from `progress_fingerprint_repeats` (missing -\u003e 0); set `$freshProgressMin = 10`; `$freshWork = ($seqAge -lt $freshProgressMin) -and ($repeats -lt 3)`.",
+                                "Compose the trigger as `$commit_famine = (\u003cexisting dirty/age condition\u003e -and -not $liveAgentRunning -and -not $paused -and -not $freshWork)`, leaving all prior hard gates intact.",
+                                "Extend the `commit_famine` Detail string to include `last_seq_age_min` and `progress_fingerprint_repeats`.",
+                                "Run ParseFile on `lib/auditor.ps1` to confirm it parses.",
+                                "Update `tools/test-doctor-commit-famine-skip.ps1`: set `New-CommitFamineSnapshot` default `last_seq_age_min` to stale (e.g. 45); repoint/retire any `last_commit_age_min` assertions; add scenarios — (a) fresh dirty `last_seq_age_min=2` -\u003e NOT fires, (b) stale dirty `last_seq_age_min=45` -\u003e fires, (c) boundary 9/10/11, (d) spinning fresh `last_seq_age_min=1` + `progress_fingerprint_repeats=4` -\u003e fires, (e) missing `last_seq_age_min` -\u003e fires.",
+                                "Run the full test file; require zero failures and confirm scenarios 2/3/6/7 plus the new cases behave as expected.",
+                                "Smoke-run `auditor-tick` / `Test-AuditorTriggers` against the live repo; inspect the Detail string for correct `last_seq_age_min` / `progress_fingerprint_repeats` values and confirm no legitimate famine is suppressed.",
+                                "Run a critic pass over the final boolean expression to confirm legitimate dirty/no-progress/no-agent/not-paused famine remains detectable and no regression is introduced.",
+                                "Calibrate `freshProgressMin` and the repeat cutoff against the real reaper-fix loop case if telemetry is available; adjust constants if needed."
+                            ],
+    "next_step":  "Open `lib/auditor.ps1` and confirm the exact `commit_famine` trigger location and whether `last_seq_age_min` and `progress_fingerprint_repeats` already exist in the snapshot, before introducing the `freshWork` predicate.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision\u0027s stated outcome for the motivating case is the OPPOSITE of the task goal. The task says commit_famine FALSELY fires on the ready-but-uncommitted reaper-fix task and THAT firing locks the Doctor in a 90-min loop; the required fix is to EXEMPT (suppress) famine for it. The decision instead concludes reaper-fix \u0027is still caught\u0027 (famine still fires) and deliberately adds a spinning backstop (progress_fingerprint_repeats \u003e= 3) to RE-FIRE famine on any looping task.",
+                                  "why":  "If famine keeps firing on the reaper-fix task, the Doctor activation that the firing triggers keeps happening — i.e. the exact 90-min loop the task exists to kill is not broken. A Doctor looping on already-ready work re-examines an unchanged working tree, so its progress fingerprint repeats and the new backstop re-fires famine every tick, perpetuating the loop. The decision reclassifies the contract\u0027s named false-positive as a true-positive, so it can satisfy \u0027don\u0027t break legit famine\u0027 only by failing the primary goal. The two claims in its own summary (\u0027reaper-fix still caught\u0027 AND \u0027spare genuinely-fresh between-turns work\u0027) are mutually inconsistent given reaper-fix IS a fresh-but-uncommitted between-turns case."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The chosen primary signal is semantically wrong. last_seq_age_min does NOT measure code/task progress — Get-AuditorLastSeqAge (lib/auditor.ps1:375-414) tracks the channel\u0027s message sequence number `lastSeq` and resets the age to 0 on ANY new message (system events, heartbeat posts, Doctor/critic chatter, agent turn boundaries). The decision\u0027s core rationale states it \u0027measures actual task advancement\u0027; it does not.",
+                                  "why":  "A genuinely-stuck dirty task whose channel stays chatty (a Doctor loop posts messages every activation) keeps lastSeq advancing → last_seq_age_min stays \u003c 10 → progressStalled=false → famine SUPPRESSED. That is a false negative that violates the constraint \u0027do not break legitimate commit_famine detection,\u0027 and it is precisely the reaper-fix loop shape. Symmetrically, a task that legitimately progresses code between turns but posts no messages shows stale seq → famine still fires → the original false positive is NOT cured. The signal cannot distinguish \u0027making code progress\u0027 from \u0027channel is noisy.\u0027"
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The behavior on the real 2026-06-19 case is indeterminate and asserted without evidence. The decision states reaper-fix\u0027s \u0027seq age was far past any threshold, so it is still caught,\u0027 but provides no verification, and the reset-on-any-message mechanism makes a stale seq during a chatty 90-min loop unlikely.",
+                                  "why":  "Whether famine fires depends on two runtime facts the decision never confirmed: (a) does the loop bump lastSeq (it almost certainly does → fresh → suppress), and (b) does progress_fingerprint_repeats climb during the loop. Depending on these, the same change could suppress famine (accidentally correct) or fire it (loop continues) — the decision has no reliable handle on which. Open question #3 (are the fields even directly available on $c in Get-AuditorSnapshot) is in fact answered by the code — they are present — but the deeper question of what they mean was not asked, and the decision\u0027s assumption is the wrong one."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The spinning backstop depends on progress_fingerprint_repeats/no_progress_count, which is unreliable for the loop class in question. In the snapshot (lib/auditor.ps1:436-440) it falls back to `no_progress_count`, which the DRIVER resets to 0 on task completion and on any detected progress (driver.ps1:303, driver/83-loop-agent-turn.ps1:367,472; driver/86-loop-completion-checks.ps1:967) and only increments inside driver agent-turns.",
+                                  "why":  "In a Doctor-driven loop on work that is already \u0027ready,\u0027 the driver is not running fresh agent turns, so no_progress_count can sit at 0 (last reset on the completing turn). Then: fresh seq (Finding 2) AND repeats\u003c3 → famine never fires → unbounded loop, with the backstop providing no protection at all. The backstop is simultaneously the SOLE catch for fast loops and the part the decision admits (open question #2) may be \u0027noisy or absent.\u0027 Building safety on an unverified, driver-reset counter is fragile."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Watchdog fails toward NOT firing on missing/initial data. Get-AuditorLastSeqAge returns 0 when the slug is not yet in control\\auditor-seqtrack.json (first observation), when lastSeq\u003c=0, or when the tracking file is missing/corrupt (the try/catch yields an empty track). The [int] coercion in the proposed predicate also turns null into 0.",
+                                  "why":  "On the first auditor tick after any auditor restart, or any time auditor-seqtrack.json is rotated/cleared/corrupted, every channel reports last_seq_age_min=0 → progressStalled=false → commit_famine is SUPPRESSED for ALL channels on that tick (and repeatedly if the file keeps resetting). For a critical control-plane trigger, the safe failure direction is to keep firing (or fall back to prior behavior) when the freshness signal is absent; this design does the opposite and can silently mask real famine across restarts."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The fix is scoped to one trigger but the Doctor loop is a system-level behavior driven by several triggers. Suppressing commit_famine alone does not guarantee the loop stops, and the new threshold is uncoordinated with siblings. wait_state_stuck fires at last_seq_age_min\u003e=5 (line 521), same_task_too_long at task_turn\u003e30 (line 540), and doctor_recidivism (line 573) can all independently re-summon the Doctor; the new famine gate uses last_seq_age_min\u003e=10.",
+                                  "why":  "Even in the case where famine is correctly suppressed, another trigger can keep activating the Doctor, so the 90-min loop / queue blockage may persist — meaning the goal (\u0027avoid system loops and queue blockages\u0027) is not actually met by a famine-only change. The 5-vs-10-minute threshold split between wait_state_stuck and the new famine gate is arbitrary and unexplained, creating an inconsistent progress-staleness definition across triggers in the same file."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The literal success_tests are not satisfied; the metric and tests were pivoted. success_tests #1/#2 define the exemption in terms of last_commit_age_min (\u003c5 suppress / \u003e5 fire). The decision rejects last_commit_age_min and rewrites the tests around last_seq_age_min, then changes the shared New-CommitFamineSnapshot default (test file currently sets last_commit_age_min=45, last_seq_age_min=0) to make stuck scenarios stale.",
+                                  "why":  "Under the new logic, a task with last_commit_age_min\u003c5 (just committed) but last_seq_age_min\u003e=10 STILL fires famine — directly failing success_test #1 as written. The constraint\u0027s \u0027and/or\u0027 gives latitude on which signal to reuse, but the named acceptance tests are not honored; the verification basis was rewritten to match the chosen implementation rather than the spec. Additionally, flipping the shared snapshot default silently changes inputs to all 8 existing scenarios, and the rewritten \u0027stale-seq dirty task fires\u0027 assertions would lock in the inverted reaper-fix outcome flagged in the first finding."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

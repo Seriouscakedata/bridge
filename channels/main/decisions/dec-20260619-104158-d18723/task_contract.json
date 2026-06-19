@@ -1,0 +1,28 @@
+{
+    "task":  "[Автозадача из бэклога] [operator/reliability] commit_famine ЛОЖНО срабатывает на ГОТОВОЙ-но-незакоммиченной длинной задаче между ходами/после apply-restart → запирает Доктора в петле. ФАЙЛ: lib/auditor.ps1 (Get-AuditorSnapshot, commit_famine trigger ~стр.550-559). Прошлый фикс 84f797f добавил (-not liveAgentRunning -and -not paused) — мало: между ходами агента в этот миг нет. ФИКС: exempt commit_famine когда работа СВЕЖАЯ — last_commit_age_min маленький (порог напр. \u003c5 мин: свежий коммит = только что сделано) ИЛИ progress_fingerprint/last_seq свежий. last_commit_age_min УЖЕ в снапшоте — переиспользуй (Foundation #2: не плодить поля/гейты). АТОМАРНО: 1 файл, ParseFile + smoke + юнит-тест (задача со свежим last_commit НЕ даёт commit_famine; реально-застрявшая dirty без прогресса ПО-ПРЕЖНЕМУ ловится). control-plane: аккуратно, verify+critic, НЕ ломать легитимный famine. Реальный кейс 2026-06-19: задача reaper-fix, ~90мин луп, держал всю очередь.",
+    "goal":  "Prevent false positives of the `commit_famine` trigger on long-running tasks that have recently completed but are not yet committed, thereby avoiding system loops and queue blockages, while ensuring legitimate `commit_famine` cases are still detected.",
+    "constraints":  [
+                        "Do not break legitimate `commit_famine` detection.",
+                        "The fix must be atomic and confined to a single file: `lib/auditor.ps1`.",
+                        "Do not proliferate new fields or gates; reuse existing data like `last_commit_age_min`, `progress_fingerprint`, or `last_seq`.",
+                        "Implementation must be done carefully, with verification and critical review (control-plane)."
+                    ],
+    "known_context":  [
+                          "`commit_famine` is a trigger located in `lib/auditor.ps1`, specifically within `Get-AuditorSnapshot` around lines 550-559.",
+                          "A previous fix (`84f797f`) adding `(-not liveAgentRunning -and -not paused)` was insufficient because the agent is not running between cycles, leading to false positives.",
+                          "`last_commit_age_min` is already available in the snapshot data and can be reused.",
+                          "A real case on 2026-06-19 involved a `reaper-fix` task looping for approximately 90 minutes, which held up the entire queue."
+                      ],
+    "output_format":  "A code change in `lib/auditor.ps1` modifying the `commit_famine` trigger logic.",
+    "task_type":  "bugfix",
+    "risk":  "critical",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "A long-running task that has completed within a recent threshold (e.g., `last_commit_age_min` \u003c 5 minutes) but is not yet committed, does *not* trigger `commit_famine`.",
+                          "A genuinely stuck and dirty task with no recent progress (e.g., `last_commit_age_min` \u003e 5 minutes AND no recent `progress_fingerprint`/`last_seq` update) *still* triggers `commit_famine`.",
+                          "The code change is implemented exclusively within `lib/auditor.ps1`.",
+                          "The solution reuses `last_commit_age_min` and/or `progress_fingerprint`/`last_seq` to determine if a task is \u0027fresh\u0027 and should be exempted.",
+                          "Unit tests confirm the new exemption logic works correctly for both fresh and genuinely stuck task scenarios.",
+                          "Smoke tests confirm that the overall system behavior is correct and legitimate `commit_famine` cases are still caught without introducing new regressions."
+                      ]
+}

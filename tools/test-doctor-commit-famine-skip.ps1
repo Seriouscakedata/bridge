@@ -83,7 +83,9 @@ function New-CommitFamineSnapshot {
   param(
     [string]$LastCommitMsg,
     $QaVerdictCache = $null,
-    [string]$Head = $script:HeadSha
+    [string]$Head = $script:HeadSha,
+    [int]$LastSeqAgeMin = 45,
+    [int]$ProgressFingerprintRepeats = 0
   )
 
   return [pscustomobject]@{
@@ -108,13 +110,14 @@ function New-CommitFamineSnapshot {
         last_commit_msg = $LastCommitMsg
         qa_verdict_cache = $QaVerdictCache
         empty_reply_streak = 0
-        progress_fingerprint_repeats = 0
+        progress_fingerprint_repeats = $ProgressFingerprintRepeats
         task_age_min = 45
         last_seq = 1
-        last_seq_age_min = 0
+        last_seq_age_min = $LastSeqAgeMin
         status_text = ''
         active_jobs_count = 0
         active_agent = 'codex'
+        paused = $false
       }
     }
     git = [pscustomobject]@{
@@ -133,6 +136,16 @@ function Has-CommitFamineTrigger {
     if ([string]$trigger.name -eq 'commit_famine') { return $true }
   }
   return $false
+}
+
+function Get-CommitFamineTrigger {
+  param($Snapshot)
+
+  $triggers = @(Test-AuditorTriggers -Snapshot $Snapshot)
+  foreach ($trigger in $triggers) {
+    if ([string]$trigger.name -eq 'commit_famine') { return $trigger }
+  }
+  return $null
 }
 
 try {
@@ -182,6 +195,28 @@ try {
   $wrongHeadCache = New-QaVerdictCache -Head '1111111234567890abcdef1234567890abcdef12'
   Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $wrongSourceCache -CommitSha $script:HeadSha)) 'Scenario 8: non-post_commit QA cache returns false'
   Assert-True (-not (Test-AuditorDoctorQaPass -MaxMinutes 360 -LogPath $script:DoctorLogPath -QaVerdictCache $wrongHeadCache -CommitSha $script:HeadSha)) 'Scenario 8: QA cache for another head returns false'
+
+  Write-Host '--- Scenario 9: fresh_progress_suppresses_commit_famine ---'
+  Assert-True (-not (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 2))) 'Scenario 9: fresh progress suppresses commit_famine'
+
+  Write-Host '--- Scenario 10: stale_progress_still_fires ---'
+  $staleTrigger = Get-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 45)
+  Assert-True ($null -ne $staleTrigger) 'Scenario 10: stale progress still triggers commit_famine'
+  Assert-True ([string]$staleTrigger.detail -match 'last_seq_age_min=45') 'Scenario 10: detail includes last_seq_age_min'
+  Assert-True ([string]$staleTrigger.detail -match 'progress_fingerprint_repeats=0') 'Scenario 10: detail includes progress_fingerprint_repeats'
+
+  Write-Host '--- Scenario 11: freshness_boundary ---'
+  Assert-True (-not (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 9))) 'Scenario 11: seq age 9 is fresh'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 10)) 'Scenario 11: seq age 10 is stale'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 11)) 'Scenario 11: seq age 11 is stale'
+
+  Write-Host '--- Scenario 12: fresh_but_spinning_still_fires ---'
+  Assert-True (Has-CommitFamineTrigger -Snapshot (New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change' -LastSeqAgeMin 1 -ProgressFingerprintRepeats 4)) 'Scenario 12: spinning fresh work still triggers commit_famine'
+
+  Write-Host '--- Scenario 13: missing_seq_age_is_stale ---'
+  $missingSeqSnapshot = New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change'
+  $missingSeqSnapshot.channels.main.PSObject.Properties.Remove('last_seq_age_min')
+  Assert-True (Has-CommitFamineTrigger -Snapshot $missingSeqSnapshot) 'Scenario 13: missing last_seq_age_min is treated as stale'
 } finally {
   try {
     if (Test-Path -LiteralPath $script:TestBridgeRoot) {

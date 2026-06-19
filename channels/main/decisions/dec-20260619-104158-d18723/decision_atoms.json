@@ -1,0 +1,130 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Add a local `freshWork` predicate near the existing `commit_famine` trigger.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Core Logic - Exemption Mechanism",
+                      "test":  "Add focused unit coverage for fresh dirty work not firing and stale dirty work still firing, specifically verifying the behavior of the `freshWork` predicate.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Add a freshness exemption to `commit_famine` using `last_commit_age_min \u003c 5` minutes.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Core Logic - Exemption Condition",
+                      "test":  "Verify fresh dirty task with `last_commit_age_min = 1` does not produce `commit_famine`; stale dirty task with `last_commit_age_min = 30` still does. (A.minimal_version) Also, thorough unit and smoke testing with both fresh-task and stuck-task scenarios, specifically for `last_commit_age_min \u003c 5` exemption. (C.risks.4)",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Also exempt tasks with recent `progress_fingerprint` or `last_seq` change if freshness is derivable without new fields.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Core Logic - Exemption Condition",
+                      "test":  "Add boundary tests for `\u003c5`, `=5`, and stale progress for `progress_fingerprint` or `last_seq` (A.advanced_version). Thorough unit and smoke testing with both fresh-task and stuck-task scenarios, specifically for `progress_fingerprint` or `last_seq` freshness. (C.risks.4)",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Leave all existing hard famine requirements intact: dirty work, no live agent, not paused.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Constraint Adherence",
+                      "test":  "Verify with critic review of the final boolean expression to confirm legitimate dirty/no-progress famine remains detectable, and that existing `liveAgentRunning` and `paused` checks are preserved. (A.advanced_version, C.risks.4)",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "Add focused unit coverage for fresh dirty work not firing and stale dirty work still firing.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Add or update focused tests: fresh dirty task with `last_commit_age_min = 1` does not produce `commit_famine`; stale dirty task with `last_commit_age_min = 30` still does. (A.minimal_version)",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "Key the exemption on `last_seq_age_min` (progress freshness), NOT on `last_commit_age_min`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Core Logic - Exemption Condition",
+                      "test":  "Smoke-run `auditor-tick / Test-AuditorTriggers` against the live repo and inspect the `last_seq_age_min` values logged in the Detail string to confirm its behavior. (B.risks.4)",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Fire famine only when progress is stalled: add `-and [int]$c.last_seq_age_min -ge $freshProgressMin` (e.g., 10 min) to the existing condition.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Core Logic - Exemption Condition",
+                      "test":  "Add one new scenario with `last_seq_age_min=2` asserting `commit_famine` is suppressed. (B.minimal_version)",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Do NOT exempt a spinning task; guard the exemption with `progress_fingerprint_repeats \u003c 3` so famine remains a backstop for loops.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Core Logic - Exemption Condition",
+                      "test":  "Verify spinning backstop: a task with `last_seq_age_min=1` (fresh) but `progress_fingerprint_repeats=4` still triggers `commit_famine`. (B.advanced_version)",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Update `tools/test-doctor-commit-famine-skip.ps1` to use stale `last_seq_age_min` for stuck scenarios and add fresh-seq + spinning scenarios.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Run the full test file and assert pass count increased with zero failures before/after, specifically checking scenarios 2/3/6/7 for expected `fires` behavior after updating `New-CommitFamineSnapshot`\u0027s default `last_seq_age_min` to 45 (stale). (B.risks.3, B.minimal_version)",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Extend the `commit_famine` Detail string to include `last_seq_age_min` and `progress_fingerprint_repeats`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Observability",
+                      "test":  "Smoke-run `auditor-tick / Test-AuditorTriggers` against the live repo and inspect the Detail string for the presence and correctness of `last_seq_age_min` and `progress_fingerprint_repeats` values. (B.risks.4)",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Implement the change only in `lib/auditor.ps1` within `Get-AuditorSnapshot`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Constraint Adherence",
+                      "test":  "Verify with `ParseFile` and a smoke run to ensure no other files are modified and the change is localized to `lib/auditor.ps1`. (A.minimal_version, B.minimal_version)",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

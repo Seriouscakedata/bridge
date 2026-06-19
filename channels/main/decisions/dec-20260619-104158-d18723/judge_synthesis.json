@@ -1,0 +1,195 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A local predicate is a good low-cost way to isolate the exemption logic near the existing trigger, as long as the predicate is defined around progress freshness rather than commit age alone.",
+                      "total":  0.8325
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.25,
+                                     "feasibility":  0.95,
+                                     "impact":  0.45,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.25,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "high_conflict_with_progress_metric:-0.20",
+                                        "false_famine_for_active_noncommitting_work:-0.10"
+                                    ],
+                      "reason":  "`last_commit_age_min \u003c 5` is the wrong primary freshness signal. It can still flag active non-committing work and does not measure actual task progress.",
+                      "total":  0.595
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.55
+                                 },
+                      "penalties":  [
+                                        "ambiguous_metric_and_threshold:-0.05",
+                                        "must_guard_spinning_repeats:-0.05"
+                                    ],
+                      "reason":  "Progress-derived freshness is the right direction, but it needs a concrete metric and threshold. Prefer `last_seq_age_min`, with a repeat guard so spinning work is not exempted.",
+                      "total":  0.7675
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.98,
+                                     "feasibility":  0.98,
+                                     "impact":  0.85,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Preserving the existing hard requirements keeps the trigger scoped to true dirty, unattended, unpaused famine cases.",
+                      "total":  0.9385
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.4,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.45,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "tests_target_rejected_last_commit_metric:-0.20"
+                                    ],
+                      "reason":  "Focused fresh-versus-stale coverage is needed, but the test cases should target `last_seq_age_min` and spinning behavior, not `last_commit_age_min`.",
+                      "total":  0.685
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.93,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        "needs_missing_field_fallback_and_unit_tests:-0.03"
+                                    ],
+                      "reason":  "`last_seq_age_min` is the better freshness signal because it tracks progress rather than commits. It should become the primary exemption metric.",
+                      "total":  0.9
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "must_not_cast_missing_last_seq_age_to_zero:-0.08",
+                                        "needs_spinning_exception_from_atom_08:-0.05"
+                                    ],
+                      "reason":  "The stalled-progress condition is correct in principle, but the implementation should avoid treating missing `last_seq_age_min` as fresh and must compose with the spinning-task guard.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "threshold_depends_on_existing_repeat_semantics:-0.03"
+                                    ],
+                      "reason":  "The repeat guard is important: fresh sequence activity alone should not suppress famine when the same fingerprint is looping.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        "test_file_edit_must_be_reconciled_with_localization_constraint:-0.04"
+                                    ],
+                      "reason":  "The proposed test updates align with the progress-freshness design and cover the important stale, fresh, and spinning scenarios.",
+                      "total":  0.82
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Adding `last_seq_age_min` and `progress_fingerprint_repeats` to the detail output improves diagnosis with little risk.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.9,
+                                     "impact":  0.6,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        "overconstrains_test_updates:-0.08",
+                                        "verify_actual_trigger_location_before_limiting_to_Get-AuditorSnapshot:-0.05"
+                                    ],
+                      "reason":  "The production change should stay localized, but the atom is too strict if it blocks test updates or if the actual trigger logic is outside `Get-AuditorSnapshot`.",
+                      "total":  0.755
+                  }
+              ]
+}
