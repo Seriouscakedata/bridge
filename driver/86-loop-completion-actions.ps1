@@ -268,7 +268,7 @@ function Invoke-BridgeSelfDecomposeGate {
           $createdValid = Test-BridgeSelfGateTruthy (Get-BridgeSelfGateObjectValue -Object $atom -Names @('created_valid','createdValid') -Default $false)
           $sameParentSkippedValid = Test-BridgeSelfGateTruthy (Get-BridgeSelfGateObjectValue -Object $atom -Names @('same_parent_skipped_valid','same-parent-skipped_valid','sameParentSkippedValid') -Default $false)
           $kind = ([string](Get-BridgeSelfGateObjectValue -Object $atom -Names @('kind','status','action','outcome') -Default '')).Trim().ToLowerInvariant()
-          if ($createdValid -or $sameParentSkippedValid -or $kind -eq 'created_valid' -or $kind -eq 'same-parent-skipped_valid' -or $kind -eq 'same_parent_skipped_valid') {
+          if ($createdValid -or $sameParentSkippedValid -or $kind -eq 'created' -or $kind -eq 'created_valid' -or $kind -eq 'same-parent-skipped_valid' -or $kind -eq 'same_parent_skipped_valid') {
             $validSplitCount++
           }
         }
