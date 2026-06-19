@@ -1,0 +1,80 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task aims to harden the existing covered-after-restart recovery mechanism to eliminate false-FAILED statuses on completed and committed tasks, specifically addressing an incident where 9 restarts caused verified code tasks to incorrectly fail. The solution introduces a fail-closed helper `Test-TaskCompletionRecoverable` in `lib/task-action-evidence.ps1`, uses identity-keyed `task_started_at` in `driver/81:1657`, and prepends `[task:\u003cid\u003e]` in auto-commits from `driver/83:265` before truncation. Recovery logic triggers on restart/cap-hit reconciliation (`driver/60:217`), covered-after-restart (`driver/86:1465`), and fast-path (`driver/81:1466`) BEFORE marking a task failed. Task identification uses exact-id-match, and completion verification uses a commit-relative AND-chain (qa_head==HEAD AND critic.ts\u003e=commit_ts). The system remains fail-closed, and control-plane blast radius is mitigated via canary deployment, admission control, and rollback. No net-new subsystem is introduced; this strengthens FOUNDATION #2.",
+    "summary":  "Hardening covered-after-restart recovery by adding a fail-closed `Test-TaskCompletionRecoverable` helper, identity-keyed task tracking, and prepended task IDs in auto-commits, triggered before failure marking to prevent false-FAILED outcomes on completed tasks, with exact-id-match and commit-relative AND-chain verification to avoid false-DONE on template tasks.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Introduce `Test-TaskCompletionRecoverable` fail-closed helper in `lib/task-action-evidence.ps1`",
+                               "reason":  "Provides a dedicated, reusable function to verify task completion recoverability using exact-id-match and commit-relative AND-chain, centralizing the recovery logic and keeping it fail-closed.",
+                               "tradeoff":  "Adds a new function to an existing library, requiring careful integration and testing, but avoids creating a new subsystem.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use identity-keyed `task_started_at` in `driver/81:1657`",
+                               "reason":  "Ensures precise tracking of when a task started, enabling accurate comparison with commit timestamps (`critic.ts\u003e=commit_ts`) to verify completion.",
+                               "tradeoff":  "Requires storage and retrieval of an additional keyed value, slightly increasing state management complexity, but critical for exact recovery verification.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Prepend `[task:\u003cid\u003e]` in auto-commits from `driver/83:265` before truncation",
+                               "reason":  "Makes task identity explicitly visible in commit messages, facilitating exact-id-match during recovery without relying on text-based grep.",
+                               "tradeoff":  "Slightly alters commit message format, which could affect external tools parsing commit messages, but the prefix is structured and non-invasive.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Trigger recovery logic BEFORE marking task failed in restart/cap-hit reconciliation (`driver/60:217`), covered-after-restart (`driver/86:1465`), and fast-path (`driver/81:1466`)",
+                               "reason":  "Ensures that completed tasks are recovered and not incorrectly marked FAILED, directly addressing the incident where verified code tasks failed after restarts.",
+                               "tradeoff":  "Adds a check in multiple code paths, increasing execution time slightly, but prevents false-FAILED outcomes and reduces wasted re-processing.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement exact-id-match and commit-relative AND-chain (qa_head==HEAD AND critic.ts\u003e=commit_ts) for completion verification",
+                               "reason":  "Prevents false-DONE on template tasks by ensuring the task ID matches exactly and the commit is relative to the task\u0027s start time, not just any matching text.",
+                               "tradeoff":  "More restrictive than a simple grep, potentially missing some edge cases, but fail-closed design ensures safety over completeness.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Mitigate control-plane blast radius with canary deployment, admission control, and rollback capabilities",
+                               "reason":  "Limits the impact of any unforeseen issues in the recovery logic, allowing gradual rollout and quick reversal if problems arise.",
+                               "tradeoff":  "Requires additional deployment infrastructure and monitoring, but essential for a medium-risk change in a critical path.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing covered-after-restart mechanism (FOUNDATION #2) is functional and well-understood.",
+                        "The `task_started_at` timestamp is reliably recorded when a task begins execution.",
+                        "Auto-commits in `driver/83:265` can be safely modified to include the `[task:\u003cid\u003e]` prefix without breaking other processes.",
+                        "The `qa_head` and `critic.ts` values are accessible and accurate at the time of recovery checks.",
+                        "Canary deployment and rollback procedures are already established or can be implemented without significant overhead.",
+                        "The incident (SHA256: 9 restarts→failed on verified code) is representative of the class of false-FAILED issues to be addressed."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "False-DONE on template tasks due to incorrect exact-id-match or timestamp comparison",
+                      "severity":  "medium",
+                      "mitigation":  "Fail-closed design ensures that any uncertainty results in not recovering the task (leaving it as failed), and canary deployment with monitoring will detect any unexpected DONE markings."
+                  },
+                  {
+                      "risk":  "Performance degradation from additional checks in restart/cap-hit paths",
+                      "severity":  "low",
+                      "mitigation":  "Optimize the `Test-TaskCompletionRecoverable` helper to minimize overhead, and monitor system metrics during canary phase to detect any significant slowdown."
+                  },
+                  {
+                      "risk":  "Incorrect integration of `[task:\u003cid\u003e]` prefix breaking commit parsing or other tooling",
+                      "severity":  "medium",
+                      "mitigation":  "Admission control and canary deployment will limit exposure; rollback plan is in place if parsing issues are detected."
+                  },
+                  {
+                      "risk":  "State corruption or race conditions when storing/retrieving identity-keyed `task_started_at`",
+                      "severity":  "medium",
+                      "mitigation":  "Use atomic write/read operations and validate data integrity; fail-closed behavior ensures tasks are not incorrectly recovered if state is inconsistent."
+                  },
+                  {
+                      "risk":  "Recovery logic fails to trigger in all required paths, leaving some false-FAILED cases unresolved",
+                      "severity":  "low",
+                      "mitigation":  "Comprehensive testing with the 9-restart incident scenario and monitoring of outcome-ledger for 24 hours post-deployment to verify reduction in false-FAILED entries."
+                  }
+              ],
+    "minimal_version":  "Implement `Test-TaskCompletionRecoverable` helper with exact-id-match and commit-relative AND-chain, integrate into `driver/60:217`, `driver/86:1465`, and `driver/81:1466` before failure marking, and add identity-keyed `task_started_at` in `driver/81:1657`.",
+    "advanced_version":  "Minimal version plus prepend `[task:\u003cid\u003e]` in auto-commits from `driver/83:265` before truncation, canary deployment with admission control, automated rollback triggers, and 24-hour outcome-ledger monitoring dashboard to track false-FAILED reduction and restart-idle-run metrics."
+}

@@ -1,224 +1,119 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Acceptance test: Test-CoveredAfterRestart covered-close logic.
+  Acceptance test: covered-after-restart closes only on exact task marker with commit-relative QA/critic evidence.
 #>
 param([string]$BridgeRoot = (Split-Path $PSScriptRoot -Parent))
 
 $ErrorActionPreference = 'Stop'
-$passed = 0; $failed = 0
-$existingGetTaskRepoRoot = Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue
-$script:CoveredCloseProjectRepoRoot = ''
+$passed = 0
+$failed = 0
 
-# Load the function under test
+. (Join-Path $BridgeRoot 'lib\task-action-evidence.ps1')
 . (Join-Path $BridgeRoot 'driver\86-loop-completion-checks.ps1')
 
 function Invoke-TestGit {
   param(
-    [string]$RepoRoot = $BridgeRoot,
+    [string]$RepoRoot,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Args
   )
-
-  & git -c "safe.directory=$RepoRoot" -C $RepoRoot @Args 2>$null
+  & git -C $RepoRoot @Args 2>$null
 }
 
-function Assert-True([bool]$cond, [string]$label) {
-  if ($cond) { Write-Host "  PASS: $label"; $script:passed++ }
-  else        { Write-Host "  FAIL: $label"; $script:failed++ }
+function Assert-True([bool]$cond, [string]$label, [object]$actual = $null) {
+  if ($cond) {
+    Write-Host "  PASS: $label"
+    $script:passed++
+    return
+  }
+  $suffix = if ($null -ne $actual) { ' actual=' + ($actual | ConvertTo-Json -Compress -Depth 5) } else { '' }
+  Write-Host "  FAIL: $label$suffix"
+  $script:failed++
+}
+
+function New-CoveredState {
+  param(
+    [string]$TaskId,
+    [string]$StartedAt,
+    [string]$Head,
+    [string]$CriticTs
+  )
+  $startedMap = [ordered]@{}
+  if (-not [string]::IsNullOrWhiteSpace($StartedAt)) { $startedMap[$TaskId] = $StartedAt }
+  return [pscustomobject]@{
+    task_apply_restart_count = 1
+    task_hard_restart_count  = 0
+    current_backlog_id       = $TaskId
+    current_task             = 'Template task text that must not be used for recovery matching'
+    task_started_at          = $startedMap
+    qa_verdict_cache         = [pscustomobject]@{ head = $Head; verdict = 'PASS'; source = 'post_commit'; ts = $CriticTs }
+    critic_verdict_cache     = [pscustomobject]@{ verdict = 'OK'; severity = 'none'; ts = $CriticTs }
+  }
 }
 
 $tmpParent = Join-Path $BridgeRoot 'tmp'
 New-Item -ItemType Directory -Path $tmpParent -Force | Out-Null
 $fixtureRoot = Join-Path $tmpParent ("bridge-covered-close-test-" + [guid]::NewGuid().ToString('N'))
-$projectRoot = Join-Path $tmpParent ("bridge-covered-close-project-" + [guid]::NewGuid().ToString('N'))
-$missingProjectRoot = Join-Path $tmpParent ("bridge-covered-close-missing-" + [guid]::NewGuid().ToString('N'))
 
 try {
   New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
-  & git -C $fixtureRoot init -q
-  & git -C $fixtureRoot config user.email 'bridge-test@example.invalid'
-  & git -C $fixtureRoot config user.name 'Bridge Test'
-  & git -C $fixtureRoot config commit.gpgsign false
-  Set-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.txt') -Value 'covered-close fixture' -Encoding UTF8
-  $headMsg = 'covered-close plus+ [literal] (ok) fixture commit'
-  & git -C $fixtureRoot add fixture.txt
-  & git -C $fixtureRoot commit -q --no-gpg-sign -m $headMsg
+  Invoke-TestGit -RepoRoot $fixtureRoot init -q
+  Invoke-TestGit -RepoRoot $fixtureRoot config user.email 'bridge-test@example.invalid'
+  Invoke-TestGit -RepoRoot $fixtureRoot config user.name 'Bridge Test'
+  Invoke-TestGit -RepoRoot $fixtureRoot config commit.gpgsign false
 
-  $headSha = (& { Invoke-TestGit -RepoRoot $fixtureRoot log --oneline -1 } | Select-Object -First 1).Split(' ')[0].Trim()
-  $claimedAt = (& { Invoke-TestGit -RepoRoot $fixtureRoot log --format=%aI -1 } | Out-String).Trim()
-  $commitAt = [datetimeoffset]::Parse($claimedAt)
-  $claimedAtDt = $commitAt.AddSeconds(-5).ToString('o')
-  $criticOkCache = @{ verdict = 'OK'; severity = 'none'; ts = $commitAt.AddSeconds(5).ToString('o') }
-  $criticStaleCache = @{ verdict = 'OK'; severity = 'none'; ts = $commitAt.AddSeconds(-30).ToString('o') }
+  Set-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.ps1') -Value "'covered'" -Encoding UTF8
+  Invoke-TestGit -RepoRoot $fixtureRoot add fixture.ps1
+  $longTask = 'x' * 240
+  $msg = ('[task:task-covered] auto-commit (driver): ' + $longTask)
+  if ($msg.Length -gt 180) { $msg = $msg.Substring(0, 180) }
+  Invoke-TestGit -RepoRoot $fixtureRoot commit -q --no-gpg-sign -m $msg
 
-  Write-Host "=== Test-CoveredAfterRestart: scenario 1 (covered - restart + clean tree + real literal commit) ==="
-  $fakeState1 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = $criticOkCache
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r1 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState1.claimed_at `
-    -BacklogId $fakeState1.current_backlog_id -TaskText $fakeState1.current_task -StateObj $fakeState1
+  $headSha = ([string](Invoke-TestGit -RepoRoot $fixtureRoot rev-parse HEAD | Select-Object -First 1)).Trim()
+  $subject = ([string](Invoke-TestGit -RepoRoot $fixtureRoot log -1 --format=%s HEAD | Select-Object -First 1)).Trim()
+  $commitTs = [int64](([string](Invoke-TestGit -RepoRoot $fixtureRoot log -1 --format=%ct HEAD | Select-Object -First 1)).Trim())
+  $startedAt = [datetimeoffset]::FromUnixTimeSeconds($commitTs - 60).ToString('o')
+  $criticAfter = [datetimeoffset]::FromUnixTimeSeconds($commitTs + 1).ToString('o')
+  $criticBefore = [datetimeoffset]::FromUnixTimeSeconds($commitTs - 1).ToString('o')
 
-  Assert-True ($r1.Covered -eq $true) "Covered=true when restart+clean+commit exists"
-  Assert-True ($r1.Sha -eq $headSha) "Sha matches fixture HEAD"
-  Write-Host "  Sha returned: $($r1.Sha)"
+  Write-Host "=== Test-CoveredAfterRestart: marker survives truncation ==="
+  Assert-True ($subject.StartsWith('[task:task-covered] ')) 'marker is prepended before truncation' $subject
 
   Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 2 (not covered - no matching commit) ==="
-  $fakeState2 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = $criticOkCache
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = 'XNOMATCH_unique_task_text_that_will_never_be_in_any_commit_xyz987'
-  }
-  $r2 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState2.claimed_at `
-    -BacklogId $fakeState2.current_backlog_id -TaskText $fakeState2.current_task -StateObj $fakeState2
-
-  Assert-True ($r2.Covered -eq $false) "Covered=false when no matching commit"
-  Assert-True ([string]::IsNullOrWhiteSpace($r2.Sha)) "Sha is empty when not covered"
+  Write-Host "=== Test-CoveredAfterRestart: scenario 1 (covered) ==="
+  $state1 = New-CoveredState -TaskId 'task-covered' -StartedAt $startedAt -Head $headSha -CriticTs $criticAfter
+  $r1 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt 'ignored' -BacklogId 'task-covered' -TaskText $state1.current_task -StateObj $state1
+  Assert-True ($r1.Covered -eq $true) 'Covered=true with exact marker, QA HEAD, critic after commit' $r1
+  Assert-True ($r1.Sha -eq $headSha) 'Sha matches HEAD' $r1
 
   Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 3 (not covered - no restart) ==="
-  $fakeState3 = @{
-    task_apply_restart_count = 0
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = $criticOkCache
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r3 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState3.claimed_at `
-    -BacklogId $fakeState3.current_backlog_id -TaskText $fakeState3.current_task -StateObj $fakeState3
-
-  Assert-True ($r3.Covered -eq $false) "Covered=false when restart_count=0 (no restart)"
+  Write-Host "=== Test-CoveredAfterRestart: scenario 2 (no text fallback) ==="
+  $state2 = New-CoveredState -TaskId 'task-template-prefix' -StartedAt $startedAt -Head $headSha -CriticTs $criticAfter
+  $r2 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt 'ignored' -BacklogId 'task-template-prefix' -TaskText '[task:task-covered] same visible text should not matter' -StateObj $state2
+  Assert-True ($r2.Covered -eq $false) 'Covered=false for id mismatch even when task text resembles commit subject' $r2
 
   Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 4 (not covered - critic missing) ==="
-  $fakeState4 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r4 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState4.claimed_at `
-    -BacklogId $fakeState4.current_backlog_id -TaskText $fakeState4.current_task -StateObj $fakeState4
-
-  Assert-True ($r4.Covered -eq $false) "Covered=false when critic verdict is missing"
+  Write-Host "=== Test-CoveredAfterRestart: scenario 3 (critic stale) ==="
+  $state3 = New-CoveredState -TaskId 'task-covered' -StartedAt $startedAt -Head $headSha -CriticTs $criticBefore
+  $r3 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt 'ignored' -BacklogId 'task-covered' -TaskText $state3.current_task -StateObj $state3
+  Assert-True ($r3.Covered -eq $false) 'Covered=false when critic OK predates commit' $r3
 
   Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 5 (not covered - critic not OK) ==="
-  $fakeState5 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'WARN'; severity = 'serious'; ts = $commitAt.AddSeconds(5).ToString('o') }
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r5 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState5.claimed_at `
-    -BacklogId $fakeState5.current_backlog_id -TaskText $fakeState5.current_task -StateObj $fakeState5
-
-  Assert-True ($r5.Covered -eq $false) "Covered=false when critic verdict is not OK"
+  Write-Host "=== Test-CoveredAfterRestart: scenario 4 (no restart) ==="
+  $state4 = New-CoveredState -TaskId 'task-covered' -StartedAt $startedAt -Head $headSha -CriticTs $criticAfter
+  $state4.task_apply_restart_count = 0
+  $r4 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt 'ignored' -BacklogId 'task-covered' -TaskText $state4.current_task -StateObj $state4
+  Assert-True ($r4.Covered -eq $false) 'Covered=false when restart_count=0' $r4
 
   Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 6 (not covered - critic OK is stale) ==="
-  $fakeState6 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = $criticStaleCache
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r6 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState6.claimed_at `
-    -BacklogId $fakeState6.current_backlog_id -TaskText $fakeState6.current_task -StateObj $fakeState6
-
-  Assert-True ($r6.Covered -eq $false) "Covered=false when critic OK predates claimed_at"
-
-  Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 7 (not covered - critic timestamp missing) ==="
-  $fakeState7 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'OK'; severity = 'none' }
-    claimed_at               = $claimedAtDt
-    current_backlog_id       = ''
-    current_task             = $headMsg
-  }
-  $r7 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState7.claimed_at `
-    -BacklogId $fakeState7.current_backlog_id -TaskText $fakeState7.current_task -StateObj $fakeState7
-
-  Assert-True ($r7.Covered -eq $false) "Covered=false when critic timestamp is missing"
-
-  New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
-  & git -C $projectRoot init -q
-  & git -C $projectRoot config user.email 'bridge-test@example.invalid'
-  & git -C $projectRoot config user.name 'Bridge Test'
-  & git -C $projectRoot config commit.gpgsign false
-  Set-Content -LiteralPath (Join-Path $projectRoot 'project-fixture.txt') -Value 'covered-close project fixture' -Encoding UTF8
-  $projectMsg = 'covered-close project repo matching fixture commit'
-  & git -C $projectRoot add project-fixture.txt
-  & git -C $projectRoot commit -q --no-gpg-sign -m $projectMsg
-  $projectSha = (& { Invoke-TestGit -RepoRoot $projectRoot log --oneline -1 } | Select-Object -First 1).Split(' ')[0].Trim()
-  $projectClaimedAt = (& { Invoke-TestGit -RepoRoot $projectRoot log --format=%aI -1 } | Out-String).Trim()
-  $projectCommitAt = [datetimeoffset]::Parse($projectClaimedAt)
-  $script:CoveredCloseProjectRepoRoot = $projectRoot
-  Set-Item -Path Function:\Get-TaskRepoRoot -Value { return $script:CoveredCloseProjectRepoRoot }
-
-  Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 8 (covered - matching commit in project repo) ==="
-  $fakeState8 = @{
-    task_apply_restart_count = 1
-    task_hard_restart_count  = 0
-    critic_verdict_cache     = @{ verdict = 'OK'; severity = 'none'; ts = $projectCommitAt.AddSeconds(5).ToString('o') }
-    claimed_at               = $projectCommitAt.AddSeconds(-5).ToString('o')
-    current_backlog_id       = ''
-    current_task             = $projectMsg
-  }
-  $r8 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState8.claimed_at `
-    -BacklogId $fakeState8.current_backlog_id -TaskText $fakeState8.current_task -StateObj $fakeState8
-
-  Assert-True ($r8.Covered -eq $true) "Covered=true when matching commit is in project repo"
-  Assert-True ($r8.Sha -eq $projectSha) "Sha matches project repo HEAD"
-  Assert-True ($r8.Repo -eq (Resolve-Path -LiteralPath $projectRoot).ProviderPath) "Repo points to normalized project repo"
-
-  Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 9 (not covered - project repo dirty) ==="
-  Set-Content -LiteralPath (Join-Path $projectRoot 'dirty.txt') -Value 'dirty project worktree' -Encoding UTF8
-  $r9 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState8.claimed_at `
-    -BacklogId $fakeState8.current_backlog_id -TaskText $fakeState8.current_task -StateObj $fakeState8
-
-  Assert-True ($r9.Covered -eq $false) "Covered=false when any candidate repo is dirty"
-  Assert-True ([string]::IsNullOrWhiteSpace($r9.Sha)) "Sha is empty when project repo is dirty"
-
-  Write-Host ""
-  Write-Host "=== Test-CoveredAfterRestart: scenario 10 (not covered - task repo cannot be resolved) ==="
-  Set-Item -Path Function:\Get-TaskRepoRoot -Value { return $script:CoveredCloseMissingProjectRepoRoot }
-  $script:CoveredCloseMissingProjectRepoRoot = $missingProjectRoot
-  $r10 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt $fakeState1.claimed_at `
-    -BacklogId $fakeState1.current_backlog_id -TaskText $fakeState1.current_task -StateObj $fakeState1
-
-  Assert-True ($r10.Covered -eq $false) "Covered=false when task repo helper returns a missing repo"
-  Assert-True ([string]::IsNullOrWhiteSpace($r10.Sha)) "Sha is empty when task repo is missing"
+  Write-Host "=== Test-CoveredAfterRestart: scenario 5 (QA head mismatch) ==="
+  $state5 = New-CoveredState -TaskId 'task-covered' -StartedAt $startedAt -Head ('0' * 40) -CriticTs $criticAfter
+  $r5 = Test-CoveredAfterRestart -BridgeRoot $fixtureRoot -ClaimedAt 'ignored' -BacklogId 'task-covered' -TaskText $state5.current_task -StateObj $state5
+  Assert-True ($r5.Covered -eq $false) 'Covered=false when qa_verdict_cache.head != HEAD' $r5
 } finally {
   if ($fixtureRoot -like (Join-Path $tmpParent 'bridge-covered-close-test-*')) {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-  if ($projectRoot -like (Join-Path $tmpParent 'bridge-covered-close-project-*')) {
-    Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-  if ($existingGetTaskRepoRoot -and $existingGetTaskRepoRoot.CommandType -eq 'Function') {
-    Set-Item -Path Function:\Get-TaskRepoRoot -Value $existingGetTaskRepoRoot.ScriptBlock
-  } else {
-    Remove-Item -Path Function:\Get-TaskRepoRoot -ErrorAction SilentlyContinue
   }
 }
 

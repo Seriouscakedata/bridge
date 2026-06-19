@@ -269,135 +269,26 @@ function Test-CoveredAfterRestart {
   # Returns: @{ Covered=$false; Sha=''; Repo='' }
   $result = @{ Covered = $false; Sha = ''; Repo = '' }
   try {
-    $getStateValue = {
-      param($Obj, [string]$Name)
-      if ($null -eq $Obj -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
-      if ($Obj -is [hashtable]) {
-        if ($Obj.ContainsKey($Name)) { return $Obj[$Name] }
-        return $null
-      }
-      $prop = $Obj.PSObject.Properties[$Name]
-      if ($null -ne $prop) { return $prop.Value }
-      return $null
+    if (-not (Get-Command Test-TaskCompletionRecoverable -ErrorAction SilentlyContinue)) {
+      . (Join-Path $BridgeRoot 'lib\task-action-evidence.ps1')
     }
+    if ([string]::IsNullOrWhiteSpace($BacklogId)) { return $result }
 
-    # (a) resumed after restart
-    $applyRestarts = [int](& $getStateValue $StateObj 'task_apply_restart_count')
-    $hardRestarts  = [int](& $getStateValue $StateObj 'task_hard_restart_count')
-    if (($applyRestarts + $hardRestarts) -le 0) { return $result }
-
-    $resolveGitRepoRoot = {
-      param([string]$RepoRoot)
-      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return '' }
-      $resolvedInput = ''
-      try {
-        $resolvedInput = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).ProviderPath
-      } catch {
-        return ''
-      }
-
-      $topLevel = ''
-      try {
-        $topLevel = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $resolvedInput -Arguments @('rev-parse','--show-toplevel') -Description 'rev-parse --show-toplevel' | Select-Object -First 1) -join '')).Trim()
-      } catch {
-        return ''
-      }
-      if ([string]::IsNullOrWhiteSpace($topLevel)) { return '' }
-
-      try {
-        return (Resolve-Path -LiteralPath $topLevel -ErrorAction Stop).ProviderPath
-      } catch {
-        return $topLevel
-      }
-    }
-
-    # Search bridge repo and project-repo (when the channel has one). If the
-    # task repo helper returns a path that cannot be resolved as a git repo,
-    # fail closed instead of silently searching only bridge.
-    $repos = New-Object 'System.Collections.Generic.List[string]'
-    $seenRepos = @{}
-    $addResolvedRepo = {
-      param([string]$RepoRoot)
-      if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return }
-      $repoKey = $RepoRoot.TrimEnd('\','/').ToLowerInvariant()
-      if (-not $seenRepos.ContainsKey($repoKey)) {
-        $seenRepos[$repoKey] = $true
-        [void]$repos.Add($RepoRoot)
-      }
-    }
-    $bridgeRepo = [string](& $resolveGitRepoRoot $BridgeRoot)
-    if ([string]::IsNullOrWhiteSpace($bridgeRepo)) { return $result }
-    & $addResolvedRepo $bridgeRepo
-
+    $repos = @($BridgeRoot)
     try {
       if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
-        $taskRepoRaw = [string](Get-TaskRepoRoot)
-        if (-not [string]::IsNullOrWhiteSpace($taskRepoRaw)) {
-          $taskRepo = [string](& $resolveGitRepoRoot $taskRepoRaw)
-          if ([string]::IsNullOrWhiteSpace($taskRepo)) { return $result }
-          & $addResolvedRepo $taskRepo
-        }
+        $taskRepo = [string](Get-TaskRepoRoot)
+        if (-not [string]::IsNullOrWhiteSpace($taskRepo)) { $repos += $taskRepo }
       }
-    } catch {
+    } catch { return $result }
+
+    $recover = Test-TaskCompletionRecoverable -State $StateObj -BacklogId $BacklogId -BridgeRoot $BridgeRoot -RepoRoots @($repos)
+    try { Write-TaskCompletionRecoveryAudit -BridgeRoot $BridgeRoot -TaskId $BacklogId -Decision $(if ([string]$recover.verdict -eq 'RECOVER_DONE') { 'recover' } else { 'fail' }) -Verdict $recover -FlagState $true -Site 'driver86_covered_after_restart' } catch {}
+    if ([string]$recover.verdict -eq 'RECOVER_DONE') {
+      $result.Covered = $true
+      $result.Sha = [string]$recover.head
+      $result.Repo = [string]$recover.repo
       return $result
-    }
-    if ($repos.Count -eq 0) { return $result }
-
-    # (b) every candidate working tree is clean
-    foreach ($repo in @($repos.ToArray())) {
-      $dirty = ([string]((Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments @('status','--porcelain','-uall') -Description 'status --porcelain -uall') | Out-String)).Trim()
-      if ($dirty -ne '') { return $result }
-    }
-
-    # claimed_at is required both for git --since and for rejecting stale critic verdicts.
-    if ([string]::IsNullOrWhiteSpace($ClaimedAt)) { return $result }
-    $claimedAtUtc = $null
-    try {
-      $claimedAtUtc = [datetimeoffset]::Parse($ClaimedAt).UtcDateTime
-    } catch {
-      return $result
-    }
-
-    # (c) critic verdict OK/none and fresh for this task, not a stale cache from a previous task.
-    $cache = & $getStateValue $StateObj 'critic_verdict_cache'
-    $criticVerdict = [string](& $getStateValue $cache 'verdict')
-    $criticSeverity = [string](& $getStateValue $cache 'severity')
-    $criticTsText = [string](& $getStateValue $cache 'ts')
-    if ($criticVerdict -ne 'OK' -or $criticSeverity -ne 'none' -or [string]::IsNullOrWhiteSpace($criticTsText)) { return $result }
-    $criticTsUtc = $null
-    try {
-      $criticTsUtc = [datetimeoffset]::Parse($criticTsText).UtcDateTime
-    } catch {
-      return $result
-    }
-    if ($criticTsUtc -lt $claimedAtUtc) { return $result }
-
-    # (d) git log finds a commit since claimed_at matching backlog_id or first 60 chars of task text
-    $since = $ClaimedAt
-    # Build literal grep patterns: backlog_id (if non-empty) and first 60 chars of task text.
-    $patterns = @()
-    if (-not [string]::IsNullOrWhiteSpace($BacklogId)) { $patterns += $BacklogId }
-    if (-not [string]::IsNullOrWhiteSpace($TaskText)) {
-      $shortened = $TaskText.Trim()
-      if ($shortened.Length -gt 60) { $shortened = $shortened.Substring(0, 60) }
-      if ($shortened.Length -gt 0) { $patterns += $shortened }
-    }
-    if ($patterns.Count -eq 0) { return $result }
-
-    foreach ($repo in @($repos.ToArray())) {
-      foreach ($pat in $patterns) {
-        $gitArgs = @('log', '--oneline', '--fixed-strings', '--grep', $pat, '--since', $since)
-        $lines = @(Invoke-DriverDoneGateGitLines -BridgeRoot $repo -Arguments $gitArgs -Description 'log covered-after-restart' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($lines.Count -gt 0) {
-          $sha = ([string]$lines[0]).Split(' ')[0].Trim()
-          if ($sha.Length -ge 7) {
-            $result.Covered = $true
-            $result.Sha = $sha
-            $result.Repo = $repo
-            return $result
-          }
-        }
-      }
     }
   } catch {}
   return $result
@@ -1462,12 +1353,20 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     # covered-after-restart: если работа уже закоммичена в прошлой сессии, не требуем новый verify
     if ($didActions -and -not $hasVerify) {
       $covSt = Read-State
-      $covResult = Test-CoveredAfterRestart `
-        -BridgeRoot $bridgeRoot `
-        -ClaimedAt ([string]$covSt.claimed_at) `
-        -BacklogId ([string]$covSt.current_backlog_id) `
-        -TaskText ([string]$covSt.current_task) `
-        -StateObj $covSt
+      $covRecoverFlag = $false
+      try {
+        $cfgRecover = Get-BridgeConfig
+        if ($cfgRecover.PSObject.Properties.Name -contains 'recover_covered_after_restart') { $covRecoverFlag = [bool]$cfgRecover.recover_covered_after_restart }
+      } catch { $covRecoverFlag = $false }
+      $covResult = @{ Covered = $false; Sha = ''; Repo = '' }
+      if ($covRecoverFlag) {
+        $covResult = Test-CoveredAfterRestart `
+          -BridgeRoot $bridgeRoot `
+          -ClaimedAt ([string]$covSt.claimed_at) `
+          -BacklogId ([string]$covSt.current_backlog_id) `
+          -TaskText ([string]$covSt.current_task) `
+          -StateObj $covSt
+      }
       if ($covResult.Covered) {
         $covMsg = "✅ covered-after-restart: задача закрыта — коммит найден после рестарта ($($covResult.Sha)), рабочее дерево чистое, критик OK. Новый verify не требуется."
         Add-Message -From system -Text $covMsg -Kind event | Out-Null

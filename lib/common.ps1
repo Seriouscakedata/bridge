@@ -724,6 +724,55 @@ function Get-StateContentHash {
   return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
+function Normalize-StateTaskStartedAt {
+  param($State)
+  if ($null -eq $State) { return $State }
+  $activeId = ''
+  try { $activeId = ([string]$State.current_backlog_id).Trim() } catch { $activeId = '' }
+  $map = [ordered]@{}
+  $existing = $null
+  $hasExisting = $false
+  try {
+    $prop = $State.PSObject.Properties['task_started_at']
+    if ($null -ne $prop) {
+      $hasExisting = $true
+      $existing = $prop.Value
+    }
+  } catch {}
+
+  if ($hasExisting -and $existing -is [string]) {
+    $legacy = ([string]$existing).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($legacy) -and -not [string]::IsNullOrWhiteSpace($activeId)) {
+      $map[$activeId] = $legacy
+    }
+    $State | Add-Member -NotePropertyName task_started_at -NotePropertyValue $map -Force
+    return $State
+  }
+
+  if ($hasExisting -and $existing -is [System.Collections.IDictionary]) {
+    foreach ($key in @($existing.Keys)) {
+      $k = ([string]$key).Trim()
+      $v = ([string]$existing[$key]).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($k) -and -not [string]::IsNullOrWhiteSpace($v)) { $map[$k] = $v }
+    }
+    $State | Add-Member -NotePropertyName task_started_at -NotePropertyValue $map -Force
+    return $State
+  }
+
+  if ($hasExisting -and $null -ne $existing) {
+    try {
+      foreach ($p in @($existing.PSObject.Properties)) {
+        $k = ([string]$p.Name).Trim()
+        $v = ([string]$p.Value).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($k) -and -not [string]::IsNullOrWhiteSpace($v)) { $map[$k] = $v }
+      }
+    } catch {}
+  }
+
+  $State | Add-Member -NotePropertyName task_started_at -NotePropertyValue $map -Force
+  return $State
+}
+
 function Read-State {
   # FIX 2026-05-27: shape-guard — broken state forces Initialize-Bridge recreate.
   # FIX 2026-05-30: 3×50ms retry-backoff on transient parse-fail before returning $null;
@@ -790,6 +839,7 @@ function Read-State {
     if ($null -ne $restored) { return $restored }
     return $null
   }
+  $state = Normalize-StateTaskStartedAt -State $state
   return $state
 }
 
@@ -829,6 +879,7 @@ function Write-State {
       throw $msg
     }
   }
+  $State = Normalize-StateTaskStartedAt -State $State
   $json = $State | ConvertTo-Json -Depth 10
   $sp = Get-StatePath
   Write-AtomicFile -Path $sp -Content $json
@@ -2191,6 +2242,7 @@ function Initialize-Bridge {
       task_timing_restart_ms = 0
       task_timing_memory_ms  = 0
       task_timing_start_at   = ''
+      task_started_at        = @{}
     }
     Write-State -State $state -AllowPartial   # initial create; guard skip OK
   } else {
@@ -2212,7 +2264,7 @@ function Initialize-Bridge {
       task_last_failure=$null
       agent_telemetry=$null
       session_mission=$null
-      task_timing_planner_ms=0; task_timing_worker_ms=0; task_timing_critic_ms=0; task_timing_verify_ms=0; task_timing_smoke_ms=0; task_timing_restart_ms=0; task_timing_memory_ms=0; task_timing_start_at=''
+      task_timing_planner_ms=0; task_timing_worker_ms=0; task_timing_critic_ms=0; task_timing_verify_ms=0; task_timing_smoke_ms=0; task_timing_restart_ms=0; task_timing_memory_ms=0; task_timing_start_at=''; task_started_at=@{}
     }
     $changed = $false
     foreach ($k in $defaults.Keys) {

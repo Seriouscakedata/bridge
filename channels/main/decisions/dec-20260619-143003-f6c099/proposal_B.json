@@ -1,0 +1,92 @@
+{
+    "proposer":  "B",
+    "understanding":  "The driver (PowerShell orchestration loop) periodically restarts or hits caps; on restart it reconciles in-flight tasks. For tasks whose code was actually finished, committed, and verified, the reconciliation/covered-after-restart/fast-path paths mis-attribute the in-flight record and mark the task FAILED instead of DONE (the SHA256 incident: 9 restarts, 9 false-FAILED on verified+committed code). Root causes: (1) `task_started_at` is recorded in a way that cannot be re-bound to a specific task identity after a restart, so the post-restart logic can\u0027t prove the running record belongs to THIS task; (2) auto-commit messages carry no durable, exact task anchor (and any anchor can be lost to subject truncation), so completion cannot be proven by exact-id match against git; (3) there is no single fail-closed predicate gating the mark-failed transition. The fix hardens the EXISTING covered-after-restart mechanism (FOUNDATION #2) — not a net-new subsystem — by adding a pure fail-closed helper `Test-TaskCompletionRecoverable`, identity-keying `task_started_at`, prepending `[task:\u003cid\u003e]` to commit subjects before truncation, and invoking the helper as a guard immediately before mark-failed at all three sites. Completion is asserted only via a strict commit-relative AND-chain (exact-id commit exists AND qa_head==HEAD AND critic.ts\u003e=commit_ts), fail-closed, so the inverse failure (false-DONE on template/boilerplate tasks) is structurally prevented.",
+    "summary":  "Introduce a single pure, side-effect-free predicate `Test-TaskCompletionRecoverable` in `lib/task-action-evidence.ps1` that returns a structured verdict from durable evidence and never mutates state. Wire it as a short-circuit guard immediately BEFORE the existing mark-failed transition at the three reconciliation sites (restart/cap-hit `driver/60:217`, covered-after-restart `driver/86:1465`, fast-path `driver/81:1466`), leaving FOUNDATION #2\u0027s reconciliation otherwise intact. Make completion provable across restarts by (a) identity-keying `task_started_at` by task id at `driver/81:1657` so a record can be re-bound to its exact task, and (b) prepending `[task:\u003cid\u003e]` to the auto-commit subject at `driver/83:265` BEFORE truncation so the exact-id anchor always survives. The verdict is a strict AND-chain — an exact `[task:\u003cid\u003e]` commit exists, qa_head==HEAD, and critic.ts\u003e=commit_ts — with every missing/unparseable/ambiguous input collapsing to \u0027not recoverable\u0027 (fail-closed → safe direction is false-FAILED, never false-DONE). Ship behind a default-off canary flag with admission control and one-switch rollback, emit a structured audit line for every recover-vs-fail decision (with each conjunct\u0027s value) to make the 24h false-FAILED metric measurable and regressions detectable, and validate against a replay fixture of the SHA256 incident plus a template-task corpus.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement `Test-TaskCompletionRecoverable` as a pure predicate that reads evidence (git log, state record, qa_head, critic/commit timestamps) and returns a structured verdict {recoverable:bool, reason, conjuncts}, with zero state mutation and all parsing wrapped so it can never throw into the driver loop.",
+                               "reason":  "A pure predicate is reusable identically at all three call sites, trivially unit-testable against fixtures, and makes the fail-closed contract auditable (a function that cannot partially mutate cannot leave a half-recovered task). Wrapping parsing guarantees a crashed/garbled evidence file degrades to \u0027not recoverable\u0027 rather than wedging the loop.",
+                               "tradeoff":  "Callers must perform the state mutation themselves, so the DONE-transition logic is duplicated at three sites; mitigated by keeping the mutation a one-line shared call. Slightly more ceremony than an inline check.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Identity-key `task_started_at` by task id (a map `task_started_at[\u003cid\u003e]`) at `driver/81:1657` rather than a scalar, with backward-compatible read of any legacy scalar value treated as unattributed/not-recoverable.",
+                               "reason":  "The scalar cannot be re-bound to a specific task instance after a restart — this is the core mis-attribution that lets the in-flight record of a finished task be charged to the wrong identity and failed. Keying by id makes \u0027is this record THIS task\u0027 decidable.",
+                               "tradeoff":  "State-schema change requires migration and must coexist with the existing state.json sha256 integrity sidecar; an additive key plus atomic Write-State avoids breaking the integrity check, but adds migration surface. Legacy scalars cannot be recovered (fail-closed), so already-running pre-deploy tasks may still false-FAIL once.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Prepend `[task:\u003cid\u003e]` to the auto-commit subject at `driver/83:265` BEFORE truncation, and make exact-id-match the ONLY identity link (never text/grep similarity).",
+                               "reason":  "The commit subject is the durable, restart-surviving anchor that ties a commit to a task; prepending guarantees the id is not lost when the subject is truncated to the length cap. Exact-id-match closes the false-DONE vector where template/boilerplate task text collides.",
+                               "tradeoff":  "Consumes subject character budget and makes messages slightly less human-readable; pre-existing commits without the tag are unmatchable (fail-closed → those tasks fall through to normal handling). The driver — not the coder sandbox — must own commit formatting, since only the driver can reach .git.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Assert completion only via the strict AND-chain: (a) an exact `[task:\u003cid\u003e]` commit exists, (b) qa_head == HEAD, and (c) critic.ts \u003e= commit_ts — every conjunct fail-closed on missing/unparseable input.",
+                               "reason":  "Each conjunct closes a distinct false-DONE vector: (a) text-collision/template reuse, (b) work mutated after verification, (c) the critic verdict predating the commit (verifying a pre-commit state). Conjunction guarantees the helper only claims DONE when the verified artifact IS the committed HEAD for THIS task.",
+                               "tradeoff":  "Stricter than necessary for some genuinely-done-but-untracked tasks, which then fall through to FAILED (residual false-FAILED) — but that is the deliberately chosen safe direction over false-DONE.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Invoke the helper as a guard immediately BEFORE the existing mark-failed transition at all three sites — as an interception/short-circuit, not a rewrite of FOUNDATION #2 reconciliation.",
+                               "reason":  "Minimizes control-plane blast radius: everything that is not provably recoverable flows through the unchanged existing path, so the only behavioral delta is \u0027recover the provably-done instead of failing it.\u0027 Honors the constraint to strengthen, not replace, the existing subsystem.",
+                               "tradeoff":  "Three insertion points must stay in sync; mitigated by centralizing the entire decision in the single helper so the call sites are one identical guard line each.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Ship behind a default-off canary flag with admission control and one-switch rollback, and emit a structured audit line for every recover-vs-fail decision recording each conjunct\u0027s value, the task id, and the matched commit sha.",
+                               "reason":  "This is core control-plane logic with prior art of regressions wedging the queue; observability is required both to prove the 24h false-FAILED reduction metric and to detect a false-DONE regression early enough to roll back. Decision-level logging makes rollback data-driven rather than guesswork.",
+                               "tradeoff":  "Extra flag plumbing and log volume; the canary delays full benefit. Acceptable given the blast radius.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Return a tri-state internally (RECOVER_DONE / NOT_RECOVERABLE / INSUFFICIENT_EVIDENCE) but collapse the latter two to \u0027do not recover\u0027 at the call site, distinguishing them only in telemetry.",
+                               "reason":  "Lets us measure how often fall-through is due to MISSING evidence (anchor/plumbing not working — actionable) versus genuine non-completion, without weakening the binary fail-closed gate. Drives a future \u0027quarantine instead of fail\u0027 bucket.",
+                               "tradeoff":  "Minor added complexity in the verdict type; the distinction is observability-only and never relaxes the gate.",
+                               "confidence":  0.6
+                           }
+                       ],
+    "assumptions":  [
+                        "The task/state record already persists (or this work will persist) per-task qa_head, the critic verdict + its timestamp, and the commit timestamp/sha; absence of any field is handled by the fail-closed path.",
+                        "Auto-commits are produced by the driver itself, so commit-subject formatting is fully under our control at `driver/83:265`.",
+                        "The helper executes in the driver process context where .git is reachable (the coder sandbox cannot reach .git), so git log / HEAD inspection is valid there.",
+                        "Task ids are globally unique and stable across restarts, making exact-id-match unambiguous.",
+                        "The commit-subject truncation length is known/configurable so \u0027prepend before truncation\u0027 reliably preserves the `[task:\u003cid\u003e]` token.",
+                        "Work proceeds on a single working branch with a well-defined HEAD, so qa_head==HEAD is a meaningful comparison.",
+                        "state.json carries a sha256 integrity sidecar (per recent commits), so any schema change must be additive and written atomically with the sidecar to avoid tripping integrity verification."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "false-DONE on template/boilerplate tasks — recovering a task as DONE when it is not actually complete, abandoning real remaining work.",
+                      "severity":  "high",
+                      "mitigation":  "Exact-id-match only (never text grep) plus the full AND-chain (qa_head==HEAD AND critic.ts\u003e=commit_ts), fail-closed on any missing conjunct; replay a template-task corpus in tests asserting recoverable=false; canary + audit log to catch any escape and roll back."
+                  },
+                  {
+                      "risk":  "Control-plane blast radius — a defect in core reconciliation wedges the task queue (there is prior art of regressions wedging the queue).",
+                      "severity":  "high",
+                      "mitigation":  "Pure non-mutating predicate inserted only as a pre-failure guard (no rewrite of FOUNDATION #2); default-off canary flag, admission control, one-switch rollback; wrap all evidence parsing so the helper can never throw into the loop."
+                  },
+                  {
+                      "risk":  "Identity-keyed `task_started_at` schema change collides with the state.json sha256 integrity check or breaks Read-State/Write-State.",
+                      "severity":  "medium",
+                      "mitigation":  "Make the change purely additive (new keyed map alongside legacy field), write state and its integrity sidecar atomically, and tolerate legacy scalars as unattributed/not-recoverable; add a Read-State/Write-State round-trip test on migrated state."
+                  },
+                  {
+                      "risk":  "qa_head==HEAD is brittle when other tasks commit to the same branch between QA and reconciliation, moving HEAD and suppressing legitimate recovery.",
+                      "severity":  "medium",
+                      "mitigation":  "Bind qa_head to the task\u0027s OWN recorded commit sha; keep strict equality as the default (errs to safe false-FAILED), and if the 24h metric shows excess fall-through, relax conjunct (b) to \u0027task commit is an ancestor of HEAD\u0027 or single-flight the commit step — change gated behind the same flag."
+                  },
+                  {
+                      "risk":  "Clock skew / non-monotonic timestamps make critic.ts\u003e=commit_ts unreliable (git committer time vs critic wall-clock from a different source).",
+                      "severity":  "medium",
+                      "mitigation":  "Source critic.ts and commit_ts from the same host/clock where possible; if a tolerance is needed, keep it minimal and one-directional and log when it is exercised, since any tolerance slightly weakens fail-closed."
+                  },
+                  {
+                      "risk":  "Genuinely-completed-but-untracked tasks (pre-deploy, missing anchor, legacy scalar start time) still false-FAIL after this change.",
+                      "severity":  "low",
+                      "mitigation":  "Accept as the intended safe direction (re-running wastes compute but never abandons work); measure via the INSUFFICIENT_EVIDENCE telemetry bucket and, in the advanced version, route them to a \u0027needs-human/quarantine\u0027 state instead of FAILED."
+                  }
+              ],
+    "minimal_version":  "Add the pure fail-closed `Test-TaskCompletionRecoverable` helper to `lib/task-action-evidence.ps1` returning a binary recoverable verdict from the AND-chain (exact `[task:\u003cid\u003e]` commit exists AND qa_head==HEAD AND critic.ts\u003e=commit_ts), with all parsing wrapped to never throw. Identity-key `task_started_at` by id at `driver/81:1657` (additive, backward-compatible read). Prepend `[task:\u003cid\u003e]` to the auto-commit subject before truncation at `driver/83:265`. Insert the helper as a one-line guard immediately before mark-failed at `driver/60:217`, `driver/86:1465`, and `driver/81:1466`. Gate the whole thing behind a default-off flag, emit one structured audit line per decision, and validate with a replay fixture of the SHA256 incident (asserts DONE) plus a template-task fixture (asserts not-recoverable). No tri-state, no auto-rollback automation.",
+    "advanced_version":  "Everything in the minimal version, plus: a tri-state verdict (RECOVER_DONE / NOT_RECOVERABLE / INSUFFICIENT_EVIDENCE) feeding telemetry and an admission-control \u0027quarantine/needs-human\u0027 bucket so missing-evidence tasks are neither false-DONE nor false-FAILED; percentage-based canary rollout with automatic rollback triggered on any detected false-DONE or a false-FAILED-rate regression; ancestry-based head check (task commit is ancestor of HEAD) as a flag-gated relaxation of qa_head==HEAD to tolerate concurrent commits; monotonic single-clock sourcing for critic.ts/commit_ts with logged tolerance exercises; a golden-corpus regression suite (recover and fail scenarios, including 9-restart replay, post-QA mutation, pre-commit critic, template collision, garbled evidence) run in CI; and a 24h dashboard tracking false-FAILED reduction and restart-idle-run savings tied directly to the audit-line conjunct values."
+}

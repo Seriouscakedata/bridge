@@ -13,6 +13,18 @@
     throw 'Missing task-action-evidence helper: Get-TaskActionEvidenceContext'
   }
 
+  function Get-DriverAutoCommitTaskMarker {
+    $taskId = ''
+    try {
+      $stMarker = Read-State
+      $taskId = [string]$stMarker.current_task_id
+      if ([string]::IsNullOrWhiteSpace($taskId)) { $taskId = [string]$stMarker.current_backlog_id }
+      if ([string]::IsNullOrWhiteSpace($taskId) -and $stMarker.task_start_seq) { $taskId = 'task-' + [string]$stMarker.task_start_seq }
+    } catch { $taskId = '' }
+    if ([string]::IsNullOrWhiteSpace($taskId)) { return '' }
+    return ('[task:' + $taskId.Trim() + '] ')
+  }
+
   function Normalize-TurnResultContract {
     param([AllowNull()][object]$Result)
     if ($null -eq $Result) { $Result = [pscustomobject]@{} }
@@ -262,7 +274,7 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
           $acFiles = @($acDirty | ForEach-Object { Normalize-AutoCommitStatusPath -StatusLine ([string]$_) } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
           $commitWorthyFiles = @($acFiles | Where-Object { Test-BridgeAutoCommitWorthPath -Path ([string]$_) })
           if ($acFiles.Count -gt 0 -and $commitWorthyFiles.Count -gt 0) {
-            $acMsg = 'auto-commit (driver; coder sandbox cannot reach .git): ' + (($task -replace '\s+',' ').Trim())
+            $acMsg = (Get-DriverAutoCommitTaskMarker) + 'auto-commit (driver; coder sandbox cannot reach .git): ' + (($task -replace '\s+',' ').Trim())
             if ($acMsg.Length -gt 180) { $acMsg = $acMsg.Substring(0,180) }
             $acAdd = Invoke-GitAddPaths -RepoRoot $bridgeRoot -Paths @($commitWorthyFiles)
             if ($acAdd.ExitCode -ne 0) {
@@ -328,7 +340,7 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
     if ($projRoot -and ($projRoot -ne $bridgeRoot) -and (Test-Path (Join-Path $projRoot '.git'))) {
       $pDirty = @(& git -C $projRoot status --porcelain -uall 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
       if (@($pDirty).Count -gt 0) {
-        $pMsg = 'auto-commit (driver): ' + (($task -replace '\s+', ' ').Trim())
+        $pMsg = (Get-DriverAutoCommitTaskMarker) + 'auto-commit (driver): ' + (($task -replace '\s+', ' ').Trim())
         if ($pMsg.Length -gt 160) { $pMsg = $pMsg.Substring(0, 160) }
         $pAdd = Invoke-GitNative -RepoRoot $projRoot -GitArgs @('add', '-A')
         if ($pAdd.ExitCode -ne 0) {

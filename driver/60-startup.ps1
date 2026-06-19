@@ -225,6 +225,24 @@ if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
         } catch {}
       }
       if (-not $dqpcMarkedDone) {
+        $recoverFlag = $false
+        try {
+          $cfgRecover = Get-BridgeConfig
+          if ($cfgRecover.PSObject.Properties.Name -contains 'recover_covered_after_restart') { $recoverFlag = [bool]$cfgRecover.recover_covered_after_restart }
+        } catch { $recoverFlag = $false }
+        if ($recoverFlag -and (Get-Command Test-TaskCompletionRecoverable -ErrorAction SilentlyContinue)) {
+          try {
+            $recoverResult = Test-TaskCompletionRecoverable -State $boot -BacklogId $stuckBacklogId -BridgeRoot (Get-BridgeRoot)
+            $recoverDecision = if ([string]$recoverResult.verdict -eq 'RECOVER_DONE') { 'recover' } else { 'fail' }
+            try { Write-TaskCompletionRecoveryAudit -BridgeRoot (Get-BridgeRoot) -TaskId $stuckBacklogId -Decision $recoverDecision -Verdict $recoverResult -FlagState $recoverFlag -Site 'driver60_restart_cap' } catch {}
+            if ([string]$recoverResult.verdict -eq 'RECOVER_DONE') {
+              try { Set-Idea -Id $stuckBacklogId -Status 'done' -Reason ("restart_cap_recovered_covered_after_restart_" + ([string]$recoverResult.head).Substring(0,[Math]::Min(7,([string]$recoverResult.head).Length))) | Out-Null } catch {}
+              $dqpcMarkedDone = $true
+            }
+          } catch {}
+        }
+      }
+      if (-not $dqpcMarkedDone) {
         try { Set-Idea -Id $stuckBacklogId -Status 'failed' -Reason ("task_restart_loop_" + $restartCapHit + "_" + $newTotalRestartCount) | Out-Null } catch {}
       }
     }

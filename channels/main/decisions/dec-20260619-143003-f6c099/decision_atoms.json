@@ -1,0 +1,93 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Implement `Test-TaskCompletionRecoverable` as a pure, fail-closed helper in `lib/task-action-evidence.ps1` that reads evidence and returns a structured verdict without state mutation, with robust parsing.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Core Logic",
+                      "test":  "Unit test `Test-TaskCompletionRecoverable` with valid, missing, and garbled evidence fixtures, asserting correct verdict and no exceptions.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Identity-key `task_started_at` by task ID in `driver/81` (e.g., `task_started_at[\u003cid\u003e]`), with backward-compatible reading for legacy scalar values.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Model",
+                      "test":  "Add a Read-State/Write-State round-trip test for `task_started_at` with both legacy scalar and new identity-keyed formats, ensuring integrity and backward compatibility.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Prepend `[task:\u003cid\u003e]` to the auto-commit subject in `driver/83` BEFORE truncation, making exact-id-match the sole identity link.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Commit Formatting",
+                      "test":  "Unit test `driver/83` auto-commit logic to ensure `[task:\u003cid\u003e]` is prepended and survives truncation, and that `git log` can reliably extract it.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Invoke the `Test-TaskCompletionRecoverable` helper as a guard immediately BEFORE marking a task FAILED in `driver/60` (restart/cap-hit), `driver/86` (covered-after-restart), and `driver/81` (fast-path).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Integration",
+                      "test":  "Regression tests for `driver/60`, `driver/86`, and `driver/81` to verify the recovery check is called *before* the failed outcome is recorded.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Assert task completion only via a strict fail-closed AND-chain: (a) an exact `[task:\u003cid\u003e]` commit exists, (b) `qa_head == HEAD`, and (c) `critic.ts \u003e= commit_ts`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Core Logic",
+                      "test":  "Unit tests for `Test-TaskCompletionRecoverable` covering all conjuncts: successful match, mismatch on ID, mismatch on `qa_head`, mismatch on timestamps, and missing evidence for each conjunct.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Deploy behind a default-off canary flag with admission control and one-switch rollback, emitting structured audit logs for every recover-vs-fail decision.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Deployment \u0026 Observability",
+                      "test":  "Verify canary flag functionality (default-off, on/off toggle), admission control behavior, and that structured audit logs are emitted for both recovered and failed tasks.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Internally return a tri-state verdict (RECOVER_DONE / NOT_RECOVERABLE / INSUFFICIENT_EVIDENCE) from the helper, collapsing the latter two to \u0027do not recover\u0027 at the call site, but distinguishing them in telemetry.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Core Logic \u0026 Observability",
+                      "test":  "Unit test `Test-TaskCompletionRecoverable` to ensure it returns the correct tri-state for different evidence scenarios (e.g., missing `qa_head` vs. `qa_head` mismatch), and verify telemetry captures this distinction.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

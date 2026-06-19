@@ -1485,6 +1485,30 @@ $script:DriverLoopIdleClaimBlock = {
               $claimedIdea = $null
             }
           }
+          if ($claimedIdea) {
+            $recoverFlag = $false
+            try {
+              $cfgRecover = Get-BridgeConfig
+              if ($cfgRecover.PSObject.Properties.Name -contains 'recover_covered_after_restart') { $recoverFlag = [bool]$cfgRecover.recover_covered_after_restart }
+            } catch { $recoverFlag = $false }
+            if ($recoverFlag) {
+              try { if (-not (Get-Command Test-TaskCompletionRecoverable -ErrorAction SilentlyContinue)) { . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1') } } catch {}
+              if (Get-Command Test-TaskCompletionRecoverable -ErrorAction SilentlyContinue) {
+                $recoverId = [string]$claimedIdea.id
+                $recoverState = $null
+                try { $recoverState = Read-State } catch { $recoverState = $null }
+                $recoverResult = Test-TaskCompletionRecoverable -State $recoverState -BacklogId $recoverId -BridgeRoot $bridgeRoot
+                $recoverDecision = if ([string]$recoverResult.verdict -eq 'RECOVER_DONE') { 'recover' } else { 'fail' }
+                try { Write-TaskCompletionRecoveryAudit -BridgeRoot $bridgeRoot -TaskId $recoverId -Decision $recoverDecision -Verdict $recoverResult -FlagState $recoverFlag -Site 'driver81_fast_path' } catch {}
+                if ([string]$recoverResult.verdict -eq 'RECOVER_DONE') {
+                  try { Set-Idea -Id $recoverId -Status 'done' -Reason ("recover_covered_after_restart_" + ([string]$recoverResult.head).Substring(0,[Math]::Min(7,([string]$recoverResult.head).Length))) | Out-Null } catch {}
+                  Add-Message -From system -Text ("✅ covered-after-restart fast-path: задача $recoverId авто-закрыта — HEAD $(([string]$recoverResult.head).Substring(0,[Math]::Min(7,([string]$recoverResult.head).Length))) подтверждён exact [task:id], QA PASS и критиком после коммита.") -Kind event | Out-Null
+                  try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='covered-after-restart-preclaim-skip'; item_id=$recoverId; commit=[string]$recoverResult.head; reason=[string]$recoverResult.reason }) } catch {}
+                  $claimedIdea = $null
+                }
+              }
+            }
+          }
           $preflightChecked = $false
           try {
             if ($claimedIdea -and $currentClaimedIdea.PSObject.Properties.Name -contains 'preflight_checked') { $preflightChecked = [bool]$currentClaimedIdea.preflight_checked }
@@ -1655,6 +1679,20 @@ $script:DriverLoopIdleClaimBlock = {
             $s | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue 'operator-atom-declared' -Force
           }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
+          $taskStartedAtMap = [ordered]@{}
+          try {
+            $existingStartedAt = $null
+            if ($s.PSObject.Properties.Name -contains 'task_started_at') { $existingStartedAt = $s.task_started_at }
+            if ($existingStartedAt -is [System.Collections.IDictionary]) {
+              foreach ($k in @($existingStartedAt.Keys)) { $taskStartedAtMap[[string]$k] = [string]$existingStartedAt[$k] }
+            } elseif ($null -ne $existingStartedAt -and -not ($existingStartedAt -is [string])) {
+              foreach ($p in @($existingStartedAt.PSObject.Properties)) { $taskStartedAtMap[[string]$p.Name] = [string]$p.Value }
+            } elseif ($existingStartedAt -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$existingStartedAt)) {
+              $taskStartedAtMap[[string]$bid] = [string]$existingStartedAt
+            }
+          } catch {}
+          if (-not $taskStartedAtMap.Contains([string]$bid)) { $taskStartedAtMap[[string]$bid] = (Get-Date).ToUniversalTime().ToString('o') }
+          $s | Add-Member -NotePropertyName task_started_at -NotePropertyValue $taskStartedAtMap -Force
           $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
           $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force

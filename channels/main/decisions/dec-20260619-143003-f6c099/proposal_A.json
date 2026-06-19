@@ -1,0 +1,90 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно усилить существующий covered-after-restart recovery так, чтобы уже завершенные и закоммиченные задачи не уходили в FAILED после restart/cap-hit, но только при строгом fail-closed доказательстве завершения по точному task id и commit-relative проверке.",
+    "summary":  "Предлагаю добавить в lib/task-action-evidence.ps1 helper Test-TaskCompletionRecoverable, который возвращает recoverable только при exact-id-match и AND-цепочке qa_head==HEAD \u0026\u0026 critic.ts\u003e=commit_ts. Вызвать его во всех трех существующих точках перед выставлением failed: restart/cap-hit reconciliation, covered-after-restart и fast-path. Дополнительно закрепить identity-keyed task_started_at и префикс [task:\u003cid\u003e] в auto-commit subject до truncation.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить Test-TaskCompletionRecoverable в lib/task-action-evidence.ps1 как единую fail-closed точку принятия решения.",
+                               "reason":  "Сейчас recovery-логика размазана по сценариям restart/cap-hit и может ошибочно завершаться FAILED при наличии уже проверенного коммита.",
+                               "tradeoff":  "Появляется дополнительный общий helper, но без новой подсистемы и с меньшим риском расхождения логики между call-site.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Идентифицировать задачу только exact-id-match по [task:\u003cid\u003e] и связанным identity-keyed данным, без grep по тексту задачи.",
+                               "reason":  "Текстовые совпадения опасны для шаблонных или похожих задач и могут дать false-DONE.",
+                               "tradeoff":  "Старые коммиты без task-id префикса не будут recoverable автоматически, что соответствует fail-closed поведению.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Считать задачу recoverable только если qa_head==HEAD и critic.ts\u003e=commit_ts.",
+                               "reason":  "Это связывает восстановление с текущим HEAD и подтверждает, что критик/QA видел не более старую версию, чем коммит задачи.",
+                               "tradeoff":  "При неполных или поврежденных timestamp/evidence данных задача останется failed, даже если фактически выполнена.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Вставить recovery-check строго перед пометкой failed во всех трех путях: driver/60 restart/cap-hit, driver/86 covered-after-restart, driver/81 fast-path.",
+                               "reason":  "Цель инцидента — предотвратить ложный FAILED до записи итогового статуса, а не исправлять ledger постфактум.",
+                               "tradeoff":  "Каждый путь failed получает небольшой дополнительный I/O/evidence check.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Сделать task_started_at identity-keyed в driver/81, чтобы restart не смешивал старты разных задач.",
+                               "reason":  "Глобальный или текстово связанный timestamp может ломать commit-relative проверку после рестартов.",
+                               "tradeoff":  "Потребуется аккуратная миграция/дефолт для старого состояния без identity key.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "В auto-commit driver/83 добавлять [task:\u003cid\u003e] перед truncation.",
+                               "reason":  "Если префикс добавлять после truncation или не добавлять вовсе, exact-id-match станет ненадежным.",
+                               "tradeoff":  "Полезная часть commit subject станет короче на длину префикса.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Развернуть через canary/admission/rollback флаги.",
+                               "reason":  "Изменение влияет на control-plane статусы задач, поэтому нужен ограниченный blast radius.",
+                               "tradeoff":  "Полное включение займет дольше, но риск false-DONE и массовых неверных статусов ниже.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "В репозитории уже есть существующие механизмы covered-after-restart, evidence QA/critic и outcome-ledger, которые можно расширить без новой подсистемы.",
+                        "HEAD, qa_head, critic.ts и commit_ts доступны из существующих state/evidence файлов или могут быть извлечены из уже используемых sidecar-данных.",
+                        "Task id является стабильной идентичностью задачи на всем пути driver/60, driver/81, driver/83 и driver/86.",
+                        "Для старых задач без [task:\u003cid\u003e] в commit subject допустимо fail-closed поведение без recovery в DONE.",
+                        "Canary/admission/rollback можно реализовать существующими конфигурационными флагами или driver-level gates."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "False-DONE для шаблонной или похожей задачи.",
+                      "severity":  "high",
+                      "mitigation":  "Требовать exact-id-match по task id, [task:\u003cid\u003e] в commit subject и commit-relative AND-chain qa_head==HEAD \u0026\u0026 critic.ts\u003e=commit_ts; при любом mismatch возвращать not recoverable."
+                  },
+                  {
+                      "risk":  "False-FAILED сохранится для старых коммитов без task-id префикса.",
+                      "severity":  "medium",
+                      "mitigation":  "Принять как fail-closed компромисс; покрыть только новые auto-commits и явно зафиксировать это в тестах/метриках."
+                  },
+                  {
+                      "risk":  "Поврежденные или отсутствующие evidence файлы приведут к отказу recovery.",
+                      "severity":  "medium",
+                      "mitigation":  "Helper должен ловить ошибки чтения/парсинга и возвращать negative result с диагностикой, не бросая систему в DONE."
+                  },
+                  {
+                      "risk":  "Изменение статусов в control-plane может затронуть outcome-ledger и 24h verdicts массово.",
+                      "severity":  "medium",
+                      "mitigation":  "Включать через canary, admission gate и rollback flag; сначала логировать would-recover, затем включать запись статуса."
+                  },
+                  {
+                      "risk":  "Неправильный порядок вызова helper после выставления FAILED не устранит инцидент.",
+                      "severity":  "high",
+                      "mitigation":  "Добавить regression tests на три call-site, проверяющие, что recovery вызывается до записи failed outcome."
+                  },
+                  {
+                      "risk":  "Truncation commit subject может обрезать task id.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавлять [task:\u003cid\u003e] до truncation и truncation считать от полной строки с обязательным сохранением префикса."
+                  }
+              ],
+    "minimal_version":  "Реализовать Test-TaskCompletionRecoverable в lib/task-action-evidence.ps1; интегрировать его перед failed в driver/60, driver/86 и driver/81; сделать task_started_at keyed by task id; изменить auto-commit subject на [task:\u003cid\u003e] prefix before truncation; добавить unit/regression тесты на exact-id mismatch, timestamp mismatch, qa_head mismatch и успешный recovery verified HEAD.",
+    "advanced_version":  "Добавить staged rollout: режим dry-run/would-recover, canary gate, admission policy, rollback flag, structured metrics для recovered-after-restart, rejected-recovery-reason, false-FAILED reduction и restart-idle-run reduction; затем включить recovery записью DONE только после проверки ledger/24h verdicts на canary."
+}

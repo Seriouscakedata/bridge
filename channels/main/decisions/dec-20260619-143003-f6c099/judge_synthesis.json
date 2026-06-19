@@ -1,0 +1,132 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A pure fail-closed helper cleanly isolates recovery evidence evaluation, reduces accidental state mutation, and is directly testable. Robust parsing and structured verdicts are appropriate for this failure path.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.03,
+                                            "reason":  "Legacy scalar migration is underspecified when multiple task identities may be present."
+                                        }
+                                    ],
+                      "reason":  "Identity-keying fixes an important ambiguity, but the implementation should explicitly define how legacy scalar values are interpreted, migrated, and written back across Read-State/Write-State, not only in driver/81.",
+                      "total":  0.7825
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Prepending the exact task marker before truncation is simple, high-value, and makes commit identity extraction deterministic. The test should include long subjects to prove the marker survives truncation.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Guarding immediately before FAILED recording addresses the key regression surface. The atom is specific about call sites and ordering, which makes it testable and limits behavioral drift.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.025,
+                                            "reason":  "Timestamp comparison needs a precise clock/source format and timezone rule to avoid false negatives."
+                                        }
+                                    ],
+                      "reason":  "The strict AND-chain is the right fail-closed policy, but it needs exact definitions for HEAD, qa_head source, timestamp parsing, and equality boundaries so recovery is deterministic under clock and format differences.",
+                      "total":  0.8325
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.65,
+                                     "impact":  0.75,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.04,
+                                            "reason":  "Admission control and rollback semantics are too broad without naming the concrete flag, scope, and log schema."
+                                        }
+                                    ],
+                      "reason":  "A default-off canary and audit logs are prudent for rollout, but this atom is heavier than the core fix and underspecified. It should name the flag, exact admission criteria, rollback behavior, and structured log fields.",
+                      "total":  0.7025
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Tri-state internal verdicts improve observability without changing fail-closed behavior at call sites. Collapsing non-recoverable and insufficient evidence operationally while preserving telemetry distinction is a sound design.",
+                      "total":  0.84
+                  }
+              ]
+}

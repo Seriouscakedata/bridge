@@ -1,0 +1,37 @@
+{
+    "task":  "[Автозадача из бэклога] Hardening covered-after-restart recovery (`lib/task-action-evidence.ps1` новый fail-closed helper `Test-TaskCompletionRecoverable` + identity-keyed `task_started_at` в `driver/81:1657` + prepend `[task:\u003cid\u003e]` в auto-commit `driver/83:265` до truncation) · триггерится на restart/cap-hit реконсиляции в `driver/60:217`, covered-after-restart `driver/86:1465`, fast-path `driver/81:1466` ПЕРЕД пометкой failed · метрика: устраняет false-FAILED на готовых-закоммиченных задачах (инцидент SHA256: 9 рестартов→failed на верифицированном коде) — чистит outcome-ledger/24ч-вердикты и срезает рестарт-холостой ход · главный риск: false-DONE на шаблонных задачах → снят exact-id-match (не grep-по-тексту) + commit-relative AND-цепочкой (qa_head==HEAD ∧ critic.ts\u003e=commit_ts), fail-closed; control-plane blast radius → canary+admission+rollback. NOT net-new: укрепление существующего covered-after-restart (FOUNDATION #2), новой подсистемы не вводит — OPERATOR_JUSTIFICATION не требуется.",
+    "goal":  "Eliminate false-FAILED statuses for completed and committed tasks, specifically addressing incidents where verified code tasks incorrectly fail after restarts. This will clean the outcome-ledger, improve 24-hour verdicts, and reduce wasted effort from restart-induced idle runs.",
+    "constraints":  [
+                        "The recovery logic must trigger BEFORE a task is marked \u0027failed\u0027.",
+                        "Task identification must use exact-id-match, not text-based grep.",
+                        "Task completion verification must use a commit-relative AND-chain: (qa_head==HEAD AND critic.ts\u003e=commit_ts).",
+                        "The system must remain fail-closed.",
+                        "Control-plane blast radius must be mitigated via canary deployment, admission control, and rollback capabilities.",
+                        "The solution must strengthen existing covered-after-restart functionality (FOUNDATION #2) and NOT introduce a net-new subsystem.",
+                        "OPERATOR_JUSTIFICATION is not required."
+                    ],
+    "known_context":  [
+                          "The task involves hardening an existing covered-after-restart recovery mechanism.",
+                          "A new fail-closed helper `Test-TaskCompletionRecoverable` will be introduced in `lib/task-action-evidence.ps1`.",
+                          "An identity-keyed `task_started_at` will be used in `driver/81:1657`.",
+                          "Auto-commits in `driver/83:265` will be prepended with `[task:\u003cid\u003e]` before truncation.",
+                          "The logic will be triggered by restart/cap-hit reconciliation in `driver/60:217`, covered-after-restart in `driver/86:1465`, and fast-path in `driver/81:1466`.",
+                          "The motivation is an incident (SHA256) where 9 restarts led to \u0027failed\u0027 status on verified code.",
+                          "The primary risk of \u0027false-DONE\u0027 on template tasks has been identified and mitigated by specific design choices (exact-id-match, commit-relative AND-chain, fail-closed, canary/admission/rollback)."
+                      ],
+    "output_format":  "JSON object matching TaskContract schema",
+    "task_type":  "bugfix",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Simulate the \u00279 restarts -\u003e failed on verified code\u0027 incident scenario and verify that tasks with verified code are no longer marked \u0027FAILED\u0027 after restarts/cap-hits.",
+                          "Verify that `lib/task-action-evidence.ps1`\u0027s `Test-TaskCompletionRecoverable` helper is correctly integrated and invoked.",
+                          "Verify that `identity-keyed task_started_at` is correctly stored and retrieved from `driver/81:1657`.",
+                          "Verify that auto-commits from `driver/83:265` correctly prepend `[task:\u003cid\u003e]` before truncation.",
+                          "Verify that the new recovery logic correctly activates on `restart/cap-hit` in `driver/60:217`, `covered-after-restart` in `driver/86:1465`, and `fast-path` in `driver/81:1466` *before* a task is marked `FAILED`.",
+                          "Verify that the `exact-id-match` logic (`qa_head==HEAD ∧ critic.ts\u003e=commit_ts`) correctly prevents `false-DONE` on template tasks when an ID or timestamp mismatch occurs.",
+                          "Monitor `outcome-ledger` for a measurable reduction in `false-FAILED` entries for completed tasks over a 24-hour period post-deployment.",
+                          "Monitor system metrics for a reduction in \u0027restart-idle-run\u0027 or similar resource waste related to re-processing already completed tasks.",
+                          "Verify that the system remains `fail-closed` in various unexpected or error scenarios."
+                      ]
+}

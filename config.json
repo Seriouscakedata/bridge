@@ -10,6 +10,7 @@
                             "hard":  3,
                             "total":  8
                         },
+    "recover_covered_after_restart":  false,
     "mode":  "interactive",
     "planner":  "claude",
     "coder":  {

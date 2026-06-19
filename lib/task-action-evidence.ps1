@@ -296,6 +296,232 @@ function Test-TaskDoneQaPassCommitEvidence {
   }
 }
 
+function Get-TaskCompletionRecoverableValue {
+  param(
+    [object]$Object,
+    [string]$Name
+  )
+  if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) { return $null }
+  if ($Object -is [hashtable]) {
+    if ($Object.ContainsKey($Name)) { return $Object[$Name] }
+    return $null
+  }
+  try {
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+  } catch {}
+  return $null
+}
+
+function ConvertTo-TaskCompletionRecoverableEpoch {
+  param([object]$Value)
+  if ($null -eq $Value) { return $null }
+  $text = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  $longValue = 0L
+  if ([Int64]::TryParse($text, [ref]$longValue)) { return $longValue }
+  try {
+    return [datetimeoffset]::Parse($text).ToUniversalTime().ToUnixTimeSeconds()
+  } catch {
+    return $null
+  }
+}
+
+function Get-TaskCompletionRecoverableStartedAt {
+  param(
+    [object]$State,
+    [string]$BacklogId
+  )
+  if ($null -eq $State -or [string]::IsNullOrWhiteSpace($BacklogId)) { return '' }
+  $started = Get-TaskCompletionRecoverableValue -Object $State -Name 'task_started_at'
+  if ($null -eq $started) { return '' }
+  if ($started -is [string]) {
+    $activeId = [string](Get-TaskCompletionRecoverableValue -Object $State -Name 'current_backlog_id')
+    if ($activeId.Equals($BacklogId, [System.StringComparison]::OrdinalIgnoreCase)) { return ([string]$started).Trim() }
+    return ''
+  }
+  if ($started -is [System.Collections.IDictionary]) {
+    if ($started.Contains($BacklogId)) { return ([string]$started[$BacklogId]).Trim() }
+    return ''
+  }
+  try {
+    $prop = $started.PSObject.Properties[$BacklogId]
+    if ($null -ne $prop) { return ([string]$prop.Value).Trim() }
+  } catch {}
+  return ''
+}
+
+function New-TaskCompletionRecoverableResult {
+  param(
+    [string]$Verdict,
+    [string]$Reason,
+    [string]$TaskId = '',
+    [string]$Head = '',
+    [string]$QaHead = '',
+    [Nullable[Int64]]$CommitTs = $null,
+    [Nullable[Int64]]$CriticTs = $null,
+    [string]$Repo = ''
+  )
+  return [pscustomobject]@{
+    verdict   = [string]$Verdict
+    reason    = [string]$Reason
+    task_id   = [string]$TaskId
+    head      = [string]$Head
+    qa_head   = [string]$QaHead
+    commit_ts = $CommitTs
+    critic_ts = $CriticTs
+    repo      = [string]$Repo
+  }
+}
+
+function Test-TaskCompletionRecoverable {
+  # Pure/read-only. Fail-closed restart recovery evidence:
+  # exact [task:<id>] HEAD commit, clean tree, worthy changed path, QA PASS on HEAD,
+  # and critic OK/none at or after the commit timestamp.
+  param(
+    [object]$State,
+    [string]$BacklogId,
+    [string]$BridgeRoot = '',
+    [string[]]$RepoRoots = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace($BacklogId)) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_task_id')
+  }
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_bridge_root' -TaskId $BacklogId)
+  }
+
+  $applyRestarts = 0
+  $hardRestarts = 0
+  try { $applyRestarts = [int](Get-TaskCompletionRecoverableValue -Object $State -Name 'task_apply_restart_count') } catch { $applyRestarts = 0 }
+  try { $hardRestarts = [int](Get-TaskCompletionRecoverableValue -Object $State -Name 'task_hard_restart_count') } catch { $hardRestarts = 0 }
+  if (($applyRestarts + $hardRestarts) -le 0) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'no_restart' -TaskId $BacklogId)
+  }
+
+  $startedAt = Get-TaskCompletionRecoverableStartedAt -State $State -BacklogId $BacklogId
+  $startedEpoch = ConvertTo-TaskCompletionRecoverableEpoch -Value $startedAt
+  if ($null -eq $startedEpoch) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_task_started_at' -TaskId $BacklogId)
+  }
+
+  $qa = Get-TaskCompletionRecoverableValue -Object $State -Name 'qa_verdict_cache'
+  $qaVerdict = [string](Get-TaskCompletionRecoverableValue -Object $qa -Name 'verdict')
+  $qaHead = ([string](Get-TaskCompletionRecoverableValue -Object $qa -Name 'head')).Trim()
+  if ($qaVerdict -ne 'PASS' -or [string]::IsNullOrWhiteSpace($qaHead)) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_qa_pass' -TaskId $BacklogId -QaHead $qaHead)
+  }
+
+  $critic = Get-TaskCompletionRecoverableValue -Object $State -Name 'critic_verdict_cache'
+  $criticVerdict = [string](Get-TaskCompletionRecoverableValue -Object $critic -Name 'verdict')
+  $criticSeverity = [string](Get-TaskCompletionRecoverableValue -Object $critic -Name 'severity')
+  $criticTs = ConvertTo-TaskCompletionRecoverableEpoch -Value (Get-TaskCompletionRecoverableValue -Object $critic -Name 'ts')
+  if ($criticVerdict -ne 'OK' -or $criticSeverity -ne 'none' -or $null -eq $criticTs) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_fresh_critic' -TaskId $BacklogId -QaHead $qaHead -CriticTs $criticTs)
+  }
+
+  $repoList = New-Object 'System.Collections.Generic.List[string]'
+  $seen = @{}
+  foreach ($candidate in @($RepoRoots + @($BridgeRoot))) {
+    $repo = ([string]$candidate).Trim()
+    if ([string]::IsNullOrWhiteSpace($repo)) { continue }
+    try { $repo = [System.IO.Path]::GetFullPath($repo).TrimEnd('\','/') } catch { continue }
+    $key = $repo.ToLowerInvariant()
+    if (-not $seen.ContainsKey($key)) {
+      $seen[$key] = $true
+      [void]$repoList.Add($repo)
+    }
+  }
+  if ($repoList.Count -eq 0) {
+    return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_repo' -TaskId $BacklogId -QaHead $qaHead -CriticTs $criticTs)
+  }
+
+  $marker = '[task:' + $BacklogId + ']'
+  foreach ($repo in @($repoList.ToArray())) {
+    if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+    $head = ''
+    try { $head = ((& git -C $repo rev-parse HEAD 2>$null) | Select-Object -First 1).Trim() } catch { $head = '' }
+    if ([string]::IsNullOrWhiteSpace($head)) { continue }
+
+    $dirty = ''
+    try { $dirty = ([string]((& git -C $repo status --porcelain -uall 2>$null) | Out-String)).Trim() } catch { return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'status_failed' -TaskId $BacklogId -Head $head -QaHead $qaHead -CriticTs $criticTs -Repo $repo) }
+    if ($dirty -ne '') {
+      return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'dirty_tree' -TaskId $BacklogId -Head $head -QaHead $qaHead -CriticTs $criticTs -Repo $repo)
+    }
+
+    $subject = ''
+    $commitTs = $null
+    try {
+      $subject = ([string]((& git -C $repo log -1 --format=%s HEAD 2>$null) | Out-String)).Trim()
+      $commitTsText = ([string]((& git -C $repo log -1 --format=%ct HEAD 2>$null) | Out-String)).Trim()
+      $commitTs = ConvertTo-TaskCompletionRecoverableEpoch -Value $commitTsText
+    } catch {
+      return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'head_log_failed' -TaskId $BacklogId -Head $head -QaHead $qaHead -CriticTs $criticTs -Repo $repo)
+    }
+    if ($null -eq $commitTs) {
+      return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'missing_commit_ts' -TaskId $BacklogId -Head $head -QaHead $qaHead -CriticTs $criticTs -Repo $repo)
+    }
+    if ($commitTs -lt $startedEpoch) { continue }
+    if ($subject.IndexOf($marker, [System.StringComparison]::Ordinal) -lt 0) { continue }
+
+    if (-not $qaHead.Equals($head, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'qa_head_mismatch' -TaskId $BacklogId -Head $head -QaHead $qaHead -CommitTs $commitTs -CriticTs $criticTs -Repo $repo)
+    }
+    if ($criticTs -lt $commitTs) {
+      return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'critic_before_commit' -TaskId $BacklogId -Head $head -QaHead $qaHead -CommitTs $commitTs -CriticTs $criticTs -Repo $repo)
+    }
+
+    $worthyCount = 0
+    try {
+      foreach ($path in @(& git -C $repo diff-tree --no-commit-id --name-only -r --root HEAD 2>$null)) {
+        $p = ([string]$path).Trim() -replace '\\','/'
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        if (Test-TaskActionEvidencePathWorth -Path $p -RepoRoot $repo -BridgeRoot $BridgeRoot) { $worthyCount++ }
+      }
+    } catch {
+      return (New-TaskCompletionRecoverableResult -Verdict 'INSUFFICIENT_EVIDENCE' -Reason 'changed_paths_failed' -TaskId $BacklogId -Head $head -QaHead $qaHead -CommitTs $commitTs -CriticTs $criticTs -Repo $repo)
+    }
+    if ($worthyCount -le 0) {
+      return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'no_worthy_paths' -TaskId $BacklogId -Head $head -QaHead $qaHead -CommitTs $commitTs -CriticTs $criticTs -Repo $repo)
+    }
+
+    return (New-TaskCompletionRecoverableResult -Verdict 'RECOVER_DONE' -Reason 'exact_task_head_qa_critic' -TaskId $BacklogId -Head $head -QaHead $qaHead -CommitTs $commitTs -CriticTs $criticTs -Repo $repo)
+  }
+
+  return (New-TaskCompletionRecoverableResult -Verdict 'NOT_RECOVERABLE' -Reason 'no_exact_task_head_commit' -TaskId $BacklogId -QaHead $qaHead -CriticTs $criticTs)
+}
+
+function Write-TaskCompletionRecoveryAudit {
+  param(
+    [string]$BridgeRoot = '',
+    [string]$TaskId = '',
+    [string]$Decision = '',
+    [object]$Verdict = $null,
+    [bool]$FlagState = $false,
+    [string]$Site = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { return }
+  try {
+    $logDir = Join-Path $BridgeRoot 'logs'
+    if (-not (Test-Path -LiteralPath $logDir -PathType Container)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    $record = [ordered]@{
+      ts         = (Get-Date).ToUniversalTime().ToString('o')
+      site       = [string]$Site
+      task_id    = [string]$TaskId
+      decision   = [string]$Decision
+      verdict    = if ($null -ne $Verdict) { [string]$Verdict.verdict } else { '' }
+      reason     = if ($null -ne $Verdict) { [string]$Verdict.reason } else { '' }
+      head       = if ($null -ne $Verdict) { [string]$Verdict.head } else { '' }
+      qa_head    = if ($null -ne $Verdict) { [string]$Verdict.qa_head } else { '' }
+      commit_ts  = if ($null -ne $Verdict -and $null -ne $Verdict.commit_ts) { [Int64]$Verdict.commit_ts } else { $null }
+      critic_ts  = if ($null -ne $Verdict -and $null -ne $Verdict.critic_ts) { [Int64]$Verdict.critic_ts } else { $null }
+      flag_state = [bool]$FlagState
+    }
+    Add-Content -LiteralPath (Join-Path $logDir 'task-completion-recovery.jsonl') -Value ($record | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
+  } catch {}
+}
+
 function Get-TaskDoneEvidenceDecision {
   # Pure, deterministic decision for the driver/85 mode-transition DONE evidence gate.
   # Returns { allow; reason } describing whether a planner DONE may pass without fresh
