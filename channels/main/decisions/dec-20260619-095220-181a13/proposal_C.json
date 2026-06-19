@@ -1,0 +1,51 @@
+{
+    "proposer":  "C",
+    "understanding":  "The Doctor process in lib/doctor.ps1 has two bugs causing an eternal loop: (a) when commit_famine triggers but the task\u0027s work is actually complete (clean tree, recent commit, or passing tests), Doctor continues diagnosing instead of closing the task via Complete-Doctor; (b) hard-restarts (missing-stamp) reset doctor_repair_attempts to zero for the same task, preventing the counter from ever reaching the escalation threshold. Both fixes must be atomic in one file, with parsing, smoke tests, and unit tests included, without altering other state field structures.",
+    "summary":  "Modify lib/doctor.ps1 to: (1) add a readiness check before diagnosing a suspended task—if the tree is not dirty, or a fresh commit exists, or tests pass, call Complete-Doctor to mark the task done/resolved; (2) persist doctor_repair_attempts per task_id across hard-restarts by storing/retrieving the counter from state keyed by task_id rather than resetting it. Include ParseFile validation, smoke tests, and a unit test that verifies a ready-but-uncommitted task closes in one pass and that the repair counter survives a simulated restart.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a pre-diagnosis readiness gate in Doctor that checks for actual task completion (clean tree, recent commit, or passed tests) and calls Complete-Doctor instead of proceeding with repair diagnosis.",
+                               "reason":  "Without this gate, Doctor perpetually diagnoses tasks whose work is already done, causing an infinite loop because the trigger condition (commit_famine) remains true but no repair is needed.",
+                               "tradeoff":  "Slightly increases Doctor\u0027s runtime per task due to additional checks, but eliminates the infinite loop and reduces overall system load by closing tasks promptly.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Modify the hard-restart path so that doctor_repair_attempts is persisted per task_id in state and restored on restart, rather than being reset to zero.",
+                               "reason":  "Resetting the counter on every restart prevents it from ever reaching the escalation threshold, trapping the task in an eternal loop. Persisting it allows escalation to eventually fire.",
+                               "tradeoff":  "Requires careful state management to avoid key collisions or stale data, but is necessary for correct escalation behavior and aligns with the existing state structure.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Implement both fixes atomically in lib/doctor.ps1 with ParseFile validation, smoke tests, and a unit test covering the combined scenario.",
+                               "reason":  "The two bugs are interdependent in causing the eternal loop; fixing only one leaves the loop intact. Atomic delivery with tests ensures both fixes work together and do not regress.",
+                               "tradeoff":  "Increases the scope of the single change, but reduces integration risk and ensures the loop is fully resolved.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "The Doctor process is implemented in lib/doctor.ps1 and uses Complete-Doctor to mark tasks done/resolved.",
+                        "State variables doctor_repair_attempts and doctor_restart_count are accessible and can be keyed by task_id.",
+                        "Hard-restart is triggered by a missing-stamp condition that currently resets doctor_repair_attempts.",
+                        "Task readiness can be determined by checking Git tree dirty status, existence of a recent commit, or test pass results.",
+                        "The paired commit_famine-trigger fix in lib/auditor.ps1 is handled separately but does not conflict with these changes."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Readiness checks (clean tree, recent commit, tests passed) may have false positives, closing tasks that are not truly complete.",
+                      "severity":  "medium",
+                      "mitigation":  "Use conservative checks (e.g., require all three conditions or a combination) and add logging for manual verification; include unit tests for edge cases."
+                  },
+                  {
+                      "risk":  "Persisting doctor_repair_attempts per task_id may cause state bloat if old task entries are not cleaned up.",
+                      "severity":  "low",
+                      "mitigation":  "Add a cleanup routine that removes entries for tasks that are closed or escalated, or rely on existing state garbage collection."
+                  },
+                  {
+                      "risk":  "Changes to state handling could inadvertently affect other processes that read doctor_repair_attempts or doctor_restart_count.",
+                      "severity":  "high",
+                      "mitigation":  "Restrict changes to the Doctor process only; verify with control-plane checks that other state field structures remain unmodified; run integration tests."
+                  }
+              ],
+    "minimal_version":  "In lib/doctor.ps1, before the existing diagnosis loop, insert a readiness check: if (-not (Test-GitTreeDirty) -or (Test-RecentCommit) -or (Test-TestsPassed)) { Complete-Doctor -TaskId $taskId; continue }. For the restart path, change `$doctor_repair_attempts = 0` to `$doctor_repair_attempts = Get-StateValue -Key \"repair_attempts_$taskId\" -Default 0` and update state with `Set-StateValue -Key \"repair_attempts_$taskId\" -Value $doctor_repair_attempts` after increment. Include ParseFile, smoke test, and unit test.",
+    "advanced_version":  "In lib/doctor.ps1, implement a robust readiness evaluator function Test-TaskActuallyReady that combines dirty-tree check, recent-commit detection via git log, and test-result parsing with configurable thresholds. Use a state helper module for atomic get/set of per-task repair counters with TTL-based cleanup. Add detailed logging for each decision branch. Include comprehensive unit tests mocking Git state, test results, and restart scenarios, plus a smoke test that runs the full Doctor pipeline on a synthetic ready-but-uncommitted task and validates closure and counter persistence."
+}

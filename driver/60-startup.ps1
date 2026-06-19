@@ -441,6 +441,9 @@ try {
         $s.doctor_attempts = 0
         $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
         $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue '' -Force
+        $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue '' -Force
+        $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue '' -Force
         $s.doctor_reason = ''
         $s.doctor_started_at = $null
         Close-ReplayForStateTask -State $s -Status 'aborted'

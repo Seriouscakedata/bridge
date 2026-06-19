@@ -10,6 +10,7 @@
 #   doctor_repair_attempts -- repair attempts seeded for the held task
 #   doctor_restart_count   -- driver restarts while Doctor is active (restart-loop guard)
 #   doctor_attempts        -- legacy alias, mirrors doctor_repair_attempts
+#   doctor_repair_task_id  -- stable owner of doctor_repair_attempts
 #   doctor_reason          -- short reason string (planner_timeout, watchdog_rollback, ...)
 #   doctor_started_at      -- ISO timestamp the Doctor activated
 
@@ -68,6 +69,140 @@ function Get-DoctorRestartCount {
   return (Get-DoctorStateInt -State $State -Names @('doctor_restart_count') -Default 0)
 }
 
+function Test-DoctorCommitFamineReason {
+  param([string]$Reason)
+  return (([string]$Reason).Trim().ToLowerInvariant() -match '(^|:)commit_famine$')
+}
+
+function Get-DoctorStateText {
+  param($State, [string[]]$Names, [string]$Default = '')
+  if (-not $State) { return $Default }
+  foreach ($name in @($Names)) {
+    try {
+      if (($State.PSObject.Properties.Name -contains $name) -and $null -ne $State.$name) {
+        $value = ([string]$State.$name).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+      }
+    } catch {}
+  }
+  return $Default
+}
+
+function Get-DoctorStableTextHash {
+  param([string]$Text)
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha.ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0,16)
+  } finally {
+    try { $sha.Dispose() } catch {}
+  }
+}
+
+function Get-DoctorHeldBacklogId {
+  param($State)
+  return (Get-DoctorStateText -State $State -Names @('current_backlog_id','current_task_id') -Default '')
+}
+
+function Get-DoctorRepairTaskId {
+  param($State)
+  $id = Get-DoctorHeldBacklogId -State $State
+  if (-not [string]::IsNullOrWhiteSpace($id)) { return ('backlog:' + $id) }
+  $taskId = Get-DoctorStateText -State $State -Names @('task_id') -Default ''
+  if (-not [string]::IsNullOrWhiteSpace($taskId)) { return ('task:' + $taskId) }
+  $held = Get-DoctorStateText -State $State -Names @('held_task') -Default ''
+  if (-not [string]::IsNullOrWhiteSpace($held)) { return ('held-hash:' + (Get-DoctorStableTextHash -Text $held)) }
+  return ''
+}
+
+function Sync-DoctorRepairCounterOwner {
+  param($State)
+  if (-not $State) { return $State }
+  $owner = Get-DoctorRepairTaskId -State $State
+  if ([string]::IsNullOrWhiteSpace($owner)) { return $State }
+  $stored = Get-DoctorStateText -State $State -Names @('doctor_repair_task_id') -Default ''
+  if ($stored -eq $owner) { return $State }
+  Update-State ({
+    param($s)
+    $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue $owner -Force
+    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+    $s.doctor_attempts = 0
+  }.GetNewClosure()) | Out-Null
+  return (Read-State)
+}
+
+function Get-DoctorGitHead {
+  param([string]$Root = '')
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  try { return ([string](& git -c ('safe.directory=' + $Root) -C $Root rev-parse HEAD 2>$null | Out-String)).Trim() } catch { return '' }
+}
+
+function Get-DoctorGitStatusText {
+  param([string]$Root = '')
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  try { return ([string](& git -c ('safe.directory=' + $Root) -C $Root status --porcelain -uall 2>$null | Out-String)).Trim() } catch { return '__git_status_error__' }
+}
+
+function Get-DoctorLastCommitMessage {
+  param([string]$Root = '')
+  if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-BridgeRoot }
+  try { return ([string](& git -c ('safe.directory=' + $Root) -C $Root log -1 --pretty=%B 2>$null | Out-String)).Trim() } catch { return '' }
+}
+
+function Test-DoctorCommitLooksLikeDoctorRepair {
+  param([string]$Message)
+  $msg = ([string]$Message).Trim()
+  if ([string]::IsNullOrWhiteSpace($msg)) { return $false }
+  return ($msg -match '(?i)(\bdoctor\b|repair\(|доктор|саморемонт)')
+}
+
+function Test-DoctorHeldTestsPassed {
+  param($State, [string]$Head = '')
+  if (-not $State) { return $false }
+  try {
+    if (($State.PSObject.Properties.Name -contains 'doctor_tests_passed') -and [bool]$State.doctor_tests_passed) { return $true }
+  } catch {}
+  try {
+    if (($State.PSObject.Properties.Name -contains 'qa_verdict_cache') -and $State.qa_verdict_cache) {
+      $qc = $State.qa_verdict_cache
+      $verdict = ([string]$qc.verdict).Trim().ToUpperInvariant()
+      $qcHead = ([string]$qc.head).Trim()
+      if ($verdict -eq 'PASS' -and ([string]::IsNullOrWhiteSpace($qcHead) -or [string]::IsNullOrWhiteSpace($Head) -or $qcHead -eq $Head)) { return $true }
+    }
+  } catch {}
+  try {
+    $doneSha = Get-DoctorStateText -State $State -Names @('done_gate_pass_sha') -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($doneSha) -and -not [string]::IsNullOrWhiteSpace($Head) -and $doneSha -eq $Head) { return $true }
+  } catch {}
+  return $false
+}
+
+function Test-DoctorHeldFreshCommit {
+  param($State, [string]$Head = '', [string]$Root = '')
+  if (-not $State -or [string]::IsNullOrWhiteSpace($Head)) { return $false }
+  $base = Get-DoctorStateText -State $State -Names @('doctor_held_base_commit','task_bridge_base_commit','task_base_commit') -Default ''
+  if ([string]::IsNullOrWhiteSpace($base) -or $base -eq $Head) { return $false }
+  $lastMsg = Get-DoctorLastCommitMessage -Root $Root
+  if (Test-DoctorCommitLooksLikeDoctorRepair -Message $lastMsg) { return $false }
+  return $true
+}
+
+function Test-DoctorHeldWorkReady {
+  param($State = $null)
+  if (-not $State) { $State = Read-State }
+  if (-not $State) { return $false }
+  if (-not (Test-DoctorCommitFamineReason -Reason ([string]$State.doctor_reason))) { return $false }
+
+  $root = Get-BridgeRoot
+  $head = Get-DoctorGitHead -Root $root
+  $status = Get-DoctorGitStatusText -Root $root
+  if ($status -eq '') { return $true }
+  if (Test-DoctorHeldFreshCommit -State $State -Head $head -Root $root) { return $true }
+  if (Test-DoctorHeldTestsPassed -State $State -Head $head) { return $true }
+  return $false
+}
+
 function Write-DoctorLog {
   param([string]$Message)
   try {
@@ -93,13 +228,22 @@ function Activate-Doctor {
     return $false
   }
   $now = (Get-Date).ToString('o')
+  $repairOwner = Get-DoctorRepairTaskId -State $st
+  $storedOwner = Get-DoctorStateText -State $st -Names @('doctor_repair_task_id') -Default ''
+  $preserveRepairAttempts = (-not [string]::IsNullOrWhiteSpace($repairOwner) -and $storedOwner -eq $repairOwner)
+  $repairAttempts = if ($preserveRepairAttempts) { Get-DoctorRepairAttemptCount -State $st } else { 0 }
+  $holdHead = Get-DoctorGitHead
+  $heldBaseCommit = Get-DoctorStateText -State $st -Names @('task_bridge_base_commit','task_base_commit') -Default ''
   try { Save-StateSnapshot -Reason 'doctor_activate' } catch {}
   Update-State ({ param($s)
     $s.held_task         = $cur
     $s.doctor_active     = $true
-    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue $repairAttempts -Force
     $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
-    $s.doctor_attempts   = 0
+    $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue $repairOwner -Force
+    $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue $holdHead -Force
+    $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue $heldBaseCommit -Force
+    $s.doctor_attempts   = $repairAttempts
     $s.doctor_reason     = $Reason
     $s.doctor_started_at = $now
     $s.current_task      = $null
@@ -220,8 +364,69 @@ $ctx
 function Complete-Doctor {
   # Called when Doctor reports STATUS: DONE successfully. Restore the held task as the new
   # current_task with mode='normal' and fresh counters; clear Doctor state.
+  param([switch]$ResolveHeldDone)
   $st = Read-State
   $held = [string]$st.held_task
+  if ($ResolveHeldDone) {
+    $bid = Get-DoctorHeldBacklogId -State $st
+    if ([string]::IsNullOrWhiteSpace($bid)) {
+      try { Add-Message -From system -Text "🩺 Доктор: готовность held-задачи подтверждена, но backlog id пуст — не закрываю и не очищаю held_task." -Kind event | Out-Null } catch {}
+      try { Write-DoctorLog "Doctor resolve-held-done blocked: missing backlog id" } catch {}
+      return $false
+    }
+    $head = Get-DoctorGitHead
+    $closed = $false
+    if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+      try { $closed = [bool](Set-Idea -Id $bid -Status 'done' -Reason 'doctor-resolved-commit-famine-ready') } catch { $closed = $false }
+    }
+    if (-not $closed) {
+      try { Add-Message -From system -Text ("🩺 Доктор: готовность held-задачи подтверждена, но Set-Idea не закрыл backlog id " + $bid + " — state оставлен без изменений.") -Kind event | Out-Null } catch {}
+      try { Write-DoctorLog ("Doctor resolve-held-done blocked: Set-Idea failed for " + $bid) } catch {}
+      return $false
+    }
+    try {
+      if (Get-Command Write-BacklogJsonLine -ErrorAction SilentlyContinue) {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'doctor-resolve-held-done'
+          item_id = $bid
+          reason = 'commit_famine_work_ready'
+          commit = $head
+        })
+      }
+    } catch {}
+    Update-State ({ param($s)
+      $s.current_task         = $null
+      $s.held_task            = $null
+      $s.current_backlog_id   = $null
+      $s.doctor_active        = $false
+      $s.doctor_reason        = ''
+      $s.doctor_started_at    = $null
+      $s.doctor_attempts      = 0
+      $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue '' -Force
+      $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue '' -Force
+      $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue '' -Force
+      $s.task_turn            = 0
+      $s.task_mode            = 'normal'
+      $s.no_progress_count    = 0
+      $s.timeout_retry_count  = 0
+      $s.task_did_actions     = $false
+      $s.coder_fired          = $false
+      $s.coder_bypass_retry_count = 0
+      $s.verify_retry_count   = 0
+      $s.critic_retry_count   = 0
+      $s.force_planner        = $false
+      Clear-AuditorSuppressedHashes -State $s
+      $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
+      $s.status='idle'
+    }.GetNewClosure()) | Out-Null
+    try { Add-Message -From system -Text ("🩺 Доктор: held-задача " + $bid + " уже готова при commit_famine — закрыта как done, повторная диагностика пропущена.") -Kind event | Out-Null } catch {}
+    try { Append-DoctorEvent -Event 'resolve-held-done' -Reason 'commit_famine_work_ready' } catch {}
+    try { Write-DoctorLog ("Doctor resolve-held-done: " + $bid + " " + $head) } catch {}
+    return $true
+  }
   if ([string]::IsNullOrWhiteSpace($held)) {
     try { Add-Message -From system -Text "🩺 Доктор завершил, но held_task пуст — нечего возобновлять. Возвращаюсь в idle." -Kind event | Out-Null } catch {}
     # FIX 2026-05-26: clear current_task and counters too, else the loop keeps running the
@@ -230,6 +435,9 @@ function Complete-Doctor {
       $s.doctor_active=$false; $s.held_task=$null; $s.doctor_reason=''; $s.doctor_started_at=$null; $s.doctor_attempts=0
       $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
       $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+      $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue '' -Force
+      $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue '' -Force
+      $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue '' -Force
       $s.current_task=$null; $s.task_turn=0; $s.task_mode='normal'
       $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false
       $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.critic_retry_count=0
@@ -250,6 +458,9 @@ function Complete-Doctor {
     $s.doctor_attempts      = 0
     $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
     $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue '' -Force
+    $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue '' -Force
+    $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue '' -Force
     $s.task_turn            = 0
     $s.task_mode            = 'normal'
     $s.no_progress_count    = 0
@@ -296,6 +507,9 @@ function Abort-Doctor {
     $s.doctor_active=$false; $s.doctor_attempts=0; $s.doctor_reason=''; $s.doctor_started_at=$null
     $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue 0 -Force
     $s | Add-Member -NotePropertyName doctor_restart_count -NotePropertyValue 0 -Force
+    $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue '' -Force
+    $s | Add-Member -NotePropertyName doctor_hold_head -NotePropertyValue '' -Force
+    $s | Add-Member -NotePropertyName doctor_held_base_commit -NotePropertyValue '' -Force
     $s.current_task=$null; $s.task_turn=0; Clear-AuditorSuppressedHashes -State $s
     if ($requeued) { $s.held_task=$null; $s.current_backlog_id=$null }
   }.GetNewClosure()) | Out-Null

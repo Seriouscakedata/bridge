@@ -1,0 +1,80 @@
+{
+    "proposer":  "B",
+    "understanding":  "Two coupled defects in the Doctor self-repair agent (lib/doctor.ps1) produce an eternal loop when the trigger reason is commit_famine. (a) The auditor fires commit_famine (lib/auditor.ps1:559) on a dirty/stale tree with no recent commit; the driver preflight (driver/80-loop-preflight.ps1:230-270) then increments doctor_repair_attempts and feeds Get-DoctorTaskText into the planner→coder pipeline. But when the held task\u0027s work is ACTUALLY finished (tree clean for its footprint, a fresh commit exists after doctor_started_at, or smoke/tests pass), there is nothing to repair — the Doctor \u0027diagnoses emptiness\u0027 and never converges. There is no readiness short-circuit and no path that closes the held backlog item as done; Complete-Doctor (lib/doctor.ps1:220) only RE-QUEUES held_task as current_task, which immediately re-trips commit_famine. (b) doctor_repair_attempts is a global, task-agnostic counter. The escalation gate is `if ($att -ge $maxA) { Abort-Doctor }` (preflight:233). On a hard restart with a missing/untrusted stamp (driver/60-startup.ps1, \u0027missing-stamp\u0027 path) the held task can be re-seeded so the repair counter effectively resets to 0 and never reaches maxRepairAttempts, so the system never escalates to Abort-Doctor. (a)+(b) compose into a permanent loop: re-run done work, restart resets the counter, repeat. This is the paired atom to the commit_famine-trigger fix already landed in lib/auditor.ps1.",
+    "summary":  "Inside lib/doctor.ps1, add (1) a deterministic readiness probe Test-DoctorHeldWorkReady that returns true only on strong evidence the held work is complete (clean tree for the held footprint AND (fresh post-doctor_started_at commit OR advisory smoke/tests pass)), reusing the parse/smoke discipline already in Invoke-FailedTaskSalvage; (2) a -ResolveHeldDone switch on Complete-Doctor that marks the held backlog item done/resolved (Set-Idea -Status done + ledger) and returns to idle instead of re-queuing it; and (3) bind the repair counter to the held task by persisting doctor_repair_task_id next to doctor_repair_attempts, so the missing-stamp restart resume only zeroes the counter when the resumed task_id differs. The preflight gains a minimal short-circuit: when doctor_reason is commit_famine and Test-DoctorHeldWorkReady is true, call Complete-Doctor -ResolveHeldDone and continue, before any attempt increment. All new state is additive doctor_* fields (Add-Member -Force); no unrelated state schema is touched. Shipped atomically with a ParseFile gate, smoke, and a unit test covering one-pass close and counter-survives-restart.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a deterministic Test-DoctorHeldWorkReady helper in lib/doctor.ps1 that treats held work as \u0027done\u0027 only when the tree is clean of the held task\u0027s code footprint AND (a fresh commit exists after doctor_started_at OR advisory smoke/tests pass), reusing the runtime-exclusion + ParseFile + advisory-smoke pattern already present in Invoke-FailedTaskSalvage.",
+                               "reason":  "commit_famine is a time+dirty-tree heuristic with no completion check; the readiness signal must be deterministic and boot-safe (git status/log are reliable; smoke may be red at boot, so it stays advisory), and reusing the salvage pattern keeps the judgment consistent with the existing, reviewed code.",
+                               "tradeoff":  "A conservative AND-gate may occasionally leave a genuinely-done task in the Doctor for one more pass (false negative) rather than risk closing an unfinished task; this trades a little extra latency for safety.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Resolve the held task by adding a -ResolveHeldDone switch to Complete-Doctor that marks the held backlog item done/resolved (Set-Idea -Status \u0027done\u0027 + task-outcome-ledger) and clears state to idle, rather than restoring held_task as current_task.",
+                               "reason":  "The contract requires closing through Complete-Doctor; the default Complete-Doctor RE-RUNS the held task, which on already-done work re-trips commit_famine and recreates the loop. A switch keeps one code path/file and one source of truth for state teardown.",
+                               "tradeoff":  "Adds a branch to a critical state-mutating function; mitigated by guarding the close strictly to reason=commit_famine + readiness=true and keeping the existing resume branch byte-for-byte unchanged.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "Persist the repair counter\u0027s owner: write doctor_repair_task_id (held task id / current_backlog_id, falling back to a stable hash of held_task) alongside doctor_repair_attempts, and change the missing-stamp/hard-restart resume to reset doctor_repair_attempts ONLY when the resumed held task_id differs from doctor_repair_task_id.",
+                               "reason":  "The escalation gate depends on doctor_repair_attempts reaching maxRepairAttempts; if a hard restart for the SAME held task resets it, escalation never fires. Keying the counter to the held task makes it survive restarts for that task while still resetting cleanly for a genuinely new held task.",
+                               "tradeoff":  "Introduces one additive state field and a small amount of restart-path branching; risk that a stale doctor_repair_task_id sticks, mitigated by clearing it in Activate-Doctor/Complete-Doctor/Abort-Doctor alongside the existing counter resets.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Wire the readiness short-circuit into driver/80-loop-preflight.ps1 immediately before the attempt-increment block (line ~230-270): when doctor_active, current_task empty, doctor_reason=\u0027commit_famine\u0027, and Test-DoctorHeldWorkReady → Complete-Doctor -ResolveHeldDone; continue.",
+                               "reason":  "The increment-and-build-prompt block is exactly where a non-converging pass would be spawned, so short-circuiting there is the minimal-surface intercept; the contract explicitly permits touching driver restart logic for this atom.",
+                               "tradeoff":  "Spreads the atom across a second file (driver), slightly weakening \u0027one file\u0027 purity; kept to a few lines that only call helpers defined in lib/doctor.ps1 so the logic still lives in doctor.ps1.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Keep every new field additive (Add-Member ... -Force, doctor_* namespace), reuse Get-DoctorRepairAttemptCount/Get-DoctorStateInt, and gate the close strictly to commit_famine; do not restructure any unrelated state field.",
+                               "reason":  "Constraint: control-plane change, verify+critic, no structural edits to other state fields; reusing existing accessors preserves the legacy doctor_attempts mirror and avoids divergence.",
+                               "tradeoff":  "doctor_attempts legacy mirror must be kept in sync at every new write site, which is easy to forget; mitigated by funneling counter writes through the existing seed/increment sites only.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Ship one atomic self-test (e.g. tools/test-doctor-commit-famine-resolve.ps1) that stubs Get-BridgeRoot/Read-State/Update-State/Set-Idea and asserts: ready-but-uncommitted held task under commit_famine closes in exactly one pass via Complete-Doctor, AND a simulated missing-stamp restart for the same task_id leaves doctor_repair_attempts non-zero; plus a ParseFile gate on doctor.ps1 and a smoke run.",
+                               "reason":  "The contract makes ParseFile + smoke + unit test part of the atom, and the two success scenarios (one-pass close; counter survives restart) are precisely the regressions that would otherwise re-open the loop.",
+                               "tradeoff":  "Mock-heavy tests can drift from real Update-State semantics; mitigated by mirroring the existing test harness style in tools/test-doctor-commit-famine-skip.ps1 and tools/test-apply-restart-stamp.ps1.",
+                               "confidence":  0.83
+                           }
+                       ],
+    "assumptions":  [
+                        "doctor_reason carries \u0027commit_famine\u0027 verbatim from Activate-Doctor (set by the auditor trigger name) and is readable in the preflight, so the close can be scoped to that reason only.",
+                        "A held backlog id is available via state.current_backlog_id (already used by Abort-Doctor and the restart-loop guard); when absent, a stable hash of held_task is an acceptable counter key and Set-Idea is simply skipped (state still cleared to idle).",
+                        "Set-Idea -Status \u0027done\u0027 (or the equivalent task-management/ledger close) is the canonical way to resolve a backlog item and is loadable in the driver context, mirroring how Abort-Doctor already calls Set-Idea -Status \u0027held\u0027.",
+                        "The \u0027missing-stamp\u0027 hard-restart path is the resume code in driver/60-startup.ps1 that currently re-seeds task state on an untrusted restart; it is the single place where the per-task repair counter can be zeroed for the same held task.",
+                        "Git and smoke.ps1 are reachable from the driver process at the point the readiness probe runs (git always; smoke advisory only, never a hard gate), consistent with Invoke-FailedTaskSalvage\u0027s existing assumptions.",
+                        "maxRepairAttempts (default 3) is the intended escalation ceiling, so a correctly-surviving counter will reach Abort-Doctor within the existing budget."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "False-positive readiness closes a task whose work is actually incomplete (e.g. tree clean only because edits were stashed/rolled back), losing the repair.",
+                      "severity":  "high",
+                      "mitigation":  "Require strong conjunctive evidence (clean held-footprint AND (fresh post-doctor_started_at commit OR smoke pass)); smoke red blocks the auto-close; scope strictly to reason=commit_famine; log the close decision; closing is reversible — the backlog item can be reopened, and held_task text is preserved in the event log."
+                  },
+                  {
+                      "risk":  "Persisted counter blocks a legitimately fresh Doctor run if doctor_repair_task_id is stale or collides for a different-but-similar task.",
+                      "severity":  "medium",
+                      "mitigation":  "Key on current_backlog_id when present (unique), fall back to a hash of held_task; clear doctor_repair_task_id in Activate-Doctor, Complete-Doctor and Abort-Doctor exactly where the counter is already reset; reset the counter whenever the resumed task_id differs."
+                  },
+                  {
+                      "risk":  "Editing driver/80-loop-preflight.ps1 and the startup resume path introduces a regression in the hot loop or restart budget accounting.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the driver edits to a few lines that only call lib/doctor.ps1 helpers; leave the existing Complete-Doctor resume branch and the restart-count accounting untouched; gate behind ParseFile + smoke + the existing doctor/restart self-tests before commit."
+                  },
+                  {
+                      "risk":  "Auto-closing a task that keeps re-famine-ing (close → re-trigger → close) creates a different oscillation instead of a loop.",
+                      "severity":  "low",
+                      "mitigation":  "Because the close marks the backlog item done and the held footprint is verified clean, the task will not be re-selected; advanced version adds recidivism awareness (if the same id was closed-then-refamined N times, escalate to operator instead of re-closing)."
+                  },
+                  {
+                      "risk":  "Legacy doctor_attempts mirror drifts from doctor_repair_attempts after the new persist logic.",
+                      "severity":  "low",
+                      "mitigation":  "Write both fields at the same site (as the existing seed/increment code already does) and read via Get-DoctorRepairAttemptCount which already Max()-es the two."
+                  }
+              ],
+    "minimal_version":  "In lib/doctor.ps1: (1) add Test-DoctorHeldWorkReady (git-only: held-footprint clean AND fresh commit after doctor_started_at; smoke advisory); (2) add a -ResolveHeldDone switch to Complete-Doctor that calls Set-Idea -Status \u0027done\u0027 on current_backlog_id (skip if absent), clears Doctor state to idle, and does NOT re-queue held_task; (3) add additive doctor_repair_task_id written wherever doctor_repair_attempts is seeded/incremented, and change the missing-stamp restart resume to reset doctor_repair_attempts only when the resumed task id differs. In driver/80-loop-preflight.ps1: before the attempt-increment block, if doctor_reason=\u0027commit_famine\u0027 and Test-DoctorHeldWorkReady → Complete-Doctor -ResolveHeldDone; continue. Ship with a ParseFile gate, smoke, and one unit test (tools/test-doctor-commit-famine-resolve.ps1) asserting one-pass close and counter-survives-simulated-restart. No new config, no new metrics, no unrelated state fields.",
+    "advanced_version":  "All of the minimal version plus: a configurable readiness policy under config.doctor (readinessMode = tree|commit|tests|all) routed through Get-DoctorConfigInt-style accessors; reuse of the auditor\u0027s Test-AuditorDoctorQaPass / qa_verdict_cache to confirm \u0027tests passed\u0027 deterministically rather than running smoke at boot; structured decision logging of each auto-close and each counter-preserved-restart into decisions/restart-root-cause-log.jsonl with task_id, evidence, and class; recidivism-aware closing (if the same task_id was auto-closed then re-famined ≥N times, escalate via Abort-Doctor/Send-PushEvent instead of re-closing); metrics counters (doctor_auto_closed, doctor_counter_preserved_restarts); and an expanded test matrix covering clean-tree-only, fresh-commit-only, smoke-red, task-id-mismatch-resets, and TTL/expired-stamp interactions, mirroring tools/test-apply-restart-stamp.ps1\u0027s case coverage."
+}

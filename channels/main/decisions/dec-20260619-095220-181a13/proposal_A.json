@@ -1,0 +1,79 @@
+{
+    "proposer":  "A",
+    "understanding":  "Doctor currently enters an eternal loop in a commit_famine scenario: the supervised task may already be effectively complete, but Doctor continues diagnosing/repairing instead of resolving it through Complete-Doctor. Separately, a hard-restart caused by missing-stamp reinitializes doctor_repair_attempts for the same held task_id, so escalation thresholds are never reached.",
+    "summary":  "Implement a single atomic fix in lib/doctor.ps1: add an early readiness-to-completion path for commit_famine-held tasks, and make missing-stamp hard-restart preserve doctor_repair_attempts when the held task_id is unchanged. Keep existing state structure intact, add ParseFile coverage, smoke coverage, and a focused unit test for ready-but-uncommitted completion plus counter persistence across simulated restart.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add an early commit_famine readiness gate in lib/doctor.ps1 before repair diagnosis.",
+                               "reason":  "If the worktree is clean, a fresh relevant commit exists, or the task\u0027s tests have passed, Doctor should treat the held task as resolved and call Complete-Doctor instead of diagnosing an empty failure.",
+                               "tradeoff":  "This slightly expands Doctor\u0027s authority to close tasks, so the readiness checks must reuse existing trusted signals and stay scoped to suspended commit_famine cases.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Call Complete-Doctor and stop the current Doctor pass when readiness is proven.",
+                               "reason":  "The bug is not only detection but control flow: after resolving the task, Doctor must not continue into repair, restart, or escalation logic for that same task.",
+                               "tradeoff":  "Requires careful placement to avoid bypassing cleanup/logging that Complete-Doctor already handles.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Preserve doctor_repair_attempts across missing-stamp hard-restart when the held task_id is the same.",
+                               "reason":  "Resetting the counter for the same task prevents escalation and creates the eternal loop described in the contract.",
+                               "tradeoff":  "Using the existing scalar field avoids state-schema churn but means preservation depends on reliable task_id comparison.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Reset or reinitialize repair attempts only when the held task_id changes or the task is completed.",
+                               "reason":  "The counter is meaningful per supervised task; carrying it across unrelated tasks would create false escalations.",
+                               "tradeoff":  "This requires a clear fallback for missing/empty task_id, likely treating unknown identity as a new task unless an existing held id can be recovered.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Keep all changes in lib/doctor.ps1 and avoid restructuring unrelated state fields.",
+                               "reason":  "The contract explicitly requests one atomic file and warns control-plane verify+critic not to disturb other state shape.",
+                               "tradeoff":  "A more normalized per-task counter map could be cleaner long-term, but it is too broad for this atom.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Add focused tests for ParseFile, smoke execution, ready-but-uncommitted completion, and restart counter persistence.",
+                               "reason":  "The failure mode is a control-flow loop, so tests must prove both the one-pass completion path and the restart persistence behavior.",
+                               "tradeoff":  "Unit tests may need light harnessing/mocking around Git/test-status signals, but that is preferable to broad integration-only coverage.",
+                               "confidence":  0.82
+                           }
+                       ],
+    "assumptions":  [
+                        "Complete-Doctor already exists in lib/doctor.ps1 or is imported by it and is the canonical way to mark a Doctor-held task done/resolved.",
+                        "Doctor can identify the currently held task_id before and after missing-stamp restart logic.",
+                        "Existing state already contains doctor_repair_attempts and doctor_restart_count as fields whose structure must not change.",
+                        "There are existing test conventions or harnesses capable of running PowerShell ParseFile checks, smoke checks, and unit tests for lib/doctor.ps1.",
+                        "A \u0027fresh commit\u0027 and \u0027tests passed\u0027 signal can be derived from existing Doctor/Auditor state or existing helper functions without inventing a new state schema."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "False-positive task completion if clean worktree or fresh commit is unrelated to the held task.",
+                      "severity":  "high",
+                      "mitigation":  "Scope the completion gate to commit_famine-held tasks and prefer task-linked signals where available; require at least one trusted readiness signal already used elsewhere by the control plane."
+                  },
+                  {
+                      "risk":  "Repair attempts could persist across the wrong task if task_id is missing or stale.",
+                      "severity":  "medium",
+                      "mitigation":  "Preserve the counter only when both previous and current held task_id are present and equal; otherwise initialize according to existing behavior."
+                  },
+                  {
+                      "risk":  "Calling Complete-Doctor too early could skip required Doctor logging or state cleanup.",
+                      "severity":  "medium",
+                      "mitigation":  "Use the existing Complete-Doctor path as the single completion mechanism and return immediately only after that function performs its normal state updates."
+                  },
+                  {
+                      "risk":  "Tests may become brittle if they depend on real Git timing or wall-clock freshness.",
+                      "severity":  "medium",
+                      "mitigation":  "Mock or fixture the readiness signals where possible; for smoke, use deterministic repository state and avoid timing-sensitive assertions."
+                  },
+                  {
+                      "risk":  "Changing restart logic could affect doctor_restart_count semantics.",
+                      "severity":  "low",
+                      "mitigation":  "Leave doctor_restart_count behavior intact except for ensuring it does not imply repair-attempt reset for the same task."
+                  }
+              ],
+    "minimal_version":  "In lib/doctor.ps1, insert a commit_famine readiness check before diagnosis: if the held task is objectively ready, invoke Complete-Doctor and return. In the missing-stamp hard-restart path, snapshot the current held task_id and doctor_repair_attempts, then restore the attempts value after restart only if the held task_id remains the same. Add ParseFile, one smoke run, and a focused unit test covering one-pass completion plus repair-attempt persistence.",
+    "advanced_version":  "Factor the readiness check and same-task counter preservation into small local helper functions inside lib/doctor.ps1, with explicit logging for \u0027completed-ready-task\u0027 and \u0027preserved-repair-attempts-after-restart\u0027. Add table-driven unit cases for clean tree, fresh commit, tests-passed, same-task restart, changed-task restart, and missing task_id fallback, while still preserving the existing state schema and keeping the atom limited to lib/doctor.ps1."
+}

@@ -1,0 +1,27 @@
+{
+    "task":  "[Автозадача из бэклога] [operator/reliability] Доктор крутится в ПЕТЛЕ на задаче, чья работа ФАКТИЧЕСКИ готова, + hard-restart СБРАСЫВАЕТ repair-счётчик → вечный луп. ФАЙЛ: lib/doctor.ps1 (+ при необходимости driver restart-логика, doctor_repair_attempts/doctor_restart_count в state). ДВА под-фикса в одном атоме (один файл, связаны): (а) когда Доктор по commit_famine видит что работа РЕАЛЬНО готова (дерево не dirty ИЛИ свежий коммит ИЛИ тесты прошли) — ЗАКРЫВАТЬ приостановленную задачу (mark done/resolved через Complete-Doctor), а не диагностировать пустоту; (б) hard-restart (missing-stamp) НЕ должен обнулять doctor_repair_attempts для ТОЙ ЖЕ задачи — счётчик переживает рестарт (persist по held task_id), иначе никогда не escalate → вечный луп. АТОМАРНО: ParseFile + smoke + юнит-тест (готовая-но-uncommitted задача под Доктором → закрывается за 1 проход; счётчик НЕ сбрасывается через симулированный restart). control-plane: verify+critic, не трогать структуру прочих state-полей. Парный атом к commit_famine-trigger фиксу (lib/auditor.ps1).",
+    "goal":  "Eliminate an \u0027eternal loop\u0027 in the Doctor process where tasks that are actually complete are not closed, and hard-restarts incorrectly reset the `doctor_repair_attempts` counter, preventing escalation. Ensure Doctor correctly closes ready tasks and that the repair counter persists across restarts for the same task.",
+    "constraints":  [
+                        "Implement two sub-fixes as a single atomic change within one file (`lib/doctor.ps1`).",
+                        "Do not modify the structure of other state fields (control-plane: verify+critic).",
+                        "Changes should primarily be in `lib/doctor.ps1`, potentially affecting driver restart logic and `doctor_repair_attempts`/`doctor_restart_count` in state.",
+                        "The solution must include `ParseFile`, smoke tests, and unit tests as part of the atomic change."
+                    ],
+    "known_context":  [
+                          "There is a \u0027Doctor\u0027 process/script (`lib/doctor.ps1`) responsible for diagnosing and repairing tasks.",
+                          "The Doctor process uses `commit_famine` as a trigger condition.",
+                          "Tasks can be marked done/resolved via `Complete-Doctor`.",
+                          "The system uses `doctor_repair_attempts` and `doctor_restart_count` state variables.",
+                          "Hard-restarts can occur, potentially involving \u0027missing-stamp\u0027 conditions.",
+                          "The task is related to a fix for `commit_famine-trigger` in `lib/auditor.ps1` (paired atom context)."
+                      ],
+    "output_format":  "JSON object matching the provided TaskContract schema.",
+    "task_type":  "bugfix",
+    "risk":  "high",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Set up a task that is suspended under Doctor\u0027s supervision due to `commit_famine`, but its underlying work is demonstrably complete (e.g., Git tree is clean, or a recent commit exists, or tests have passed). Run `lib/doctor.ps1` once. Verify that the task is marked as done/resolved via `Complete-Doctor` and is no longer being diagnosed.",
+                          "Set up a scenario where a task is under Doctor\u0027s supervision and has accumulated a non-zero `doctor_repair_attempts` count. Simulate a hard-restart (e.g., by simulating a \u0027missing-stamp\u0027 condition or restarting the Doctor process). After the restart, verify that the `doctor_repair_attempts` count for that specific `task_id` retains its value and is *not* reset to zero.",
+                          "Execute the atomic unit test which simulates a ready-but-uncommitted task under Doctor, verifies it closes in one pass, and then simulates a restart to confirm the repair counter for the same (or another relevant) task persists."
+                      ]
+}

@@ -1,0 +1,106 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "doctor-readiness-gate",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.82,
+                                     "impact":  0.9,
+                                     "simplicity":  0.68,
+                                     "risk_reduction":  0.86,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Addresses the core failure mode by detecting completed held work before entering another repair cycle. It needs careful readiness semantics, but the commit_famine gate and Complete-Doctor path make it directionally correct.",
+                      "total":  0.834
+                  },
+                  {
+                      "atom_id":  "doctor-task-resolution",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.88,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.84,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correctly resolves the held backlog item instead of resurrecting it as current work. The ledger requirement and idle state clear give this a concrete, testable completion path.",
+                      "total":  0.836
+                  },
+                  {
+                      "atom_id":  "doctor-repair-attempts-persistence",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.87,
+                                     "feasibility":  0.78,
+                                     "impact":  0.82,
+                                     "simplicity":  0.62,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Persisting the counter owner fixes false resets across missing-stamp restarts while still allowing reset on task change. Slight complexity comes from the fallback hash path, but the behavior is well scoped.",
+                      "total":  0.8085
+                  },
+                  {
+                      "atom_id":  "doctor-architectural-constraints",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.92,
+                                     "impact":  0.72,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "These constraints reduce regression risk by keeping state additions additive, namespaced, and limited to commit_famine. The low implementation cost and strong specificity make this a useful guardrail.",
+                      "total":  0.863
+                  },
+                  {
+                      "atom_id":  "doctor-testing-requirements",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.76,
+                                     "impact":  0.86,
+                                     "simplicity":  0.64,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The proposed self-test covers both critical behaviors: one-pass close and counter persistence across same-task restart. The scope is moderate, but ParseFile plus smoke coverage is appropriate for this stateful Doctor path.",
+                      "total":  0.827
+                  },
+                  {
+                      "atom_id":  "doctor-driver-wiring",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.86,
+                                     "impact":  0.76,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.74,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+                                        0.03
+                                    ],
+                      "reason":  "The integration point is plausible and testable, but it should remain a thin call into Doctor helpers and should not depend on an exact line number. Modify to phrase the placement behaviorally: before repair attempt increment, after state is loaded and Doctor helpers are available.",
+                      "total":  0.771
+                  }
+              ]
+}

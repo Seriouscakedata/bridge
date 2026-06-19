@@ -1,0 +1,147 @@
+{
+    "final_answer":  "Adopt all five consensus atoms and the driver-wiring atom (with the judge\u0027s modification) as a single atomic fix centered in lib/doctor.ps1, plus a thin call from driver/80-loop-preflight.ps1. The eternal Doctor loop has two root causes, fixed together: (a) when Doctor is held under commit_famine but the underlying work is actually finished (clean tree OR a fresh commit OR passed tests), Doctor must detect readiness BEFORE re-entering diagnosis and close the held backlog item via Complete-Doctor -ResolveHeldDone (mark done/resolved + task-outcome-ledger, clear state to idle) rather than diagnosing emptiness; and (b) a missing-stamp / hard-restart must NOT blindly reset doctor_repair_attempts — the counter is now owned by a persisted doctor_repair_task_id, so it survives a restart for the SAME held task and only resets when the resumed task differs, restoring the path to escalation. All new state is additive in the doctor_* namespace (Add-Member -Force), reusing existing Get-DoctorRepairAttemptCount/Get-DoctorStateInt, with the close strictly gated to commit_famine and no unrelated state fields restructured. Correctness is locked in by an atomic self-test (one-pass close + counter-survives-same-task-restart) behind a ParseFile gate and a smoke run. The only change from the proposals is the judge\u0027s modify on driver wiring: place the short-circuit behaviorally (after state load and Doctor helpers are available, before the repair-attempt increment) as a thin call into Doctor helpers — never anchored to an exact line number.",
+    "decisions":  [
+                      {
+                          "decision":  "Add a pre-diagnosis readiness gate (Test-DoctorHeldWorkReady) in lib/doctor.ps1 that checks for actual completion — clean tree OR fresh commit OR passed tests — and short-circuits to Complete-Doctor instead of re-entering repair diagnosis; gate strictly to commit_famine.",
+                          "rationale":  "Directly eliminates the core failure mode: Doctor was diagnosing empty work on a task whose work was already done. Detecting readiness before another repair cycle breaks the loop at its source. Judge accept (0.834), high impact (0.9) and risk_reduction (0.86).",
+                          "alternatives_considered":  [
+                                                          "Keep diagnosing the held task without a readiness check (status quo — this is what produces the eternal loop).",
+                                                          "Trust commit_famine alone and always close without a positive readiness signal (rejected — risks closing genuinely incomplete work)."
+                                                      ],
+                          "risk":  "Readiness semantics must be precise; a false-positive would close incomplete work. Mitigation: require commit_famine context AND at least one concrete positive signal (clean tree / commit newer than hold / test-pass stamp).",
+                          "test":  "A ready-but-uncommitted held task under commit_famine closes in exactly one pass via Complete-Doctor and is no longer diagnosed."
+                      },
+                      {
+                          "decision":  "Add a -ResolveHeldDone switch to Complete-Doctor that marks the held backlog item done/resolved (Set-Idea -Status \u0027done\u0027 + task-outcome-ledger entry) and clears state to idle, rather than restoring held_task as current_task.",
+                          "rationale":  "Provides a concrete, auditable completion path that resolves the held item instead of resurrecting it as current work (which would simply re-arm the loop). Judge accept (0.836), strong correctness (0.9) and specificity (0.86).",
+                          "alternatives_considered":  [
+                                                          "Restore held_task as current_task on readiness (rejected — re-triggers diagnosis and the loop returns).",
+                                                          "Silently drop the held task to idle without a ledger entry (rejected — loses the audit trail required for outcome accounting)."
+                                                      ],
+                          "risk":  "Premature \u0027done\u0027 marking, or a non-idempotent ledger write on retry. Mitigation: only reachable behind the readiness gate; make the ledger append idempotent on task_id.",
+                          "test":  "Complete-Doctor -ResolveHeldDone, with readiness proven, marks the held backlog item done/resolved, writes the task-outcome-ledger, and clears state to idle."
+                      },
+                      {
+                          "decision":  "Persist the repair counter\u0027s owner: write doctor_repair_task_id (held task id / current_backlog_id, falling back to a stable deterministic hash of held_task) alongside doctor_repair_attempts, and reset doctor_repair_attempts on missing-stamp/hard-restart resume ONLY when the resumed held task_id differs from doctor_repair_task_id.",
+                          "rationale":  "The second root cause of the eternal loop: hard-restart was unconditionally zeroing the counter, so escalation never fired. Owning the counter by task id makes it survive restarts for the same task while still resetting cleanly on task change. Judge accept (0.8085), highest risk_reduction (0.9) and strong specificity (0.88).",
+                          "alternatives_considered":  [
+                                                          "Reset doctor_repair_attempts unconditionally on missing-stamp/hard-restart (status quo — never escalates, eternal loop).",
+                                                          "Never reset the counter (rejected — stale attempts leak across unrelated tasks and cause premature escalation)."
+                                                      ],
+                          "risk":  "Fallback hash instability or collision would mis-attribute the counter. Mitigation: derive the fallback hash deterministically from a stable field of held_task and prefer task_id/current_backlog_id when present.",
+                          "test":  "A simulated missing-stamp restart for the same task_id leaves doctor_repair_attempts non-zero; a restart with a differing task_id resets it to zero."
+                      },
+                      {
+                          "decision":  "Keep every new field additive (Add-Member ... -Force, doctor_* namespace), reuse Get-DoctorRepairAttemptCount/Get-DoctorStateInt, gate the close strictly to commit_famine, and restructure no unrelated state field.",
+                          "rationale":  "Architectural guardrail that satisfies the control-plane (verify+critic) constraint and minimizes regression blast radius. Judge accept (0.863, highest total) with strong feasibility (0.92) and simplicity (0.9).",
+                          "alternatives_considered":  [
+                                                          "Restructure the state schema or normalize counter fields across reasons (rejected — violates the \u0027do not touch other state-field structure\u0027 constraint and broadens risk)."
+                                                      ],
+                          "risk":  "Low. Main hazard is accidental coupling of the new gate to non-commit_famine reasons; enforced by the strict gate condition.",
+                          "test":  "ParseFile validation on lib/doctor.ps1 passes, and code review confirms all new fields are additive, namespaced doctor_*, and no unrelated state field is restructured."
+                      },
+                      {
+                          "decision":  "Ship one atomic self-test (tools/test-doctor-commit-famine-resolve.ps1) that stubs Get-BridgeRoot/Read-State/Update-State/Set-Idea and asserts BOTH: (1) a ready-but-uncommitted held task under commit_famine closes in exactly one pass via Complete-Doctor, and (2) a simulated missing-stamp restart for the same task_id leaves doctor_repair_attempts non-zero; plus a ParseFile gate on doctor.ps1 and a smoke run.",
+                          "rationale":  "Locks in both critical behaviors in a single atomic, repeatable test as required by the contract\u0027s success_tests. Judge accept (0.827), highest specificity (0.92) and strong risk_reduction (0.9).",
+                          "alternatives_considered":  [
+                                                          "Manual / one-off verification only (rejected — not repeatable, no regression guard).",
+                                                          "Two separate tests for the two behaviors (acceptable but the atom mandates a single atomic self-test covering both)."
+                                                      ],
+                          "risk":  "Stubs drifting from real Read-State/Update-State/Set-Idea signatures, giving false green. Mitigation: assert on observable state transitions and keep stubs minimal and signature-faithful.",
+                          "test":  "Execute tools/test-doctor-commit-famine-resolve.ps1 — both assertions pass; ParseFile gate on doctor.ps1 is green; smoke run completes clean."
+                      },
+                      {
+                          "decision":  "Wire the readiness short-circuit into driver/80-loop-preflight.ps1 as a THIN call into Doctor helpers, placed behaviorally — after state is loaded and Doctor helpers are available, immediately before the repair-attempt-increment block — and NOT anchored to an exact line number. Condition: doctor_active AND current_task empty AND doctor_reason=\u0027commit_famine\u0027 AND Test-DoctorHeldWorkReady → Complete-Doctor -ResolveHeldDone; continue.",
+                          "rationale":  "Connects the in-Doctor logic to the live loop so the close actually fires before another attempt is counted. Accepted with the judge\u0027s modification (modify, 0.771): the integration is plausible and testable but must stay a thin helper call and must not depend on a brittle line number.",
+                          "alternatives_considered":  [
+                                                          "Hardcode placement at line ~230-270 (rejected by the judge — brittle, breaks on any edit above it).",
+                                                          "Inline the readiness+resolve logic directly in the driver (rejected — duplicates Doctor logic and violates the thin-call / single-source constraint)."
+                                                      ],
+                          "risk":  "If placed AFTER the attempt increment, one spurious attempt leaks each cycle; placement before the increment is essential. Touching a second file slightly extends the \u0027primarily one file\u0027 scope — keep the driver change to a minimal guarded call.",
+                          "test":  "driver/80-loop-preflight.ps1 calls Complete-Doctor -ResolveHeldDone exactly once, before the attempt increment, when doctor_active, current_task empty, doctor_reason=\u0027commit_famine\u0027, and Test-DoctorHeldWorkReady is true; otherwise the preflight proceeds unchanged."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Anchor the driver wiring to an exact line range (line ~230-270) in driver/80-loop-preflight.ps1.",
+                         "why":  "Judge modify penalty: line-number coupling is brittle and breaks on any edit above the block. Replaced with behavioral placement (before the repair-attempt increment, after state load and Doctor helpers are available)."
+                     },
+                     {
+                         "decision":  "Restore held_task as current_task when readiness is detected.",
+                         "why":  "Re-arms the diagnosis cycle and re-creates the eternal loop; the held item must be resolved to done/idle via -ResolveHeldDone, not resurrected."
+                     },
+                     {
+                         "decision":  "Reset doctor_repair_attempts unconditionally on missing-stamp / hard-restart.",
+                         "why":  "This is the second root cause of the eternal loop — the counter never reaches the escalation threshold. Replaced by ownership-gated reset keyed on doctor_repair_task_id."
+                     },
+                     {
+                         "decision":  "Restructure or normalize unrelated state fields while adding the new counter-owner field.",
+                         "why":  "Violates the control-plane (verify+critic) constraint to leave other state-field structure untouched; all additions must be additive in the doctor_* namespace."
+                     },
+                     {
+                         "decision":  "Run a micro-debate round to resolve atom conflicts.",
+                         "why":  "Conflict matrix shows zero conflicts and full consensus on five atoms; micro-debate was correctly skipped — no contested topics to resolve."
+                     }
+                 ],
+    "open_questions":  [
+                           "Recency window for the \u0027fresh commit\u0027 readiness signal — what makes a commit count as proof of completion (e.g., commit timestamp newer than the hold timestamp vs. HEAD moved since hold)?",
+                           "Authoritative source for the \u0027tests passed\u0027 readiness signal — which stamp/artifact proves the held task\u0027s tests passed, and is it trustworthy at preflight time?",
+                           "Stability of the fallback stable-hash of held_task when neither task_id nor current_backlog_id is present — confirm it is deterministic across a restart so the counter owner matches.",
+                           "Interaction with the paired commit_famine-trigger fix in lib/auditor.ps1 — once the counter survives restarts, re-verify the escalation threshold (N attempts) fires as intended and is not double-counted across the auditor trigger and Doctor."
+                       ],
+    "implementation_plan":  [
+                                "lib/doctor.ps1: add Test-DoctorHeldWorkReady — returns true when commit_famine is the reason AND at least one positive signal holds (clean git tree OR commit newer than hold OR recorded test-pass).",
+                                "lib/doctor.ps1: add -ResolveHeldDone switch to Complete-Doctor — Set-Idea -Status \u0027done\u0027, append idempotent task-outcome-ledger entry, clear state to idle; do NOT restore held_task as current_task.",
+                                "lib/doctor.ps1: insert the readiness gate before repair diagnosis — if commit_famine and Test-DoctorHeldWorkReady → Complete-Doctor -ResolveHeldDone and return.",
+                                "lib/doctor.ps1: persist counter ownership — when incrementing, write doctor_repair_task_id (held id / current_backlog_id / stable hash) via Add-Member -Force in the doctor_* namespace, reusing Get-DoctorRepairAttemptCount/Get-DoctorStateInt.",
+                                "lib/doctor.ps1: change missing-stamp / hard-restart resume to reset doctor_repair_attempts ONLY when resumed held task_id != doctor_repair_task_id; otherwise carry the counter forward.",
+                                "driver/80-loop-preflight.ps1: add a thin guarded short-circuit (behavioral placement, before the repair-attempt increment, after state load) calling Complete-Doctor -ResolveHeldDone when doctor_active, current_task empty, doctor_reason=\u0027commit_famine\u0027, Test-DoctorHeldWorkReady true; then continue.",
+                                "tools/test-doctor-commit-famine-resolve.ps1: stub Get-BridgeRoot/Read-State/Update-State/Set-Idea; assert (1) ready-but-uncommitted held task under commit_famine closes in one pass via Complete-Doctor, and (2) simulated missing-stamp restart for the same task_id keeps doctor_repair_attempts non-zero (and resets when task_id differs).",
+                                "Gate: run ParseFile on lib/doctor.ps1 (and the driver file), execute the new self-test, run a smoke pass, and do a control-plane verify+critic review confirming additive-only, namespaced, commit_famine-scoped changes."
+                            ],
+    "next_step":  "In lib/doctor.ps1, implement Test-DoctorHeldWorkReady and the Complete-Doctor -ResolveHeldDone switch (decisions 1–2), then layer in doctor_repair_task_id counter persistence (decision 3) — committed as the first coding change before driver wiring and the self-test.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Reason-string mismatch nullifies the entire headline fix in production while the unit test passes green. The decision gates both the readiness short-circuit and the close strictly on `doctor_reason -eq \u0027commit_famine\u0027`, but the auditor that actually raises this trigger sets `$doctorReason = \u0027auditor:\u0027 + $primaryName` (lib/auditor.ps1:951), so the value stored in state is `\u0027auditor:commit_famine\u0027` (confirmed verbatim in metrics.jsonl: \"reason\":\"auditor:commit_famine\"). doctor_reason is written raw in Activate-Doctor (lib/doctor.ps1:103) and no consumer strips the `auditor:` prefix. An exact-equality check against \u0027commit_famine\u0027 can never match the live value.",
+                                  "why":  "The one-pass close and counter-non-consume behavior will silently no-op in the running bridge, leaving the eternal loop intact. Worse, the contract\u0027s success_tests and the planned self-test stub `doctor_reason=\u0027commit_famine\u0027` directly (exactly as the existing tools/diag/doctor-abort-requeue-selftest.ps1:40 does), so the test goes green against a value that never occurs in production — a textbook \u0027green test, dead feature.\u0027 The micro-debate/conflict matrix that was \u0027skipped\u0027 is precisely what should have caught this namespacing."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Sub-fix (b) targets a reset path that does not exist. The decision asserts \u0027a missing-stamp hard-restart blindly zeroes doctor_repair_attempts\u0027 and proposes guarding that resume with doctor_repair_task_id. But the actual hard-restart resume in driver/60-startup.ps1 (lines 261-302) resets only task_apply/hard/total_restart_count — it never touches doctor_repair_attempts. The Doctor restart guard (60-startup.ps1:411-467) only increments doctor_restart_count and zeroes doctor_repair_attempts solely when it ABORTS at the restart-loop cap (line 442). The real unconditional reset that prevents escalation is Activate-Doctor (lib/doctor.ps1:100) and Complete-Doctor (lines 231/251), both of which the decision explicitly preserves (\u0027alongside the existing counter resets\u0027).",
+                                  "why":  "The doctor_repair_task_id guard will be placed where no reset occurs, so it guards nothing; meanwhile the genuine reset engine (re-activation via auditor re-trigger -\u003e Activate-Doctor counter=0, with Clear-AuditorSuppressedHashes also wiped each cycle) is left fully intact. Escalation still cannot accumulate across re-activations. Success_test #2 (\u0027simulated missing-stamp restart leaves doctor_repair_attempts non-zero\u0027) passes vacuously because nothing in the restart path resets the counter in the first place — it validates a fix for a phantom while the real loop survives."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Hard constraint #1 (\u0027single atomic change within one file, lib/doctor.ps1\u0027) is violated without being flagged as a constraint conflict. The decision edits driver/80-loop-preflight.ps1 (doctor-driver-wiring) and adds tools/test-doctor-commit-famine-resolve.ps1. More damning: to actually fix sub-fix (b) you must edit driver/60-startup.ps1 (the only file with restart-resume counter logic) — a third driver file the plan never touches.",
+                                  "why":  "The plan simultaneously over-reaches the one-file constraint (two extra files) AND under-reaches (omits the one file where the counter actually lives across restart). The contract\u0027s softer constraint #3 (\u0027potentially affecting driver restart logic\u0027) is in tension with the hard #1; the decision resolves the contradiction by silently picking the loose reading and still misses the operative file."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The readiness predicates are undefined for the exact headline scenario (\u0027ready-but-uncommitted\u0027). commit_famine only fires when working_tree_lines \u003e 0 (lib/auditor.ps1:559), i.e. the tree is dirty by definition at hold time. For a done-but-uncommitted held task: \u0027clean tree\u0027 is FALSE (dirty), \u0027fresh commit for the held task\u0027 is FALSE (uncommitted by premise), so readiness collapses onto \u0027tests demonstrably passed\u0027 — whose authoritative signal the decision itself lists as unresolved (open_question #1, re-running risks flakiness/cost).",
+                                  "why":  "Two of three readiness signals are structurally unavailable for the scenario the gate is built to catch, and the third is undefined. Either the gate fails to fire for genuine ready-but-uncommitted work (no fix), or it is loosened (e.g. treating runtime-only churn as \u0027clean\u0027 like the salvage exclusion set) and fires on genuinely-unfinished work (false-positive close). The success_test cannot be satisfied deterministically without first pinning the tests-passed source, which remains open."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Overlap/duplication with existing closers that the \u0027zero conflicts\u0027 matrix never examined. Invoke-FailedTaskSalvage (lib/doctor.ps1:601) already auto-commits a parse-clean uncommitted tail, and driver/81-loop-idle-claim.ps1:1465-1486 already has a \u0027post-restart защита от commit_famine\u0027 DONE-gate that auto-closes tasks with a valid done_qa_pass_commit via Set-Idea -Status done.",
+                                  "why":  "A new readiness gate that also commits/closes can double-handle the same held task: race the salvage auto-commit (which makes the tree clean, flipping the gate\u0027s \u0027clean tree\u0027 signal mid-flight) or redundantly Set-Idea done on an item the idle-claim gate is also closing. The decision claims \u0027conflict matrix found zero conflicts\u0027 but never inspected these pre-existing overlapping completion paths, so the no-conflict assertion is unsupported for the part of the system most likely to collide."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The -ResolveHeldDone close is higher-blast-radius than the loop it fixes and has an unhandled no-backlog-id hole. It calls Set-Idea -Status \u0027done\u0027 on the held backlog item, but held tasks frequently have no current_backlog_id (Abort-Doctor at lib/doctor.ps1:291 and the persistence atom\u0027s own \u0027held_task-hash fallback\u0027 both acknowledge this). With no backlog id, the done-mark silently no-ops while doctor state is cleared to idle — the task is dropped, not closed. And a false-positive readiness marks genuinely-incomplete work \u0027done\u0027 in the backlog + outcome ledger.",
+                                  "why":  "Existing Abort-Doctor deliberately requeues the held item as \u0027held\u0027 for operator review precisely so nothing is lost or falsely finalized. -ResolveHeldDone abandons that safety: \u0027done\u0027 removes the item from every review queue, and the claim that the close \u0027is reversible\u0027 has no auto-reopen mechanism — a single false positive ships unfinished work as delivered. For a task whose whole justification is reliability, the new failure mode (silent false-done / silent drop) is arguably worse than the loop."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The two paired atoms tend to cancel each other. The 2026-06-19 auditor fix (lib/auditor.ps1:551-560) already narrowed commit_famine to \u0027truly abandoned dirty work\u0027 (excludes live agents and paused channels). If that paired auditor fix works as intended, commit_famine only fires on genuinely-incomplete dirty work, where all three readiness signals are false — so the gate never legitimately fires.",
+                                  "why":  "The readiness gate\u0027s legitimate trigger population is \u0027auditor mis-fired commit_famine on already-done work\u0027 — but the paired auditor change exists to eliminate exactly those mis-fires. So in the success case the gate has nothing to do, and in the failure case Finding 1\u0027s reason-string mismatch means it can\u0027t fire anyway. The decision\u0027s own open_question #4 (must both land together?) hints at this coupling but doesn\u0027t resolve that the two fixes may be mutually redundant rather than complementary."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "A known-unverified determinism dependency is shipped in a high-risk change. doctor_repair_task_id falls back to \u0027a stable hash of canonicalized held_task\u0027 when no backlog id exists, and the decision\u0027s own open_question #2 admits it has not confirmed the held_task serialization is deterministic across restarts.",
+                                  "why":  "If the canonicalization is not byte-stable across a restart, the same held task hashes differently, the resume reads it as a \u0027new\u0027 task, and doctor_repair_attempts resets — reproducing the very escalation-starvation the atom claims to fix, but now non-deterministically (intermittent, hard to reproduce). Shipping a high-risk reliability fix while its core invariant is an admitted open question is the kind of residual the self-test (which controls the serialization) will not catch."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

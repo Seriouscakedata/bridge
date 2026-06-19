@@ -1,0 +1,80 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "doctor-readiness-gate",
+                      "statement":  "Add a pre-diagnosis readiness gate in Doctor that checks for actual task completion (clean tree, recent commit, or passed tests) and calls Complete-Doctor instead of proceeding with repair diagnosis.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Readiness Check",
+                      "test":  "Verify that a ready-but-uncommitted held task under commit_famine closes in exactly one pass via Complete-Doctor.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "doctor-task-resolution",
+                      "statement":  "Resolve the held task by adding a -ResolveHeldDone switch to Complete-Doctor that marks the held backlog item done/resolved (Set-Idea -Status \u0027done\u0027 + task-outcome-ledger) and clears state to idle, rather than restoring held_task as current_task.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Task Resolution",
+                      "test":  "Assert that Complete-Doctor, when called with readiness proven, marks the held backlog item done/resolved and clears state to idle.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "doctor-repair-attempts-persistence",
+                      "statement":  "Persist the repair counter’s owner: write doctor_repair_task_id (held task id / current_backlog_id, falling back to a stable hash of held_task) alongside doctor_repair_attempts, and change the missing-stamp/hard-restart resume to reset doctor_repair_attempts ONLY when the resumed held task_id differs from doctor_repair_task_id.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "State Management",
+                      "test":  "Verify that a simulated missing-stamp restart for the same task_id leaves doctor_repair_attempts non-zero, and resets it if the task_id differs.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "doctor-architectural-constraints",
+                      "statement":  "Keep every new field additive (Add-Member ... -Force, doctor_* namespace), reuse Get-DoctorRepairAttemptCount/Get-DoctorStateInt, and gate the close strictly to commit_famine; do not restructure any unrelated state field.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architectural Constraint",
+                      "test":  "Perform ParseFile validation on lib/doctor.ps1 and conduct a code review to ensure new fields are additive and no unrelated state fields are restructured.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "doctor-testing-requirements",
+                      "statement":  "Ship one atomic self-test (e.g. tools/test-doctor-commit-famine-resolve.ps1) that stubs Get-BridgeRoot/Read-State/Update-State/Set-Idea and asserts: ready-but-uncommitted held task under commit_famine closes in exactly one pass via Complete-Doctor, AND a simulated missing-stamp restart for the same task_id leaves doctor_repair_attempts non-zero; plus a ParseFile gate on doctor.ps1 and a smoke run.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Execute the atomic self-test (e.g. tools/test-doctor-commit-famine-resolve.ps1) asserting one-pass close and counter-survives-restart, plus ParseFile gate on doctor.ps1 and a smoke run.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "doctor-driver-wiring",
+                      "statement":  "Wire the readiness short-circuit into driver/80-loop-preflight.ps1 immediately before the attempt-increment block (line ~230-270): when doctor_active, current_task empty, doctor_reason=\u0027commit_famine\u0027, and Test-DoctorHeldWorkReady → Complete-Doctor -ResolveHeldDone; continue.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Integration",
+                      "test":  "Verify that driver/80-loop-preflight.ps1 correctly calls Complete-Doctor -ResolveHeldDone when doctor_active, current_task empty, doctor_reason=\u0027commit_famine\u0027, and Test-DoctorHeldWorkReady is true.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

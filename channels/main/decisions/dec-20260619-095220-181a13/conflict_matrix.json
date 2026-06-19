@@ -1,0 +1,15 @@
+{
+    "consensus_atoms":  [
+                            "doctor-readiness-gate",
+                            "doctor-task-resolution",
+                            "doctor-repair-attempts-persistence",
+                            "doctor-architectural-constraints",
+                            "doctor-testing-requirements"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

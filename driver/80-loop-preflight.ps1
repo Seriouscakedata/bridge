@@ -228,6 +228,17 @@
     }
   }
   if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
+    try {
+      $state = Sync-DoctorRepairCounterOwner -State $state
+      if (Test-DoctorHeldWorkReady -State $state) {
+        if (Complete-Doctor -ResolveHeldDone) {
+          Start-Sleep -Seconds $loopDelay; continue
+        }
+      }
+    } catch {
+      try { Add-Message -From system -Text ("🩺 Доктор: readiness short-circuit error: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+      $state = Read-State
+    }
     $maxA = Get-DoctorMaxRepairAttempts
     $att  = Get-DoctorRepairAttemptCount -State $state
     if ($att -ge $maxA) {
@@ -265,6 +276,7 @@
         $s | Add-Member -NotePropertyName task_bridge_base_commit -NotePropertyValue $baseCommitD -Force
         $s | Add-Member -NotePropertyName task_bridge_base_dirty -NotePropertyValue @($baseDirtyD) -Force
         $s | Add-Member -NotePropertyName doctor_repair_attempts -NotePropertyValue $newRepairAttempt -Force
+        $s | Add-Member -NotePropertyName doctor_repair_task_id -NotePropertyValue (Get-DoctorRepairTaskId -State $s) -Force
         $s.doctor_attempts  = $newRepairAttempt
         Reset-TaskAgentDuration $s
       }.GetNewClosure()) | Out-Null
