@@ -8,6 +8,7 @@ $script:Failed = 0
 $script:Messages = New-Object 'System.Collections.Generic.List[object]'
 $script:State = $null
 $script:MockHasActions = $false
+$script:DoctorActivated = $false
 
 function Check {
   param([string]$Name, [bool]$Condition, [string]$Detail = '')
@@ -119,6 +120,7 @@ function Clear-TaskLastFailureKind {}
 function Test-CoveredAfterRestart { return [pscustomobject]@{ Covered=$false; Sha='' } }
 function Write-BridgeLog {}
 function Get-EffectiveChannel { return 'main' }
+function Get-EffectiveProjectRoot { return $root }
 function Get-ActiveProjectBinding { return [pscustomobject]@{ slug='main' } }
 function Add-Idea { return 'idea-test' }
 function Send-PushEvent {}
@@ -128,9 +130,11 @@ function Clear-FastLaneFlags {}
 function Clear-ChunkingState {}
 function Complete-TaskAgentDuration {}
 function Close-ReplayForStateTask {}
+function Activate-Doctor { $script:DoctorActivated = $true }
 
 . (Join-Path $root 'lib\task-action-evidence.ps1')
 . (Join-Path $root 'driver\86-loop-completion-checks.ps1')
+. (Join-Path $root 'driver\85-loop-mode-transitions.ps1')
 
 function Get-TaskActionEvidenceContext {
   param([object]$State, [string]$DefaultRepoRoot, [string]$BridgeRoot)
@@ -163,12 +167,25 @@ function Invoke-InitialBlock {
   return [pscustomobject]@{ ok=$ok; error=$err; status=$status }
 }
 
+function Invoke-ModeTransitionBlock {
+  $ok = $true
+  $err = ''
+  try {
+    function script:git { return @() }
+    . $script:DriverLoopModeTransitionBlock
+  } catch {
+    $ok = $false
+    $err = $_.Exception.Message
+  }
+  return [pscustomobject]@{ ok=$ok; error=$err }
+}
+
 $file85 = Get-Content -LiteralPath (Join-Path $root 'driver\85-loop-mode-transitions.ps1') -Raw
 $file86 = Get-Content -LiteralPath (Join-Path $root 'driver\86-loop-completion-checks.ps1') -Raw
 
 Check '85 keeps PARALLEL handler' ($file85 -match '\[\[PARALLEL:')
 Check '85 keeps stagnation detector' ($file85 -match 'Stagnation detector')
-Check '85 no longer calls action-evidence helper' ($file85 -notmatch 'Get-TaskActionEvidence')
+Check '85 keeps action-evidence as read-only stagnation input' ($file85 -match 'Stagnation detector action-evidence check failed')
 Check '85 no longer mutates task_did_actions' ($file85 -notmatch 'task_did_actions')
 
 $statusAnchor = $file86.IndexOf('$statusHits = [regex]::Matches')
@@ -200,6 +217,23 @@ $r3 = Invoke-InitialBlock
 $reject3 = @($script:Messages | Where-Object { [string]$_.text -match 'DONE отклон' }).Count -gt 0
 $r3Detail = ("ok={0}; err={1}; plannerStatus={2}; force_coder={3}; reject={4}" -f $r3.ok,$r3.error,$r3.status,[bool]$script:State.force_coder,$reject3)
 Check 'accepted DONE clears stale force_coder without rejection' ($r3.ok -and $r3.status -eq 'DONE' -and -not [bool]$script:State.force_coder -and -not $reject3) $r3Detail
+
+Reset-Harness -BacklogId 'task-a' -TaskId 'task-a'
+Set-CommonLoopVars
+$script:State.PSObject.Properties.Remove('current_task_id')
+$script:State.PSObject.Properties.Remove('current_task')
+$script:MockHasActions = $false
+$rMissingProps = Invoke-InitialBlock
+Check '86 missing optional task identity fields no StrictMode throw' ($rMissingProps.ok -and $rMissingProps.status -eq 'CONTINUE') $rMissingProps.error
+
+Reset-Harness -BacklogId 'task-a' -TaskId 'task-a'
+Set-CommonLoopVars
+$script:MockHasActions = $true
+$script:State.no_progress_count = 3
+$script:DoctorActivated = $false
+$r4 = Invoke-ModeTransitionBlock
+$r4Detail = ("ok={0}; err={1}; npc={2}; task_did_actions={3}; doctor={4}" -f $r4.ok,$r4.error,[int]$script:State.no_progress_count,[bool]$script:State.task_did_actions,[bool]$script:DoctorActivated)
+Check '85 action evidence resets stagnation without DONE mutation' ($r4.ok -and [int]$script:State.no_progress_count -eq 0 -and -not [bool]$script:State.task_did_actions -and -not [bool]$script:DoctorActivated) $r4Detail
 
 Write-Output ("RESULT passed={0} failed={1}" -f $script:Passed, $script:Failed)
 if ($script:Failed -gt 0) { exit 1 }

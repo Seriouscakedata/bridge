@@ -1303,14 +1303,18 @@ $script:DriverLoopCompletionInitialChecksBlock = {
     $noopActiveBacklogIdentityMatched = $false
     try {
       $stNoop = Read-State
-      $noopBacklogId = [string]$stNoop.current_backlog_id
-      $noopCurrentTaskId = [string]$stNoop.current_task_id
+      $noopStateProps = @()
+      try {
+        if ($stNoop -and $stNoop.PSObject) { $noopStateProps = @($stNoop.PSObject.Properties.Name) }
+      } catch { $noopStateProps = @() }
+      if ($noopStateProps -contains 'current_backlog_id') { $noopBacklogId = [string]$stNoop.current_backlog_id }
+      if ($noopStateProps -contains 'current_task_id') { $noopCurrentTaskId = [string]$stNoop.current_task_id }
       $noopHasBacklogId = -not [string]::IsNullOrWhiteSpace($noopBacklogId)
       $noopActiveBacklogIdentityMatched = $noopHasBacklogId
       if ($noopActiveBacklogIdentityMatched -and -not [string]::IsNullOrWhiteSpace($noopCurrentTaskId) -and $noopCurrentTaskId -ne $noopBacklogId) {
         $noopActiveBacklogIdentityMatched = $false
       }
-      $noopTask = [string]$stNoop.current_task
+      if ($noopStateProps -contains 'current_task') { $noopTask = [string]$stNoop.current_task }
       $repoNoopRoot = Get-TaskRepoRoot
       $noopEvidenceContext = Get-TaskActionEvidenceContext -State $stNoop -DefaultRepoRoot $repoNoopRoot -BridgeRoot $bridgeRoot
       $noopEvidence = Get-TaskActionEvidence -RepoRoot ([string]$noopEvidenceContext.repo_root) -BaseCommit ([string]$noopEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($noopEvidenceContext.base_dirty_paths)

@@ -52,7 +52,31 @@
         Add-Message -From system -Text ("⚠ Stagnation detector project_root check failed: " + $_.Exception.Message) -Kind event | Out-Null
       }
     }
-    $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentMetas.Count -gt 0
+    $attachmentCount = 0
+    try { $attachmentCount = @($attachmentMetas).Count } catch { $attachmentCount = 0 }
+    $hasChanges = -not [string]::IsNullOrWhiteSpace($gitDiffOut) -or $attachmentCount -gt 0
+    if (-not $hasChanges) {
+      try {
+        if (-not (Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue)) {
+          . (Join-Path $bridgeRoot 'lib\task-action-evidence.ps1')
+        }
+        if ((Get-Command Get-TaskActionEvidence -ErrorAction SilentlyContinue) -and (Get-Command Get-TaskActionEvidenceContext -ErrorAction SilentlyContinue)) {
+          $stProgressEvidence = Read-State
+          $repoProgressRoot = Get-TaskRepoRoot
+          $progressEvidenceContext = Get-TaskActionEvidenceContext -State $stProgressEvidence -DefaultRepoRoot $repoProgressRoot -BridgeRoot $bridgeRoot
+          $progressEvidence = Get-TaskActionEvidence -RepoRoot ([string]$progressEvidenceContext.repo_root) -BaseCommit ([string]$progressEvidenceContext.base_commit) -BridgeRoot $bridgeRoot -BaseDirtyPaths @($progressEvidenceContext.base_dirty_paths)
+          $progressHasActions = $false
+          try { $progressHasActions = ($progressEvidence -and [bool]$progressEvidence.has_actions) } catch { $progressHasActions = $false }
+          $progressHasCoveredVerifiedEvidence = $false
+          if (Get-Command Test-TaskCoveredVerifiedDoneEvidence -ErrorAction SilentlyContinue) {
+            $progressHasCoveredVerifiedEvidence = [bool](Test-TaskCoveredVerifiedDoneEvidence -Reply $reply)
+          }
+          if ($progressHasActions -or $progressHasCoveredVerifiedEvidence) { $hasChanges = $true }
+        }
+      } catch {
+        Add-Message -From system -Text ("⚠ Stagnation detector action-evidence check failed: " + $_.Exception.Message) -Kind event | Out-Null
+      }
+    }
     $npc = [int](Read-State).no_progress_count
     if ($hasChanges) {
       Update-State { param($s) $s.no_progress_count=0 } | Out-Null
