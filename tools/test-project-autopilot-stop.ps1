@@ -239,43 +239,46 @@ try {
   . (Join-Path (Split-Path -Parent $PSScriptRoot) 'driver\86-loop-completion-actions.ps1')
   $script:GateNonMainStateCalls = 0
   $script:GateNonMainIdeaWrites = 0
-  function Read-State {
-    $script:GateNonMainStateCalls++
-    return [pscustomobject]@{
-      bridge_self_decompose_retry_count = 3
-      bridge_self_decompose_retry_parent_id = 'noninterference-regression-id'
+  & {
+    function Read-State {
+      $script:GateNonMainStateCalls++
+      return [pscustomobject]@{
+        bridge_self_decompose_retry_count = 3
+        bridge_self_decompose_retry_parent_id = 'noninterference-regression-id'
+      }
+    }
+    function Update-State {
+      param([scriptblock]$Mutator)
+      $script:GateNonMainStateCalls++
+      throw 'TEST B: non-main gate must not call Update-State'
+    }
+    function Set-Idea {
+      param([string]$Id, [string]$Status, [string]$Reason)
+      $script:GateNonMainIdeaWrites++
+      throw 'TEST B: non-main gate must not call Set-Idea'
+    }
+    function Set-IdeaHoldReason {
+      param([string]$Id, [string]$Reason)
+      $script:GateNonMainIdeaWrites++
+      throw 'TEST B: non-main gate must not call Set-IdeaHoldReason'
+    }
+    function Get-IdeaById {
+      param([string]$Id)
+      $script:GateNonMainStateCalls++
+      throw 'TEST B: non-main gate must not read idea/state'
+    }
+    $resultB = Invoke-BridgeSelfDecomposeGate -Id 'noninterference-regression-id' -Channel 'myproject' -Scope 'bridge' -Tags @()
+    Assert-True ([string]$resultB.action -eq 'noop') ('TEST B: gate action must be noop for non-main channel; got: ' + [string]$resultB.action)
+    Assert-True (-not [bool]$resultB.suppressContinue) 'TEST B: gate must not suppress continue for non-main channel'
+    Assert-True ([int]$script:GateNonMainStateCalls -eq 0) ('TEST B: non-main gate must not read/write state; calls=' + [string]$script:GateNonMainStateCalls)
+    Assert-True ([int]$script:GateNonMainIdeaWrites -eq 0) ('TEST B: non-main gate must not hold/retry/update idea; writes=' + [string]$script:GateNonMainIdeaWrites)
+  }
+  foreach ($gateMockName in @('Read-State','Update-State','Set-Idea','Set-IdeaHoldReason','Get-IdeaById')) {
+    $gateMockCommand = Get-Command $gateMockName -CommandType Function -ErrorAction SilentlyContinue
+    if ($null -ne $gateMockCommand) {
+      Assert-True ($gateMockCommand.ScriptBlock.ToString() -notmatch 'TEST B: non-main gate must not') ('TEST B: mock function leaked after local gate check: ' + $gateMockName)
     }
   }
-  function Update-State {
-    param([scriptblock]$Mutator)
-    $script:GateNonMainStateCalls++
-    throw 'TEST B: non-main gate must not call Update-State'
-  }
-  function Set-Idea {
-    param([string]$Id, [string]$Status, [string]$Reason)
-    $script:GateNonMainIdeaWrites++
-    throw 'TEST B: non-main gate must not call Set-Idea'
-  }
-  function Set-IdeaHoldReason {
-    param([string]$Id, [string]$Reason)
-    $script:GateNonMainIdeaWrites++
-    throw 'TEST B: non-main gate must not call Set-IdeaHoldReason'
-  }
-  function Get-IdeaById {
-    param([string]$Id)
-    $script:GateNonMainStateCalls++
-    throw 'TEST B: non-main gate must not read idea/state'
-  }
-  $resultB = Invoke-BridgeSelfDecomposeGate -Id 'noninterference-regression-id' -Channel 'myproject' -Scope 'bridge' -Tags @()
-  Assert-True ([string]$resultB.action -eq 'noop') ('TEST B: gate action must be noop for non-main channel; got: ' + [string]$resultB.action)
-  Assert-True (-not [bool]$resultB.suppressContinue) 'TEST B: gate must not suppress continue for non-main channel'
-  Assert-True ([int]$script:GateNonMainStateCalls -eq 0) ('TEST B: non-main gate must not read/write state; calls=' + [string]$script:GateNonMainStateCalls)
-  Assert-True ([int]$script:GateNonMainIdeaWrites -eq 0) ('TEST B: non-main gate must not hold/retry/update idea; writes=' + [string]$script:GateNonMainIdeaWrites)
-  Remove-Item Function:\Read-State -ErrorAction SilentlyContinue
-  Remove-Item Function:\Update-State -ErrorAction SilentlyContinue
-  Remove-Item Function:\Set-Idea -ErrorAction SilentlyContinue
-  Remove-Item Function:\Set-IdeaHoldReason -ErrorAction SilentlyContinue
-  Remove-Item Function:\Get-IdeaById -ErrorAction SilentlyContinue
   Write-Host 'TEST B PASS: Invoke-BridgeSelfDecomposeGate is noop (pass-through) for non-main channel; no state write, no hold/retry'
 
   # ============================================================
