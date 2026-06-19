@@ -910,9 +910,8 @@ function Set-MemoryHitsLastRecalled {
   try {
     if (-not $Hits -or @($Hits).Count -eq 0) { return }
     $now = Get-Date
+    try { Assert-MemoryWriteAllowed -TargetSlug $StoreSlug } catch { return }
     $mc = Get-MemoryConfig
-    $canWrite = $true
-    try { Assert-MemoryWriteAllowed -TargetSlug $StoreSlug } catch { $canWrite = $false }
     $allow = $true
     if ($null -ne $script:LastRecallFlushTs) {
       if (($now - $script:LastRecallFlushTs).TotalSeconds -lt $script:RecallFlushMinIntervalSec) { $allow = $false }
@@ -925,7 +924,7 @@ function Set-MemoryHitsLastRecalled {
     foreach ($m in $all) {
       if ($idSet.ContainsKey([string]$m.id)) {
         $m | Add-Member -NotePropertyName lastRecalledAt -NotePropertyValue ($now.ToUniversalTime().ToString('o')) -Force
-        if ($canWrite -and $mc.ContainsKey('verifyOnRecall') -and [bool]$mc['verifyOnRecall']) {
+        if ($mc.ContainsKey('verifyOnRecall') -and [bool]$mc['verifyOnRecall']) {
           Test-MemoryHitFreshness -Mem $m -McConfig $mc -Channel $StoreSlug | Out-Null
         }
         $stampedAny = $true
