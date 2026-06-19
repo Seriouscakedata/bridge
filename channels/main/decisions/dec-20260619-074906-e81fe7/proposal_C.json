@@ -1,0 +1,75 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing a mandatory gate function `Invoke-BridgeSelfDecomposeGate` in the crusher pipeline (driver/86-loop-completion-actions.ps1). This gate evaluates the decomposition results of large bridge-self parent tasks. It checks a predicate (channel==\u0027main\u0027, scope==\u0027bridge\u0027, Test-IsLargeTask returns true, and tags do not contain \u0027atom\u0027, \u0027decomposed-child\u0027, or \u0027bridge-self-child\u0027). If the predicate is true, it reads the ingest state from crusher-03, calculates valid split count, and either marks the task as \u0027decomposed\u0027 (if valid splits \u003e= 2 and no errors), or manages retries (up to 3) before marking the task as \u0027held\u0027. If the predicate is false, the function exits without action. The function must be called after `Invoke-PostTaskSelfModelRefresh`.",
+    "summary":  "Add `Invoke-BridgeSelfDecomposeGate` function to driver/86-loop-completion-actions.ps1 and call it after `Invoke-PostTaskSelfModelRefresh`. The function acts as a mandatory gate for large bridge-self parent tasks, evaluating decomposition results and controlling flow to the coder by either decomposing the parent, retrying decomposition, or holding the task after exhausted retries.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The gate predicate must strictly check channel==\u0027main\u0027, scope==\u0027bridge\u0027, Test-IsLargeTask returning true, and absence of specific tags (\u0027atom\u0027,\u0027decomposed-child\u0027,\u0027bridge-self-child\u0027).",
+                               "reason":  "This ensures the gate only activates for large, non-atomic, non-child bridge-self parent tasks in the main channel, as specified in the task contract.",
+                               "tradeoff":  "Strict predicate prevents unintended activation on small tasks or child tasks, but may require careful tag management elsewhere in the pipeline.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Valid split count is calculated as the sum of created_valid and same-parent-skipped_valid atoms where valid_for_split==true from $state.bridge_self_last_decompose_ingest.",
+                               "reason":  "The task contract explicitly defines valid_split_count = (created_valid + same-parent-skipped_valid) for atoms with valid_for_split==true.",
+                               "tradeoff":  "Relies on crusher-03 correctly populating the ingest state with these fields; any upstream changes could break this calculation.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "When valid_split_count \u003e= 2 and errors are empty, the parent task is marked \u0027decomposed\u0027 and STATUS:CONTINUE is NOT emitted to the coder.",
+                               "reason":  "This prevents the coder from processing a parent task that has been successfully decomposed into children, avoiding duplicate work.",
+                               "tradeoff":  "Suppressing STATUS:CONTINUE means the coder must rely on child tasks being emitted separately; if child emission fails, work could be lost.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Retry logic increments bridge_self_decompose_retry_count up to 3 attempts before marking the task as \u0027held\u0027 with reason \u0027bridge-self-decomposition-invalid\u0027.",
+                               "reason":  "The contract specifies a maximum of 3 retries to prevent infinite loops on tasks that cannot be decomposed.",
+                               "tradeoff":  "A hard limit of 3 retries may be insufficient for complex tasks, but prevents resource exhaustion.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "The function must be called immediately after Invoke-PostTaskSelfModelRefresh in the same script file.",
+                               "reason":  "The task contract explicitly states this ordering requirement to ensure the gate runs after the self-model refresh.",
+                               "tradeoff":  "Tight coupling with Invoke-PostTaskSelfModelRefresh may make future refactoring harder, but ensures correct execution order.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "The $state object is accessible within the scope of driver/86-loop-completion-actions.ps1 and contains bridge_self_last_decompose_ingest and bridge_self_decompose_retry_count.",
+                        "Test-IsLargeTask, Update-IdeaStatus, Set-IdeaHoldReason, and Invoke-PostTaskSelfModelRefresh are already defined and available in the script or sourced modules.",
+                        "The $PromptState object is passed through to the function but its internal structure is not modified by this gate.",
+                        "The ingest state from crusher-03 contains fields: created_valid, same-parent-skipped_valid, valid_for_split, and errors.",
+                        "The \u0027force-decompose-retry\u0027 signal is a recognized mechanism in the pipeline that triggers a retry of the decomposition process.",
+                        "STATUS:CONTINUE emission to the coder is controlled elsewhere and can be suppressed by not returning it from this function.",
+                        "The script file driver/86-loop-completion-actions.ps1 is the correct location for this function and its invocation."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Upstream changes to crusher-03 ingest state structure could break valid_split_count calculation.",
+                      "severity":  "medium",
+                      "mitigation":  "Add validation of expected fields in $state.bridge_self_last_decompose_ingest before calculation, with clear error logging."
+                  },
+                  {
+                      "risk":  "Race condition if multiple instances of the gate run concurrently on the same task.",
+                      "severity":  "low",
+                      "mitigation":  "Ensure state updates (retry_count increment, status changes) are atomic or use locking mechanisms if concurrency is possible."
+                  },
+                  {
+                      "risk":  "Incorrect tag management could cause the gate to activate on child tasks or miss valid parent tasks.",
+                      "severity":  "medium",
+                      "mitigation":  "Add debug logging of predicate evaluation to trace which conditions pass/fail for troubleshooting."
+                  },
+                  {
+                      "risk":  "Suppressing STATUS:CONTINUE for decomposed parents could lead to orphaned tasks if child task creation fails silently.",
+                      "severity":  "high",
+                      "mitigation":  "Ensure child task creation is verified before marking parent as decomposed; consider a rollback mechanism if child creation fails."
+                  },
+                  {
+                      "risk":  "The force-decompose-retry signal may not be properly handled by the upstream orchestrator, causing the retry to be ignored.",
+                      "severity":  "medium",
+                      "mitigation":  "Document the expected signal format and verify integration with the orchestrator; add fallback logging if signal is not acknowledged."
+                  }
+              ],
+    "minimal_version":  "Implement Invoke-BridgeSelfDecomposeGate with predicate check, valid split calculation, decompose/hold/retry logic, and call after Invoke-PostTaskSelfModelRefresh. Use existing functions (Test-IsLargeTask, Update-IdeaStatus, Set-IdeaHoldReason) and state object. Return force-decompose-retry signal as a simple string or object property.",
+    "advanced_version":  "Add comprehensive error handling for missing state fields, detailed logging at each decision point, unit tests for each predicate branch, integration with a state persistence layer for retry_count, and a callback mechanism to verify child task creation before marking parent as decomposed. Include telemetry for monitoring gate effectiveness and retry rates."
+}

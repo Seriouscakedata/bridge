@@ -1,0 +1,181 @@
+{
+    "final_answer":  "Implement `Invoke-BridgeSelfDecomposeGate` as a pure, side-effect-light decision function defined in `driver/86-loop-completion-actions.ps1`, invoked exactly once immediately after the `Invoke-PostTaskSelfModelRefresh` call on the completion/cleanup path (anchored to that call, not a literal line number). The function takes the current task (`id`, `tags`, `channel`, `scope`, `taskText`) plus `$PromptState`/`$state` and returns a structured decision object (`{ action; suppressContinue; retryErrors; status; reason; log }`); the call site applies the loop-scoped effects (suppress `STATUS:CONTINUE`, set `$plannerStatus`, set the force-decompose-retry flag). The entry predicate is the strict AND of `channel==\u0027main\u0027`, `scope==\u0027bridge\u0027`, `Test-IsLargeTask -Channel \u0027main\u0027 -Scope \u0027bridge\u0027` returning true (loading the full idea via `Get-IdeaById` for counts), and tags NOT containing any of `atom`/`decomposed-child`/`bridge-self-child`; on FALSE the function returns a `noop` decision and does nothing. On TRUE it reads `$state.bridge_self_last_decompose_ingest`, computes `valid_split_count = created_valid + same-parent-skipped_valid` over atoms with `valid_for_split==true`, and branches: (a) `valid_split_count\u003e=2` AND no errors → mark parent `decomposed`, suppress `STATUS:CONTINUE`, reset retry counter, log `\u0027CRUSHER: valid split N atoms, parent decomposed\u0027`; (b) otherwise read `bridge_self_decompose_retry_count` (default 0) and, if `\u003c3`, increment it, return `force-decompose-retry` carrying the ingest errors, log `\u0027CRUSHER: invalid split, retry N/3\u0027`; (c) if `\u003e=3`, mark parent `held` with reason `bridge-self-decomposition-invalid`, reset the counter, log `\u0027CRUSHER: retry exhausted, parent held\u0027`. Missing/null/parent-id-mismatched ingest is treated as `valid_split_count=0` with non-empty errors (routes to retry/held, never throws). All external store calls are guarded with `Get-Command -ErrorAction SilentlyContinue`, and the whole gate plus call site is wrapped in `try/catch` that degrades to `noop` so it can never block `DONE` or poison planner status. The one judge-flagged modification: do NOT assume `Set-Idea -Reason` is the canonical API for both statuses — default to the contract-named `Update-IdeaStatus`/`Set-IdeaHoldReason` and verify the real idea-store signature before substituting `Set-Idea`.",
+    "decisions":  [
+                      {
+                          "decision":  "PREDICATE_LOGIC — gate only fires for channel==\u0027main\u0027 AND scope==\u0027bridge\u0027 AND Test-IsLargeTask==true AND tags exclude \u0027atom\u0027,\u0027decomposed-child\u0027,\u0027bridge-self-child\u0027 (load full idea via Get-IdeaById for counts).",
+                          "rationale":  "Full A/B/C consensus, judge total 0.875. This is the correct entry guard; the explicit tag exclusions are what prevent re-decomposition loops on already-split children/atoms. Loading the idea via Get-IdeaById is justified because Test-IsLargeTask needs the full record for its counts.",
+                          "alternatives_considered":  [
+                                                          "Predicate on taskText/tags only without scope/channel (rejected: would mis-fire on PROJECT and small tasks)",
+                                                          "Skip tag exclusions and rely on status only (rejected: opens re-decomposition loops on children)"
+                                                      ],
+                          "risk":  "Medium reversibility. If Test-IsLargeTask semantics drift, the gate could over- or under-fire; mitigated by passing the same -Channel/-Scope that crusher-01 classifier uses.",
+                          "test":  "Assert gate proceeds only for main/bridge/large/untagged; assert pass-through (noop) for channel!=\u0027main\u0027, scope!=\u0027bridge\u0027, Test-IsLargeTask==false, and for tasks tagged atom/decomposed-child/bridge-self-child."
+                      },
+                      {
+                          "decision":  "STRUCTURED_RETURN_CALL_SITE — function returns a structured decision object (action/suppressContinue/retryErrors[/status/reason/log]); the call site applies loop-scoped effects.",
+                          "rationale":  "A/B consensus, judge total 0.8425. Separating pure decision logic from loop-scoped side effects (suppressing STATUS:CONTINUE, setting $plannerStatus, setting the force-retry flag) keeps the gate unit-testable in isolation and keeps mutation of loop state at the one place that owns it.",
+                          "alternatives_considered":  [
+                                                          "Function directly mutates loop/global state and emits STATUS lines (rejected: untestable, couples decision to side effects)",
+                                                          "Function returns a bare string status code (rejected: cannot carry retryErrors payload for the prompt)"
+                                                      ],
+                          "risk":  "Medium. Slight indirection cost; the call site must faithfully interpret every property — an unhandled property silently drops an effect. Mitigated by a small fixed property contract.",
+                          "test":  "Assert the returned object exposes action/suppressContinue/retryErrors and that the call site suppresses STATUS:CONTINUE and sets $plannerStatus/force-retry exactly per those fields."
+                      },
+                      {
+                          "decision":  "VALID_SPLIT_COUNT_CALCULATION — valid_split_count = created_valid + same-parent-skipped_valid, counting only atoms with valid_for_split==true, from $state.bridge_self_last_decompose_ingest.",
+                          "rationale":  "A/C consensus, judge total 0.842. Summing created and same-parent-skipped valid atoms makes the count idempotent across retries that re-skip already-created atoms, so a retry does not artificially deflate the count.",
+                          "alternatives_considered":  [
+                                                          "Count only newly-created atoms (rejected: a retry that re-skips prior atoms would read as 0 and falsely fail)",
+                                                          "Count all ingested atoms ignoring valid_for_split (rejected: inflates count with invalid splits)"
+                                                      ],
+                          "risk":  "Medium. Correctness depends on the crusher-03 ingest schema field names; if they differ the count is wrong. Mitigated by INGEST_ROBUSTNESS treating malformed ingest as 0.",
+                          "test":  "Feed mock ingest with varied created_valid / same-parent-skipped_valid / valid_for_split and assert computed valid_split_count."
+                      },
+                      {
+                          "decision":  "DECOMPOSED_OUTCOME — if valid_split_count\u003e=2 and errors empty: mark parent \u0027decomposed\u0027, DO NOT emit STATUS:CONTINUE, reset retry counter.",
+                          "rationale":  "A/C consensus, judge total 0.8815 (top tier). The \u003e=2 threshold is a sensible definition of a real split; suppressing STATUS:CONTINUE stops the coder from continuing work on a parent that has just been replaced by atoms; resetting the counter avoids stale retry state leaking into any future reuse of the id.",
+                          "alternatives_considered":  [
+                                                          "Threshold of \u003e=1 (rejected: a single atom is not a decomposition)",
+                                                          "Leave STATUS:CONTINUE and just relabel status (rejected: coder would still execute the now-obsolete parent)"
+                                                      ],
+                          "risk":  "Medium. If the parent is marked decomposed but children fail to enqueue elsewhere, work could stall — but that is crusher-03\u0027s responsibility, not this gate\u0027s.",
+                          "test":  "With valid_split_count\u003e=2 and no errors, assert status==\u0027decomposed\u0027, STATUS:CONTINUE suppressed, retry counter reset to 0, and log \u0027CRUSHER: valid split N atoms, parent decomposed\u0027."
+                      },
+                      {
+                          "decision":  "RETRY_MECHANISM — on invalid split with retry_count\u003c3: increment bridge_self_decompose_retry_count, return \u0027force-decompose-retry\u0027 with ingest errors; check the counter BEFORE incrementing.",
+                          "rationale":  "A/C consensus, judge total 0.809. Bounded force-decompose-retry is the right control structure. Check-before-increment yields the sequence count 0→1, 1→2, 2→3 (three retries), then held at count\u003e=3, matching the contract exactly.",
+                          "alternatives_considered":  [
+                                                          "Increment then test (rejected: off-by-one — would allow only 2 or as many as 4 attempts depending on placement)",
+                                                          "Unbounded retry (rejected: infinite loop on a permanently invalid parent)"
+                                                      ],
+                          "risk":  "Medium and the single most error-prone point (judge penalty 0.02): the fence-post must give exactly 3 retries. Mitigated by an explicit unit test of the 0/1/2 increment sequence.",
+                          "test":  "Drive three consecutive invalid splits; assert counter goes 0→1→2→3 with \u0027force-decompose-retry\u0027 each time and logs \u0027CRUSHER: invalid split, retry 1/3\u0027,\u00272/3\u0027,\u00273/3\u0027."
+                      },
+                      {
+                          "decision":  "HELD_OUTCOME — when bridge_self_decompose_retry_count\u003e=3 (4th invalid attempt): mark parent \u0027held\u0027 with reason \u0027bridge-self-decomposition-invalid\u0027 and reset the counter.",
+                          "rationale":  "A/C consensus, judge total 0.867. Terminal \u0027held\u0027 fallback is the escape hatch that bounds the retry loop; resetting the counter keeps state clean and prevents an immediately-held re-entry if the id is ever re-evaluated.",
+                          "alternatives_considered":  [
+                                                          "Drop/skip the parent silently (rejected: loses the diagnostic reason and is harder to audit)",
+                                                          "Keep retrying past 3 (rejected: unbounded)"
+                                                      ],
+                          "risk":  "Medium but low-frequency (rare terminal branch). A held parent requires human/automation follow-up; that is acceptable for a permanently invalid split.",
+                          "test":  "On the 4th invalid attempt (counter already 3), assert status==\u0027held\u0027, reason==\u0027bridge-self-decomposition-invalid\u0027, counter reset, log \u0027CRUSHER: retry exhausted, parent held\u0027."
+                      },
+                      {
+                          "decision":  "FUNCTION_LOCATION_INVOCATION — define Invoke-BridgeSelfDecomposeGate in driver/86-loop-completion-actions.ps1; place its single invocation immediately AFTER Invoke-PostTaskSelfModelRefresh on the cleanup path, outside any actions scriptblock, anchored to that call rather than a literal line number.",
+                          "rationale":  "B/C consensus, judge total 0.829. Definition-in-actions / invocation-after-refresh respects execution order and scope (the gate needs post-task state and must run before STATUS emission). Pinning to the anchor avoids the brittle hardcoded cleanup.ps1:938 reference.",
+                          "alternatives_considered":  [
+                                                          "Invoke inside an actions scriptblock (rejected: wrong scope/order, cannot influence STATUS:CONTINUE)",
+                                                          "Hardcode at cleanup.ps1:938 (rejected per judge penalty 0.01: line numbers drift)"
+                                                      ],
+                          "risk":  "Medium. Refactors that move Invoke-PostTaskSelfModelRefresh must keep the gate adjacent; mitigated by grep-anchoring the insertion to the function name, not a line.",
+                          "test":  "Assert the definition exists in actions.ps1 and exactly one invocation appears in the cleanup path on the line(s) directly following the Invoke-PostTaskSelfModelRefresh call."
+                      },
+                      {
+                          "decision":  "INGEST_ROBUSTNESS — treat missing, null, or parent-id-mismatched bridge_self_last_decompose_ingest as valid_split_count=0 with non-empty errors; route to retry/held; never throw.",
+                          "rationale":  "Single-source (B) but judge total 0.8415. Guards against both crashes and the dangerous case of reading stale ingest belonging to a different parent (which could falsely mark the current parent decomposed). High risk reduction.",
+                          "alternatives_considered":  [
+                                                          "Assume ingest is always present and well-formed (rejected: crashes on first-run/empty state and trusts cross-parent stale data)",
+                                                          "Treat missing ingest as success (rejected: silently decomposes parents that were never split)"
+                                                      ],
+                          "risk":  "Medium. Adds branching; must explicitly compare ingest\u0027s recorded parent id against the current task id before trusting counts.",
+                          "test":  "Feed missing / null / wrong-parent-id ingest; assert no throw, route to retry (or held at limit), and an ingest-error is logged."
+                      },
+                      {
+                          "decision":  "GATE_STABILITY_TRY_CATCH — wrap the entire gate function and its call site in try/catch; on any exception degrade to a \u0027noop\u0027 decision (no status change, no STATUS suppression, log the error).",
+                          "rationale":  "Single-source (B) and the highest-scoring atom (judge total 0.892). This is opportunistic completion-path code; a bug in any other atom must never block DONE or poison $plannerStatus. The try/catch bounds the blast radius of every other decision.",
+                          "alternatives_considered":  [
+                                                          "Let exceptions propagate (rejected: a gate bug would stall the whole completion loop)",
+                                                          "Catch only inside the function, not the call site (rejected: a call-site interpretation error would still escape)"
+                                                      ],
+                          "risk":  "High reversibility, low cost. Only downside: a silent noop on a real error could mask a misbehaving gate — mitigated by logging the caught error (e.g. Add-Message) so failures are observable.",
+                          "test":  "Inject an artificial throw inside the gate; assert the completion loop continues, no failing planner status is set, STATUS:CONTINUE is unaffected, and the error is logged."
+                      },
+                      {
+                          "decision":  "CANONICAL_API_USAGE (MODIFIED) — keep the Get-Command -ErrorAction SilentlyContinue guard on every external store call; for status/reason updates default to the contract-named Update-IdeaStatus -Id -Status and Set-IdeaHoldReason, and verify the real idea-store signature before substituting a single Set-Idea -Reason call.",
+                          "rationale":  "Judge verdict \u0027modify\u0027 (total 0.76). The defensive Get-Command guarding is excellent and retained. But the unverified claims — that Set-Idea is canonical, that -Reason is valid for status \u0027decomposed\u0027 (reason may be meaningful only for \u0027held\u0027), and that Update-IdeaStatus/Set-IdeaHoldReason are mere aliases — are too risky to adopt blind. Default to the commands the task contract already names.",
+                          "alternatives_considered":  [
+                                                          "Adopt Set-Idea -Id -Status -Reason for both held and decomposed (rejected pending verification: assumes an unverified API contract)",
+                                                          "Drop the Get-Command guards (rejected: loses graceful degradation when a command is absent)"
+                                                      ],
+                          "risk":  "Medium. Calling a non-existent or wrong-arity command would fail; the Get-Command guard plus GATE_STABILITY_TRY_CATCH contain it to a noop, but a silent skip of the status update is itself a correctness gap — hence the verification open question.",
+                          "test":  "Assert all external calls are Get-Command-guarded; after verifying the store API, assert \u0027decomposed\u0027 and \u0027held\u0027 transitions plus the hold reason are actually persisted via the confirmed command(s)."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Treat Set-Idea -Reason as the canonical, alias-equivalent API for BOTH \u0027held\u0027 and \u0027decomposed\u0027 status updates (the unverified portion of CANONICAL_API_USAGE).",
+                         "why":  "Single-source (B) and asserts an unverified contract. -Reason is likely semantically meaningful only for \u0027held\u0027; Update-IdeaStatus/Set-IdeaHoldReason may have distinct semantics rather than being aliases. Deferred to verification before substitution; meanwhile use the contract-named commands."
+                     },
+                     {
+                         "decision":  "Pin the invocation to the literal line cleanup.ps1:938 (the penalized portion of FUNCTION_LOCATION_INVOCATION).",
+                         "why":  "Hardcoded absolute line numbers drift as the file changes. Replaced with anchor-based placement: insert immediately after the Invoke-PostTaskSelfModelRefresh call located by grep."
+                     }
+                 ],
+    "open_questions":  [
+                           "What is the real idea-store status API? Confirm exact signatures/semantics of Update-IdeaStatus, Set-IdeaHoldReason, and whether Set-Idea exists as a canonical wrapper, and whether \u0027decomposed\u0027 is a valid status value and whether -Reason applies to it.",
+                           "Exact field names/shape of $state.bridge_self_last_decompose_ingest as written by crusher-03 (created_valid, same-parent-skipped_valid, valid_for_split, errors, and the recorded parent id used for the mismatch check).",
+                           "How does the prompt layer consume the returned \u0027force-decompose-retry\u0027 signal and its ingest errors — what flag/variable name does the cleanup call site set, and does it map to an existing $plannerStatus value?",
+                           "Should the retry counter (bridge_self_decompose_retry_count) be keyed per-parent-id rather than global, to avoid one parent\u0027s retries bleeding into another\u0027s?",
+                           "Is there an existing logging primitive (Add-Message / Write-Log) that the gate must use for the four CRUSHER log lines so they appear in the standard channel?"
+                       ],
+    "implementation_plan":  [
+                                "Grep driver/86-loop-completion-actions.ps1 for \u0027Invoke-PostTaskSelfModelRefresh\u0027 to locate the definition region and confirm the cleanup-path call site (anchor, not line number).",
+                                "Verify the idea-store API: Get-Command for Update-IdeaStatus, Set-IdeaHoldReason, and Set-Idea; confirm \u0027decomposed\u0027 is an accepted status and which command carries the hold reason (resolves CANONICAL_API_USAGE and an open question).",
+                                "Inspect crusher-03 to confirm the exact schema of $state.bridge_self_last_decompose_ingest (field names + recorded parent id) and the retry-count key.",
+                                "Add function Invoke-BridgeSelfDecomposeGate(id, tags, channel, scope, taskText, $PromptState/$state) in driver/86-loop-completion-actions.ps1, wrapped in try/catch returning a \u0027noop\u0027 decision on exception (GATE_STABILITY_TRY_CATCH).",
+                                "Implement the entry predicate: channel==\u0027main\u0027 AND scope==\u0027bridge\u0027 AND Test-IsLargeTask -Channel \u0027main\u0027 -Scope \u0027bridge\u0027 (loading idea via Get-IdeaById) AND tags exclude atom/decomposed-child/bridge-self-child; return noop otherwise (PREDICATE_LOGIC).",
+                                "Read and validate the ingest robustly: missing/null/parent-id-mismatch =\u003e valid_split_count=0 with non-empty errors, no throw (INGEST_ROBUSTNESS).",
+                                "Compute valid_split_count = created_valid + same-parent-skipped_valid over valid_for_split==true atoms (VALID_SPLIT_COUNT_CALCULATION).",
+                                "Branch DECOMPOSED: valid_split_count\u003e=2 AND empty errors =\u003e decision {action:\u0027decomposed\u0027, suppressContinue:true, status:\u0027decomposed\u0027}, reset retry counter, log \u0027CRUSHER: valid split N atoms, parent decomposed\u0027 (DECOMPOSED_OUTCOME).",
+                                "Branch RETRY/HELD: read bridge_self_decompose_retry_count (default 0); if \u003e=3 =\u003e decision {action:\u0027held\u0027, status:\u0027held\u0027, reason:\u0027bridge-self-decomposition-invalid\u0027} + reset counter + log \u0027CRUSHER: retry exhausted, parent held\u0027; else increment counter, return {action:\u0027force-decompose-retry\u0027, retryErrors:\u003cingest errors\u003e}, log \u0027CRUSHER: invalid split, retry N/3\u0027 — check-before-increment (RETRY_MECHANISM, HELD_OUTCOME).",
+                                "Guard all external store calls with Get-Command -ErrorAction SilentlyContinue, using the verified status/reason commands (CANONICAL_API_USAGE modified).",
+                                "Insert exactly one invocation of Invoke-BridgeSelfDecomposeGate immediately after the Invoke-PostTaskSelfModelRefresh call (outside any actions scriptblock), passing the current task fields from $state, and have the call site apply suppressContinue/$plannerStatus/force-retry from the returned object — all inside try/catch (STRUCTURED_RETURN_CALL_SITE, FUNCTION_LOCATION_INVOCATION, GATE_STABILITY_TRY_CATCH).",
+                                "Run the checks: PowerShell ParseFile syntax check on driver/86-loop-completion-actions.ps1; driver.ps1 -SelfTest; tools/smoke.ps1; plus targeted unit assertions for each predicate/outcome branch including the 0/1/2 retry-increment sequence."
+                            ],
+    "next_step":  "Grep driver/86-loop-completion-actions.ps1 for \u0027Invoke-PostTaskSelfModelRefresh\u0027 to pin the definition region and the cleanup-path invocation anchor, and in the same pass run Get-Command on Update-IdeaStatus / Set-IdeaHoldReason / Set-Idea to resolve the CANONICAL_API_USAGE verification before writing the function.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The gate runs AFTER the parent task is already marked terminal \u0027done\u0027, so its core mutations (Set-Idea -Status \u0027decomposed\u0027/\u0027held\u0027) are silently refused. The contract anchors the gate immediately after Invoke-PostTaskSelfModelRefresh, which lives at cleanup.ps1:938 inside the `$plannerStatus -eq \u0027DONE\u0027` block. But Set-BacklogOutcomeDoneWithLedger (called at cleanup.ps1:860, before 938) already wrote the parent\u0027s idea to status=\u0027done\u0027 and persisted it via Save-Backlog. Set-Idea\u0027s terminal-downgrade guard (backlog-crud.ps1:418-423) returns $false for any change away from \u0027done\u0027/\u0027rejected\u0027 unless Reason matches ^(operator|reaper):. The gate writes \u0027decomposed\u0027/\u0027held\u0027 with reason \u0027bridge-self-decomposition-invalid\u0027 (no such prefix), so the write is refused and the parent stays \u0027done\u0027.",
+                                  "why":  "This defeats the entire goal. The decision dismisses this as \u0027if the parent is somehow already done\u0027 (risk note on the Set-Idea atom) and mitigates only by \u0027checking the return value and logging on false\u0027. But in the post-DONE cleanup path, already-\u0027done\u0027 is the NORMAL case, not an edge case. Logging a refused write does not mark the parent decomposed or held — it leaves the parent reported as a normal completed task. The gate becomes observable noise with no effect on the backlog."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The retry counter cannot persist across cycles under the chosen \u0027pure decision function\u0027 design, breaking convergence to \u0027held\u0027. The decision defines the function as \u0027pure, side-effect-light\u0027 returning {action, suppressContinue, retryErrors, plannerStatus} — an object with NO field carrying the incremented/reset retry counter. It never names Update-State (common.ps1:1103), the only persisting mutator. Read-State returns a throwaway disk snapshot and Write-State (common.ps1:780-793) explicitly REFUSES direct/partial writes (\u0027Use Update-State+Add-Member for mutations\u0027). So a naive `$state.bridge_self_decompose_retry_count = N` on a Read-State result is lost.",
+                                  "why":  "If the counter never persists, every cleanup cycle reads it as 0 and the gate can never reach retry_count\u003e=3 → it never transitions to \u0027held\u0027 → infinite force-decompose-retry, the exact failure the held branch exists to prevent. Conversely, persisting correctly REQUIRES the function to call Update-State internally — a side effect that contradicts the stated \u0027pure / unit-testable in isolation\u0027 rationale and is absent from the structured return contract. The decision is internally inconsistent and leaves success_test \u0027bridge_self_decompose_retry_count being incremented in state\u0027 unmet either way."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "\u0027Suppress STATUS:CONTINUE / do not run the coder on this parent\u0027 is unachievable at the chosen anchor. Line 938 is inside `if (($speaker -eq \u0027claude\u0027 -or $fastLaneDone) -and $plannerStatus -eq \u0027DONE\u0027)` (cleanup.ps1:708/728). At that point $plannerStatus is already \u0027DONE\u0027 — there is no CONTINUE being emitted for this parent to suppress, and the coder has ALREADY executed and reported DONE.",
+                                  "why":  "The contract\u0027s intent (keep an un-decomposed parent away from the coder) requires intercepting BEFORE the coder runs. Placing the gate in the post-DONE bookkeeping path means the suppressContinue field maps to nothing actionable. The decision treats suppressContinue as a real lever (\u0027stops the coder re-running an already-decomposed parent\u0027) without verifying that, at this call site, the loop is already finalizing DONE and moving to the next claim regardless."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "A success_test and a hard constraint are literally unmet by the two-file split. Constraint: \u0027function must be called immediately after Invoke-PostTaskSelfModelRefresh\u0027 and contract Files = ONLY driver/86-loop-completion-actions.ps1; success_test #2 says the call must be \u0027in driver/86-loop-completion-actions.ps1\u0027. But Invoke-PostTaskSelfModelRefresh is only DEFINED in actions.ps1 (line 2); it is CALLED in cleanup.ps1:938. The decision places the gate invocation in cleanup.ps1.",
+                                  "why":  "The decision\u0027s split is functionally more correct, but it directly contradicts the literal success_test (call expected in actions.ps1) and the declared Files scope. Worse, the only dedicated syntax Check (ParseFile) targets actions.ps1 alone — the file that now contains the new call site (cleanup.ps1) is not covered by that check and relies solely on driver.ps1 -SelfTest dot-sourcing it. The decision should have explicitly reconciled this contract contradiction rather than silently overriding it."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "bridge_self_decompose_retry_count is a single global scalar, not keyed by parent id. The decision applies a parent-id match guard to the INGEST read but does NOT key the retry counter per parent. If parent A fails twice (counter=2) and is then abandoned (or interleaved with) parent B, parent B inherits counter=2 and is held after a single failure; or a reset from one parent zeroes another\u0027s progress.",
+                                  "why":  "Cross-parent counter contamination produces both premature \u0027held\u0027 and incorrect \u0027retry N/3\u0027 counts, violating the deterministic 3-retry-then-held semantics the decision spent an entire atom pinning down. The same per-parent reasoning that justified the ingest parent-id guard was not carried over to the counter."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027defensive missing-ingest → retry/held\u0027 design is not operationally safe given crusher-03 is unlanded. Grep confirms bridge_self_last_decompose_ingest / valid_for_split / same-parent-skipped exist NOWHERE in source (only in decision/plan JSON). The decision routes missing/null ingest to valid_split_count=0 + non-empty errors → the retry/held path. So while the producing dependency is absent, EVERY large main/bridge parent reaching the gate is driven down the failure path on every cycle.",
+                                  "why":  "Combined with finding #1 (held write refused) and #2 (counter not persisting), the net runtime behavior of this \u0027mandatory gate\u0027 is: emit force-decompose-retry signals that nothing consumes, log churn, and never actually decompose, hold, or block anything — the parent completes normally as \u0027done\u0027. The decision frames missing-ingest handling as a safety win (\u0027never read as success\u0027); in practice it makes the gate inert-but-noisy rather than safe, and the Depends-on:crusher-03 ordering is the only thing preventing churn the design claims to tolerate."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "None of the four required Checks (canary; ParseFile on actions.ps1; driver.ps1 -SelfTest; tools/smoke.ps1) necessarily exercise the gate\u0027s decision branches. The decision adds unit tests to tools/test-loop-completion-decompose.ps1, but that file is NOT in the contract\u0027s Checks list.",
+                                  "why":  "A gate whose branches are broken (e.g., refused Set-Idea writes per #1, non-persisting counter per #2) can still pass all required Checks, because parser/self-test/smoke validate load and pipeline health, not the decomposed/retry/held behaviors in the acceptance criteria. The behavioral acceptance is effectively unverified by the gating checks."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The blanket try/catch \u0027degrade to noop on any error\u0027 undermines the \u0027mandatory\u0027 nature of the gate. Any signature mismatch (e.g., wrong Get-IdeaById usage, an unexpected Test-IsLargeTask parameter, a state-shape surprise) is swallowed and the gate silently does nothing.",
+                                  "why":  "For a gate explicitly named \u0027mandatory\u0027, silent permissive degradation means a mis-wiring makes it invisibly non-functional in production while still passing tests that don\u0027t trigger the failing path. The safety goal (never block DONE) is valid, but the decision does not pair it with any liveness assertion that the gate actually fired for qualifying tasks, so silent disablement is undetectable."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

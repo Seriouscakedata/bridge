@@ -1,0 +1,79 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно добавить в driver/86-loop-completion-actions.ps1 обязательный control-plane gate после Invoke-PostTaskSelfModelRefresh, который перехватывает только крупные main/bridge parent-задачи без child/atom тегов, оценивает результат crusher-03 ingest, либо завершает parent как decomposed, либо удерживает после исчерпания retry, либо форсирует повторную декомпозицию.",
+    "summary":  "Предлагаю реализовать Invoke-BridgeSelfDecomposeGate как узкую функцию-фильтр с явным возвратом результата gate: pass-through, decomposed, held или force-decompose-retry. Call site сразу после Invoke-PostTaskSelfModelRefresh должен использовать этот результат, чтобы не эмитить STATUS:CONTINUE для decomposed/held/retry parent-задач и передать ошибки ingest в prompt при retry.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Gate должен сначала проверять channel, scope, исключающие теги и Test-IsLargeTask, и только после этого читать ingest/state.",
+                               "reason":  "Acceptance требует полного pass-through для PROJECT, small и child/atom задач.",
+                               "tradeoff":  "Чуть больше явной защитной логики, зато нет побочных эффектов для нерелевантных задач.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Invoke-BridgeSelfDecomposeGate должен возвращать структурированный объект с action/suppressContinue/retryErrors, а не только писать в state.",
+                               "reason":  "Call site должен надежно понять, когда нельзя отправлять STATUS:CONTINUE кодеру.",
+                               "tradeoff":  "Потребуется небольшая интеграция в вызывающем коде, но поведение станет тестируемым.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "valid_split_count нужно считать как сумму created_valid и same-parent-skipped_valid атомов, где valid_for_split == true.",
+                               "reason":  "Так явно задан контракт crusher-03/04.",
+                               "tradeoff":  "Реализация должна быть терпимой к отсутствующим полям и разным формам ingest объекта.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "При valid_split_count \u003e= 2 и пустых errors задача получает статус decomposed, retry_count можно сбросить или оставить без увеличения.",
+                               "reason":  "Успешная декомпозиция parent должна остановить передачу этой parent-задачи в coder.",
+                               "tradeoff":  "Сброс retry_count чище, но если в проекте state хранит историю, лучше не удалять без локального паттерна.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "При invalid split и retry_count \u003c 3 gate инкрементирует bridge_self_decompose_retry_count и возвращает force-decompose-retry.",
+                               "reason":  "Это реализует обязательный повтор decomposition вместо продолжения в coder.",
+                               "tradeoff":  "Нужно аккуратно встроиться в существующий prompt/status pipeline, чтобы retry был понят текущей системой.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "При retry_count \u003e= 3 задача получает held и hold reason bridge-self-decomposition-invalid.",
+                               "reason":  "Контракт требует не пропускать стабильно неразложимый крупный bridge-self parent дальше.",
+                               "tradeoff":  "Возможен false hold при ошибочном ingest, но retry limit ограничивает зацикливание.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "$state доступен в месте вызова, а $PromptState либо является этим state, либо содержит ссылку на состояние.",
+                        "Update-IdeaStatus и Set-IdeaHoldReason уже доступны в driver/86-loop-completion-actions.ps1 или загружены раньше.",
+                        "Test-IsLargeTask уже принимает параметры, достаточные для channel/scope/taskText проверки.",
+                        "Существующий код, который эмитит STATUS:CONTINUE, можно условно обойти по результату gate.",
+                        "crusher-03 пишет bridge_self_last_decompose_ingest в совместимой структуре с полями atoms/errors или эквивалентными коллекциями."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Неясная фактическая форма bridge_self_last_decompose_ingest может привести к неверному valid_split_count.",
+                      "severity":  "high",
+                      "mitigation":  "Сначала grep/read crusher-03 writer и реализовать tolerant extraction только под реально найденную структуру."
+                  },
+                  {
+                      "risk":  "Call site может продолжить эмитить STATUS:CONTINUE даже после статуса decomposed/held.",
+                      "severity":  "high",
+                      "mitigation":  "Сделать результат gate обязательным для ветки continuation и добавить явный suppressContinue/return path."
+                  },
+                  {
+                      "risk":  "Retry signal force-decompose-retry может не совпасть с существующим форматом prompt pipeline.",
+                      "severity":  "medium",
+                      "mitigation":  "Найти существующие status/action markers в файле и вернуть сигнал в том же стиле."
+                  },
+                  {
+                      "risk":  "Set-IdeaHoldReason может иметь другую сигнатуру, чем указано в контракте.",
+                      "severity":  "medium",
+                      "mitigation":  "Перед правкой grep по репозиторию и использовать существующий canonical вызов."
+                  },
+                  {
+                      "risk":  "Изменение critical control-plane файла может сломать SelfTest.",
+                      "severity":  "high",
+                      "mitigation":  "Сохранять правку локальной, выполнить parser check, driver.ps1 -SelfTest и tools/smoke.ps1."
+                  }
+              ],
+    "minimal_version":  "Добавить Invoke-BridgeSelfDecomposeGate в driver/86-loop-completion-actions.ps1 рядом с Invoke-PostTaskSelfModelRefresh, реализовать predicate, чтение ingest, подсчет valid_split_count, статусы decomposed/held, retry_count++, возврат force-decompose-retry и suppressContinue. Вызвать функцию сразу после Invoke-PostTaskSelfModelRefresh и прервать дальнейший STATUS:CONTINUE для handled результата.",
+    "advanced_version":  "Дополнительно нормализовать ingest через helper extraction, логировать диагностические детали errors/counts без шума, сбрасывать retry_count после успешной декомпозиции при наличии принятого state-паттерна, добавить canary/self-test сценарии для pass-through, retry, held и decomposed веток."
+}

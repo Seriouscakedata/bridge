@@ -1,0 +1,183 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "PREDICATE_LOGIC",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A/B/C consensus. The gate condition (channel/scope/Test-IsLargeTask + tag exclusions) is the correct entry guard and the explicit exclusion of \u0027atom\u0027/\u0027decomposed-child\u0027/\u0027bridge-self-child\u0027 tags directly prevents re-decomposition loops. Loading the full idea via Get-IdeaById for counts is justified. Highly specific and unambiguous.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "STRUCTURED_RETURN_CALL_SITE",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.9,
+                                     "impact":  0.82,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A/B consensus. Returning a structured decision object (action/suppressContinue/retryErrors) cleanly separates pure decision logic from loop-scoped side effects, which keeps the gate testable. Slight cost to simplicity from the extra indirection, but the design is sound and the named properties are concrete.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "VALID_SPLIT_COUNT_CALCULATION",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.72,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A/C consensus. Summing created_valid and same-parent-skipped_valid (gated on valid_for_split==true) correctly makes the count idempotent across retries that re-skip already-created atoms. Low cost; correctness hinges on the ingest schema being as described, otherwise straightforward.",
+                      "total":  0.842
+                  },
+                  {
+                      "atom_id":  "DECOMPOSED_OUTCOME",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.92,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A/C consensus. The \u003e=2 valid-split threshold is a sensible definition of a real decomposition, and suppressing STATUS:CONTINUE prevents the coder from continuing work on a parent that has just been split. Resetting the retry counter on success is correct. Clear and low-cost.",
+                      "total":  0.8815
+                  },
+                  {
+                      "atom_id":  "RETRY_MECHANISM",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.88,
+                                     "impact":  0.8,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Off-by-one risk: \u0027check before increment to allow exactly 3 retries\u0027 is a known fence-post hazard; could yield 2 or 4 attempts if the boundary is implemented loosely. Requires an explicit unit test of the 0/1/2 increment sequence.",
+                                            "value":  0.02
+                                        }
+                                    ],
+                      "reason":  "A/C consensus and clearly the right control structure (bounded force-decompose-retry). The atom itself flags the boundary condition, which is good, but the check-before-increment semantics are the most error-prone part of the design, hence the small penalty and reduced simplicity score.",
+                      "total":  0.809
+                  },
+                  {
+                      "atom_id":  "HELD_OUTCOME",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.92,
+                                     "impact":  0.78,
+                                     "simplicity":  0.88,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A/C consensus. The terminal \u0027held\u0027 fallback with reason \u0027bridge-self-decomposition-invalid\u0027 plus counter reset is the correct escape hatch that prevents unbounded retry loops. Low cost and well-specified; impact is slightly lower as it is the rare terminal branch.",
+                      "total":  0.867
+                  },
+                  {
+                      "atom_id":  "FUNCTION_LOCATION_INVOCATION",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.72,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Hardcoded line reference (cleanup.ps1:938) is fragile and will drift as the file changes; the placement should be pinned to the anchor (immediately after Invoke-PostTaskSelfModelRefresh) rather than a literal line number.",
+                                            "value":  0.01
+                                        }
+                                    ],
+                      "reason":  "B/C consensus. Placing the definition in actions.ps1 and the single invocation after Invoke-PostTaskSelfModelRefresh (outside an actions scriptblock) is justified by execution-order and scope needs. Extremely specific; only weakness is the brittle absolute line number.",
+                      "total":  0.829
+                  },
+                  {
+                      "atom_id":  "CANONICAL_API_USAGE",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Single-source (B only) and asserts an unverified API contract: that Set-Idea is canonical, that -Reason is valid for the \u0027decomposed\u0027 status (reason may be semantically meaningful only for \u0027held\u0027), and that Update-IdeaStatus/Set-IdeaHoldReason are mere aliases rather than functions with distinct semantics.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "The Get-Command -ErrorAction SilentlyContinue guarding is excellent defensive practice and should be kept. However, the claim that Set-Idea is the canonical entry point and that -Reason applies uniformly to both \u0027held\u0027 and \u0027decomposed\u0027 must be verified against the actual idea-store API before adoption; treating the other commands as plain aliases is the riskiest assumption. Modify to confirm the real signature.",
+                      "total":  0.76
+                  },
+                  {
+                      "atom_id":  "INGEST_ROBUSTNESS",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.88,
+                                     "impact":  0.78,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but a strong, defensible design. Treating missing/null/parent-id-mismatched ingest as valid_split_count=0 with non-empty errors and routing to retry/held avoids both crashes and the dangerous case of reading stale ingest from a different parent. High risk reduction; modest added branching cost.",
+                      "total":  0.8415
+                  },
+                  {
+                      "atom_id":  "GATE_STABILITY_TRY_CATCH",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.88,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but the highest-scoring atom: wrapping the gate and call site in try/catch and degrading to \u0027noop\u0027 guarantees this opportunistic feature can never block DONE or poison planner status. High reversibility, low cost, and it bounds the blast radius of every other atom\u0027s potential bugs — exactly the right stability posture for completion-path code.",
+                      "total":  0.892
+                  }
+              ]
+}

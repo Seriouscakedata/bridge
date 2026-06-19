@@ -1,0 +1,17 @@
+{
+    "consensus_atoms":  [
+                            "PREDICATE_LOGIC",
+                            "STRUCTURED_RETURN_CALL_SITE",
+                            "VALID_SPLIT_COUNT_CALCULATION",
+                            "DECOMPOSED_OUTCOME",
+                            "RETRY_MECHANISM",
+                            "HELD_OUTCOME",
+                            "FUNCTION_LOCATION_INVOCATION"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

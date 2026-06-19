@@ -1,0 +1,122 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "PREDICATE_LOGIC",
+                      "statement":  "The gate predicate must strictly check channel==\u0027main\u0027, scope==\u0027bridge\u0027, Test-IsLargeTask returning true (requiring loading the full idea via Get-IdeaById for counts), and the absence of specific tags (\u0027atom\u0027, \u0027decomposed-child\u0027, \u0027bridge-self-child\u0027).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Predicate Logic",
+                      "test":  "Verify that the gate only proceeds for tasks matching channel==\u0027main\u0027, scope==\u0027bridge\u0027, Test-IsLargeTask==true, and without \u0027atom\u0027, \u0027decomposed-child\u0027, or \u0027bridge-self-child\u0027 tags.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "STRUCTURED_RETURN_CALL_SITE",
+                      "statement":  "Invoke-BridgeSelfDecomposeGate must be implemented as a function that returns a structured decision object (e.g., with action/suppressContinue/retryErrors), allowing the cleanup call site to apply loop-scoped effects like suppressing STATUS:CONTINUE or setting $plannerStatus and a force-retry flag.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Control Flow / API Design",
+                      "test":  "Verify the function returns a structured object with expected properties (action, suppressContinue, retryErrors) and that the call site correctly interprets and acts on these properties to control STATUS:CONTINUE and $plannerStatus.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "VALID_SPLIT_COUNT_CALCULATION",
+                      "statement":  "Valid split count must be calculated as the sum of created_valid and same-parent-skipped_valid atoms where valid_for_split==true, read from $state.bridge_self_last_decompose_ingest.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Data Calculation",
+                      "test":  "Provide mock ingest data with varying created_valid, same-parent-skipped_valid, and valid_for_split values and assert the calculated valid_split_count is correct.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DECOMPOSED_OUTCOME",
+                      "statement":  "If valid_split_count \u003e= 2 and errors are empty, the parent task must be marked \u0027decomposed\u0027, STATUS:CONTINUE must NOT be emitted to the coder, and the retry counter should be reset.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Control Flow / State Management",
+                      "test":  "Verify that when valid_split_count \u003e= 2 and no errors, the task status is set to \u0027decomposed\u0027, STATUS:CONTINUE is suppressed, and the retry counter is reset.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "RETRY_MECHANISM",
+                      "statement":  "Upon invalid split and if bridge_self_decompose_retry_count is less than 3, the gate must increment bridge_self_decompose_retry_count, return a \u0027force-decompose-retry\u0027 signal, and ensure the retry counter is checked *before* incrementing to allow exactly 3 retries.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "State Management / Control Flow",
+                      "test":  "Verify that for invalid splits, the retry counter increments up to 3 times, and a \u0027force-decompose-retry\u0027 signal is returned. Assert the counter is checked correctly to allow 3 retries (0, 1, 2 increments).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "HELD_OUTCOME",
+                      "statement":  "If bridge_self_decompose_retry_count reaches 3 or more (after 3 retries), the task must be marked \u0027held\u0027 with the reason \u0027bridge-self-decomposition-invalid\u0027, and the retry counter should be reset.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "State Management / Control Flow",
+                      "test":  "Verify that after 3 retries (i.e., on the 4th invalid attempt), the task status is set to \u0027held\u0027 with the reason \u0027bridge-self-decomposition-invalid\u0027, and the retry counter is reset.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "FUNCTION_LOCATION_INVOCATION",
+                      "statement":  "Define Invoke-BridgeSelfDecomposeGate within driver/86-loop-completion-actions.ps1, but its single invocation must be placed immediately after the Invoke-PostTaskSelfModelRefresh call at driver/86-loop-completion-cleanup.ps1:938, not within an actions scriptblock, due to execution order and scope requirements.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture / Integration",
+                      "test":  "Verify the function definition is in actions.ps1 and its invocation is a single line in cleanup.ps1 at the specified location, and that it executes in the correct order relative to Invoke-PostTaskSelfModelRefresh.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "CANONICAL_API_USAGE",
+                      "statement":  "Use the canonical `Set-Idea -Id \u003cid\u003e -Status \u0027held\u0027|\u0027decomposed\u0027 -Reason \u0027bridge-self-decomposition-invalid\u0027` API for status updates, treating `Update-IdeaStatus` and `Set-IdeaHoldReason` as aliases. All external calls must be guarded with `Get-Command -ErrorAction SilentlyContinue`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "API Integration",
+                      "test":  "Verify that `Set-Idea` is used for status and reason updates, and that all external API calls are wrapped with `Get-Command -ErrorAction SilentlyContinue`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "INGEST_ROBUSTNESS",
+                      "statement":  "The gate must gracefully handle a missing, null, or parent-id-mismatched `bridge_self_last_decompose_ingest` by treating it as `valid_split_count=0` with non-empty errors, routing to the retry/held path, and never throwing an exception.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling / Data Robustness",
+                      "test":  "Provide mock state with missing, null, or mismatched `bridge_self_last_decompose_ingest` and verify the gate does not throw, correctly routes to retry/held, and logs an appropriate error.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "GATE_STABILITY_TRY_CATCH",
+                      "statement":  "The entire gate function and its call site must be wrapped in a `try/catch` block to prevent it from blocking completion (`DONE`) or setting a failing planner status due to internal errors, degrading gracefully to a \u0027noop\u0027 on exception.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling / System Stability",
+                      "test":  "Introduce an artificial error within the gate function and verify that the completion loop is not blocked, no failing planner status is set, and an error is logged (e.g., via Add-Message).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

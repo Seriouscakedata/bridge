@@ -66,6 +66,272 @@ function Invoke-PostTaskSelfModelRefresh {
   }
 }
 
+function Get-BridgeSelfGateObjectValue {
+  param(
+    $Object,
+    [string[]]$Names = @(),
+    $Default = $null
+  )
+  if ($null -eq $Object) { return $Default }
+  foreach ($name in @($Names)) {
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    try {
+      $prop = $Object.PSObject.Properties[$name]
+      if ($null -ne $prop) { return $prop.Value }
+    } catch {}
+  }
+  return $Default
+}
+
+function Test-BridgeSelfGateTruthy {
+  param($Value)
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [bool]) { return [bool]$Value }
+  $text = ([string]$Value).Trim().ToLowerInvariant()
+  return @('1','true','yes','valid','ok') -contains $text
+}
+
+function ConvertTo-BridgeSelfGateInt {
+  param($Value, [int]$Default = 0)
+  if ($null -eq $Value) { return $Default }
+  $out = 0
+  if ([int]::TryParse(([string]$Value).Trim(), [ref]$out)) { return $out }
+  return $Default
+}
+
+function New-BridgeSelfDecomposeGateDecision {
+  param(
+    [string]$Action = 'noop',
+    [bool]$SuppressContinue = $false,
+    [string[]]$RetryErrors = @(),
+    [string]$Status = '',
+    [string]$Reason = '',
+    [string]$Log = '',
+    [int]$ValidSplitCount = 0
+  )
+  return [pscustomobject][ordered]@{
+    action           = [string]$Action
+    suppressContinue = [bool]$SuppressContinue
+    retryErrors      = @($RetryErrors)
+    status           = [string]$Status
+    reason           = [string]$Reason
+    log              = [string]$Log
+    validSplitCount  = [int]$ValidSplitCount
+  }
+}
+
+function Write-BridgeSelfDecomposeGateLog {
+  param([string]$Message)
+  if ([string]::IsNullOrWhiteSpace($Message)) { return }
+  try {
+    if (Get-Command Add-Message -ErrorAction SilentlyContinue) {
+      Add-Message -From system -Text $Message -Kind event | Out-Null
+    }
+  } catch {
+    try { Write-Host $Message } catch {}
+  }
+}
+
+function Set-BridgeSelfGateIdeaStatus {
+  param(
+    [string]$Id,
+    [string]$Status,
+    [string]$Reason = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($Status)) { return $false }
+  try {
+    if (Get-Command Update-IdeaStatus -ErrorAction SilentlyContinue) {
+      Update-IdeaStatus -Id $Id -Status $Status | Out-Null
+      return $true
+    }
+    if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+      return [bool](Set-Idea -Id $Id -Status $Status -Reason $Reason)
+    }
+  } catch {
+    Write-BridgeSelfDecomposeGateLog -Message ("⚠ CRUSHER: status update failed: " + $_.Exception.Message)
+  }
+  return $false
+}
+
+function Set-BridgeSelfGateHoldReason {
+  param(
+    [string]$Id,
+    [string]$Reason
+  )
+  if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($Reason)) { return $false }
+  try {
+    if (Get-Command Set-IdeaHoldReason -ErrorAction SilentlyContinue) {
+      Set-IdeaHoldReason -Id $Id -Reason $Reason | Out-Null
+      return $true
+    }
+    if (Get-Command Set-Idea -ErrorAction SilentlyContinue) {
+      return [bool](Set-Idea -Id $Id -Status 'held' -Reason $Reason)
+    }
+  } catch {
+    Write-BridgeSelfDecomposeGateLog -Message ("⚠ CRUSHER: hold reason update failed: " + $_.Exception.Message)
+  }
+  return $false
+}
+
+function Invoke-BridgeSelfDecomposeGate {
+  [CmdletBinding()]
+  param(
+    [string]$Id,
+    [string[]]$Tags = @(),
+    [string]$Channel = '',
+    [string]$Scope = '',
+    [string]$TaskText = '',
+    $PromptState = $null
+  )
+
+  try {
+    $taskId = ([string]$Id).Trim()
+    if ([string]::IsNullOrWhiteSpace($taskId)) { return (New-BridgeSelfDecomposeGateDecision) }
+    if ([string]$Channel -ne 'main' -or [string]$Scope -ne 'bridge') { return (New-BridgeSelfDecomposeGateDecision) }
+
+    $tagSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($tag in @($Tags)) {
+      $tagText = ([string]$tag).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($tagText)) { [void]$tagSet.Add($tagText) }
+    }
+    foreach ($blockedTag in @('atom','decomposed-child','bridge-self-child')) {
+      if ($tagSet.Contains($blockedTag)) { return (New-BridgeSelfDecomposeGateDecision) }
+    }
+
+    $idea = $null
+    if (Get-Command Get-IdeaById -ErrorAction SilentlyContinue) {
+      try { $idea = Get-IdeaById -Id $taskId } catch { $idea = $null }
+    }
+    $largeText = [string]$TaskText
+    $largeTags = @($Tags)
+    $largeFiles = @()
+    $acceptanceCount = 0
+    $subsystemCount = 0
+    $estimatedTurns = 0
+    if ($idea) {
+      try {
+        $ideaText = [string](Get-BridgeSelfGateObjectValue -Object $idea -Names @('text','task','title') -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($ideaText)) { $largeText = $ideaText }
+      } catch {}
+      try {
+        $largeTags = @(Get-BridgeSelfGateObjectValue -Object $idea -Names @('tags') -Default @() | ForEach-Object { [string]$_ })
+      } catch { $largeTags = @($Tags) }
+      try {
+        $largeFiles = @(Get-BridgeSelfGateObjectValue -Object $idea -Names @('files') -Default @() | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      } catch { $largeFiles = @() }
+      try {
+        $acceptance = @(Get-BridgeSelfGateObjectValue -Object $idea -Names @('acceptance') -Default @())
+        $acceptanceCount = @($acceptance).Count
+      } catch { $acceptanceCount = 0 }
+      $subsystemCount = ConvertTo-BridgeSelfGateInt -Value (Get-BridgeSelfGateObjectValue -Object $idea -Names @('subsystem_count','subsystems_count') -Default 0)
+      $estimatedTurns = ConvertTo-BridgeSelfGateInt -Value (Get-BridgeSelfGateObjectValue -Object $idea -Names @('estimated_turns','estimatedTurns') -Default 0)
+    }
+
+    $isLarge = $false
+    if (Get-Command Test-IsLargeTask -ErrorAction SilentlyContinue) {
+      $isLarge = [bool](Test-IsLargeTask -TaskText $largeText -Tags $largeTags -Channel 'main' -Scope 'bridge' -AcceptanceCount $acceptanceCount -SubsystemCount $subsystemCount -EstimatedTurns $estimatedTurns -Files $largeFiles)
+    }
+    if (-not $isLarge) { return (New-BridgeSelfDecomposeGateDecision) }
+
+    $state = $PromptState
+    if ($null -eq $state) {
+      if (Get-Command Read-State -ErrorAction SilentlyContinue) { $state = Read-State }
+    }
+
+    $errors = New-Object 'System.Collections.Generic.List[string]'
+    $ingest = $null
+    try { $ingest = Get-BridgeSelfGateObjectValue -Object $state -Names @('bridge_self_last_decompose_ingest') -Default $null } catch { $ingest = $null }
+    if ($null -eq $ingest) {
+      [void]$errors.Add('bridge_self_last_decompose_ingest missing')
+    } else {
+      $ingestParent = [string](Get-BridgeSelfGateObjectValue -Object $ingest -Names @('parent_id','parentId') -Default '')
+      if ([string]::IsNullOrWhiteSpace($ingestParent)) {
+        [void]$errors.Add('decompose ingest parent_id missing')
+      } elseif ($ingestParent -ne $taskId) {
+        [void]$errors.Add("decompose ingest parent mismatch: $ingestParent")
+      }
+      foreach ($err in @(Get-BridgeSelfGateObjectValue -Object $ingest -Names @('errors') -Default @())) {
+        $errText = ([string]$err).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($errText)) { [void]$errors.Add($errText) }
+      }
+    }
+
+    $validSplitCount = 0
+    if ($null -ne $ingest) {
+      $createdValidRaw = Get-BridgeSelfGateObjectValue -Object $ingest -Names @('created_valid','createdValid') -Default $null
+      $sameParentSkippedValidRaw = Get-BridgeSelfGateObjectValue -Object $ingest -Names @('same_parent_skipped_valid','same-parent-skipped_valid','sameParentSkippedValid') -Default $null
+      if ($null -ne $createdValidRaw -or $null -ne $sameParentSkippedValidRaw) {
+        $validSplitCount = (ConvertTo-BridgeSelfGateInt -Value $createdValidRaw) + (ConvertTo-BridgeSelfGateInt -Value $sameParentSkippedValidRaw)
+      } else {
+        foreach ($atom in @(Get-BridgeSelfGateObjectValue -Object $ingest -Names @('atoms') -Default @())) {
+          if (-not (Test-BridgeSelfGateTruthy (Get-BridgeSelfGateObjectValue -Object $atom -Names @('valid_for_split','validForSplit') -Default $false))) { continue }
+          $createdValid = Test-BridgeSelfGateTruthy (Get-BridgeSelfGateObjectValue -Object $atom -Names @('created_valid','createdValid') -Default $false)
+          $sameParentSkippedValid = Test-BridgeSelfGateTruthy (Get-BridgeSelfGateObjectValue -Object $atom -Names @('same_parent_skipped_valid','same-parent-skipped_valid','sameParentSkippedValid') -Default $false)
+          $kind = ([string](Get-BridgeSelfGateObjectValue -Object $atom -Names @('kind','status','action','outcome') -Default '')).Trim().ToLowerInvariant()
+          if ($createdValid -or $sameParentSkippedValid -or $kind -eq 'created_valid' -or $kind -eq 'same-parent-skipped_valid' -or $kind -eq 'same_parent_skipped_valid') {
+            $validSplitCount++
+          }
+        }
+      }
+    }
+
+    if ($validSplitCount -ge 2 -and $errors.Count -eq 0) {
+      Set-BridgeSelfGateIdeaStatus -Id $taskId -Status 'decomposed' -Reason 'bridge-self-decompose-gate' | Out-Null
+      if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_count -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_parent_id -NotePropertyValue '' -Force
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_errors -NotePropertyValue @() -Force
+        }.GetNewClosure()) | Out-Null
+      }
+      $log = "CRUSHER: valid split $validSplitCount atoms, parent decomposed"
+      Write-BridgeSelfDecomposeGateLog -Message $log
+      return (New-BridgeSelfDecomposeGateDecision -Action 'decomposed' -SuppressContinue $true -Status 'decomposed' -Log $log -ValidSplitCount $validSplitCount)
+    }
+
+    $retryCount = 0
+    $retryParent = ''
+    try {
+      $retryParent = [string](Get-BridgeSelfGateObjectValue -Object $state -Names @('bridge_self_decompose_retry_parent_id') -Default '')
+      if ($retryParent -eq $taskId) {
+        $retryCount = ConvertTo-BridgeSelfGateInt -Value (Get-BridgeSelfGateObjectValue -Object $state -Names @('bridge_self_decompose_retry_count') -Default 0)
+      }
+    } catch { $retryCount = 0 }
+    if ($errors.Count -eq 0) { [void]$errors.Add("valid split count $validSplitCount is below 2") }
+
+    if ($retryCount -ge 3) {
+      $reason = 'bridge-self-decomposition-invalid'
+      Set-BridgeSelfGateIdeaStatus -Id $taskId -Status 'held' -Reason $reason | Out-Null
+      Set-BridgeSelfGateHoldReason -Id $taskId -Reason $reason | Out-Null
+      if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_count -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_parent_id -NotePropertyValue '' -Force
+          $s | Add-Member -NotePropertyName bridge_self_decompose_retry_errors -NotePropertyValue @() -Force
+        }.GetNewClosure()) | Out-Null
+      }
+      $log = 'CRUSHER: retry exhausted, parent held'
+      Write-BridgeSelfDecomposeGateLog -Message $log
+      return (New-BridgeSelfDecomposeGateDecision -Action 'held' -SuppressContinue $true -RetryErrors $errors.ToArray() -Status 'held' -Reason $reason -Log $log -ValidSplitCount $validSplitCount)
+    }
+
+    $nextRetry = $retryCount + 1
+    if (Get-Command Update-State -ErrorAction SilentlyContinue) {
+      $retryErrors = @($errors.ToArray())
+      Update-State ({ param($s)
+        $s | Add-Member -NotePropertyName bridge_self_decompose_retry_count -NotePropertyValue $nextRetry -Force
+        $s | Add-Member -NotePropertyName bridge_self_decompose_retry_parent_id -NotePropertyValue $taskId -Force
+        $s | Add-Member -NotePropertyName bridge_self_decompose_retry_errors -NotePropertyValue $retryErrors -Force
+      }.GetNewClosure()) | Out-Null
+    }
+    $retryLog = "CRUSHER: invalid split, retry $nextRetry/3"
+    Write-BridgeSelfDecomposeGateLog -Message $retryLog
+    return (New-BridgeSelfDecomposeGateDecision -Action 'force-decompose-retry' -RetryErrors $errors.ToArray() -Log $retryLog -ValidSplitCount $validSplitCount)
+  } catch {
+    return (New-BridgeSelfDecomposeGateDecision -Action 'noop' -RetryErrors @($_.Exception.Message) -Log ('CRUSHER: gate noop after error: ' + $_.Exception.Message))
+  }
+}
+
 $script:DriverLoopCompletionCriticActionsBlock = {
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     # Независимый критик: перед закрытием ревьюим git-дифф задачи на другой модели.
@@ -552,6 +818,47 @@ $diff
 }
 
 $script:DriverLoopCompletionProjectActionsBlock = {
+  if ($plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
+    try {
+      $gateState = Read-State
+      $gateTaskId = [string]$gateState.current_backlog_id
+      if ([string]::IsNullOrWhiteSpace($gateTaskId)) { $gateTaskId = [string]$gateState.current_task_id }
+      $gateIdea = $null
+      if (-not [string]::IsNullOrWhiteSpace($gateTaskId) -and (Get-Command Get-IdeaById -ErrorAction SilentlyContinue)) {
+        try { $gateIdea = Get-IdeaById -Id $gateTaskId } catch { $gateIdea = $null }
+      }
+      $gateTags = @()
+      $gateScope = ''
+      $gateText = [string]$gateState.current_task
+      if ($gateIdea) {
+        try { $gateTags = @(Get-BridgeSelfGateObjectValue -Object $gateIdea -Names @('tags') -Default @() | ForEach-Object { [string]$_ }) } catch { $gateTags = @() }
+        try { $gateScope = [string](Get-BridgeSelfGateObjectValue -Object $gateIdea -Names @('scope') -Default '') } catch { $gateScope = '' }
+        try {
+          $gateIdeaText = [string](Get-BridgeSelfGateObjectValue -Object $gateIdea -Names @('text','task','title') -Default '')
+          if (-not [string]::IsNullOrWhiteSpace($gateIdeaText)) { $gateText = $gateIdeaText }
+        } catch {}
+      }
+      $bridgeSelfGateDecision = Invoke-BridgeSelfDecomposeGate -Id $gateTaskId -Tags $gateTags -Channel $Channel -Scope $gateScope -TaskText $gateText -PromptState $gateState
+      if ($bridgeSelfGateDecision -and [string]$bridgeSelfGateDecision.action -eq 'force-decompose-retry') {
+        $plannerStatus = 'CONTINUE'
+        $retryText = @($bridgeSelfGateDecision.retryErrors) -join '; '
+        if ([string]::IsNullOrWhiteSpace($retryText)) { $retryText = 'bridge-self decomposition invalid' }
+        try { Set-TaskLastFailure -Kind bridge_self_decomposition_invalid -Text $retryText } catch {}
+        Update-State ({ param($s)
+          $s | Add-Member -NotePropertyName force_planner -NotePropertyValue $true -Force
+          $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.heartbeat=(Get-Date).ToString('o')
+        }.GetNewClosure()) | Out-Null
+      } elseif ($bridgeSelfGateDecision -and ([string]$bridgeSelfGateDecision.action -eq 'decomposed' -or [string]$bridgeSelfGateDecision.action -eq 'held')) {
+        Update-State { param($s)
+          $s.current_backlog_id=$null
+          $s | Add-Member -NotePropertyName force_planner -NotePropertyValue $false -Force
+        } | Out-Null
+      }
+    } catch {
+      try { Add-Message -From system -Text ("⚠ CRUSHER: decompose gate failed open: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+  }
+
   # Project Autopilot stop-condition: record the coordinator outcome only after
   # STATUS/COVERED/verification gates have settled the final planner status.
   if ($plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
