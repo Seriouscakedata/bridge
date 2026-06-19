@@ -125,6 +125,8 @@ function Get-AdvancedSettings {
     'memory.recallMinScore'          = 0.62
     'memory.dedupThreshold'          = 0.93
     'memory.ageDaysPrune'            = 30
+    'memory.verifyOnRecall'          = $true
+    'memory.restaleOnSha1Mismatch'   = $true
     'librarian.deltaTriggerCount'    = 10
     'librarian.ceilingHours'         = 6
     'reflect.minTaskDurationSec'     = 60
@@ -187,6 +189,8 @@ function Test-AdvancedSettingValue {
     'memory.recallMinScore'         = @{ type='float'; min=0.0; max=1.0  }
     'memory.dedupThreshold'         = @{ type='float'; min=0.0; max=1.0  }
     'memory.ageDaysPrune'           = @{ type='int';   min=1;   max=3650 }
+    'memory.verifyOnRecall'         = @{ type='bool'                    }
+    'memory.restaleOnSha1Mismatch'  = @{ type='bool'                    }
     'librarian.deltaTriggerCount'   = @{ type='int';   min=1;   max=1000 }
     'librarian.ceilingHours'        = @{ type='int';   min=1;   max=720  }
     'reflect.minTaskDurationSec'    = @{ type='int';   min=0;   max=86400 }
@@ -243,6 +247,7 @@ function Set-AdvancedSetting {
     'canary.enabled','canary.intervalHours','canary.cooldownMinutes',
     'fastLane.autoDetect','fastLane.minChars',
     'memory.recallTopK','memory.recallMinScore','memory.dedupThreshold','memory.ageDaysPrune',
+    'memory.verifyOnRecall','memory.restaleOnSha1Mismatch',
     'librarian.deltaTriggerCount','librarian.ceilingHours',
     'reflect.minTaskDurationSec',
     'backlogPack.enabled','backlogPack.burstCount','backlogPack.windowMinutes',

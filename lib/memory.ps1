@@ -378,6 +378,8 @@ function Get-MemoryConfig {
     codeTopK = 4
     codeMinScore = 0.5
     codeMaxInjectChars = 900
+    verifyOnRecall = $true
+    restaleOnSha1Mismatch = $true
   }
   $m = $null
   try {
@@ -876,11 +878,41 @@ function Select-MemoryHits {
   return @($scored | Where-Object { $_.Score -ge $MinScore } | Sort-Object -Property Score -Descending | Select-Object -First $TopK)
 }
 
+function Test-MemoryHitFreshness {
+  # Checks SHA1 freshness of a recalled record's evidence anchor.
+  param($Mem, $McConfig = $null, [string]$Channel = $null)
+  if (-not $McConfig) { $McConfig = Get-MemoryConfig }
+  if (-not ($McConfig.ContainsKey('restaleOnSha1Mismatch')) -or -not [bool]$McConfig['restaleOnSha1Mismatch']) { return $true }
+  if ($Mem.PSObject.Properties['pinned'] -and [bool]$Mem.pinned) { return $true }
+  $schema = 0
+  try { if ($Mem.PSObject.Properties['schema_version']) { $schema = [int]$Mem.schema_version } } catch {}
+  if ($schema -lt 2) { return $true }
+  $ev = $null
+  try { if ($Mem.PSObject.Properties['evidence']) { $ev = $Mem.evidence } } catch {}
+  if (-not $ev) { return $true }
+  $hasSha1 = $false
+  try { $hasSha1 = ($ev.PSObject.Properties['sha1'] -and -not [string]::IsNullOrWhiteSpace([string]$ev.sha1)) } catch {}
+  if (-not $hasSha1) { return $true }
+  try {
+    $res = Test-ProjectMemoryFreshness -MemoryRecord $Mem -Channel $Channel
+    if (-not [bool]$res.fresh -and [string]$res.reason -eq 'sha1-mismatch') {
+      $Mem | Add-Member -NotePropertyName status -NotePropertyValue 'stale' -Force
+      $Mem | Add-Member -NotePropertyName status_reason -NotePropertyValue 'sha1-mismatch' -Force
+      $Mem | Add-Member -NotePropertyName status_evidence -NotePropertyValue $res -Force
+      return $false
+    }
+  } catch {}
+  return $true
+}
+
 function Set-MemoryHitsLastRecalled {
   param([string]$StoreSlug, $Hits)
   try {
     if (-not $Hits -or @($Hits).Count -eq 0) { return }
     $now = Get-Date
+    $mc = Get-MemoryConfig
+    $canWrite = $true
+    try { Assert-MemoryWriteAllowed -TargetSlug $StoreSlug } catch { $canWrite = $false }
     $allow = $true
     if ($null -ne $script:LastRecallFlushTs) {
       if (($now - $script:LastRecallFlushTs).TotalSeconds -lt $script:RecallFlushMinIntervalSec) { $allow = $false }
@@ -893,6 +925,9 @@ function Set-MemoryHitsLastRecalled {
     foreach ($m in $all) {
       if ($idSet.ContainsKey([string]$m.id)) {
         $m | Add-Member -NotePropertyName lastRecalledAt -NotePropertyValue ($now.ToUniversalTime().ToString('o')) -Force
+        if ($canWrite -and $mc.ContainsKey('verifyOnRecall') -and [bool]$mc['verifyOnRecall']) {
+          Test-MemoryHitFreshness -Mem $m -McConfig $mc -Channel $StoreSlug | Out-Null
+        }
         $stampedAny = $true
       }
     }
@@ -930,6 +965,7 @@ function Search-Memory {
   if ($Channel -ne '__all__') {
     $mems = @($mems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel $Channel })
   }
+  $mems = @($mems | Where-Object { (Get-MemoryStatus $_) -eq 'active' })
   $result = @(Select-MemoryHits -Mems $mems -QueryVector $qvec -TopK $TopK -MinScore $MinScore)
   Set-MemoryHitsLastRecalled -StoreSlug $storeSlug -Hits $result
 
@@ -946,6 +982,7 @@ function Search-Memory {
         $bridgeMems = @($bridgeMems | Where-Object { -not (@($_.tags) -contains $tag) })
       }
       $bridgeMems = @($bridgeMems | Where-Object { Test-MemoryVisibleInChannel -Mem $_ -Channel 'main' })
+      $bridgeMems = @($bridgeMems | Where-Object { (Get-MemoryStatus $_) -eq 'active' })
       $bridgeHits = @(Select-MemoryHits -Mems $bridgeMems -QueryVector $qvec -TopK $bridgeCap -MinScore $MinScore)
       foreach ($h in $bridgeHits) {
         $h.Mem | Add-Member -NotePropertyName readonly_source -NotePropertyValue 'bridge' -Force
@@ -1498,6 +1535,40 @@ function Set-Memory {
       $m | Add-Member -NotePropertyName content_hash -NotePropertyValue (Get-MemoryContentHash -Text ([string]$Text)) -Force
       $m | Add-Member -NotePropertyName vec  -NotePropertyValue (@($newVec)) -Force
     }
+    break
+  }
+  if (-not $found) { return $false }
+  Save-AllMemories -Mems $mems -Channel $target
+  return $true
+}
+
+function Set-MemoryStatus {
+  # Mutate status field of an existing memory record. Pinned records are silently skipped.
+  param(
+    [Parameter(Mandatory=$true)][string]$Id,
+    [Parameter(Mandatory=$true)]
+    [ValidateSet('active','stale','rejected','archived')]
+    [string]$Status,
+    [string]$Reason = $null,
+    $Evidence = $null,
+    [string]$Channel = $null
+  )
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $target = if (-not [string]::IsNullOrWhiteSpace($Channel)) { $Channel } else { Get-CurrentMemoryChannel }
+  try { Assert-MemoryWriteAllowed -TargetSlug $target } catch { return $false }
+  $mems = @(Get-AllMemories -Channel $target)
+  $found = $false
+  foreach ($m in $mems) {
+    if ([string]$m.id -ne $Id) { continue }
+    if ($m.PSObject.Properties['pinned'] -and [bool]$m.pinned) { return $false }
+    $m | Add-Member -NotePropertyName status -NotePropertyValue $Status -Force
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+      $m | Add-Member -NotePropertyName status_reason -NotePropertyValue $Reason -Force
+    }
+    if ($null -ne $Evidence) {
+      $m | Add-Member -NotePropertyName status_evidence -NotePropertyValue $Evidence -Force
+    }
+    $found = $true
     break
   }
   if (-not $found) { return $false }
