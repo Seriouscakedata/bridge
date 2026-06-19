@@ -595,6 +595,18 @@ function New-DeepAuditAgentResult {
   }
 }
 
+function Get-DeepAuditJsonArray {
+  param(
+    [object]$Object,
+    [string]$PropertyName
+  )
+
+  if ($null -eq $Object) { return @() }
+  $prop = $Object.PSObject.Properties[$PropertyName]
+  if ($null -eq $prop -or $null -eq $prop.Value) { return @() }
+  return @($prop.Value | Where-Object { $null -ne $_ })
+}
+
 function Set-DeepAuditSinglePathEnvironment {
   $envs = [System.Environment]::GetEnvironmentVariables('Process')
   $pathKeys = @($envs.Keys | Where-Object { [string]$_ -ieq 'Path' })
@@ -694,13 +706,13 @@ function Complete-DeepAuditAgentProcess {
       model = [string]$parsed.model
       status = [string]$parsed.status
       runtime_sec = [double]$parsed.runtime_sec
-      findings = @($parsed.findings)
-      errors = @($parsed.errors)
-      coverage = @($parsed.coverage)
-      coverage_gap = @($parsed.coverage_gap)
+      findings = @(Get-DeepAuditJsonArray -Object $parsed -PropertyName 'findings')
+      errors = @(Get-DeepAuditJsonArray -Object $parsed -PropertyName 'errors')
+      coverage = @(Get-DeepAuditJsonArray -Object $parsed -PropertyName 'coverage')
+      coverage_gap = @(Get-DeepAuditJsonArray -Object $parsed -PropertyName 'coverage_gap')
       confidence = [double]$parsed.confidence
       prompt_truncated = [bool]$parsed.prompt_truncated
-      truncated_sections = @($parsed.truncated_sections)
+      truncated_sections = @(Get-DeepAuditJsonArray -Object $parsed -PropertyName 'truncated_sections')
     }
   } catch {
     return (New-DeepAuditAgentResult -Role $role -Model $model -Status 'error' -Errors @($_.Exception.Message) -RuntimeSec $runtime)

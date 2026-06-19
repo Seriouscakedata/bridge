@@ -111,10 +111,30 @@ function Invoke-DeepAuditSubprocess {
   }
 }
 
+$deepAuditFunctionsOnlyPath = [System.IO.Path]::Combine(
+  [System.IO.Path]::GetTempPath(),
+  ('deep-audit-functions-only-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+)
+try {
+  $deepAuditRaw = [System.IO.File]::ReadAllText($deepAuditScript, [System.Text.Encoding]::UTF8)
+  $mainMarker = '# --- Main ---'
+  $mainIndex = $deepAuditRaw.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
+  if ($mainIndex -lt 0) {
+    throw "main marker not found in $deepAuditScript"
+  }
+  $deepAuditFunctionsOnly = $deepAuditRaw.Substring(0, $mainIndex)
+  $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+  [System.IO.File]::WriteAllText($deepAuditFunctionsOnlyPath, $deepAuditFunctionsOnly, $utf8Bom)
+  . $deepAuditFunctionsOnlyPath
+} finally {
+  Remove-Item -LiteralPath $deepAuditFunctionsOnlyPath -ErrorAction SilentlyContinue
+}
+
 $hasTestAgentContentTruncated = [bool](Get-Command Test-AgentContentTruncated -ErrorAction SilentlyContinue)
 $hasGetAgentFileContentCapped = [bool](Get-Command Get-AgentFileContentCapped -ErrorAction SilentlyContinue)
 $hasNewAgentPrompt = [bool](Get-Command New-AgentPrompt -ErrorAction SilentlyContinue)
 $hasGetAgentPromptContext = [bool](Get-Command Get-AgentPromptContext -ErrorAction SilentlyContinue)
+$hasCompleteDeepAuditAgentProcess = [bool](Get-Command Complete-DeepAuditAgentProcess -ErrorAction SilentlyContinue)
 
 # --- Unit: Test-AgentContentTruncated ---
 Check 'T1: function Test-AgentContentTruncated defined' $hasTestAgentContentTruncated
@@ -184,6 +204,49 @@ try {
   }
   Check 'T12d: deep-audit -NoLLM exits 0' ($deepAuditResult.exit_code -eq 0) $deepAuditResult.exit_code
   Check 'T12e: deep-audit agents expose prompt_truncated + truncated_sections' $allAgentsHaveTelemetry $deepAuditAgents
+
+  Check 'T13: Complete-DeepAuditAgentProcess defined' $hasCompleteDeepAuditAgentProcess
+  $legacyResultPath = Join-Path $tmpDir 'legacy-agent.json'
+  [System.IO.File]::WriteAllText(
+    $legacyResultPath,
+    '{"role":"legacy-model","model":"test-model","status":"ok","runtime_sec":0.1,"findings":[],"errors":[],"coverage":[],"confidence":0.5}',
+    [System.Text.Encoding]::UTF8
+  )
+  $legacyState = [pscustomobject]@{
+    spec = [pscustomobject]@{ role = 'legacy-model'; model = 'test-model' }
+    proc = $null
+    resultF = $legacyResultPath
+    outF = Join-Path $tmpDir 'legacy-agent.out'
+    errF = Join-Path $tmpDir 'legacy-agent.err'
+    startedAt = Get-Date
+    timeoutSec = 1
+  }
+  $legacyParsed = if ($hasCompleteDeepAuditAgentProcess) { Complete-DeepAuditAgentProcess -State $legacyState } else { $null }
+  $legacyCoverageGap = if ($legacyParsed -and ($legacyParsed.PSObject.Properties.Name -contains 'coverage_gap')) { @($legacyParsed.coverage_gap) } else { @('missing') }
+  $legacyTruncatedSections = if ($legacyParsed -and ($legacyParsed.PSObject.Properties.Name -contains 'truncated_sections')) { @($legacyParsed.truncated_sections) } else { @('missing') }
+  Check 'T13b: missing coverage_gap normalizes to empty array' ($legacyCoverageGap.Count -eq 0) $legacyCoverageGap
+  Check 'T13c: missing truncated_sections normalizes to empty array' ($legacyTruncatedSections.Count -eq 0) $legacyTruncatedSections
+
+  $nullResultPath = Join-Path $tmpDir 'null-agent.json'
+  [System.IO.File]::WriteAllText(
+    $nullResultPath,
+    '{"role":"null-model","model":"test-model","status":"ok","runtime_sec":0.1,"findings":null,"errors":null,"coverage":null,"coverage_gap":null,"confidence":0.5,"truncated_sections":null}',
+    [System.Text.Encoding]::UTF8
+  )
+  $nullState = [pscustomobject]@{
+    spec = [pscustomobject]@{ role = 'null-model'; model = 'test-model' }
+    proc = $null
+    resultF = $nullResultPath
+    outF = Join-Path $tmpDir 'null-agent.out'
+    errF = Join-Path $tmpDir 'null-agent.err'
+    startedAt = Get-Date
+    timeoutSec = 1
+  }
+  $nullParsed = if ($hasCompleteDeepAuditAgentProcess) { Complete-DeepAuditAgentProcess -State $nullState } else { $null }
+  $nullCoverageGap = if ($nullParsed -and ($nullParsed.PSObject.Properties.Name -contains 'coverage_gap')) { @($nullParsed.coverage_gap) } else { @('missing') }
+  $nullTruncatedSections = if ($nullParsed -and ($nullParsed.PSObject.Properties.Name -contains 'truncated_sections')) { @($nullParsed.truncated_sections) } else { @('missing') }
+  Check 'T14: null coverage_gap normalizes to empty array' ($nullCoverageGap.Count -eq 0) $nullCoverageGap
+  Check 'T14b: null truncated_sections normalizes to empty array' ($nullTruncatedSections.Count -eq 0) $nullTruncatedSections
 } finally {
   Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }
