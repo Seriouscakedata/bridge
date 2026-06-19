@@ -1,0 +1,25 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] Изучи СВОЮ систему аудита и продумай, как поднять её ЭФФЕКТИВНОСТЬ (доля реальных проблем, доведённых до фикса). Это исследование+дизайн в режиме DISCUSS — НЕ реализуй сразу, на выходе durable план улучшений на ревью оператора.\n\nКАРТА для изучения (отправная, копай шире): lib/auditor.ps1 (Get-AuditorSnapshot, периодический auditor, commit_famine), deep-audit-agent.ps1 + audit.ps1 (deep-audit chain, 5 LLM-агентов security/functional/architecture), lib/backlog-workpack.ps1 (Invoke-BacklogIntakeGate — дедуп/верификация findings), findings→backlog→approved путь, driver/10-maintenance.ps1 (Start-AuditIfDue, окно 01-06).\n\nИЗВЕСТНЫЕ боли (вскрой корень + проверь актуальность): (1) deep:deep_failed — 5 deep-LLM агентов падают на subprocess/job-слое (Start-Job/Stop-Job не рвёт зависший сокет), static-часть даёт findings а deep — 0; (2) покрытие — что аудит НЕ смотрит; (3) ложные срабатывания vs пропуски (intake-gate их фильтрует — насколько точно?); (4) скорость/окно; (5) устаревание findings; (6) доходимость находок до реального фикса (сколько findings реально чинятся vs дропаются).\n\nЗАДАЧА: разобрать аудит по слоям, найти где теряется эффективность, продумать оптимизации (не плодя новые механизмы — Foundation #2; чинить/усиливать существующее). Сформируй PROJECT_MAP + PLAN (durable) ИЛИ decision_atoms с приоритизированными улучшениями. Декомпозируй до глав для ревью оператора.",
+    "goal":  "To study the existing audit system and design improvements to increase its efficiency, specifically the proportion of real problems that are identified and successfully fixed.",
+    "constraints":  [
+                        "Do not implement immediately; the output is a plan for review.",
+                        "Do not create new mechanisms; fix/strengthen existing ones (Foundation #2).",
+                        "Operate in DISCUSS mode."
+                    ],
+    "known_context":  [
+                          "Map for study (starting point, dig deeper): lib/auditor.ps1 (Get-AuditorSnapshot, periodic auditor, commit_famine), deep-audit-agent.ps1 + audit.ps1 (deep-audit chain, 5 LLM-agents security/functional/architecture), lib/backlog-workpack.ps1 (Invoke-BacklogIntakeGate - deduplication/verification of findings), findings-\u003ebacklog-\u003eapproved path, driver/10-maintenance.ps1 (Start-AuditIfDue, window 01-06).",
+                          "Known pains (uncover root cause + check relevance): (1) deep:deep_failed - 5 deep-LLM agents fail at the subprocess/job layer (Start-Job/Stop-Job does not break a hung socket), static part gives findings but deep gives 0; (2) coverage - what the audit DOES NOT look at; (3) false positives vs. misses (how accurately does intake-gate filter them?); (4) speed/window; (5) outdated findings; (6) reachability of findings to actual fix (how many findings are actually fixed vs. dropped)."
+                      ],
+    "output_format":  "A durable plan of improvements for operator review, OR a PROJECT_MAP + durable PLAN, OR prioritized decision_atoms. The output must be decomposed into chapters for operator review.",
+    "task_type":  "research",
+    "risk":  "medium",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The output contains a `PROJECT_MAP` and a `durable PLAN` OR `decision_atoms` with prioritized improvements.",
+                          "The output is decomposed into chapters suitable for operator review.",
+                          "The plan identifies where efficiency is lost within the audit system\u0027s layers.",
+                          "The plan proposes optimizations that strengthen existing mechanisms without introducing new ones.",
+                          "The plan addresses the root causes and relevance of the \u0027known pains\u0027.",
+                          "The proposed improvements are clearly aimed at increasing the \u0027efficiency\u0027 (share of real problems fixed)."
+                      ]
+}

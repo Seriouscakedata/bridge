@@ -1,0 +1,103 @@
+{
+    "proposer":  "B",
+    "understanding":  "The bridge runs TWO distinct, weakly-connected audit systems. (1) A runtime SENSOR auditor (lib/auditor.ps1): every ~15min when idle it builds Get-AuditorSnapshot, runs deterministic triggers (commit_famine, wait_state_stuck, empty_reply_streak, same_task_too_long, critic_pingpong, working_tree_drift, restart_frequency, doctor_recidivism), then a cheap LLM (gemini-2.5-flash-lite) classifies normal|transient|hung|corrupted_state|unsolvable and Dispatch-AuditorVerdict activates Doctor / notifies / suppresses. It feeds Doctor, NOT the backlog. (2) A nightly CODE-FINDING audit (driver/10-maintenance.ps1 Start-AuditIfDue, window 01-06, once-per-window-occurrence, floor 20h, maxWait 60, launch-admission 2/60min) -\u003e tools/audit.ps1 Invoke-BridgeAudit runs static security+functional subcomponents, a Start-Job signal collector (30s), then the DEEP phase: Invoke-DeepAuditProcess spawns tools/deep-audit.ps1 as a child PowerShell (Start-Process + $proc.WaitForExit + $proc.Kill on timeout -\u003e status deep_failed), which in Invoke-MultiAgentDeepAudit fans out up to maxParallelAgents(3) per-role agents (tools/deep-audit-agent.ps1: 8 roles security/functional/reliability/architecture/dependency/runtime-incident/latency/cost), plus codex.exe + claude.exe passes, with quorum minSuccess=ceil(N/2) and required slices that never abort. Findings flow: agents -\u003e Get-DeepAuditDedupedFindings -\u003e Update-FindingsLedger (rootCauseKey state machine) -\u003e Add-Idea (-SkipCurator) -\u003e Invoke-BacklogIntakeGate -\u003e approved/held/deduped/dropped -\u003e backlog -\u003e held-auto-triage / reaper / workpack -\u003e driver claims -\u003e fix. Efficiency = real problems fixed / real problems present. The funnel loses yield at every hop, but the decisive break is that nothing closes the loop back to the ledger.",
+    "summary":  "PROJECT_MAP (audit efficiency funnel, by layer):\nL0 INPUTS  - source files (capped reads), telemetry (turns/usage/restarts/circuit-breaker), runtime state.json.\nL1 DETECT  - static subcomponents + 8 deep LLM agents + codex/claude; runtime sensor auditor (separate).\nL2 DEDUP/AGE - Get-DeepAuditDedupedFindings (per-run) + Update-FindingsLedger (cross-run rootCauseKey: new/open/fixed/suppressed/regressed).\nL3 GATE    - Invoke-BacklogIntakeGate (dedup vs open, security-evidence verify, file-existence).\nL4 QUEUE   - Add-Idea -\u003e approved(bridge)/held(project); held-auto-triage, state-reaper, workpack pressure.\nL5 FIX     - driver claims approved items, edits, commits, QA.\nL6 FEEDBACK- usefulness.jsonl (action_rate, resolved_signal_delta, incident_capture_rate); ledger close-out.\n\nCHAPTERS FOR OPERATOR REVIEW:\nCh.1 Close the audit-\u003efix loop (L6/L2): CONFIRMED ROOT CAUSE - in production, ledger state \u0027fixed\u0027 is only READ (audit.ps1:620); the only writer Update-FindingsLedger emits new/open/regressed. Findings never close, so resolved_signal_delta ~ 0, regressed-detection is dead, usefulness structurally cannot see fix-rate, and fixed findings re-file or sit falsely-open. This is why \u0027доходимость до фикса\u0027 is both LOW and INVISIBLE. Fix: on backlog-item completion+QA-pass, set the originating finding\u0027s ledger entry to \u0027fixed\u0027 (id linkage already exists via Add-Idea return).\nCh.2 Deep-LLM reliability (pain #1, RELEVANCE CHECK): the stated \u0027Start-Job/Stop-Job hung socket\u0027 is now mostly STALE - the live agent path is Start-Process + WaitForExit + Kill (deep-audit.ps1 Start/Complete-DeepAuditAgentProcess), only the signal collector still uses Start-Job/Stop-Job(30s). Real residual root causes of deep_failed agents=0: (a) $proc.Kill() is NOT a tree-kill on Windows -\u003e orphan grandchildren (codex/claude/LLM sockets) survive; (b) outer DeepAuditTimeoutSec watchdog kills the orchestrator and DISCARDS all partial agent results (no incremental result write); (c) Invoke-LLM lacks confirmed hard wall-clock cancellation, so a wedged socket consumes the whole budget -\u003e missing_output_file.\nCh.3 Gate precision/recall (pain #3): non-security findings with any existing-file token are auto-APPROVED with zero content verification (backlog-workpack.ps1:640) while prose-only findings are HELD into limbo. Security path is well-verified; the rest is not.\nCh.4 Coverage (pain #2): per-role agents read capped content (security 5000, reliability 10000, default 20000 chars) -\u003e large core files (server.ps1/driver.ps1) are mostly UNSEEN; runtime incidents the sensor auditor already catches never become durable findings.\nCh.5 Staleness \u0026 cadence (pains #4/#5): -SkipCurator on audit findings bypasses the freshness/auto-resolved check, so stale audit tasks get worked; once-nightly + maxWait 60 can be skipped entirely on busy nights -\u003e up to 24h+ detection latency.\n\nThis plan strengthens existing mechanisms only (Foundation #2): the ledger state machine, the watchdog/kill, the intake gate, usefulness scoring, the freshness check, and the file-cap policy - no new subsystems.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "P1 - Close the ledger loop: mark a finding \u0027fixed\u0027 when the backlog item derived from it completes with a QA pass. Reuse the existing Add-Idea-\u003eitem id linkage, the existing qa_verdict_cache/post-commit QA signal, and Update-FindingsLedger; add a single close-out call on task completion that flips the matching rootCauseKey to \u0027fixed\u0027.",
+                               "reason":  "Confirmed: no production code ever sets ledger state \u0027fixed\u0027 (audit.ps1:620 is read-only). This silently zeroes resolved_signal_delta, kills regressed-detection, makes usefulness blind to fix-rate, and causes fixed findings to re-file or sit open forever. Closing this is the single highest-leverage change for the headline metric (share of real problems actually fixed) because it both raises true yield and finally makes the metric observable.",
+                               "tradeoff":  "Risk of false-closing a finding if a commit touches the file without truly fixing it; mitigated by requiring (a) the specific originating backlog item completed AND (b) a QA pass, scoped by item id, not \u0027any commit to the file\u0027.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "P2 - Make the deep phase loss-resilient: have deep-audit.ps1 write its result JSON incrementally (per agent as it completes) so audit.ps1\u0027s Invoke-DeepAuditProcess reads whatever finished even when the outer watchdog fires, instead of recording deep_failed agents=0.",
+                               "reason":  "Today a single slow/wedged agent can push total runtime past DeepAuditTimeoutSec; the outer Kill() then discards ALL agent output, producing the exact reported symptom (static gives findings, deep gives 0). Persisting partial results converts a total loss into graceful degradation and recovers most of the deep yield on bad nights.",
+                               "tradeoff":  "Slightly more file I/O and a marginally more complex result contract between deep-audit.ps1 and audit.ps1; both already exchange a result file, so the surface is small.",
+                               "confidence":  0.68
+                           },
+                           {
+                               "statement":  "P3 - Replace bare $proc.Kill() with a scoped process-TREE kill for both the deep orchestrator and each agent, and verify/repair Invoke-LLM hard wall-clock cancellation; if Invoke-LLM cannot guarantee cancellation, wrap its socket call with a hard timeout.",
+                               "reason":  "On Windows $proc.Kill() terminates only the immediate child, leaving codex.exe/claude.exe/LLM HTTP sockets as orphans that keep consuming handles and can wedge the next run. The original pain (Start-Job/Stop-Job not breaking a hung socket) is now mostly stale, but the underlying disease - no tree-kill + no hard socket cancellation - is still present and is the true root of hung deep runs.",
+                               "tradeoff":  "Tree-kill must be scoped to the captured spawn PID-set (job object / child-PID list) so it never kills a codex/claude process shared by other bridge work; needs careful PID capture at spawn time.",
+                               "confidence":  0.63
+                           },
+                           {
+                               "statement":  "P4 - Strengthen Invoke-BacklogIntakeGate to content-verify ALL categories, not just security: reuse Get-BacklogIntakeReferencedLines to require that the cited line/symbol actually exists before auto-approving a non-security finding, and rescue prose-only findings by re-deriving a file hint before holding.",
+                               "reason":  "Currently any finding that merely names an existing file is approved unverified (backlog-workpack.ps1:640), so plausible-but-wrong functional/architecture findings reach the work queue (wasted fix cycles = lost efficiency), while genuinely real findings described in prose are dumped to \u0027held\u0027. Extending the already-built evidence check raises precision AND recall simultaneously.",
+                               "tradeoff":  "More findings land in \u0027held\u0027 initially, increasing operator-escalation volume; mitigated by the existing held-auto-triage and by attaching the concrete evidence so triage is fast.",
+                               "confidence":  0.6
+                           },
+                           {
+                               "statement":  "P5 - Stratify file-content caps and window large core files: raise/segment the cap for priority-1 files (server.ps1, driver.ps1, supervisor.ps1) in Get-AgentFileContentCapped/Get-AgentRiskRankedFiles so they are audited in overlapping windows rather than truncated at 5000 chars.",
+                               "reason":  "The biggest, highest-risk files are exactly the ones most truncated, so most of their body is invisible to the per-role agents - a structural coverage hole (pain #2). Audited content is the precondition for any finding to exist at all.",
+                               "tradeoff":  "More tokens and latency per run; bounded by chunking only the handful of priority-1 core files and keeping a per-run token budget.",
+                               "confidence":  0.58
+                           },
+                           {
+                               "statement":  "P6 - Upgrade Write-AuditUsefulnessScore to per-slice filed-\u003efixed conversion (enabled by P1) and auto-demote chronically unfixed slices: a slice that files steadily but whose findings are essentially never fixed gets its model downgraded or that slice paused.",
+                               "reason":  "Efficiency is a closed-loop control problem; today usefulness measures only filing (action_rate) and a dead resolved-delta. Once P1 makes fix-rate observable, feeding it back to throttle low-yield slices directly optimizes the metric and cuts noise/cost.",
+                               "tradeoff":  "Risk of demoting a slice that is valuable but slow-to-fix (e.g. security); mitigate by exempting required slices and using a long observation window before any demotion.",
+                               "confidence":  0.57
+                           },
+                           {
+                               "statement":  "P7 - Promote runtime incidents the sensor auditor already classifies (corrupted_state / repeated unsolvable) into durable deduped findings via the existing Add-Idea path, instead of only notifying main and activating Doctor.",
+                               "reason":  "The two audit systems are disjoint: the runtime auditor detects real, reproducible problems but they evaporate after a chat notice unless the nightly runtime-incident-model agent independently re-derives them. Routing operator-visible auditor verdicts into the same finding pipeline closes a detection-\u003edurable-fix gap with no new mechanism.",
+                               "tradeoff":  "Could add backlog noise if auditor classification is jittery; mitigated by filing only the stable operator-visible classes and going through the same intake gate + dedup.",
+                               "confidence":  0.55
+                           },
+                           {
+                               "statement":  "P8 - Run the cheap freshness/auto-resolved check for audit findings even though they use -SkipCurator: keep the LLM curator off (cost) but execute the deterministic freshness-skip so a finding already addressed by a later commit is auto-resolved before it is claimed.",
+                               "reason":  "-SkipCurator currently skips the whole curator, including the freshness-skip handled in Publish-CuratorDecisionEvents, so stale audit tasks get worked - a direct waste that lowers effective fix-yield (pain #5). Decoupling the deterministic freshness check from the costly curator LLM keeps cost flat while preventing stale work.",
+                               "tradeoff":  "Small extra per-item check at intake; must ensure the freshness check itself is cheap/deterministic and does not reintroduce curator latency.",
+                               "confidence":  0.5
+                           },
+                           {
+                               "statement":  "P9 - Add a window catch-up guard in Start-AuditIfDue so a nightly audit that was skipped (system busy past 06:00, never reached stable idle) still runs opportunistically once the last SUCCESSFUL audit exceeds floorHours, rather than waiting a full day.",
+                               "reason":  "Once-nightly + maxWait 60 means a busy night silently skips detection entirely, pushing detection latency past 24h and starving the whole funnel (pain #4). Anchoring on last-successful (already partly modeled by floorHours) closes the skip without a new scheduler.",
+                               "tradeoff":  "A daytime catch-up audit competes with live work for idle and tokens; bound it to a strict floor and the existing launch-admission limiter.",
+                               "confidence":  0.45
+                           }
+                       ],
+    "assumptions":  [
+                        "I reviewed the master tree; worktrees/parallel/0ebb429fa86d/A/* is another proposer\u0027s isolated copy and was ignored.",
+                        "No production path sets ledger state \u0027fixed\u0027/\u0027suppressed\u0027 - inferred from grep (only audit.ps1:620 reads them; only test-findings-ledger.ps1 writes them) and from Update-FindingsLedger emitting only new/open/regressed. Should be re-verified against any reflect.ps1 / librarian / backlog-completion hook before implementing P1.",
+                        "Invoke-LLM (lib) does not currently enforce a hard wall-clock cancellation on a wedged socket; I did not open lib/llm.* and this must be confirmed before P3.",
+                        "Add-Idea returns an item id that can be persisted on the originating ledger entry to link finding\u003c-\u003ebacklog item for P1 close-out (the return value is already captured as $bid in audit.ps1).",
+                        "The post-commit QA signal (qa_verdict_cache in state, Test-AuditorQaCachePass) is reliable enough to gate a \u0027fixed\u0027 transition.",
+                        "DISCUSS mode: this is a plan for operator review; nothing here is to be implemented in this task."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "P1 false-closes a finding: a commit touches the file without actually fixing the issue, ledger marks it \u0027fixed\u0027, and the real problem is hidden until regression.",
+                      "severity":  "medium",
+                      "mitigation":  "Gate the \u0027fixed\u0027 transition on the SPECIFIC originating backlog item completing AND a QA pass, scoped by item id; leave regressed-detection (already present) to re-open it on the next audit if it reappears."
+                  },
+                  {
+                      "risk":  "P3 tree-kill terminates a codex.exe/claude.exe process shared by other bridge work, causing collateral failures.",
+                      "severity":  "high",
+                      "mitigation":  "Capture the exact child PID-set / use a Windows job object at spawn time and kill only that scoped tree; never kill by image name. Stage behind a config flag and the -Sequential debug path first."
+                  },
+                  {
+                      "risk":  "P4 content-verification raises the \u0027held\u0027 rate, flooding the operator with escalations and slowing real fixes.",
+                      "severity":  "medium",
+                      "mitigation":  "Attach concrete evidence (referenced lines) to each held item so held-auto-triage and the operator resolve fast; keep criticals surfaced; tune thresholds on usefulness.jsonl before full rollout."
+                  },
+                  {
+                      "risk":  "Changing the deep result contract (P2 incremental writes) breaks audit.ps1\u0027s parser and yields deep_failed for a different reason.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the final single-line JSON contract as-is and ADD incremental sidecar files that audit.ps1 reads only when the watchdog fires; cover with test-findings-ledger-style unit tests before enabling."
+                  },
+                  {
+                      "risk":  "P6 auto-demotion silences a slow-but-valuable slice (e.g. security) because real fixes take longer than the observation window.",
+                      "severity":  "medium",
+                      "mitigation":  "Exempt required slices from demotion; require a long, multi-run window of zero fixes AND non-zero filing before any model downgrade; never fully disable, only downgrade the model tier."
+                  },
+                  {
+                      "risk":  "Over-scoping: trying all nine atoms at once destabilizes a system that is currently at least producing static findings.",
+                      "severity":  "low",
+                      "mitigation":  "Ship in the phased order below; P1 is independently valuable and low-blast-radius (write-only ledger transition) and should land and be measured first."
+                  }
+              ],
+    "minimal_version":  "Phase 1 (highest yield, lowest blast radius): implement P1 (close the ledger loop - mark findings \u0027fixed\u0027 on linked-item completion + QA pass) and P2 (incremental deep-result persistence so a watchdog kill no longer zeroes deep findings). These two alone (a) make fix-rate observable for the first time, (b) stop fixed findings re-filing, and (c) recover most deep yield on bad nights. Validate by watching audit/usefulness.jsonl resolved_signal_delta become non-zero and deep_failed-with-agents=0 frequency drop. No new mechanisms - only Update-FindingsLedger, the existing QA signal, and the existing deep result file are touched.",
+    "advanced_version":  "Phase 2: P3 (scoped tree-kill + Invoke-LLM hard cancellation) and P4 (content-verify all intake-gate categories) - hardens reliability and precision/recall together. Phase 3: P5 (stratified caps for core files) + P7 (promote runtime-auditor incidents into durable findings) - closes coverage holes. Phase 4: P6 (per-slice filed-\u003efixed feedback + auto-demotion of unfixed slices), P8 (deterministic freshness check despite -SkipCurator), P9 (window catch-up) - turns the funnel into a measured closed-loop controller that continuously optimizes share-of-real-problems-fixed and trims noise/cost. Each phase is independently shippable, reversible behind config, and strengthens an existing component rather than adding one (Foundation #2)."
+}

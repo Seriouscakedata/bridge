@@ -1,0 +1,102 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно не внедрять новый аудит, а спроектировать усиление существующей цепочки так, чтобы росла доля реальных проблем, которые доходят до фикса. Я проверил текущие слои: fast auditor/Doctor, nightly audit scheduler, static audit, deep multi-agent phase, findings ledger, intake gate и путь audit-\u003ebacklog-\u003eworkpack/status.",
+    "summary":  "PROJECT_MAP: 1) lib/auditor.ps1 - operational health sensor, не code-quality audit; ловит stuck/commit_famine/doctor_recidivism и зовет Doctor. 2) driver/10-maintenance.ps1 + tools/audit-runner.ps1 - nightly launch/admission/idle window; сейчас config audit.enabled=false, значит регулярный аудит не работает. 3) tools/audit.ps1 - static security+functional, ledger, reports, backlog filing, deep phase. 4) tools/deep-audit.ps1 + deep-audit-agent.ps1 - process fan-out LLM slices; current config has 5 deepAgents, code can add required runtime slice. 5) lib/backlog-workpack.ps1 Invoke-BacklogIntakeGate - deterministic evidence/dedup gate for approved audit items. 6) channels/main/backlog.jsonl + audit/findings-ledger.jsonl - фактический downstream. Observed losses: audit disabled; old logs show launch storms and deep_failed runs; ledger has open/new but fixed/suppressed/regressed remain zero; main backlog has about 297 audit-sourced items, roughly 54 done, 227 rejected, 7 failed, 9 auto-resolved; only a small later cohort has intake_gate metadata. Durable plan: first close telemetry loop finding-\u003ebacklog-\u003efix-\u003erevalidation, then stabilize launch/deep, then tune intake and coverage using existing mechanisms.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "P0: Define audit efficiency as a closed loop: rootCauseKey/finding id -\u003e backlog item id -\u003e status -\u003e resolved_by_sha/done evidence -\u003e post-fix revalidation -\u003e ledger state fixed/stale/regressed.",
+                               "reason":  "Current ledger accumulates findings but Update-FindingsLedger never marks absent findings fixed; usefulness.resolved_signal_delta is therefore structurally weak, and backlog outcomes are disconnected from audit truth.",
+                               "tradeoff":  "Requires careful historical backfill and may expose that prior usefulness numbers are not comparable. Avoid auto-closing unless the same relevant slice completed successfully.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "P0: Keep audit disabled for automatic nightly runs until launch/completion accounting is repaired, then re-enable with one completed audit per window as the acceptance criterion.",
+                               "reason":  "config.json currently has audit.enabled=false. Old audit.log/audit.launches show repeated starts/denials and many starts without clear completion, so simply turning it on risks noise and cost without fixes.",
+                               "tradeoff":  "Short-term coverage remains manual only. The first reviewed change should be admission/completion correctness, not more detectors.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "P0: Strengthen existing audit launch ledger to distinguish started, skipped_idle, completed_ok, completed_partial, failed, and watchdog_killed using the current audit.launches/audit.log path.",
+                               "reason":  "Request-AuditLaunchAdmission counts started attempts, while audit.last is written before deep phase. Efficiency depends on completed useful audits, not spawned processes.",
+                               "tradeoff":  "Slightly more bookkeeping in existing files; no new subsystem needed.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "P0: Fix deep phase reliability inside the existing Start-Process fan-out: honor per-agent timeoutSec, kill descendant process trees, preserve stderr/result files on failure, and make required slice failure produce partial/deep_failed rather than silent zero-value success.",
+                               "reason":  "Known deep:deep_failed is still relevant historically: logs show deep_failed agents=0 around May 30/31 and Jun 5. The code moved away from Start-Job, but child LLM calls can still hang or return no JSON, and the orchestrator watchdog only kills the top process.",
+                               "tradeoff":  "Stricter timeout cleanup can drop slow but valid LLM responses. Prefer partial results from completed slices over waiting for all slices indefinitely.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "P1: Calibrate Invoke-BacklogIntakeGate against historical operator decisions before widening approvals.",
+                               "reason":  "Main backlog shows many audit-sourced items rejected; examples include legitimate false positives in test harnesses. The gate now checks file evidence and security evidence, but most historical items predate its metadata, so precision is unmeasured.",
+                               "tradeoff":  "A stricter gate can increase holds. For security criticals, default weak evidence to held, not dropped.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "P1: Use existing workpack/root-cause grouping to fix clusters, not individual duplicate audit findings.",
+                               "reason":  "The system already has duplicate compactor, workpack_root_cause_key, audit-burst packing, and protected serial batches. Efficiency improves when one root-cause repair closes several findings and marks covered duplicates.",
+                               "tradeoff":  "Clustered fixes are slower per task and require stronger verification, but reduce rejected/duplicate churn.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "P1: Turn stale finding handling into an explicit ledger lifecycle: unseen after N successful relevant audits =\u003e fixed_or_stale; reappears after fixed =\u003e regressed.",
+                               "reason":  "audit/findings-ledger.jsonl currently has open/new counts but zero fixed/suppressed/regressed in the inspected state. Without lifecycle, old findings poison prioritization and usefulness.",
+                               "tradeoff":  "Absence is only evidence if the slice that could detect the issue actually ran; must depend on deep/static coverage status.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "P1: Refocus coverage with existing slices instead of adding mechanisms: make reliability/runtime incidents required for bridge self-audit, demote noisy dead-function/orphan/debt findings unless actionable, and keep behavioral scenarios opt-in but track skipped critical user flows.",
+                               "reason":  "Static security currently scans PowerShell patterns and some architecture/dead code; functional covers API mapping/config/debt/scenarios. Deep covers richer slices, but only if it runs. Gaps include non-PS code, skipped mutating scenarios, truncated context, and post-fix behavior.",
+                               "tradeoff":  "Less broad output may miss low-value cleanup, but increases proportion of actionable real problems fixed.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "P2: Make usefulness.jsonl outcome-based: precision proxy, fix-through rate, median time to done, reject reasons, stale count, deep health, and coverage_gap per run.",
+                               "reason":  "Existing usefulness has action_rate and resolved_delta, but cannot answer \u0027real problems fixed\u0027 until linked to backlog and ledger lifecycle.",
+                               "tradeoff":  "Early metrics will be approximate and should be cohort-separated: pre-intake-gate vs post-intake-gate.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "P2: Require targeted revalidation for audit-sourced done items using existing checks: static subcomponent, relevant deep role, scenario, or smoke/QA cache as appropriate.",
+                               "reason":  "A backlog item marked done does not necessarily prove the original finding is gone. Revalidation closes the loop without creating a new auditor.",
+                               "tradeoff":  "Adds latency and cost to fixes; should be targeted by finding category and severity.",
+                               "confidence":  0.83
+                           }
+                       ],
+    "assumptions":  [
+                        "DISCUSS mode means no file edits or config changes now.",
+                        "Foundation #2 means use existing audit.ps1, deep-audit, backlog gate, ledger, workpack and usefulness files rather than a new audit service.",
+                        "Counts are read-only, approximate from current workspace text search: audit disabled; ledger fixed/suppressed/regressed appear zero; main backlog has about 297 audit-sourced items with many rejected.",
+                        "Main channel is the primary review target; non-main audit remains disabled by channelMaintenance config."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Re-enabling nightly audit before admission/deep cleanup recreates launch storms and LLM cost burn.",
+                      "severity":  "high",
+                      "mitigation":  "Operator should approve only a staged manual run first; automatic enablement waits for completed audit ledger and watchdog proof."
+                  },
+                  {
+                      "risk":  "Tight intake filtering may suppress real security issues.",
+                      "severity":  "high",
+                      "mitigation":  "Use hold for weak security evidence, reserve drop for comment-only/no-primitive cases, and sample held/rejected items during review."
+                  },
+                  {
+                      "risk":  "Historical data mixes pre-gate and post-gate behavior, making precision/fix-through metrics misleading.",
+                      "severity":  "medium",
+                      "mitigation":  "Separate cohorts by date/gate metadata and label old metrics as baseline only."
+                  },
+                  {
+                      "risk":  "Post-fix absence can be mistaken for fixed if the relevant detector failed or coverage changed.",
+                      "severity":  "medium",
+                      "mitigation":  "Only mark fixed/stale after successful relevant slice completion and stable rootCauseKey mapping."
+                  },
+                  {
+                      "risk":  "Deep LLM stability changes can reduce coverage by aborting slow agents.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep partial results, require only key slices, and record coverage_gap explicitly for operator review."
+                  }
+              ],
+    "minimal_version":  "Chapter 1: repair observability loop only. Keep audit.enabled=false. Add/review design for linking audit rootCauseKey to backlog id and reflecting backlog statuses back into findings-ledger. Define fixed/stale/regressed rules and corrected usefulness metrics. Chapter 2: produce one manual audit run acceptance checklist: no launch storm, static report written, deep status explicit, backlog additions counted, ledger updated. Chapter 3: review 20 rejected and 20 done audit items to tune existing intake rules before any auto-enable.",
+    "advanced_version":  "Chapter 1: after minimal metrics are accepted, harden Start-AuditIfDue/audit-runner/audit.ps1 completion semantics and move audit.last to final completion semantics. Chapter 2: harden deep process tree timeouts, per-role timeoutSec, required slice accounting, and deep failure diagnostics. Chapter 3: reprocess historical audit backlog through Invoke-BacklogIntakeGate in dry-run/report mode, tune deterministic evidence rules, and feed operator decisions back into gate policy. Chapter 4: use workpack root-cause clustering for audit items, targeted post-fix revalidation, and usefulness dashboards showing precision, fix-through rate, stale count, deep health, and coverage gaps."
+}

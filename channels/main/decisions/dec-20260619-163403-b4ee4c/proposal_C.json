@@ -1,0 +1,74 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to study the existing audit system (comprising static snapshots, deep LLM-agent chains, intake gates, and maintenance scheduling) and design a durable plan to improve its efficiency—defined as the share of real problems that are identified, survive filtering, and ultimately get fixed. The work must operate in DISCUSS mode, fix/strengthen existing mechanisms without introducing new ones, and produce a reviewable decomposition addressing six known pain points: deep-agent failures, coverage gaps, false-positive/miss tradeoffs, speed/window constraints, finding staleness, and fix reachability.",
+    "summary":  "Proposal decomposes the audit pipeline into four layers (Collection, Analysis, Intake, Remediation) and identifies efficiency losses at each. Root causes for the six known pains are traced to specific code/configuration weaknesses. The plan prioritizes fixes that strengthen existing PowerShell modules: hardening deep-agent subprocess lifecycle, expanding static coverage via existing snapshot providers, tuning intake-gate similarity thresholds with feedback loops, time-boxing audit windows, adding staleness metadata to findings, and instrumenting a lightweight fix-outcome tracker. All improvements reuse current scripts and data flows, avoiding new mechanisms per Foundation #2.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Fix deep-agent subprocess/job layer by adding a watchdog timeout and forced socket cleanup in Stop-Job, reusing existing job infrastructure in deep-audit-agent.ps1.",
+                               "reason":  "Root cause of deep:deep_failed is that hung LLM sockets survive Stop-Job, blocking subsequent agents. A timeout-kill pattern directly addresses this without new modules.",
+                               "tradeoff":  "Aggressive socket cleanup may occasionally kill a slow-but-valid agent, losing a finding. Mitigated by a two-phase timeout (soft cancel, then hard kill) already partially present in the codebase.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Expand audit coverage by extending Get-AuditorSnapshot to include currently unmonitored assets (e.g., scheduled tasks, certificate store, DNS records) using existing WMI/registry providers already in lib/auditor.ps1.",
+                               "reason":  "Coverage gaps exist because snapshot providers are not exhaustive. Adding queries to existing cmdlets is a low-risk extension, not a new mechanism.",
+                               "tradeoff":  "Broader snapshots increase runtime and data volume, potentially stressing the audit window. Mitigated by making new providers optional and window-aware.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Tune Invoke-BacklogIntakeGate similarity thresholds using a feedback loop that compares deduplication decisions against operator overrides, stored in the existing backlog-workpack.ps1 metadata.",
+                               "reason":  "False positives and misses stem from static similarity thresholds. A feedback loop adjusts thresholds based on operator corrections, improving precision/recall without new infrastructure.",
+                               "tradeoff":  "Requires operators to consistently log overrides for the loop to be effective; initial weeks may see noisy adjustments. Acceptable given existing override logging.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Enforce a strict time-box in Start-AuditIfDue by adding a configurable hard-stop parameter that terminates the audit chain and flushes partial results, reusing the existing maintenance window logic.",
+                               "reason":  "Speed/window pain arises when audits overrun the 01-06 window, delaying maintenance. A hard-stop ensures the system remains predictable without new scheduling mechanisms.",
+                               "tradeoff":  "Partial deep-audit results may be lost if the window expires mid-chain. Mitigated by checkpointing agent outputs to disk, a pattern already in audit.ps1.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Add a \u0027staleness\u0027 metadata field to findings in the backlog, updated by a lightweight daily job that compares finding timestamps against current system state using existing snapshot diff logic.",
+                               "reason":  "Outdated findings waste remediation effort. A staleness flag allows operators to filter or re-verify old findings, reusing the diff engine already in auditor.ps1.",
+                               "tradeoff":  "Daily re-diffing adds compute load. Mitigated by limiting staleness checks to findings older than N days and using incremental snapshots.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Instrument a fix-outcome tracker in the findings→backlog→approved pipeline by adding a \u0027fix_status\u0027 field and a weekly summary report, leveraging existing backlog-workpack.ps1 export functions.",
+                               "reason":  "Reachability to fix is unmeasured. A simple status field (open/in-progress/fixed/dropped) with a report closes the loop, enabling measurement of the core efficiency metric without new systems.",
+                               "tradeoff":  "Relies on operator discipline to update statuses. Mitigated by auto-detecting closure when a finding\u0027s snapshot diff disappears in subsequent audits.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing PowerShell modules (lib/auditor.ps1, deep-audit-agent.ps1, audit.ps1, lib/backlog-workpack.ps1, driver/10-maintenance.ps1) are functional and can be modified in-place.",
+                        "Operators will participate in the feedback loop by logging overrides and updating fix statuses, at least minimally.",
+                        "The 01-06 maintenance window is a soft constraint that can be enforced programmatically without breaking other scheduled tasks.",
+                        "LLM agent failures are primarily due to subprocess/socket management, not API rate limits or model unavailability.",
+                        "The existing deduplication logic in Invoke-BacklogIntakeGate uses configurable similarity thresholds that can be adjusted dynamically."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Deep-agent socket cleanup may introduce instability if the forced kill corrupts shared state in audit.ps1.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement cleanup within a try/finally block scoped to the agent\u0027s job; test in a staging environment with simulated hung sockets before production rollout."
+                  },
+                  {
+                      "risk":  "Expanded snapshot coverage significantly increases audit runtime, causing consistent window overruns.",
+                      "severity":  "high",
+                      "mitigation":  "Gate new providers behind a -Comprehensive switch; default to current coverage; monitor runtime in the first week and adjust hard-stop accordingly."
+                  },
+                  {
+                      "risk":  "Feedback-loop threshold tuning may oscillate if operator overrides are inconsistent or sparse.",
+                      "severity":  "low",
+                      "mitigation":  "Use a dampened adjustment (exponential moving average) and require a minimum number of overrides before applying changes."
+                  },
+                  {
+                      "risk":  "Staleness re-diffing may produce false staleness flags if the system state changes legitimately but the finding remains valid.",
+                      "severity":  "medium",
+                      "mitigation":  "Staleness is advisory, not auto-closing; operators confirm before dropping. The diff logic will include a \u0027context match\u0027 tolerance."
+                  }
+              ],
+    "minimal_version":  "Fix deep-agent subprocess lifecycle (decision_atom 1) and add fix-outcome tracker (decision_atom 6). These two changes directly address the core efficiency metric (real problems fixed) and the most acute failure mode (deep:deep_failed). Deploy in one maintenance cycle, measure fix-rate delta.",
+    "advanced_version":  "Implement all six decision_atoms in phased order: (1) deep-agent fix, (2) coverage expansion, (3) intake-gate tuning, (4) window hard-stop, (5) staleness metadata, (6) fix-outcome tracker. Each phase includes a one-week observation period with rollback points. The full plan transforms the audit pipeline into a measured, closed-loop system while staying within Foundation #2 constraints."
+}

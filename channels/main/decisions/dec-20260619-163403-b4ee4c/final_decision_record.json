@@ -1,0 +1,221 @@
+{
+    "final_answer":  "DISCUSS-mode output: a durable, operator-reviewable plan to raise audit efficiency (share of real problems actually fixed) by strengthening existing mechanisms only (Foundation #2). Diagnosis — efficiency leaks at six layers: (a) the deep phase fails silently because hung LLM sockets aren\u0027t killed by Start-Job/Stop-Job, so static produces findings while deep returns 0 and half the audit\u0027s depth is lost invisibly; (b) the nightly 01-06 window mis-accounts launches, so audits can silently skip or overrun; (c) Invoke-BacklogIntakeGate filters on weak signals, so false positives reach the work queue while real findings get dropped; (d) findings have no staleness lifecycle, so the ledger rots and resolved issues can still be claimed as live tasks; (e) coverage has blind spots (truncated large core files, unmonitored assets, runtime incidents never promoted to findings); and most importantly (f) there is no closed loop — nothing links a finding to whether it was actually fixed, so the whole system is unmeasurable and cannot self-correct. The judge accepted all nine atoms (totals 0.845-0.955) with no conflicts and no micro-debate, so all nine are adopted. The plan sequences them along a measurement spine across three chapters: Chapter 1 makes the audit run reliably and become measurable (scheduling accounting, deep fail-loud, findings↔backlog ledger); Chapter 2 raises and preserves signal quality (intake precision/recall, staleness lifecycle, post-fix revalidation, root-cause batching); Chapter 3 closes coverage gaps and adds an outcome-driven feedback loop that auto-demotes chronically unfixed slices. Net effect: more real problems seen, fewer false ones queued, every fix verified, and slices that never yield fixes pruned — directly increasing fix-through rate.",
+    "decisions":  [
+                      {
+                          "decision":  "DA-01 — Close the audit loop: link every finding to its backlog item and record a fix_status lifecycle (open/fixed/stale/regressed) in a findings ledger, marking a finding \u0027fixed\u0027 only when its linked backlog item completes with a QA pass.",
+                          "rationale":  "Efficiency is defined as the share of real problems fixed, yet that ratio is currently unmeasurable because findings and fixes are disconnected. The ledger is the measurement spine that DA-05 (staleness), DA-07 (feedback), and DA-08 (revalidation) all build on.",
+                          "alternatives_considered":  [
+                                                          "Manual operator tallying of fixed findings — not durable or scalable",
+                                                          "Inferring fixes from commit messages alone — too lossy, no QA gate",
+                                                          "No metric, keep status quo — leaves the system unmeasurable and unable to self-correct"
+                                                      ],
+                          "risk":  "Findings↔backlog linkage may lack a stable join key; marking \u0027fixed\u0027 on backlog completion without revalidation can record false positives (mitigated by DA-08).",
+                          "test":  "audit/findings-ledger.jsonl shows \u0027fixed\u0027 for findings linked to completed backlog items, and usefulness.jsonl reports non-zero resolved_signal_delta and fix-through rates."
+                      },
+                      {
+                          "decision":  "DA-02 — Make the deep phase fail loud, not silent: scoped process-tree kills for agents, hard wall-clock cancellation of LLM calls, honored per-agent timeouts, preserved partial/incremental results on failure, and explicit deep_failed reporting when a required slice yields nothing.",
+                          "rationale":  "Root cause of deep:deep_failed is that Start-Job/Stop-Job does not break a hung socket, so orphaned processes leak and deep silently returns 0 while static returns findings — half the audit\u0027s analytical depth lost invisibly.",
+                          "alternatives_considered":  [
+                                                          "Rewrite the deep agents as a brand-new runner — violates Foundation #2",
+                                                          "Only increase timeouts — does not address hung sockets or orphaned process trees",
+                                                          "Suppress deep failures silently — hides the loss, the current broken behavior"
+                                                      ],
+                          "risk":  "Process-tree kill on Windows must target the correct tree; over-aggressive kills could discard in-flight good work — mitigated by preserving partial results before kill.",
+                          "test":  "audit.log shows deep_failed with a non-zero agent count on failure, partial results are recorded, and no orphan processes remain after deep runs, including under forced timeout."
+                      },
+                      {
+                          "decision":  "DA-03 — Tighten Invoke-BacklogIntakeGate precision and recall: content-verify every finding category (cited lines/symbols must actually exist), calibrate similarity thresholds against historical operator approve/hold/reject decisions, and feed operator overrides back as an ongoing calibration signal.",
+                          "rationale":  "The gate is the precision/recall chokepoint: false positives burn operator trust and work cycles, while misses lose real problems. Citation verification and data-driven calibration raise both at once.",
+                          "alternatives_considered":  [
+                                                          "Keep hand-tuned static thresholds — drift over time, not data-driven",
+                                                          "Remove the gate and let the operator triage everything — floods the queue, defeats the gate\u0027s purpose",
+                                                          "Verify only some categories — leaves unverified categories as a false-positive channel"
+                                                      ],
+                          "risk":  "Insufficient historical operator-decision data to calibrate; over-strict citation verification could reject valid findings whose line/symbol coordinates have shifted.",
+                          "test":  "Track the approved/held/rejected ratio; held items carry concrete evidence for triage; observe a measurable reduction in false positives reaching the work queue."
+                      },
+                      {
+                          "decision":  "DA-04 — Stabilize nightly scheduling and execution: repair launch/completion accounting in the launch ledger (started, completed_ok, failed, etc.), enforce a strict time-box with hard-stop and partial-result flush, and add a catch-up guard for skipped windows that does not cause launch storms.",
+                          "rationale":  "If audits silently skip or overrun the 01-06 window, no downstream improvement matters. Accurate launch accounting also supplies a clean input to the efficiency metric (DA-01).",
+                          "alternatives_considered":  [
+                                                          "Widen the window — masks the accounting bug and risks daytime resource contention",
+                                                          "Adopt an external cron-style scheduler — a new mechanism, violates Foundation #2",
+                                                          "No catch-up — keeps silently dropping skipped audits"
+                                                      ],
+                          "risk":  "An unbounded catch-up guard could trigger launch storms — mitigated by an explicit storm/throttle bound.",
+                          "test":  "audit.launches accurately reflects every run state, audits complete within their window, and skipped audits run opportunistically without launch storms."
+                      },
+                      {
+                          "decision":  "DA-05 — Give findings an explicit staleness lifecycle: add a staleness metadata field, run a deterministic freshness/auto-resolved check even with -SkipCurator, and define ledger transitions to fixed_or_stale (absent after N relevant audits) and regressed (reappears after being resolved).",
+                          "rationale":  "Without a lifecycle, stale findings accumulate and can be claimed as live tasks, wasting fix effort on already-resolved problems and polluting the efficiency signal.",
+                          "alternatives_considered":  [
+                                                          "Periodic manual ledger pruning — not durable",
+                                                          "Pure time-based expiry — ignores whether a relevant audit actually re-checked the area",
+                                                          "Never expire findings — ledger rots indefinitely"
+                                                      ],
+                          "risk":  "N too low marks live findings stale; N too high lets rot accumulate — N is left as an operator open question.",
+                          "test":  "Findings not re-observed after N relevant audits become fixed_or_stale, regressed findings are correctly re-flagged, and the freshness check blocks claiming a stale task."
+                      },
+                      {
+                          "decision":  "DA-06 — Optimize coverage: expand Get-AuditorSnapshot to unmonitored assets (scheduled tasks, DNS records, etc.), stratify file-content caps so large core files are fully scanned, promote runtime incidents from the sensor auditor into durable findings, and refocus existing slices toward actionable reliability/runtime issues while demoting noisy ones.",
+                          "rationale":  "Blind spots and truncated scans of large core files mean real problems are never seen; promoting observed runtime incidents converts real failures into tracked findings.",
+                          "alternatives_considered":  [
+                                                          "Add brand-new audit slices — risks noise and violates Foundation #2",
+                                                          "Raise content caps globally — cost/time blowup versus targeted stratification",
+                                                          "Leave coverage as-is — keeps known blind spots"
+                                                      ],
+                          "risk":  "Expanding coverage can raise finding volume and noise — paired with DA-03 intake tightening and DA-07 demotion to stay net-positive on actionability.",
+                          "test":  "Large core files are fully scanned, new asset types appear in snapshots, runtime incidents generate findings, and the proportion of actionable findings increases."
+                      },
+                      {
+                          "decision":  "DA-07 — Make usefulness.jsonl outcome-based (precision proxy, fix-through rate, stale count, deep health, coverage gaps) and use those metrics in a feedback loop that auto-demotes or pauses chronically unfixed audit slices.",
+                          "rationale":  "Closes the self-correction loop: the audit stops spending budget on slices that never produce fixes, raising overall fix-through efficiency. Depends on the DA-01 ledger for its inputs.",
+                          "alternatives_considered":  [
+                                                          "Volume-based metrics only — rewards noise rather than fixes",
+                                                          "Operator manually disables low-yield slices — slow and reactive",
+                                                          "No feedback loop — chronically unfixed slices keep consuming budget"
+                                                      ],
+                          "risk":  "Auto-pausing could silence a slice that is low-yield but high-severity — pausing must be reversible and operator-visible (open question on policy).",
+                          "test":  "usefulness.jsonl contains the new outcome metrics and low-yield slices are observably demoted or paused over time."
+                      },
+                      {
+                          "decision":  "DA-08 — Add targeted revalidation for audit-sourced done items, reusing existing checks (static subcomponents, relevant deep roles, scenarios, or smoke/QA caches) to confirm the original finding is resolved before the ledger marks it fixed.",
+                          "rationale":  "Prevents the closed loop (DA-01) from recording false \u0027fixed\u0027 states — a backlog item completing is not proof the underlying finding is gone. This is the verification detail that makes DA-01\u0027s fix_status trustworthy.",
+                          "alternatives_considered":  [
+                                                          "Trust backlog completion as proof of fix — produces false positives in the metric",
+                                                          "Run a full re-audit per item — expensive versus targeted reuse of existing checks"
+                                                      ],
+                          "risk":  "Revalidation must map each finding to the right existing check; unmapped findings fall back to an explicit unverified-fixed state rather than a silent \u0027fixed\u0027.",
+                          "test":  "A revalidation step fires for completed audit items and confirms the original finding is resolved before fix_status flips to fixed."
+                      },
+                      {
+                          "decision":  "DA-09 — Use existing workpack/root-cause grouping to fix clusters of related findings as a single root-cause item instead of chasing individual duplicates.",
+                          "rationale":  "Highest judge score (0.955) at low cost: fixing one root cause resolves many findings at once, directly raising fix-through rate per unit of effort, and the grouping mechanism already exists.",
+                          "alternatives_considered":  [
+                                                          "One backlog item per finding — duplicated effort and partial fixes",
+                                                          "Build a new clustering engine — violates Foundation #2 since grouping already exists"
+                                                      ],
+                          "risk":  "Over-grouping unrelated findings under one root cause could leave some unfixed yet falsely marked resolved — bounded by DA-08 revalidation per finding.",
+                          "test":  "Multiple related findings are grouped under one workpack/root-cause item, and fixing the root cause resolves all grouped findings (each confirmed via DA-08)."
+                      }
+                  ],
+    "rejected":  [
+
+                 ],
+    "open_questions":  [
+                           "DA-05: How many consecutive relevant audits without re-observing a finding before marking it fixed_or_stale (value of N)?",
+                           "DA-03: Is there enough historical operator approve/hold/reject data to calibrate similarity thresholds now, or must a calibration period run first?",
+                           "DA-01/Foundation #2: Do findings-ledger.jsonl and the enhanced usefulness.jsonl strictly extend existing storage, or would the operator count them as new mechanisms? Confirm a stable join key already links findings↔backlog.",
+                           "DA-07: Should auto-pausing a chronically-unfixed slice be fully automatic or require operator confirmation, and what severity floor exempts a slice from auto-pause?",
+                           "DA-02: What per-agent hard wall-clock timeout values, and what is the exact process-tree kill strategy for hung sockets on Windows?",
+                           "DA-04: What hard-stop duration within the 01-06 window, and what bounds on the catch-up guard prevent launch storms?",
+                           "DA-06: What is the acceptable post-expansion finding-volume/noise budget, i.e. the target precision-proxy floor once coverage grows?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "chapter":  "Chapter 1 — Foundation: make the audit run and become measurable",
+                                    "goal":  "Guarantee audits run reliably, run to full depth, and produce a measurable finding→fix loop. Nothing downstream matters until this holds.",
+                                    "atoms":  [
+                                                  "DA-04",
+                                                  "DA-02",
+                                                  "DA-01"
+                                              ],
+                                    "deliverables":  [
+                                                         "Accurate launch/completion ledger + strict time-box with partial flush + catch-up guard (DA-04)",
+                                                         "Deep phase with scoped process-tree kill, hard wall-clock cancellation, per-agent timeouts, preserved partials, explicit deep_failed (DA-02)",
+                                                         "findings↔backlog linkage + fix_status lifecycle in findings-ledger.jsonl (DA-01)"
+                                                     ],
+                                    "depends_on":  [
+
+                                                   ],
+                                    "exit_criteria":  "Audits complete in-window with accurate accounting; deep_failed reported with non-zero agent counts and no orphan processes; ledger shows open/fixed states linked to backlog items."
+                                },
+                                {
+                                    "chapter":  "Chapter 2 — Signal quality: trust what reaches the queue, keep it fresh, batch the fixes",
+                                    "goal":  "Raise intake precision/recall, prevent stale findings from being claimed, verify every fix, and resolve related findings together.",
+                                    "atoms":  [
+                                                  "DA-03",
+                                                  "DA-05",
+                                                  "DA-08",
+                                                  "DA-09"
+                                              ],
+                                    "deliverables":  [
+                                                         "Content-verified + operator-calibrated intake gate with override feedback (DA-03)",
+                                                         "Staleness field + deterministic freshness check + fixed_or_stale/regressed transitions (DA-05)",
+                                                         "Targeted revalidation of audit-sourced done items reusing existing checks (DA-08)",
+                                                         "Root-cause/workpack grouping of finding clusters (DA-09)"
+                                                     ],
+                                    "depends_on":  [
+                                                       "DA-01 (ledger and fix_status)"
+                                                   ],
+                                    "exit_criteria":  "Held items carry concrete evidence; stale findings auto-resolve and cannot be claimed; done items are revalidated before fixed; related findings are batched under one root cause."
+                                },
+                                {
+                                    "chapter":  "Chapter 3 — Coverage and self-correction",
+                                    "goal":  "Close coverage blind spots and let the audit prune itself based on real outcomes.",
+                                    "atoms":  [
+                                                  "DA-06",
+                                                  "DA-07"
+                                              ],
+                                    "deliverables":  [
+                                                         "Expanded snapshot (new asset types) + stratified caps for large core files + runtime-incident promotion + slice refocus toward actionable issues (DA-06)",
+                                                         "Outcome-based usefulness.jsonl (precision proxy, fix-through rate, stale count, deep health, coverage gaps) driving auto-demote/pause of low-yield slices (DA-07)"
+                                                     ],
+                                    "depends_on":  [
+                                                       "DA-01 (metric inputs)",
+                                                       "DA-03 (intake tightening to absorb added volume)"
+                                                   ],
+                                    "exit_criteria":  "Large core files fully scanned and new assets in snapshots; runtime incidents become findings; usefulness metrics are non-zero and chronically unfixed slices are demoted/paused (reversibly)."
+                                }
+                            ],
+    "next_step":  "Submit this plan for operator review; on approval, begin Chapter 1 with DA-04 (launch/completion accounting) and DA-02 (deep-phase fail-loud), since these unblock the DA-01 closed-loop metric that every later chapter depends on — and first resolve the Foundation #2 open question confirming findings-ledger.jsonl/usefulness.jsonl count as extensions, not new mechanisms.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-02\u0027s root-cause diagnosis of pain #1 is factually wrong and the symptom was already fixed. The plan asserts the 5 deep LLM agents \u0027hang at the Start-Job/Stop-Job layer (Stop-Job cannot tear down a hung socket).\u0027 But the deep phase does NOT use Start-Job/Stop-Job: tools/audit.ps1 launches deep-audit via Start-Process -PassThru + $deepProc.WaitForExit(timeout) + $deepProc.Kill() with a wall-clock watchdog (lines 1171-1189), and each agent is a Start-Process child (deep-audit.ps1 Start-DeepAuditAgentProcess line 641). The only Start-Job/Stop-Job in audit.ps1 is the unrelated signal-collector (lines 1013-1027). The ACTUAL cause of \u0027deep_failed agents=0\u0027 is documented at deep-audit.ps1:925-930 as a case-insensitive PowerShell variable collision ($functionalAgent vs param $FunctionalAgent) and was fixed 2026-05-30 — three weeks before this task.",
+                                  "why":  "Directly fails success_test 5 (\u0027addresses the root causes and relevance of the known pains\u0027): the plan neither found the real root cause nor checked currency. It puts DA-02 at P0 and claims it \u0027recovers roughly half the audit\u0027s lost value\u0027 on a premise (deep yields 0) that the code shows was already resolved. Per-agent timeouts (-TimeoutSec), watchdog wall-clock cancellation, deep_failed status, per-agent error results and a partial-results array also ALREADY exist (audit.ps1:1181-1502, deep-audit.ps1 New-DeepAuditAgentResult), so most of DA-02\u0027s proposed work is already implemented; only a process-TREE kill for orphaned child exes is genuinely new."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-01, DA-05 and DA-09 propose building mechanisms that already exist, on a false \u0027nothing exists\u0027 premise. The plan says \u0027there is no durable finding→backlog link and no staleness lifecycle… efficiency cannot even be measured\u0027 and lists creating audit/findings-ledger.jsonl, stable finding IDs, a fix/stale/regressed lifecycle, and root-cause clustering. The code already has: audit/findings-ledger.jsonl (exists on disk) with Get/Read/Update/Write-FindingsLedger (audit.ps1:113,540-659); stable IDs via New-FindingId (line 514); root-cause grouping via New-RootCauseKey — the ledger is KEYED by rootCauseKey so duplicates already collapse to one entry (lines 523-549,596); a full state machine new→open→fixed/suppressed→regressed with firstSeen/lastSeen/seenCount, including the exact \u0027reappears ⇒ regressed\u0027 rule (lines 567-640); and resolved_signal_delta is already emitted in usefulness.jsonl.",
+                                  "why":  "Fails success_test 5/3 and violates the explicit Foundation #2 constraint (\u0027do not create new mechanisms; fix/strengthen existing\u0027). Proposing to re-create an existing ledger, ID scheme, root-cause grouping and regressed-detection is the opposite of strengthening them, and the rejected-item \u0027we introduced no new mechanisms\u0027 claim is therefore false. The \u0027keystone\u0027 DA-01 and the highest-scored DA-09 (0.98) rest on premises the implementation contradicts; an operator following this would duplicate live infrastructure. The genuine residual gaps (explicit backlog-item↔finding ID write-back, an absence-sweep that sets \u0027fixed\u0027, QA-gated transition) are real but small and are buried under inaccurate framing."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-04 conflates two unrelated subsystems and targets an already-fixed pain. It claims \u0027accurate launch accounting also removes the commit_famine false-positive that trips on a ready-but-uncommitted long task.\u0027 commit_famine lives in lib/auditor.ps1 and is a git-commit-age/working-tree/progress detector (lines 581-582) with no dependency on audit launch accounting (audit.launches.jsonl). Moreover the commit_famine false-positive was already fixed TODAY, 2026-06-19, by a progress-aware gate (live-agent / paused / fresh-progress exemptions) — see the dated FIX comment and new logic at lib/auditor.ps1:551-582.",
+                                  "why":  "Fails success_test 5 (currency): the headline pain DA-04 promises to remove was independently fixed the same day via a different mechanism, and the causal link the plan draws (launch accounting → commit_famine) does not exist in the code. This both inflates DA-04\u0027s value and demonstrates the plan did not check the live state of the auditor it was tasked to study."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Systemic: the deliverable was produced without reading the implementation it was tasked to \u0027study,\u0027 so its localization of efficiency leaks (success_test 3) is unreliable. The funnel diagnosis mirrors the task\u0027s known_context almost verbatim, and at least five \u0027X does not exist / is not done\u0027 claims are contradicted by the code (ledger, IDs, root-cause grouping, regressed lifecycle, resolved_signal_delta, content verification, per-agent deep timeouts/partial results). The task explicitly required \u0027Изучи СВОЮ систему\u0027 and \u0027вскрой корень + проверь актуальность.\u0027 The first-choice output (PROJECT_MAP of the system\u0027s layers) is also absent — only the decision_atoms branch is satisfied — and producing that map would have surfaced the existing mechanisms.",
+                                  "why":  "A research/design plan whose model of the current system is materially wrong will misdirect operator effort regardless of how well-structured the chapters are. Several P0/P1 atoms would spend effort rebuilding or re-diagnosing things that already work, which undermines success_test 6 (improvements aimed at raising the share of real problems fixed)."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-03 overstates the intake-gate gap. The plan says Invoke-BacklogIntakeGate is \u0027uncalibrated\u0027 and proposes to \u0027content-verify every finding category (cited lines/symbols must actually exist).\u0027 But lib/backlog-workpack.ps1 already content-verifies: Get-BacklogIntakeGateFileEvidence checks Test-Path for cited files and separates existing vs missing (lines 448-509); Test-BacklogIntakeSecurityEvidence holds security findings lacking concrete secret/dynamic-exec/readable-code evidence (lines 528-582); and audit findings \u0027lacking readable code target evidence\u0027 are already held (line 655). The gate also already fails closed on error (line 660).",
+                                  "why":  "Misrepresenting the current state inflates the scope of DA-03. The genuinely new parts (symbol-level vs line-level verification, threshold calibration against operator history, override-driven feedback loop) are valid, but the plan should have built on the existing verification rather than describing it as absent — again touching the Foundation #2 \u0027strengthen existing\u0027 constraint."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-07 mischaracterizes usefulness.jsonl as \u0027activity-based rather than outcome-based.\u0027 The actual file already records outcome metrics per audit: resolved_signal_delta, action_rate, incident_capture_rate, suppressed_known, ledger_open_prev/ledger_open_now and a usefulness/trend score (audit/usefulness.jsonl). The code comment at audit.ps1:667-669 already anticipates downgrading a noisy slice. DA-01\u0027s proposal to \u0027record resolved_signal_delta in usefulness.jsonl\u0027 is adding a field that is already present.",
+                                  "why":  "DA-07 and part of DA-01 are scoped against a state that does not match the code. The legitimate residual work (precision proxy, fix-through rate, auto-pause with coverage floor) is real, but the premise that the ledger is purely activity-based is false, weakening the rationale and the rejected-alternative reasoning."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Coverage claims rest on an inaccurate agent inventory. The plan repeatedly says \u00275 deep-LLM agents,\u0027 but deep-audit-agent.ps1 defines EIGHT roles (security-model, functional-model, reliability-model, architecture-model, dependency-model, runtime-incident-model, latency-speed-model, cost-burn-model — ValidateSet line 4). DA-06\u0027s claim that \u0027runtime incidents are never promoted to durable findings\u0027 is undercut by the existing runtime-incident-model role, and its \u0027refocus existing slices toward reliability/runtime\u0027 overlaps with reliability-model/latency-speed-model/cost-burn-model that already exist.",
+                                  "why":  "Weakens success_test 5/6 for the COVER stage: the gap is smaller and differently shaped than stated. Some DA-06 value remains (stratified file-content caps, new asset types in Get-AuditorSnapshot, sensor-auditor runtime triggers like restart_frequency into durable findings), but the durable-runtime-finding gap is partly already closed."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The plan does not ground its RUN-stage claims in observable telemetry it could have read. The primary audit/usefulness.jsonl has no entries after 2026-06-05 (last row 2026-06-05T06:02), suggesting the audit/scoring pipeline may have been idle for ~2 weeks before this 2026-06-19 task — a concrete, current RUN-stage signal. The plan diagnoses RUN reliability via wrong/stale mechanisms (Start-Job teardown, commit_famine) instead of citing this gap.",
+                                  "why":  "If true, a stale ledger is the most consequential current efficiency leak (the whole funnel is idle) and would also make DA-05\u0027s absence-based staleness signal unsafe (absence could mean \u0027audit didn\u0027t run,\u0027 not \u0027fixed\u0027). The plan\u0027s failure to surface it confirms the diagnosis was narrative-driven rather than evidence-driven (success_test 3)."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Internal inconsistency in the \u0027fixed\u0027 transition trigger. DA-01 states a finding is marked \u0027fixed\u0027 \u0027when the linked backlog item completes with a QA pass,\u0027 while DA-08 makes a separate targeted revalidation the mandatory gate before \u0027fixed\u0027 (\u0027only then allow DA-01 to mark fixed\u0027). The two atoms define different gates for the same state transition, and the dependency note in Chapter 3 (DA-08 depends_on DA-01) is the reverse of the stated control flow (DA-01\u0027s fixed-marking depends on DA-08\u0027s revalidation result).",
+                                  "why":  "Minor, but an operator implementing these as written gets ambiguous acceptance criteria for the single most important status in the closed loop, and a circular dependency between Chapter 2 (DA-01) and Chapter 3 (DA-08)."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

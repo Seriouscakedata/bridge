@@ -1,0 +1,116 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-01",
+                      "statement":  "Implement a closed-loop audit efficiency metric by tracking finding resolution: link audit findings to backlog items, mark findings as \u0027fixed\u0027 upon backlog item completion with QA pass, and add a \u0027fix_status\u0027 field to findings for reporting. This includes defining ledger states like fixed/stale/regressed and enabling post-fix revalidation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Lifecycle \u0026 Metrics",
+                      "test":  "Verify that \u0027audit/findings-ledger.jsonl\u0027 shows \u0027fixed\u0027 status for findings linked to completed backlog items, and \u0027usefulness.jsonl\u0027 reports non-zero \u0027resolved_signal_delta\u0027 and fix-through rates.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-02",
+                      "statement":  "Enhance deep audit phase reliability by implementing robust process management: use scoped process-tree kills for agents, ensure hard wall-clock cancellation for LLM calls, honor per-agent timeouts, preserve partial/incremental results on failure, and ensure required slice failures are explicitly reported as \u0027deep_failed\u0027.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Reliability \u0026 Stability",
+                      "test":  "Verify that \u0027audit.log\u0027 shows \u0027deep_failed\u0027 with non-zero agents when agents fail, partial results are recorded, and no orphan processes remain after deep audit runs, especially under timeout conditions.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-03",
+                      "statement":  "Improve Invoke-BacklogIntakeGate precision and recall by content-verifying all finding categories (requiring cited lines/symbols to exist), calibrating similarity thresholds against historical operator decisions, and implementing a feedback loop using operator overrides.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Intake \u0026 Filtering",
+                      "test":  "Monitor the ratio of approved/held/rejected items, verify that \u0027held\u0027 items have concrete evidence for triage, and observe a reduction in false positives reaching the work queue.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-04",
+                      "statement":  "Stabilize nightly audit scheduling and execution: repair launch/completion accounting, strengthen the launch ledger to track detailed statuses (started, completed_ok, failed, etc.), enforce a strict time-box with a hard-stop and partial result flushing, and implement a catch-up guard for skipped windows.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Scheduling \u0026 Cadence",
+                      "test":  "Verify \u0027audit.launches\u0027 accurately reflects all run states, audits complete within their window, and skipped audits run opportunistically without causing launch storms.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-05",
+                      "statement":  "Implement explicit staleness handling for findings: add a \u0027staleness\u0027 metadata field to findings, enable a deterministic freshness/auto-resolved check (even with -SkipCurator), and define a ledger lifecycle for \u0027fixed_or_stale\u0027 and \u0027regressed\u0027 based on absence/reappearance after successful relevant audits.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Lifecycle \u0026 Data Management",
+                      "test":  "Verify that findings not seen after N relevant audits are marked \u0027fixed_or_stale\u0027, \u0027regressed\u0027 findings are correctly identified, and the freshness check prevents stale tasks from being claimed.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-06",
+                      "statement":  "Optimize audit coverage: expand \u0027Get-AuditorSnapshot\u0027 to include unmonitored assets (e.g., scheduled tasks, DNS records), stratify file-content caps for large core files to ensure full scanning, promote runtime incidents from the sensor auditor into durable findings, and refocus existing slices to prioritize actionable reliability/runtime issues while demoting noisy findings.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Coverage",
+                      "test":  "Verify that large core files are fully scanned, new asset types are included in snapshots, runtime incidents generate findings, and the proportion of actionable findings increases.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-07",
+                      "statement":  "Enhance \u0027usefulness.jsonl\u0027 to be outcome-based, including metrics like precision proxy, fix-through rate, stale count, deep health, and coverage gaps; use these metrics to implement a feedback loop that can auto-demote or pause chronically unfixed audit slices.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Metrics \u0026 Feedback",
+                      "test":  "Verify \u0027usefulness.jsonl\u0027 contains new outcome-based metrics, and observe that low-yield slices are appropriately downgraded or paused over time.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-08",
+                      "statement":  "Implement targeted revalidation for audit-sourced done items, leveraging existing checks such as static subcomponents, relevant deep roles, scenarios, or smoke/QA caches.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Remediation \u0026 Verification",
+                      "test":  "Verify that a revalidation step is triggered for completed audit items and that it confirms the original finding is resolved.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-09",
+                      "statement":  "Leverage existing workpack and root-cause grouping mechanisms to address clusters of related audit findings rather than individual duplicates, improving efficiency of fixes.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Remediation \u0026 Workflow",
+                      "test":  "Verify that multiple related findings are grouped under a single workpack/root-cause item and that fixing the root cause resolves all grouped findings.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}
