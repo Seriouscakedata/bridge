@@ -220,6 +220,83 @@ try {
   $prefixedCoordinatorText = "[autonomous backlog task] " + (New-ProjectAutopilotCoordinatorTaskText -Slug $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -MaxTasks 4)
   Assert-True (Test-ProjectAutopilotCoordinatorText -Text $prefixedCoordinatorText) 'coordinator detector should allow driver task prefixes'
 
+  # ============================================================
+  # TEST A: PROJECT-channel Test-IsLargeTask uses text-length path, NOT scope-profile
+  # Verifies AcceptanceCount/SubsystemCount/EstimatedTurns are ignored for non-main channels.
+  # ============================================================
+  . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\prompt-builder.ps1')
+  $testAText = 'Short bridge task for the myproject channel. No length trigger, no keyword.'
+  $resultA_highCount = Test-IsLargeTask -TaskText $testAText -Channel 'myproject' -Scope 'feature' -AcceptanceCount 99 -SubsystemCount 10 -EstimatedTurns 20
+  $resultA_zeroCount = Test-IsLargeTask -TaskText $testAText -Channel 'myproject' -Scope 'feature' -AcceptanceCount 0 -SubsystemCount 0 -EstimatedTurns 0
+  Assert-True ([bool]$resultA_highCount -eq [bool]$resultA_zeroCount) 'TEST A: scope counters (AcceptanceCount/SubsystemCount/EstimatedTurns) must not change result for non-main channel'
+  Assert-True (-not [bool]$resultA_zeroCount) 'TEST A: short non-regex text must return false for non-main channel (text-length path only)'
+  Write-Host 'TEST A PASS: PROJECT-channel Test-IsLargeTask uses old text-length path (scope counters ignored)'
+
+  # ============================================================
+  # TEST B: crusher-04 gate (Invoke-BridgeSelfDecomposeGate) is noop for non-main channel
+  # Verifies gate predicate at line 190 of 86-loop-completion-actions.ps1 short-circuits for channel != main.
+  # ============================================================
+  . (Join-Path (Split-Path -Parent $PSScriptRoot) 'driver\86-loop-completion-actions.ps1')
+  $script:GateNonMainStateCalls = 0
+  $script:GateNonMainIdeaWrites = 0
+  function Read-State {
+    $script:GateNonMainStateCalls++
+    return [pscustomobject]@{
+      bridge_self_decompose_retry_count = 3
+      bridge_self_decompose_retry_parent_id = 'noninterference-regression-id'
+    }
+  }
+  function Update-State {
+    param([scriptblock]$Mutator)
+    $script:GateNonMainStateCalls++
+    throw 'TEST B: non-main gate must not call Update-State'
+  }
+  function Set-Idea {
+    param([string]$Id, [string]$Status, [string]$Reason)
+    $script:GateNonMainIdeaWrites++
+    throw 'TEST B: non-main gate must not call Set-Idea'
+  }
+  function Set-IdeaHoldReason {
+    param([string]$Id, [string]$Reason)
+    $script:GateNonMainIdeaWrites++
+    throw 'TEST B: non-main gate must not call Set-IdeaHoldReason'
+  }
+  function Get-IdeaById {
+    param([string]$Id)
+    $script:GateNonMainStateCalls++
+    throw 'TEST B: non-main gate must not read idea/state'
+  }
+  $resultB = Invoke-BridgeSelfDecomposeGate -Id 'noninterference-regression-id' -Channel 'myproject' -Scope 'bridge' -Tags @()
+  Assert-True ([string]$resultB.action -eq 'noop') ('TEST B: gate action must be noop for non-main channel; got: ' + [string]$resultB.action)
+  Assert-True (-not [bool]$resultB.suppressContinue) 'TEST B: gate must not suppress continue for non-main channel'
+  Assert-True ([int]$script:GateNonMainStateCalls -eq 0) ('TEST B: non-main gate must not read/write state; calls=' + [string]$script:GateNonMainStateCalls)
+  Assert-True ([int]$script:GateNonMainIdeaWrites -eq 0) ('TEST B: non-main gate must not hold/retry/update idea; writes=' + [string]$script:GateNonMainIdeaWrites)
+  Remove-Item Function:\Read-State -ErrorAction SilentlyContinue
+  Remove-Item Function:\Update-State -ErrorAction SilentlyContinue
+  Remove-Item Function:\Set-Idea -ErrorAction SilentlyContinue
+  Remove-Item Function:\Set-IdeaHoldReason -ErrorAction SilentlyContinue
+  Remove-Item Function:\Get-IdeaById -ErrorAction SilentlyContinue
+  Write-Host 'TEST B PASS: Invoke-BridgeSelfDecomposeGate is noop (pass-through) for non-main channel; no state write, no hold/retry'
+
+  # ============================================================
+  # TEST C: Start-ProjectAutopilotIfNeeded for non-main channel without approved PROJECT_PLAN returns false
+  # Verifies existing behavior is not changed by decomposer additions.
+  # ============================================================
+  $savedTestChannel = $script:TestChannel
+  $script:TestChannel = 'myproject-noninterference'
+  $testCChannelDir = Get-ChannelDir -Slug $script:TestChannel
+  New-Item -ItemType Directory -Path $testCChannelDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), '', (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $testCChannelDir 'channel.json'), (@{
+    slug = $script:TestChannel
+    project_root = (Join-Path $script:TestBridgeRoot 'project')
+  } | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+  $resultC = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
+  $script:TestChannel = $savedTestChannel
+  Assert-True (-not [bool]$resultC.queued) 'TEST C: non-main channel without approved plan must not queue coordinator'
+  Assert-True ([string]$resultC.reason -eq 'plan-not-approved') ('TEST C: expected plan-not-approved; got: ' + [string]$resultC.reason)
+  Write-Host 'TEST C PASS: Start-ProjectAutopilotIfNeeded for non-main channel without plan returns false (behavior unchanged)'
+
   $r1 = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-1' -Created 0
   Assert-True ([bool]$r1.recorded) 'first empty outcome should be recorded'
   Assert-True (-not [bool]$r1.paused) 'first empty outcome should not pause when limit=2'
