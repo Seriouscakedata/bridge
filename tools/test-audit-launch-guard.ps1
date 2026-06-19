@@ -213,6 +213,42 @@ try {
   Write-AuditLaunchLedgerEntry -AuditDir $timeoutAuditDir -Channel 'main' -Decision 'runner_timeout' -Reason 'reserved_test' -ProcessId $PID -RunId ([guid]::NewGuid().ToString()) -RuntimeSeconds 2 -ExitReason 'reserved_schema_test' | Out-Null
   $timeoutEntries = Read-AuditLaunchEntries -LedgerPath (Join-Path $timeoutAuditDir 'audit.launches.jsonl')
   Check-AuditLaunchGuard 'runner_timeout state is accepted by launch ledger schema' (@($timeoutEntries | Where-Object { [string]$_.decision -eq 'runner_timeout' }).Count -eq 1) $timeoutEntries
+
+  $staleAuditDir1 = Join-Path $tmpRoot 'stale-reconcile-dead-old\audit'
+  New-Item -ItemType Directory -Path $staleAuditDir1 -Force | Out-Null
+  $staleLedger1 = Join-Path $staleAuditDir1 'audit.launches.jsonl'
+  $staleRunId1a = [guid]::NewGuid().ToString()
+  $staleRunId1b = [guid]::NewGuid().ToString()
+  $s1a = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddMinutes(-3).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $staleRunId1a; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  $s1b = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddMinutes(-4).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $staleRunId1b; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  [System.IO.File]::WriteAllText($staleLedger1, ($s1a + "`n" + $s1b + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $staleAdmit = Request-AuditLaunchAdmission -AuditDir $staleAuditDir1 -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5 -StaleStartedTtlMinutes 2
+  Check-AuditLaunchGuard 'dead-pid stale started entries reconciled then next audit admitted' ([bool]$staleAdmit.allowed) $staleAdmit
+  $staleEntries1 = Read-AuditLaunchEntries -LedgerPath $staleLedger1
+  $abandonedCount1 = @($staleEntries1 | Where-Object { [string]$_.decision -eq 'abandoned' }).Count
+  Check-AuditLaunchGuard 'abandoned entries written for each reconciled stale-started' ($abandonedCount1 -eq 2) $staleEntries1
+
+  $staleAuditDir2 = Join-Path $tmpRoot 'stale-reconcile-live-pid\audit'
+  New-Item -ItemType Directory -Path $staleAuditDir2 -Force | Out-Null
+  $staleLedger2 = Join-Path $staleAuditDir2 'audit.launches.jsonl'
+  $liveRunId2a = [guid]::NewGuid().ToString()
+  $liveRunId2b = [guid]::NewGuid().ToString()
+  $l2a = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddMinutes(-3).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = [int]$PID; run_id = $liveRunId2a; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  $l2b = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddMinutes(-4).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = [int]$PID; run_id = $liveRunId2b; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  [System.IO.File]::WriteAllText($staleLedger2, ($l2a + "`n" + $l2b + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $liveDenied = Request-AuditLaunchAdmission -AuditDir $staleAuditDir2 -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5 -StaleStartedTtlMinutes 2
+  Check-AuditLaunchGuard 'live-pid started entries block new audit launch storm guard intact' ((-not [bool]$liveDenied.allowed) -and [string]$liveDenied.reason -eq 'max_attempts_per_window') $liveDenied
+
+  $staleAuditDir3 = Join-Path $tmpRoot 'stale-reconcile-dead-recent\audit'
+  New-Item -ItemType Directory -Path $staleAuditDir3 -Force | Out-Null
+  $staleLedger3 = Join-Path $staleAuditDir3 'audit.launches.jsonl'
+  $recentRunId3a = [guid]::NewGuid().ToString()
+  $recentRunId3b = [guid]::NewGuid().ToString()
+  $r3a = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddSeconds(-30).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $recentRunId3a; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  $r3b = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddSeconds(-45).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $recentRunId3b; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  [System.IO.File]::WriteAllText($staleLedger3, ($r3a + "`n" + $r3b + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $recentDenied = Request-AuditLaunchAdmission -AuditDir $staleAuditDir3 -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5 -StaleStartedTtlMinutes 2
+  Check-AuditLaunchGuard 'dead-pid started within TTL not reconciled and still blocks' ((-not [bool]$recentDenied.allowed) -and [string]$recentDenied.reason -eq 'max_attempts_per_window') $recentDenied
 } finally {
   if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

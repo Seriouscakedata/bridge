@@ -381,21 +381,109 @@ function Get-AuditLaunchAttemptCount {
 
   $ledgerPath = Join-Path $AuditDir 'audit.launches.jsonl'
   if (-not (Test-Path -LiteralPath $ledgerPath)) { return 0 }
-  $count = 0
   $lines = @()
   try { $lines = [System.IO.File]::ReadAllLines($ledgerPath) } catch { return 0 }
+
+  $allParsed = New-Object 'System.Collections.Generic.List[object]'
   foreach ($line in @($lines)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try {
       $entry = ConvertFrom-AuditLaunchJsonLine -Line $line
-      if (-not $entry) { continue }
-      if ([string]$entry.decision -ne 'started') { continue }
-      if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
-      $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-      if ($ts -ge $SinceUtc.ToUniversalTime()) { $count++ }
+      if ($entry) { [void]$allParsed.Add($entry) }
     } catch {}
   }
+
+  $abandonedRunIds = @{}
+  foreach ($entry in $allParsed) {
+    if ([string]$entry.decision -eq 'abandoned' -and -not [string]::IsNullOrWhiteSpace([string]$entry.run_id)) {
+      $abandonedRunIds[[string]$entry.run_id] = $true
+    }
+  }
+
+  $sinceNorm = $SinceUtc.ToUniversalTime()
+  $count = 0
+  foreach ($entry in $allParsed) {
+    if ([string]$entry.decision -ne 'started') { continue }
+    if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
+    try {
+      $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+      if ($ts -lt $sinceNorm) { continue }
+    } catch { continue }
+    $runId = [string]$entry.run_id
+    if (-not [string]::IsNullOrWhiteSpace($runId) -and $abandonedRunIds.ContainsKey($runId)) { continue }
+    $count++
+  }
   return $count
+}
+
+function Invoke-AuditLaunchStaleStartReconciliation {
+  param(
+    [Parameter(Mandatory=$true)][string]$AuditDir,
+    [string]$Channel = '',
+    [Parameter(Mandatory=$true)][datetime]$SinceUtc,
+    [int]$StaleStartedTtlMinutes = 60
+  )
+
+  $ledgerPath = Join-Path $AuditDir 'audit.launches.jsonl'
+  if (-not (Test-Path -LiteralPath $ledgerPath)) { return 0 }
+  $lines = @()
+  try { $lines = [System.IO.File]::ReadAllLines($ledgerPath) } catch { return 0 }
+
+  $allParsed = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($line in @($lines)) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try {
+      $entry = ConvertFrom-AuditLaunchJsonLine -Line $line
+      if ($entry) { [void]$allParsed.Add($entry) }
+    } catch {}
+  }
+
+  $terminalDecisions = @{
+    completed_ok      = $true
+    completed_partial = $true
+    failed            = $true
+    runner_timeout    = $true
+    skipped_not_idle  = $true
+    abandoned         = $true
+  }
+  $terminalRunIds = @{}
+  foreach ($entry in $allParsed) {
+    if ($terminalDecisions.ContainsKey([string]$entry.decision) -and -not [string]::IsNullOrWhiteSpace([string]$entry.run_id)) {
+      $terminalRunIds[[string]$entry.run_id] = $true
+    }
+  }
+
+  $now = (Get-Date).ToUniversalTime()
+  $staleThreshold = $now.AddMinutes(-1 * [Math]::Max(1, $StaleStartedTtlMinutes))
+  $sinceNorm = $SinceUtc.ToUniversalTime()
+  $reconciled = 0
+  foreach ($entry in $allParsed) {
+    if ([string]$entry.decision -ne 'started') { continue }
+    if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
+    $runId = [string]$entry.run_id
+    if ([string]::IsNullOrWhiteSpace($runId)) { continue }
+    if ($terminalRunIds.ContainsKey($runId)) { continue }
+    try {
+      $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+      if ($ts -lt $sinceNorm) { continue }
+      if ($ts -gt $staleThreshold) { continue }
+    } catch { continue }
+
+    $entryPid = 0
+    try { $entryPid = [int]$entry.pid } catch { $entryPid = 0 }
+    if ($entryPid -le 0) { continue }
+
+    $alive = $false
+    try { $alive = [bool](Get-Process -Id $entryPid -ErrorAction SilentlyContinue) } catch {}
+    if ($alive) { continue }
+
+    try {
+      Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel ([string]$entry.channel) -Decision 'abandoned' -Reason 'stale_pid_dead' -ProcessId $entryPid -RunId $runId -ExitReason ('stale_pid_dead: pid=' + $entryPid) | Out-Null
+      $terminalRunIds[$runId] = $true
+      $reconciled++
+    } catch {}
+  }
+  return $reconciled
 }
 
 function Test-AuditLaunchLockActive {
@@ -497,13 +585,15 @@ function Request-AuditLaunchAdmission {
     [string]$Channel = 'main',
     [int]$MaxAttempts = 2,
     [int]$WindowMinutes = 60,
-    [int]$LockTtlMinutes = 10
+    [int]$LockTtlMinutes = 10,
+    [int]$StaleStartedTtlMinutes = 60
   )
 
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
   if ($MaxAttempts -lt 1) { $MaxAttempts = 1 } elseif ($MaxAttempts -gt 24) { $MaxAttempts = 24 }
   if ($WindowMinutes -lt 5) { $WindowMinutes = 5 } elseif ($WindowMinutes -gt 1440) { $WindowMinutes = 1440 }
   if ($LockTtlMinutes -lt 1) { $LockTtlMinutes = 1 } elseif ($LockTtlMinutes -gt 60) { $LockTtlMinutes = 60 }
+  if ($StaleStartedTtlMinutes -lt 0) { $StaleStartedTtlMinutes = 0 } elseif ($StaleStartedTtlMinutes -gt 480) { $StaleStartedTtlMinutes = 480 }
   if (-not (Test-Path -LiteralPath $AuditDir)) { New-Item -ItemType Directory -Path $AuditDir -Force | Out-Null }
 
   $lockPath = Join-Path $AuditDir 'audit.launch.lock'
@@ -516,6 +606,9 @@ function Request-AuditLaunchAdmission {
   try {
     $runId = [guid]::NewGuid().ToString()
     $since = (Get-Date).ToUniversalTime().AddMinutes(-1 * $WindowMinutes)
+    if ($StaleStartedTtlMinutes -gt 0) {
+      try { Invoke-AuditLaunchStaleStartReconciliation -AuditDir $AuditDir -Channel $Channel -SinceUtc $since -StaleStartedTtlMinutes $StaleStartedTtlMinutes | Out-Null } catch {}
+    }
     $count = Get-AuditLaunchAttemptCount -AuditDir $AuditDir -SinceUtc $since -Channel $Channel
     if ($count -ge $MaxAttempts) {
       Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'max_attempts_per_window' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null
@@ -712,6 +805,7 @@ function Start-AuditIfDue {
   $launchMax = if ($null -ne $auditCfg.maxLaunchAttemptsPerWindow) { [int]$auditCfg.maxLaunchAttemptsPerWindow } else { 2 }
   $launchWindow = if ($null -ne $auditCfg.launchAttemptWindowMinutes) { [int]$auditCfg.launchAttemptWindowMinutes } else { 60 }
   $launchLockTtl = if ($null -ne $auditCfg.launchLockTtlMinutes) { [int]$auditCfg.launchLockTtlMinutes } else { 10 }
+  $launchStaleTtl = if ($null -ne $auditCfg.launchStaleStartedTtlMinutes) { [int]$auditCfg.launchStaleStartedTtlMinutes } else { 60 }
   if ($startH -lt 0) { $startH = 0 } elseif ($startH -gt 23) { $startH = 23 }
   if ($endH -lt 0) { $endH = 0 } elseif ($endH -gt 23) { $endH = 23 }
   if ($floorH -lt 1) { $floorH = 1 } elseif ($floorH -gt 168) { $floorH = 168 }
@@ -719,6 +813,7 @@ function Start-AuditIfDue {
   if ($launchMax -lt 1) { $launchMax = 1 } elseif ($launchMax -gt 24) { $launchMax = 24 }
   if ($launchWindow -lt 5) { $launchWindow = 5 } elseif ($launchWindow -gt 1440) { $launchWindow = 1440 }
   if ($launchLockTtl -lt 1) { $launchLockTtl = 1 } elseif ($launchLockTtl -gt 60) { $launchLockTtl = 60 }
+  if ($launchStaleTtl -lt 0) { $launchStaleTtl = 0 } elseif ($launchStaleTtl -gt 480) { $launchStaleTtl = 480 }
   $hourNow = (Get-Date).Hour
   $inWindow = $false
   if ($startH -le $endH) {
@@ -759,7 +854,7 @@ function Start-AuditIfDue {
   $auditRunner = Join-Path $bridgeRoot 'tools\audit-runner.ps1'
   if (-not (Test-Path -LiteralPath $auditRunner)) { return }
   if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) { return }
-  $launchAdmission = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel $auditChannel -MaxAttempts $launchMax -WindowMinutes $launchWindow -LockTtlMinutes $launchLockTtl
+  $launchAdmission = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel $auditChannel -MaxAttempts $launchMax -WindowMinutes $launchWindow -LockTtlMinutes $launchLockTtl -StaleStartedTtlMinutes $launchStaleTtl
   if (-not $launchAdmission -or -not [bool]$launchAdmission.allowed) { return }
   $auditRunId = [string]$launchAdmission.run_id
   $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
