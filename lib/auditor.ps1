@@ -559,7 +559,8 @@ function Test-AuditorTriggers {
     $seqAge    = [int]$c.last_seq_age_min
     $waitsBg   = ([int]$c.active_jobs_count -gt 0) -or ([string]$c.status_text -match 'Жду фоновую|waiting|stuck|pending')
     $noAgent   = [string]::IsNullOrWhiteSpace([string]$c.active_agent) -and [int]$c.task_turn -eq 0
-    if ($isWorking -and $hbFresh -and $seqAge -ge 5 -and ($waitsBg -or $noAgent)) {
+    $inSynthesis = ([string]$c.task_mode -eq 'synthesis')
+    if ($isWorking -and $hbFresh -and $seqAge -ge 5 -and -not $inSynthesis -and ($waitsBg -or $noAgent)) {
       # First try the cheap fix: recover zombie jobs in-place.
       $rec = $null
       try { $rec = Recover-ZombieJobs -Slug $slug } catch {}
