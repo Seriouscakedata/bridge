@@ -1,0 +1,36 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] Изучи внешний экспертный разбор слабостей ТВОЕЙ памяти: tmp/memory-weakness-analysis.md (прислан оператором, 22 стр., 16 слабостей + 7 приоритетов). Главный тезис разбора СОВПАДАЕТ с твоим собственным само-размышлением (decisions/dec-20260620-032229-2bd892/self_reflection_directions.md): «не больше проверок — больше структуры/evidence/бюджетов/контрактов», закалять а не плодить (Foundation #2).\n\nЗАДАЧА (рефлексия+дизайн, НЕ реализация): сверь КАЖДУЮ из слабостей разбора со СВОИМ реальным кодом памяти (lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, context-builder в driver, маркеры [[PROJECT_*]]). Для каждой честно реши: (а) УЖЕ закрыто (покажи где в коде), (б) частично, (в) реально болит. НЕ верь разбору на слово — проверяй по своему коду (как ты сам же выводишь: code is source of truth). Затем ВЫБЕРИ 2-3 улучшения с наибольшим рычагом (по твоей оценке + данным), которые ПЕРЕИСПОЛЬЗУЮТ/усилят существующее (typed memory, trust/status, freshness, librarian, evidence-поля), НЕ плодя новые слои/валидаторы. Из 7 приоритетов разбора особо оцени: authority-levels в промпте, авто-evidence-enrichment, lazy freshness только для recalled, один memory_status heartbeat — какие из них ты ещё НЕ имеешь и какой дешевле всего.\n\nНА ВЫХОДЕ: durable PLAN в decisions/ — таблица «слабость → статус в моём коде → вердикт» + 2-3 выбранных улучшения атомами (файл/изменение/acceptance/что переиспользуешь вместо нового/risk). НЕ реализуй. Оператор проверит план (целостность + что не плодишь механизмы + что атомы реально малы).",
+    "goal":  "To analyze an external expert\u0027s report on memory weaknesses, compare each weakness against the current memory codebase, identify 2-3 high-leverage improvements that reuse existing mechanisms without introducing new layers, and produce a durable plan for these improvements.",
+    "constraints":  [
+                        "The task is for reflection and design, NOT implementation.",
+                        "Do NOT trust the external analysis at face value; verify against actual code (code is source of truth).",
+                        "Choose exactly 2-3 improvements.",
+                        "Improvements MUST reuse/strengthen existing mechanisms (typed memory, trust/status, freshness, librarian, evidence-fields).",
+                        "Improvements MUST NOT proliferate new layers or validators.",
+                        "The output plan must be durable and located in `decisions/`.",
+                        "The plan will be reviewed by an operator for integrity, adherence to \u0027no new mechanisms\u0027, and atomicity of improvements."
+                    ],
+    "known_context":  [
+                          "External expert analysis is in `tmp/memory-weakness-analysis.md` (22 pages, 16 weaknesses, 7 priorities).",
+                          "The main thesis of the analysis (\u0027not more checks — more structure/evidence/budgets/contracts\u0027, strengthen not proliferate - Foundation #2) aligns with own self-reflection in `decisions/dec-20260620-032229-2bd892/self_reflection_directions.md`.",
+                          "Memory code to check includes: `lib/memory.ps1`, `tools/memory-tail.ps1`, `lib/librarian.ps1`, `code-index`, `context-builder` in driver, and `[[PROJECT_*]]` markers.",
+                          "Existing mechanisms to reuse/strengthen include: `typed memory`, `trust/status`, `freshness`, `librarian`, `evidence-поля`.",
+                          "Specific priorities from the analysis to evaluate are: `authority-levels` in prompt, `авто-evidence-enrichment`, `lazy freshness` only for recalled, `один memory_status heartbeat`."
+                      ],
+    "output_format":  "A durable plan file in `decisions/` containing:\n1. A table with columns: \u0027weakness\u0027 (from analysis) → \u0027status in my code\u0027 (a/b/c) → \u0027verdict\u0027.\n2. Descriptions of 2-3 chosen improvements, each detailed with: `file`, `change`, `acceptance criteria`, `what is reused instead of new`, `risk`.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "A plan file exists in the `decisions/` directory.",
+                          "The plan includes a table with 16 rows, each corresponding to a weakness identified in `tmp/memory-weakness-analysis.md`.",
+                          "Each row in the table contains a \u0027weakness\u0027, \u0027status in my code\u0027 (categorized as \u0027a\u0027, \u0027b\u0027, or \u0027c\u0027), and a \u0027verdict\u0027 column.",
+                          "The plan identifies exactly 2 or 3 proposed improvements.",
+                          "Each proposed improvement is detailed with the following atomic components: `файл` (file), `изменение` (change), `acceptance` (acceptance criteria), `что переиспользуешь вместо нового` (what is reused instead of new), and `risk`.",
+                          "The plan explicitly demonstrates how each chosen improvement reuses or strengthens existing mechanisms: `typed memory`, `trust/status`, `freshness`, `librarian`, and `evidence-поля`.",
+                          "The plan explicitly states that no new layers or validators are introduced for the proposed improvements.",
+                          "The plan includes an evaluation of the 7 priorities from the analysis, specifically indicating which ones are not yet present in the system and identifying which one is the cheapest to implement.",
+                          "The plan demonstrates verification of weaknesses against the specified code files (`lib/memory.ps1`, `tools/memory-tail.ps1`, `lib/librarian.ps1`, `code-index`, `context-builder` in driver) and `[[PROJECT_*]]` markers.",
+                          "The plan contains no actual code implementation or execution steps, only design and reflection."
+                      ]
+}

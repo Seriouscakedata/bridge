@@ -1,0 +1,179 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "plan_weakness_table",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C). A 16-row weakness-\u003estatus(a/b/c)-\u003everdict-with-code-references table forces every claimed improvement to be grounded in actual code, which is the single highest-leverage anti-hallucination control in the plan. Cheap markdown artifact, fully reversible, very specific. The exact count \u002716\u0027 is the only mild arbitrariness, but it traces to the agreed weakness set. Accept as-is.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "improvement_constraints",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Number-of-improvements tension: 4 improvement candidates exist but constraint allows only 2-3; selection set must be explicitly enumerated to resolve.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,B,C). Read correctly this is a SELECTION constraint (pick 2-3 of the candidate improvements that reuse existing mechanisms and add no new layers/validators), not a mandate to ship all 4 — the reviewer\u0027s \u0027major\u0027 contradiction dissolves once the plan names the chosen 2-3 and defers the rest. The constraint is the core discipline preventing scope creep and new infrastructure, so it stays. Small penalty because the plan must still explicitly reconcile the 4-vs-2-3 gap (defer improve_kind_source_retention).",
+                      "total":  0.885
+                  },
+                  {
+                      "atom_id":  "evaluate_7_priorities",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B,C). Evaluating the 7 priorities (authority-levels, auto-evidence-enrichment, lazy freshness, memory_status heartbeat) for presence/absence and relative cost is the analytical bridge that justifies the 2-3 selection from improvement_constraints. Specific named priorities and a present/absent + cheapest-to-implement output make it testable. Pure analysis, low cost, reversible. Accept.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "plan_deliverable_format",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Blocking cross-atom contradiction: \u0027No memory code modifications\u0027 collides with improve_* atoms phrased as \u0027Implement\u0027; scope must be disambiguated.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,B,C) and internally coherent as a plan-only deliverable (single decisions/\u003cdec-id\u003e/plan.md with weakness table, atomic improvement descriptions [file/change/acceptance/reused-mechanisms/risk], 7-priorities evaluation, explicit no-new-layers statement). Modify rather than accept to close the blocking ambiguity flagged in review: state explicitly that the improve_* atoms are PLAN SPECIFICATIONS for a follow-up pass, so \u0027no memory code modifications in this task\u0027 is the correct framing and the \u0027Implement\u0027 verbs in the improvement atoms are reinterpreted as \u0027specify in plan\u0027.",
+                      "total":  0.87
+                  },
+                  {
+                      "atom_id":  "improve_authority_recall_render",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Scope verb mismatch: \u0027Implement\u0027 conflicts with the plan-only task scope; must be reframed as a selected, fully-specified plan item rather than executed now.",
+                                            "value":  0.04
+                                        }
+                                    ],
+                      "reason":  "Strong consensus-adjacent improvement (A,B) and the best first pick: render-only change in Get-MemoryRecall that prefixes each item with existing kind/trust and adds a \u0027подсказка, не истина; код — источник правды\u0027 disclaimer. Reuses typed-memory + trust/status fields, adds no validator, fully reversible, low cost, and directly mitigates the over-trust weakness. Modify only to align with plan-only scope (describe it in the plan: file, change, acceptance, reused mechanisms, risk).",
+                      "total":  0.8775
+                  },
+                  {
+                      "atom_id":  "improve_auto_evidence_enrichment",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Scope verb mismatch: \u0027Implement\u0027 vs plan-only task; reframe as specified plan item.",
+                                            "value":  0.04
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,B). Backfilling sha1+commit+line_text at marker write (ConvertFrom-ProjectMemoryMarker/Add-ProjectMemoryFromMarker) when evidence has \u0027file\u0027 but no \u0027sha1\u0027 reuses existing evidence fields and the freshness subsystem, and is the precondition that makes lazy-freshness staleness detection actually fire. More moving parts than the render change (path resolution, commit lookup, medium reversibility) lower simplicity/feasibility slightly. A reasonable second pick; modify to fit plan-only scope.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "activate_lazy_freshness",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Scope verb mismatch (plan-only) plus dependency on enrichment and a vague acceptance test (\u0027effectively utilized\u0027).",
+                                            "value":  0.04
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,B). Leveraging the existing lazy-freshness model so checks run only for recalled items is low-cost and reuses an existing mechanism, but it is largely a corollary of improve_auto_evidence_enrichment (records need sha1 to be checkable) and its test is the least concrete of the improvement atoms. Best treated as a sub-item bundled with enrichment rather than a standalone third improvement. Modify: tighten the acceptance criterion and fold into the enrichment plan item.",
+                      "total":  0.7925
+                  },
+                  {
+                      "atom_id":  "improve_kind_source_retention",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.75,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Exceeds the 2-3 selection cap (4th candidate) and is single-proposal (B only), not consensus.",
+                                            "value":  0.1
+                                        },
+                                        {
+                                            "reason":  "Highest code-modification blast radius: changes deletion/dedup logic in Invoke-MemoryAgePrune + Invoke-MemoryDedup, conflicting with the no-new-mechanisms/small-atoms and plan-only constraints.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Genuinely valuable idea — protecting project_decision/project_invariant/project_test from silent prune/dedup while pruning transient task:* notes addresses a real data-loss risk. But it is non-consensus (proposal B only), it is the 4th candidate that breaks the \u0027exactly 2-3\u0027 constraint, and it mutates deletion logic (largest blast radius, riskier than the render/enrichment changes). Reject for THIS pass and relocate it into defer_heavier_items as a fast-follow, keeping the selected set to the two render/evidence improvements.",
+                      "total":  0.765
+                  },
+                  {
+                      "atom_id":  "defer_heavier_items",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B). Explicitly listing deferred heavy items (supersede subject/predicate, recall-replay harness, context-budget manager, code-index freshness banner, decisions cache, fast-lane safety pack, end-of-task candidate block) as \u0027next-pass/fast-follow\u0027, and naming memory_status.json heartbeat as the cheapest fast-follow while refusing to include it if it becomes a new monitoring layer, is exactly the governance that enforces the no-new-mechanisms constraint. Pure documentation, fully reversible, specific. This is also the correct home for the rejected improve_kind_source_retention. Accept.",
+                      "total":  0.8925
+                  }
+              ]
+}

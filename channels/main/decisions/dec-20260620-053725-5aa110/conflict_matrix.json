@@ -1,0 +1,52 @@
+{
+    "consensus_atoms":  [
+                            "plan_weakness_table",
+                            "improvement_constraints",
+                            "evaluate_7_priorities",
+                            "plan_deliverable_format",
+                            "improve_authority_recall_render",
+                            "improve_auto_evidence_enrichment",
+                            "activate_lazy_freshness",
+                            "defer_heavier_items"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "plan_deliverable_format",
+                                           "improve_authority_recall_render",
+                                           "improve_auto_evidence_enrichment",
+                                           "activate_lazy_freshness",
+                                           "improve_kind_source_retention"
+                                       ],
+                          "axis":  "Task Scope: Code Modification",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "improvement_constraints",
+                                           "improve_authority_recall_render",
+                                           "improve_auto_evidence_enrichment",
+                                           "activate_lazy_freshness",
+                                           "improve_kind_source_retention"
+                                       ],
+                          "axis":  "Number of Improvements",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "plan_deliverable_format",
+                        "severity":  "blocking",
+                        "why":  "The statement \u0027No memory code modifications are allowed in this task\u0027 directly contradicts the presence of multiple \u0027Improvement\u0027 atoms (e.g., `improve_authority_recall_render`, `improve_auto_evidence_enrichment`, `activate_lazy_freshness`, `improve_kind_source_retention`) which explicitly require implementation and thus memory code modifications. This makes the overall task definition ambiguous or impossible to fulfill as stated.",
+                        "fix":  "Clarify if the task is *only* planning, or if it includes both planning and implementation. If it includes implementation, remove \u0027No memory code modifications are allowed in this task\u0027 from `plan_deliverable_format`. If it\u0027s *only* planning, then the \u0027Improvement\u0027 atoms should be rephrased as \u0027Plan for X\u0027 or removed from this task\u0027s scope.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "improvement_constraints",
+                        "severity":  "major",
+                        "why":  "The constraint states \u0027Select exactly 2-3 improvements\u0027, but there are 4 distinct \u0027Improvement\u0027 atoms provided in the overall decision set (`improve_authority_recall_render`, `improve_auto_evidence_enrichment`, `activate_lazy_freshness`, `improve_kind_source_retention`). This creates an ambiguity or contradiction regarding which improvements are to be implemented, or if the constraint itself is incorrect given the provided improvement options.",
+                        "fix":  "Either adjust the `improvement_constraints` statement to allow for 4 improvements (e.g., \u0027Select 2-4 improvements\u0027 or \u0027Implement the following 4 improvements\u0027), or remove one of the improvement atoms from the scope of this task to match the 2-3 constraint.",
+                        "cost":  "low"
+                    }
+                ]
+}

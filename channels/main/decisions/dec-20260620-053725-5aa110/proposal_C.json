@@ -1,0 +1,57 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to perform a reflective analysis and design exercise, not implementation. I must examine an external expert\u0027s analysis of memory weaknesses (tmp/memory-weakness-analysis.md) and cross-reference each of the 16 weaknesses against the actual codebase (lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, context-builder, [[PROJECT_*]] markers). For each weakness, I must honestly classify its status: (a) already addressed in code, (b) partially addressed, or (c) genuinely problematic. I must not trust the analysis blindly but verify against the code. Then, I must select 2-3 high-leverage improvements that reuse existing mechanisms (typed memory, trust/status, freshness, librarian, evidence-fields) without introducing new layers or validators. I must also evaluate the 7 priorities from the analysis, especially authority-levels, auto-evidence-enrichment, lazy freshness, and memory_status heartbeat, identifying which are not yet present and which is cheapest to implement. The output is a durable plan in decisions/ with a weakness-status-verdict table and atomic improvement descriptions.",
+    "summary":  "I will produce a plan that systematically verifies each of the 16 weaknesses against the existing memory code, classifies them as already closed, partially closed, or genuinely painful, and selects 2-3 improvements that leverage existing typed memory, trust/status, freshness, librarian, and evidence-fields. The plan will include an evaluation of the 7 priorities, identifying gaps and the cheapest implementation path, all without adding new layers or validators.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Verify each of the 16 weaknesses against actual code in lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, context-builder, and [[PROJECT_*]] markers.",
+                               "reason":  "The task explicitly requires not trusting the external analysis at face value; code is the source of truth. This ensures the resulting plan is grounded in reality.",
+                               "tradeoff":  "Time-consuming to manually cross-reference, but prevents designing solutions for non-existent or already-solved problems.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Select exactly 2-3 improvements that reuse existing mechanisms (typed memory, trust/status, freshness, librarian, evidence-fields) and do not introduce new layers or validators.",
+                               "reason":  "The constraints mandate strengthening existing architecture rather than proliferating complexity, aligning with Foundation #2\u0027s principle of \u0027not more checks — more structure/evidence/budgets/contracts\u0027.",
+                               "tradeoff":  "Limits the scope of possible improvements, but ensures architectural coherence and avoids bloat.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Evaluate the 7 priorities from the analysis, specifically authority-levels, auto-evidence-enrichment, lazy freshness, and memory_status heartbeat, identifying which are absent and which is cheapest to implement.",
+                               "reason":  "The task explicitly requires this evaluation to guide the selection of high-leverage, low-cost improvements.",
+                               "tradeoff":  "Focusing on these four may miss other valuable priorities, but they are explicitly called out as needing special assessment.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Produce a durable plan file in decisions/ with a weakness-status-verdict table and atomic improvement descriptions (file, change, acceptance, what is reused, risk).",
+                               "reason":  "The output format is specified and must be durable for operator review, ensuring traceability and accountability.",
+                               "tradeoff":  "Structured output may constrain creative design, but provides clarity and auditability.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "The external analysis file tmp/memory-weakness-analysis.md exists and contains 16 weaknesses and 7 priorities as described.",
+                        "The code files (lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, context-builder) are accessible and reflect the current state of the memory system.",
+                        "The self-reflection document decisions/dec-20260620-032229-2bd892/self_reflection_directions.md aligns with the analysis\u0027s main thesis.",
+                        "Existing mechanisms (typed memory, trust/status, freshness, librarian, evidence-fields) are well-defined and can be extended without breaking changes.",
+                        "The operator will review the plan for integrity, adherence to \u0027no new mechanisms\u0027, and atomicity of improvements."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The external analysis may misidentify weaknesses that are already adequately addressed in code, leading to wasted effort if not properly verified.",
+                      "severity":  "medium",
+                      "mitigation":  "Rigorous cross-referencing of each weakness against actual code, with explicit evidence in the verdict column."
+                  },
+                  {
+                      "risk":  "Selected improvements may inadvertently introduce hidden complexity or dependencies that violate the \u0027no new layers\u0027 constraint.",
+                      "severity":  "medium",
+                      "mitigation":  "Each improvement will be designed to explicitly reuse existing mechanisms and will be reviewed against the constraint before finalizing the plan."
+                  },
+                  {
+                      "risk":  "The plan may be too abstract or miss critical implementation details, making it non-durable or non-actionable.",
+                      "severity":  "low",
+                      "mitigation":  "Atomic descriptions with file, change, acceptance criteria, and risk will ensure concreteness and testability."
+                  }
+              ],
+    "minimal_version":  "Plan with weakness-status-verdict table covering all 16 weaknesses, classification of each as a/b/c, and 2 improvements that reuse existing mechanisms, with evaluation of the 4 specified priorities.",
+    "advanced_version":  "Plan with detailed code references for each weakness classification, 3 improvements with full atomic descriptions, comprehensive evaluation of all 7 priorities with cost-benefit analysis, and a traceability matrix linking improvements to specific weaknesses and existing mechanisms."
+}

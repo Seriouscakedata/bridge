@@ -1,0 +1,143 @@
+{
+    "final_answer":  "The deliverable is a PLAN-ONLY durable record (decisions/\u003cdec-id\u003e/plan.md) — no memory code is modified in this task, and the improve_* items are written as specifications for a follow-up pass (their \u0027Implement\u0027 verbs are read as \u0027specify in plan\u0027). This resolves the one blocking contradiction the review flagged (no-code-modifications vs. \u0027Implement\u0027 verbs). The plan contains four accepted structural parts plus exactly TWO selected improvements: (1) a 16-row weakness→status(a/b/c)→verdict table where every status is backed by a concrete code citation in lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, the driver context-builder, and [[PROJECT_*]] markers (highest-leverage anti-hallucination control: code is source of truth); (2) the improvement_constraints discipline read as a SELECTION rule (pick 2-3 reuse-only, no new layer/validator) which dissolves the 4-vs-2-3 conflict by naming the chosen two and deferring the fourth; (3) an evaluation of the 7 external-report priorities; (4) a deferred \u0027next-pass/fast-follow\u0027 list. The two selected improvements are: A) authority/trust labeling + disclaimer in the semantic recall render (Get-MemoryRecall), prefixing each item with its existing kind/trust and adding \u0027подсказка, не истина; код — источник правды; worklog/hypothesis проверять по файлам\u0027 — render-only, reuses typed-memory + trust/status, no validator; and B) auto evidence enrichment at marker write (ConvertFrom-ProjectMemoryMarker / Add-ProjectMemoryFromMarker) that backfills sha1+commit+line_text when evidence has \u0027file\u0027 but no \u0027sha1\u0027, reusing the existing evidence-fields and lazy-freshness subsystem — with \u0027lazy freshness only for recalled\u0027 FOLDED IN as a sub-item of B (it is a corollary that only fires once records carry sha1, so it is not a standalone third improvement). improve_kind_source_retention is REJECTED for this pass (single-proposal, 4th candidate breaking the 2-3 cap, and the largest blast radius since it mutates delete/dedup logic) and relocated into the deferred list. On the 7 priorities: authority-levels is the cheapest to implement (render-only) and is picked first; auto-evidence-enrichment is the precondition that makes lazy-freshness actually fire and is picked second; the memory_status.json heartbeat is named the cheapest FAST-FOLLOW but explicitly NOT adopted now because it would be a new monitoring layer, violating the no-new-mechanisms constraint (Foundation #2: harden, do not proliferate).",
+    "decisions":  [
+                      {
+                          "decision":  "Include a 16-row weakness→status(a/b/c)→verdict table in plan.md, with every status backed by a concrete code citation (lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, code-index, driver context-builder, [[PROJECT_*]] markers).",
+                          "rationale":  "Full consensus (A,B,C); the single highest-leverage anti-hallucination control — it forces each claimed improvement to be grounded in real code rather than in the external report\u0027s framing (code is source of truth). Cheap, fully reversible markdown.",
+                          "alternatives_considered":  [
+                                                          "Free-form prose summary without per-weakness code citations",
+                                                          "Trusting the external report\u0027s 16 weaknesses at face value without code verification"
+                                                      ],
+                          "risk":  "Low — markdown artifact, fully reversible; only residual risk is mis-mapping a weakness, mitigated by a strict 1:1 mapping to the report\u0027s enumerated set.",
+                          "test":  "plan.md contains a 16-row table with columns weakness | status(a/b/c) | verdict-with-code-reference, and each status cites a file:symbol that proves it."
+                      },
+                      {
+                          "decision":  "Treat improvement_constraints as a SELECTION rule: choose exactly 2-3 candidate improvements that reuse existing mechanisms (typed memory, trust/status, freshness, librarian, evidence-fields) and add no new layer/validator; explicitly enumerate the chosen set and defer the rest.",
+                          "rationale":  "Consensus (A,B,C). This is the core discipline against scope creep and new infrastructure (Foundation #2). Reading it as a selection rule (not a mandate to ship all four candidates) dissolves the reviewer\u0027s \u0027major\u0027 contradiction once the plan names the two chosen and defers the fourth.",
+                          "alternatives_considered":  [
+                                                          "Relax the cap to 2-4 to fit all four candidates",
+                                                          "Ship all four improvement atoms",
+                                                          "Pick only one improvement"
+                                                      ],
+                          "risk":  "Low — the only residual is the 4-vs-2-3 gap, closed by deferring improve_kind_source_retention and folding activate_lazy_freshness into the enrichment item.",
+                          "test":  "plan.md names exactly the two selected improvements, states for each which existing mechanism it reuses, and asserts no new layer/validator is added."
+                      },
+                      {
+                          "decision":  "Include an evaluation of all 7 external-report priorities, explicitly tagging authority-levels, auto-evidence-enrichment, lazy-freshness, and the memory_status heartbeat as present/partial/absent with relative cost, and naming the cheapest.",
+                          "rationale":  "Consensus (A,B,C). This is the analytical bridge that justifies the 2-3 selection — present/absent + cheapest-to-implement output is concrete and testable, and ties the report\u0027s priorities to the actual gap analysis.",
+                          "alternatives_considered":  [
+                                                          "Skip the priorities evaluation and present only own gap analysis",
+                                                          "Evaluate only the 4 named priorities and ignore the other 3"
+                                                      ],
+                          "risk":  "Low — pure analysis, no code touched.",
+                          "test":  "plan.md has a priorities section addressing all 7 (at least the 4 named) with present/partial/absent + cost, identifies authority-levels as cheapest to implement and memory_status.json heartbeat as the cheapest fast-follow."
+                      },
+                      {
+                          "decision":  "Produce a single durable file decisions/\u003cdec-id\u003e/plan.md containing the weakness table, the 7-priorities evaluation, the two atomic improvement SPECIFICATIONS (file/change/acceptance/reused-mechanism/risk), the deferred list, and an explicit \u0027no new layers/validators and no memory code modified in this task\u0027 statement. The improve_* atoms are specifications for a follow-up pass; their \u0027Implement\u0027 verbs are reinterpreted as \u0027specify in plan\u0027.",
+                          "rationale":  "Judge MODIFY + micro-debate resolution: this closes the blocking contradiction between \u0027No memory code modifications\u0027 and the \u0027Implement\u0027 verbs in the improvement atoms by framing the whole task as plan-only.",
+                          "alternatives_considered":  [
+                                                          "Implement the improvements now in memory code",
+                                                          "Split into plan plus immediate partial implementation",
+                                                          "Emit multiple files instead of one"
+                                                      ],
+                          "risk":  "Low — documentation only; the risk is scope-creep into implementation, mitigated by the explicit plan-only statement and by writing only under decisions/.",
+                          "test":  "Exactly one new file under decisions/ exists; no file under lib/, tools/, or the driver is modified by this task."
+                      },
+                      {
+                          "decision":  "Select as improvement #1 (specified, not implemented): in the semantic recall render (Get-MemoryRecall), prefix each recalled item with its existing kind/trust (e.g. [worklog/observed]) and add a disclaimer header \u0027подсказка, не истина; код — источник правды; worklog/hypothesis проверять по файлам\u0027. Reuses typed-memory + trust/status fields; adds no validator.",
+                          "rationale":  "Best first pick (A,B). Render-only, fully reversible, lowest cost, directly mitigates the over-trust weakness, and is the cheapest realization of the authority-levels priority.",
+                          "alternatives_considered":  [
+                                                          "Add authority levels as a new metadata field on records",
+                                                          "Filter low-trust items out of recall entirely instead of labeling them",
+                                                          "Add a separate authority-classification validator"
+                                                      ],
+                          "risk":  "Low — render-only; the only risk is prompt verbosity/noise, mitigated by one compact disclaimer header plus terse inline kind/trust prefixes.",
+                          "test":  "Spec acceptance: the recall block prefixes each entry with its kind/trust and shows one disclaimer header, visibly separating evidence-backed entries from low-trust ones."
+                      },
+                      {
+                          "decision":  "Select as improvement #2 (specified, not implemented): at marker write (ConvertFrom-ProjectMemoryMarker / Add-ProjectMemoryFromMarker), when evidence has \u0027file\u0027 but no \u0027sha1\u0027, resolve the path, compute sha1, and backfill sha1+commit+line_text into the evidence object — reusing the existing evidence-fields and lazy-freshness subsystem, with no new evidence service or validator. FOLD IN activate_lazy_freshness as a sub-item: once records carry sha1, the existing lazy-freshness check (run only on recalled items) detects staleness.",
+                          "rationale":  "Consensus (A,B) and the precondition that makes lazy-freshness staleness actually fire. activate_lazy_freshness is a corollary (records need sha1 to be checkable) with the vaguest standalone acceptance test, so it is bundled here rather than counted as a third improvement — keeping the selected set at two.",
+                          "alternatives_considered":  [
+                                                          "Keep activate_lazy_freshness as a standalone third improvement",
+                                                          "Build a separate evidence-enrichment service/validator",
+                                                          "Eager freshness on all stored memory instead of lazy on recalled only"
+                                                      ],
+                          "risk":  "Medium — more moving parts (path resolution, commit lookup), reversibility medium. Mitigate: enrich best-effort, skip silently when the path is unresolved or git is unreachable in the sandbox, and make no behavior change when sha1 is already present.",
+                          "test":  "Spec acceptance: a marker written with a file ref but no sha1 gets evidence.sha1 (plus commit+line_text) populated at write; a later file change flags the recalled entry stale via the existing freshness mechanism; freshness runs only on recalled items."
+                      },
+                      {
+                          "decision":  "Include a \u0027next-pass / fast-follow\u0027 deferred list (supersede subject/predicate, recall-replay harness, global context-budget manager, code-index freshness banner, decisions normalized cache, fast-lane safety pack, end-of-task candidate block, AND the relocated kind/source-aware retention). Name memory_status.json heartbeat as the cheapest fast-follow but explicitly do NOT adopt it now because it would be a new monitoring layer.",
+                          "rationale":  "Consensus (A,B). This is the governance that enforces the no-new-mechanisms constraint and is the correct home for the rejected improve_kind_source_retention, keeping the active set to the two render/evidence improvements.",
+                          "alternatives_considered":  [
+                                                          "Adopt the memory_status.json heartbeat now as the third improvement",
+                                                          "Omit a deferred list and silently drop the heavier ideas"
+                                                      ],
+                          "risk":  "Low — documentation only.",
+                          "test":  "plan.md lists the deferred items including kind/source-aware retention, names memory_status.json heartbeat as the cheapest fast-follow, and states the reason it is excluded this pass (new monitoring layer)."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "improve_kind_source_retention (kind/source-aware retention in Invoke-MemoryAgePrune + Invoke-MemoryDedup to protect project_decision/project_invariant/project_test and prune transient task:*/memory_note).",
+                         "why":  "Rejected for THIS pass (total 0.765, judge verdict reject). Non-consensus (proposal B only), it is the 4th candidate that breaks the exactly-2-3 selection cap, and it mutates deletion/dedup logic — the largest blast radius of all candidates, conflicting with the no-new-mechanisms/small-atoms and plan-only constraints. The idea is genuinely valuable (real data-loss risk), so it is relocated into the deferred fast-follow list rather than dropped."
+                     },
+                     {
+                         "decision":  "Implementing any of the improvements in this task (executing code changes in lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, or the driver).",
+                         "why":  "Out of scope: this is a plan-only reflection/design task (judge MODIFY on plan_deliverable_format + micro-debate resolution). The \u0027Implement\u0027 verbs in the improvement atoms are reinterpreted as \u0027specify in plan\u0027; the operator reviews the plan before any code is written."
+                     },
+                     {
+                         "decision":  "Adopting the memory_status.json heartbeat now.",
+                         "why":  "Even as the cheapest fast-follow candidate, a heartbeat would introduce a new monitoring layer, violating the no-new-mechanisms constraint (Foundation #2). Kept only in the deferred list."
+                     }
+                 ],
+    "open_questions":  [
+                           "Does Get-MemoryRecall already surface kind/trust on each recalled item (status (a), render-only) or must the render read them back from the typed-memory record (status (b), slightly larger change)? Resolve while filling the weakness table; it determines whether improvement #1 is truly render-only.",
+                           "Is git reachable at marker-write time in the coder sandbox so the enrichment can resolve commit (recent commits note the coder sandbox cannot reach .git)? If not, backfill sha1+line_text only and defer commit, or compute it later in the driver.",
+                           "Which dec-id/path to use for the plan file — reuse the already-scaffolded folder (channels/main/decisions/dec-20260620-053725-5aa110/) or mint a new decisions/\u003cdec-id\u003e/? Confirm the canonical decisions/ root before writing."
+                       ],
+    "implementation_plan":  [
+                                "Read lib/memory.ps1, tools/memory-tail.ps1, lib/librarian.ps1, the code-index, the driver context-builder, and the [[PROJECT_*]] marker handling; for each of the 16 report weaknesses record status a/b/c with a file:symbol citation.",
+                                "Write the 16-row weakness→status(a/b/c)→verdict table into plan.md.",
+                                "Write the 7-priorities evaluation section: present/partial/absent + relative cost; mark authority-levels cheapest-to-implement and memory_status.json heartbeat cheapest fast-follow.",
+                                "Write improvement #1 specification (authority/trust + disclaimer in Get-MemoryRecall): file, change, acceptance, reused mechanism (typed-memory + trust/status), risk.",
+                                "Write improvement #2 specification (auto evidence enrichment at marker write, with lazy-freshness-for-recalled folded in): file(s) ConvertFrom-ProjectMemoryMarker/Add-ProjectMemoryFromMarker, change, acceptance, reused mechanism (evidence-fields + lazy-freshness subsystem), risk.",
+                                "Write the deferred \u0027next-pass/fast-follow\u0027 list, including the relocated kind/source-aware retention and the excluded memory_status.json heartbeat with rationale.",
+                                "Add an explicit statement: no new layers/validators introduced and no memory code modified in this task; improvements are specifications for a follow-up pass.",
+                                "Save as a single file decisions/\u003cdec-id\u003e/plan.md and confirm no files under lib/, tools/, or the driver were changed."
+                            ],
+    "next_step":  "Author decisions/\u003cdec-id\u003e/plan.md: first verify each of the 16 weaknesses against the actual memory code and fill the weakness→status→verdict table with code citations, then add the 7-priorities evaluation, the two improvement specifications (authority render + auto-evidence-enrichment with lazy-freshness folded in), the deferred list, and the explicit no-new-mechanisms / plan-only statement — making no code changes.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Improvement #3 is a no-op built on an UNVERIFIED precondition that is one readable line in the file the decision cites. It frames the work as \u0027confirm/flip restaleOnSha1Mismatch to default-on in Get-MemoryConfig\u0027 and parks the answer in open_questions (\u0027Current default of restaleOnSha1Mismatch ... if already on, #3 collapses into verification-only\u0027). The actual code: restaleOnSha1Mismatch = $true AND verifyOnRecall = $true are BOTH defaults in Get-MemoryConfig (lib/memory.ps1:381-382), and a repo-wide search shows NO config.json override (only matches are inside the decision\u0027s own artifacts). verifyOnRecall is the gate that actually triggers Test-MemoryHitFreshness (lib/memory.ps1:927). So lazy freshness is already fully activated; #3 changes zero code and zero config.",
+                                  "why":  "Directly violates the task\u0027s binding constraint \u0027Do NOT trust the external analysis at face value; verify against actual code (code is source of truth)\u0027 — the decision failed to read line 382 of a file it references dozens of times, and propagated proposal_B\u0027s inverted precedence reading. It also hollows the \u0027select THREE coupled improvements\u0027 COUNT RULING: only TWO improvements (#1 render, #2 enrichment) carry content, so the operator-review gate for \u0027atom smallness / no padding\u0027 is presented with an empty atom dressed as real. The decision itself flags this in open_questions yet never resolved it despite the answer being trivially checkable."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The freshness/stale signal never reaches the render path Improvement #1 targets. #1 dresses up Get-MemoryRecall (lib/memory.ps1:1043-1067), which renders raw \u0027- (pct%) text\u0027 and never reads status/freshness nor calls Format-ProjectMemoryHits -RequireFresh. The lazy stale-check (#3) and -RequireFresh exclusion live only on the TYPED pack path (Get-ProjectContextPack / Format-ProjectMemoryHits, lib/project-context.ps1:215-228). The two paths are disjoint.",
+                                  "why":  "Undercuts the decision\u0027s central claim that the three improvements are \u0027coupled\u0027 and \u0027reuse exactly these mechanisms.\u0027 After shipping #1+#2+#3, the generic semantic block (#1\u0027s surface, and the exact subject of weaknesses #1/#14 \u0027memory treated as truth\u0027) will still surface stale records with no stale marker, because Get-MemoryRecall ignores status entirely. #1 adds [kind/trust] labels but the freshness benefit it implies does not flow there."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Improvement #2\u0027s chosen location contradicts its own acceptance criteria. The decision places enrichment in ConvertFrom-ProjectMemoryMarker / Add-ProjectMemoryFromMarker (lib/project-context.ps1:243-274), which is invoked synchronously from driver/84-loop-reply-markers.ps1:127. The repo\u0027s own commit history (and the decision\u0027s open_questions) confirm the coder sandbox at the synchronous marker-reply path \u0027cannot reach .git\u0027. SHA1 (file read) works there, but the acceptance demands backfilling \u0027sha1+commit+line_text\u0027 — the commit lookup needs git and will fail in that location.",
+                                  "why":  "proposal_B explicitly mitigated this by running enrichment \u0027only on the detached memory-tail path\u0027 (where .git is reachable). The final decision moved it to the synchronous path and left the reachability conflict unresolved in open_questions rather than fixing the atom. As written, #2\u0027s acceptance (\u0027commit populated on write\u0027) is unsatisfiable at the specified call site — an internal inconsistency an operator reviewing for integrity should catch."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027librarian\u0027 reuse claim is unsupported. Success_test 6 requires the plan to demonstrate reuse/strengthening of \u0027librarian\u0027 among the named mechanisms, and section 0 claims reuse of \u0027existing librarian/recall renderers.\u0027 But no chosen improvement touches lib/librarian.ps1: #1 edits Get-MemoryRecall (in lib/memory.ps1), #2 edits lib/project-context.ps1, #3 is config. All librarian-related weaknesses (W9, W12) were deferred.",
+                                  "why":  "Section 0 conflates the recall renderer Get-MemoryRecall (which lives in lib/memory.ps1) with the librarian (lib/librarian.ps1) to manufacture a \u0027librarian reused\u0027 claim. Against success_test 6\u0027s explicit enumeration including \u0027librarian,\u0027 this is a partial miss / misstatement that the no-new-mechanisms framing leans on."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The audit status column violates the specified value set. Success_test 3 requires each row categorized as \u0027a\u0027, \u0027b\u0027, or \u0027c\u0027 (a single letter). Rows 1.3, 1.8, and 1.13 use \u0027b/c\u0027 (two values), which is outside the specified domain.",
+                                  "why":  "Literal nonconformance with the output_format and success_test 3. Minor, but the operator review checks \u0027integrity\u0027 of the table; a hybrid \u0027b/c\u0027 bucket is exactly the kind of ambiguity that defeats the a/b/c triage the contract asked for."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Imprecise code references that the decision presents as proof of \u0027already built.\u0027 It states Test-MemoryHitFreshness is \u0027wired into Search-Memory at :928\u0027 / \u0027invoked from Search-Memory at :928,\u0027 but line 928 is inside Set-MemoryHitsLastRecalled; Search-Memory only reaches it indirectly at lines 969/1039. The check is additionally gated by verifyOnRecall and throttled by RecallFlushMinIntervalSec (lib/memory.ps1:916-928), and it mutates/saves the reloaded store records, so staling takes effect on the NEXT recall, not the current render.",
+                                  "why":  "The decision\u0027s whole redirection (\u0027three priorities already built, don\u0027t rebuild\u0027) rests on these citations, and the task demanded file:line accuracy. The omitted throttle/next-recall semantics also weaken Improvement #3\u0027s acceptance wording (\u0027a file change causes the recalled record to be flagged stale [and excluded]\u0027), which will not hold on the first recall after an edit."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}
