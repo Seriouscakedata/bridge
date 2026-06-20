@@ -110,6 +110,22 @@ function Add-Idea {
   Assert-AuditBacklogFilingTest 'deep-truth-status-failed' ([string]$truth.deepStatus -eq 'deep_failed') ("deep={0}" -f $truth.deepStatus)
   Assert-AuditBacklogFilingTest 'deep-truth-required-failure-count' ([int]$truth.deepAgentRequiredFailures -eq 2) ("count={0}" -f $truth.deepAgentRequiredFailures)
   Assert-AuditBacklogFilingTest 'deep-truth-empty-reply-reason' ((@($truth.reasons) -join '; ') -match 'empty_llm_reply')
+  Assert-AuditBacklogFilingTest 'deep-truth-bucket-empty-reply' ([string]$truth.deepRequiredRoleFailureReasons['security'] -eq 'empty_llm_reply') ("bucket={0}" -f $truth.deepRequiredRoleFailureReasons['security'])
+  Assert-AuditBacklogFilingTest 'deep-truth-bucket-missing-output' ([string]$truth.deepRequiredRoleFailureReasons['functional'] -eq 'missing_output_file') ("bucket={0}" -f $truth.deepRequiredRoleFailureReasons['functional'])
+
+  $truthBuckets = Get-BridgeAuditDeepTruth -DeepResult ([pscustomobject]@{
+    deepStatus = 'ok'
+    deepRequiredSlices = @('security-model','functional-model','runtime-incident-model')
+    deepCoverageGap = @('security-model','functional-model','runtime-incident-model')
+    deepModelAgentResults = @(
+      [pscustomobject]@{ role = 'security-model'; status = 'error'; errors = @('timeout'); findings = @() },
+      [pscustomobject]@{ role = 'functional-model'; status = 'error'; errors = @('empty_llm_reply'); findings = @() },
+      [pscustomobject]@{ role = 'runtime-incident-model'; status = 'error'; errors = @('aborted_by_quorum'); findings = @() }
+    )
+  })
+  Assert-AuditBacklogFilingTest 'reason-bucket-timeout' ([string]$truthBuckets.deepRequiredRoleFailureReasons['security-model'] -eq 'timeout') ("bucket={0}" -f $truthBuckets.deepRequiredRoleFailureReasons['security-model'])
+  Assert-AuditBacklogFilingTest 'reason-bucket-empty-reply' ([string]$truthBuckets.deepRequiredRoleFailureReasons['functional-model'] -eq 'empty_llm_reply') ("bucket={0}" -f $truthBuckets.deepRequiredRoleFailureReasons['functional-model'])
+  Assert-AuditBacklogFilingTest 'reason-bucket-aborted' ([string]$truthBuckets.deepRequiredRoleFailureReasons['runtime-incident-model'] -eq 'aborted_by_quorum') ("bucket={0}" -f $truthBuckets.deepRequiredRoleFailureReasons['runtime-incident-model'])
 
   $reportErrors = New-Object 'System.Collections.Generic.List[string]'
   $reportPath = Join-Path $bridgeRoot 'audit\truth-report.json'
@@ -147,6 +163,62 @@ function Add-Idea {
   $writtenReport = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
   Assert-AuditBacklogFilingTest 'complete-report-json-deep-failed' ([string]$writtenReport.metadata.deep_status -eq 'deep_failed') ("deep={0}" -f $writtenReport.metadata.deep_status)
   Assert-AuditBacklogFilingTest 'complete-report-json-counters' ([int]$writtenReport.metadata.deep_agent_error_count -eq 2 -and [int]$writtenReport.metadata.deep_agent_required_failures -eq 2) ("errors={0}; failures={1}" -f $writtenReport.metadata.deep_agent_error_count,$writtenReport.metadata.deep_agent_required_failures)
+  Assert-AuditBacklogFilingTest 'complete-report-json-bucket-empty-reply' ([string]$writtenReport.metadata.deep_required_role_failure_reasons.security -eq 'empty_llm_reply') ("bucket={0}" -f $writtenReport.metadata.deep_required_role_failure_reasons.security)
+  Assert-AuditBacklogFilingTest 'complete-report-json-bucket-missing-output' ([string]$writtenReport.metadata.deep_required_role_failure_reasons.functional -eq 'missing_output_file') ("bucket={0}" -f $writtenReport.metadata.deep_required_role_failure_reasons.functional)
+
+  $reportPathBuckets = Join-Path $bridgeRoot 'audit\truth-report-buckets.json'
+  $completeBuckets = Complete-BridgeAuditReport `
+    -Root $bridgeRoot `
+    -AuditCtx $ctx `
+    -Report ([pscustomobject]@{ runtime_sec = 0.1; metadata = @{} }) `
+    -Paths ([pscustomobject]@{ json = $reportPathBuckets; md = (Join-Path $bridgeRoot 'audit\truth-report-buckets.md') }) `
+    -StaticResult ([pscustomobject]@{
+      secCounts = [pscustomobject]@{ critical = 0; warning = 0; info = 0 }
+      fncCounts = [pscustomobject]@{ critical = 0; warning = 0; info = 0 }
+    }) `
+    -Filed 0 `
+    -DeepResult ([pscustomobject]@{
+      deepStatus = 'ok'
+      deepCodexResult = $null
+      deepClaudeResult = $null
+      deepModelAgentResults = @(
+        [pscustomobject]@{ role = 'security-model'; status = 'error'; errors = @('json_parse_failed'); findings = @() },
+        [pscustomobject]@{ role = 'functional-model'; status = 'error'; errors = @('missing_output_file'); findings = @() }
+      )
+      deepRequiredSlices = @('security-model','functional-model')
+      deepCoverageGap = @('security-model','functional-model')
+      deepRuntimeSec = 0.2
+      deepWatchdogFired = $false
+      deepModelAgentCount = 0
+      deepCodexCount = 0
+      deepClaudeCount = 0
+      deepFiled = 0
+    }) `
+    -DeepAuditTimeoutSec 1 `
+    -Errors ([ref](New-Object 'System.Collections.Generic.List[string]'))
+  Assert-AuditBacklogFilingTest 'complete-report-buckets-partial' ([string]$completeBuckets.status -eq 'partial') ("status={0}" -f $completeBuckets.status)
+  $writtenBuckets = Get-Content -LiteralPath $reportPathBuckets -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-AuditBacklogFilingTest 'report-metadata-json-parse-failed' ([string]$writtenBuckets.metadata.deep_required_role_failure_reasons.'security-model' -eq 'json_parse_failed') ("bucket={0}" -f $writtenBuckets.metadata.deep_required_role_failure_reasons.'security-model')
+  Assert-AuditBacklogFilingTest 'report-metadata-missing-output' ([string]$writtenBuckets.metadata.deep_required_role_failure_reasons.'functional-model' -eq 'missing_output_file') ("bucket={0}" -f $writtenBuckets.metadata.deep_required_role_failure_reasons.'functional-model')
+
+  $mdPathBuckets = Join-Path $bridgeRoot 'audit\truth-report-buckets-md.md'
+  [System.IO.File]::WriteAllText($mdPathBuckets, "# Report`r`n", (New-Object System.Text.UTF8Encoding($false)))
+  $mdErrors = New-Object 'System.Collections.Generic.List[string]'
+  Add-DeepAuditSectionsToMarkdown `
+    -Paths ([pscustomobject]@{ md = $mdPathBuckets }) `
+    -DeepStatus 'deep_failed' `
+    -DeepRuntimeSec 0.2 `
+    -DeepAuditTimeoutSec 1 `
+    -DeepWatchdogFired $false `
+    -DeepModelAgentResults @([pscustomobject]@{ role = 'security-model'; model = 'test'; status = 'error'; errors = @('timeout'); findings = @() }) `
+    -DeepCodexResult $null `
+    -DeepClaudeResult $null `
+    -DeepCodexCount 0 `
+    -DeepClaudeCount 0 `
+    -DeepRequiredRoleFailureReasons @{ 'security-model' = 'timeout' } `
+    -Errors ([ref]$mdErrors)
+  $mdTextBuckets = Get-Content -LiteralPath $mdPathBuckets -Raw -Encoding UTF8
+  Assert-AuditBacklogFilingTest 'markdown-required-role-reasons' ($mdTextBuckets -match 'Required role failure reasons: `security-model`=timeout') $mdTextBuckets
 } finally {
   if ($null -eq $oldScopeRoot) { Remove-Item Env:\AUDIT_SCOPE_TEST_ROOT -ErrorAction SilentlyContinue } else { $env:AUDIT_SCOPE_TEST_ROOT = $oldScopeRoot }
   foreach ($p in @($bridgeRoot, $projectRoot)) {
