@@ -311,7 +311,20 @@ function Get-BacklogDuplicateCompactorKey {
   $root = Get-BacklogDuplicateRootKey -Item $Item
   $kind = Get-BacklogDuplicateFindingType -Item $Item
   if ([string]::IsNullOrWhiteSpace($kind)) { return $null }
-  $keyStr = if ([string]::IsNullOrWhiteSpace($root)) { 'finding|' + $kind } else { $root + '|' + $kind }
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    $text = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+    $scope = ''
+    $m = [regex]::Match($text, '^\s*\[(?<scope>[^\]]+)\]')
+    if ($m.Success) {
+      $scope = ([string]$m.Groups['scope'].Value).Trim().ToLowerInvariant()
+      $scope = ($scope -replace '\\','/' -replace '[^a-z0-9/_-]+','-' -replace '-+','-').Trim('-').Trim('/')
+      if ($scope -match '^deep-agent/(?<role>.+)/[^/]+$') { $scope = 'deep-agent/' + [string]$Matches['role'] }
+    }
+    if ([string]::IsNullOrWhiteSpace($scope)) { return $null }
+    $keyStr = 'finding|' + $scope + '|' + $kind
+  } else {
+    $keyStr = $root + '|' + $kind
+  }
   return [pscustomobject]@{
     key = $keyStr
     root = $root
