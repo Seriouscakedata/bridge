@@ -1,0 +1,25 @@
+{
+    "consensus_atoms":  [
+                            "ATOM_002",
+                            "ATOM_003"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "ATOM_003",
+                                           "ATOM_007"
+                                       ],
+                          "axis":  "Test Coverage / Assertion Scope for \u0027discuss\u0027 keyword",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "ATOM_003",
+                        "severity":  "major",
+                        "why":  "ATOM_003 states that the test should cover \u0027plan-refinement DISCUSS\u0027 for the Standard pole. However, ATOM_007 explicitly defers the hard assertion for the \u0027literal-обсуди/discuss-stays-Standard\u0027 case, which is a primary example of \u0027plan-refinement DISCUSS\u0027. This creates an ambiguity regarding how ATOM_003\u0027s requirement for \u0027plan-refinement DISCUSS\u0027 coverage is to be met without violating ATOM_007. It implies a level of coverage that is not fully delivered in this change, potentially leading to an incomplete or misleading test of the Standard case\u0027s routing logic.",
+                        "fix":  "Clarify the scope of \u0027covering plan-refinement DISCUSS\u0027 in ATOM_003. For instance, rephrase it to explicitly acknowledge the deferral of literal keyword testing (e.g., \u0027covering *other aspects of* plan-refinement DISCUSS, *excluding literal keyword matching which is deferred*\u0027). Alternatively, if the intent is to *not* cover this aspect at all in ATOM_003, remove the phrase from ATOM_003.",
+                        "cost":  "low"
+                    }
+                ]
+}

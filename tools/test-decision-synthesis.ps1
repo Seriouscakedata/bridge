@@ -161,6 +161,26 @@ function Assert-Artifact {
     if (-not $ok) { Write-Host ("    errors: " + (($errsRef.Value) -join '; ')) -ForegroundColor Yellow }
   }
 }
+function Test-DepthRoutingAssertion {
+  $standardText = 'Plan refinement request: adjust backlog atom ordering and acceptance checks for the maintenance queue.'
+  $highStakesText = '[[HIGH-STAKES]] Refine release checks for account payment rollback handling.'
+  $deepText = 'Discuss the architecture design for a new synthesis routing pipeline across planners.'
+
+  $standard = Get-SynthesisDepthDecision -Text $standardText
+  $highStakes = Get-SynthesisDepthDecision -Text $highStakesText
+  $deep = Get-SynthesisDepthDecision -Text $deepText
+
+  Assert-True ("Depth routing: plan-refinement without high-stakes marker stays Standard (actual: " + [string]$standard['depth'] + ")") ([string]$standard['depth'] -eq 'Standard')
+  Assert-True ("Depth routing: explicit high-stakes marker stays High-Stakes (actual: " + [string]$highStakes['depth'] + ")") ([string]$highStakes['depth'] -eq 'High-Stakes')
+  Assert-True ("Depth routing: broad architecture/design request stays Deep (actual: " + [string]$deep['depth'] + ")") ([string]$deep['depth'] -eq 'Deep')
+}
+
+# ---------------------------------------------------------------------------------------------------
+# RUN: depth routing assertions
+# ---------------------------------------------------------------------------------------------------
+
+Write-Host '=== Depth routing ==='
+Test-DepthRoutingAssertion
 
 # ---------------------------------------------------------------------------------------------------
 # RUN: Standard depth

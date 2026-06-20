@@ -1,0 +1,148 @@
+{
+    "final_answer":  "Implement ATOM_003 as a single, self-contained addition to tools/test-decision-synthesis.ps1: one new function (Test-DepthRoutingAssertion) that wraps one dedicated assertion block, calls Get-SynthesisDepthDecision directly, and asserts the three-pole depth split — Standard / High-Stakes / Deep. The Standard pole is exercised with a plan-refinement DISCUSS fixture that contains NO literal обсуди/discuss/architecture markers, so it is green against the router as it exists today; the High-Stakes pole uses an explicit high-stakes marker; the Deep pole uses a broad architecture/design input. Fixtures are ASCII-only and the Standard case is free of high-risk keywords to avoid accidental router escalation. The block reuses the existing Assert-True / $script:pass / $script:total / exit 1 harness, and the file\u0027s existing ParseFile + smoke run serves as the test-of-the-test. Assertions are fail-loud: any routing mismatch is a hard failure with a clear message. The literal-keyword (обсуди/discuss-stays-Standard) hard assertion is intentionally deferred — adding it now would be red because the current router escalates literal discuss — and is moved to a follow-up gated on the router change that makes literal discuss route to Standard (not on ATOM_004, which is only fixture hygiene). This satisfies the contract\u0027s reuse-only, atomic (1 file / 1 verifiable change / own test), ParseFile+smoke, and fail-loud requirements.",
+    "decisions":  [
+                      {
+                          "decision":  "Confine the change to a single new function Test-DepthRoutingAssertion in tools/test-decision-synthesis.ps1, containing exactly one dedicated assertion block (reconciles ATOM_001 + ATOM_008).",
+                          "rationale":  "A named function wrapping one block keeps the diff atomic and reviewable while giving the assertions a clear callable identity; the inline-block (ATOM_001) and named-function (ATOM_008) intents are not in conflict — the function is the block\u0027s container.",
+                          "alternatives_considered":  [
+                                                          "Inline assertion block with no wrapping function (ATOM_001 alone)",
+                                                          "Multiple separate test functions per pole",
+                                                          "Editing more than one file"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Diff shows exactly one new function and one verifiable change in tools/test-decision-synthesis.ps1; no other files touched."
+                      },
+                      {
+                          "decision":  "Call Get-SynthesisDepthDecision directly; do not route the assertion through Invoke-SynthesisPipeline or Get-SynthesisRouteDecision (ATOM_002 + ATOM_009).",
+                          "rationale":  "Consensus across proposals A and B. Testing at the depth-decision unit isolates the behavior under test, so a failure indicts the depth router and not unrelated pipeline/route coupling, and the test stays robust to upstream changes.",
+                          "alternatives_considered":  [
+                                                          "Exercise depth routing through the full pipeline",
+                                                          "Drive via Get-SynthesisRouteDecision"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Test body invokes Get-SynthesisDepthDecision and no pipeline/route entrypoints; verified by inspection of the new function."
+                      },
+                      {
+                          "decision":  "Assert the three-pole split (Standard / High-Stakes / Deep) in one change, but represent the Standard plan-refinement DISCUSS pole with a NON-literal-keyword input (ATOM_003 as MODIFIED by the judge, enabled by ATOM_005).",
+                          "rationale":  "This is the core, highest-impact deliverable. The judge\u0027s modify verdict resolves the ATOM_003/ATOM_007 conflict: covering plan-refinement DISCUSS via an input free of literal обсуди/discuss/architecture markers keeps the Standard assertion green against today\u0027s router while still verifying that plan refinement without a high-stakes marker stays Standard.",
+                          "alternatives_considered":  [
+                                                          "Cover the Standard pole with a literal обсуди/discuss input (would be red today)",
+                                                          "Drop plan-refinement DISCUSS coverage from this change entirely",
+                                                          "Two-pole split only (Standard vs escalated)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Three distinct Assert-True cases (Standard, High-Stakes, Deep) present; the Standard fixture contains no literal обсуди/discuss/architecture markers; all three pass against the current router."
+                      },
+                      {
+                          "decision":  "Keep all new fixture text ASCII and exclude high-risk domain keywords from the Standard case (ATOM_004).",
+                          "rationale":  "Non-ASCII fixtures are a real PowerShell encoding/parse failure mode in this repo, and high-risk keywords in the Standard input would cause accidental escalation by the router. Encoding hygiene and keyword hygiene are complementary to the ATOM_005 fixture choice.",
+                          "alternatives_considered":  [
+                                                          "Use Cyrillic/non-ASCII fixture text",
+                                                          "Reuse an existing high-stakes-flavored string for the Standard case"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Review of the new fixture strings confirms ASCII-only encoding and absence of high-risk keywords in the Standard case; ParseFile succeeds."
+                      },
+                      {
+                          "decision":  "Reuse the existing Assert-True / $script:pass / $script:total / exit 1 harness and the existing ParseFile + smoke run as the test-of-the-test (ATOM_006 + ATOM_009 + ATOM_010).",
+                          "rationale":  "Maximal convention adherence with minimal new surface: the file\u0027s own exit code becomes the pass/fail signal, and ParseFile (syntactic soundness) plus smoke (runnable behavior) catch parse-level regressions the assertion alone would miss.",
+                          "alternatives_considered":  [
+                                                          "Introduce a new assertion helper or test framework",
+                                                          "Custom pass/fail accounting separate from $script:pass/$script:total",
+                                                          "Skip ParseFile or skip smoke"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "New function increments $script:pass/$script:total and routes failures through Assert-True/exit 1; ParseFile and smoke both run and the file exits 0 on success."
+                      },
+                      {
+                          "decision":  "Make the assertions fail-loud: a mismatched routing produces a hard test failure with a clear, specific message (ATOM_011).",
+                          "rationale":  "Fail-loud is the property that makes the assertion worth adding — a silently passing test gives false assurance. It is the approved direction for this task and is directly verifiable by feeding an intentionally mismatched input.",
+                          "alternatives_considered":  [
+                                                          "Soft/warning-only assertions",
+                                                          "Logging without failing the run"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "An intentionally mismatched routing input causes a hard failure (non-zero exit) with a message naming the expected vs actual pole."
+                      },
+                      {
+                          "decision":  "Defer the literal-обсуди/discuss-stays-Standard hard assertion; do NOT add it red now (ATOM_007, amended trigger).",
+                          "rationale":  "The current router escalates literal discuss, so this assertion asserts future router behavior and would be red today. Per the micro-debate, deferral is accepted to let the three-pole split land cleanly, with the trigger re-pegged to the router change that makes literal discuss route to Standard — correcting ATOM_007\u0027s penalty, which named ATOM_004 (mere fixture hygiene) as the unblocking change.",
+                          "alternatives_considered":  [
+                                                          "Add the literal-discuss assertion red now (ATOM_003 unmodified)",
+                                                          "Permanently omit literal-discuss coverage with no follow-up",
+                                                          "Gate the deferral on ATOM_004 landing (incorrect trigger)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "No hard assertion for literal обсуди/discuss routing to Standard exists in this change; a follow-up task is filed and references the router change as its precondition."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Add the literal-keyword (обсуди/discuss) stays-Standard hard assertion in this change.",
+                         "why":  "The current router escalates literal discuss, so the assertion would be red now; it encodes a future router state, not present behavior. Deferred per ATOM_007 and both micro-debate rounds, with a follow-up task gated on the router change."
+                     },
+                     {
+                         "decision":  "Exercise depth routing through the full pipeline (Invoke-SynthesisPipeline / Get-SynthesisRouteDecision).",
+                         "why":  "Couples the assertion to unrelated pipeline/route logic, raising the chance the test fails for the wrong reason and breaks on upstream changes; the correct altitude is the depth-decision unit (ATOM_002)."
+                     },
+                     {
+                         "decision":  "Peg the deferral of the literal-discuss assertion to ATOM_004 landing.",
+                         "why":  "ATOM_004 is ASCII/keyword fixture hygiene, not a router change; it cannot make literal discuss route to Standard. The deferral trigger is re-pegged to the actual router behavior change (judge penalty: sequencing_reference_ambiguity)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Confirm the exact function name (Get-SynthesisDepthDecision) and its return contract — the precise label/enum strings for the three poles (Standard / High-Stakes / Deep) — and that it is defined in or dot-sourced by tools/test-decision-synthesis.ps1.",
+                           "Choose a concrete, ASCII, plan-refinement-DISCUSS fixture that the current router reliably classifies as Standard while containing no literal обсуди/discuss/architecture markers.",
+                           "Confirm the existing harness specifics: Assert-True signature, $script:pass/$script:total accounting, and how ParseFile + smoke are invoked, so the new function wires in without duplicating logic.",
+                           "Owner and precondition wording for the deferred literal-discuss-stays-Standard follow-up task (gated on the router change, not ATOM_004)."
+                       ],
+    "implementation_plan":  [
+                                "Read tools/test-decision-synthesis.ps1 to confirm the Assert-True harness, $script:pass/$script:total counters, exit 1 convention, the ParseFile+smoke run, and the exact name/return labels of Get-SynthesisDepthDecision (and its dot-sourced origin).",
+                                "Select an ASCII plan-refinement DISCUSS fixture with no literal обсуди/discuss/architecture markers that the current router routes to Standard; select an explicit high-stakes-marker fixture (High-Stakes) and a broad architecture/design fixture (Deep).",
+                                "Add one new function Test-DepthRoutingAssertion containing a single assertion block with three Assert-True checks (Standard / High-Stakes / Deep), each calling Get-SynthesisDepthDecision directly, ASCII-only, with fail-loud messages naming expected vs actual pole.",
+                                "Wire Test-DepthRoutingAssertion into the existing test run so it contributes to $script:pass/$script:total and the file exits 1 on any failure.",
+                                "Run ParseFile (syntax validation) and the smoke run; confirm the file exits 0 and the three assertions pass green; sanity-check fail-loud by temporarily feeding a mismatched input and confirming a hard, clear failure.",
+                                "Produce the diff for tools/test-decision-synthesis.ps1 and hand to the operator for code review.",
+                                "File a follow-up task for the deferred literal-обсуди/discuss-stays-Standard assertion, with its precondition set to the router change that makes literal discuss route to Standard."
+                            ],
+    "next_step":  "Read tools/test-decision-synthesis.ps1 to confirm the Assert-True/$script:pass/$script:total/exit 1 harness conventions, the ParseFile+smoke run, and the exact name and return labels of Get-SynthesisDepthDecision before writing the assertion block.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision deliberately drops the task\u0027s HEADLINE deliverable. The task title and ATOM_003 spec both require asserting \u0027plan-refinement DISCUSS without explicit high-stakes marker stays Standard\u0027, and the atom\u0027s acceptance is \u0027The test fails on over-eager escalation\u0027. The decision substitutes a keyword-FREE fixture that hits the trivial default-Standard path (decision-depth.ps1:100). Because that fixture contains none of the обсуди/discuss/approach/strategy triggers, the assertion passes regardless of whether the router over-escalates real DISCUSS tasks — it can never \u0027fail on over-eager escalation\u0027.",
+                                  "why":  "success_tests #4 (\u0027correctly asserts depth-routing behavior as per ATOM_003 fail-loud direction\u0027) and the atom\u0027s own acceptance criterion are NOT met. The test provides zero regression coverage for the exact behavior ATOM_003 was created to lock down; it is a hollow test that reads as coverage but tests nothing about the DISCUSS→Standard path."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The TDD/coverage chain is broken. ATOM_004 (the router narrowing) has acceptance \u0027ATOM_003 tests pass\u0027 and depends_on ATOM_003. But the hollowed keyword-free Standard fixture routes to Standard BOTH before and after ATOM_004\u0027s change, so ATOM_004\u0027s behavior change ships with no test that actually exercises it. The real assertion is pushed to an uncreated \u0027follow-up task gated on the router change\u0027 — i.e. a third, non-existent task.",
+                                  "why":  "The router narrowing (the actual behavior the operator cares about) will land unverified. The \u0027fail-loud\u0027 intent of the whole atom wave is defeated: at no point in this sequence does a fail-loud assertion guard the DISCUSS-stays-Standard behavior."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The Standard-fixture constraints are under-specified and can route to the WRONG pole. (a) If the keyword-free fixture is \u003c 40 trimmed chars it routes Simple, not Standard (decision-depth.ps1:95) — a short \u0027Refine the backlog list\u0027 style string fails the assertion. (b) The step-3 keyword set (line 89) is far broader than the decision acknowledges — it includes approach/подход, strategy/страте, redesign, \u0027whether to\u0027, \u0027как лучше\u0027, \u0027следует ли\u0027 — all natural in plan-refinement prose. The decision only warns about обсуди/discuss/architecture, missing both the ≥40-char floor and these extra triggers.",
+                                  "why":  "An implementer following the decision\u0027s stated guidance can easily produce a fixture that routes Simple or Deep, yielding a red smoke run — or, worse, the fixture gets quietly tuned until green, hardening a test that asserts nothing meaningful."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The decision is presented as the FINAL/accepted answer, yet three of its four open_questions are load-bearing and unresolved: the exact return shape, the exact pole casing, and whether a keyword-free input deterministically routes Standard. All three are directly resolvable from decision-depth.ps1 (hashtable with .depth; casing \u0027Standard\u0027/\u0027Deep\u0027/\u0027High-Stakes\u0027; keyword-free ≥40 chars → Standard), but the decision finalized without obtaining them.",
+                                  "why":  "Finalizing routing-equality assertions while the equality contract is still an open question means the \u0027final\u0027 assertions may be wrong on first execution (e.g. comparing the whole hashtable to a string, or wrong casing). The decision asserts low risk on facts it never confirmed."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The mitigation for the deferred assertion — \u0027a follow-up task must be created\u0027 — has no concrete mechanism. The implementation_plan step is merely \u0027record a follow-up task\u0027 with no backlog target, ID, or gating reference, and the decision output is only a code diff.",
+                                  "why":  "If the follow-up is not actually recorded anywhere, the \u0027temporary coverage gap\u0027 becomes permanent and silent. The deferral\u0027s only stated safeguard is unenforceable, so the central behavior may never get its fail-loud assertion."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The decision\u0027s placement risk-mitigation (\u0027mitigated by appending it next to the current depth-routing checks\u0027) rests on a false premise: the target file has NO existing depth-routing checks. Every current assertion runs through Invoke-SynthesisPipeline with an explicit -Depth (lines 170, 189, 213); Get-SynthesisDepthDecision is never called in the test file today.",
+                                  "why":  "Indicates the decision was finalized without confirming the file\u0027s contents (consistent with the unresolved return-contract open question). The new block will be a standalone first-of-its-kind section, not an append to a sibling — minor, but the stated mitigation is vacuous."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Two spec constraints are silently unaddressed: (1) success_test #1 (\u0027exactly one verifiable change\u0027) and #2 (\u0027A new, dedicated test case\u0027, singular) vs. the decision\u0027s three Assert-True cases framed as \u0027one block\u0027; (2) ATOM_003\u0027s declared depends_on [\u0027ATOM_010b\u0027] in refined-atom-list.json, which the decision never mentions even though it accepts ATOM_003 as a starting atom.",
+                                  "why":  "The \u0027one block = one change\u0027 reading is defensible but is an operator-judgment call (success_test #6) the decision pre-empts; and dropping a declared dependency without justification leaves an ordering question open, even if ATOM_010b is plausibly spurious for a test-only atom."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

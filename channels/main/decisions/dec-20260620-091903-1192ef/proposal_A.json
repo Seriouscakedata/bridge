@@ -1,0 +1,55 @@
+{
+    "proposer":  "A",
+    "understanding":  "ATOM_003 is a one-file, test-only contract change in tools/test-decision-synthesis.ps1. It should add fail-loud depth-routing assertions proving that plan-refinement DISCUSS text without an explicit [[HIGH-STAKES]] marker stays Standard, while the explicit marker still routes High-Stakes and broad architecture/design discussion still routes Deep.",
+    "summary":  "Add one dedicated depth-routing assertion block to the existing synthesis test harness, reusing Get-SynthesisDepthDecision and Assert-True. No production code, new helper layer, or additional files should be introduced.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement ATOM_003 as a single dedicated assertion block in tools/test-decision-synthesis.ps1.",
+                               "reason":  "The atom is explicitly test-only and constrained to exactly one file.",
+                               "tradeoff":  "This may produce a red smoke test until the follow-up router implementation atom is applied, but that is the intended fail-loud signal.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Reuse Get-SynthesisDepthDecision directly rather than testing through the full pipeline.",
+                               "reason":  "The behavior under contract is depth classification, and the file already dot-sources lib/decision-depth.ps1.",
+                               "tradeoff":  "This tests the router contract narrowly, not downstream synthesis execution.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Assert all three route cases in one verifiable change: Standard plan-refinement DISCUSS, explicit High-Stakes marker, and broad architecture/design Deep.",
+                               "reason":  "The ATOM_003 spec names these exact split points.",
+                               "tradeoff":  "A single block contains multiple assertions, but it remains one coherent test contract.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Keep the new test text ASCII and avoid high-risk domain keywords in the Standard case.",
+                               "reason":  "This prevents accidental escalation through unrelated high-stakes keyword matching.",
+                               "tradeoff":  "The fixture is synthetic, but it isolates the specific plan-refinement DISCUSS regression.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "The untracked decision artifact in the worktree is unrelated and should not be touched.",
+                        "Fail-loud means the added smoke test is allowed to fail against the current over-eager router until ATOM_004 changes lib/decision-depth.ps1.",
+                        "The existing Assert-True counter is the intended local test mechanism for this file."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The smoke command may fail immediately because current routing treats generic DISCUSS as Deep.",
+                      "severity":  "low",
+                      "mitigation":  "Accept this as the ATOM_003 contract test result; ATOM_004 should make it green."
+                  },
+                  {
+                      "risk":  "The Standard fixture could accidentally include another Deep or High-Stakes keyword.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a narrow ASCII fixture with plan-refinement DISCUSS wording and no architecture, design, security, finance, medical, control-plane, or [[HIGH-STAKES]] marker."
+                  },
+                  {
+                      "risk":  "Adding a helper function could be interpreted as a new layer.",
+                      "severity":  "low",
+                      "mitigation":  "Do not add helpers; call Get-SynthesisDepthDecision inline and reuse Assert-True."
+                  }
+              ],
+    "minimal_version":  "Proposed diff: insert one block after Assert-Artifact and before the existing Standard pipeline run:\n\n# ---------------------------------------------------------------------------------------------------\n# RUN: Depth routing contract (ATOM_003)\n# ---------------------------------------------------------------------------------------------------\n\nWrite-Host \u0027=== Depth routing contract ===\u0027\n$planRefinementDiscuss = Get-SynthesisDepthDecision -Text \u0027plan-refinement DISCUSS atom-list update for self-improve test-only assertions without explicit high stakes marker\u0027\nAssert-True \u0027Depth routing: plan-refinement DISCUSS without explicit high-stakes marker stays Standard\u0027 ([string]$planRefinementDiscuss[\u0027depth\u0027] -eq \u0027Standard\u0027)\n$explicitHighStakes = Get-SynthesisDepthDecision -Text \u0027[[HIGH-STAKES]] plan-refinement DISCUSS atom-list update\u0027\nAssert-True \u0027Depth routing: explicit high-stakes marker remains High-Stakes\u0027 ([string]$explicitHighStakes[\u0027depth\u0027] -eq \u0027High-Stakes\u0027)\n$broadArchitecture = Get-SynthesisDepthDecision -Text \u0027Design the architecture for a synthesis pipeline and discuss tradeoffs between routing strategies\u0027\nAssert-True \u0027Depth routing: broad architecture/design remains Deep\u0027 ([string]$broadArchitecture[\u0027depth\u0027] -eq \u0027Deep\u0027)",
+    "advanced_version":  "No broader implementation is recommended for ATOM_003 because the contract is test-only and one-file. Verification should be: ParseFile on tools/test-decision-synthesis.ps1 using System.Management.Automation.Language.Parser.ParseFile, then smoke with powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1. Expected pre-ATOM_004 critic result: ParseFile passes; smoke fails loudly on the Standard plan-refinement DISCUSS assertion if the router is still over-eager."
+}

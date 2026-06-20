@@ -1,0 +1,57 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to implement a test-only change in tools/test-decision-synthesis.ps1 that adds depth-routing assertions for plan refinement according to ATOM_003\u0027s fail-loud direction. The change must be atomic (one file, one verifiable change, self-tested), reuse-only (no new layers), and include ParseFile and smoke checks. The implementation should ensure that when plan-refinement DISCUSS occurs without an explicit high-stakes marker, it remains classified as Standard, and the depth-routing logic asserts this behavior loudly on failure.",
+    "summary":  "Add a test case to tools/test-decision-synthesis.ps1 that validates depth-routing assertion logic: a plan-refinement DISCUSS without a high-stakes marker must be routed as Standard. The test includes ParseFile validation and a smoke check. The implementation reuses existing test infrastructure and assertion patterns, introducing no new modules or layers.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The change will be confined to adding a single test function within tools/test-decision-synthesis.ps1",
+                               "reason":  "Task constraints require exactly 1 file, 1 verifiable change, and test-only implementation.",
+                               "tradeoff":  "No production code is modified; coverage is limited to the test harness but satisfies the fail-loud assertion requirement.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "The test will use existing depth-routing functions and assertion utilities already present in the file",
+                               "reason":  "The reuse-only constraint prohibits introducing new layers or modules.",
+                               "tradeoff":  "Limited to existing capabilities; if depth-routing functions are absent, the test will validate their absence loudly.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "The test will include both ParseFile validation and a smoke check",
+                               "reason":  "Explicitly required by the task constraints.",
+                               "tradeoff":  "Adds minimal execution time; smoke check ensures basic functional integrity.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "The assertion will be fail-loud: a mismatched routing will cause a hard test failure with a clear message",
+                               "reason":  "ATOM_003 specifies fail-loud direction for depth-routing assertions.",
+                               "tradeoff":  "Hard failures may block CI on routing mismatches, but this is intentional for fail-loud behavior.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The file tools/test-decision-synthesis.ps1 exists and contains reusable depth-routing or decision-classification functions.",
+                        "The refined-atom-list.json file at the specified path is accessible and contains ATOM_003 with fail-loud specification details.",
+                        "Existing test infrastructure in the file supports adding new test cases without structural changes.",
+                        "ParseFile refers to a PowerShell script parsing validation step, not an external tool.",
+                        "The operator will verify the code against the ATOM_003 specification after implementation."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The file may not contain existing depth-routing functions to reuse",
+                      "severity":  "medium",
+                      "mitigation":  "Test will first check for function existence and fail-loud with a clear message if missing; operator can then provide the required foundation."
+                  },
+                  {
+                      "risk":  "ATOM_003 specification in refined-atom-list.json may be ambiguous or missing",
+                      "severity":  "low",
+                      "mitigation":  "Test will document the expected behavior based on the task description; operator review will confirm alignment with the actual spec."
+                  },
+                  {
+                      "risk":  "ParseFile validation may have side effects or dependencies not met in the test environment",
+                      "severity":  "low",
+                      "mitigation":  "Smoke check will isolate ParseFile validation and handle missing dependencies gracefully with informative failures."
+                  }
+              ],
+    "minimal_version":  "Add a single test function Test-DepthRoutingAssertion that calls existing depth-routing logic with a plan-refinement DISCUSS input lacking a high-stakes marker, asserts the result is \u0027Standard\u0027, and includes ParseFile and smoke checks.",
+    "advanced_version":  "Add Test-DepthRoutingAssertion with parameterized test cases covering multiple DISCUSS scenarios (with/without high-stakes markers, edge cases), comprehensive ParseFile validation with schema checking, and a smoke check that verifies the test environment integrity before execution."
+}

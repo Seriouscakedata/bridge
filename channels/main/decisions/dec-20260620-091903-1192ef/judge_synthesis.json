@@ -1,0 +1,199 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Confining ATOM_003 to a single dedicated assertion block is a sound, low-cost scoping decision that keeps the diff reviewable and the test of the test trivial. Mildly overlaps with ATOM_008 (block vs. named function) but the two are reconcilable. Impact is moderate since it is a structural nicety rather than coverage itself.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "ATOM_002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus across A and B. Calling Get-SynthesisDepthDecision directly isolates the depth-routing unit, removing pipeline/route coupling so the assertion fails for the right reason and stays robust to upstream changes. Concrete, low-risk, and the correct testing altitude for a depth-split assertion.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "ATOM_003",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "conflict_with_ATOM_007",
+                                            "value":  0.05,
+                                            "why":  "Claims plan-refinement DISCUSS coverage while ATOM_007 defers the literal обсуди/discuss-stays-Standard assertion; ambiguous as written."
+                                        }
+                                    ],
+                      "reason":  "The core deliverable and highest-impact atom: a three-pole Standard/High-Stakes/Deep assertion in one change. Accept the intent but modify the wording. As phrased, \u0027covering plan-refinement DISCUSS\u0027 for the Standard pole collides with ATOM_005/ATOM_007: the current router escalates literal discuss, so a literal-keyword Standard case would be red. Rephrase to cover plan-refinement DISCUSS via a non-literal-keyword input (per ATOM_005), explicitly deferring literal-keyword matching. This resolves the major review finding and keeps the change green.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "ATOM_004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Keeping fixture text ASCII avoids PowerShell encoding/parse fragility (a real failure mode in this repo), and excluding high-risk keywords from the Standard case prevents accidental escalation by the router. Overlaps with ATOM_005 but is complementary (encoding hygiene + keyword hygiene). Sound and cheap.",
+                      "total":  0.8375
+                  },
+                  {
+                      "atom_id":  "ATOM_005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Highest-scoring atom. The key correctness insight: select a Standard input free of literal обсуди/discuss/architecture markers so the assertion is green against the router as it exists today. This is exactly what reconciles ATOM_003 with ATOM_007 and prevents a self-inflicted red test. Specific, low-risk, and directly enabling.",
+                      "total":  0.895
+                  },
+                  {
+                      "atom_id":  "ATOM_006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Reusing the established Assert-True / $script:pass / $script:total / exit 1 harness plus the existing ParseFile+smoke run keeps the addition consistent with the suite and lets the file\u0027s own exit code serve as the test of the test. Minimal new surface, maximal convention adherence.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "ATOM_007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "sequencing_reference_ambiguity",
+                                            "value":  0.03,
+                                            "why":  "Pegs the deferral to \u0027when ATOM_004 lands\u0027, but ATOM_004 is ASCII/keyword hygiene, not a router change that would make literal discuss route to Standard."
+                                        }
+                                    ],
+                      "reason":  "The sequencing call is correct: do not add the literal-discuss-stays-Standard hard assertion red now; it asserts future router behavior. This aligns with ATOM_005 and is the right half of the ATOM_003 conflict (resolved by amending ATOM_003, not by rejecting this). Minor penalty: the dependency it names (ATOM_004) is not the change that actually unblocks the deferred assertion, so the trigger condition is fuzzy.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "ATOM_008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Confining the change to a single new Test-DepthRoutingAssertion function is a clean, well-named scoping decision. Mild tension with ATOM_001 (inline block vs. function) but compatible — the function can wrap the assertion block. Feasible and contained; impact is structural rather than coverage-bearing.",
+                      "total":  0.8225
+                  },
+                  {
+                      "atom_id":  "ATOM_009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Restricting the test to existing depth-routing functions and assertion utilities already in (or dot-sourced by) the file reinforces ATOM_002 and ATOM_006: no new dependencies, no broadened surface. Correct and low-risk; specificity slightly soft on which exact functions/utilities are intended.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "ATOM_010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Including both ParseFile validation and a smoke check gives the new test a self-check (syntactic soundness + runnable behavior), consistent with ATOM_006\u0027s \u0027test of the test\u0027. Catches parse-level regressions the assertion alone would miss. Cheap and well-targeted.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "ATOM_011",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Fail-loud behavior — a mismatched routing producing a hard failure with a clear message — is the property that makes the assertion worth adding; a silently-passing test gives false assurance. Strong risk reduction and impact, and directly verifiable via an intentionally mismatched input. Pairs naturally with the Assert-True/exit 1 harness of ATOM_006.",
+                      "total":  0.8875
+                  }
+              ]
+}

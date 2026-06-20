@@ -1,0 +1,68 @@
+{
+    "proposer":  "B",
+    "understanding":  "ATOM_003 is a test-only atom on tools/test-decision-synthesis.ps1. It must add depth-routing assertions that pin a \u0027route split\u0027: a bare plan-refinement/DISCUSS task with no explicit high-stakes marker stays Standard; an explicit [[HIGH-STAKES]] marker yields High-Stakes; broad architecture/design yields Deep. The fail-loud intent is that escalation must be driven by an explicit marker or genuine architecture wording, never by mere refine/discuss phrasing. Critically, the operator_review_gate orders ATOM_003 to be GREEN before ATOM_004 (the lib/decision-depth.ps1 narrowing) may start, and the file ends with `exit 1` when pass!=total, so every assertion I add must pass against the CURRENT router. The classifier Get-SynthesisDepthDecision is pure/deterministic and already dot-sourced by the test (line 13), so it can be asserted directly with no LLM mock.",
+    "summary":  "Add exactly one new, clearly-labeled assertion block near the end of tools/test-decision-synthesis.ps1 that calls Get-SynthesisDepthDecision directly and asserts three poles via the existing Assert-True harness: (1) a procedural plan-refinement task with no marker and no architecture wording -\u003e \u0027Standard\u0027; (2) the same text prefixed with [[HIGH-STAKES]] -\u003e \u0027High-Stakes\u0027; (3) a broad design/redesign-pipeline task -\u003e \u0027Deep\u0027. All three are green against the current lib/decision-depth.ps1, so the file still exits 0 (smoke/ParseFile pass) and ATOM_003 is green before ATOM_004, while the split fails loudly if a future change escalates a bare refinement above Standard, drops [[HIGH-STAKES]], or stops routing architecture Deep.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Assert against the pure classifier Get-SynthesisDepthDecision (already dot-sourced), not the full Invoke-SynthesisPipeline or Get-SynthesisRouteDecision.",
+                               "reason":  "It is the deterministic depth router the atom is about; it needs no LLM mocks, no config (synthesisMode.enabled), and no scratch artifacts, giving the most atomic, robust, reuse-only test of routing depth.",
+                               "tradeoff":  "Does not exercise the end-to-end route() gate (route=true/false), so the \u0027Standard stays on normal path\u0027 wiring is only proven indirectly.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Pin a three-pole split (Standard / High-Stakes / Deep) rather than a single Standard assertion.",
+                               "reason":  "The fail-loud contract is contrastive: escalation must come from the explicit [[HIGH-STAKES]] marker or genuine architecture wording, not from refine/discuss phrasing. Three poles encode exactly that and catch both over-escalation and accidental collapse-to-Standard.",
+                               "tradeoff":  "Three assertions instead of one is slightly more surface, but all reuse Assert-True and add no new layer.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Choose the \u0027stays Standard\u0027 input WITHOUT literal обсуди/discuss/architecture keywords so it is green against the current router.",
+                               "reason":  "The operator gate requires ATOM_003 green before ATOM_004; the current router escalates literal обсуди/discuss to Deep (that is precisely what ATOM_004 narrows). A procedural refinement (\u003e160 chars, no trigger keywords) deterministically lands Standard today and after ATOM_004.",
+                               "tradeoff":  "ATOM_003 therefore does not directly assert ATOM_004\u0027s literal-discuss narrowing; it guards the poles and against keyword creep, deferring the narrowed-keyword assertion (a coverage gap I flag below).",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Reuse the existing Assert-True / $script:pass / $script:total / `exit 1` harness and the existing ParseFile+smoke run as the test of the test.",
+                               "reason":  "reuse-only / no-new-layers: the file\u0027s terminal `if ($script:pass -ne $script:total){ exit 1 }` already IS the smoke/exit gate, and keeping the block syntactically valid satisfies ParseFile. No new helper, no new file.",
+                               "tradeoff":  "Counting new assertions into pass/total means any mistaken expectation immediately reds the whole suite — acceptable and intended (fail-loud).",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Defer the literal-обсуди/discuss-stays-Standard hard assertion to when ATOM_004 lands, rather than adding it red now.",
+                               "reason":  "That input routes Deep under the current router; asserting Standard now would red the suite and violate the green-before-ATOM_004 gate. ATOM_004\u0027s own acceptance (\u0027ATOM_003 tests pass; explicit high stays high; architecture stays Deep\u0027) is exactly the pole-stability ATOM_003 already guards.",
+                               "tradeoff":  "ATOM_004\u0027s core behavioral flip is not auto-asserted by ATOM_003; closing that needs either ATOM_004 to add the assertion (but it is constrained to lib/decision-depth.ps1) or a follow-up test atom — surfaced as a risk.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "ATOM_003 is committed and must pass (exit 0) against the CURRENT lib/decision-depth.ps1, before ATOM_004 starts, per operator_review_gate.do_not_start.",
+                        "Get-SynthesisDepthDecision is the canonical depth classifier, is pure/deterministic (no LLM), and is already available via the line-13 dot-source of lib/decision-depth.ps1 in the test.",
+                        "\u0027ParseFile + smoke\u0027 means the file parses with the PowerShell parser and the smoke run prints SYNTH_TEST PASS=N/N and exits 0.",
+                        "The depth router operates on raw task text and has no special [[DISCUSS]] handling; a procedural plan-refinement with no обсуди/discuss/architecture keyword currently routes Standard, while literal обсуди/discuss currently routes Deep (the over-eager escalation ATOM_004 fixes).",
+                        "The test is expected to run without synthesisMode.enabled, so asserting Get-SynthesisRouteDecision.route is config-dependent and is left out of the minimal version."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "ATOM_003 does not directly assert ATOM_004\u0027s literal-обсуди/discuss-stays-Standard narrowing, leaving that behavior unguarded by an automated assertion at green time.",
+                      "severity":  "medium",
+                      "mitigation":  "Anchor the two stable poles ([[HIGH-STAKES]]-\u003eHigh-Stakes, architecture-\u003eDeep) so ATOM_004 cannot break them silently; add the narrowed-keyword assertion in the change that lands ATOM_004 or as a follow-up test atom; rely on the named operator review gate for the interim."
+                  },
+                  {
+                      "risk":  "A chosen \u0027Standard\u0027 input could unintentionally trip a trigger keyword (e.g. an architecture/strategy/high-stakes-domain term) and red the suite, breaking the green-before-ATOM_004 gate.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a keyword-free procedural phrasing \u003e160 chars (avoids isSmallTask and short-Simple paths); traced through all five classifier branches; verify by running ParseFile + the smoke test before commit."
+                  },
+                  {
+                      "risk":  "Asserting rationale strings or exact wording would make the test brittle to benign router-message edits.",
+                      "severity":  "low",
+                      "mitigation":  "Assert only the depth bucket literals (\u0027Standard\u0027|\u0027High-Stakes\u0027|\u0027Deep\u0027) returned by Get-SynthesisDepthDecision, not rationale text."
+                  },
+                  {
+                      "risk":  "Hashtable access or case sensitivity on the returned depth could cause a false failure.",
+                      "severity":  "low",
+                      "mitigation":  "Read $decision.depth (PS hashtable member access works) and compare against the exact case-correct literals the classifier returns; no ToLower on the comparison."
+                  }
+              ],
+    "minimal_version":  "One labeled block (e.g. \u0027=== Depth-routing route split (ATOM_003) ===\u0027) inserted after Assert-True is defined and before the cleanup/verdict. It calls Get-SynthesisDepthDecision three times and uses the existing Assert-True: (1) Get-SynthesisDepthDecision -Text \u0027\u003cprocedural plan-refinement, no marker, no architecture wording, \u003e160 chars\u003e\u0027 -\u003e depth -eq \u0027Standard\u0027; (2) same Text prefixed \u0027[[HIGH-STAKES]] \u0027 -\u003e depth -eq \u0027High-Stakes\u0027; (3) Get-SynthesisDepthDecision -Text \u0027Design a new caching architecture and redesign the synthesis pipeline structure for the read path\u0027 -\u003e depth -eq \u0027Deep\u0027. No new functions, files, or config. All three pass on the current router (green before ATOM_004); the terminal exit-code gate provides the smoke check; the file stays parseable for ParseFile.",
+    "advanced_version":  "Add, still reuse-only: (a) a Get-SynthesisRouteDecision assertion that the Standard pole yields route=$false (\u0027standard task stays on normal path\u0027) to prove Standard is not pulled into synthesis (guarded so it only runs/asserts when Test-SynthesisModeEnabled is true, else skipped, to avoid config coupling); and (b) a literal-обсуди/discuss plan-refinement case captured NOW as a non-failing diagnostic (Write-Host the observed depth, not counted in pass/total) documenting that it currently routes Deep, to be promoted to a hard \u0027Standard\u0027 assertion in the same change that lands ATOM_004. Tradeoff: the diagnostic is a weaker guard until promoted, and promotion couples this test\u0027s green state to ATOM_004 — so it is kept out of the minimal version to preserve the strict green-before-ATOM_004 ordering and the one-verifiable-change atomicity rule."
+}

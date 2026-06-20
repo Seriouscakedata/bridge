@@ -1,0 +1,30 @@
+{
+    "task":  "[Автозадача из бэклога] [operator][self-improve реализация ATOM_003] Test-only: depth-routing assertions — plan-refinement DISCUSS без явного high-stakes маркера остаётся Standard. ФАЙЛ: tools/test-decision-synthesis.ps1. Полная спека атома: channels/main/decisions/dec-20260620-071425-784f10/refined-atom-list.json (retained_atoms, atom_id=ATOM_003). reuse-only, без новых слоёв (твой план). АТОМАРНО: ровно 1 файл / 1 проверяемая правка / свой тест, ParseFile+smoke. verify+critic. Это одобренная реализация ТВОЕГО же доточенного плана само-выбора (направление fail-loud); мост ведёт, оператор проверит по коду.",
+    "goal":  "Implement and test a specific self-improvement logic (ATOM_003) related to depth-routing assertions for plan refinement, focusing on a \u0027fail-loud\u0027 approach, within a \u0027test-only\u0027 context.",
+    "constraints":  [
+                        "Task is \u0027Test-only\u0027.",
+                        "Task is \u0027Standard\u0027, without high-stakes markers.",
+                        "All work must be confined to the file: `tools/test-decision-synthesis.ps1`.",
+                        "Implementation must be \u0027reuse-only\u0027, introducing no new layers.",
+                        "The change must be \u0027atomic\u0027: exactly 1 file, 1 verifiable change, and include its own test.",
+                        "The test must include \u0027ParseFile\u0027 and \u0027smoke\u0027 checks."
+                    ],
+    "known_context":  [
+                          "This is an automated task from the backlog.",
+                          "An operator will be involved for code verification.",
+                          "The full specification for ATOM_003 is available at `channels/main/decisions/dec-20260620-071425-784f10/refined-atom-list.json` (specifically `retained_atoms`, `atom_id=ATOM_003`).",
+                          "This is an approved implementation of a previously refined self-selection plan, specifically in the \u0027fail-loud\u0027 direction."
+                      ],
+    "output_format":  "Proposed code changes (diff) for `tools/test-decision-synthesis.ps1` and verification of test results.",
+    "task_type":  "architecture",
+    "risk":  "low",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "The modified file `tools/test-decision-synthesis.ps1` contains exactly one verifiable change.",
+                          "A new, dedicated test case is added within `tools/test-decision-synthesis.ps1` that specifically validates the implemented change.",
+                          "The new test case passes, including `ParseFile` and `smoke` checks.",
+                          "The implemented logic correctly asserts depth-routing behavior as per ATOM_003\u0027s \u0027fail-loud\u0027 direction.",
+                          "The implementation adheres to the \u0027reuse-only\u0027 constraint, introducing no new layers.",
+                          "The operator\u0027s code review confirms the correctness and adherence to all specified constraints."
+                      ]
+}

@@ -1,0 +1,127 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001",
+                      "statement":  "Implement ATOM_003 as a single dedicated assertion block in tools/test-decision-synthesis.ps1.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Implementation Scope",
+                      "test":  "Verify the addition of a single assertion block in tools/test-decision-synthesis.ps1.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_002",
+                      "statement":  "Reuse Get-SynthesisDepthDecision directly rather than testing through the full pipeline (avoiding full pipeline/Invoke-SynthesisPipeline/Get-SynthesisRouteDecision).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Testing Strategy",
+                      "test":  "Verify calls to `Get-SynthesisDepthDecision` directly in the test block, avoiding `Invoke-SynthesisPipeline` or `Get-SynthesisRouteDecision`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_003",
+                      "statement":  "Assert a three-pole split (Standard / High-Stakes / Deep) in one verifiable change, covering plan-refinement DISCUSS, explicit High-Stakes marker, and broad architecture/design.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Test Coverage",
+                      "test":  "Verify three distinct assertion cases (Standard, High-Stakes, Deep) are present in the test block.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_004",
+                      "statement":  "Keep the new test text ASCII and avoid high-risk domain keywords in the Standard case.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Test Fixture Design",
+                      "test":  "Review test input strings for ASCII compliance and absence of high-risk keywords in the Standard case.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_005",
+                      "statement":  "Choose the \u0027stays Standard\u0027 input WITHOUT literal обсуди/discuss/architecture keywords so it is green against the current router.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Test Fixture Design",
+                      "test":  "Review the \u0027Standard\u0027 test input to ensure it avoids literal \u0027обсуди/discuss/architecture\u0027 keywords and is designed to pass against the current router.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_006",
+                      "statement":  "Reuse the existing Assert-True / $script:pass / $script:total / `exit 1` harness and the existing ParseFile+smoke run as the test of the test.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Testing Infrastructure",
+                      "test":  "Verify the test block integrates with the existing `Assert-True` harness and contributes to `$script:pass`/`$script:total` counts, ensuring the file exits 0 on success.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_007",
+                      "statement":  "Defer the literal-обсуди/discuss-stays-Standard hard assertion to when ATOM_004 lands, rather than adding it red now.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Test Scope / Sequencing",
+                      "test":  "Verify that no hard assertion for \u0027literal-обсуди/discuss\u0027 routing to Standard is present in ATOM_003\u0027s changes.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_008",
+                      "statement":  "The change will be confined to adding a single test function within tools/test-decision-synthesis.ps1.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Implementation Scope",
+                      "test":  "Verify the addition of a single new test function `Test-DepthRoutingAssertion` in `tools/test-decision-synthesis.ps1`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_009",
+                      "statement":  "The test will use existing depth-routing functions and assertion utilities already present in the file.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Design Constraint",
+                      "test":  "Verify that the test implementation exclusively calls existing functions and utilities within `tools/test-decision-synthesis.ps1` or its dot-sourced dependencies.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_010",
+                      "statement":  "The test will include both ParseFile validation and a smoke check.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Testing Requirement",
+                      "test":  "Verify that the test execution includes a ParseFile validation step and a smoke check.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_011",
+                      "statement":  "The assertion will be fail-loud: a mismatched routing will cause a hard test failure with a clear message.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Test Behavior",
+                      "test":  "Execute the test with an intentionally mismatched routing input and verify it results in a hard test failure with a clear message.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

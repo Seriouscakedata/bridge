@@ -1,0 +1,23 @@
+{
+    "skipped":  false,
+    "topics":  [
+                   {
+                       "atom_ids":  [
+                                        "ATOM_003",
+                                        "ATOM_007"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "ATOM_003: Asserting the \u0027plan-refinement DISCUSS\u0027 case is crucial for defining the \u0027Standard\u0027 pole\u0027s boundaries and ensuring comprehensive initial test coverage for the core routing logic of the three-pole split.",
+                                          "against":  "ATOM_007: Adding an assertion that is expected to fail (\u0027red now\u0027) would block the immediate goal of establishing the foundational three-pole split test, creating unnecessary friction before the routing logic is fully aligned.",
+                                          "resolution":  "Prioritize establishing the three-pole split test with passing assertions, deferring specific cases that would currently fail."
+                                      },
+                                      {
+                                          "for":  "ATOM_007: Deferring the \u0027literal-обсуди/discuss-stays-Standard\u0027 assertion allows ATOM_003 to land cleanly, providing immediate value by verifying the basic three-pole distinction without being held up by a specific, potentially future-state routing expectation.",
+                                          "against":  "ATOM_003: Omitting the \u0027discuss\u0027 assertion, even temporarily, leaves a critical gap in the \u0027Standard\u0027 pole\u0027s test coverage, risking a common and important keyword being misrouted without immediate detection in the initial implementation.",
+                                          "resolution":  "Deferral is acceptable for initial progress, but a follow-up task must be created to implement the \u0027discuss\u0027 assertion once the routing logic supports it."
+                                      }
+                                  ]
+                   }
+               ]
+}
