@@ -636,10 +636,27 @@ if ($NoLLM -or -not $RunLLM) {
       $status = 'error'
       $errors.Add('Invoke-LLM unavailable')
     } else {
-      $reply = Invoke-LLM -Purpose ('audit-' + $Role) -Model $Model -Prompt $promptContext.prompt -TimeoutSec $TimeoutSec -Temperature 0.2
+      $maxRetries = 3
+      $reply = $null
+      for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        $reply = Invoke-LLM -Purpose ('audit-' + $Role) -Model $Model -Prompt $promptContext.prompt -TimeoutSec $TimeoutSec -Temperature 0.2
+        if (-not [string]::IsNullOrWhiteSpace($reply)) { break }
+        if ($attempt -lt $maxRetries) {
+          Write-Host "[deep-audit-agent] $Role attempt $attempt/$maxRetries returned empty, retrying..."
+          Start-Sleep -Seconds 5
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($reply)) {
+        $fallbackModel =
+          if ($Model -and $Model.StartsWith('gemini', [System.StringComparison]::OrdinalIgnoreCase)) { 'deepseek-v4-flash' }
+          elseif ($Model -and $Model.StartsWith('deepseek', [System.StringComparison]::OrdinalIgnoreCase)) { 'gemini-2.5-flash-lite' }
+          else { 'deepseek-v4-flash' }
+        Write-Host "[deep-audit-agent] $Role all retries empty, trying fallback model $fallbackModel"
+        $reply = Invoke-LLM -Purpose ('audit-' + $Role) -Model $fallbackModel -Prompt $promptContext.prompt -TimeoutSec $TimeoutSec -Temperature 0.2
+      }
       if ([string]::IsNullOrWhiteSpace($reply)) {
         $status = 'error'
-        $errors.Add("empty_llm_reply (prompt_chars=$($promptContext.prompt_chars))")
+        $errors.Add('empty_llm_reply_all_retries')
       } else {
         $parsed = Extract-AgentJson -Text $reply
         if ($parsed -is [Array]) { $findings = @($parsed) }
