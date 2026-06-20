@@ -162,6 +162,28 @@ try {
   Assert-True ([string]$newDup.duplicate_of -eq $idNewRep) 'new-status duplicate_of should point to representative'
   Assert-True (-not [string]::IsNullOrWhiteSpace([string]$newDup.duplicate_key)) 'new-status rejected duplicate_key must be stamped'
 
+  # ATOM_006: rootless typed items deduplicate by finding type alone.
+  # workpack_root_cause_key='module:general' makes Get-BacklogDuplicateRootKey return ''.
+  $idRootlessRep = [guid]::NewGuid().ToString('N')
+  $idRootlessDup = [guid]::NewGuid().ToString('N')
+  $idRootlessOther = [guid]::NewGuid().ToString('N')
+  Save-Backlog @(
+    (New-TestBacklogItem -Id $idRootlessRep -Text '[audit/perf] timeout-detected -- Rootless finding, first occurrence.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'warning' -RootKey 'module:general'),
+    (New-TestBacklogItem -Id $idRootlessDup -Text '[audit/perf] timeout_detected -- Rootless duplicate, same type normalized.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'new' -Severity 'info' -RootKey 'module:general'),
+    (New-TestBacklogItem -Id $idRootlessOther -Text '[audit/perf] memory-leak -- Different rootless type must survive.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'approved' -Severity 'warning' -RootKey 'module:general')
+  )
+  $runRootless = Invoke-BacklogDuplicateCompactor -Reason @('test-rootless')
+  Assert-True ([bool]$runRootless.ran) 'rootless group: compactor should run'
+  Assert-True ([int]$runRootless.duplicates_rejected -ge 1) 'rootless group: at least 1 rejected'
+  $rootlessRep = Get-TestItemById -Id $idRootlessRep
+  $rootlessDup = Get-TestItemById -Id $idRootlessDup
+  $rootlessOther = Get-TestItemById -Id $idRootlessOther
+  Assert-True ([string]$rootlessRep.status -eq 'approved') 'rootless representative should remain approved'
+  Assert-True ([string]$rootlessDup.status -eq 'rejected') 'rootless duplicate should be rejected'
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$rootlessDup.duplicate_key)) 'rootless rejected duplicate_key must be stamped'
+  Assert-True (([string]$rootlessDup.duplicate_key) -like 'finding|*') 'rootless duplicate_key must use finding| prefix'
+  Assert-True ([string]$rootlessOther.status -eq 'approved') 'rootless different-type item should survive'
+
   Write-Host 'OK backlog duplicate compactor: root-cause audit duplicates rejected, unrelated tasks preserved'
 } finally {
   try {

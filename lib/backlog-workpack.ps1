@@ -309,11 +309,11 @@ function Get-BacklogDuplicateRootKey {
 function Get-BacklogDuplicateCompactorKey {
   param($Item)
   $root = Get-BacklogDuplicateRootKey -Item $Item
-  if ([string]::IsNullOrWhiteSpace($root)) { return $null }
   $kind = Get-BacklogDuplicateFindingType -Item $Item
   if ([string]::IsNullOrWhiteSpace($kind)) { return $null }
+  $keyStr = if ([string]::IsNullOrWhiteSpace($root)) { 'finding|' + $kind } else { $root + '|' + $kind }
   return [pscustomobject]@{
-    key = ($root + '|' + $kind)
+    key = $keyStr
     root = $root
     finding_type = $kind
   }
