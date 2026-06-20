@@ -148,6 +148,33 @@ function Get-CommitFamineTrigger {
   return $null
 }
 
+function New-WaitStateSnapshot {
+  param([string]$TaskMode = 'normal')
+
+  $snapshot = New-CommitFamineSnapshot -LastCommitMsg 'fix: recent progress' -LastSeqAgeMin 6
+  $channel = $snapshot.channels.main
+  $channel.hb_age_sec = 10
+  $channel.task_mode = $TaskMode
+  $channel.task_turn = 0
+  $channel.status_text = ''
+  $channel.active_jobs_count = 0
+  $channel.active_agent = ''
+  $channel.working_tree_lines = 0
+  $channel.last_commit_age_min = 1
+  $channel.task_age_min = 6
+  return $snapshot
+}
+
+function Has-WaitStateStuckTrigger {
+  param($Snapshot)
+
+  $triggers = @(Test-AuditorTriggers -Snapshot $Snapshot)
+  foreach ($trigger in $triggers) {
+    if ([string]$trigger.name -eq 'wait_state_stuck') { return $true }
+  }
+  return $false
+}
+
 try {
   New-Item -ItemType Directory -Path (Join-Path $script:TestBridgeRoot 'control') -Force | Out-Null
 
@@ -217,6 +244,10 @@ try {
   $missingSeqSnapshot = New-CommitFamineSnapshot -LastCommitMsg 'fix: ordinary change'
   $missingSeqSnapshot.channels.main.PSObject.Properties.Remove('last_seq_age_min')
   Assert-True (Has-CommitFamineTrigger -Snapshot $missingSeqSnapshot) 'Scenario 13: missing last_seq_age_min is treated as stale'
+
+  Write-Host '--- Scenario 14: synthesis_suppresses_wait_state_stuck ---'
+  Assert-True (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'normal')) 'Scenario 14: normal idle-looking wait state triggers wait_state_stuck'
+  Assert-True (-not (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'synthesis'))) 'Scenario 14: synthesis task_mode suppresses wait_state_stuck'
 } finally {
   try {
     if (Test-Path -LiteralPath $script:TestBridgeRoot) {
