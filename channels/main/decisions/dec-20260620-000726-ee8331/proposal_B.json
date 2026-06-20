@@ -1,0 +1,79 @@
+{
+    "proposer":  "B",
+    "understanding":  "Deep-audit (Start-AuditIfDue in driver/10-maintenance.ps1) has not launched since ~2026-06-10: audit.last frozen at 2026-06-06, audit.launches.jsonl frozen at 2026-06-10 (1411 \u0027denied max_attempts\u0027 vs 32 \u0027started\u0027, and ZERO run_id fields — the entire ledger predates the Ch1 launch-ledger/run_id schema). Live inspection shows the true current blocker is config.json: audit.enabled=false, so Start-AuditIfDue returns silently at 10-maintenance.ps1:800 — long BEFORE Request-AuditLaunchAdmission, the reconcile, or any ledger write is ever reached. settings.json does NOT override it: it carries only a flat \u0027enabled\u0027 (overlays cfg.enabled root, per the documented overlay rule) and \u0027auditor.*\u0027 dotted keys (the lightweight auditor, a different subsystem) — there is no \u0027audit.enabled\u0027 dotted key, so the effective Get-BridgeConfig().audit.enabled stays false. The empty catch at 81-loop-idle-claim.ps1:1777 only swallows EXCEPTIONS, but this is a clean early-RETURN, so adding logging only there would still not reveal the cause. The task\u0027s suspected regression (Ch1 stale-start reconcile throwing on old launches.jsonl lines) is NOT supported by the code: Invoke-AuditLaunchStaleStartReconciliation and Get-AuditLaunchAttemptCount both skip non-\u0027started\u0027, run_id-less, out-of-window, and unparseable lines via try/catch+continue — they are already tolerant. A deeper latent issue exists (June 7-10 runners logged \u0027audit start\u0027 but audit.last never advanced past June 6 → runners START but never COMPLETE → max_attempts denial spam), which is exactly what Ch1\u0027s started-\u003eterminal lifecycle + stale-start reconciliation target going forward.",
+    "summary":  "Lead with observability, then unblock at the true root. (1) Make the silent failure VISIBLE for BOTH failure modes: add throttled logging to the 1777 catch (exception path) AND make Start-AuditIfDue surface a structured skip-reason for each early-return gate (return path) — because the actual cause is a silent return, not a throw. (2) Fix the real root: re-enable audit in config.json (the source of truth) and VERIFY the effective merged Get-BridgeConfig().audit.enabled=true; confirm no settings.json/rollback re-disables it. (3) Harden defensively as mandated: keep the already-tolerant reconcile/count, add explicit corrupt-line counters + a one-time warning, and add a regression fixture built from the ACTUAL June-10 ledger (run_id-less \u0027denied\u0027 lines) proving admission/reconcile never throw and correctly write a fresh \u0027started\u0027 when due. (4) Prove in real bridge-context (secrets-bootstrap, forced in-window+due) that a launch yields a started-\u003eterminal ledger record + audit.last update, OR a clear terminal (failed/partial with reason). Gate on ParseFile + smoke + targeted test; route through control-plane verify+critic. CRITICAL: any new logging MUST be throttled — the idle loop hammers Start-AuditIfDue many times/min (observed ~15 denied entries in 90s) and would flood logs otherwise.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The true current blocker is config.json: audit.enabled=false (Start-AuditIfDue returns at 10-maintenance.ps1:800), NOT a reconcile/ledger regression. Re-enable audit in config.json and assert the effective Get-BridgeConfig().audit.enabled=true.",
+                               "reason":  "All symptoms (no launches, ledger/audit.log silent since June 10, audit.last frozen) are fully explained by a silent early-return at the enabled gate, which fires before any Ch1 code. settings.json\u0027s flat \u0027enabled\u0027 overlays cfg.enabled (root) only and its \u0027auditor.*\u0027 keys are a different subsystem, so the deep-audit gate is genuinely false. No code writes it false (grep-verified), so it is a manual state, safe and intended to re-enable per the task premise.",
+                               "tradeoff":  "Re-enabling can resurface the deeper \u0027runner starts but never completes\u0027 problem (denial spam); acceptable because acceptance explicitly allows a clear terminal (failed/partial+reason) as success, and Ch1 stale-start reconciliation now abandons dead \u0027started\u0027 runs.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Observability must cover the RETURN path, not just the throw path: have Start-AuditIfDue return a structured result {launched, reason, gate, run_id}, and replace the empty catch at 81-loop-idle-claim.ps1:1777 with explicit logging of BOTH the exception and the returned skip-reason.",
+                               "reason":  "The mandated \u0027catch logging first\u0027 only captures exceptions, but the observed failure is a silent return (enabled=false). Without per-gate reason emission, the silent skip stays invisible exactly as it has since June 10. A structured return makes every skip (disabled/not-in-window/throttled/busy/admission-denied) attributable.",
+                               "tradeoff":  "Changing the function\u0027s return contract touches its only caller (1777); kept back-compatible by making the return value optional/ignorable. Slightly more code than a one-line catch edit.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "All new diagnostics MUST be throttled via a marker file (once per reason per window), not logged on every call.",
+                               "reason":  "The idle loop invokes Start-AuditIfDue many times per minute — the live ledger shows ~15 \u0027denied\u0027 entries within 90 seconds on June 10. Unthrottled per-call logging to audit.log/auditor.log would flood the very logs we are trying to make legible and add OneDrive write churn.",
+                               "tradeoff":  "Throttling can briefly hide a state change until the window elapses; mitigated by always logging on a reason TRANSITION (e.g., disabled-\u003eenabled, or first occurrence per window).",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Do NOT rewrite the reconcile/count logic; it is already tolerant of old/corrupt lines. Add explicit corrupt-line counters + a one-time warning, and a regression test using the real June-10 ledger as a fixture.",
+                               "reason":  "Code inspection confirms Invoke-AuditLaunchStaleStartReconciliation and Get-AuditLaunchAttemptCount skip non-\u0027started\u0027, run_id-less, out-of-window, and unparseable lines via try/catch+continue. The ledger has zero run_id fields, yet reconcile filters those out cleanly. Rewriting risks regressions; a fixture-based test locks in the tolerance the task demands.",
+                               "tradeoff":  "Less visibly \u0027fixing\u0027 the suspected component than the task implies; mitigated by proving tolerance with the actual problematic data and adding counters so future corruption is observable.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Acceptance is proven only by a real-context run (secrets-bootstrap), forcing in-window+due, asserting a started-\u003eterminal ledger record + audit.last update OR a clear terminal (failed/partial+reason).",
+                               "reason":  "ParseFile/smoke cannot prove the end-to-end launch; the task explicitly requires running Start-AuditIfDue in real bridge-context and catching exception/early-return. A real run also surfaces whether the runner now completes or needs a terminal-with-reason.",
+                               "tradeoff":  "Real runs are slower, environment-dependent, and may need the idle/stable-idle wait; mitigated by a targeted test override (forced window/marker) and by accepting a clear terminal as success.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "The live driver for channel \u0027main\u0027 resolves config via this repo\u0027s Get-BridgeConfig (config.json overlaid by settings.json) with no other external override.",
+                        "audit.enabled=false is a manual/config state, not an automated circuit-breaker (grep found no code path that writes it false).",
+                        "The operator wants the deep-audit to run (the task\u0027s explicit premise), so re-enabling aligns with intent.",
+                        "secrets-bootstrap is available so tools/audit-runner.ps1 can run in a real bridge context.",
+                        "The Ch1 audit-runner writes the terminal ledger entry keyed by the -RunId passed at launch (10-maintenance.ps1:884), and stale-start reconciliation abandons dead \u0027started\u0027 runs.",
+                        "The only caller of Start-AuditIfDue is 81-loop-idle-claim.ps1:1777, so changing its return value is safe."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Misattributing the root cause to the reconcile (per the task\u0027s suspicion) and \u0027fixing\u0027 it while audit.enabled stays false — the audit would STILL never launch and the task would falsely report success.",
+                      "severity":  "high",
+                      "mitigation":  "Lead with re-enabling audit and verifying the effective merged config; prove the launch with a real-context run before declaring done; treat reconcile work as defense-in-depth, not the fix."
+                  },
+                  {
+                      "risk":  "Re-enabling resurfaces the deeper failure: runners START (audit start logged) but never COMPLETE, so audit.last stays stuck and denial spam returns.",
+                      "severity":  "medium",
+                      "mitigation":  "Verify a full started-\u003eterminal in the real run; rely on stale-start reconciliation to abandon dead \u0027started\u0027 runs; accept a clear terminal (failed/partial+reason) as success per acceptance; flag the completion gap as a follow-up atom."
+                  },
+                  {
+                      "risk":  "New gate/exception logging floods audit.log/auditor.log because the idle loop calls Start-AuditIfDue many times per minute.",
+                      "severity":  "high",
+                      "mitigation":  "Marker-file throttle (once per reason per window) with logging forced on reason transitions; keep payloads compact; reuse existing Rotate-LogIfBig caps."
+                  },
+                  {
+                      "risk":  "Flipping config.json gets reverted by a rollback or shadowed by a settings.json overlay, so the change does not stick.",
+                      "severity":  "medium",
+                      "mitigation":  "Set it in config.json (source of truth), then assert effective Get-BridgeConfig().audit.enabled=true at runtime; document the discovery so the operator sees it was disabled."
+                  },
+                  {
+                      "risk":  "Changing Start-AuditIfDue to return a structured object breaks an unseen caller or alters control flow.",
+                      "severity":  "low",
+                      "mitigation":  "Confirm 1777 is the sole caller; make the return additive (callers may ignore it); keep all early-return points returning the same shape."
+                  },
+                  {
+                      "risk":  "control-plane verify+critic rejects the change if ParseFile/smoke/targeted test are not green or the atom drifts beyond medium complexity.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the change atomic (logging + config re-enable + tolerance test); run ParseFile + smoke + targeted test locally before submitting; document the divergence from the stated suspicion for the critic."
+                  }
+              ],
+    "minimal_version":  "1) Add throttled logging to the catch at 81-loop-idle-claim.ps1:1777 (exception type/message + a one-line audit.log/auditor.log entry). 2) In Start-AuditIfDue, emit a throttled \u0027audit skipped: \u003creason\u003e\u0027 line at the enabled/in-window gates so a silent early-return becomes visible (this is what actually fired: enabled=false). 3) Set config.json audit.enabled=true and assert the effective Get-BridgeConfig().audit.enabled=true. 4) Add a targeted test that runs Start-AuditIfDue in-window+due against the existing run_id-less June-10 ledger and asserts it does NOT throw and writes a fresh \u0027started\u0027 entry. 5) Run ParseFile + smoke. This makes the failure visible and the audit actually launch.",
+    "advanced_version":  "Everything in minimal, plus: refactor Start-AuditIfDue to return a structured {launched, reason, gate, run_id}; replace the empty 1777 catch with explicit throttled logging of BOTH exceptions and skip-reasons to audit.log + auditor.log; add a once/day \u0027disabled-but-otherwise-due\u0027 operator notice (and chat event) so a disabled deep-audit can never again be an invisible mystery; add corrupt/skipped-line counters to Get-AuditLaunchAttemptCount and Invoke-AuditLaunchStaleStartReconciliation with a one-time warning when malformed lines are seen; build a fixture unit test from the ACTUAL audit.launches.jsonl (run_id-less, all-denied, out-of-window) asserting reconcile/count never throw and correctly ignore those lines while a due call still writes \u0027started\u0027; build a real-context integration test (secrets-bootstrap) that forces in-window+due, drives the full admission-\u003erunner path, and asserts started-\u003eterminal + audit.last update OR a clear terminal (failed/partial+reason); verify the started-\u003eterminal lifecycle end-to-end and, if the runner still fails to complete, ensure a terminal-with-reason is always written; route through control-plane verify+critic with ParseFile + smoke + targeted + integration tests green."
+}

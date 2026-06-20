@@ -1,0 +1,36 @@
+{
+    "task":  "[Автозадача из бэклога] [operator][audit-improve КОРЕНЬ] Deep-audit НЕ запускается даже когда due+idle+в окне — Start-AuditIfDue молча не доходит до запуска. ФАКТ (2026-06-20 ~03:00, в окне 01-06, main idle несколько минут): audit.last=2026-06-06, audit/audit.launches.jsonl обрывается на 2026-06-10 (denied max_attempts_per_window), НЕТ ни одной попытки запуска сегодня, audit.log молчит с 10 июня. Start-AuditIfDue вызывается в driver/81-loop-idle-claim.ps1:1777 через try{}catch{} (исключение ГЛУШИТСЯ молча). Гейты должны пускать: inWindow=true, audit.last(06-06)\u003cwinStart(сегодня 01:00). 10-maintenance.ps1 парсится чисто.\n\nПОДОЗРЕНИЕ: регрессия от Ch1-атомов audit-improve (1.1 launch-ledger 17271ea, 1.2 stale-start reconciliation a50c58e — оба меняли driver/10-maintenance.ps1). Новый stale-start код читает старые launches.jsonl записи (2026-06-10) и, возможно, бросает исключение на date-парсинге/reconcile → catch глушит → запуск не происходит.\n\nЗАДАЧА (атомарно): (1) ПЕРВЫМ делом добавь error-logging в проглатывающий catch на 81-loop-idle-claim.ps1:1777 (Write в audit.log/auditor.log детали исключения) — чтобы тихий сбой стал ВИДИМ; (2) запусти Start-AuditIfDue в реальном bridge-контексте (есть secrets-bootstrap) и поймай исключение/early-return; (3) почини корень так, чтобы deep-audit РЕАЛЬНО запустился когда due+idle+в окне (не падал на старых launches.jsonl записях; reconcile терпим к старым/битым строкам). ACCEPTANCE: Start-AuditIfDue в окне с due-аудитом → пишет новую launches.jsonl запись (started→terminal из Ch1) И audit.last обновляется ИЛИ записан понятный terminal (failed/partial с причиной). CHECKS: ParseFile + smoke + targeted test. control-plane, verify+critic. ЭТО КОРЕНЬ «аудит не завершается с 5 июня» — без запуска весь audit-improve бесполезен.",
+    "goal":  "Ensure the deep-audit mechanism reliably launches when due, idle, and within its operational window, by fixing the underlying silent failure that prevents its execution and renders related audit-improve features ineffective.",
+    "constraints":  [
+                        "The three sub-tasks (add logging, test, fix) must be completed atomically.",
+                        "Error logging must be added FIRST to the silently swallowing catch block at `81-loop-idle-claim.ps1:1777`.",
+                        "Testing must occur in a real bridge-context with secrets-bootstrap.",
+                        "The fix must ensure the deep-audit does not crash on old `launches.jsonl` records.",
+                        "The reconciliation logic must be tolerant to old or corrupted lines in `launches.jsonl`.",
+                        "Requires control-plane, verify+critic review/deployment."
+                    ],
+    "known_context":  [
+                          "Deep-audit is not launching despite being due, idle, and within its window (observed 2026-06-20 ~03:00).",
+                          "`audit.last` is 2026-06-06.",
+                          "`audit/audit.launches.jsonl` abruptly ends on 2026-06-10, with the last entry indicating `denied max_attempts_per_window`.",
+                          "No launch attempts recorded for 2026-06-20.",
+                          "`audit.log` has been silent since June 10.",
+                          "`Start-AuditIfDue` is called in `driver/81-loop-idle-claim.ps1:1777` within a `try{}catch{}` block that silently suppresses exceptions.",
+                          "Audit gates `inWindow=true` and `audit.last(06-06) \u003c winStart(today 01:00)` should allow launch.",
+                          "`10-maintenance.ps1` parses cleanly.",
+                          "Suspicion: Regression introduced by Ch1-atoms `audit-improve` (1.1 `launch-ledger` 17271ea, 1.2 `stale-start reconciliation` a50c58e), both of which modified `driver/10-maintenance.ps1`.",
+                          "The new `stale-start` code likely reads old `launches.jsonl` records (from 2026-06-10) and might throw an exception during date parsing or reconciliation, which is then silently caught."
+                      ],
+    "output_format":  "JSON object matching the TaskContract schema.",
+    "task_type":  "bugfix",
+    "risk":  "critical",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "When `Start-AuditIfDue` is called in a window with a due audit, it writes a new `launches.jsonl` record (transitioning from `started` to a `terminal` state as per Ch1).",
+                          "`audit.last` is successfully updated after a successful audit launch.",
+                          "Alternatively, if the audit fails or is partial, a clear `terminal` record (e.g., `failed`/`partial` with a reason) is written to `launches.jsonl`.",
+                          "The `ParseFile` check passes.",
+                          "The `smoke` test passes.",
+                          "The `targeted test` passes."
+                      ]
+}

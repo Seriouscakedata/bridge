@@ -1,0 +1,62 @@
+{
+    "proposer":  "C",
+    "understanding":  "The deep-audit mechanism is silently failing to launch due to an exception that is swallowed by an empty catch block in 81-loop-idle-claim.ps1. The root cause is likely in the stale-start reconciliation code (Ch1.2 a50c58e) that reads old launches.jsonl records and throws on date parsing or reconciliation of corrupted/stale entries from June 10. Because the exception is silenced, no launch occurs, no logging is written, and the entire audit-improve feature chain is dead. The fix requires: (1) adding error visibility to the catch block, (2) reproducing the failure in a real bridge context, (3) making the reconciliation logic tolerant to old/corrupted lines so that Start-AuditIfDue can proceed to launch when due+idle+in-window.",
+    "summary":  "Fix silent deep-audit launch failure by adding error logging to the swallowing catch block, testing in bridge context to capture the exact exception, and hardening the stale-start reconciliation in 10-maintenance.ps1 to tolerate old or malformed launches.jsonl records without aborting the audit launch.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add explicit error logging to the try/catch at 81-loop-idle-claim.ps1:1777 as the first atomic step.",
+                               "reason":  "The current catch{} silently discards all exceptions, making root-cause diagnosis impossible. Logging must be added first so that any subsequent testing reveals the actual failure.",
+                               "tradeoff":  "Adds a small I/O overhead on the error path, but this path is already exceptional and currently invisible.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Reproduce the failure in a real bridge-context with secrets-bootstrap to capture the exact exception.",
+                               "reason":  "The bug manifests only with real state (old launches.jsonl from June 10, actual window/due conditions). Synthetic tests may miss date-parsing edge cases or reconciliation logic triggered by specific stale records.",
+                               "tradeoff":  "Requires access to production-like state and secrets; risk of side effects is mitigated by running in a controlled test window or with dry-run flags if available.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Harden the stale-start reconciliation code in 10-maintenance.ps1 to be tolerant of old/corrupted launches.jsonl lines.",
+                               "reason":  "The regression from Ch1.2 (a50c58e) likely throws on date parsing or unexpected record formats from June 10 entries. The reconciliation must skip or default-on-failure for unparseable lines rather than throwing, allowing the audit launch to proceed.",
+                               "tradeoff":  "Tolerant parsing may mask data corruption that should be alerted; mitigation is to log skipped lines as warnings rather than failing silently.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Ensure the fix writes a terminal launches.jsonl record (started→failed/partial with reason) when launch fails post-reconciliation, and updates audit.last on success.",
+                               "reason":  "The acceptance criteria require that even failed launches produce visible terminal records, closing the observability gap that left audit.log silent since June 10.",
+                               "tradeoff":  "Increases code paths in the launch sequence, but these are necessary for the audit ledger to fulfill its Ch1 design contract.",
+                               "confidence":  0.90
+                           }
+                       ],
+    "assumptions":  [
+                        "The bridge-context secrets-bootstrap is available and can be used for testing without disrupting production audit state.",
+                        "The launches.jsonl file from June 10 contains records that trigger the stale-start reconciliation path in 10-maintenance.ps1.",
+                        "The exception is thrown during date parsing or reconciliation logic, not from a lower-level infrastructure failure (e.g., file permissions).",
+                        "The inWindow and due checks are correct and the only blocker is the exception in the reconciliation code.",
+                        "The 10-maintenance.ps1 file parses cleanly as stated, meaning the bug is runtime logic, not syntax."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Adding logging to the catch block may expose sensitive data (e.g., file paths, partial ledger content) in audit.log.",
+                      "severity":  "medium",
+                      "mitigation":  "Sanitize exception messages before writing; log only exception type and safe contextual metadata, not raw record content."
+                  },
+                  {
+                      "risk":  "Testing in real bridge-context could accidentally trigger a partial audit launch that modifies state.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a dry-run flag or isolated test window; back up launches.jsonl and audit.last before testing."
+                  },
+                  {
+                      "risk":  "Tolerant parsing may cause the reconciliation to silently ignore genuinely corrupted state that requires operator attention.",
+                      "severity":  "low",
+                      "mitigation":  "Log all skipped/corrupted lines as warnings with line numbers; consider adding a periodic health-check summary of skipped records."
+                  },
+                  {
+                      "risk":  "The fix may not cover all edge cases in stale-start reconciliation if the June 10 records have multiple corruption patterns.",
+                      "severity":  "high",
+                      "mitigation":  "Implement a robust line-by-line try/catch in the reconciliation loop, logging and skipping any unparseable line, and run targeted tests with varied corrupted inputs."
+                  }
+              ],
+    "minimal_version":  "Add error logging to the catch block at 81-loop-idle-claim.ps1:1777 and wrap the stale-start reconciliation in 10-maintenance.ps1 with per-line try/catch that logs and skips unparseable records, then verify with a targeted test using a copy of the June 10 launches.jsonl.",
+    "advanced_version":  "Minimal version plus: refactor reconciliation into a separate function with comprehensive input validation, add structured error telemetry to audit.log (timestamp, exception type, affected line), implement a dry-run mode for Start-AuditIfDue, and add a control-plane health endpoint that reports reconciliation skip counts for proactive monitoring."
+}

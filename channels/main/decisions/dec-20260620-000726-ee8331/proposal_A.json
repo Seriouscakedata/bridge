@@ -1,0 +1,73 @@
+{
+    "proposer":  "A",
+    "understanding":  "Проблема не в расписании аудита, а в том, что вызов Start-AuditIfDue из driver/81-loop-idle-claim.ps1 обёрнут в молчащий catch, поэтому исключение из maintenance/reconcile полностью скрывает отказ запуска. Наиболее вероятный корень — новая логика stale-start reconciliation в driver/10-maintenance.ps1 неустойчиво читает старые или нестандартные строки audit/audit.launches.jsonl и падает до записи новой попытки запуска.",
+    "summary":  "Сначала сделать сбой наблюдаемым: добавить логирование исключения в catch вокруг Start-AuditIfDue в driver/81-loop-idle-claim.ps1. Затем воспроизвести Start-AuditIfDue в реальном bridge-контексте через secrets-bootstrap и зафиксировать, где именно происходит исключение или early-return. После этого исправить reconciliation так, чтобы launches.jsonl читался построчно и терпимо: битый JSON, старые схемы, пустые строки и непарсящиеся даты не должны валить запуск аудита, а должны логироваться как skipped/corrupt и не блокировать due launch. Финальная проверка: ParseFile, smoke, targeted test, плюс контроль факта новой terminal-записи в audit.launches.jsonl или понятного failed/partial terminal с причиной.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Первым изменением добавить явное логирование в catch вокруг Start-AuditIfDue в driver/81-loop-idle-claim.ps1.",
+                               "reason":  "Это прямо требуется контрактом и превращает текущий невидимый отказ в диагностируемое событие в audit.log/auditor.log.",
+                               "tradeoff":  "Само по себе не чинит запуск, но снижает риск дальнейшего слепого расследования.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Воспроизводить Start-AuditIfDue не изолированно, а через реальный bridge bootstrap/secrets контекст.",
+                               "reason":  "Гейты, пути, окружение, секреты и ledger-файлы участвуют в фактическом поведении; unit-only проверка может пропустить корневой отказ.",
+                               "tradeoff":  "Smoke в реальном контексте может быть медленнее и требует аккуратной фиксации побочных записей в audit.launches.jsonl/audit.last.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Исправить stale-start reconciliation как best-effort обработку JSONL: ошибка одной строки не должна прерывать весь Start-AuditIfDue.",
+                               "reason":  "launches.jsonl является append-only журналом с историческими записями разных схем; reconciliation обязан быть совместимым назад и устойчивым к повреждённым строкам.",
+                               "tradeoff":  "Некорректные старые строки могут быть проигнорированы для reconciliation, поэтому нужно логировать их с номером строки и причиной, чтобы не потерять диагностику.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Дата-время из старых записей парсить через безопасный TryParse/nullable путь с проверкой наличия поля перед сравнением.",
+                               "reason":  "Подозрение указывает на date parsing; PowerShell date casts часто бросают исключения на пустых, старых или неожиданных форматах.",
+                               "tradeoff":  "Некоторые старые записи без валидной даты не смогут участвовать в дедупликации/stale-detection, но это лучше, чем блокировать весь аудит.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Terminal-запись в audit.launches.jsonl должна появляться даже при failed/partial исходе запуска.",
+                               "reason":  "Acceptance допускает не только успешное обновление audit.last, но и понятный terminal с причиной; это сохраняет наблюдаемость и предотвращает вечные started/stale состояния.",
+                               "tradeoff":  "Нужно аккуратно не маскировать реальный failure как success; audit.last обновлять только при настоящем успешном завершении.",
+                               "confidence":  0.91
+                           }
+                       ],
+    "assumptions":  [
+                        "driver/10-maintenance.ps1 содержит Start-AuditIfDue и новую stale-start reconciliation логику.",
+                        "audit/audit.launches.jsonl может содержать записи старых схем, пустые строки, частично записанные строки или даты в несовместимом формате.",
+                        "secrets-bootstrap доступен в рабочем bridge-контексте, но изменения и проверки должны быть выполнены через control-plane/verify+critic, а не вручную в обход процесса.",
+                        "Окно аудита 01:00-06:00 и audit.last=2026-06-06 действительно делают аудит due на 2026-06-20.",
+                        "Успешный запуск deep-audit может быть долгим; для acceptance достаточно доказать started→terminal или terminal failed/partial с ясной причиной."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Реальный запуск deep-audit может изменить audit.last или создать production ledger-записи во время диагностики.",
+                      "severity":  "medium",
+                      "mitigation":  "Перед запуском зафиксировать исходные значения файлов, запускать через принятый bridge/control-plane путь и проверять только ожидаемые append/update эффекты."
+                  },
+                  {
+                      "risk":  "Слишком широкое подавление ошибок в reconciliation может скрыть настоящую коррупцию журнала.",
+                      "severity":  "medium",
+                      "mitigation":  "Не молчать: каждую skipped/corrupt строку логировать с номером строки, типом ошибки и безопасным фрагментом причины, но не останавливать Start-AuditIfDue."
+                  },
+                  {
+                      "risk":  "Исправление date parsing может изменить поведение max_attempts_per_window или stale-start дедупликации.",
+                      "severity":  "high",
+                      "mitigation":  "Добавить targeted test на старые записи 2026-06-10, битую строку, started без terminal и корректное разрешение due launch в новом окне."
+                  },
+                  {
+                      "risk":  "catch logging может само упасть из-за недоступного пути логов и снова скрыть исходную ошибку.",
+                      "severity":  "medium",
+                      "mitigation":  "Использовать best-effort logging: отдельный защищённый write path, fallback в auditor.log/audit.log, без выброса нового исключения из catch."
+                  },
+                  {
+                      "risk":  "Smoke вне окна аудита даст ложный early-return вместо проверки запуска.",
+                      "severity":  "medium",
+                      "mitigation":  "В targeted test управлять временем/окном через существующие параметры или тестовый harness; в реальном smoke явно записать вычисленные inWindow, winStart, audit.last и due reason."
+                  }
+              ],
+    "minimal_version":  "1. В driver/81-loop-idle-claim.ps1 добавить best-effort Write в audit.log/auditor.log внутри catch вокруг Start-AuditIfDue с exception type, message, script stack trace и timestamp. 2. Запустить Start-AuditIfDue через bridge secrets-bootstrap и получить конкретный отказ. 3. В driver/10-maintenance.ps1 заменить падение reconciliation на tolerant per-line parsing: ConvertFrom-Json/date parsing внутри try, invalid lines skip+log, missing fields allowed. 4. Проверить ParseFile, targeted test на старые/битые launches.jsonl строки и smoke due-in-window сценарий.",
+    "advanced_version":  "Помимо minimal fix, вынести чтение launch ledger в маленькую helper-функцию Read-AuditLaunchLedgerSafe с typed result: valid records, skipped records, warnings. Добавить structured diagnostic events для reconcile summary, отдельный тест на started→failed/partial terminal при downstream failure, и verify+critic артефакты с before/after ledger diff, чтобы control-plane мог подтвердить, что аудит больше не блокируется историческими строками."
+}

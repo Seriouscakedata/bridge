@@ -1774,7 +1774,9 @@ $script:DriverLoopIdleClaimBlock = {
           $prioUpdated = Start-BacklogPrioritizerIfDue -Channel $Channel -IntervalMinutes 60 -MaxItems 20
           if ($prioUpdated -gt 0) { Add-Message -From system -Text ("🧠 LLM-приоритизатор бэклога: обновлено " + $prioUpdated + " задач.") -Kind event | Out-Null }
         } catch {}
-        try { Start-AuditIfDue } catch {}
+        try { Start-AuditIfDue } catch {
+          try { Write-AuditMaintenanceExceptionLog -Channel $Channel -Context 'idle-loop Start-AuditIfDue failed' -ErrorRecord $_ } catch {}
+        }
         try { Start-FeatureVerifierIfDue } catch {}
         try { Update-FeatureActivations | Out-Null } catch {}
         $brainstormMaintenanceEnabled = $false

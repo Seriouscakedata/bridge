@@ -207,7 +207,7 @@
                       "ceilingHours":  6
                   },
     "audit":  {
-                  "enabled":  false,
+                  "enabled":  true,
                   "windowStartHour":  1,
                   "windowEndHour":  6,
                   "floorHours":  20,

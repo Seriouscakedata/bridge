@@ -1,0 +1,123 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Низкорисковое улучшение наблюдаемости: исключение вокруг Start-AuditIfDue сейчас должно быть видимым, иначе диагностика блокируется. Достаточно использовать существующий механизм логирования и не логировать секреты.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "ATOM-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "medium cost and possible environment sensitivity"
+                                    ],
+                      "reason":  "Реальная проверка через secrets-bootstrap важна для подтверждения причины и поведения в рабочем контексте. Нужно выполнять аккуратно, чтобы не повредить реальные ledger/state файлы, но как validation-шаг это оправдано.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "ATOM-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Устойчивость reconciliation к битым JSONL-строкам и непарсящимся датам является прямым bug fix: старые или поврежденные записи не должны срывать Start-AuditIfDue. Требует аккуратной обработки ошибок построчно.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "ATOM-004",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.7,
+                                     "impact":  0.8,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        "fixture choice may be brittle if June-10 ledger is environment-specific"
+                                    ],
+                      "reason":  "Идея верная, но тест лучше формализовать как минимальную воспроизводимую фикстуру на основе реальных данных, а не зависеть от конкретного June-10 ledger. Счетчики и одноразовые предупреждения полезны, если не создают шум в логах.",
+                      "total":  0.75
+                  },
+                  {
+                      "atom_id":  "ATOM-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Terminal-состояния в audit.launches.jsonl закрывают важный observability gap и позволяют отличать success, failed и partial. Условие обновлять audit.last только при успехе корректно снижает риск скрытого пропуска последующих аудитов.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "ATOM-006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.65,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.55,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        "may mask deeper failures if treated as sole root cause"
+                                    ],
+                      "reason":  "Если audit.enabled действительно false, включение конфигурации необходимо для запуска аудита. Но это не должно подменять диагностику: нужно сначала подтвердить effective config и учитывать, что отключение может быть намеренным.",
+                      "total":  0.77
+                  },
+                  {
+                      "atom_id":  "ATOM-007",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.65,
+                                     "impact":  0.75,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        "refactoring scope may exceed immediate fix"
+                                    ],
+                      "reason":  "Структурированный результат и throttled skip-logging полезны, но это более широкий refactor. Лучше ограничить первый шаг минимальной диагностикой причин раннего возврата, затем расширять контракт Start-AuditIfDue при наличии тестового покрытия.",
+                      "total":  0.6925
+                  }
+              ]
+}

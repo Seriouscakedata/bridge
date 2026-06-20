@@ -1,0 +1,90 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM-001",
+                      "statement":  "Добавить явное логирование исключений в catch блок вокруг Start-AuditIfDue в driver/81-loop-idle-claim.ps1.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Observability",
+                      "test":  "Спровоцировать исключение в Start-AuditIfDue и убедиться, что оно логируется в audit.log/auditor.log с типом, сообщением и стеком.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM-002",
+                      "statement":  "Воспроизвести и протестировать Start-AuditIfDue в реальном bridge-контексте с использованием secrets-bootstrap для точной диагностики и валидации.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing/Validation",
+                      "test":  "Запустить Start-AuditIfDue через secrets-bootstrap в реальном bridge-контексте, зафиксировать поведение/исключения и убедиться в корректном завершении (started-\u003eterminal или terminal failed/partial).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM-003",
+                      "statement":  "Обеспечить устойчивость логики stale-start reconciliation в driver/10-maintenance.ps1 к старым, повреждённым или непарсящимся строкам в audit.launches.jsonl, предотвращая прерывание Start-AuditIfDue.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Bug Fix/Resilience",
+                      "test":  "Запустить reconciliation с заведомо повреждёнными или старыми записями launches.jsonl (включая битые даты) и убедиться, что он не падает, а корректно обрабатывает или пропускает такие строки, логируя предупреждения.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM-004",
+                      "statement":  "Добавить логирование пропущенных/поврежденных строк в stale-start reconciliation с счетчиками и одноразовыми предупреждениями, а также создать регрессионный тест с реальными данными (например, June-10 ledger) для подтверждения устойчивости.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Observability/Testing",
+                      "test":  "Запустить reconciliation с реальным June-10 ledger как фикстурой, убедиться, что он не падает, корректно игнорирует старые записи, и логирует счетчики поврежденных строк с предупреждениями.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM-005",
+                      "statement":  "Обеспечить запись terminal-состояния (started→terminal, started→failed/partial с причиной) в audit.launches.jsonl для всех исходов запуска, а также обновление audit.last только при успешном завершении.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Observability/Bug Fix",
+                      "test":  "Спровоцировать успешный, failed и partial исходы запуска аудита и убедиться, что в audit.launches.jsonl появляются соответствующие terminal-записи с причиной, и audit.last обновляется только при успехе.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM-006",
+                      "statement":  "Установить audit.enabled=true в config.json и убедиться, что эффективное Get-BridgeConfig().audit.enabled возвращает true, чтобы разблокировать запуск аудита.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Configuration/Root Cause Fix",
+                      "test":  "Проверить, что config.json содержит audit.enabled=true и Get-BridgeConfig().audit.enabled возвращает true.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM-007",
+                      "statement":  "Расширить Start-AuditIfDue для возврата структурированного результата с причиной пропуска (gate, reason) и реализовать логирование этих причин, а также всех новых диагностических сообщений, с механизмом троттлинга (например, раз в окно аудита для каждой причины).",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Observability/Refactoring",
+                      "test":  "Запустить Start-AuditIfDue в условиях, вызывающих ранний возврат (например, audit.enabled=false), убедиться, что причина пропуска логируется, и что многократные вызовы не приводят к флуду логов благодаря троттлингу.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

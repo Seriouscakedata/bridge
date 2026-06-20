@@ -249,6 +249,26 @@ try {
   [System.IO.File]::WriteAllText($staleLedger3, ($r3a + "`n" + $r3b + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   $recentDenied = Request-AuditLaunchAdmission -AuditDir $staleAuditDir3 -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5 -StaleStartedTtlMinutes 2
   Check-AuditLaunchGuard 'dead-pid started within TTL not reconciled and still blocks' ((-not [bool]$recentDenied.allowed) -and [string]$recentDenied.reason -eq 'max_attempts_per_window') $recentDenied
+
+  $staleAuditDir4 = Join-Path $tmpRoot 'stale-reconcile-corrupt-lines\audit'
+  New-Item -ItemType Directory -Path $staleAuditDir4 -Force | Out-Null
+  $staleLedger4 = Join-Path $staleAuditDir4 'audit.launches.jsonl'
+  $badTsRunId4 = [guid]::NewGuid().ToString()
+  $deadRunId4 = [guid]::NewGuid().ToString()
+  $oldDenied4 = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = '2026-06-10T03:27:59.9026379Z'; channel = 'main'; decision = 'denied'; reason = 'max_attempts_per_window'; max_attempts = 2; window_minutes = 60; pid = 27960; run_id = ''; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  $badTsStarted4 = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = 'not-a-date'; channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $badTsRunId4; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  $deadStarted4 = ConvertTo-AuditLaunchJsonLine -Object ([ordered]@{ ts = (Get-Date).ToUniversalTime().AddMinutes(-4).ToString('o'); channel = 'main'; decision = 'started'; reason = ''; max_attempts = 2; window_minutes = 60; pid = 999998; run_id = $deadRunId4; report_path = ''; runtime_seconds = 0; runtime = '00:00:00'; exit_reason = '' })
+  [System.IO.File]::WriteAllText($staleLedger4, ("{broken-json`n" + $oldDenied4 + "`n" + $badTsStarted4 + "`n" + $deadStarted4 + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $corruptAllowed = Request-AuditLaunchAdmission -AuditDir $staleAuditDir4 -Channel 'main' -MaxAttempts 2 -WindowMinutes 60 -LockTtlMinutes 5 -StaleStartedTtlMinutes 2
+  Check-AuditLaunchGuard 'corrupt legacy launch ledger lines do not abort admission' ([bool]$corruptAllowed.allowed) $corruptAllowed
+  $corruptEntries4 = Read-AuditLaunchEntries -LedgerPath $staleLedger4
+  Check-AuditLaunchGuard 'valid dead stale-start is still abandoned with corrupt neighbors' (@($corruptEntries4 | Where-Object { [string]$_.decision -eq 'abandoned' -and [string]$_.run_id -eq $deadRunId4 }).Count -eq 1) $corruptEntries4
+  $corruptLog4 = Join-Path $staleAuditDir4 'audit.log'
+  $corruptWarnings4 = @()
+  if (Test-Path -LiteralPath $corruptLog4) {
+    $corruptWarnings4 = @(Get-Content -LiteralPath $corruptLog4 -Encoding UTF8 | Select-String -Pattern 'audit launch stale-start reconcile skipped corrupt_lines=1; invalid_timestamps=1')
+  }
+  Check-AuditLaunchGuard 'corrupt reconciliation writes one summarized warning' ($corruptWarnings4.Count -eq 1) $corruptWarnings4
 } finally {
   if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

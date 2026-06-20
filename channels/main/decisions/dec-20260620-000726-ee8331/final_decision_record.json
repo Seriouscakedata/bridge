@@ -1,0 +1,140 @@
+{
+    "final_answer":  "The deep-audit stall is a silent-failure regression, not a gate problem. The gates do permit launch (inWindow=true, audit.last 2026-06-06 \u003c winStart 2026-06-20 01:00), but Start-AuditIfDue is invoked inside a try{}catch{} at driver/81-loop-idle-claim.ps1:1777 that swallows exceptions. The Ch1 stale-start reconciliation (a50c58e) added to driver/10-maintenance.ps1 reads the pre-existing June-10 audit.launches.jsonl entries (the last being a \u0027denied max_attempts_per_window\u0027) and most likely throws during per-line JSON/date parsing or reconcile; the swallowing catch hides it, so no launch is attempted and audit.log has been silent since June 10 — which is the true cause of \u0027audit not completing since June 5\u0027. Without an actual launch the entire audit-improve chain is inert. Resolution proceeds in strict order: (1) FIRST add exception logging to the swallowing catch so the silent failure becomes visible; (2) reproduce in a real bridge-context via secrets-bootstrap, operating on copies of ledger/state, to pinpoint the exact throw; (3) fix the root cause by making reconciliation tolerant of old/corrupt/unparseable lines (per-line try/catch, skip-and-continue, counters, one-time warning) so old records can never abort Start-AuditIfDue; (4) guarantee a terminal record for every outcome (started→terminal on success, started→failed/partial with reason otherwise) and advance audit.last ONLY on success; (5) confirm effective Get-BridgeConfig().audit.enabled and enable only if it is genuinely and unintentionally false; (6) add a minimal early-return skip-reason diagnostic to Start-AuditIfDue while deferring the broader structured-result/throttle refactor. Validate with ParseFile, smoke, and a targeted reconciliation regression test built on a minimal synthetic June-10-shaped fixture (not the environment-specific file), then route through verify+critic and control-plane.",
+    "decisions":  [
+                      {
+                          "decision":  "Add explicit exception logging to the swallowing try/catch around Start-AuditIfDue at driver/81-loop-idle-claim.ps1:1777 FIRST, before any other change. Capture exception type, message and ScriptStackTrace to audit.log/auditor.log via the existing logging helper; never log secrets.",
+                          "rationale":  "The silent catch is precisely why the failure is invisible and undiagnosable; making it visible is a prerequisite for every subsequent step. Lowest-risk, highest-confidence atom (judge accept, 0.89).",
+                          "alternatives_considered":  [
+                                                          "Re-throw the exception (rejected — would crash the idle loop)",
+                                                          "Rely on external instrumentation instead of in-place logging (rejected — slowest path to diagnosis, leaves the swallow in place)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Provoke an exception inside Start-AuditIfDue and confirm it is logged with type, message and stack to audit.log/auditor.log without leaking secrets."
+                      },
+                      {
+                          "decision":  "Harden stale-start reconciliation in driver/10-maintenance.ps1 to tolerate old, corrupted, or unparseable lines in audit.launches.jsonl — wrap per-line JSON parse and date parse in try/catch and skip-and-continue rather than throwing.",
+                          "rationale":  "Most probable root cause: the Ch1 reconciliation (a50c58e) reads the June-10 ledger lines and throws on date-parse/reconcile, which the silent catch swallows, blocking the launch. Per-line resilience directly restores launch behavior (judge accept, 0.85).",
+                          "alternatives_considered":  [
+                                                          "Truncate/rotate the old ledger to remove June-10 lines (rejected — destroys audit history and masks the parsing bug)",
+                                                          "Disable reconciliation entirely (rejected — loses the stale-start safety added in Ch1.2)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Run reconciliation against fixtures containing broken dates and old denied/max_attempts entries; confirm no throw, lines are skipped/handled, warnings logged, and Start-AuditIfDue proceeds."
+                      },
+                      {
+                          "decision":  "Record a terminal state for every launch outcome in audit.launches.jsonl (started→terminal on success; started→failed/partial with reason otherwise) and update audit.last ONLY on successful completion.",
+                          "rationale":  "Closes the observability gap that hid the stall; distinguishes success/failed/partial and prevents audit.last from advancing on a non-success, which would silently skip subsequent audits (judge accept, 0.825).",
+                          "alternatives_considered":  [
+                                                          "Advance audit.last whenever a launch is merely attempted (rejected — would hide failures and re-create the silent-skip class of bug)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Force success, failed and partial outcomes; confirm matching terminal records with reason are written and audit.last advances only on success."
+                      },
+                      {
+                          "decision":  "Reproduce and validate Start-AuditIfDue in a real bridge-context via secrets-bootstrap, operating on copies of the ledger/state files.",
+                          "rationale":  "Confirms the actual failure point and validates the fix in a production-like context; pure unit tests would not reproduce the real-context early-return/exception (judge accept, 0.8125). Must avoid mutating real ledger/state.",
+                          "alternatives_considered":  [
+                                                          "Pure offline unit test without secrets-bootstrap (rejected — cannot reproduce the real-context behavior the bug depends on)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Invoke via secrets-bootstrap with a due audit in-window; capture the exception/early-return pre-fix and a clean started→terminal record post-fix, against copied state."
+                      },
+                      {
+                          "decision":  "Add per-line skipped/corrupt counters and one-time (throttled, not per-line) warnings to reconciliation, and add a targeted regression test built on a MINIMAL synthetic fixture modeled on the June-10 ledger shape rather than the environment-specific file. [ATOM-004 modified per judge]",
+                          "rationale":  "Counters plus throttled warnings give visibility without log flooding; a self-contained fixture keeps the test reproducible and portable across environments, addressing the judge\u0027s brittleness concern (judge modify, 0.75).",
+                          "alternatives_considered":  [
+                                                          "Depend directly on the real June-10 ledger as the test fixture (rejected — brittle and environment-specific)",
+                                                          "Log every skipped line individually (rejected — risks log flooding)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Run reconciliation against the synthetic June-10-shaped fixture; assert no throw, old/denied entries ignored, corrupt-line counter incremented, and exactly one warning emitted."
+                      },
+                      {
+                          "decision":  "Confirm effective Get-BridgeConfig().audit.enabled before any config change; set audit.enabled=true in config.json only if it is actually false AND the disable was not intentional. [ATOM-006 modified per judge]",
+                          "rationale":  "If audit is genuinely disabled it must be enabled to launch, but flipping it blindly could mask the real reconciliation bug or override an intentional kill-switch (judge modify, 0.77).",
+                          "alternatives_considered":  [
+                                                          "Unconditionally set audit.enabled=true (rejected — may mask the deeper failure or override an intentional disable)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Print effective Get-BridgeConfig().audit.enabled; if false and unintentional, verify the config change makes it true; if intentionally disabled, document and halt that branch."
+                      },
+                      {
+                          "decision":  "Add minimal diagnostic logging of Start-AuditIfDue early-return reasons (which gate, why) using the new logging path; DEFER the full structured-result contract and per-reason throttling framework. [ATOM-007 modified per judge]",
+                          "rationale":  "Surfacing skip reasons closes the immediate diagnosis gap cheaply; the broader return-contract refactor exceeds the atomic critical hotfix and should follow once test coverage exists (judge modify, 0.6925).",
+                          "alternatives_considered":  [
+                                                          "Implement the full structured result object plus per-reason throttle now (deferred — scope creep on a critical hotfix; destabilization risk to the idle loop)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Trigger an early return (e.g., not due / audit disabled); confirm a single clear reason line is logged via the new logging path."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Full Start-AuditIfDue refactor into a structured result object with a per-reason throttling framework (literal full ATOM-007).",
+                         "why":  "Scope exceeds the atomic critical hotfix and risks destabilizing the idle loop. Reduced to minimal early-return reason logging now; the broader contract is deferred until diagnostics and tests are in place."
+                     },
+                     {
+                         "decision":  "Unconditionally set audit.enabled=true without checking effective config (literal ATOM-006).",
+                         "why":  "Could mask the underlying reconciliation bug or override an intentional kill-switch. Effective config must be confirmed first; enable only if genuinely and unintentionally false."
+                     },
+                     {
+                         "decision":  "Use the real environment-specific June-10 ledger file directly as the regression fixture (literal ATOM-004).",
+                         "why":  "Brittle and non-portable across environments. Replaced by a minimal synthetic fixture that reproduces the same line shapes (denied/max_attempts entries and broken dates)."
+                     },
+                     {
+                         "decision":  "Truncate or rotate audit.launches.jsonl to drop the June-10 entries as the fix.",
+                         "why":  "Destroys audit history and masks the parse-resilience defect instead of fixing it; the reconciler must survive old/corrupt lines regardless."
+                     }
+                 ],
+    "open_questions":  [
+                           "Is audit.enabled intentionally false in the effective config, or did it drift? Must be confirmed before flipping it.",
+                           "What exact exception does the June-10 ledger trigger inside reconciliation (per-line JSON parse vs date parse vs reconcile logic)? Confirm via the real-context repro before finalizing the resilience patch.",
+                           "Should audit.last be backfilled/repaired given the 2026-06-06 → 2026-06-20 gap, or left for the next successful launch to advance naturally?",
+                           "Should pre-existing partial/denied ledger entries be reconciled to a terminal state retroactively, or only handled going forward?"
+                       ],
+    "implementation_plan":  [
+                                "Step 1 (ATOM-001): Add error-logging to the swallowing catch at driver/81-loop-idle-claim.ps1:1777 — capture $_.Exception.GetType().FullName, .Message, .ScriptStackTrace and write to audit.log/auditor.log via the existing logging helper; no secrets. Make the silent failure visible.",
+                                "Step 2 (ATOM-002): Reproduce in real bridge-context via secrets-bootstrap on COPIES of ledger/state. Invoke Start-AuditIfDue with a due audit in-window; capture the exception/early-return and pinpoint the throw (expected: date-parse/reconcile over June-10 entries).",
+                                "Step 3 (ATOM-003): Harden stale-start reconciliation in driver/10-maintenance.ps1 — wrap per-line JSON parse and date parse in try/catch; skip-and-continue on unparseable/old/corrupt lines instead of throwing, so old records can never abort Start-AuditIfDue.",
+                                "Step 4 (ATOM-004 modified): Add skipped/corrupt-line counters plus a one-time throttled warning; add a targeted regression test using a minimal synthetic fixture modeled on the June-10 ledger shape (denied/max_attempts entries, broken dates) — not the environment-specific file.",
+                                "Step 5 (ATOM-005): Ensure every launch outcome writes a terminal record to audit.launches.jsonl (started→terminal on success; started→failed/partial with reason otherwise) and update audit.last ONLY on success.",
+                                "Step 6 (ATOM-006 modified): Read effective Get-BridgeConfig().audit.enabled; if false and unintentional, set audit.enabled=true in config.json; if intentionally disabled, document and stop that branch.",
+                                "Step 7 (ATOM-007 modified): Add minimal early-return reason logging (gate + reason) to Start-AuditIfDue via the new logging path; defer the full structured-result + throttling refactor.",
+                                "Step 8 (CHECKS): Run ParseFile on driver/10-maintenance.ps1 and driver/81-loop-idle-claim.ps1, the smoke test, and the targeted reconciliation regression test; confirm a fresh launches.jsonl started→terminal record and audit.last update (or a clear failed/partial terminal). Route through verify+critic and control-plane review."
+                            ],
+    "next_step":  "Implement ATOM-001: add exception logging (type, message, ScriptStackTrace) to the swallowing catch at driver/81-loop-idle-claim.ps1:1777 so the silent failure becomes visible, then proceed to the real-context reproduction via secrets-bootstrap.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision fixes \u0027doesn\u0027t launch\u0027 but the ledger proves the real, user-stated root (\u0027аудит не завершается с 5 июня\u0027) is \u0027doesn\u0027t COMPLETE\u0027. audit/audit.launches.jsonl contains 32 \u0027started\u0027 and 1411 \u0027denied\u0027 records but ZERO terminal records of any kind (no completed_ok/partial/failed/runner_timeout/abandoned), and audit.last is frozen at 2026-06-06. During June 7–10 (when enabled was still true), the audit launched 32 times and never once completed.",
+                                  "why":  "enabled=false explains only the CURRENT silence (June 10→20). It does not explain — and the plan never diagnoses — why the runner/deep-phase never writes a terminal record or advances audit.last. ATOM-006 (flip enabled=true) is labeled the \u0027КОРНЕВОЙ ФИКС\u0027 but it merely returns the system to its prior launch-and-fail state. The decision found A root (proximate launch gate), not THE root (downstream non-completion). open_question #1 admits this is unresolved, yet the plan still executes the re-enable and frames it as the root fix."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The success_tests are satisfiable while the goal stays unmet. The contract accepts \u0027a clear terminal failed/partial record\u0027 as success. Given 32-started/0-terminal history, the most probable post-re-enable outcome is: launch happens → deep phase fails again → ATOM-005 writes a \u0027failed\u0027 terminal → audit.last stays frozen at June 6. That passes ParseFile + smoke + targeted-test + \u0027terminal record written\u0027, so the task can be closed \u0027done\u0027 while no audit has actually completed since June 5/6 — exactly the symptom the task exists to fix.",
+                                  "why":  "The acceptance criteria conflate \u0027launches and records an outcome\u0027 with \u0027reliably completes\u0027. A red-team reading shows the decision can clear every listed success_test without delivering the stated goal (\u0027reliably launches when due AND the audit-improve features become effective\u0027). audit-improve remains useless if the deep audit still never completes."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Effort is misallocated relative to where the bug provably lives. 5 of 7 atoms target the launch path / launch-ledger / config flag in 10-maintenance.ps1 (Start-AuditIfDue, Request-AuditLaunchAdmission, reconcile). The 32-started/0-terminal evidence localizes the actual failure to the audit RUNNER / deep phase (tools/audit-runner.ps1, tools/audit.ps1), which the plan touches only via ATOM-005 — and only to \u0027write a terminal record\u0027, not to find why the runner never reports completion (crash before terminal-write? hang? wrong ledger path? wait-for-idle never satisfied?). No atom investigates the runner\u0027s actual control flow.",
+                                  "why":  "Adding a terminal-record write (ATOM-005) does not make completion work; it only makes a still-broken completion visible. Without diagnosing the runner, ATOM-005\u0027s own test (\u0027provoke success outcome → completed_ok record\u0027) cannot reliably be made to pass, because nothing in the plan establishes that a success outcome is even reachable."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The denial-storm is structural and un-throttled by the plan, and ATOM-007 does not cover it. Start-AuditIfDue runs every idle tick (~15–45s). Once max_attempts_per_window (2) is hit, every subsequent in-window tick reaches admission and writes a fresh \u0027denied\u0027 ledger entry (10-maintenance.ps1:614, and :602 for lock races) — visible as the ~1400 continuous denials already in the file. ATOM-007 throttles the skip-reason LOG at the line-858 return, but the \u0027denied\u0027 LEDGER write happens earlier, inside Request-AuditLaunchAdmission, and is not throttled. Meanwhile Get-AuditLaunchAttemptCount and the reconcile both do ReadAllLines + ConvertFrom-Json over the ENTIRE ledger on every admission request, with no rotation/truncation anywhere.",
+                                  "why":  "Re-enabling resumes ~80+ denial writes per in-window hour into an already 1443-line file that only grows. Every idle tick then re-parses the whole growing ledger (O(N) and rising). This is real resource churn the plan neither throttles nor caps. ATOM-003/004 make reconcile tolerant of old lines but do nothing about the unbounded growth that actually degrades the launch path over time."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "ATOM-006 will flip enabled=true while open_question #2 (who/when/why enabled was set to false) is explicitly unconfirmed. The git history of config.json could not even be read here (blocked behind approval), so the \u0027manual emergency-stop ~June 10\u0027 hypothesis is unverified. If an operator deliberately disabled audit because it was storming and never completing, a blind re-enable overrides a conscious operational decision and re-introduces the exact failing/churning loop.",
+                                  "why":  "The decision lists confirming this as a precondition (open_question #2 + a \u0027rejected: just flip and ship\u0027 entry), but next_step and the implementation_plan still march toward the flip. The safeguard exists on paper but is not enforced as a hard gate; the plan should block ATOM-006 on (a) confirmed git provenance of the disable and (b) ATOM-002 demonstrating an actual completion, not merely an admission."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "ATOM-003/004\u0027s premise (\u0027reconcile may THROW on old/corrupt June-10 lines and break re-enable\u0027) is largely already handled by existing code, and the genuinely risky old records are inert. ConvertFrom-AuditLaunchJsonLine returns null on bad JSON (→ skipped, lines 390-393/434-438); date parsing is wrapped in try/catch{continue} (lines 408-411, 466-470). The pre-Ch1 \u0027started\u0027 records (June 7-8) carry no run_id, so reconcile skips them (line 463-464) and the 60-minute SinceUtc filter (line 468) excludes them anyway.",
+                                  "why":  "The hardening is low-risk and harmless, but it is positioned as a critical re-enable precondition when the existing implementation is already tolerant. The effort would be better spent on the unbounded-ledger-growth risk (finding 4) and the runner non-completion bug (findings 1-3), which the plan under-weights."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

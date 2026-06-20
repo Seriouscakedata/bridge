@@ -11,6 +11,15 @@
   return $null
 }
 
+if ([string]::IsNullOrWhiteSpace([string]$bridgeRoot)) {
+  try {
+    if (Get-Command Get-BridgeRoot -ErrorAction SilentlyContinue) { $bridgeRoot = [string](Get-BridgeRoot) }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace([string]$bridgeRoot)) {
+    try { $bridgeRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')) } catch {}
+  }
+}
+
 function Normalize-ComparisonText {
   param([string]$Text)
   return (([string]$Text -replace '\s+', ' ').Trim().ToLowerInvariant())
@@ -269,6 +278,71 @@ function Get-AuditMaintenanceDir {
   return (Join-Path (Join-Path (Join-Path $bridgeRoot 'channels') $slug) 'audit')
 }
 
+function ConvertTo-AuditMaintenanceLogText {
+  param([string]$Text, [int]$MaxLength = 1200)
+  $out = ([string]$Text) -replace '[\r\n]+', ' '
+  $out = $out.Trim()
+  if ($MaxLength -gt 0 -and $out.Length -gt $MaxLength) { return ($out.Substring(0, $MaxLength) + '...<truncated>') }
+  return $out
+}
+
+function Write-AuditMaintenanceLog {
+  param(
+    [string]$Channel = 'main',
+    [string]$AuditDir = '',
+    [Parameter(Mandatory=$true)][string]$Message
+  )
+  $msg = ConvertTo-AuditMaintenanceLogText -Text $Message
+  if ([string]::IsNullOrWhiteSpace($msg)) { return }
+  try {
+    if (Get-Command Write-AuditorLog -ErrorAction SilentlyContinue) {
+      Write-AuditorLog $msg
+    }
+  } catch {}
+  try {
+    $auditDir = $AuditDir
+    if ([string]::IsNullOrWhiteSpace($auditDir)) { $auditDir = Get-AuditMaintenanceDir -Channel $Channel }
+    if (-not (Test-Path -LiteralPath $auditDir)) { New-Item -ItemType Directory -Path $auditDir -Force | Out-Null }
+    $logPath = Join-Path $auditDir 'audit.log'
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+    [System.IO.File]::AppendAllText($logPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
+}
+
+function Write-AuditMaintenanceExceptionLog {
+  param(
+    [string]$Channel = 'main',
+    [string]$AuditDir = '',
+    [Parameter(Mandatory=$true)][string]$Context,
+    [Parameter(Mandatory=$true)]$ErrorRecord
+  )
+  $type = ''
+  $message = ''
+  $stack = ''
+  try { if ($ErrorRecord.Exception) { $type = $ErrorRecord.Exception.GetType().FullName; $message = [string]$ErrorRecord.Exception.Message } } catch {}
+  try { $stack = [string]$ErrorRecord.ScriptStackTrace } catch {}
+  Write-AuditMaintenanceLog -Channel $Channel -AuditDir $AuditDir -Message ("{0}: type={1}; message={2}; stack={3}" -f $Context, (ConvertTo-AuditMaintenanceLogText -Text $type -MaxLength 300), (ConvertTo-AuditMaintenanceLogText -Text $message -MaxLength 500), (ConvertTo-AuditMaintenanceLogText -Text $stack -MaxLength 900))
+}
+
+function Write-AuditMaintenanceSkipLog {
+  param(
+    [string]$Channel = 'main',
+    [Parameter(Mandatory=$true)][string]$Reason,
+    [string]$Detail = '',
+    [int]$ThrottleMinutes = 15
+  )
+  if (-not $script:AuditMaintenanceSkipLogLast) { $script:AuditMaintenanceSkipLogLast = @{} }
+  $key = ([string]$Channel) + '|' + ([string]$Reason)
+  $now = (Get-Date).ToUniversalTime()
+  $last = $null
+  try { if ($script:AuditMaintenanceSkipLogLast.ContainsKey($key)) { $last = [datetime]$script:AuditMaintenanceSkipLogLast[$key] } } catch {}
+  if ($last -and (($now - $last) -lt [TimeSpan]::FromMinutes([Math]::Max(1, $ThrottleMinutes)))) { return }
+  $script:AuditMaintenanceSkipLogLast[$key] = $now
+  $suffix = ''
+  if (-not [string]::IsNullOrWhiteSpace($Detail)) { $suffix = '; ' + (ConvertTo-AuditMaintenanceLogText -Text $Detail -MaxLength 700) }
+  Write-AuditMaintenanceLog -Channel $Channel -Message ("Start-AuditIfDue skipped: channel={0}; reason={1}{2}" -f ([string]$Channel), ([string]$Reason), $suffix)
+}
+
 function Test-AuditMaintenanceBusy {
   param([int]$MaxWaitMinutes = 60, [string]$AuditDir = $null)
   if ([string]::IsNullOrWhiteSpace($AuditDir)) { $AuditDir = Join-Path $bridgeRoot 'audit' }
@@ -430,11 +504,13 @@ function Invoke-AuditLaunchStaleStartReconciliation {
   try { $lines = [System.IO.File]::ReadAllLines($ledgerPath) } catch { return 0 }
 
   $allParsed = New-Object 'System.Collections.Generic.List[object]'
+  $corruptLines = 0
   foreach ($line in @($lines)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try {
       $entry = ConvertFrom-AuditLaunchJsonLine -Line $line
       if ($entry) { [void]$allParsed.Add($entry) }
+      else { $corruptLines++ }
     } catch {}
   }
 
@@ -457,6 +533,7 @@ function Invoke-AuditLaunchStaleStartReconciliation {
   $staleThreshold = $now.AddMinutes(-1 * [Math]::Max(1, $StaleStartedTtlMinutes))
   $sinceNorm = $SinceUtc.ToUniversalTime()
   $reconciled = 0
+  $invalidTimestamps = 0
   foreach ($entry in $allParsed) {
     if ([string]$entry.decision -ne 'started') { continue }
     if (-not [string]::IsNullOrWhiteSpace($Channel) -and [string]$entry.channel -ne [string]$Channel) { continue }
@@ -467,7 +544,10 @@ function Invoke-AuditLaunchStaleStartReconciliation {
       $ts = [datetime]::Parse([string]$entry.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
       if ($ts -lt $sinceNorm) { continue }
       if ($ts -gt $staleThreshold) { continue }
-    } catch { continue }
+    } catch {
+      $invalidTimestamps++
+      continue
+    }
 
     $entryPid = 0
     try { $entryPid = [int]$entry.pid } catch { $entryPid = 0 }
@@ -482,6 +562,9 @@ function Invoke-AuditLaunchStaleStartReconciliation {
       $terminalRunIds[$runId] = $true
       $reconciled++
     } catch {}
+  }
+  if ($corruptLines -gt 0 -or $invalidTimestamps -gt 0) {
+    Write-AuditMaintenanceLog -Channel $Channel -AuditDir $AuditDir -Message ("audit launch stale-start reconcile skipped corrupt_lines={0}; invalid_timestamps={1}; ledger={2}" -f $corruptLines, $invalidTimestamps, $ledgerPath)
   }
   return $reconciled
 }
@@ -607,7 +690,9 @@ function Request-AuditLaunchAdmission {
     $runId = [guid]::NewGuid().ToString()
     $since = (Get-Date).ToUniversalTime().AddMinutes(-1 * $WindowMinutes)
     if ($StaleStartedTtlMinutes -gt 0) {
-      try { Invoke-AuditLaunchStaleStartReconciliation -AuditDir $AuditDir -Channel $Channel -SinceUtc $since -StaleStartedTtlMinutes $StaleStartedTtlMinutes | Out-Null } catch {}
+      try { Invoke-AuditLaunchStaleStartReconciliation -AuditDir $AuditDir -Channel $Channel -SinceUtc $since -StaleStartedTtlMinutes $StaleStartedTtlMinutes | Out-Null } catch {
+        Write-AuditMaintenanceExceptionLog -Channel $Channel -AuditDir $AuditDir -Context 'audit launch stale-start reconciliation failed; continuing' -ErrorRecord $_
+      }
     }
     $count = Get-AuditLaunchAttemptCount -AuditDir $AuditDir -SinceUtc $since -Channel $Channel
     if ($count -ge $MaxAttempts) {
@@ -617,6 +702,7 @@ function Request-AuditLaunchAdmission {
     Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'started' -Reason '' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID -RunId $runId | Out-Null
     return [pscustomobject]@{ allowed = $true; reason = ''; count = ($count + 1); lock_path = $lockPath; run_id = $runId }
   } catch {
+    Write-AuditMaintenanceExceptionLog -Channel $Channel -AuditDir $AuditDir -Context 'audit launch admission failed' -ErrorRecord $_
     try { Write-AuditLaunchLedgerEntry -AuditDir $AuditDir -Channel $Channel -Decision 'denied' -Reason 'launch_ledger_error' -MaxAttempts $MaxAttempts -WindowMinutes $WindowMinutes -ProcessId $PID | Out-Null } catch {}
     return [pscustomobject]@{ allowed = $false; reason = 'launch_ledger_error'; count = $null; lock_path = $lockPath }
   } finally {
@@ -794,10 +880,19 @@ function Start-AuditIfDue {
   try {
     $cfgA = Get-BridgeConfig
     if ($cfgA -and ($cfgA.PSObject.Properties.Name -contains 'audit') -and $cfgA.audit) { $auditCfg = $cfgA.audit }
-  } catch { return }
-  if (-not $auditCfg) { return }
+  } catch {
+    Write-AuditMaintenanceExceptionLog -Channel 'main' -Context 'Start-AuditIfDue config read failed' -ErrorRecord $_
+    return
+  }
+  if (-not $auditCfg) {
+    Write-AuditMaintenanceSkipLog -Channel 'main' -Reason 'missing_audit_config'
+    return
+  }
   $enabled = if ($null -ne $auditCfg.enabled) { [bool]$auditCfg.enabled } else { $true }
-  if (-not $enabled) { return }
+  if (-not $enabled) {
+    Write-AuditMaintenanceSkipLog -Channel 'main' -Reason 'audit_disabled'
+    return
+  }
   $startH  = if ($null -ne $auditCfg.windowStartHour) { [int]$auditCfg.windowStartHour } else { 1 }
   $endH    = if ($null -ne $auditCfg.windowEndHour)   { [int]$auditCfg.windowEndHour }   else { 6 }
   $floorH  = if ($null -ne $auditCfg.floorHours)      { [int]$auditCfg.floorHours }      else { 20 }
@@ -822,12 +917,18 @@ function Start-AuditIfDue {
     # window wraps midnight (e.g. 22..5)
     if ($hourNow -ge $startH -or $hourNow -le $endH) { $inWindow = $true }
   }
-  if (-not $inWindow) { return }
+  if (-not $inWindow) {
+    Write-AuditMaintenanceSkipLog -Channel 'main' -Reason 'outside_window' -Detail ("hour={0}; window={1}-{2}" -f $hourNow, $startH, $endH)
+    return
+  }
   $auditChannel = 'main'
   try { $auditChannel = [string](Get-EffectiveChannel) } catch {}
   if ([string]::IsNullOrWhiteSpace($auditChannel)) { $auditChannel = 'main' }
   try { if (Get-Command Normalize-ChannelSlug -ErrorAction SilentlyContinue) { $auditChannel = Normalize-ChannelSlug $auditChannel } } catch {}
-  if (-not (Test-ChannelMaintenanceEnabled -Kind 'audit' -Channel $auditChannel)) { return }
+  if (-not (Test-ChannelMaintenanceEnabled -Kind 'audit' -Channel $auditChannel)) {
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'channel_audit_disabled'
+    return
+  }
   $auditDir = Get-AuditMaintenanceDir -Channel $auditChannel
   $marker   = Join-Path $auditDir 'audit.last'
   $waitMarker = Join-Path $auditDir 'audit.waiting'
@@ -843,19 +944,41 @@ function Start-AuditIfDue {
       $nowD = Get-Date
       $winStart = Get-Date -Hour $startH -Minute 0 -Second 0
       if ($startH -gt $endH -and $nowD.Hour -le $endH) { $winStart = $winStart.AddDays(-1) }
-      if ($last -ge $winStart) { return }
+      if ($last -ge $winStart) {
+        Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'already_ran_this_window' -Detail ("last={0}; winStart={1}" -f $last.ToString('o'), $winStart.ToString('o'))
+        return
+      }
       # secondary anti-double-run guard: never re-run within floorH of a run that already happened
       # AFTER the window opened (cheap protection if the window is ever misconfigured very wide).
-      if ($last -ge $winStart -and (($nowD - $last) -lt [TimeSpan]::FromHours($floorH))) { return }
-    } catch {}
+      if ($last -ge $winStart -and (($nowD - $last) -lt [TimeSpan]::FromHours($floorH))) {
+        Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'floor_hours_guard' -Detail ("last={0}; floor_hours={1}" -f $last.ToString('o'), $floorH)
+        return
+      }
+    } catch {
+      Write-AuditMaintenanceExceptionLog -Channel $auditChannel -Context 'Start-AuditIfDue audit.last parse failed; continuing' -ErrorRecord $_
+    }
   }
   $auditScript = Join-Path $bridgeRoot 'tools\audit.ps1'
-  if (-not (Test-Path -LiteralPath $auditScript)) { return }
+  if (-not (Test-Path -LiteralPath $auditScript)) {
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'missing_audit_script' -Detail $auditScript
+    return
+  }
   $auditRunner = Join-Path $bridgeRoot 'tools\audit-runner.ps1'
-  if (-not (Test-Path -LiteralPath $auditRunner)) { return }
-  if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) { return }
+  if (-not (Test-Path -LiteralPath $auditRunner)) {
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'missing_audit_runner' -Detail $auditRunner
+    return
+  }
+  if (Test-AuditMaintenanceBusy -MaxWaitMinutes $maxWait -AuditDir $auditDir) {
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'audit_busy'
+    return
+  }
   $launchAdmission = Request-AuditLaunchAdmission -AuditDir $auditDir -Channel $auditChannel -MaxAttempts $launchMax -WindowMinutes $launchWindow -LockTtlMinutes $launchLockTtl -StaleStartedTtlMinutes $launchStaleTtl
-  if (-not $launchAdmission -or -not [bool]$launchAdmission.allowed) { return }
+  if (-not $launchAdmission -or -not [bool]$launchAdmission.allowed) {
+    $denyReason = if ($launchAdmission) { [string]$launchAdmission.reason } else { 'no_admission_result' }
+    $denyCount = if ($launchAdmission) { [string]$launchAdmission.count } else { '' }
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'launch_denied' -Detail ("admission_reason={0}; count={1}" -f $denyReason, $denyCount)
+    return
+  }
   $auditRunId = [string]$launchAdmission.run_id
   $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
   $waitMarkerWritten = $false
@@ -865,9 +988,13 @@ function Start-AuditIfDue {
     $waitMarkerWritten = $true
   } catch {
     try { Write-AuditLaunchLedgerEntry -AuditDir $auditDir -Channel $auditChannel -Decision 'failed' -Reason 'wait_marker_write_failed' -ProcessId $PID -RunId $auditRunId -RuntimeSeconds $launchStopwatch.Elapsed.TotalSeconds -ExitReason ('wait_marker_write_failed: ' + $_.Exception.Message) | Out-Null } catch {}
+    Write-AuditMaintenanceExceptionLog -Channel $auditChannel -Context 'Start-AuditIfDue wait marker write failed' -ErrorRecord $_
     return
   }
-  if (-not $waitMarkerWritten) { return }
+  if (-not $waitMarkerWritten) {
+    Write-AuditMaintenanceSkipLog -Channel $auditChannel -Reason 'wait_marker_not_written'
+    return
+  }
   $stateFile = $null
   try { $stateFile = Get-StatePath } catch {}
   if ([string]::IsNullOrWhiteSpace($stateFile)) { $stateFile = Join-Path $bridgeRoot 'channels\main\state.json' }
@@ -897,6 +1024,7 @@ function Start-AuditIfDue {
   } catch {
     try { if (Test-Path -LiteralPath $waitMarker) { Remove-Item -LiteralPath $waitMarker -Force -ErrorAction SilentlyContinue } } catch {}
     try { Write-AuditLaunchLedgerEntry -AuditDir $auditDir -Channel $auditChannel -Decision 'failed' -Reason 'runner_start_failed' -ProcessId $PID -RunId $auditRunId -RuntimeSeconds $launchStopwatch.Elapsed.TotalSeconds -ExitReason ('runner_start_failed: ' + $_.Exception.Message) | Out-Null } catch {}
+    Write-AuditMaintenanceExceptionLog -Channel $auditChannel -Context 'Start-AuditIfDue runner start failed' -ErrorRecord $_
   }
 }
 
