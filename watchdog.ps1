@@ -403,7 +403,7 @@ function Check-Once {
       if ($st.heartbeat) {
         $age = [int](((Get-Date) - [datetime]$st.heartbeat).TotalSeconds)
         if ($age -lt $hbAge) { $hbAge = $age }
-        if ($age -lt 300) { $hbOk = $true; break }
+        if ($age -lt 1200) { $hbOk = $true; break }   # 2026-06-20: 300s->1200s (operator directive: add time where a timeout kills a WORKING process). The heavy DONE-gate cycle (parse 307 ps1 + smoke + gate-regression, ~12min) runs in the driver loop WITHOUT pumping the heartbeat, so a HEALTHY-but-finalizing driver looked stale past 5min -> UNHEALTHY -> recycle interrupted finalization before it could close the task (self-reinforcing loop, ATOM_006). 20min tolerance covers the real cycle; a genuinely dead engine is still caught.
       }
     } catch {}
   }

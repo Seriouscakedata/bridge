@@ -128,7 +128,11 @@ if (-not (Test-ProcAlive 'supervisor.ps1')) {
   $needRespawn = $false
   if ($wdProcs.Count -eq 0) {
     ELog "watchdog DEAD -> respawn"; $needRespawn = $true
-  } elseif ($wdStaleMin -gt 12) {
+  } elseif ($wdStaleMin -gt 25) {
+    # 2026-06-20: 12->25 min (operator directive: add time where a timeout kills a WORKING process).
+    # The watchdog's own smoke cycle (parse 307 ps1 + endpoint checks) legitimately takes ~12.5 min,
+    # so a 12-min staleness bar false-killed a HEALTHY-but-slow watchdog mid-smoke (~2/3 of cycles
+    # aborted). 25 min still catches a genuinely hung watchdog, with margin over the real smoke time.
     ELog ("watchdog HUNG (smoke stale " + [int]$wdStaleMin + "m, proc alive) -> kill+respawn")
     foreach ($wp in $wdProcs) { try { Stop-Process -Id ([int]$wp.ProcessId) -Force -ErrorAction SilentlyContinue } catch {} }
     Start-Sleep -Seconds 2

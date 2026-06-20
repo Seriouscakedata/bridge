@@ -870,11 +870,15 @@ $hcSrvHungLimit    = 3     # consecutive failures before kill+restart
 $hcSrvLastTs       = [datetime]::MinValue
 $hcSrvFails        = 0
 $hcDrvIntervalSec  = 60    # driver CPU-stagnation probe interval
-$hcDrvHungLimit    = 15    # consecutive zero-CPU intervals before kill+restart.
+$hcDrvHungLimit    = 25    # consecutive zero-CPU intervals before kill+restart.
                            # 2026-06-12 (zatyk #5): 5 min false-killed drivers that were
                            # legitimately blocked on long Codex/LLM calls (3 kills in one
                            # evening); surviving tasks then died on the restart cap. Long
                            # coder chunks run 10-12 min, so the hung bar is 15 min now.
+                           # 2026-06-20: 15->25 (operator directive: add time where a timeout
+                           # kills a WORKING process). The heavy DONE-gate/finalization cycle
+                           # (parse 307 ps1 + smoke + gate-regression) can hold the loop CPU-quiet
+                           # ~12-15 min and looked stagnant; 25 min gives a working driver room.
 $hcDrvGraceSec     = 300   # skip check if driver uptime < 5 min
 $hcDrvLastTs       = [datetime]::MinValue
 $hcDrvCpuSnaps     = @{}   # slug -> last TotalProcessorTime.Ticks (long)
