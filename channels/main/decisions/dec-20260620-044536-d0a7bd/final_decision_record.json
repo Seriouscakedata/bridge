@@ -1,0 +1,194 @@
+{
+    "final_answer":  "Two self-improvement directions are chosen — one quality lever and one speed lever — both hardened entirely by reusing existing mechanisms, with NO new layers. (1) QUALITY: \u0027Fail loud + signal hygiene\u0027 (atom A1, judge 0.89). This is the highest-leverage, data-grounded direction: restart-root-cause-log and audit.launches.jsonl show the dominant failure mode is silent/incomplete work that is never surfaced. Folded INTO this direction as facets (not separate directions): error-contract enforcement at the commit boundary (A4, accepted as a distinct lever but kept inside fail-loud to honor the 1–2-direction limit), the self-maintenance completion contract (A9 wins over A3: it is a SUBCASE of fail-loud, realized by A10/A11, not a standalone primary direction), and finding-dedup signal hygiene (A15). (2) SPEED: \u0027Depth-aware decomposition \u0026 routing\u0027 (A2 collapsed onto its concrete mechanism A14): integrate the EXISTING depth-router\u0027s depth-assessment into the task-ingestion gate so Standard plan-only tasks take a lighter pipeline weight, justified by planner_ms/verify_ms dominance in the metrics. Every hardening step is additive and confined to existing mechanisms — error contracts, audit ledger (Write-AuditLaunchLedgerEntry), restart-attribution, depth-router, and gates (auditor stale-alert) — preserving downstream-parser compatibility (A6, triple consensus; A8). This explicitly resists the caught habit of \u0027turning every weakness into a new verification layer\u0027: no new alert layer, no new classifier, no new watcher, no new store. This task delivers ONLY the durable plan document (A5): atoms A7 and A10–A15 are future-phase, ready-to-execute implementation specifications written INTO the plan, not code executed now; implementation begins as a distinct follow-on task after operator review.",
+    "decisions":  [
+                      {
+                          "decision":  "Deliverable is a durable, plan-only decision record in decisions/; no implementation code is produced in this task.",
+                          "rationale":  "A5 (judge 0.875) correctly scopes the task to a plan; micro-debate resolved the A5-vs-A7/A10–A15 scope conflict by ruling that the document fully specifies the implementation atoms as approved, ready-to-execute specs, while the only artifact delivered now is the document. This preserves the mandatory operator review before any irreversible change.",
+                          "alternatives_considered":  [
+                                                          "Begin the lowest-cost commits (A7/A15) immediately because they are cheap and reversible — rejected: violates A5\u0027s \u0027future work after operator review\u0027 clause and bypasses validation.",
+                                                          "Treat A7/A10–A15 as evidence that the task already includes implementation — rejected by micro-debate resolution."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Output is a decisions/ document containing chosen directions, data justification, atom specs with file/acceptance/risk, an explicit mechanism-reuse map, and an explicit no-new-layer statement; it contains no implementation code."
+                      },
+                      {
+                          "decision":  "Direction 1 (QUALITY): \u0027Fail loud + signal hygiene\u0027, with error-contract enforcement (A4) and the self-maintenance completion contract (A9) folded in as facets/subcases rather than separate top-level directions.",
+                          "rationale":  "A1 (judge 0.89) is the highest-scoring, consensus (A,B) direction, grounded in restart-root-cause-log and audit.launches.jsonl evidence of silent failure. A4 (0.81) is a genuinely distinct lever (enforcement at the commit boundary vs. loud surfacing) but is kept inside this direction to respect the \u0027exactly 1–2 directions\u0027 constraint while preserving its substance. A9 (0.8325) wins the A3/A9 conflict: completion-contract is a subcase of fail-loud, more parsimonious and aligned with A1/A6.",
+                          "alternatives_considered":  [
+                                                          "List fail-loud (A1), error-contract enforcement (A4), and routing (A2) as three separate directions — rejected: exceeds the 1–2-direction limit.",
+                                                          "A3: promote \u0027protected self-maintenance completion contract\u0027 to a standalone primary direction — rejected per A9; over-fragments against the fail-loud umbrella and the A6 reuse principle."
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Document lists \u0027Fail loud + signal hygiene\u0027 as a chosen direction justified by named repo data, explicitly records self-maintenance completion as a subcase (resolving A3 in favor of A9), and notes error-contract enforcement as an enforcement facet of the same direction."
+                      },
+                      {
+                          "decision":  "Direction 2 (SPEED): \u0027Depth-aware decomposition \u0026 routing\u0027, realized by integrating the existing depth-router\u0027s depth-assessment into the task-ingestion gate (A2 collapsed onto A14).",
+                          "rationale":  "A2 (0.84) is consensus (A,C) and justified by planner_ms/verify_ms dominance, but its \u0027or\u0027 between two candidate directions reduced specificity; A14 (0.8135, consensus A,C) supplies the concrete, additive mechanism — tune/integrate the existing depth-router instead of adding another classifier. Collapsing A2 onto A14 gives one committed speed direction with a measurable acceptance test.",
+                          "alternatives_considered":  [
+                                                          "Keep A2\u0027s two named directions joined by \u0027or\u0027 without committing — rejected: low specificity; the document must name one.",
+                                                          "Add a new task-complexity classifier — rejected: violates A6/A8 (no new layer); the depth-router already provides depth assessment."
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Metrics show reduced planner_ms/verify_ms on Standard plan-only tasks with no increase in failures; the task-ingestion gate includes the depth-assessment step from the existing depth-router."
+                      },
+                      {
+                          "decision":  "No new mechanisms or layers: all hardening is additive configuration/connection/strengthening of existing error contracts, audit ledger, restart-attribution, depth-router, and gates.",
+                          "rationale":  "A6 (0.8875, triple consensus A,B,C) is the strongest constraint in the set and the operator\u0027s own Foundation #2; A8 (0.83) gives the concrete reuse mandate for fail-loud with an explicit no-new-alert-layer guard. This directly counters the caught habit of turning every weakness into a new verification layer.",
+                          "alternatives_considered":  [
+                                                          "Add a dedicated alert layer / persistent store / new gate family for fail-loud — rejected by A8.",
+                                                          "Add a separate enforcement subsystem for error contracts — rejected; reuse the ledger as the enforcement ledger (A12)."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "All specified changes are confined to existing mechanism directories/functions; no new files, processes, schemas, or watchers; every change is additive and preserves downstream-parser compatibility."
+                      },
+                      {
+                          "decision":  "Future-phase implementation atoms follow strict 1-file/1-change granularity, each gated by ParseFile + smoke + one targeted assertion in an existing test file, with one commit per atom.",
+                          "rationale":  "A7 (0.86, consensus A,B) provides excellent blast-radius discipline. Modified per the judge to be explicitly scoped to the deferred implementation phase that A5 defines, removing the apparent A5/A7 contradiction.",
+                          "alternatives_considered":  [
+                                                          "Bundle several changes into a larger commit for speed — rejected: defeats atomic verifiability and easy revert."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Each atom in the implementation_plan names exactly one file/change, one new assertion in an existing test, and is independently committable; the document labels these as future-phase specs, not current work."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "A3 — \u0027Protected self-maintenance completion contract\u0027 as a standalone primary direction.",
+                         "why":  "Conflicts with A9 and the parsimony of A1/A6; recategorized as a SUBCASE of fail-loud. Its substance survives, realized by implementation atoms A10 (window_incomplete ledger value) and A11 (auditor stale-alert surfacing)."
+                     },
+                     {
+                         "decision":  "A2\u0027s uncommitted \u0027or\u0027 between \u0027Risk-proportional pipeline weight\u0027 and \u0027Depth-Aware Decomposition and Routing\u0027.",
+                         "why":  "Two named directions joined by \u0027or\u0027 lower specificity; collapsed onto the single concrete mechanism in A14 (depth-router integration into the task-ingestion gate)."
+                     },
+                     {
+                         "decision":  "A12 in its invasive form — mandatory contract checks that gate/block commits at the loop boundary.",
+                         "why":  "Most invasive atom; embedding blocking checks is less additive and could halt commits, conflicting with A6\u0027s additive constraint. Narrowed to additive logging-on-violation into the ledger (non-blocking), plus a concrete named test the judge flagged as missing."
+                     },
+                     {
+                         "decision":  "Error-contract enforcement (A4) as a third independent top-level direction.",
+                         "why":  "Would exceed the \u0027exactly 1–2 directions\u0027 constraint. The judge accepted it as a distinct lever, so it is preserved as an enforcement facet WITHIN Direction 1 (fail loud), not dropped."
+                     },
+                     {
+                         "decision":  "Any new alert layer, classifier, store, schema, process, or watcher for these directions.",
+                         "why":  "Violates A6 (triple consensus) / A8 and the operator\u0027s own caught habit of converting weaknesses into new verification layers; every hardening must reuse existing mechanisms."
+                     }
+                 ],
+    "open_questions":  [
+                           "A12/A13 are underspecified: which existing test file hosts the commit-boundary contract-check assertion and the violation→attribution-link assertion, and what is the exact falsifiable fixture and expected count for each? (judge penalized both for lacking a named test file and assertion).",
+                           "A14\u0027s acceptance is metrics-based and therefore post-implementation: a pre-tune baseline of planner_ms/verify_ms on Standard plan-only tasks must be captured first, and a concrete failure-rate guardrail threshold (\u0027no increase in failures\u0027) must be defined so the effect is provable.",
+                           "A10: confirm the new additive \u0027window_incomplete\u0027 decision value is tolerated by every downstream parser of audit.launches.jsonl before it is written (A6 compatibility).",
+                           "Sprint ordering across the two directions: confirm starting with the lowest-risk atom (A15 finding-dedup) and sequencing the medium-risk loop-boundary atom (A12) last."
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "atom":  "A15 (do first — lowest risk)",
+                                    "phase":  "future (after operator approval)",
+                                    "direction":  "Fail loud + signal hygiene",
+                                    "file":  "finding-append call site (reuse existing Get-BacklogDuplicateFindingType detector)",
+                                    "change":  "At the finding-append site, collapse identical findings within a window into one entry carrying count / first_seen / last_seen.",
+                                    "reused_mechanism":  "Get-BacklogDuplicateFindingType (existing detector) + backlog/ledger store; no new dedup layer.",
+                                    "acceptance":  "Own test feeds 5 identical runtime-incident-model findings → exactly 1 collapsed entry with count=5 and first_seen/last_seen populated; passes ParseFile + smoke.",
+                                    "risk":  "low — additive collapse; must preserve downstream parser of finding entries."
+                                },
+                                {
+                                    "atom":  "A10",
+                                    "phase":  "future",
+                                    "direction":  "Fail loud (self-maintenance completion subcase, per A9)",
+                                    "file":  "Write-AuditLaunchLedgerEntry; test: tools/test-audit-launch-guard.ps1",
+                                    "change":  "Add an additive \u0027window_incomplete\u0027 decision value, written through the existing Write-AuditLaunchLedgerEntry and detected by the existing stale-start reconcile.",
+                                    "reused_mechanism":  "Audit ledger (Write-AuditLaunchLedgerEntry) + existing stale-start reconcile; no new store or watcher.",
+                                    "acceptance":  "Extend tools/test-audit-launch-guard.ps1 — a started-without-terminal window produces exactly one \u0027window_incomplete\u0027 entry with a reason; passes ParseFile + smoke.",
+                                    "risk":  "medium — new enum value; verify downstream-parser tolerance (open question)."
+                                },
+                                {
+                                    "atom":  "A11",
+                                    "phase":  "future",
+                                    "direction":  "Fail loud (gates surfacing)",
+                                    "file":  "auditor stale-alert (gates); test: tools/test-auditor-stale-alert.ps1",
+                                    "change":  "Surface the completion-contract result through the existing auditor stale-alert, classifying benign reasons as non-alerting terminal reasons.",
+                                    "reused_mechanism":  "Gates — existing auditor stale-alert; no new alert layer (A8).",
+                                    "acceptance":  "Extend tools/test-auditor-stale-alert.ps1 — an incomplete window raises exactly one alert, a complete window raises none; passes ParseFile + smoke.",
+                                    "risk":  "medium — alert classification must keep benign reasons silent to avoid noise."
+                                },
+                                {
+                                    "atom":  "A12 (narrowed; do last)",
+                                    "phase":  "future",
+                                    "direction":  "Fail loud (error-contract enforcement facet, A4)",
+                                    "file":  "autonomous-loop commit boundary + ledger (named test TBD — open question)",
+                                    "change":  "At the commit boundary, run the existing error-contract check and, on violation, LOG additively to the ledger (non-blocking). Does NOT block commits.",
+                                    "reused_mechanism":  "Error contracts + audit ledger as the enforcement ledger; no new enforcement subsystem.",
+                                    "acceptance":  "Add a concrete named test: a fixture commit-boundary state violating a contract → exactly one violation entry logged; a valid state → zero. Passes ParseFile + smoke.",
+                                    "risk":  "medium-high — loop integration; kept additive/non-blocking to bound blast radius (this is why the invasive blocking form was rejected)."
+                                },
+                                {
+                                    "atom":  "A13",
+                                    "phase":  "future",
+                                    "direction":  "Fail loud (diagnostic \u0027why\u0027)",
+                                    "file":  "violation-log writer + restart-attribution link (named test TBD — open question)",
+                                    "change":  "Link each error-contract violation log entry to its restart-attribution record (add an attribution-reference field).",
+                                    "reused_mechanism":  "Restart-attribution; additive reference field only.",
+                                    "acceptance":  "Named test asserts a violation log entry carries the matching attribution id; passes ParseFile + smoke.",
+                                    "risk":  "medium — diagnostic value is secondary; verification underspecified until test file is pinned (open question)."
+                                },
+                                {
+                                    "atom":  "A14",
+                                    "phase":  "future",
+                                    "direction":  "Depth-aware routing (SPEED, A2 realized)",
+                                    "file":  "task-ingestion gate (integrate existing depth-router depth-assessment)",
+                                    "change":  "Insert the existing depth-router\u0027s depth-assessment into the task-ingestion gate and route Standard plan-only tasks to a lighter pipeline weight. No new classifier.",
+                                    "reused_mechanism":  "Depth-router + gates (ingestion gate); additive integration.",
+                                    "acceptance":  "Against a captured pre-tune baseline, metrics show reduced planner_ms/verify_ms on Standard plan-only tasks with no increase in failure rate (guardrail threshold defined per open question).",
+                                    "risk":  "medium — routing change could under-serve some tasks; gated on the no-failure-increase guardrail."
+                                }
+                            ],
+    "next_step":  "Operator reviews this plan-only decision record for integrity, atomicity, and non-proliferation of mechanisms; on approval, open the implementation phase with the lowest-risk atom A15 (finding-dedup via the existing Get-BacklogDuplicateFindingType) as a single-file, single-commit change.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Direction 2\u0027s named lever (depth-router) does not control the cost it promises to reduce. lib/decision-depth.ps1 is a Decision-Synthesis depth classifier that only gates entry into the multi-model synthesis pipeline; Standard tasks ALREADY take the light path (Get-SynthesisRouteDecision line 192: \u0027standard task stays on normal path\u0027, route=false) and Simple tasks already skip the heavy pipeline. It is also SHADOW-only unless synthesisMode.enabled.",
+                                  "why":  "A14\u0027s acceptance (\u0027reduced planner_ms/verify_ms on Standard plan-only tasks\u0027) targets normal planner/verify time, which the depth-router never touches — it only decides whether to enter synthesis. So tuning it is likely a no-op for the targeted metric, the \u0027speed lever\u0027 is unsubstantiated, and open_questions[2] admits the baseline is unknown — the justification is circular (claims dominance from a measurement not yet taken). \u0027Integrating a shadow component into a live gate\u0027 is also more than \u0027tuning\u0027 and the code itself records a past incident where depth misrouting \u0027wedged the main channel\u0027."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "A15 — the atom the plan recommends executing FIRST (\u0027lowest cost, highest specificity\u0027) — collides with an existing duplicate subsystem rather than reusing it. lib/backlog-workpack.ps1 already has Invoke-BacklogDuplicateCompactor (rejection model: status=rejected, duplicate_of, resolved_reason=\u0027duplicate-of-root-cause\u0027) AND an intake gate that \u0027prevents new approved audit duplicates from being appended\u0027 (test-backlog-duplicate-compactor.ps1:82-84).",
+                                  "why":  "A15 proposes a DIFFERENT representation — collapse into one entry carrying count/first_seen/last_seen. That is a second, parallel dedup mechanism alongside the existing rejection-based compactor, i.e. exactly the \u0027new layer\u0027 the task forbids (A6/Foundation #2/the caught habit) — not reuse. It is also partly redundant since duplicates are already blocked at intake, and its acceptance test (append 5 identical findings, then collapse) directly contradicts the existing intake gate that would block those appends. Calling this \u0027reuse of Get-BacklogDuplicateFindingType\u0027 is misleading: that function lives only in the compactor-key builder, not at any \u0027append site\u0027."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Success_test #8 (\u0027specific file paths\u0027) is unmet for most atoms. A12 (\u0027autonomous loop commit-boundary handler\u0027), A13 (\u0027violation-logging site\u0027), A14 (\u0027task-ingestion gate\u0027), and A15 (\u0027finding-append site that already imports Get-BacklogDuplicateFindingType\u0027) name no concrete file path. No file named or functioning as a \u0027task-ingestion gate\u0027 exists (the depth-router is consumed by the driver), and Get-BacklogDuplicateFindingType is not at an append site.",
+                                  "why":  "The operator review explicitly checks atomicity. For 4 of 6 atoms the change cannot be located or verified as a single-file edit; one path description (A15) is factually wrong about where the function is used. This undermines the core deliverable requirement of decomposing to locatable, verifiable atoms."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Atomicity constraint (\u00271 file / 1 small verifiable change\u0027, success_test #7) is violated by A10, A11, A12, A13, A14: each lists two distinct files — an implementation site PLUS a separate test file (e.g., A10 = \u0027tools/test-audit-launch-guard.ps1 + the Write-AuditLaunchLedgerEntry call site\u0027; A11 = \u0027tools/test-auditor-stale-alert.ps1 + auditor stale-alert classifier\u0027).",
+                                  "why":  "The contract literally specifies \u00271 файл / 1 маленькая проверяемая правка\u0027. Pairing an impl edit in one file with a test edit in another is 2 files per atom for 5 of 6 atoms. A strict atomicity reviewer (the stated review criterion) would reject these as non-atomic."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027no new verification layer\u0027 principle (decision[3]/A6) is contradicted by the atoms it governs. A12 adds a brand-new error-contract CHECK at the commit boundary (judge-flagged \u0027most invasive\u0027, lowest score 0.6875); A11 adds a new completion-contract alert condition; A15 adds a new collapse representation. Reusing a storage mechanism (the ledger) to back a NEW check is still a new check.",
+                                  "why":  "The task\u0027s explicit warning was the habit of \u0027too easily turning every weakness into a new verification layer.\u0027 Laundering a new check as \u0027additive to an existing mechanism\u0027s files\u0027 is precisely that habit. The plan claims (success_test #10) to demonstrate avoidance of the new-layer habit while A11/A12/A15 actually instantiate it."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Direction-count gaming. Direction 1 bundles fail-loud + self-maintenance completion (A10/A11) + error-contract enforcement (A12/A13) + dedup (A15) — roughly 4 of the original 5 directions — under one \u0027umbrella\u0027, keeping the count at \u00272\u0027 only by relabeling distinct concerns as \u0027subcases\u0027.",
+                                  "why":  "The task mandate was to CHOOSE 1-2 directions with the HIGHEST leverage (focus), and the operator review checks non-proliferation. Re-adopting nearly all original directions via an umbrella subverts that focus mandate and ironically reproduces the very sprawl habit being guarded against. The 1-2 cap is satisfied in letter but not in spirit."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Data justification is asserted, not quantified (success_test #3 wants concrete data points: projected impact / cost / evidence of effect). Direction 1 names artifacts (restart-root-cause-log, audit.launches.jsonl) but cites no frequency or magnitude to support \u0027highest-frequency failure mode\u0027; Direction 2 asserts \u0027planner_ms/verify_ms dominance\u0027 while open_questions[2] concedes the baseline is unknown.",
+                                  "why":  "Naming a log file is not a data point. The claim \u0027highest-frequency failure mode\u0027 and \u0027X-vs-Y dominance\u0027 carry the entire leverage argument but are unmeasured, so the prioritization (which direction has the most leverage, what is safer/cheaper) rests on assertion rather than the data the contract requires."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Sequencing inconsistency in next_step. It directs starting with A15 first and resolving only open_questions[0] and [2] before A12/A14 — but open_questions[1] (the dedup window definition and the field set that defines \u0027identical\u0027) is unresolved and is required to write A15\u0027s acceptance test.",
+                                  "why":  "The first atom to execute is blocked by an open question that the execution order omits, so the stated \u0027start A15 first\u0027 is not actually actionable as written."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The durable deliverable is the raw multi-agent pipeline artifact (final_decision_record.json) in channels/main/decisions/dec-20260620-044536-d0a7bd/, not an authored standalone plan document with the requested sections. The directory contains only pipeline JSONs (proposals/judge/micro_debate/conflict_matrix); no plan .md was produced, unlike the source task which produced self_reflection_directions.md.",
+                                  "why":  "The output_format calls for \u0027a durable document\u0027 organized into chosen directions / justification / hardening plan / atoms / reuse map. A machine pipeline record technically contains the fields but is harder to review as the intended human-facing plan deliverable; a reviewer may consider the deliverable form only marginally compliant."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

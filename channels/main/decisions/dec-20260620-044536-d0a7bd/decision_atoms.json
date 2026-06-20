@@ -1,0 +1,176 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "A1",
+                      "statement":  "Choose \u0027Fail loud + signal hygiene\u0027 as a primary direction.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Direction Choice",
+                      "test":  "Document lists \u0027Fail loud + signal hygiene\u0027 as a chosen direction, justified by repo data (restart-root-cause-log, audit.launches.jsonl).",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A2",
+                      "statement":  "Choose \u0027Risk-proportional pipeline weight\u0027 or \u0027Depth-Aware Decomposition and Routing\u0027 as a direction to improve speed/routing.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Direction Choice",
+                      "test":  "Document lists a speed/routing improvement direction, justified by metrics data (planner_ms/verify_ms dominance, task step counts).",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A3",
+                      "statement":  "Choose \u0027Protected self-maintenance completion contract\u0027 as a direction.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Direction Choice",
+                      "test":  "Document lists \u0027Protected self-maintenance completion contract\u0027 as a chosen direction, justified by audit.launches.jsonl data.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A4",
+                      "statement":  "Choose \u0027Error Contract Enforcement\u0027 as a primary direction.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Direction Choice",
+                      "test":  "Document lists \u0027Error Contract Enforcement\u0027 as a primary direction, justified by data on autonomous task interruptions.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A5",
+                      "statement":  "The durable plan document is the only artifact for this task; implementation is future work after operator review.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Plan Deliverable / Scope Definition",
+                      "test":  "Deliverable is a decisions/ document, contains no code, lists atoms with details, reuse map, and no-new-layer statement.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A6",
+                      "statement":  "No new mechanisms or layers will be introduced; all hardening is achieved by configuring, connecting, or strengthening existing error contracts, audit ledger, restart attribution, depth-router, and gates.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Implementation Strategy / Mechanism Reuse",
+                      "test":  "All changes are confined to existing mechanism directories; no new files, processes, schemas, or watchers are introduced; all changes are additive, preserving compatibility with downstream parsers.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A7",
+                      "statement":  "Implementation atoms are granular: 1 file / 1 change, each gated by ParseFile + smoke + a targeted test assertion, with commit per atom.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Implementation Strategy / Testing/Verification",
+                      "test":  "Each implementation atom is a single file change, passes ParseFile, smoke, and one new assertion in an existing test file.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A8",
+                      "statement":  "For fail-loud, reuse existing error contracts, audit ledger, delivery-gate facts, and restart attribution rather than adding a new alert layer.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Error Handling / Mechanism Reuse",
+                      "test":  "No new alert layer, persistent store, or gate family is introduced for fail-loud; changes are additive to existing mechanisms.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A9",
+                      "statement":  "Treat protected self-maintenance completion as a subcase of fail-loud, not as a separate direction.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Direction Refinement / Scope Definition",
+                      "test":  "Document states self-maintenance is subcase of fail-loud, not a separate direction.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "A10",
+                      "statement":  "Implement self-maintenance completion contract as a new decision value (\u0027window_incomplete\u0027) written through the existing Write-AuditLaunchLedgerEntry and detected by the existing stale-start reconcile.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Self-Maintenance / Error Handling / Mechanism Reuse",
+                      "test":  "Extend tools/test-audit-launch-guard.ps1 — started-without-terminal window -\u003e exactly one window_incomplete entry with reason.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A11",
+                      "statement":  "Surface the self-maintenance completion-contract result through the existing auditor stale-alert (gates), classifying benign reasons as non-alerting terminal reasons.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling / Mechanism Reuse / Gates",
+                      "test":  "Extend tools/test-auditor-stale-alert.ps1 — incomplete window raises exactly one alert, complete window raises none.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A12",
+                      "statement":  "Embed mandatory error contract checks into the autonomous loop\u0027s commit boundary, reusing the ledger as the enforcement ledger.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Error Handling / Mechanism Reuse",
+                      "test":  "Ledger acts as enforcement ledger; every state transition at commit boundary passes contract check or logs violation.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A13",
+                      "statement":  "Reuse restart-attribution to provide the \u0027why\u0027 for error contract violations, linking violation log entry to attribution record.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Error Handling / Mechanism Reuse",
+                      "test":  "Error contract violation log entries are linked to restart-attribution records.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A14",
+                      "statement":  "Tune/integrate the existing depth-router and mode selection into the task ingestion gate for speed and depth-aware decomposition, instead of adding another classifier.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Routing / Speed / Mechanism Reuse",
+                      "test":  "Metrics show reduced planner_ms/verify_ms on Standard plan-only tasks, with no increase in failures; task ingestion gate includes depth-assessment step from depth-router.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A15",
+                      "statement":  "Implement finding dedup by reusing the existing Get-BacklogDuplicateFindingType detector at the finding-append site, collapsing identical findings within a window into one entry with count/first_seen/last_seen.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Data Handling / Signal Hygiene / Mechanism Reuse",
+                      "test":  "Own test feeds 5 identical runtime-incident-model findings and asserts 1 collapsed entry with count=5.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

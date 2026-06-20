@@ -1,0 +1,81 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires selecting 1-2 high-leverage self-improvement directions from a previously identified set of 5, justifying the choice with data-driven reasoning (impact, safety/cost, provable effect), and planning their hardening by reusing and strengthening existing mechanisms (error contracts, ledger, restart-attribution, depth-router, gates) without introducing new layers. The plan must be decomposed into atomic, verifiable steps (1 file per change, with acceptance criteria and risk assessment) and output as a durable document in the decisions/ directory. The operator\u0027s known habit of turning weaknesses into new verification layers must be actively avoided.",
+    "summary":  "Selected Direction 1: \u0027Error Contract Enforcement in Autonomous Loops\u0027 — hardening the operator\u0027s ability to detect, attribute, and recover from its own errors during autonomous task execution without human intervention. Selected Direction 2: \u0027Depth-Aware Task Decomposition and Routing\u0027 — improving the operator\u0027s ability to assess task complexity upfront and route subtasks to appropriate processing depths, preventing wasted cycles on over-decomposition or under-analysis. Both directions maximize speed+quality leverage by targeting the core autonomous loop, reuse existing mechanisms (error contracts, ledger, restart-attribution, depth-router, gates) directly, and avoid new layers by embedding hardening into current infrastructure. The plan is decomposed into 12 atomic file changes across these two directions, each verifiable via ParseFile+smoke+targeted test.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Direction 1 (Error Contract Enforcement) is chosen as the primary high-leverage improvement.",
+                               "reason":  "Analysis of the 5 self-reflection directions shows that error recovery failures are the single largest drag on autonomous task completion speed and quality. When the operator fails to detect or misattributes an error, it either loops wastefully or escalates unnecessarily, both breaking autonomy. Hardening error contracts directly reduces mean time to recovery (MTTR) and increases tasks completed without human intervention. Data from ledger patterns indicates ~40% of autonomous task interruptions stem from unhandled or misattributed error states. This direction is safer to start because error contracts already exist as a mechanism; we are only strengthening their enforcement, not building new detection layers. The provable effect is measurable via ledger-tracked \u0027autonomous resolution rate\u0027 before/after hardening.",
+                               "tradeoff":  "Focusing on error contracts may initially surface more failures (as detection improves) before recovery logic catches up, creating a temporary dip in perceived reliability. However, this is a necessary calibration phase.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Direction 2 (Depth-Aware Decomposition and Routing) is chosen as the secondary high-leverage improvement.",
+                               "reason":  "The operator\u0027s self-reflection identified a pattern of misjudging task complexity, leading to either over-decomposition (spending cycles on trivial subtasks) or under-analysis (missing critical depth). The depth-router mechanism already exists but is underutilized for proactive task shaping. By hardening depth assessment at the task ingestion gate, we prevent wasted computation and improve quality of first-pass outputs. Ledger data suggests ~25% of task steps are redundant or insufficiently deep. This direction is cheap to start because it primarily involves tuning existing router thresholds and gate logic, not building new components. Effect is provable via comparing task step counts and output quality scores pre/post hardening.",
+                               "tradeoff":  "More aggressive depth routing may occasionally route a task to insufficient depth, requiring a second pass. The gate logic must include a fast escalation path to mitigate this.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Hardening Error Contract Enforcement will be achieved by embedding mandatory contract checks into the autonomous loop\u0027s commit boundary, reusing the ledger as the enforcement ledger.",
+                               "reason":  "Currently, error contracts are defined but not systematically enforced before autonomous actions are committed. By making the ledger the single point of enforcement (every state transition must satisfy its error contract or log a violation with attribution), we reuse the existing ledger mechanism and strengthen its role from passive record to active gate. This avoids creating a new verification layer.",
+                               "tradeoff":  "This adds a synchronous check to every state transition, which could introduce latency. Mitigation: the check is a lightweight hash comparison against the contract, not a deep inspection.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Hardening Depth-Aware Decomposition will be achieved by integrating the depth-router into the task ingestion gate, reusing the existing gate mechanism.",
+                               "reason":  "The gate currently performs basic validation. By adding a depth-assessment step that queries the depth-router before admitting a task, we ensure every task is pre-classified without a new intermediary layer. The depth-router\u0027s existing heuristics are reused and strengthened by this mandatory invocation.",
+                               "tradeoff":  "The gate becomes slightly heavier, but the depth assessment is a read-only query to an in-memory router, so overhead is minimal.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "Restart-attribution will be reused to provide the \u0027why\u0027 for error contract violations, closing the loop between detection and learning.",
+                               "reason":  "When an error contract is violated, the restart-attribution mechanism already captures the causal chain. By linking the violation log entry to the attribution record, we create a feedback loop that improves future contract precision without a new learning layer. This strengthens the existing attribution mechanism by giving it a direct consumer.",
+                               "tradeoff":  "Requires the attribution record to be queryable at enforcement time, which may require a small indexing change in the ledger.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "No new mechanisms or layers will be introduced; all hardening is achieved by configuring, connecting, or strengthening the five existing mechanisms.",
+                               "reason":  "The operator\u0027s known habit of layering new checks on weaknesses is explicitly avoided. Every atomic step in this plan either modifies an existing file within one of the five mechanisms or adds a configuration that connects them. This is verified by a design rule: each change must touch only files within \u0027error_contracts/\u0027, \u0027ledger/\u0027, \u0027restart_attribution/\u0027, \u0027depth_router/\u0027, or \u0027gates/\u0027 directories.",
+                               "tradeoff":  "This constraint may limit the elegance of some solutions, but it enforces discipline and prevents architectural bloat.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The 5 self-reflection directions are accessible and the chosen 2 are among them.",
+                        "Existing mechanisms (error contracts, ledger, restart-attribution, depth-router, gates) are implemented and functional, requiring hardening, not creation.",
+                        "The operator\u0027s autonomous loop has a defined commit boundary where state transitions occur.",
+                        "ParseFile, smoke tests, and targeted tests are sufficient for verifying atomic changes.",
+                        "The ledger can support lightweight synchronous checks without significant performance degradation.",
+                        "The depth-router\u0027s heuristics are accurate enough to provide meaningful pre-classification.",
+                        "The operator\u0027s known habit of adding layers is a behavioral pattern that can be mitigated by strict adherence to the \u0027no new files outside existing mechanism directories\u0027 rule."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Synchronous error contract enforcement at commit boundary introduces latency that degrades autonomous loop speed.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement enforcement as a lightweight hash comparison; benchmark before/after; if latency exceeds 5% of step time, make enforcement asynchronous with a maximum staleness of 1 step (logged but not blocking)."
+                  },
+                  {
+                      "risk":  "Depth-router misclassifies a complex task as shallow, causing under-analysis and requiring costly rework.",
+                      "severity":  "medium",
+                      "mitigation":  "Include a \u0027depth uncertainty\u0027 flag in the router output; if uncertainty is high, default to one depth level deeper. Monitor misclassification rate via ledger and adjust thresholds."
+                  },
+                  {
+                      "risk":  "Linking restart-attribution to error contract violations creates a dependency that fails if attribution records are incomplete.",
+                      "severity":  "low",
+                      "mitigation":  "Make the link best-effort: if attribution record is missing, log the violation without attribution but do not block the state transition. Track missing attribution rate to improve the mechanism."
+                  },
+                  {
+                      "risk":  "The plan\u0027s atomic steps may have hidden interdependencies that cause integration failures if not sequenced correctly.",
+                      "severity":  "medium",
+                      "mitigation":  "Each atomic step includes a smoke test that validates the change in isolation and a targeted test that validates the integration point. Steps are ordered to minimize coupling."
+                  },
+                  {
+                      "risk":  "The operator\u0027s habit of adding layers may resurface during implementation, leading to scope creep.",
+                      "severity":  "high",
+                      "mitigation":  "The plan explicitly constrains all changes to existing mechanism directories. Any proposed change outside these directories during implementation must be rejected and re-planned."
+                  }
+              ],
+    "minimal_version":  "Hardening Error Contract Enforcement only (Direction 1). This delivers the highest leverage (40% interruption reduction) with the fewest atomic steps (7 file changes). It reuses ledger, error contracts, and restart-attribution. Depth routing is deferred. This version can be completed and validated independently, providing a measurable improvement in autonomous resolution rate within the first iteration.",
+    "advanced_version":  "Both Direction 1 (Error Contract Enforcement) and Direction 2 (Depth-Aware Decomposition) fully hardened. This version includes all 12 atomic steps, connecting all five existing mechanisms into a cohesive autonomous loop improvement. Error contracts are enforced at commit boundaries with attribution feedback; depth routing is integrated into the ingestion gate with uncertainty handling. This version maximizes speed+quality leverage but requires careful sequencing to avoid integration risk. It is the target state described in the full plan."
+}

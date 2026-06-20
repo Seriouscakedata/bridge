@@ -1,0 +1,92 @@
+{
+    "proposer":  "B",
+    "understanding":  "This is a PLAN-ONLY architecture task. From the 5 self-reflection directions in channels/main/decisions/dec-20260620-032229-2bd892/self_reflection_directions.md I must pick exactly 1-2 with the highest leverage for autonomy speed+quality, justify with the operator\u0027s own log data (max impact, cheapest/safest start, provable effect), and design hardening that REUSES and strengthens existing mechanisms (error contracts, ledger=Write-AuditLaunchLedgerEntry, restart-attribution=restart-root-cause-log, depth-router=lib/decision-depth.ps1, gates=lib/delivery-gate.ps1 + auditor triggers) — explicitly NOT adding a new layer, because my own caught habit is \u0027I too easily turn every weakness into a new verification layer\u0027 (Foundation #2). Deliverable is a durable doc in decisions/ decomposed into atoms (1 file / 1 small verifiable change, passing ParseFile + smoke + its own tools/test-*.ps1 assertion, committable in minutes), each with file path, acceptance, risk, and the concrete existing mechanism reused. No implementation now.",
+    "summary":  "Choose Direction 1 \u0027Fail loud + signal hygiene\u0027 (primary) and Direction 2 \u0027Protected self-maintenance completion contract\u0027 (secondary). They are the only two with a PROVEN payoff already in the logs (audit.launches.jsonl:1444-1447 shows ledger hardening turning a denial-storm into terminal \u0027skipped_not_idle\u0027/\u0027completed_partial\u0027 events), they harden the SAME existing signal machinery (error contracts + audit ledger + restart-attribution + auditor gates), and every fix is a surgical additive edit to code that already exists — so they are simultaneously the highest-quality and the cheapest/safest to start. I deliberately reject Directions 3/4/5: 4 (risk-proportional pipeline) is the biggest raw SPEED lever but the worst provability/safety ratio (re-weighting depth-router risks under-protecting high-stakes work); 3 (gate consolidation) is higher blast-radius removal work, hard to atomize safely; 5 is self-flagged lowest and is the new-mechanism trap. The plan adds ZERO new files, processes, schemas, or watchers: dedup reuses Get-BacklogDuplicateFindingType (lib/backlog-workpack.ps1:265); the completion contract is a new DECISION VALUE (\u0027window_incomplete\u0027) written through the existing Write-AuditLaunchLedgerEntry and detected by the existing stale-start reconcile (driver/10-maintenance.ps1:501-567); it is surfaced through the existing auditor stale-alert (lib/auditor.ps1 Get-StaleAuditLaunchInfo/Test-AuditorTriggers) rather than a new monitor; the silent swallow is fixed in place at driver/81-loop-idle-claim.ps1:1777. Output is a durable decisions/ document listing the atoms below with file/acceptance/risk + an explicit reuse map, and an explicit statement that no new layer is introduced.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Pick Direction 1 (fail-loud + signal hygiene) as primary and Direction 2 (protected self-maintenance completion contract) as secondary; reject Directions 3, 4, 5.",
+                               "reason":  "1 and 2 are the only directions with a demonstrated payoff in the operator\u0027s own ledger (audit.launches.jsonl:1444-1447: denial-storm -\u003e terminal events + completed_partial runtime_seconds=129.4), they share one mechanism family so hardening compounds, and the documented harms are quality-critical (silent Start-AuditIfDue swallow at metrics.jsonl:258; repeated runtime-incident-model warning 58f4 at audit.log:110-139; recurring missing-stamp restarts at restart-root-cause-log.jsonl:2-43).",
+                               "tradeoff":  "Leaves the biggest raw SPEED lever (Direction 4 planner_ms/verify_ms overhead at metrics.jsonl:203,261) for a later, data-fed pass; this plan improves speed only indirectly (less triage of noisy/duplicate signals).",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Implement finding dedup by reusing the existing Get-BacklogDuplicateFindingType detector at the finding-append site, NOT by building a new dedup layer.",
+                               "reason":  "Dedup capability already exists (lib/backlog-workpack.ps1:265); the documented signal-noise is the same finding id 58f4 appended many times (audit.log:110-139). Reuse directly avoids my caught new-layer habit.",
+                               "tradeoff":  "Must confirm the detector\u0027s match key (type/file) fits audit.log findings; if its semantics differ, the atom narrows to collapsing identical (id,file) tuples using the same helper rather than re-implementing.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Make the self-maintenance completion contract a new DECISION VALUE (\u0027window_incomplete\u0027 with reason) written through the existing Write-AuditLaunchLedgerEntry and detected by the existing stale-start reconcile + terminalRunIds dedup set.",
+                               "reason":  "driver/10-maintenance.ps1:501-567 already iterates the ledger, holds a terminal-decisions table (completed_partial/skipped_not_idle) and a terminalRunIds dedup set; extending it asserts \u0027each window has a terminal health-result or an explicit reason\u0027 with no new ledger, file, or process.",
+                               "tradeoff":  "Must guard against double-firing across overlapping windows; mitigated by reusing the already-present terminalRunIds set, but adds review burden to one hot function.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Surface the completion-contract result through the existing auditor stale-alert (gates), not a new monitor; classify benign reasons (channel_audit_disabled, already_ran_this_window) as non-alerting terminal reasons.",
+                               "reason":  "lib/auditor.ps1 already has Get-StaleAuditLaunchInfo (line 496) and Test-AuditorTriggers (line 537); routing the completion result there reuses the existing gate. The reflection\u0027s honest finding (auditor.log:2297-2331) is that real skips are mostly benign, so alerting must distinguish benign from concerning.",
+                               "tradeoff":  "Couples the completion contract to the auditor\u0027s cadence rather than firing instantly; acceptable because the auditor is the existing owner of health alerts.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Keep every change strictly additive — collapse-with-count + first_seen/last_seen for findings, owner/cause fields for restarts, reason field for skips — and never drop data.",
+                               "reason":  "Dedup must not mask an escalating problem (50 repeats getting worse), and downstream parsers (backlog ingestion, delivery-gate) must not break; additive fields preserve both fail-loud intent and signal hygiene.",
+                               "tradeoff":  "Slightly larger ledger/finding entries and a few extra fields to maintain.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Atom granularity = 1 file / 1 change, each gated by ParseFile + an existing tools/test-*.ps1 smoke run + exactly one new assertion in that same test file; commit per atom.",
+                               "reason":  "Matches the existing harness (test-audit-launch-guard.ps1, test-auditor-stale-alert.ps1, test-apply-restart-stamp.ps1, test-delivery-gate*.ps1), keeps each step provable and revertible, and satisfies the \u0027commits in minutes\u0027 constraint.",
+                               "tradeoff":  "More, smaller commits; slightly more ceremony per change.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Output is PLAN ONLY: a durable doc in channels/main/decisions/\u003cthis-dec-id\u003e/ listing chosen directions + data justification + atoms (file/acceptance/risk) + an explicit reuse map and an explicit \u0027no new layer/mechanism\u0027 statement; write no production code now.",
+                               "reason":  "Direct task constraint; the operator reviews integrity + atomicity + non-proliferation before any implementation.",
+                               "tradeoff":  "Defers value to a follow-up implementation task.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The operator runtime is PowerShell; mechanism code is in lib/*.ps1 and driver/*.ps1, and \u0027ParseFile+smoke+own test\u0027 maps to the existing tools/test-*.ps1 convention.",
+                        "Get-BacklogDuplicateFindingType (lib/backlog-workpack.ps1:265) is reusable for collapsing repeated findings, or its match key can be reused for an (id,file) collapse without a new helper.",
+                        "Write-AuditLaunchLedgerEntry plus the stale-start reconcile and terminalRunIds dedup set (driver/10-maintenance.ps1:413-567) are the canonical ledger write/read paths and accept an additional decision value without schema migration.",
+                        "The auditor stale-alert path (lib/auditor.ps1 Get-StaleAuditLaunchInfo / Test-AuditorTriggers) is the existing owner of health alerts and can read the new ledger value.",
+                        "The durable document is the deliverable; this proposal describes the plan and atoms but does not itself create production code.",
+                        "I have not seen proposals A or C; this is an independent solution. (proposal_A.json exists in the dec dir but was intentionally not read.)",
+                        "Per project memory, the PowerShell tool cannot reach git in this repo, but that does not affect a PLAN-only deliverable; implementation atoms would be committed via the driver auto-commit path."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Dedup masks an escalating problem — collapsing repeated findings hides that the same warning is worsening.",
+                      "severity":  "medium",
+                      "mitigation":  "Collapse-with-count only: keep count + first_seen + last_seen; never drop entries; an increasing count on a collapsed finding is itself a louder, single signal."
+                  },
+                  {
+                      "risk":  "The completion-contract reconcile silently becomes the very \u0027new verification layer\u0027 the task forbids.",
+                      "severity":  "medium",
+                      "mitigation":  "Constrain it to a new decision VALUE inside the existing ledger + existing reconcile + existing auditor alert: no new file, process, schema, or watcher; the reuse map in the doc makes this auditable."
+                  },
+                  {
+                      "risk":  "Changing finding/ledger entry shape breaks downstream parsers (backlog ingestion, delivery-gate, depth-router inputs).",
+                      "severity":  "medium",
+                      "mitigation":  "Additive fields only; each atom reruns the relevant existing tools/test-*.ps1 (delivery-gate, audit-launch-guard) as part of acceptance before commit."
+                  },
+                  {
+                      "risk":  "False \u0027window_incomplete\u0027 alerts on legitimately disabled/idle channels create new noise — re-introducing the problem being solved.",
+                      "severity":  "medium",
+                      "mitigation":  "Classify channel_audit_disabled / already_ran_this_window / audit_busy as benign terminal reasons that satisfy the contract without alerting; only genuine start-without-terminal raises one auditor alert."
+                  },
+                  {
+                      "risk":  "Over-scoping: 6 atoms across 2 directions in one pass dilutes the \u0027cheapest to start\u0027 justification.",
+                      "severity":  "low",
+                      "mitigation":  "minimal_version ships only Direction 1\u0027s two highest-provability atoms first; Direction 2 and the rest follow once the first commits prove the pattern."
+                  },
+                  {
+                      "risk":  "Exact append/match sites differ from the located candidates, so an atom\u0027s file path is wrong.",
+                      "severity":  "low",
+                      "mitigation":  "Each atom names a primary file and a confirm step (grep the append site / detector signature) as the first acceptance check; ParseFile + the existing test gate catches a mistargeted edit."
+                  }
+              ],
+    "minimal_version":  "Durable doc choosing ONLY Direction 1 (fail-loud + signal hygiene) with two atoms — the cheapest, safest, most provable slice. ATOM 1.1 (fail-loud): in driver/81-loop-idle-claim.ps1:1777-1778, replace the inner silent `catch {}` (which swallows logging failures of the Start-AuditIfDue wrapper) with a one-line attributed fallback that reuses Write-AuditMaintenanceExceptionLog (or a stderr marker) so a logging failure is itself visible; acceptance: ParseFile OK + a forced-throw test asserts a non-silent fallback is emitted; reuse: error-contract Write-AuditMaintenanceExceptionLog; risk: low (error path only). ATOM 1.2 (signal hygiene): at the audit-finding append site (tools/audit-functional.ps1 Add-AuditFinding), collapse identical findings within a window into one entry with count/first_seen/last_seen by reusing Get-BacklogDuplicateFindingType (lib/backlog-workpack.ps1:265); acceptance: own test feeds 5 identical runtime-incident-model findings and asserts 1 collapsed entry with count=5 (mirroring audit.log:110-139); reuse: existing duplicate-finding detector; risk: medium, mitigated by additive count fields. Doc states explicitly: no new file/process/schema/watcher added.",
+    "advanced_version":  "Durable doc choosing Directions 1+2 with the full atom set, still ZERO new mechanisms. Direction 1: ATOM 1.1 + ATOM 1.2 (as above) + ATOM 1.3 — in the restart-root-cause writer (lib/common.ps1 / driver/60-startup.ps1), add additive owner/cause-class fields to the dominant stamp_reason=missing-stamp entries so the recurring class (restart-root-cause-log.jsonl:2-43) is one attributed signal; acceptance: extend tools/test-apply-restart-stamp.ps1 to assert the new fields and that consecutive missing-stamp events for one task are attributed; reuse: restart-attribution log; risk: low-medium. Direction 2: ATOM 2.1 — extend the stale-start reconcile (driver/10-maintenance.ps1:501-567) to write one \u0027window_incomplete\u0027 decision via the existing Write-AuditLaunchLedgerEntry when a window closes with no terminal decision, deduped by the existing terminalRunIds set; acceptance: extend tools/test-audit-launch-guard.ps1 — started-without-terminal window -\u003e exactly one window_incomplete entry with reason; reuse: ledger + terminal-decisions table; risk: medium. ATOM 2.2 — route that result through the existing auditor stale-alert (lib/auditor.ps1 Get-StaleAuditLaunchInfo/Test-AuditorTriggers) so a missing health-result is one existing gate alert; acceptance: extend tools/test-auditor-stale-alert.ps1 — incomplete window raises exactly one alert, complete window raises none; reuse: gates/auditor triggers; risk: low-medium. ATOM 2.3 — at the Start-AuditIfDue skip path (driver/10-maintenance.ps1:343), classify skip reasons as benign vs concerning in the SAME ledger entry so a never-completing audit cannot \u0027look normal\u0027; acceptance: own test asserts each skip writes a ledger entry with a classified reason; reuse: ledger; risk: low. Plus an additive baseline: measure duplicate-finding count and silent-catch count before/after using the EXISTING metrics.jsonl (no new telemetry layer), and feed the deduped finding-rate + completion-contract status into the EXISTING decision-depth risk inputs (lib/decision-depth.ps1) as data — giving Direction 4 a future, evidence-based nudge with no new classifier. Doc ends with an explicit reuse map (mechanism -\u003e file -\u003e reused-not-rebuilt) and the line: \u0027No new layer, file, process, schema, or watcher is introduced.\u0027"
+}

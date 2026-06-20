@@ -1,0 +1,74 @@
+{
+    "proposer":  "A",
+    "understanding":  "The task is plan-only: create a durable decisions/ document that chooses exactly 1-2 self-improvement directions, justifies them with repo data, and decomposes future implementation into small one-file atoms. The plan must strengthen existing error contracts, ledgers, restart attribution, depth-router, and gates, without adding a new watcher, new gate family, new memory/cache layer, or new verification layer.",
+    "summary":  "I would choose exactly two directions: (1) Fail loud + signal hygiene, and (2) Risk-proportional pipeline weight. Direction 1 has the highest quality leverage because current data shows repeated hard restarts with missing/blank attribution and audit launch failures that previously went silent. Direction 2 has the highest speed leverage because metrics show planner/verify overhead often dominates worker time, and depth-shadow already provides the existing routing surface to tune without inventing a new mechanism. I would not choose protected self-maintenance as a separate direction; I would fold it into fail-loud via the existing audit launch ledger. I would not start with shadow/gate consolidation or context-rebuild reduction because both are more likely to create new policy layers before proving effect.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Choose exactly two directions: fail loud + signal hygiene; risk-proportional pipeline weight.",
+                               "reason":  "The self-reflection ranks fail-loud highest, and repo data supports it: restart-root-cause-log has many hard restarts with missing-stamp/task-id-mismatch and blank root-cause class, while audit launch history contains denial/partial states. Speed data also points at routing cost: metrics entries such as 203, 261, and 266 show planner_ms and verify_ms frequently comparable to or larger than worker_ms.",
+                               "tradeoff":  "This defers self-maintenance as a standalone direction, gate consolidation, and context-memory work. That is intentional: those are either already covered by fail-loud, riskier to change, or likely to become new layers.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Treat protected self-maintenance completion as a subcase of fail-loud, not as a third direction.",
+                               "reason":  "Audit hardening already has existing mechanisms: audit/audit.launches.jsonl, audit logs, tools/audit-runner.ps1, tools/audit.ps1, and tools/deep-audit.ps1. The cheapest improvement is to make every start/skip/fail/partial outcome terminally visible in the existing ledger.",
+                               "tradeoff":  "This does not solve every scheduling fairness issue immediately, but it avoids creating a new self-maintenance scheduler or watchdog.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "For fail-loud, reuse existing error contracts, audit ledger, delivery-gate facts, and restart attribution rather than adding a new alert layer.",
+                               "reason":  "Existing files already encode these surfaces: tools/audit-runner.ps1 and audit/audit.launches.jsonl for audit attempts; driver/60-startup.ps1 and decisions/restart-root-cause-log.jsonl for restart attribution; lib/delivery-gate*.ps1 and driver/86-loop-completion-cleanup.ps1 for gate facts.",
+                               "tradeoff":  "The plan may add small fields/reasons to existing JSONL records, which requires careful compatibility tests, but it does not add a new persistent store.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "For speed, tune the existing depth-router and mode selection instead of adding another classifier.",
+                               "reason":  "channels/main/depth-shadow.jsonl already records Standard/Deep/High-Stakes decisions, and lib/decision-depth.ps1 plus driver/81-loop-idle-claim.ps1 already control synthesis routing. This gives a measurable before/after surface using existing metrics.jsonl phase timings.",
+                               "tradeoff":  "Routing changes can under-classify risky tasks. Mitigation is to keep existing gates/canary/DONE checks unchanged and begin with conservative tests plus shadow evidence.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "The durable plan document should be the only artifact for this task; implementation atoms are future work after operator review.",
+                               "reason":  "The contract explicitly says do not implement now. The document should live under decisions/, contain no code, and list one-file atoms with file path, acceptance, risk, and reused mechanism.",
+                               "tradeoff":  "This delays code changes, but preserves reviewability and prevents the known habit of converting reflection into extra verification layers.",
+                               "confidence":  0.94
+                           }
+                       ],
+    "assumptions":  [
+                        "The referenced self-reflection document is the authoritative list of five directions.",
+                        "A helper inside an existing module is acceptable only when it strengthens that module and does not create a new layer, store, watcher, or gate family.",
+                        "ParseFile means using the existing tools/check-parsefile.ps1 workflow for touched PowerShell files.",
+                        "Smoke means the existing smoke.ps1 or tools/smoke.ps1 workflow already used by this repo.",
+                        "Focused tests should be existing tools/test-*.ps1 files where possible; adding a new test file is only acceptable when no focused test file exists and is itself one atom.",
+                        "The durable document can be named decisions/2026-06-20_self_autonomy_hardening_plan.md or an equivalent unique decisions/ path."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Risk-proportional routing could make an actually high-stakes task too cheap.",
+                      "severity":  "high",
+                      "mitigation":  "Do not weaken delivery gates, canary, ParseFile, smoke, or DONE checks. Start with depth-router tests that prove bridge-self/core/destructive tasks remain High-Stakes, and measure depth-shadow before promotion."
+                  },
+                  {
+                      "risk":  "Fail-loud changes could create noisy ledger spam rather than useful signal.",
+                      "severity":  "medium",
+                      "mitigation":  "Use existing error-contract reason enums and terminal audit launch records; dedupe by task/run where existing ledger conventions already do so. No new alert channel."
+                  },
+                  {
+                      "risk":  "Atomic steps could expand into multi-file refactors.",
+                      "severity":  "medium",
+                      "mitigation":  "The plan document must list each implementation atom as one file only, with its own ParseFile/smoke/focused-test acceptance. Test-file updates are separate atoms from code-file updates."
+                  },
+                  {
+                      "risk":  "Changing restart attribution can affect recovery behavior if mixed with state mutation.",
+                      "severity":  "medium",
+                      "mitigation":  "Limit the restart atom to classification/log fields in driver/60-startup.ps1 and existing decisions/restart-root-cause-log.jsonl output; do not change restart caps or resume policy."
+                  },
+                  {
+                      "risk":  "Existing dirty/untracked decision work could be overwritten.",
+                      "severity":  "low",
+                      "mitigation":  "Use a unique new decisions/ filename or subdirectory and do not touch existing dirty paths."
+                  }
+              ],
+    "minimal_version":  "Create only decisions/2026-06-20_self_autonomy_hardening_plan.md. It should contain: exactly two chosen directions; evidence table with restart-root-cause-log missing-stamp/task-id-mismatch records, audit launch partial/denied records, delivery-gate acceptance_pending examples, and metrics planner_ms/verify_ms dominance; explicit statement that no new mechanisms are introduced; and an atom table. Proposed atoms: A0 document-only atom: decisions/2026-06-20_self_autonomy_hardening_plan.md, acceptance = exactly two directions, no code, lists reused mechanisms. F1 test atom: tools/test-audit-launch-guard.ps1, acceptance = fixture proves every audit start path has terminal ledger status/reason. F2 code atom: tools/audit-runner.ps1, acceptance = ParseFile + test-audit-launch-guard + smoke; reuse audit.launches.jsonl/error contracts. F3 test atom: tools/test-restart-root-cause-class.ps1, acceptance = missing-stamp/task-id-mismatch hard restart no longer records blank attribution. F4 code atom: driver/60-startup.ps1, acceptance = ParseFile + test-restart-root-cause-class + smoke; reuse restart-root-cause-log.jsonl. R1 test atom: tools/test-decision-synthesis.ps1, acceptance = safe plan-only DISCUSS does not become High-Stakes unless bridge-self/core/destructive markers exist; critical bridge tasks remain High-Stakes. R2 code atom: lib/decision-depth.ps1, acceptance = ParseFile + test-decision-synthesis + smoke; reuse depth-router/depth-shadow. Each atom records risk and explicitly says which existing mechanism it strengthens.",
+    "advanced_version":  "After operator approves the minimal document, implement in two waves. Wave 1: fail-loud only, because it is safest and improves quality immediately: F1, F2, F3, F4, each committed separately. Measure effect by fewer blank restart_root_cause_class records and fewer audit attempts without terminal launch status. Wave 2: routing cost only after Wave 1 is stable: R1 and R2 first, then optionally one separate driver/81-loop-idle-claim.ps1 atom if the existing route decision is not actually applied to mode selection. Promotion criteria: metrics.jsonl shows reduced planner_ms/verify_ms on Standard plan-only tasks, while delivery-gate-shadow, qa-results, and restart-root-cause-log show no increase in failures. No additional gates, ledgers, daemons, or classifiers are allowed in either wave."
+}

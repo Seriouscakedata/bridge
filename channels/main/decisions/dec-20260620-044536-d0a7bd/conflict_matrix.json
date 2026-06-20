@@ -1,0 +1,64 @@
+{
+    "consensus_atoms":  [
+                            "A1",
+                            "A2",
+                            "A5",
+                            "A6",
+                            "A7",
+                            "A14"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "A3",
+                                           "A9"
+                                       ],
+                          "axis":  "Direction Scope / Categorization",
+                          "impact":  "medium"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "A5",
+                                           "A7",
+                                           "A10",
+                                           "A11",
+                                           "A12",
+                                           "A13",
+                                           "A14",
+                                           "A15"
+                                       ],
+                          "axis":  "Task Scope / Deliverables",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "A3",
+                        "severity":  "major",
+                        "why":  "Atom A3 (from Proposal B) chooses \u0027Protected self-maintenance completion contract\u0027 as a primary direction. This directly conflicts with Atom A9 (from Proposal A), which explicitly states that \u0027protected self-maintenance completion\u0027 should be treated as a subcase of \u0027fail-loud\u0027 and *not* as a separate direction. These two atoms present a fundamental contradiction regarding the strategic categorization and independence of this concept.",
+                        "fix":  "Reconcile the conflicting views on \u0027Protected self-maintenance completion contract\u0027. A clear decision is needed on whether it is a standalone primary direction or a subcase of \u0027fail-loud\u0027. One of the atoms (A3 or A9) needs to be revised or removed, or a new atom created to clarify its definitive status.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "A9",
+                        "severity":  "major",
+                        "why":  "Atom A9 (from Proposal A) states that \u0027protected self-maintenance completion\u0027 should be treated as a subcase of \u0027fail-loud\u0027 and *not* as a separate direction. This directly conflicts with Atom A3 (from Proposal B), which chooses \u0027Protected self-maintenance completion contract\u0027 as a primary direction. The strategic positioning and scope of this concept are ambiguous and contradictory.",
+                        "fix":  "Reconcile the conflicting views on \u0027Protected self-maintenance completion contract\u0027. A clear decision is needed on whether it is a standalone primary direction or a subcase of \u0027fail-loud\u0027. One of the atoms (A3 or A9) needs to be revised or removed, or a new atom created to clarify its definitive status.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "A5",
+                        "severity":  "major",
+                        "why":  "Atom A5 explicitly states that \u0027The durable plan document is the only artifact for this task; implementation is future work after operator review.\u0027 This defines the current task as purely planning, with no implementation. However, Atom A7 describes the granularity and testing requirements for \u0027implementation atoms\u0027, strongly implying that implementation work *is* part of the current task or is being detailed for immediate execution. This creates a fundamental conflict in the defined scope and deliverables of the current task.",
+                        "fix":  "Clarify the precise scope of the current task. If it is purely a planning task, A7 should be removed or explicitly rephrased to apply to a future, separate implementation phase. If implementation is indeed part of the current task, A5 must be revised to accurately reflect this.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "A7",
+                        "severity":  "major",
+                        "why":  "Atom A7 details the structure and testing requirements for \u0027implementation atoms\u0027, implying that implementation work is part of the current task. This directly conflicts with Atom A5, which explicitly states that \u0027implementation is future work after operator review\u0027 and that the plan document is the *only* artifact for this task. The scope of the current work is contradictory, leading to confusion about what is expected to be delivered.",
+                        "fix":  "Clarify the precise scope of the current task. If it is purely a planning task, A7 should be removed or explicitly rephrased to apply to a future, separate implementation phase. If implementation is indeed part of the current task, A5 must be revised to accurately reflect this.",
+                        "cost":  "low"
+                    }
+                ]
+}

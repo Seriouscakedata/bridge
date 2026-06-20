@@ -1,0 +1,300 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "A1",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B), data-grounded in restart-root-cause-log and audit.launches.jsonl. Low-cost, low-reversibility direction choice directly targeting silent-failure risk. Clean accept and natural umbrella for A9.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "A2",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "presents two named directions joined by \u0027or\u0027 without committing to one, reducing specificity",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,C), justified by planner_ms/verify_ms dominance. Sound speed/routing direction, but the unresolved \u0027or\u0027 between two candidate directions should be collapsed to one in the document; A14 effectively supplies the concrete mechanism.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "A3",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.6,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "direct categorization conflict with A9; promotes self-maintenance to a separate primary direction, over-fragmenting against the fail-loud umbrella and A6 reuse principle",
+                                            "amount":  0.1
+                                        }
+                                    ],
+                      "reason":  "The concept is valid and data-justified, but framing it as a standalone primary direction conflicts with A9 and the parsimony of A1/A6. Modify: keep the completion-contract substance (realized by A10/A11) but recategorize it as a subcase of fail-loud per A9 rather than a separate direction.",
+                      "total":  0.69
+                  },
+                  {
+                      "atom_id":  "A4",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (C) but complementary to fail-loud, not redundant: enforcement at the commit boundary is a distinct lever from loud surfacing. Justified by autonomous-interruption data; reversible and low-cost as a direction. Accept; its implementation (A12/A13) needs tightening.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "A5",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "surface scope ambiguity with A7/A10-A15 requires an explicit one-line note that those are future-phase specifications",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Correctly scopes the task as a durable plan-only deliverable, preventing premature implementation. The flagged conflict with A7 is reconcilable: A5 governs (no code now); A7 and A10-A15 describe future implementation atoms specified within the document, not executed in this task.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "A6",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Triple consensus (A,B,C) and the core simplicity principle: additive-only changes to existing error contracts, audit ledger, restart attribution, depth-router, and gates. Names the specific mechanisms and preserves downstream-parser compatibility. Strongest constraint in the set; clean accept.",
+                      "total":  0.8875
+                  },
+                  {
+                      "atom_id":  "A7",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "must be rephrased to explicitly scope to the future implementation phase to remove the apparent contradiction with A5",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,B) and excellent discipline — 1 file/1 change, ParseFile + smoke + one targeted assertion, commit per atom — which strongly reduces blast radius. Modify only to state it applies to the deferred implementation phase A5 defines, resolving the major scope flag without losing the rigor.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "A8",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Concrete reuse mandate for fail-loud (error contracts, audit ledger, delivery-gate facts, restart attribution) with an explicit no-new-alert-layer guard, fully consistent with A6. Medium cost/reversibility is acceptable given the additive constraint. Accept.",
+                      "total":  0.83
+                  },
+                  {
+                      "atom_id":  "A9",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "document must explicitly record this as the chosen resolution over A3 so the categorization is unambiguous",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Preferred side of the A3/A9 conflict: folding self-maintenance completion into the fail-loud umbrella is more parsimonious and aligns with A1 and A6. Accept as the governing categorization; A3\u0027s substance survives as a subcase realized by A10/A11.",
+                      "total":  0.8325
+                  },
+                  {
+                      "atom_id":  "A10",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "stated as an action (\u0027Implement\u0027); must be framed as a future-phase implementation atom per A5",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Highly specific and well-reused: a new additive \u0027window_incomplete\u0027 decision value through the existing Write-AuditLaunchLedgerEntry, detected by the existing stale-start reconcile, with a named test extension. Modify only to scope it as a specified future implementation atom rather than current work.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "A11",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "stated as an action; must be framed as a future-phase implementation atom per A5",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Surfaces the completion-contract result through the existing auditor stale-alert with benign reasons classified non-alerting — strong signal hygiene and pure reuse of gates, with a precise both-directions test (incomplete -\u003e one alert, complete -\u003e none). Modify only for scope framing under A5.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "A12",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.7,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.6
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "scope: framed as current work, not future-phase per A5",
+                                            "amount":  0.03
+                                        },
+                                        {
+                                            "reason":  "test lacks a named test file and a falsifiable assertion (no fixture/expected-count), unlike A10/A11/A15",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "High-leverage idea (mandatory contract check at the commit boundary, ledger as enforcement ledger) but the most invasive atom — embedding checks into the loop is less additive and could block commits. Modify: scope per A5, narrow to additive logging-on-violation, and add a concrete named test with a falsifiable assertion.",
+                      "total":  0.72
+                  },
+                  {
+                      "atom_id":  "A13",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.78,
+                                     "impact":  0.7,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "scope: framed as current work, not future-phase per A5",
+                                            "amount":  0.03
+                                        },
+                                        {
+                                            "reason":  "no named test file/assertion specifying how the violation-\u003eattribution link is verified",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "Sensible additive linkage giving violations a \u0027why\u0027 by reusing restart-attribution. Diagnostic value is real but secondary, and the verification is underspecified. Modify: scope per A5 and pin down a concrete test asserting the link between a violation log entry and its attribution record.",
+                      "total":  0.748
+                  },
+                  {
+                      "atom_id":  "A14",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.78,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "metrics-based test is post-implementation; document should note it as the future-phase realization of the A2 direction",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,C) and the concrete mechanism for A2: tune/integrate the existing depth-router into the task-ingestion gate instead of adding a classifier (aligns A6). Measurable acceptance (reduced planner_ms/verify_ms with no failure increase). Accept; this is the direction A2 should collapse onto.",
+                      "total":  0.8135
+                  },
+                  {
+                      "atom_id":  "A15",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.88,
+                                     "impact":  0.78,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "stated as an action; must be framed as a future-phase implementation atom per A5",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Best-specified implementation atom: reuse Get-BacklogDuplicateFindingType at the finding-append site to collapse identical findings into one count/first_seen/last_seen entry, with a crisp own test (5 identical -\u003e 1 entry, count=5). Low cost, directly serves signal hygiene (A1). Modify only to scope under A5.",
+                      "total":  0.847
+                  }
+              ]
+}

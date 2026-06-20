@@ -1,0 +1,37 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] Ты сам назвал 5 направлений улучшения СЕБЯ (channels/main/decisions/dec-20260620-032229-2bd892/self_reflection_directions.md). Теперь — ВЫБЕРИ САМ 1-2 направления с наибольшим рычагом для скорости+качества автономии. ОБОСНУЙ выбор СВОИМИ данными: что даст больше всего, что безопаснее/дешевле начать, где доказуемый эффект. Для выбранных — спланируй КАК закалить, ПЕРЕИСПОЛЬЗУЯ и усиливая СУЩЕСТВУЮЩИЕ механизмы (error contracts, ledger, restart-attribution, depth-router, gates), НЕ добавляя новые слои — это твой собственный вывод и Foundation #2. Помни свою же пойманную привычку: «слишком легко превращаю каждую слабость в новый слой проверки» — НЕ делай так.\n\nДЕКОМПОЗИРУЙ план до АТОМОВ: 1 файл / 1 маленькая проверяемая правка, проходит ParseFile+smoke+свой тест, коммитится за минуты. НЕ реализуй сейчас — это PLAN. На выходе durable документ в decisions/ (выбранные направления + обоснование + атомы с файлами/acceptance/risk + что КОНКРЕТНО переиспользуешь вместо нового). Оператор проверит план (целостность + атомарность + что не плодишь механизмы) перед внедрением.",
+    "goal":  "To improve the operator\u0027s autonomy (speed and quality) by identifying 1-2 high-leverage self-improvement directions, justifying them with data, and planning their hardening using existing mechanisms, decomposed into atomic, verifiable steps, without introducing new layers.",
+    "constraints":  [
+                        "Choose exactly 1-2 improvement directions.",
+                        "Justify the choice using own data (max impact, safety/cost, provable effect).",
+                        "Plan must reuse and strengthen EXISTING mechanisms (error contracts, ledger, restart-attribution, depth-router, gates).",
+                        "DO NOT add new layers or mechanisms.",
+                        "DO NOT turn weaknesses into new verification layers.",
+                        "Decompose the plan into ATOMIC steps: 1 file / 1 small verifiable change, passes ParseFile+smoke+own test, commits in minutes.",
+                        "DO NOT implement the plan; this task is for planning ONLY.",
+                        "Output must be a durable document in the \u0027decisions/\u0027 directory.",
+                        "The plan will be reviewed by an operator for integrity, atomicity, and non-proliferation of mechanisms."
+                    ],
+    "known_context":  [
+                          "The operator has previously identified 5 self-improvement directions (documented in channels/main/decisions/dec-20260620-032229-2bd892/self_reflection_directions.md).",
+                          "Existing mechanisms available for reuse include: error contracts, ledger, restart-attribution, depth-router, gates.",
+                          "Foundation #2 supports the principle of not adding new layers.",
+                          "The operator has a known habit of \u0027too easily turning every weakness into a new verification layer\u0027."
+                      ],
+    "output_format":  "A durable document located in the \u0027decisions/\u0027 directory, containing:\n- The 1-2 chosen improvement directions.\n- Justification for each chosen direction (based on data: what gives most, safer/cheaper to start, provable effect).\n- A detailed plan for hardening the chosen directions.\n- The plan must be decomposed into atomic steps, each specifying: file paths, acceptance criteria, and risk assessment.\n- Explicit identification of which CONCRETE existing mechanisms are reused and strengthened for each step, instead of new ones.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "A document is created in the \u0027decisions/\u0027 directory.",
+                          "The document identifies 1 or 2 specific improvement directions.",
+                          "Each chosen direction is clearly justified with data points (e.g., projected impact, cost/safety, evidence of effect).",
+                          "For each chosen direction, a concrete plan is provided on \u0027HOW to harden it\u0027.",
+                          "The plan explicitly states which of the existing mechanisms (error contracts, ledger, restart-attribution, depth-router, gates) are reused and strengthened, and how.",
+                          "The plan explicitly states that NO new layers or mechanisms are introduced.",
+                          "The plan is decomposed into atomic steps, where each step corresponds to \u00271 file / 1 small verifiable change\u0027.",
+                          "Each atomic step includes specific file paths, acceptance criteria, and a risk assessment.",
+                          "The document does NOT contain any implementation code, only the plan.",
+                          "The plan demonstrates an understanding and avoidance of the \u0027new layer\u0027 habit."
+                      ]
+}
