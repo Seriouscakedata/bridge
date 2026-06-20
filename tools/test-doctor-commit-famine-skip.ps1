@@ -149,7 +149,10 @@ function Get-CommitFamineTrigger {
 }
 
 function New-WaitStateSnapshot {
-  param([string]$TaskMode = 'normal')
+  param(
+    [string]$TaskMode = 'normal',
+    $SynthesisLastStepAgeMin = $null
+  )
 
   $snapshot = New-CommitFamineSnapshot -LastCommitMsg 'fix: recent progress' -LastSeqAgeMin 6
   $channel = $snapshot.channels.main
@@ -162,6 +165,9 @@ function New-WaitStateSnapshot {
   $channel.working_tree_lines = 0
   $channel.last_commit_age_min = 1
   $channel.task_age_min = 6
+  if ($null -ne $SynthesisLastStepAgeMin) {
+    $channel | Add-Member -NotePropertyName synthesis_last_step_age_min -NotePropertyValue $SynthesisLastStepAgeMin -Force
+  }
   return $snapshot
 }
 
@@ -248,6 +254,10 @@ try {
   Write-Host '--- Scenario 14: synthesis_suppresses_wait_state_stuck ---'
   Assert-True (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'normal')) 'Scenario 14: normal idle-looking wait state triggers wait_state_stuck'
   Assert-True (-not (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'synthesis'))) 'Scenario 14: synthesis task_mode suppresses wait_state_stuck'
+
+  Write-Host '--- Scenario 15: fresh_synthesis_step_suppresses_wait_state_stuck ---'
+  Assert-True (-not (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'normal' -SynthesisLastStepAgeMin 3))) 'Scenario 15: fresh synthesis step timestamp suppresses wait_state_stuck'
+  Assert-True (Has-WaitStateStuckTrigger -Snapshot (New-WaitStateSnapshot -TaskMode 'normal' -SynthesisLastStepAgeMin 15)) 'Scenario 15: stale synthesis step timestamp no longer suppresses wait_state_stuck'
 } finally {
   try {
     if (Test-Path -LiteralPath $script:TestBridgeRoot) {

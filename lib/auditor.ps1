@@ -413,6 +413,40 @@ function Get-AuditorLastSeqAge {
   return $ageMin
 }
 
+function Get-AuditorTimestampAgeMinutes {
+  param(
+    $State,
+    [string[]]$Names
+  )
+  if (-not $State -or -not $Names) { return $null }
+  foreach ($name in @($Names)) {
+    try {
+      if (-not ($State.PSObject.Properties.Name -contains $name)) { continue }
+      $raw = [string]$State.$name
+      if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+      $ts = [datetime]::Parse($raw, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+      return [int](((Get-Date).ToUniversalTime() - $ts).TotalMinutes)
+    } catch {}
+  }
+  return $null
+}
+
+function Test-AuditorInDecisionSynthesis {
+  param($Channel)
+  if (-not $Channel) { return $false }
+  if ([string]$Channel.task_mode -eq 'synthesis') { return $true }
+
+  # During Decision Synthesis the driver can legitimately have active_jobs=0
+  # between model stages. Treat a fresh synthesis checkpoint as forward progress.
+  try {
+    if ($Channel.PSObject.Properties.Name -contains 'synthesis_last_step_age_min') {
+      $age = [Nullable[int]]$Channel.synthesis_last_step_age_min
+      if ($null -ne $age -and [int]$age -ge 0 -and [int]$age -lt 15) { return $true }
+    }
+  } catch {}
+  return $false
+}
+
 function Get-AuditorSnapshot {
   $cfg = Get-AuditorConfig
   $channels = [ordered]@{}
@@ -445,6 +479,7 @@ function Get-AuditorSnapshot {
     $activeJobsCount = 0
     try { if ($st -and $st.PSObject.Properties.Name -contains 'active_jobs') { $activeJobsCount = @($st.active_jobs).Count } } catch {}
     $activeAgent = if ($st -and $st.PSObject.Properties.Name -contains 'active_agent') { [string]$st.active_agent } else { '' }
+    $synthesisLastStepAge = Get-AuditorTimestampAgeMinutes -State $st -Names @('synthesis_last_step_at','last_synthesis_step_at','synthesis_heartbeat','synthesis_updated_at')
     $qaVerdictCache = $null
     try { if ($st -and $st.PSObject.Properties.Name -contains 'qa_verdict_cache') { $qaVerdictCache = $st.qa_verdict_cache } } catch { $qaVerdictCache = $null }
     $channels[$slug] = [ordered]@{
@@ -474,6 +509,7 @@ function Get-AuditorSnapshot {
       status_text = $statusText
       active_jobs_count = [int]$activeJobsCount
       active_agent = $activeAgent
+      synthesis_last_step_age_min = $synthesisLastStepAge
       paused = if ($st -and $st.PSObject.Properties.Name -contains 'paused') { [bool]$st.paused } else { $false }
     }
   }
@@ -559,7 +595,7 @@ function Test-AuditorTriggers {
     $seqAge    = [int]$c.last_seq_age_min
     $waitsBg   = ([int]$c.active_jobs_count -gt 0) -or ([string]$c.status_text -match 'Жду фоновую|waiting|stuck|pending')
     $noAgent   = [string]::IsNullOrWhiteSpace([string]$c.active_agent) -and [int]$c.task_turn -eq 0
-    $inSynthesis = ([string]$c.task_mode -eq 'synthesis')
+    $inSynthesis = Test-AuditorInDecisionSynthesis -Channel $c
     if ($isWorking -and $hbFresh -and $seqAge -ge 5 -and -not $inSynthesis -and ($waitsBg -or $noAgent)) {
       # First try the cheap fix: recover zombie jobs in-place.
       $rec = $null
