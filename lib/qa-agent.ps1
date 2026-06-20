@@ -303,6 +303,16 @@ function Invoke-QAAgentPostCommit {
     if ([string]::IsNullOrWhiteSpace($short)) { $short = '<unknown>' }
     return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'PASS' -Summary ('post-commit ' + $short + ': bridge QA scenarios skipped (project channel ' + $qaPostChannel + ' — bridge smoke is not relevant to project changes)') -Bugs @() -BridgeRoot $BridgeRoot
   }
+  # Guard: reject empty commits; git diff --stat HEAD~1 HEAD must show file changes.
+  # An empty commit means Codex did not change files; QA PASS here would let the done-gate
+  # close a task that produced nothing, losing the turn.
+  $emptyCommitCheck = @(& git -C $BridgeRoot diff --stat HEAD~1 HEAD 2>$null |
+                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($emptyCommitCheck.Count -eq 0) {
+    $shortEc = [string]$CommitSha; if ($shortEc.Length -gt 7) { $shortEc = $shortEc.Substring(0,7) }
+    if ([string]::IsNullOrWhiteSpace($shortEc)) { $shortEc = '<unknown>' }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel (Get-QAAgentChannel -Channel $Channel) -Verdict 'FAIL' -Summary ('post-commit ' + $shortEc + ': EMPTY COMMIT - git diff --stat HEAD~1 HEAD shows no file changes; Codex did not modify files, task is not done.') -Bugs @() -BridgeRoot $BridgeRoot
+  }
   $qaCfg = Get-QAAgentConfig -BridgeRoot $BridgeRoot
   $runUnsafe = [bool]$IncludeUnsafe -or [bool]$qaCfg.RunUnsafeScenarios
   $scenarioResult = Invoke-QAAgentScenarioSuite -BridgeRoot $BridgeRoot -Url ([string]$qaCfg.ScenarioUrl) -TimeoutSec ([int]$qaCfg.ScenarioTimeoutSec) -IncludeUnsafe:$runUnsafe
