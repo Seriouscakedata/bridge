@@ -162,17 +162,31 @@ function Assert-Artifact {
   }
 }
 function Test-DepthRoutingAssertion {
-  $standardText = 'Plan refinement request: adjust backlog atom ordering and acceptance checks for the maintenance queue.'
+  $standardText = 'Plan refinement DISCUSS request for backlog atom list: refine accepted atoms and acceptance checks for the maintenance queue without changing production files.'
   $highStakesText = '[[HIGH-STAKES]] Refine release checks for account payment rollback handling.'
+  $riskHighText = 'Plan refinement request for backlog atom specification: refine acceptance checks for a routine atom while explicit risk metadata is high.'
+  $keywordOnlyText = 'Plan refinement DISCUSS request for backlog atom list: refine acceptance checks around quoted control-plane security and payment rollback wording in the atom spec, but do not change production behavior or mark this routine backlog planning task as an explicit high-risk task.'
   $deepText = 'Discuss the architecture design for a new synthesis routing pipeline across planners.'
 
   $standard = Get-SynthesisDepthDecision -Text $standardText
   $highStakes = Get-SynthesisDepthDecision -Text $highStakesText
+  $riskHigh = Get-SynthesisDepthDecision -Text $riskHighText -Risk 'high'
+  $keywordOnly = Get-SynthesisDepthDecision -Text $keywordOnlyText
   $deep = Get-SynthesisDepthDecision -Text $deepText
+  $oldTestSynthesisModeEnabled = (Get-Command Test-SynthesisModeEnabled -CommandType Function).ScriptBlock
+  try {
+    function global:Test-SynthesisModeEnabled { return $true }
+    $route = Get-SynthesisRouteDecision -Text $standardText -ExplicitDiscuss $true
+  } finally {
+    Set-Item -Path function:\Test-SynthesisModeEnabled -Value $oldTestSynthesisModeEnabled
+  }
 
   Assert-True ("Depth routing: plan-refinement without high-stakes marker stays Standard (actual: " + [string]$standard['depth'] + ")") ([string]$standard['depth'] -eq 'Standard')
+  Assert-True ("Depth routing: plan-refinement with keyword-only high-stakes terms stays Standard (actual: " + [string]$keywordOnly['depth'] + ")") ([string]$keywordOnly['depth'] -eq 'Standard')
   Assert-True ("Depth routing: explicit high-stakes marker stays High-Stakes (actual: " + [string]$highStakes['depth'] + ")") ([string]$highStakes['depth'] -eq 'High-Stakes')
+  Assert-True ("Depth routing: explicit risk=high stays High-Stakes (actual: " + [string]$riskHigh['depth'] + ")") ([string]$riskHigh['depth'] -eq 'High-Stakes')
   Assert-True ("Depth routing: broad architecture/design request stays Deep (actual: " + [string]$deep['depth'] + ")") ([string]$deep['depth'] -eq 'Deep')
+  Assert-True ("Route decision: plan-refinement ExplicitDiscuss with Standard depth stays normal path (route: " + [string]$route.route + ", reason: " + [string]$route.reason + ")") (-not [bool]$route.route)
 }
 
 # ---------------------------------------------------------------------------------------------------

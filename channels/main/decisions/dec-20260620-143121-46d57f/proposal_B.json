@@ -1,0 +1,73 @@
+{
+    "proposer":  "B",
+    "understanding":  "Get-SynthesisDepthDecision is a deterministic depth classifier (Simple|Standard|Deep|High-Stakes). Two keyword-derived branches over-escalate plan-refinement/DISCUSS atom-list meta-tasks: (a) Step 2 sets High-Stakes when $highStakesKw matches and the task is not small ($t.Trim().Length \u003e= 160) -- but plan-refinement tasks are long AND quote plan/atom content that names high-stakes subsystems (watchdog|supervisor|control.?plane|security|secret|circuit-breaker), so they match the keyword on QUOTED text, not on real risk; (b) Step 3 sets Deep on generic discuss/refine-adjacent wording (обсуди|discuss|подход|approach|...). Either Deep or High-Stakes makes Get-SynthesisRouteDecision return route=true, which swaps role-based DISCUSS for full multi-model Decision Synthesis; that pipeline then churns and the task hangs in wait_state_stuck, wedging the channel. The 2026-06-19 fix already de-escalated SMALL keyword-only tasks, but long plan-refinement meta-tasks slip through. ATOM_004 must narrow routing so generic refine/discuss wording alone does not reach Deep/High-Stakes, while explicit [[HIGH-STAKES]], explicit risk=high/critical, and genuine broad architecture/design discussions keep their current routes (per ATOM_003: plan-refinement DISCUSS -\u003e Standard; [[HIGH-STAKES]] -\u003e High-Stakes; broad architecture/design -\u003e Deep).",
+    "summary":  "Add one $isPlanRefinement meta-task predicate (reusing $low) near the existing $isSmallTask/$highStakesKw block, then gate the two keyword-derived escalations with -not $isPlanRefinement: the Step 2 high-stakes-DOMAIN branch and the Step 3 discuss-\u003eDeep branch. Plan-refinement/DISCUSS atom-list tasks then fall through to Standard (which stays on the normal/light path, so no synthesis, no wait_state_stuck). Step 1 ([[HIGH-STAKES]] marker) and Step 2\u0027s explicit risk=high/critical branch are left UNGATED, so genuine high-stakes still routes high; genuine architecture/design (no refine-artifact token) still routes Deep. Land the ATOM_003 assertions first, then this single-file, reuse-only change.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Introduce exactly one predicate $isPlanRefinement and use it to gate BOTH the keyword-only High-Stakes branch (Step 2) and the discuss-\u003eDeep branch (Step 3) with `-and -not $isPlanRefinement`.",
+                               "reason":  "ATOM_003 requires plan-refinement DISCUSS to land on Standard. Standard requires neither Step 2\u0027s keyword branch nor Step 3 firing, so both must be gated. A single shared predicate keeps this one cohesive logical change (\u0027narrow synthesis routing for plan-refinement\u0027) rather than two unrelated edits.",
+                               "tradeoff":  "It touches two conditionals instead of a single line, which is slightly more than a literal one-liner; justified because both branches express the same over-escalation defect and the atom\u0027s own `change` text covers Deep AND High-Stakes.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Leave Step 1 ([[HIGH-STAKES]] marker) and Step 2\u0027s `$riskVal -in @(\u0027high\u0027,\u0027critical\u0027)` sub-condition completely ungated by the new predicate.",
+                               "reason":  "Acceptance demands \u0027explicit high-risk/high-stakes tasks still route high\u0027. Only the keyword-DERIVED escalation is the bug; explicit signals must remain authoritative.",
+                               "tradeoff":  "A plan-refinement task that is genuinely high-stakes but carries neither the marker nor an explicit high risk will now stay Standard; we deliberately make escalation opt-in/explicit for meta-tasks.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Define the predicate to require a refine/refinement token AND a plan/atom/backlog artifact token, e.g. `($low -match \u0027plan.?refin|refine|refinement|уточн|доработ\u0027) -and ($low -match \u0027atom|backlog|plan|план|spec|self.?improve\u0027)`.",
+                               "reason":  "This distinguishes a meta plan-refinement task from a genuine \u0027обсуди архитектуру X\u0027 (which has no refine-artifact token and must keep routing Deep). It anchors on tokens that actually appear in the auto-backlog plan-refinement task titles (refine, atom, plan, self-improve).",
+                               "tradeoff":  "Regex precision risk in both directions: too broad suppresses real Deep work (e.g. \u0027refine the deployment plan for the payment system\u0027 would de-escalate); too narrow misses some refine phrasings. Mitigated by explicit-marker override and the ATOM_003 test matrix pinning both sides.",
+                               "confidence":  0.62
+                           },
+                           {
+                               "statement":  "Compute the predicate inline (reuse existing $low), add no helper function, no new file, no new router layer; keep depth result space unchanged (Simple|Standard|Deep|High-Stakes).",
+                               "reason":  "Constraints require reuse-only, single-file, no new architectural layers, atomic.",
+                               "tradeoff":  "Inline regex is slightly less testable in isolation than a named predicate function; acceptable for a low-complexity atomic change and avoids introducing a new public surface.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Pair the code change with the ATOM_003 assertions in tools/test-decision-synthesis.ps1: plan-refinement DISCUSS -\u003e Standard; [[HIGH-STAKES]] -\u003e High-Stakes; broad architecture/design -\u003e Deep; and a high-stakes-keyword-QUOTING plan-refinement task -\u003e Standard (not High-Stakes).",
+                               "reason":  "Success tests require a dedicated ATOM_004 regression test plus no smoke regressions; the fourth case directly pins the wait_state_stuck trigger.",
+                               "tradeoff":  "ATOM_004 depends on ATOM_003 being green first (operator gate: \u0027ATOM_004 until ATOM_003 is green\u0027); this serializes the work but prevents shipping the fix without a guard.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The live wedge originates from keyword-derived escalation inside Get-SynthesisDepthDecision, not from an explicit risk passed by the driver: Get-SynthesisRouteDecision calls Get-SynthesisDepthDecision -Text $Text -Intent $Intent with NO -Risk, so for meta-tasks $riskVal is empty/low and escalation comes from $highStakesKw + length and the discuss regex.",
+                        "Depth=Standard does NOT enter synthesis: Get-SynthesisRouteDecision routes only on Deep/High-Stakes or explicit discuss/deep-think markers, so dropping a plan-refinement task to Standard removes it from the synthesis path and resolves wait_state_stuck.",
+                        "tools/test-decision-synthesis.ps1 exists and can load/exercise Get-SynthesisDepthDecision (ATOM_003 adds the depth-routing assertions there).",
+                        "Auto-backlog plan-refinement/DISCUSS tasks reliably contain at least one refine token and one plan/atom/backlog token in their text (consistent with this task\u0027s own title).",
+                        "No other consumer relies on plan-refinement/atom-list tasks being classified Deep or High-Stakes; depth is shadow/route-only and the independent safety gates (claim-gate, approval classifier, critic, rollback) are depth-independent, as the existing 2026-06-19 comment states."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Over-suppression: a genuinely high-stakes task phrased as a plan refinement (e.g. \u0027refine the plan for the payment control-plane\u0027) stays Standard and skips synthesis.",
+                      "severity":  "medium",
+                      "mitigation":  "Explicit [[HIGH-STAKES]] and risk=high/critical remain ungated and still escalate; add a test asserting the marker overrides $isPlanRefinement; depth-independent safety gates still apply per the existing code comment. Document that meta high-stakes must be marked explicitly."
+                  },
+                  {
+                      "risk":  "Predicate too broad and regresses genuine \u0027broad architecture/design -\u003e Deep\u0027 (e.g. catches \u0027обсуди архитектуру нового пайплайна\u0027).",
+                      "severity":  "medium",
+                      "mitigation":  "Require a refine/refinement/уточн/доработ token (architecture-only discussions lack it) plus an artifact token; ATOM_003 explicitly asserts broad architecture/design stays Deep, so the test fails if the predicate over-reaches."
+                  },
+                  {
+                      "risk":  "Predicate too narrow: some real plan-refinement phrasings still match $highStakesKw and re-trigger wait_state_stuck.",
+                      "severity":  "medium",
+                      "mitigation":  "Seed the ATOM_003 fixtures from observed auto-backlog task titles (including high-stakes-keyword-quoting ones); keep the refine-token alternation generous (plan.?refin|refine|refinement|уточн|доработ)."
+                  },
+                  {
+                      "risk":  "PowerShell parse/smoke breakage from the new regex or line-continuation backtick.",
+                      "severity":  "low",
+                      "mitigation":  "Keep the regex inside single-quoted strings (pipe/brackets are literal there), prefer a single physical line over a backtick continuation if the continuation is fragile, and run ParseFile + smoke + tools/test-decision-synthesis.ps1 before commit."
+                  },
+                  {
+                      "risk":  "Sequencing violation: starting ATOM_004 before ATOM_003 is green breaks the operator review gate.",
+                      "severity":  "low",
+                      "mitigation":  "Honor operator_review_gate.do_not_start (\u0027ATOM_004 until ATOM_003 is green\u0027); land the test assertions first, confirm they fail on over-eager escalation, then apply this fix and confirm they pass."
+                  }
+              ],
+    "minimal_version":  "Single-file, single-predicate edit to lib/decision-depth.ps1. (1) After the existing $isSmallTask / $highStakesKw computation (around lines 80-81), add: `$isPlanRefinement = ($low -match \u0027plan.?refin|refine|refinement|уточн|доработ\u0027) -and ($low -match \u0027atom|backlog|plan|план|spec|self.?improve\u0027)` with a comment crediting ATOM_004 and explaining the wait_state_stuck wedge. (2) Change the Step 2 condition to `if ($riskVal -in @(\u0027high\u0027,\u0027critical\u0027) -or ($highStakesKw -and -not $isSmallTask -and -not $isPlanRefinement)) {` — explicit risk still wins, keyword-only no longer fires for plan-refinement. (3) Change the Step 3 condition to `if ((-not $isPlanRefinement) -and ($low -match \u0027обсуди|обсужден|обсуждать|обсуждени|\\bdiscuss\\b|архитектур|architect|\\bdesign\\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли\u0027)) {`. Result: plan-refinement/DISCUSS atom-list tasks fall through to the Standard default and stay on the normal path. Add ATOM_003 assertions in tools/test-decision-synthesis.ps1: plan-refinement DISCUSS -\u003e Standard; a watchdog/control-plane-QUOTING plan-refinement task -\u003e Standard (the wait_state_stuck repro); [[HIGH-STAKES]] -\u003e High-Stakes; \u0027обсуди архитектуру пайплайна\u0027 -\u003e Deep. Verify: ParseFile lib/decision-depth.ps1, run the synthesis test, run the smoke suite, then verify+critic.",
+    "advanced_version":  "Same single predicate and gating, plus observability and finer routing without new layers: (a) when $isPlanRefinement de-escalates, set rationale to \u0027plan-refinement meta (de-escalated, generic refine/discuss)\u0027 instead of the generic strings so depth-shadow.jsonl (Write-DepthShadow already logs rationale) makes the de-escalation auditable and lets a later metrics pass quantify how often it fires; (b) distinguish meta-refinement from genuine architecture more sharply by allowing plan-refinement that ALSO carries a true broad-design signal to still reach Deep (lighter than synthesis-on-High-Stakes) while never reaching High-Stakes — i.e. gate only the High-Stakes keyword branch hard, and for the Deep branch require an explicit architecture token co-occurring; (c) expand the ATOM_003 matrix into a corpus-derived table of real auto-backlog titles (including mixed cases that quote secret/finance/security) to lock both over- and under-suppression; (d) optionally emit a one-line Write-DecisionShadowSignal counter on de-escalation for the ATOM_010b latency/attribution report. Still confined to lib/decision-depth.ps1 (plus the test file), reuse-only, no new functions beyond the inline predicate."
+}

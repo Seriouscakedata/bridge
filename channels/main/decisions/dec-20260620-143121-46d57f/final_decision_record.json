@@ -1,0 +1,149 @@
+{
+    "final_answer":  "Fix `wait_state_stuck` by adding a single inline predicate to `Get-SynthesisDepthDecision` in `lib/decision-depth.ps1` that recognizes generic plan-refinement/DISCUSS backlog tasks, and use that predicate to gate exactly the two escalation branches that misfire: the keyword-only High-Stakes domain escalation (Step 2) and the generic DISCUSS→Deep escalation (Step 3). The predicate must match plan-refinement/atom-list terms AND artifact terms together (e.g. `plan.?refin|refine|refinement|уточн|доработ` AND `atom|backlog|plan|план|spec|self.?improve`) so that incidental high-stakes keywords or a bare \u0027discuss\u0027 in a routine backlog/atom task route Standard instead of High-Stakes or Deep. Explicit `[[HIGH-STAKES]]` markers and explicit `risk in {high,critical}` remain hard overrides that bypass the predicate, and genuine architecture/design discussions still route Deep because the predicate requires co-occurring artifact terms it will not match. The production change is confined to `lib/decision-depth.ps1` with no new functions, files, or router layers (reuse `$low` and existing flow); regression assertions are added to the existing harness `tools/test-decision-synthesis.ps1`, which is the only permitted secondary edit. All seven atoms scored high (0.74–0.95) with no conflicts and no micro-debate, so all are accepted — three with the judge\u0027s modifications folded in (ATOM_001 scope, ATOM_002 predicate narrowing, ATOM_007 testing).",
+    "decisions":  [
+                      {
+                          "decision":  "Confine the production change to an inline predicate inside `Get-SynthesisDepthDecision` in `lib/decision-depth.ps1`; reuse existing variables (e.g. `$low`); add no new helpers, files, or router layers; preserve the depth result space (Simple|Standard|Deep|High-Stakes). Permit test-only edits to `tools/test-decision-synthesis.ps1` as the single allowed secondary file.",
+                          "rationale":  "Satisfies the reuse-only / atomic-single-edit constraint while resolving the judge\u0027s flagged conflict between ATOM_001\u0027s single-file rule and ATOM_007\u0027s need to add assertions: the production logic stays in one file and one edit, and the harness file is touched only to add regression coverage, which the task\u0027s own output_format (\u0027updated or new test cases\u0027) anticipates.",
+                          "alternatives_considered":  [
+                                                          "Add a new helper function or router layer for the predicate",
+                                                          "Strictly one file with zero test changes",
+                                                          "Refactor the whole escalation chain"
+                                                      ],
+                          "risk":  "low — narrow diff; main residual risk is touching shared escalation logic, mitigated by preserving the result space and existing branch order.",
+                          "test":  "Verify the diff modifies only `lib/decision-depth.ps1` (production) plus `tools/test-decision-synthesis.ps1` (tests), adds no new files/functions, and the depth result space remains (Simple|Standard|Deep|High-Stakes); `ParseFile` parses the changed file."
+                      },
+                      {
+                          "decision":  "Introduce a single inline predicate (e.g. `$isPlanRefinementDiscussTask`) that is true only when text matches plan-refinement/atom-list terms (`plan.?refin|refine|refinement|уточн|доработ`) AND artifact terms (`atom|backlog|plan|план|spec|self.?improve`), using word boundaries and validated against a corpus so it does not over-match architecture/design planning.",
+                          "rationale":  "The conjunction (refinement-term AND artifact-term) is what distinguishes routine backlog/atom-list churn from genuine deliberation. A bare `refine` or `plan` token would over-match real architecture/design planning and wrongly de-escalate it; requiring artifact terms keeps the predicate specific, which the judge required as the condition for ATOM_002 and ATOM_006 to hold.",
+                          "alternatives_considered":  [
+                                                          "Broad single-term regex (`refine` OR `plan`) without artifact terms",
+                                                          "Hard-coded list of exact task titles",
+                                                          "Adding explicit architecture/design negative-lookahead exclusions"
+                                                      ],
+                          "risk":  "medium — regex breadth is the primary correctness lever; over-broad matching silently downgrades real Deep/High-Stakes tasks. Mitigated by the AND-of-two-sets design and corpus tests.",
+                          "test":  "Validate the predicate against a corpus of plan-refinement tasks (must match) and architecture/design + non-refinement tasks (must NOT match); confirm no over-match on genuine design-planning text."
+                      },
+                      {
+                          "decision":  "Gate the keyword-only High-Stakes domain escalation branch (Step 2) with the new predicate, so plan-refinement/DISCUSS tasks carrying incidental high-stakes keywords do not escalate to High-Stakes.",
+                          "rationale":  "This is the direct cause of `wait_state_stuck`: incidental domain keywords in routine refinement tasks trigger the heaviest route. Gating only the keyword-only branch removes the false escalation while leaving explicit-risk and small-task logic intact (composition, not replacement, per the judge).",
+                          "alternatives_considered":  [
+                                                          "Remove the keyword-only High-Stakes branch entirely",
+                                                          "Lower keyword weight globally"
+                                                      ],
+                          "risk":  "low — change is scoped to the keyword-only path; explicit overrides preserved by ATOM_004.",
+                          "test":  "`tools/test-decision-synthesis.ps1`: a plan-refinement task quoting high-stakes keywords (e.g. \u0027control-plane security\u0027) but lacking explicit markers asserts route = Standard."
+                      },
+                      {
+                          "decision":  "Preserve explicit High-Stakes escalation: `[[HIGH-STAKES]]` markers and `$riskVal -in @(\u0027high\u0027,\u0027critical\u0027)` continue to force High-Stakes, overriding the new predicate.",
+                          "rationale":  "Highest-scored atom (0.9495). Explicit markers and declared high/critical risk are intentional safety signals and must remain hard overrides; the predicate only suppresses keyword-only and generic-discuss escalation, never explicit ones.",
+                          "alternatives_considered":  [
+                                                          "Let the predicate suppress escalation uniformly regardless of explicit markers"
+                                                      ],
+                          "risk":  "low — this is a preservation guard that protects against the fix\u0027s main downside (under-escalating a genuinely high-stakes task).",
+                          "test":  "`tools/test-decision-synthesis.ps1`: a plan-refinement task marked `[[HIGH-STAKES]]` OR with `risk=high` asserts route = High-Stakes."
+                      },
+                      {
+                          "decision":  "Gate the generic DISCUSS→Deep escalation branch (Step 3) with the new predicate, so generic \u0027discuss\u0027 terms in plan-refinement tasks do not escalate to Deep.",
+                          "rationale":  "Keeps routine backlog/atom-list discussion out of Deep routing, completing the de-escalation surface alongside the High-Stakes gate. Same predicate, same composition approach.",
+                          "alternatives_considered":  [
+                                                          "Leave Step 3 ungated and only fix the High-Stakes branch",
+                                                          "Remove the generic DISCUSS→Deep branch entirely"
+                                                      ],
+                          "risk":  "low–medium — over-gating could suppress legitimate Deep deliberation for plan tasks; bounded by the artifact-term requirement and the arch/design preservation in ATOM_006.",
+                          "test":  "`tools/test-decision-synthesis.ps1`: a plan-refinement task containing only generic \u0027discuss\u0027 terms asserts route = Standard."
+                      },
+                      {
+                          "decision":  "Preserve Deep routing for genuine architecture/design discussions (e.g. containing `архитектур|architect|design`) even when they contain generic \u0027discuss\u0027 terms, because such tasks are not matched by the plan-refinement predicate (no required artifact terms).",
+                          "rationale":  "Ensures the fix narrows only routine refinement and does not regress real deliberation routing. Its correctness is explicitly contingent on ATOM_002\u0027s predicate not over-matching design-planning text, which the narrowed AND-conjunction provides.",
+                          "alternatives_considered":  [
+                                                          "Add architecture/design terms to the suppression set",
+                                                          "Route all DISCUSS to Standard"
+                                                      ],
+                          "risk":  "low–medium — depends on predicate specificity (ATOM_002); the dedicated preservation test pins the behavior.",
+                          "test":  "`tools/test-decision-synthesis.ps1`: a broad architecture/design discussion (e.g. \u0027обсуди архитектуру пайплайна\u0027) asserts route = Deep."
+                      },
+                      {
+                          "decision":  "Add the missing regression assertions to `tools/test-decision-synthesis.ps1` covering all four scenarios: plan-refinement DISCUSS→Standard; high-stakes-keyword-quoting plan-refinement→Standard; `[[HIGH-STAKES]]`/`risk=high`→High-Stakes; and broad architecture/design→Deep. Verify rather than re-add any assertions that already exist.",
+                          "rationale":  "These four cases are the exact regression surface (both de-escalation and preservation). The judge required missing assertions be added explicitly and that both explicit-marker and risk=high preservation be included; this is the only secondary file edit permitted under the reconciled ATOM_001 scope.",
+                          "alternatives_considered":  [
+                                                          "Verification-only run with no new assertions",
+                                                          "Add assertions in a separate new test file"
+                                                      ],
+                          "risk":  "low — additive test changes; ensures the fix is locked against regression.",
+                          "test":  "Execute `tools/test-decision-synthesis.ps1`; all four assertions plus the existing suite pass with no regressions (smoke+test green); the new ATOM_004 case passes."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Add a new helper function, file, or router layer to host the predicate.",
+                         "why":  "Violates the reuse-only / no-new-layers and atomic-single-edit constraints; an inline predicate reusing `$low` and the existing branch flow is sufficient."
+                     },
+                     {
+                         "decision":  "Use a broad single-term regex (e.g. bare `refine` OR `plan`) without requiring co-occurring artifact terms.",
+                         "why":  "Over-matches genuine architecture/design planning and would wrongly de-escalate real Deep/High-Stakes tasks — the failure mode the judge flagged on ATOM_002 and that ATOM_006 depends on avoiding."
+                     },
+                     {
+                         "decision":  "Replace the explicit-risk / explicit-marker escalation logic instead of composing the predicate with it.",
+                         "why":  "Would drop the `[[HIGH-STAKES]]` and `risk in {high,critical}` hard overrides and lose safety behavior; the judge required composition, not replacement (ATOM_003/ATOM_004)."
+                     },
+                     {
+                         "decision":  "Enforce a strict single-file diff with zero edits to the test harness.",
+                         "why":  "Conflicts with the required regression coverage (ATOM_007) and the task\u0027s own output_format. Reconciled by allowing test-only edits to `tools/test-decision-synthesis.ps1` while keeping the production change atomic in `lib/decision-depth.ps1`."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact token set for the predicate regex and whether explicit architecture/design exclusions are needed — must be pinned by corpus validation before merge.",
+                           "Confirm the current variable names (`$low`, `$riskVal`) and the precise ordering of the Step 2 (keyword High-Stakes) and Step 3 (generic DISCUSS→Deep) branches in the live `lib/decision-depth.ps1` so the gates attach to the correct conditionals.",
+                           "Whether gating Step 3 risks suppressing any legitimate Deep routing for plan tasks that genuinely warrant deliberation, and if a narrow allow-list of deliberation signals is needed."
+                       ],
+    "implementation_plan":  [
+                                "Read `lib/decision-depth.ps1` and locate `Get-SynthesisDepthDecision`, the keyword-only High-Stakes branch (Step 2), the generic DISCUSS→Deep branch (Step 3), and the explicit-marker/`$riskVal` override logic; confirm `$low` and the depth result space.",
+                                "Add one inline predicate `$isPlanRefinementDiscussTask` = (matches plan-refinement terms `plan.?refin|refine|refinement|уточн|доработ`) AND (matches artifact terms `atom|backlog|plan|план|spec|self.?improve`), with word boundaries; reuse the existing lowercased text variable (`$low`).",
+                                "Gate the Step 2 keyword-only High-Stakes escalation with `-not $isPlanRefinementDiscussTask`, ensuring the explicit `[[HIGH-STAKES]]` marker and `$riskVal -in @(\u0027high\u0027,\u0027critical\u0027)` overrides still short-circuit to High-Stakes ahead of the gate.",
+                                "Gate the Step 3 generic DISCUSS→Deep escalation with `-not $isPlanRefinementDiscussTask`, leaving genuine architecture/design (`архитектур|architect|design`) on the Deep path because the predicate won\u0027t match them.",
+                                "Add/verify four assertions in `tools/test-decision-synthesis.ps1`: plan-refinement DISCUSS→Standard; high-stakes-keyword plan-refinement→Standard; `[[HIGH-STAKES]]` and `risk=high`→High-Stakes; broad arch/design→Deep.",
+                                "Run `ParseFile` on `lib/decision-depth.ps1`, then the full smoke+test suite and `tools/test-decision-synthesis.ps1`; confirm no regressions and the new ATOM_004 case passes.",
+                                "Run verify+critic (static analysis/linter/review guidelines); confirm the diff touches only the two permitted files and adds no new functions/files/layers.",
+                                "Manually re-run the original `wait_state_stuck` triggering scenario and confirm it no longer escalates to High-Stakes."
+                            ],
+    "next_step":  "Read `lib/decision-depth.ps1` to locate `Get-SynthesisDepthDecision`, the Step 2 keyword High-Stakes branch, the Step 3 generic DISCUSS→Deep branch, and the explicit-marker/`$riskVal` overrides, then add the inline `$isPlanRefinementDiscussTask` predicate.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The fix gates the depth CLASSIFIER, but routing-into-synthesis for DISCUSS tasks is decided by an independent $ExplicitDiscuss flag that has PRECEDENCE over $depth. In Get-SynthesisRouteDecision (lib/decision-depth.ps1:189-191) the order is: elseif ($ExplicitDeepThink){route} / elseif ($ExplicitDiscuss){route=true} / elseif ($depth -in @(\u0027Deep\u0027,\u0027High-Stakes\u0027)){route}. The driver computes the discuss marker itself from the same task text: backlog path driver/81-loop-idle-claim.ps1:1574 ($backlogDiscussMark via \u0027\\bdiscuss\\b|обсуди|...\u0027) and idle path :358 ($discussVerbMark). The target class is literally \u0027plan-refinement/DISCUSS\u0027 — these tasks contain the word \u0027discuss\u0027/\u0027обсуди\u0027 — so $ExplicitDiscuss=true forces route=true REGARDLESS of the gated depth.",
+                                  "why":  "Defeats success_test #1 (\u0027wait_state_stuck no longer occurs under the specific triggering scenario\u0027) and #2. Dropping depth to Standard does NOT remove a discuss-containing task from synthesis, contradicting the decision\u0027s load-bearing premise (proposal_B: \u0027Standard ⇒ not in synthesis\u0027). The bypass lives in driver/81-loop-idle-claim.ps1, which the \u0027changes confined to lib/decision-depth.ps1\u0027 constraint forbids touching — so the fix as scoped CANNOT resolve the bug for the named task class."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The chosen test altitude is structurally blind to the bypass above. Per ATOM_002/ATOM_009 (the dependency decision dec-...-1192ef) and the test as landed (tools/test-decision-synthesis.ps1:169-171), assertions call Get-SynthesisDepthDecision DIRECTLY and explicitly NOT Get-SynthesisRouteDecision/Invoke-SynthesisPipeline. So the regression test will be green (classifier returns Standard) while production still routes into synthesis via $ExplicitDiscuss.",
+                                  "why":  "Creates a false-green: the suite passing is presented as evidence that wait_state_stuck is fixed, but no test exercises the actual routing path that wedges. success_test \u0027wait_state_stuck no longer occurs\u0027 is asserted by a harness that cannot observe the failure mode."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Even on the path the fix does control, the fix is mostly a no-op or an over-correction. (a) Pure \u0027refine\u0027-only tasks already return Standard pre-fix: \u0027refine/refinement/уточн/доработ\u0027 appear in NO escalation regex (not in Step-2 $highStakesKw at line 81, not in the Step-3 regex at line 89), so they never reached Deep/High-Stakes to begin with. (b) The cases the fix actually changes are tasks hitting Step-3 terms NOT in the driver\u0027s discuss list (e.g. \u0027approach\u0027,\u0027strategy\u0027,\u0027подход\u0027,\u0027страте\u0027) AND matching the predicate — a narrow band that largely excludes the architecture terms ATOM_006 wants preserved.",
+                                  "why":  "The headline goal (\u0027generic refine/discuss terms no longer escalate\u0027) is addressed for a set that is either already-correct (refine-only) or bypassed (discuss-containing). The genuine effective domain is small and does not include the named symptom, so the behavioral payoff is far smaller than the record claims."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The $isPlanRefinement predicate over-matches via unanchored substring regex, broadly suppressing legitimate High-Stakes escalation. Artifact term \u0027plan\u0027 matches inside \u0027control-plane\u0027 and \u0027plane\u0027/\u0027explanation\u0027; \u0027spec\u0027 matches \u0027specification/inspect/especially\u0027; and \u0027atom|backlog|self.?improve\u0027 match essentially EVERY self-improvement backlog auto-task (their IDs are \u0027ATOM_xxx\u0027, they come from the backlog, they are \u0027self-improve\u0027). So for the backlog class the artifact half is ~always true, reducing the predicate to \u0027contains a refine word\u0027. Combined: a long self-improve backlog task touching payment/security/control-plane/irreversible that also says \u0027refine\u0027 gets the Step-2 keyword High-Stakes branch suppressed.",
+                                  "why":  "The backlog call site (driver/81-loop-idle-claim.ps1:1575) passes NO -Intent and NO -Risk, so $riskVal is empty and [[HIGH-STAKES]] literal is the ONLY surviving High-Stakes signal for these tasks. Gating the keyword branch therefore silently de-escalates genuinely high-stakes control-plane backlog work to Standard — exactly the under-routing the 2026-06-19 $isSmallTask author warned about (lib/decision-depth.ps1:71-77). This is a real safety regression, not a flagged-and-accepted edge."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Step-2 gate-placement trap. Step 2\u0027s condition is `$riskVal -in @(\u0027high\u0027,\u0027critical\u0027) -or ($highStakesKw -and -not $isSmallTask)` (lib/decision-depth.ps1:82). The decision says keep risk=high authoritative, but if the implementer wraps the whole `if` with `-and -not $isPlanRefinement` (the literal \u0027gate the branch\u0027 instruction), it ALSO suppresses the explicit risk=high path — violating ATOM_004. Only the keyword sub-clause may be gated. The existing tests have NO non-marker risk=high case (only the [[HIGH-STAKES]] literal at line 174), and ATOM_007\u0027s list writes it as \u0027[[HIGH-STAKES]] (or risk=high)\u0027, permitting the author to test only the marker.",
+                                  "why":  "A plausible misimplementation breaks the most authoritative atom (ATOM_004, score 0.937) and would escape the test suite — directly threatening success_test \u0027explicit high-risk tasks still route High-Stakes\u0027 while the suite reports PASS."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Vacuous-regression risk from the unmentioned $isSmallTask guard. The landed ATOM_003 standardText (\u0027Plan refinement request: adjust backlog atom ordering...\u0027) already returns Standard on UNMODIFIED code (no escalation trigger present), so it does not gate the fix. Worse, the planned ATOM_004 case \u0027high-stakes-keyword-quoting plan-refinement → Standard\u0027 also returns Standard pre-fix when short, because Step-2 requires `-not $isSmallTask` and $isSmallTask is true for any text \u003c 160 chars (line 80). The decision\u0027s open_questions never mention $isSmallTask.",
+                                  "why":  "An implementer following the plan literally can write a regression test that is green both before and after the change, satisfying \u0027a new ATOM_004 test passes\u0027 in letter while proving nothing. To be non-vacuous the keyword case must be deliberately crafted \u003e160 chars and non-trivial complexity — a constraint absent from the record."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Diagnosis/contract mismatch on the word \u0027High-Stakes\u0027. The task goal and success_test #2 assert \u0027generic refine/discuss phrases escalate to High-Stakes\u0027, but no such path exists: \u0027refine\u0027 is in no escalation regex, and \u0027discuss\u0027 routes to Deep (Step 3 → line 90), not High-Stakes. High-Stakes is reachable only via the [[HIGH-STAKES]] literal, $riskVal, or domain keywords ($highStakesKw) — none of which are the literal words \u0027refine\u0027/\u0027discuss\u0027.",
+                                  "why":  "A success_test phrased as \u0027a task containing the word refine does not escalate to High-Stakes\u0027 passes vacuously pre- and post-fix, giving misleading verification credit. The real over-routing is discuss→Deep and domain-keyword→High-Stakes; the contract\u0027s framing can cause the wrong assertion to be written."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

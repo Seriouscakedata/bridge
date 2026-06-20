@@ -1,0 +1,51 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to fix a bug in lib/decision-depth.ps1 where generic \u0027refine\u0027 or \u0027discuss\u0027 terms within the synthesis-routing plan-refinement process incorrectly escalate to \u0027High-Stakes\u0027, causing a wait_state_stuck condition. The fix must be atomic, confined to that single file, reuse existing logic without new layers, and pass ParseFile, smoke tests, and verify+critic checks.",
+    "summary":  "Add a guard clause in the decision-depth evaluation logic that checks whether the input phrase is a generic \u0027refine\u0027 or \u0027discuss\u0027 term lacking specific high-stakes indicators. If so, bypass the escalation to \u0027High-Stakes\u0027 and retain the current or default depth level, preventing the wait_state_stuck state.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Insert a conditional check before the High-Stakes escalation block to detect generic refine/discuss phrases.",
+                               "reason":  "The root cause is that the existing logic treats any occurrence of \u0027refine\u0027 or \u0027discuss\u0027 as a trigger for High-Stakes escalation, even when the phrase is generic and lacks concrete high-stakes markers. A targeted guard prevents this false positive.",
+                               "tradeoff":  "Slightly increases cyclomatic complexity in the function but avoids introducing new modules or layers, staying within the reuse-only constraint.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use a regex or string-matching pattern that matches standalone \u0027refine\u0027 or \u0027discuss\u0027 without adjacent high-stakes keywords (e.g., \u0027critical\u0027, \u0027urgent\u0027, \u0027high-stakes\u0027).",
+                               "reason":  "This ensures only truly generic usages are filtered out, while legitimate high-stakes refine/discuss actions still escalate correctly.",
+                               "tradeoff":  "Regex-based matching may need tuning if edge cases arise, but it is a localized, low-risk change.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Place the guard immediately before the existing escalation logic, preserving all other decision-depth pathways.",
+                               "reason":  "Minimizes diff size and risk of regression by not restructuring the overall function flow.",
+                               "tradeoff":  "The fix is tightly coupled to the current function structure; future refactoring may need to relocate the guard.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "The wait_state_stuck condition is solely caused by incorrect High-Stakes escalation from generic refine/discuss terms.",
+                        "The file lib/decision-depth.ps1 contains a function or script block that evaluates phrases and assigns a decision depth (including \u0027High-Stakes\u0027).",
+                        "Existing smoke tests cover the general decision-depth logic and will detect regressions.",
+                        "The ParseFile utility can process the modified PowerShell script without syntax errors.",
+                        "The refined-atom-list.json specification for ATOM_004 confirms the exact triggering phrases and expected behavior."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Overly broad regex may suppress legitimate High-Stakes escalation for edge-case refine/discuss phrases.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a narrowly scoped pattern and validate against known ATOM_004 test cases; add a specific test for borderline phrases."
+                  },
+                  {
+                      "risk":  "The fix might not cover all code paths where the escalation occurs if the logic is duplicated elsewhere in the file.",
+                      "severity":  "low",
+                      "mitigation":  "Review the entire file for similar escalation patterns and apply the guard consistently; rely on smoke tests to catch missed paths."
+                  },
+                  {
+                      "risk":  "ParseFile failure due to PowerShell syntax nuances in the guard condition.",
+                      "severity":  "low",
+                      "mitigation":  "Use only PowerShell-compatible constructs; run ParseFile immediately after the change and fix any syntax issues."
+                  }
+              ],
+    "minimal_version":  "Add a single if-statement guard before the High-Stakes escalation: if ($phrase -match \u0027\\brefine\\b|\\bdiscuss\\b\u0027 -and $phrase -notmatch \u0027\\b(critical|urgent|high.stakes)\\b\u0027) { return $currentDepth }.",
+    "advanced_version":  "Implement the guard as a small helper function IsGenericRefineOrDiscuss($phrase) that encapsulates the regex logic, call it before escalation, and add a unit test for the helper. This improves readability and testability while keeping the change atomic and file-local."
+}

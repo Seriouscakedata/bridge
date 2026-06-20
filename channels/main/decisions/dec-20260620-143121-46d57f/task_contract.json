@@ -1,0 +1,26 @@
+{
+    "task":  "[Автозадача из бэклога] [operator][self-improve реализация ATOM_004] Сузить synthesis-routing plan-refinement/DISCUSS: generic refine/discuss слова НЕ эскалируют High-Stakes (чинит wait_state_stuck). ФАЙЛ: lib/decision-depth.ps1. Полная спека: channels/main/decisions/dec-20260620-071425-784f10/refined-atom-list.json (retained_atoms atom_id=ATOM_004). reuse-only без новых слоёв. АТОМАРНО 1 файл/1 правка/тест есть, ParseFile+smoke+test, verify+critic.",
+    "goal":  "To prevent generic \u0027refine/discuss\u0027 terms from incorrectly escalating to \u0027High-Stakes\u0027 within the synthesis-routing plan-refinement process, thereby resolving the \u0027wait_state_stuck\u0027 issue.",
+    "constraints":  [
+                        "Changes must be confined to the file `lib/decision-depth.ps1`.",
+                        "No new architectural layers or components should be introduced (reuse-only).",
+                        "The change must be atomic, consisting of a single logical modification."
+                    ],
+    "known_context":  [
+                          "This is an automated task originating from the backlog.",
+                          "It is part of a self-improvement effort related to `ATOM_004`.",
+                          "The full specification for `ATOM_004` is available at `channels/main/decisions/dec-20260620-071425-784f10/refined-atom-list.json` (specifically for `retained_atoms atom_id=ATOM_004`)."
+                      ],
+    "output_format":  "Proposed code changes (diff) for `lib/decision-depth.ps1`, updated or new test cases, and a verification report.",
+    "task_type":  "bugfix",
+    "risk":  "high",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "The `wait_state_stuck` condition, previously observed, no longer occurs under the specific triggering scenario.",
+                          "Generic \u0027refine/discuss\u0027 phrases, when processed by the logic in `lib/decision-depth.ps1` within the `synthesis-routing plan-refinement` context, do not incorrectly escalate to \u0027High-Stakes\u0027.",
+                          "The `ParseFile` utility successfully processes `lib/decision-depth.ps1` after the change.",
+                          "All existing `smoke+test` suite tests pass without regressions.",
+                          "A new or updated test specifically covering the fix for `ATOM_004` passes.",
+                          "The modified code passes `verify+critic` checks (e.g., static analysis, linter, code review guidelines)."
+                      ]
+}

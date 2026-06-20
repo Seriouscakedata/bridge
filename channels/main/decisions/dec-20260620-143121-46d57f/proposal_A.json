@@ -1,0 +1,56 @@
+{
+    "proposer":  "A",
+    "understanding":  "ATOM_004 is a one-file bugfix in lib/decision-depth.ps1. The current router treats generic DISCUSS wording as Deep and can let keyword-only high-stakes domain terms promote long plan-refinement atom-list tasks to High-Stakes, which is too broad for synthesis-routing maintenance prompts and contributes to wait_state_stuck.",
+    "summary":  "Add a narrow plan-refinement/DISCUSS predicate inside Get-SynthesisDepthDecision and use it only to suppress keyword-only escalation: generic discuss/refine wording in atom-list refinement tasks stays Standard unless explicit [[HIGH-STAKES]] or risk=high/critical is supplied. Real architecture/design prompts still route Deep.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Keep the change confined to Get-SynthesisDepthDecision in lib/decision-depth.ps1.",
+                               "reason":  "The bad classification is produced by the existing depth router; no new layer is needed.",
+                               "tradeoff":  "The fix is intentionally heuristic and local rather than a richer parser.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Introduce an internal $isPlanRefinementDiscussTask predicate based on plan-refinement/atom-list terms plus generic discuss/refine terms.",
+                               "reason":  "This isolates the backlog atom-list maintenance shape without weakening all discussion routing.",
+                               "tradeoff":  "Some uncommon synonyms may still need later coverage, but the known wait_state_stuck trigger is covered.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Make keyword-only high-stakes domain escalation ignore this plan-refinement/DISCUSS shape, while preserving explicit [[HIGH-STAKES]] and explicit high/critical risk.",
+                               "reason":  "The bug is caused by incidental domain words, not by an operator explicitly requesting high-risk handling.",
+                               "tradeoff":  "A plan-refinement prompt about a genuinely risky domain must carry explicit risk or the marker to get High-Stakes.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Split generic DISCUSS from real design/architecture Deep signals.",
+                               "reason":  "Generic DISCUSS alone should not make atom-list refinement Deep, but architecture/design strategy still should.",
+                               "tradeoff":  "Plan-refinement prompts containing design/architecture keywords will still route Deep.",
+                               "confidence":  0.84
+                           }
+                       ],
+    "assumptions":  [
+                        "ATOM_003 test coverage in tools/test-decision-synthesis.ps1 is already present and is the dedicated acceptance test for this implementation atom.",
+                        "Only lib/decision-depth.ps1 may be modified for ATOM_004.",
+                        "Explicit high risk means [[HIGH-STAKES]], -Risk high/critical, or Intent.risk high/critical, not incidental words such as security/control-plane inside a refinement prompt.",
+                        "The unrelated dirty/untracked decision artifact directory must be left untouched."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The plan-refinement predicate could under-match a future wording variant.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the predicate small now and extend only with observed failing prompts plus tests."
+                  },
+                  {
+                      "risk":  "Suppressing keyword-only high-stakes escalation could downgrade a real risky refinement task.",
+                      "severity":  "medium",
+                      "mitigation":  "Do not suppress explicit [[HIGH-STAKES]] or explicit high/critical risk; require operators/tests to use those markers for true risk."
+                  },
+                  {
+                      "risk":  "Changing DISCUSS routing could affect legitimate broad discussion tasks.",
+                      "severity":  "low",
+                      "mitigation":  "Only suppress generic DISCUSS when plan-refinement/atom-list terms are also present; architecture/design terms still return Deep."
+                  }
+              ],
+    "minimal_version":  "Proposed diff for lib/decision-depth.ps1 only:\n--- a/lib/decision-depth.ps1\n+++ b/lib/decision-depth.ps1\n@@\n   $riskVal = if ($Risk) { $Risk.ToLowerInvariant() } else { (\u0026 $getIntent \u0027risk\u0027).ToLowerInvariant() }\n   $complexityHint = (\u0026 $getIntent \u0027complexity\u0027).ToLowerInvariant()\n   $isSmallTask = ($complexityHint -in @(\u0027trivial\u0027,\u0027simple\u0027)) -or ($t.Trim().Length -lt 160)\n+  $isPlanRefinementDiscussTask = (\n+    ($low -match \u0027plan[- ]?refinement|refined[- ]atom[- ]list|retained_atoms|atom[- ]list|backlog atom|decision atom\u0027) -and\n+    ($low -match \u0027\\\\brefine\\\\b|\\\\brefinement\\\\b|\\\\bdiscuss\\\\b|обсуди|обсужден|обсуждать|обсуждени|уточн|доработ\u0027)\n+  )\n   $highStakesKw = ($low -match \u0027secret|watchdog|supervisor|circuit.?breaker|control.?plane|медицин|medical|финанс|finance|деньг|payment|безопасн|security|необратим|irreversible\u0027)\n-  if ($riskVal -in @(\u0027high\u0027, \u0027critical\u0027) -or ($highStakesKw -and -not $isSmallTask)) {\n+  if ($riskVal -in @(\u0027high\u0027, \u0027critical\u0027) -or ($highStakesKw -and -not $isSmallTask -and -not $isPlanRefinementDiscussTask)) {\n@@\n-  if ($low -match \u0027обсуди|обсужден|обсуждать|обсуждени|\\bdiscuss\\b|архитектур|architect|\\bdesign\\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли\u0027) {\n+  $genericDiscussKw = ($low -match \u0027обсуди|обсужден|обсуждать|обсуждени|\\\\bdiscuss\\\\b\u0027)\n+  $deepDiscussionKw = ($low -match \u0027архитектур|architect|\\\\bdesign\\\\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли\u0027)\n+  if ($deepDiscussionKw -or ($genericDiscussKw -and -not $isPlanRefinementDiscussTask)) {\n     return @{ depth = \u0027Deep\u0027; judge_task_type = $taskType; rationale = \u0027design/architecture discussion\u0027 }\n   }\n\nVerification report to run after applying: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check-parsefile.ps1 lib/decision-depth.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-tests.ps1 -OnlyCsv test-decision-synthesis.",
+    "advanced_version":  "If test-file edits become allowed later, strengthen Test-DepthRoutingAssertion in tools/test-decision-synthesis.ps1 with a case like: \u0027Plan-refinement DISCUSS: refine atom-list acceptance for control-plane security backlog routing without explicit high-risk marker\u0027 and assert depth Standard. I would not include that in ATOM_004 because the contract says one file and the ATOM_003 test already owns test coverage."
+}

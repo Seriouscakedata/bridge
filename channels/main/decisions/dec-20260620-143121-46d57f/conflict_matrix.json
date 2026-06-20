@@ -1,0 +1,17 @@
+{
+    "consensus_atoms":  [
+                            "ATOM_001_SCOPE",
+                            "ATOM_002_PREDICATE_DEF",
+                            "ATOM_003_GATE_HIGH_STAKES",
+                            "ATOM_004_PRESERVE_EXPLICIT_HIGH_STAKES",
+                            "ATOM_005_GATE_GENERIC_DISCUSS",
+                            "ATOM_006_PRESERVE_ARCH_DESIGN_DEEP",
+                            "ATOM_007_COMPREHENSIVE_TESTING"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

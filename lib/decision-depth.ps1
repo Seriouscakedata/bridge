@@ -78,15 +78,19 @@ function Get-SynthesisDepthDecision {
   $riskVal = if ($Risk) { $Risk.ToLowerInvariant() } else { (& $getIntent 'risk').ToLowerInvariant() }
   $complexityHint = (& $getIntent 'complexity').ToLowerInvariant()
   $isSmallTask = ($complexityHint -in @('trivial','simple')) -or ($t.Trim().Length -lt 160)
+  $isPlanRefinementDiscussTask = (
+    ($low -match '(?<![a-z0-9а-яё])(plan[- _]?refin(?:e|ement|ing)?|refin(?:e|ement|ing)?|уточн\w*|доработ\w*)(?![a-z0-9а-яё])') -and
+    ($low -match '(?<![a-z0-9а-яё])(atom(?:[_ -]?\d+)?|backlog|plan|план|spec|self[- _]?improve(?:ment)?)(?![a-z0-9а-яё])')
+  )
   $highStakesKw = ($low -match 'secret|watchdog|supervisor|circuit.?breaker|control.?plane|медицин|medical|финанс|finance|деньг|payment|безопасн|security|необратим|irreversible')
-  if ($riskVal -in @('high', 'critical') -or ($highStakesKw -and -not $isSmallTask)) {
+  if ($riskVal -in @('high', 'critical') -or ($highStakesKw -and -not $isSmallTask -and -not $isPlanRefinementDiscussTask)) {
     $why = if ($riskVal -in @('high', 'critical')) { "risk=$riskVal" } else { 'high-stakes domain' }
     return @{ depth = 'High-Stakes'; judge_task_type = $taskType; rationale = $why }
   }
 
   # 3. Explicit design/architecture discussion -> Deep. Takes precedence over the short-length
   #    heuristic: "обсуди X" is a discussion request even when short, and must not become Simple.
-  if ($low -match 'обсуди|обсужден|обсуждать|обсуждени|\bdiscuss\b|архитектур|architect|\bdesign\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли') {
+  if (($low -match 'обсуди|обсужден|обсуждать|обсуждени|\bdiscuss\b|архитектур|architect|\bdesign\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли') -and -not $isPlanRefinementDiscussTask) {
     return @{ depth = 'Deep'; judge_task_type = $taskType; rationale = 'design/architecture discussion' }
   }
 
@@ -177,6 +181,12 @@ function Get-SynthesisRouteDecision {
     }
   } catch {}
 
+  $low = ([string]$Text).ToLowerInvariant()
+  $isPlanRefinementDiscussTask = (
+    ($low -match '(?<![a-z0-9а-яё])(plan[- _]?refin(?:e|ement|ing)?|refin(?:e|ement|ing)?|уточн\w*|доработ\w*)(?![a-z0-9а-яё])') -and
+    ($low -match '(?<![a-z0-9а-яё])(atom(?:[_ -]?\d+)?|backlog|plan|план|spec|self[- _]?improve(?:ment)?)(?![a-z0-9а-яё])')
+  )
+
   $enabled = Test-SynthesisModeEnabled
   $route = $false
   $reason = ''
@@ -187,6 +197,7 @@ function Get-SynthesisRouteDecision {
   elseif ($StudyMode -and -not ($ExplicitDiscuss -or $ExplicitDeepThink)) { $reason = 'study mode owns this task' }
   elseif ($LowComplexity) { $reason = 'low complexity guard' }
   elseif ($ExplicitDeepThink) { $route = $true; $reason = 'deep-think marker' }
+  elseif ($ExplicitDiscuss -and $isPlanRefinementDiscussTask -and $depth -eq 'Standard') { $reason = 'plan-refinement discuss stays standard' }
   elseif ($ExplicitDiscuss) { $route = $true; $reason = 'explicit discuss request' }
   elseif ($depth -in @('Deep','High-Stakes')) { $route = $true; $reason = 'smart-router depth=' + $depth }
   else { $reason = 'standard task stays on normal path' }

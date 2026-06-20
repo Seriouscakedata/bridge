@@ -1,0 +1,92 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001_SCOPE",
+                      "statement":  "Confine the change to `Get-SynthesisDepthDecision` in `lib/decision-depth.ps1`, implementing the predicate inline, reusing existing variables like `$low`, and introducing no new helper functions, files, or router layers, while preserving the existing depth result space and overall function flow.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Constraint Adherence",
+                      "test":  "Verify the diff modifies only `lib/decision-depth.ps1`, adds no new files, no new functions, and the depth result space remains (Simple|Standard|Deep|High-Stakes).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_002_PREDICATE_DEF",
+                      "statement":  "Introduce a predicate (e.g., `$isPlanRefinementDiscussTask` or `$isPlanRefinement`) defined by a regex matching plan-refinement/atom-list terms (e.g., `plan.?refin|refine|refinement|уточн|доработ`) AND artifact terms (e.g., `atom|backlog|plan|план|spec|self.?improve`), to identify generic plan-refinement/discuss tasks.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Code Change: Predicate Definition",
+                      "test":  "Validate the predicate\u0027s regex against a corpus of plan-refinement tasks and non-plan-refinement tasks, ensuring it correctly identifies generic refinement tasks without over-matching architecture/design discussions.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_003_GATE_HIGH_STAKES",
+                      "statement":  "Gate the keyword-only High-Stakes domain escalation branch (Step 2) with the new predicate, so that plan-refinement/DISCUSS tasks with incidental high-stakes keywords do not escalate to High-Stakes.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Code Change: Conditional Logic",
+                      "test":  "Run `tools/test-decision-synthesis.ps1` with a test case for a plan-refinement task quoting high-stakes keywords (e.g., \u0027control-plane security\u0027) but lacking explicit markers, asserting it routes Standard.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_004_PRESERVE_EXPLICIT_HIGH_STAKES",
+                      "statement":  "Ensure explicit high-stakes markers (`[[HIGH-STAKES]]`) and explicit high/critical risk values (`$riskVal -in @(\u0027high\u0027,\u0027critical\u0027)`) continue to trigger High-Stakes escalation, overriding the new predicate.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Code Change: Conditional Logic (Preservation)",
+                      "test":  "Run `tools/test-decision-synthesis.ps1` with a test case for a plan-refinement task explicitly marked `[[HIGH-STAKES]]` or with `risk=high`, asserting it routes High-Stakes.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_005_GATE_GENERIC_DISCUSS",
+                      "statement":  "Gate the generic DISCUSS -\u003e Deep escalation branch (Step 3) with the new predicate, so that generic \u0027discuss\u0027 terms in plan-refinement tasks do not escalate to Deep.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Code Change: Conditional Logic",
+                      "test":  "Run `tools/test-decision-synthesis.ps1` with a test case for a plan-refinement task containing only generic \u0027discuss\u0027 terms, asserting it routes Standard.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_006_PRESERVE_ARCH_DESIGN_DEEP",
+                      "statement":  "Ensure that genuine architecture/design discussions (e.g., containing \u0027архитектур|architect|design\u0027) continue to route Deep, even if they contain generic \u0027discuss\u0027 terms, as long as they are not identified as plan-refinement tasks by the new predicate.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Code Change: Conditional Logic (Preservation)",
+                      "test":  "Run `tools/test-decision-synthesis.ps1` with a test case for a broad architecture/design discussion (e.g., \u0027обсуди архитектуру пайплайна\u0027), asserting it routes Deep.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_007_COMPREHENSIVE_TESTING",
+                      "statement":  "Add or verify specific assertions in `tools/test-decision-synthesis.ps1` for key scenarios: plan-refinement DISCUSS -\u003e Standard; [[HIGH-STAKES]] -\u003e High-Stakes; broad architecture/design -\u003e Deep; and high-stakes-keyword-quoting plan-refinement task -\u003e Standard.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Execute `tools/test-decision-synthesis.ps1` and confirm all specified assertions pass, covering both de-escalation and preservation cases.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

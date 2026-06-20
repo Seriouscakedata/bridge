@@ -1,0 +1,123 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001_SCOPE",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.82,
+                                     "impact":  0.72,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        0.05
+                                    ],
+                      "reason":  "The implementation scope is appropriately narrow for the router change, but the \u0027diff modifies only lib/decision-depth.ps1\u0027 constraint conflicts with the testing atom if assertions must be added to tools/test-decision-synthesis.ps1. Modify to allow test-only edits or require verification-only testing when assertions already exist.",
+                      "total":  0.7455
+                  },
+                  {
+                      "atom_id":  "ATOM_002_PREDICATE_DEF",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.88,
+                                     "impact":  0.86,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        0.03
+                                    ],
+                      "reason":  "The predicate concept is correct and cheap to implement, but the regex needs careful narrowing because broad pairs like \u0027refine\u0027 plus \u0027plan\u0027 can over-match genuine architecture or design planning. Modify to include boundaries, artifact-specific terms, or explicit exclusions validated by corpus tests.",
+                      "total":  0.802
+                  },
+                  {
+                      "atom_id":  "ATOM_003_GATE_HIGH_STAKES",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.94,
+                                     "impact":  0.92,
+                                     "simplicity":  0.89,
+                                     "risk_reduction":  0.94,
+                                     "specificity":  0.91
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This directly addresses the failure mode: incidental high-stakes keywords in plan-refinement tasks should not trigger the heaviest route. It should be composed with the existing explicit-risk and small-task logic rather than replacing them.",
+                      "total":  0.9255
+                  },
+                  {
+                      "atom_id":  "ATOM_004_PRESERVE_EXPLICIT_HIGH_STAKES",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.98,
+                                     "feasibility":  0.97,
+                                     "impact":  0.9,
+                                     "simplicity":  0.93,
+                                     "risk_reduction":  0.96,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Explicit markers and high or critical risk values must remain hard overrides. This preserves safety behavior while limiting only keyword-only escalation.",
+                      "total":  0.9495
+                  },
+                  {
+                      "atom_id":  "ATOM_005_GATE_GENERIC_DISCUSS",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.93,
+                                     "impact":  0.88,
+                                     "simplicity":  0.87,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Gating generic DISCUSS escalation for plan-refinement tasks is the right behavioral change and keeps routine backlog or atom-list discussion out of Deep routing.",
+                      "total":  0.9005
+                  },
+                  {
+                      "atom_id":  "ATOM_006_PRESERVE_ARCH_DESIGN_DEEP",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.91,
+                                     "impact":  0.84,
+                                     "simplicity":  0.84,
+                                     "risk_reduction":  0.86,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+                                        0.02
+                                    ],
+                      "reason":  "Preserving Deep for real architecture and design discussions is necessary, but correctness depends on the predicate from ATOM_002 not over-matching architecture/design planning text as generic refinement.",
+                      "total":  0.853
+                  },
+                  {
+                      "atom_id":  "ATOM_007_COMPREHENSIVE_TESTING",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.88,
+                                     "impact":  0.91,
+                                     "simplicity":  0.84,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+                                        0.03
+                                    ],
+                      "reason":  "The requested scenarios are the right regression surface. Modify to state that missing assertions must be added, and include both explicit marker and risk=high preservation if feasible. This also needs reconciliation with ATOM_001\u0027s single-file diff constraint.",
+                      "total":  0.868
+                  }
+              ]
+}
