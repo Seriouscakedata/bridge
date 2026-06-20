@@ -1,5 +1,7 @@
 # Карта проекта: bridge
 
+> **[PROTECTED SERVICE] ЛАПА (computer-control)** — GUI-руки оператора для задач на ПК. Вызов: `[[ЛАПА: skill | key=val]]`. Навыки: `open-app`, `type`, `telegram-send`, `telegram-send-sticker`. Точка входа: `tools/computer-use.ps1` → `channels/computer-control/cc.py`. Архитектура: Planner(Flash Lite)→Executor(UIAutomation→Vision)→Reporter(Telegram). Гейты: verifier ≥0.40 (confidence), act (опасные шаги). Быстро+дёшево. Используй для GUI/ПК задач, НЕ для файлов/git.
+
 _Обновлено: 2026-06-02. Опорный коммит актуализации: `4633fa8 fix(driver): audit project diffs and block quality bypasses`._
 
 Это каноническая карта проекта для канала `main`. Её читают человек, агенты и `Project Context Pack`. Сгенерированные карты в `memory/` полезны, но библиотекарь может их перезаписать, поэтому устойчивый источник правды для структуры проекта - этот файл.
