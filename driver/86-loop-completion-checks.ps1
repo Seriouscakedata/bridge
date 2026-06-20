@@ -435,6 +435,10 @@ function Test-DoneGateStateValid {
     return [pscustomobject]@{Ok=$false; Reason="state.json invalid JSON: $(($_.Exception.Message -replace '\s+',' ').Trim())"; MissingFields=@(); Sha256Mismatch=$false}
   }
 
+  if ($null -eq $state -or $state -is [array] -or $state -isnot [System.Management.Automation.PSCustomObject]) {
+    return [pscustomobject]@{Ok=$false; Reason='state.json schema invalid: top-level value must be a JSON object'; MissingFields=@(); Sha256Mismatch=$false}
+  }
+
   $missing = @($requiredFields | Where-Object { -not ($state.PSObject.Properties.Name -contains $_) })
   if ($missing.Count -gt 0) {
     return [pscustomobject]@{Ok=$false; Reason="state.json missing required fields: $($missing -join ', ')"; MissingFields=$missing; Sha256Mismatch=$false}
@@ -1318,7 +1322,8 @@ $script:DriverLoopCompletionInitialChecksBlock = {
           Add-Message -From system -Text "✅ State integrity: OK." -Kind event | Out-Null
         }
       } catch {
-        Add-Message -From system -Text ("⚠ State integrity check error (non-blocking): $($_.Exception.Message)") -Kind event | Out-Null
+        Add-Message -From system -Text ("🚨 DONE-gate state integrity ERROR: $($_.Exception.Message). Задача НЕ закрывается — проверь state.json.") -Kind event | Out-Null
+        $fragGuardBlocked = $true
       }
     }
     if ($fragGuardBlocked) { continue }

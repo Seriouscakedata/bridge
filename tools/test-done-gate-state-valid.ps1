@@ -292,6 +292,24 @@ try {
     Assert-True 'invalid JSON returns invalid JSON reason' ((-not $ok) -and (Test-ContainsToken -Value $reason -Token 'invalid JSON')) ("result={0}" -f ($result | ConvertTo-Json -Depth 10 -Compress))
   }
 
+  Invoke-Case 'array state returns schema invalid reason' {
+    param($layout)
+    Write-RawUtf8NoBom -Path $layout.StatePath -Content '[{"status":"running","heartbeat":"2026-06-20T00:00:00Z","current_task_id":"task-123","current_backlog_id":"task-123"}]'
+    $result = Invoke-TestDoneGateStateValid -TempBridgeRoot $layout.Root -ChannelRoot $layout.ChannelRoot -StatePath $layout.StatePath
+    $ok = Test-TrueValue (Get-ResultValue -Object $result -Name 'Ok')
+    $reason = [string](Get-ResultValue -Object $result -Name 'Reason' '')
+    Assert-True 'array state returns schema invalid reason' ((-not $ok) -and (Test-ContainsToken -Value $reason -Token 'schema invalid')) ("result={0}" -f ($result | ConvertTo-Json -Depth 10 -Compress))
+  }
+
+  Invoke-Case 'null state returns schema invalid reason' {
+    param($layout)
+    Write-RawUtf8NoBom -Path $layout.StatePath -Content 'null'
+    $result = Invoke-TestDoneGateStateValid -TempBridgeRoot $layout.Root -ChannelRoot $layout.ChannelRoot -StatePath $layout.StatePath
+    $ok = Test-TrueValue (Get-ResultValue -Object $result -Name 'Ok')
+    $reason = [string](Get-ResultValue -Object $result -Name 'Reason' '')
+    Assert-True 'null state returns schema invalid reason' ((-not $ok) -and (Test-ContainsToken -Value $reason -Token 'schema invalid')) ("result={0}" -f ($result | ConvertTo-Json -Depth 10 -Compress))
+  }
+
   Invoke-Case 'missing status reports MissingFields=status' {
     param($layout)
     [void](Write-StateJson -Path $layout.StatePath -State ([ordered]@{
