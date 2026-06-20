@@ -126,6 +126,60 @@ function Get-TaskLatencyRecords {
   @(Read-MetricsJsonl | Where-Object { [string]$_.type -eq 'task-latency' } | Select-Object -Last $Limit)
 }
 
+function Get-PhaseLatencyBaseline {
+  param(
+    [object[]]$Records = $null,
+    [int]$Limit = 500
+  )
+
+  if ($null -eq $Records) {
+    $Records = @(Get-TaskLatencyRecords -Limit $Limit)
+  }
+
+  $byPhase = @{}
+  foreach ($rec in @($Records)) {
+    $pt = $rec.phase_timings
+    if ($null -eq $pt) { continue }
+    $props = if ($pt -is [System.Collections.IDictionary]) { @($pt.Keys) } else { @($pt.PSObject.Properties.Name) }
+    foreach ($phase in @($props)) {
+      $ms = $null
+      try {
+        $ms = if ($pt -is [System.Collections.IDictionary]) { [long]$pt[$phase] } else { [long]$pt.$phase }
+      } catch { continue }
+      if ($ms -le 0) { continue }
+      $key = [string]$phase
+      if (-not $byPhase.ContainsKey($key)) { $byPhase[$key] = [System.Collections.Generic.List[long]]::new() }
+      [void]$byPhase[$key].Add($ms)
+    }
+  }
+
+  function _Pctl([long[]]$Sorted, [double]$P) {
+    $n = $Sorted.Count
+    if ($n -eq 0) { return [long]0 }
+    $idx = [int][Math]::Ceiling($P / 100.0 * $n) - 1
+    if ($idx -lt 0) { $idx = 0 }
+    if ($idx -ge $n) { $idx = $n - 1 }
+    return [long]$Sorted[$idx]
+  }
+
+  $result = [System.Collections.Generic.List[object]]::new()
+  foreach ($phase in ($byPhase.Keys | Sort-Object)) {
+    $sorted = @($byPhase[$phase] | Sort-Object)
+    $n = $sorted.Count
+    $p50 = _Pctl $sorted 50
+    $p90 = _Pctl $sorted 90
+    $max = [long]($sorted | Measure-Object -Maximum).Maximum
+    [void]$result.Add([pscustomobject]@{
+      phase     = [string]$phase
+      count     = [int]$n
+      median_ms = [long]$p50
+      p90_ms    = [long]$p90
+      max_ms    = [long]$max
+    })
+  }
+  return @($result.ToArray())
+}
+
 function Read-RecentTurns {
   param([int]$Limit = 200)
 
