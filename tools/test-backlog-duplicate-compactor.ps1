@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -124,6 +124,13 @@ try {
     Assert-True ([string]$dup.resolved_reason -eq 'duplicate-of-root-cause') 'duplicate resolved_reason missing'
     Assert-True ([string]$dup.auto_curator.model -eq 'backlog-compactor') 'duplicate auto_curator model missing'
   }
+  # ATOM_005: typed-duplicate contract - duplicate_key must be stamped; banned count/date fields must be absent
+  foreach ($dup in @($dupA, $dupB)) {
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$dup.duplicate_key)) ('duplicate_key must be stamped on typed rejected duplicate: ' + [string]$dup.id)
+    Assert-True ($null -eq (Get-Member -InputObject $dup -Name 'duplicate_count' -MemberType NoteProperty)) ('duplicate_count must not be a persisted field on rejected item: ' + [string]$dup.id)
+    Assert-True ($null -eq (Get-Member -InputObject $dup -Name 'first_seen' -MemberType NoteProperty)) ('first_seen must not be a persisted field on rejected item: ' + [string]$dup.id)
+    Assert-True ($null -eq (Get-Member -InputObject $dup -Name 'last_seen' -MemberType NoteProperty)) ('last_seen must not be a persisted field on rejected item: ' + [string]$dup.id)
+  }
   Assert-True ([string]$otherKind.status -eq 'approved') 'different finding type should survive'
   Assert-True ([string]$manual.status -eq 'approved') 'manual non-audit item should survive'
   Assert-True ([string]$running.status -eq 'running') 'running item should not be modified'
@@ -136,6 +143,24 @@ try {
 
   $second = Invoke-BacklogDuplicateCompactor -Reason @('test-second')
   Assert-True ([int]$second.duplicates_rejected -eq 0) 'second compactor pass should be idempotent'
+
+  # ATOM_005: 'new'-status representative - open/new items can serve as representative
+  $rootKeyNew = 'file:lib/backlog-governor.ps1'
+  $idNewRep = [guid]::NewGuid().ToString('N')
+  $idNewDup = [guid]::NewGuid().ToString('N')
+  Save-Backlog @(
+    (New-TestBacklogItem -Id $idNewRep -Text '[deep-agent/runtime-incident-model/deepseek-v4-flash] orphan-restart -- First open-status item.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'new' -Severity 'critical' -RootKey $rootKeyNew),
+    (New-TestBacklogItem -Id $idNewDup -Text '[deep-agent/runtime-incident-model/claude-opus] orphan_restart -- Second open-status item, same root.' -From 'audit-deep-agent' -Tags @('audit','deep-audit') -Status 'new' -Severity 'warning' -RootKey $rootKeyNew)
+  )
+  $runNewStatus = Invoke-BacklogDuplicateCompactor -Reason @('test-new-status')
+  Assert-True ([bool]$runNewStatus.ran) 'new-status group: compactor should run'
+  Assert-True ([int]$runNewStatus.duplicates_rejected -ge 1) 'new-status group: at least 1 rejected in all-new group'
+  $newRep = Get-TestItemById -Id $idNewRep
+  $newDup = Get-TestItemById -Id $idNewDup
+  Assert-True ([string]$newRep.status -eq 'new') 'new-status representative should remain new (open)'
+  Assert-True ([string]$newDup.status -eq 'rejected') 'new-status duplicate should be rejected'
+  Assert-True ([string]$newDup.duplicate_of -eq $idNewRep) 'new-status duplicate_of should point to representative'
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$newDup.duplicate_key)) 'new-status rejected duplicate_key must be stamped'
 
   Write-Host 'OK backlog duplicate compactor: root-cause audit duplicates rejected, unrelated tasks preserved'
 } finally {
