@@ -1,0 +1,148 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "doc_evidence_based",
+                      "statement":  "The document must be based on concrete, data-backed evidence from logs and history, not opinions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Document Methodology",
+                      "test":  "Each direction in the final document includes at least 2-3 specific, verifiable citations from logs (e.g., audit.log:L123, restarts.jsonl:entry_id, task_history:task_id) or decisions/.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "doc_limit_directions",
+                      "statement":  "The reflection document should identify 3-5 prioritized directions for improvement.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Document Structure",
+                      "test":  "The final document contains between 3 and 5 distinct, prioritized improvement directions.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "prioritize_quantifiable_impact",
+                      "statement":  "Prioritize improvement directions based on quantifiable impact, such as repeatability and cost of time loss, rather than subjective irritation or perceived importance.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Prioritization Methodology",
+                      "test":  "Each prioritized direction includes a justification based on frequency of occurrence, duration of impact, or estimated cost of loss, as evidenced by logs or task history.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "doc_separate_directions_from_fixes",
+                      "statement":  "The reflection document must clearly separate identified improvement directions from concrete implementation steps, commands, or lists of fixes.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Document Structure",
+                      "test":  "The document contains no executable commands, patch instructions, or step-by-step implementation plans for any direction.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "foundation2_harden_not_multiply",
+                      "statement":  "Adhere to Foundation #2: prioritize hardening existing mechanisms and consolidating overlapping controls over introducing new layers of control, shadow systems, or duplicate mechanisms.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "System Architecture Principle",
+                      "test":  "Each proposed direction explicitly states how it hardens an existing mechanism or consolidates a duplicate, rather than proposing a new, independent control layer.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "fail_loud_not_silent",
+                      "statement":  "Ensure self-checks and tool executions fail loudly and explicitly, escalating on state transitions, rather than failing silently or writing unread artifacts, by enforcing structured error contracts and first-class pass/fail signals.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Self-Observability",
+                      "test":  "For any self-check or tool execution, an unhandled error or failure state results in an immediate, observable escalation (e.g., alert, explicit log entry parsed by a monitor) rather than a silent exit or unread artifact.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "auditor_signal_hygiene",
+                      "statement":  "Improve auditor signal hygiene by suppressing false positives (e.g., on test fixtures or self-detectors), deduplicating findings by rule, and capping the number of backlog items filed per run.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Auditor Quality",
+                      "test":  "The number of false-positive critical/warning findings from the auditor is reduced by X% (e.g., 80%) and the number of backlog items filed per audit run is capped at Y (e.g., 20).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "protected_self_maintenance_budget",
+                      "statement":  "Reserve a non-preemptible, periodic time window or budget for self-maintenance tasks (e.g., audits, health checks) to prevent them from being starved by the task queue.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resource Management",
+                      "test":  "Self-maintenance tasks (e.g., full audit runs) are completed successfully at least once per defined period (e.g., daily) without being skipped due to task queue activity.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "consolidate_shadow_layers",
+                      "statement":  "Consolidate or retire shadow/duplicate control layers and overlapping gates, promoting necessary ones to load-bearing status on a deadline, to reduce system complexity and enforcement ambiguity.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "System Architecture",
+                      "test":  "The number of active \u0027shadow\u0027 subsystems or functionally overlapping gates is reduced by X% (e.g., 50%) within the next quarter, with each remaining system having a clear, non-redundant role.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "match_pipeline_weight_to_stakes",
+                      "statement":  "Match pipeline processing weight to the genuine risk and value of a task, routing low-stakes work through lighter paths instead of forcing it through heavyweight multi-model synthesis pipelines.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Task Routing",
+                      "test":  "The median processing time for tasks explicitly labeled as \u0027reflection\u0027 or \u0027DISCUSS\u0027 is reduced by X% (e.g., 50%), and the number of \u0027timeout\u0027 or \u0027preflight_blocked\u0027 turns for such tasks is reduced to near zero.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "persistent_short_term_memory",
+                      "statement":  "Implement a persistent, indexed short-term memory of recent decisions and accessed data to reduce time lost to context-rebuilding and redundant file I/O.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Performance",
+                      "test":  "The percentage of task time spent re-reading previously accessed files/directories is reduced by X% (e.g., 50%) for multi-step tasks, as measured by audit.log or similar tracing.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "simplify_path_validation_gate",
+                      "statement":  "Simplify and refine over-aggressive path-validation gates that frequently block legitimate operations on complex file paths, replacing coarse rules with more precise, real-path resolution checks.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Validation / Security",
+                      "test":  "The false-positive rate of the path-validation gate is reduced by X% (e.g., 80%), and the number of manual overrides required for legitimate operations is reduced to near zero.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

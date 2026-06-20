@@ -1,0 +1,31 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] САМО-РАЗМЫШЛЕНИЕ: посмотри на СЕБЯ честно и НАЗОВИ свои собственные направления улучшения (скорость + качество автономии). Это НЕ список фиксов и НЕ команда — это рефлексия. Опирайся на СВОИ реальные данные: логи (audit.log, auditor.log, restarts.jsonl, decisions/), историю задач (backlog: что падало, что зависало, что повторялось), метрики времени.\n\nНАВОДЯЩИЕ ВОПРОСЫ (направь внимание, но выводы — твои, по фактам из своих данных; НЕ отвечай абстрактно — приводи свои конкретные случаи):\n1. На что РЕАЛЬНО уходит твоё время? Что из этого двигает к цели (автономная скорость+качество), а что — накладные расходы? Где ты медленный и почему?\n2. Когда у тебя что-то ломается — ты узнаёшь СРАЗУ или поздно? Какие твои части могут «болеть молча»? Откуда вообще приходит сигнал о поломке?\n3. Ухаживаешь ли ты за СОБОЙ так же дисциплинированно, как делаешь задачи? Или само-обслуживание (аудит, чистка, проверки здоровья) проигрывает очереди задач? Чем это уже оборачивалось?\n4. Чего ты делаешь БОЛЬШЕ — добавляешь новые механизмы или закаляешь существующие? Что из недавно добавленного реально окупилось, а что добавило сложности/поломок? (сверься со своей историей)\n5. Где ты сам себе мешаешь — какие твои защиты/гейты/проверки чаще ЛОЖНО блокируют нормальную работу, чем спасают? Есть ли дубли среди них?\n6. Что бы ТЫ сам изменил в первую очередь ради скорости и качества — и ПОЧЕМУ именно это (докажи данными)?\n\nНА ВЫХОДЕ: durable-документ (decisions/) — твои 3-5 СОБСТВЕННЫХ направлений улучшения с обоснованием из твоих данных, приоритизированные. НЕ реализуй — это размышление о направлении. Foundation #2 (закаляй, не плоди) держи в уме. Оператор прочитает что ты сам надумал.",
+    "goal":  "To perform an honest self-reflection, identify 3-5 prioritized, data-backed directions for improving the solver\u0027s own speed and quality of autonomy, and document these findings for operator review.",
+    "constraints":  [
+                        "The output must be a reflection, not a list of fixes or commands.",
+                        "Do not answer abstractly; provide concrete cases from own data.",
+                        "Do not implement any changes; focus solely on reflection and direction setting.",
+                        "Keep \u0027Foundation #2 (harden, don\u0027t multiply)\u0027 in mind.",
+                        "The output must contain exactly 3-5 self-identified improvement directions.",
+                        "Each improvement direction must be justified by specific data from the solver\u0027s own experience."
+                    ],
+    "known_context":  [
+                          "Solver has access to and should rely on its own real data: logs (audit.log, auditor.log, restarts.jsonl, decisions/).",
+                          "Solver has access to and should rely on its own task history (backlog: what failed, what hung, what repeated).",
+                          "Solver has access to and should rely on its own time metrics."
+                      ],
+    "output_format":  "A durable document (to be placed in `decisions/`) containing 3-5 prioritized, self-identified directions for improvement, each justified by specific data from the solver\u0027s own experience.",
+    "task_type":  "research",
+    "risk":  "low",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "A document is produced and designated for the `decisions/` directory.",
+                          "The document contains between 3 and 5 distinct improvement directions.",
+                          "Each improvement direction is clearly stated as the solver\u0027s *own* finding, not a generic suggestion.",
+                          "Each improvement direction is explicitly justified by concrete examples and data points from the solver\u0027s logs, task history, or metrics.",
+                          "The improvement directions are clearly prioritized.",
+                          "The document demonstrates deep self-reflection and analysis, rather than merely listing potential fixes.",
+                          "The document does not propose or describe any implementation steps.",
+                          "The document shows clear consideration of the principle \u0027harden, don\u0027t multiply\u0027 (Foundation #2)."
+                      ]
+}

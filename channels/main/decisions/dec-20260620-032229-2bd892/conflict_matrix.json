@@ -1,0 +1,25 @@
+{
+    "consensus_atoms":  [
+                            "doc_evidence_based",
+                            "doc_limit_directions",
+                            "prioritize_quantifiable_impact",
+                            "doc_separate_directions_from_fixes",
+                            "foundation2_harden_not_multiply",
+                            "fail_loud_not_silent",
+                            "protected_self_maintenance_budget"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "match_pipeline_weight_to_stakes",
+                                           "doc_evidence_based",
+                                           "prioritize_quantifiable_impact"
+                                       ],
+                          "axis":  "The required rigor and processing weight for \u0027reflection\u0027 documents vs. the desire for lighter paths for low-stakes work. \u0027Match pipeline weight to stakes\u0027 explicitly identifies \u0027reflection\u0027 tasks as low-stakes work requiring lighter paths. However, \u0027doc_evidence_based\u0027 and \u0027prioritize_quantifiable_impact\u0027 impose significant data gathering, analysis, and citation requirements for the content of these reflection documents, which would necessitate a heavyweight process for their creation.",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+
+                ]
+}

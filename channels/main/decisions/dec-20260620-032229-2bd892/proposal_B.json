@@ -1,0 +1,73 @@
+{
+    "proposer":  "B",
+    "understanding":  "This is a reflection/research task, not an implementation task. I must look honestly at my own operational data (audit.log, auditor.log, reflect.log, restart causes in metrics.jsonl, the *-shadow.jsonl gate logs, backlog history, turn timings) and name 3-5 of MY OWN prioritized, data-backed directions for improving autonomous speed AND quality. The deliverable is a durable decisions/ document; I must not propose fixes-as-commands or implement anything, and must keep Foundation #2 (\u0027harden, don\u0027t multiply\u0027) in mind. In this ensemble step my decision_atoms ARE those directions; a downstream synthesis turns them into the durable doc.",
+    "summary":  "The honest meta-finding from my data: the subsystems I built to PROTECT autonomy (the auditor, the gates, the health checks) are now my single largest source of overhead, false signal, and silent failure. I propose 5 prioritized directions: (1) make my own health observable and fail-loud — today I go blind silently; (2) fix auditor precision before trusting/extending it — it floods the very queue it guards; (3) give self-maintenance a protected budget so it can\u0027t be starved by the task queue; (4) stop accumulating shadow/duplicate control layers — promote-or-retire, the literal Foundation #2 lever; (5) match pipeline weight to real stakes instead of coarse depth labels. Each is grounded in specific log evidence below.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "P1 — Trustworthy self-observability: every self-check (deep-audit slices, reflect self-model smoke, liveness) must emit a first-class pass/fail that ESCALATES on transition, instead of writing to artifacts nobody reads. Fail loud, not silent.",
+                               "reason":  "My early-warning system went blind without me noticing: deep-audit stopped running and was only repaired after a task was filed (\u0027Deep-audit НЕ запускается даже когда\u0027, commit 764bdc3; later note \u0027Аудит УЖЕ снова работает — отчёт 245 находок\u0027). reflect self-model smoke FAILed exit=1 on 2026-06-19T20:56 and 2026-06-20T03:01, yet the loop still logged \u0027=== reflect done ===\u0027 and continued; 7 reflect-smoke FAIL artifacts now sit unread in decisions/. deep-audit logs \u0027deep_partial / audit partial in 129.4s\u0027 and treats partial as success. My de-facto liveness signal is indirect and late: metrics show 36 \u0027stale_hypothesis\u0027 + 6 \u0027auditor:commit_famine\u0027 restarts — i.e. I learn I\u0027m stuck only once commits dry up.",
+                               "tradeoff":  "Loud failure raises alert/interrupt volume and risks alarm fatigue; it must escalate only on state transitions above a severity threshold, or it becomes the next noise source it was meant to cure.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "P2 — Auditor signal hygiene before extension: suppress findings on test fixtures and on my own detectors, dedupe by rule, and cap per-run backlog filings. Harden the ONE auditor rather than adding more detectors (Foundation #2).",
+                               "reason":  "A single audit run filed 10 critical / 41 warning / 98 info security findings and appended ~185 backlog items (audit.log: 185 \u0027deep-audit filing\u0027 lines; rolled audit.log.1: 1320). The \u0027critical\u0027 set is almost entirely false: hardcoded-credentials flagged in test fixtures (driver/00-task-session.ps1:310-313, tools/test-audit-launch-guard.ps1) and command-injection \u0027iex\u0027 flagged in tools/test-cli-flag-diff.ps1 / test-done-gate-diff-integrity.ps1 — the detector flagging its own test inputs. Warnings are dominated by repeated \u0027unsafe-json\u0027 and missing-\u0027bom\u0027 across dozens of tool/test files. The system meant to guard the queue is its biggest polluter, and that noise both costs my time and erodes trust in the one signal I rely on.",
+                               "tradeoff":  "Context-scoped suppression could mask a genuine credential/injection issue that happens to live in a test path; mitigation is allowlist-by-context, never blanket muting, with production-critical kept loud.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "P3 — Protected self-maintenance budget: reserve a non-preemptible slice for audits/health checks so self-care cannot be permanently crowded out by the task queue.",
+                               "reason":  "auditor.log repeatedly shows Start-AuditIfDue skipped for reason \u0027audit_busy\u0027 and \u0027already_ran_this_window\u0027; whole-channel self-audit is disabled for computer-control and telegram-bridge-bot (\u0027channel_audit_disabled\u0027); the main audit completes only \u0027partial\u0027 under time pressure (deep_partial, 129.4s). This starvation is precisely HOW the audit silently broke in P1 — self-care lost to the task queue and the breakage surfaced only when an operator-style task was filed about it. I do not currently tend to myself as disciplined as I run tasks.",
+                               "tradeoff":  "A reserved maintenance budget lowers raw task throughput; over-reserving would starve real work. The split must be tuned to evidence, not maximized.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "P4 — Stop accumulating shadow/duplicate control layers: each shadow subsystem is promoted to load-bearing or retired on a deadline, and overlapping gates are consolidated. This is Foundation #2 made concrete.",
+                               "reason":  "I run at least four parallel \u0027shadow\u0027 subsystems that compute full verdicts but do nothing: delivery-gate-shadow (its own note: \u0027shadow-only; no DONE/release blocking\u0027), decision-shadow, depth-shadow, task-management-shadow. delivery-gate-shadow recomputes qa/critic/parse/smoke/acceptance that the enforced DONE-gate already checks — pure duplication. Above them sit queue-governor/auto-curator, done-gate, quality-bypass detector, bridge_self_admission canary, review_board, and preflight — each with its own test-*.ps1. \u0027audit-improve\u0027 is now a multi-chapter effort (Глава 2, atoms 2.1/2.2/2.3) hardening a mechanism that was itself recently added and then broke. The pattern is clear: I add faster than I harden or retire.",
+                               "tradeoff":  "Retiring shadows loses A/B telemetry and optionality; promoting them adds live enforcement risk. So the call must be per-subsystem with evidence, not a blanket purge.",
+                               "confidence":  0.80
+                           },
+                           {
+                               "statement":  "P5 — Match pipeline weight to real stakes: route by genuine risk/value, not coarse depth labels, so low-stakes reflection/DISCUSS work isn\u0027t forced through the full multi-model synthesis pipeline.",
+                               "reason":  "The depth-judge labeled THIS reflection task \u0027Deep\u0027 (rationale: \u0027design/architecture discussion\u0027, depth-shadow 2026-06-20T03:21) and routed it into full multi-model Decision Synthesis (independent solvers A/B/C plus synthesis) — heavyweight for a low-risk reflection. Turn telemetry backs the cost: ~2925 turns logged, median turn ≈106s, a long tail to 2505s (~42 min), 18 \u0027timeout\u0027 turns, 37 \u0027preflight_blocked\u0027. Running heavy paths on light tasks is a direct, recurring speed tax.",
+                               "tradeoff":  "Cheaper routing risks under-thinking a task that genuinely needed depth, and the miss is asymmetric for high-stakes work. The cut must be conservative and reversible (escalate-on-doubt), not aggressive.",
+                               "confidence":  0.66
+                           }
+                       ],
+    "assumptions":  [
+                        "This proposal feeds a Decision Synthesis step; the actual durable decisions/ document is produced downstream, so I output prioritized directions + justification (not the final markdown) and I implement nothing.",
+                        "The sampled log window (mainly 2026-06-18..06-20 plus rolled .1 files) is representative of current behavior, not a one-off bad window; where a single window drives a claim I flag it.",
+                        "\u0027shadow\u0027 in the *-shadow.jsonl files plus the literal note \u0027shadow-only; no DONE/release blocking\u0027 means computed-but-not-enforced.",
+                        "metrics.jsonl \u0027reason\u0027 counts reflect driver liveness, and \u0027auditor:commit_famine\u0027 is the auditor\u0027s stall heuristic (no commits for a while).",
+                        "Audit findings on test-*.ps1 fixtures and on the detector\u0027s own test inputs are false positives (test data, not production credentials/injection)."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "This remains a reflection and is never acted on — decisions/ already holds ~65 accumulated docs, so another well-reasoned doc may just join the pile.",
+                      "severity":  "medium",
+                      "mitigation":  "Prioritize ruthlessly (P1\u003e...\u003eP5) and attach exactly one observable baseline metric per direction so future-me can check whether anything moved."
+                  },
+                  {
+                      "risk":  "Recency/sampling bias: most evidence is the last ~2-3 days, so conclusions could overfit a transient bad window.",
+                      "severity":  "medium",
+                      "mitigation":  "Cross-check against rolled logs (audit.log.1: 1320 filings; usage/metrics rollovers) and the multi-day auditor.log; explicitly mark any claim that rests on a single window."
+                  },
+                  {
+                      "risk":  "Direction P4 (\u0027stop multiplying\u0027) read as \u0027freeze all change\u0027 would ossify the system — the opposite failure.",
+                      "severity":  "low",
+                      "mitigation":  "Frame strictly as promote-or-retire-on-deadline plus consolidate, never a moratorium on new capability."
+                  },
+                  {
+                      "risk":  "Labeling audit findings as false positives (P2) could hide a genuine security issue sitting in a test path.",
+                      "severity":  "medium",
+                      "mitigation":  "Scope suppression to context (test fixtures / own detectors) via an explicit allowlist, not blanket muting; keep production-critical findings loud."
+                  },
+                  {
+                      "risk":  "Loud-failure escalation (P1) becomes the next noise source / alarm fatigue.",
+                      "severity":  "low",
+                      "mitigation":  "Escalate only on state transitions above a severity threshold and dedupe repeats, so steady-state is quiet."
+                  }
+              ],
+    "minimal_version":  "A single durable markdown in channels/main/decisions/ (e.g. self-reflection-directions-2026-06-20.md) listing the 5 prioritized directions, each with 2-3 concrete data citations (file + number, e.g. \u0027185 filings/run\u0027, \u002736 stale_hypothesis restarts\u0027, \u0027shadow-only note\u0027, \u0027reflect-smoke FAIL x2 unescalated\u0027), an explicit Foundation-#2 stance per relevant direction, and a clear \u0027no implementation in this document\u0027 statement. ~1-2 pages.",
+    "advanced_version":  "The same document plus: (a) a quantified baseline table per direction (backlog-items-filed-per-audit, % false-critical, count of shadow subsystems, reflect-smoke-fail-unescalated count, median/p99 turn seconds, restart-reason histogram) so future-me can tell whether a direction actually moved; (b) a \u0027harden vs multiply\u0027 ledger enumerating every gate/governor/shadow (queue-governor, done-gate, quality-bypass, canary, review_board, preflight, the 4 *-shadow subsystems) with a promote | retire | consolidate recommendation and its evidence; (c) a short list of leading indicators to watch for each direction. All description only — still zero implementation."
+}
