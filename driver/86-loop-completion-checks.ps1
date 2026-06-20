@@ -407,6 +407,61 @@ function New-DriverDoneGatePlan {
   }
 }
 
+function Test-DoneGateStateValid {
+  param([string]$BridgeRoot, [string]$Channel = 'main')
+  # Returns [pscustomobject]@{Ok=[bool]; Reason=[string]; MissingFields=[string[]]; Sha256Mismatch=[bool]}
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
+  $statePath = Join-Path $BridgeRoot "channels\$Channel\state.json"
+  $sha256Path = $statePath + '.sha256'
+  $requiredFields = @('status', 'heartbeat', 'current_task_id', 'current_backlog_id')
+
+  if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+    return [pscustomobject]@{Ok=$false; Reason="state.json missing at $statePath"; MissingFields=@(); Sha256Mismatch=$false}
+  }
+
+  $rawBytes = $null
+  $text = $null
+  try {
+    $rawBytes = [System.IO.File]::ReadAllBytes($statePath)
+    $text = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+  } catch {
+    return [pscustomobject]@{Ok=$false; Reason="state.json unreadable: $($_.Exception.Message)"; MissingFields=@(); Sha256Mismatch=$false}
+  }
+
+  $state = $null
+  try {
+    $state = $text | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return [pscustomobject]@{Ok=$false; Reason="state.json invalid JSON: $(($_.Exception.Message -replace '\s+',' ').Trim())"; MissingFields=@(); Sha256Mismatch=$false}
+  }
+
+  $missing = @($requiredFields | Where-Object { -not ($state.PSObject.Properties.Name -contains $_) })
+  if ($missing.Count -gt 0) {
+    return [pscustomobject]@{Ok=$false; Reason="state.json missing required fields: $($missing -join ', ')"; MissingFields=$missing; Sha256Mismatch=$false}
+  }
+
+  # SHA256 sidecar check (non-blocking if sidecar absent - only validate if present).
+  $sha256Mismatch = $false
+  if (Test-Path -LiteralPath $sha256Path -PathType Leaf) {
+    try {
+      $expected = ([System.IO.File]::ReadAllText($sha256Path, [System.Text.Encoding]::UTF8)).Trim()
+      $bom = [System.Text.Encoding]::UTF8.GetPreamble()
+      $contentBytes = if ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq $bom[0] -and $rawBytes[1] -eq $bom[1] -and $rawBytes[2] -eq $bom[2]) { $rawBytes[3..($rawBytes.Length-1)] } else { $rawBytes }
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      $actual = [System.BitConverter]::ToString($sha.ComputeHash($contentBytes)) -replace '-',''
+      $sha.Dispose()
+      if ($expected -and ($expected.ToUpperInvariant() -ne $actual.ToUpperInvariant())) {
+        $sha256Mismatch = $true
+        return [pscustomobject]@{Ok=$false; Reason="state.json SHA256 mismatch (expected=$($expected.Substring(0,[Math]::Min(8,$expected.Length)))... actual=$($actual.Substring(0,[Math]::Min(8,$actual.Length)))...)"; MissingFields=@(); Sha256Mismatch=$true}
+      }
+    } catch {
+      # SHA256 check failure is non-fatal - field check passed, warn only at call sites if needed.
+    }
+  }
+
+  return [pscustomobject]@{Ok=$true; Reason=''; MissingFields=@(); Sha256Mismatch=$false}
+}
+
 $script:DriverDoneGateParseJob = {
   param([string]$BridgeRoot, [object]$ParseFiles)
   $parseFileList = @($ParseFiles | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1251,6 +1306,20 @@ $script:DriverLoopCompletionInitialChecksBlock = {
       }
     } catch {
       try { Add-Message -From system -Text ("⚠ DONE-gate fragmented-check failed open: " + $_.Exception.Message) -Kind event | Out-Null } catch {}
+    }
+    # State integrity check at DONE time (always, lightweight).
+    if (-not $fragGuardBlocked) {
+      try {
+        $stateValid = Test-DoneGateStateValid -BridgeRoot $BridgeRoot -Channel $Channel
+        if (-not $stateValid.Ok) {
+          Add-Message -From system -Text ("🚨 DONE-gate state integrity FAILED: $($stateValid.Reason). Задача НЕ закрывается — проверь state.json.") -Kind event | Out-Null
+          $fragGuardBlocked = $true
+        } else {
+          Add-Message -From system -Text "✅ State integrity: OK." -Kind event | Out-Null
+        }
+      } catch {
+        Add-Message -From system -Text ("⚠ State integrity check error (non-blocking): $($_.Exception.Message)") -Kind event | Out-Null
+      }
     }
     if ($fragGuardBlocked) { continue }
   }
