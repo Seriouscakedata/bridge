@@ -1,0 +1,240 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001",
+                      "statement":  "Create canonical refined atom-list JSON with fields atom_id, file, change, acceptance, test, reuses, sequence, risk and explicit_no_new_layer=true; all retained atoms have one concrete file:path and no multi-file changes.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "ConvertFrom-Json + проверка обязательных полей и уникальности atom_id",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_002",
+                      "statement":  "Explicitly reject old A12/A13 from this construction wave as unready and potentially a new verification layer; refined list does not contain commit-boundary enforcement atoms without concrete path/test. If error-contract enforcement is wanted, it is a SEPARATE future direction.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "JSON/assertion по rejected_atoms содержит A12/A13 с reason=\u0027new-layer-risk/underspecified\u0027; Plan document explicitly drops A12/A13.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_003",
+                      "statement":  "Add dedicated assertions for depth-router: plan-refinement DISCUSS without [[HIGH-STAKES]] gets Standard depth; explicit [[HIGH-STAKES]] remains High-Stakes; broad architecture/design remains Deep.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Speed Improvement (Test)",
+                      "test":  "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_004",
+                      "statement":  "Narrow routing rule for plan-refinement/DISCUSS tasks in lib/decision-depth.ps1: do not elevate to Deep/High-Stakes only due to \u0027discuss/refine/atom-list\u0027 if no explicit [[HIGH-STAKES]] or high-risk domain; Standard synthesis remains routed, but with lighter stage set.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Speed Improvement (Implementation)",
+                      "test":  "paired S1T",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_005",
+                      "statement":  "Replace old A15 acceptance with existing representation: 5 identical typed audit findings with same root/finding_type -\u003e 1 representative open, 4 status=rejected with duplicate_of/resolved_reason; no count/first_seen/last_seen fields expected.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Quality Improvement (Test)",
+                      "test":  "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-backlog-duplicate-compactor.ps1",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_006",
+                      "statement":  "Strengthen existing Invoke-BacklogDuplicateCompactor/Get-BacklogDuplicateFindingType path in lib/backlog-workpack.ps1 to reject typed audit duplicates through duplicate_of/duplicate_key/resolved_reason=\u0027duplicate-of-root-cause\u0027; do not add append-site collapse.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Quality Improvement (Implementation)",
+                      "test":  "paired D15T plus tools/test-backlog-intake-gate.ps1 if touched behavior crosses intake",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_007",
+                      "statement":  "Add dedicated stale-start tests in tools/test-audit-launch-guard.ps1: dead stale started run without terminal -\u003e abandoned written and next admission allowed; live pid still blocks; recent dead pid within TTL still blocks.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Quality Improvement (Test)",
+                      "test":  "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_008",
+                      "statement":  "Terminalize stale dead-pid started launches as decision=\u0027abandoned\u0027 through existing Invoke-AuditLaunchStaleStartReconciliation/Write-AuditLaunchLedgerEntry in driver/10-maintenance.ps1 and exclude abandoned run_id from Get-AuditLaunchAttemptCount.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Quality Improvement (Implementation)",
+                      "test":  "paired A10T",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_009",
+                      "statement":  "Add terminal-aware stale_audit cases and make Get-StaleAuditLaunchInfo terminal-aware by pairing started run_id with existing terminal decisions; count only unresolved recent starts plus denied entries for stale_audit. Surface completion-contract result through EXISTING auditor stale-alert, classifying benign terminal reasons as non-alerting so only genuinely-incomplete windows raise an alert.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Quality Improvement (Signal Hygiene)",
+                      "test":  "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-auditor-stale-alert.ps1; extend tools/test-auditor-stale-alert.ps1 — an incomplete window raises exactly one alert, a complete/benign window raises none; passes ParseFile + smoke.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_010",
+                      "statement":  "Narrow Direction-2\u0027s promise: the depth-router is NOT a lever for planner_ms/verify_ms on Standard plan-only tasks; delete that claim from the plan. Identify real speed levers from data: (V) verify_ms lever is narrowing gate-regression SCOPE for single-file core changes in lib/verify-selftest.ps1; (P) planner_ms lever is router precision / synthesis turn-depth on SYNTHESIS-routed DISCUSS/deep-think tasks, NOT Standard tasks. Analyze metrics.jsonl to identify the true bottleneck for planner_ms/verify_ms, and narrow the depth-router speed promise accordingly.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement, Speed Improvement (Analysis \u0026 Claim Correction)",
+                      "test":  "Plan document reflects narrowed claim; code review confirms router path; Metrics analysis report identifies gate-regression scope and synthesis depth as primary levers; Metrics analysis report produced; plan document reflects narrowed promise.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_011",
+                      "statement":  "Define atomicity rule: 1 atom = exactly ONE implementation file + ONE dedicated test assertion. Decompose A10 and A11 into true atomic units: each touching exactly 1 file, making 1 verifiable change, with 1 dedicated test.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "All atoms in the refined list adhere to the 1 impl file + 1 test rule; A10 and A11 are decomposed into multiple atoms, each adhering to atomicity rules.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_012",
+                      "statement":  "Resolve A15 collision: DROP the parallel count/first_seen/last_seen \u0027collapse\u0027 representation. Add ONE additive \u0027duplicate_count\u0027 (+ last_seen) field to the compactor\u0027s EXISTING root-rejection record. Safe fallback: drop A15 entirely. Alternatively, resolve A15 by splitting into A15a (config change in existing config file) and A15b (logic change in existing service file), each with own test.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement, Quality Improvement (Claim Correction)",
+                      "test":  "Plan document reflects A15 resolution; code review confirms no new collapse representation; A15a and A15b atoms created, each with a dedicated test.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_013",
+                      "statement":  "Create new pure function Get-PhaseLatencyBaseline in lib/metrics.ps1 to aggregate existing task-latency records into median/p90 per phase.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Speed Improvement (Baseline/Analysis)",
+                      "test":  "NEW tools/test-phase-latency-baseline.ps1 feeds synthetic task-latency records and asserts correct medians; passes ParseFile + smoke.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_014",
+                      "statement":  "Emit an additive \u0027window_incomplete\u0027 decision value with a reason in driver/10-maintenance.ps1 (Write-AuditLaunchLedgerEntry) when a launch window starts without a terminal record.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Quality Improvement (Signal Hygiene)",
+                      "test":  "extend tools/test-audit-launch-guard.ps1 — a started-without-terminal window =\u003e exactly one \u0027window_incomplete\u0027 entry carrying a reason; passes ParseFile + smoke.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_015",
+                      "statement":  "Add ONE additive \u0027duplicate_count\u0027 (+ last_seen) field to the existing root-rejection record written by Invoke-BacklogDuplicateCompactor in lib/backlog-workpack.ps1 when it rejects duplicates.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Quality Improvement (Signal Hygiene)",
+                      "test":  "extend tools/test-backlog-duplicate-compactor.ps1 — a group of N duplicates =\u003e root record carries duplicate_count=N; existing assertions still pass.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_016",
+                      "statement":  "Teach the existing stale-start reconcile (driver/60-startup.ps1 / driver/10-maintenance.ps1) to recognize the \u0027window_incomplete\u0027 value (from N2) and handle it as a terminal-but-incomplete state.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Quality Improvement (Signal Hygiene)",
+                      "test":  "extend tools/test-audit-launch-guard.ps1 with a reconcile case — a window_incomplete entry is reconciled to the expected state, no false \u0027still-running\u0027.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "ATOM_017",
+                      "statement":  "Narrow the gate-regression scope in lib/verify-selftest.ps1 (Get-GateRegressionScope) for a single-file bridge-core change to the suite(s) related to that file, instead of running to the ~312.6s ceiling.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Speed Improvement (Implementation)",
+                      "test":  "NEW tools/test-gate-regression-scope-narrowing.ps1 — a single-file core change yields a scope that is a strict subset of the full suite AND still includes the suite that catches a known-regression fixture for that file; verify_ms baseline (from N1) drops with zero missed regressions.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "ATOM_018",
+                      "statement":  "Write the human-facing plan document (decisions/2026-06-20_self-improvement-atom-plan.md) including chosen+narrowed directions, quantified data justification, ordered atom list, reuse map, explicit no-new-layer statement.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Process/Refinement (Documentation)",
+                      "test":  "doc contains all sections and no implementation code.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_019",
+                      "statement":  "Assign a concrete file:path to every atom in the list, ensuring success_test #8 is met.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "All atoms in the refined list have a concrete file:path.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_020",
+                      "statement":  "Order the refined atom-list from safest to most impactful, enabling sequential self-implementation starting with the least risky atom.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "The final atom list is ordered by safety.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "ATOM_021",
+                      "statement":  "Reuse existing infrastructure components (logger, config loader, test harness) for all atoms; introduce zero new layers or frameworks.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Process/Refinement",
+                      "test":  "Code review confirms no new layers or frameworks introduced.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

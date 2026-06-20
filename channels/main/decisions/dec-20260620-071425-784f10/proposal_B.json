@@ -1,0 +1,115 @@
+{
+    "proposer":  "B",
+    "understanding":  "The approved self-improvement plan (dec-20260620-044536-d0a7bd) picks two directions — QUALITY \u0027fail-loud + signal-hygiene\u0027 and SPEED \u0027depth-aware routing\u0027 — both via existing mechanisms, no new layers (Foundation #2). Its own red-team flagged 9 issues; my job is to re-verify them against the live code/metrics and harden the atom-list so every atom is construction-ready (concrete file:path, 1 impl file + own test, reused mechanism named) before operator review and one-by-one self-implementation starting from the safest. I independently verified the two HIGH findings in the source and, decisively, QUANTIFIED the speed claim from metrics.jsonl that the red-team said was never measured.",
+    "summary":  "Both HIGH findings are TRUE in the code, and the metrics now prove the speed direction was mis-aimed. EVIDENCE: planner_ms = accumulated Claude-turn latency (driver/50-loop-utils.ps1:126); verify_ms = DONE-gate wall-clock (driver/86-loop-completion-checks.ps1:1661-1663). The depth-router (Get-SynthesisRouteDecision, lib/decision-depth.ps1:148-192) only decides Decision-Synthesis ENTRY — Standard tasks already get route=false (\u0027standard task stays on normal path\u0027), it is shadow-only, and it is consumed in driver/81-loop-idle-claim.ps1, not in any \u0027task-ingestion gate\u0027 (no such file exists). metrics.jsonl task-latency records show: planner_ms dominates DISCUSS/deep-think SYNTHESIS-routed tasks (up to 2,188,810 ms); verify_ms is BIMODAL — ~100-300 ms when the gate short-circuits (plan-only/non-core, already handled by New-DriverDoneGatePlan gateSuiteNeeded=false), or pinned at ~312,600 ms (a fixed gate-regression timeout ceiling) on bridge-core code changes. CONCLUSION: the depth-router cannot lower planner_ms/verify_ms on \u0027Standard plan-only\u0027 tasks because those are already at the floor; the claim is a no-op. The genuine levers are (V) the gate-regression scope/timeout (verify_ms, the ~312.6s ceiling = largest single addressable block) and (P) synthesis routing precision/depth (planner_ms, on routed discuss tasks). I narrow Direction-2 accordingly and replace A14 with a read-only baseline atom + a real gate-scope lever atom. A15 collides with the existing Invoke-BacklogDuplicateCompactor + intake gate (lib/backlog-workpack.ps1, driver/81-loop-idle-claim.ps1:642): its count/first_seen/last_seen \u0027collapse\u0027 is a SECOND dedup representation = a new layer; resolved by reusing the compactor\u0027s existing root-rejection record with one additive count field (or dropping it). A12/A13 are DROPPED from the ready set: grep finds NO existing error-contract mechanism, so they would be net-new checks (a new layer, Foundation #2 violation) — this also genuinely shrinks the umbrella (fixes the direction-count-gaming finding). A10 is split into emit + reconcile atoms. Atomicity rule made explicit: 1 atom = exactly 1 impl file + its dedicated test (the contract mandates \u0027свой тест\u0027, so the test file is part of the atom, not a 2nd-file violation).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "META-1 — Narrow Direction-2\u0027s promise: the depth-router (lib/decision-depth.ps1:148-192, Get-SynthesisRouteDecision) is NOT a lever for planner_ms/verify_ms on Standard plan-only tasks; delete that claim from the plan. It only gates Decision-Synthesis entry (Standard =\u003e route=false), is shadow-only unless synthesisMode.enabled, and is consumed in driver/81-loop-idle-claim.ps1 — there is no \u0027task-ingestion gate\u0027 file.",
+                               "reason":  "Verified in source + quantified from metrics.jsonl: planner_ms = Claude-turn latency (driver/50-loop-utils.ps1:126), verify_ms = DONE-gate wall-clock (driver/86-loop-completion-checks.ps1:1661-1663); New-DriverDoneGatePlan already sets gateSuiteNeeded=false for non-core/plan-only changes, so Standard plan-only tasks already sit at the verify_ms floor (~100-300 ms). Tuning the router is a no-op for the targeted metric — exactly red-team HIGH#1.",
+                               "tradeoff":  "Loses the headline \u0027depth-aware routing makes us faster\u0027 framing; the honest speed story becomes narrower and is split across two phase-specific levers.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "META-2 — Identify the REAL speed levers from data: (V) verify_ms is bimodal — ~0 when the gate short-circuits, or pinned at ~312,600 ms (gate-regression timeout ceiling) on bridge-core changes; the lever is narrowing the gate-regression SCOPE for single-file core changes in lib/verify-selftest.ps1:322 (Get-GateRegressionScope) / driver/86-loop-completion-checks.ps1:343 (New-DriverDoneGatePlan). (P) planner_ms dominates SYNTHESIS-routed DISCUSS/deep-think tasks (up to 2,188,810 ms in metrics.jsonl); the lever is router precision / synthesis turn-depth, NOT Standard tasks.",
+                               "reason":  "metrics.jsonl task-latency records give concrete numbers (verify_ms repeatedly at 312,529-312,612 ms; planner_ms 235k-2.19M ms on discuss/deep-think). This converts the unmeasured \u0027dominance\u0027 assertion (red-team #7) into evidence and points the lever at the single largest addressable block (the ~312.6s verify ceiling on core changes).",
+                               "tradeoff":  "The verify_ms lever only helps bridge-core code tasks (not the discuss/plan tasks this very pipeline runs); the planner_ms lever touches synthesis depth which is quality-sensitive, so it stays a measured follow-on, not a quick win.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "META-3 — Atomicity rule (resolves red-team #4 vs success_test #7): 1 atom = exactly ONE implementation file + ONE dedicated test assertion. The contract mandates \u0027свой тест\u0027, so the test file is constitutive of the atom, not a second-file violation. Every atom below names exactly one impl file plus its existing test file.",
+                               "reason":  "A literal \u0027one file total\u0027 reading is unsatisfiable alongside the \u0027own test\u0027 requirement; the operator-reasonable reading is one IMPL file. Stating it explicitly lets the operator ratify the granularity instead of rejecting atoms as non-atomic.",
+                               "tradeoff":  "Slightly relaxes the strictest literal reading of \u00271 файл\u0027; mitigated by forbidding any atom from touching \u003e1 impl file.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "META-4 — Resolve A15 collision (red-team HIGH#2): DROP the parallel count/first_seen/last_seen \u0027collapse\u0027 representation. The existing Invoke-BacklogDuplicateCompactor + intake gate (lib/backlog-workpack.ps1; called driver/81-loop-idle-claim.ps1:642) already dedups via the rejection model (status=rejected, duplicate_of, resolved_reason=\u0027duplicate-of-root-cause\u0027). True-reuse replacement: add ONE additive \u0027duplicate_count\u0027 (+ last_seen) field to the compactor\u0027s EXISTING root-rejection record. Safe fallback: drop A15 entirely (intake gate already blocks new approved audit duplicates).",
+                               "reason":  "Get-BacklogDuplicateFindingType (lib/backlog-workpack.ps1:265) lives in the compactor-key builder, not at any append site, so the original \u0027reuse at finding-append site\u0027 was factually wrong; a second representation = the forbidden new layer. Enriching the existing rejection record is genuinely additive and preserves the signal-hygiene value (operators see recurrence count) without a parallel mechanism.",
+                               "tradeoff":  "Even one new field is mild proliferation; if the operator deems it so, the fallback is to drop A15 and rely on the existing compactor unchanged.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "META-5 — DROP A12 and A13 from the construction-ready set. A grep for any existing error-contract mechanism returns nothing, so an \u0027error-contract check at the commit boundary\u0027 would be a NET-NEW verification check (a new layer) regardless of reusing the ledger for storage — Foundation #2 violation (red-team #5). This also genuinely shrinks Direction-1\u0027s umbrella, fixing the direction-count-gaming finding (#6). If error-contract enforcement is wanted, it is a SEPARATE future direction, not smuggled into fail-loud.",
+                               "reason":  "Reusing a storage mechanism to back a brand-new check is still a new check; the task\u0027s explicit warning was the habit of turning every weakness into a new verification layer. Dropping these leaves Direction-1 as the genuinely-additive completion-contract (A10/A11) over existing audit-ledger + auditor mechanisms.",
+                               "tradeoff":  "Defers commit-boundary contract enforcement; acceptable because it was the lowest-scored, most-invasive idea (judge 0.6875) and the riskiest to the live loop.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "ATOM N1 (do FIRST — zero risk, read-only). file: lib/metrics.ps1 (new pure fn Get-PhaseLatencyBaseline near :124). change: aggregate existing task-latency records (reuse Get-TaskLatencyRecords, lib/metrics.ps1:124) into median/p90 per phase, optionally grouped by task class. acceptance/test: NEW tools/test-phase-latency-baseline.ps1 feeds synthetic task-latency records and asserts correct medians; passes ParseFile + smoke. reuses: Get-TaskLatencyRecords + metrics.jsonl.",
+                               "reason":  "Makes the lever choice falsifiable from the data that ALREADY exists, directly closing the \u0027circular justification / unmeasured baseline\u0027 critique (red-team #1/#7). Pure, read-only, no production-path change — the safest possible starting atom.",
+                               "tradeoff":  "Adds a small read-only helper that is analysis-only until N6 consumes it; negligible.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "ATOM N2 (additive enum). file: driver/10-maintenance.ps1 (Write-AuditLaunchLedgerEntry, :397). change: emit an additive \u0027window_incomplete\u0027 decision value with a reason when a launch window starts without a terminal record. acceptance/test: extend tools/test-audit-launch-guard.ps1 — a started-without-terminal window =\u003e exactly one \u0027window_incomplete\u0027 entry carrying a reason; passes ParseFile + smoke. reuses: audit ledger writer; no new store.",
+                               "reason":  "Self-maintenance completion as a genuine SUBCASE of fail-loud via the existing ledger — additive value only, the canonical allowed pattern (like other additive enum values). Must confirm downstream parsers of audit.launches.jsonl tolerate the new value (test asserts the entry shape).",
+                               "tradeoff":  "New enum value requires downstream-parser tolerance; mitigated by additive-only write + the guard test.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "ATOM N3 (additive field; or DROP — see META-4). file: lib/backlog-workpack.ps1 (Invoke-BacklogDuplicateCompactor root-rejection record). change: add ONE additive \u0027duplicate_count\u0027 (+ last_seen) field to the root record the compactor already writes when it rejects duplicates. acceptance/test: extend tools/test-backlog-duplicate-compactor.ps1 — a group of N duplicates =\u003e root record carries duplicate_count=N; existing assertions still pass. reuses: existing compactor + its test; no new dedup path.",
+                               "reason":  "Replaces the colliding A15 design with true reuse of the existing dedup mechanism, preserving the signal-hygiene benefit while honoring Foundation #2. Window/\u0027identical\u0027 is defined by the compactor\u0027s EXISTING root-key — no new window concept needed (closes red-team #8).",
+                               "tradeoff":  "If even one added field is judged proliferation, drop this atom; the intake gate already prevents new approved duplicates, so quality is not lost.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "ATOM N4 (additive classification). file: lib/auditor.ps1 (wait_state_stuck / stale-alert trigger, ~:551-572). change: surface the completion-contract result through the EXISTING auditor stale-alert, classifying benign terminal reasons as non-alerting so only genuinely-incomplete windows raise an alert. acceptance/test: extend tools/test-auditor-stale-alert.ps1 — an incomplete window raises exactly one alert, a complete/benign window raises none; passes ParseFile + smoke. reuses: existing auditor trigger (New-AuditorTrigger); no new alert layer (honors A8).",
+                               "reason":  "Fail-loud surfacing through the mechanism that already emits operational triggers, keeping benign cases silent to avoid alert noise — additive condition on an existing classifier, not a new watcher.",
+                               "tradeoff":  "Misclassifying benign reasons as alerting would create noise; mitigated by the two-case test (incomplete=1 alert, complete=0).",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "ATOM N5 (reconcile recognition — second half of the split A10). file: the existing stale-start reconcile (driver/60-startup.ps1 / driver/10-maintenance.ps1 reconcile path; pin exact fn at build time). change: teach the existing reconcile to recognize the \u0027window_incomplete\u0027 value from N2 and handle it as a terminal-but-incomplete state. acceptance/test: extend tools/test-audit-launch-guard.ps1 with a reconcile case — a window_incomplete entry is reconciled to the expected state, no false \u0027still-running\u0027. reuses: existing reconcile loop; no new process.",
+                               "reason":  "A10 originally bundled WRITE + DETECT in one atom; splitting into N2 (emit) and N5 (recognize) makes each a single verifiable change with its own assertion (true atomicity, red-team #4). N5 depends on N2.",
+                               "tradeoff":  "Two atoms instead of one slightly lengthens the sequence; the payoff is independent revertibility.",
+                               "confidence":  0.76
+                           },
+                           {
+                               "statement":  "ATOM N6 (the REAL speed lever — do LAST, riskiest). file: lib/verify-selftest.ps1 (Get-GateRegressionScope, :322). change: for a single-file bridge-core change, narrow the returned regression scope to the suite(s) related to that file instead of running to the ~312.6s ceiling. acceptance/test: NEW tools/test-gate-regression-scope-narrowing.ps1 — a single-file core change yields a scope that is a strict subset of the full suite AND still includes the suite that catches a known-regression fixture for that file; verify_ms baseline (from N1) drops with zero missed regressions. reuses: Get-GateRegressionScope + New-DriverDoneGatePlan.",
+                               "reason":  "Directly attacks the largest measured verify_ms block (the ~312,600 ms ceiling on core changes) by reusing the existing scope mechanism — the genuine, data-grounded replacement for the no-op depth-router atom.",
+                               "tradeoff":  "Narrowing scope risks missing a regression; gated hard on the known-regression fixture remaining red, and shipped last after the safe atoms prove the workflow.",
+                               "confidence":  0.66
+                           },
+                           {
+                               "statement":  "ATOM N7 (deliverable form — resolves red-team #9). file: decisions/2026-06-20_self-improvement-atom-plan.md (authored standalone plan). change: write the human-facing plan doc (chosen+narrowed directions, quantified data justification incl. the metrics.jsonl numbers and the audit.launches.jsonl / restart-root-cause-log.jsonl quality counts, the ordered atom list N1-N6, reuse map, explicit no-new-layer statement). acceptance: doc contains all sections and no implementation code. reuses: existing decisions/ convention.",
+                               "reason":  "output_format asks for a durable, reviewable plan document; the prior deliverable was only raw pipeline JSON. Authoring the .md makes the operator review the intended human-facing artifact.",
+                               "tradeoff":  "Doc must be kept in sync if atoms change before approval; cheap relative to review clarity.",
+                               "confidence":  0.82
+                           }
+                       ],
+    "assumptions":  [
+                        "The harness collects this Proposal JSON; the bridge pipeline (not me) persists the refined atom-list into channels/main/decisions/dec-20260620-071425-784f10/ — I did not write files, per \u0027Return ONLY the JSON object\u0027.",
+                        "The ~312,600 ms verify_ms values in metrics.jsonl are a gate-regression timeout/budget ceiling rather than genuine test runtime; N1\u0027s baseline confirms this before N6 acts on it.",
+                        "audit.launches.jsonl and decisions/restart-root-cause-log.jsonl are queryable to quantify the \u0027silent/incomplete work\u0027 failure-mode frequency for Direction-1\u0027s data justification.",
+                        "synthesisMode.enabled is currently off or shadow-only, so the depth-router is not yet on the live planner_ms path for most tasks (consistent with route=false on Standard).",
+                        "Foundation #2 (\u0027no new layers\u0027) is interpreted as: additive fields/values/conditions on existing mechanisms are allowed; net-new checks, classifiers, stores, watchers, or alert layers are not."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "N6 (gate-regression scope narrowing) silently drops a suite that would have caught a real regression on core code.",
+                      "severity":  "high",
+                      "mitigation":  "Gate N6 on a known-regression fixture that MUST stay red under the narrowed scope; ship N6 last, after N1 establishes the verify_ms baseline and after the additive/read-only atoms prove the one-by-one workflow."
+                  },
+                  {
+                      "risk":  "Additive ledger value (N2) or compactor field (N3) breaks a downstream parser of audit.launches.jsonl or the backlog store.",
+                      "severity":  "medium",
+                      "mitigation":  "Additive-only writes; each atom\u0027s test asserts entry shape and that existing assertions still pass; N3 has a clean DROP fallback."
+                  },
+                  {
+                      "risk":  "Dropping A12/A13 leaves commit-boundary error-contract enforcement unaddressed, which some reviewers expected from the original plan.",
+                      "severity":  "low",
+                      "mitigation":  "Document it as a deliberate, separate future direction (not a deletion of intent); it was the lowest-scored, most-invasive idea and would have been a new layer."
+                  },
+                  {
+                      "risk":  "The planner_ms lever (synthesis depth/precision) is left only partially specified, so the \u0027speed\u0027 story leans almost entirely on verify_ms (N6), which doesn\u0027t help discuss/plan tasks.",
+                      "severity":  "medium",
+                      "mitigation":  "Be explicit that N1\u0027s baseline decides whether the planner_ms synthesis-depth lever earns a future atom; do not over-promise speed for task classes the levers don\u0027t touch."
+                  },
+                  {
+                      "risk":  "Operator reads META-3\u0027s atomicity interpretation as relaxing the contract\u0027s \u00271 файл\u0027 rule.",
+                      "severity":  "low",
+                      "mitigation":  "State the rule explicitly as 1 IMPL file + its mandated test, enforce \u0027no atom touches \u003e1 impl file\u0027, and let the operator ratify or tighten before construction."
+                  }
+              ],
+    "minimal_version":  "Ship only the safe, non-controversial slice now: META-1 (delete the depth-router speed claim), ATOM N1 (read-only Get-PhaseLatencyBaseline over existing task-latency records), ATOM N2 (additive \u0027window_incomplete\u0027 ledger value with its guard test), and ATOM N7 (the authored plan .md). This corrects the false speed claim, establishes the falsifiable baseline, lands one genuinely-additive fail-loud improvement, and produces the reviewable deliverable — all read-only or additive, each 1 impl file + 1 test, zero changes to the live verify/commit path.",
+    "advanced_version":  "Full refined list in safety order: META-1..META-5 (narrow Direction-2, name real levers, atomicity rule, A15 resolution, drop A12/A13), then N1 (baseline) -\u003e N2 (window_incomplete emit) -\u003e N3 (additive duplicate_count on the existing compactor, or drop) -\u003e N4 (auditor stale-alert classification) -\u003e N5 (reconcile recognizes window_incomplete) -\u003e N6 (gate-regression scope narrowing, the measured verify_ms lever, gated on a known-regression fixture) -\u003e N7 (plan doc). Each atom = 1 impl file + its dedicated test, names its reused mechanism, and is independently committable/revertible. After N6, use N1\u0027s baseline to decide whether a planner_ms synthesis-depth/precision atom on ROUTED discuss tasks earns its own future atom — measured first, never promised on an unmeasured baseline."
+}

@@ -1,0 +1,29 @@
+{
+    "consensus_atoms":  [
+                            "ATOM_002",
+                            "ATOM_009",
+                            "ATOM_010",
+                            "ATOM_011",
+                            "ATOM_012"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "ATOM_005",
+                                           "ATOM_012",
+                                           "ATOM_015"
+                                       ],
+                          "axis":  "Data representation for duplicate audit findings (A15 resolution)",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "ATOM_012",
+                        "severity":  "blocking",
+                        "why":  "ATOM_012 proposes to \u0027Add ONE additive \u0027duplicate_count\u0027 (+ last_seen) field\u0027 to the root-rejection record as part of resolving the A15 collision. This directly conflicts with ATOM_005, which explicitly states \u0027no count/first_seen/last_seen fields expected\u0027 for the same duplicate rejection representation. ATOM_015 further reinforces the addition of these fields, creating a clear and fundamental disagreement on the desired data model for duplicate findings.",
+                        "fix":  "A clear decision must be made regarding the inclusion of `duplicate_count` and `last_seen` fields in the duplicate rejection record. If these fields are to be included, ATOM_005 must be updated or rejected. If they are not to be included, ATOM_012 and ATOM_015 must be revised to remove the instruction to add these fields. A new, explicit refinement atom may be needed to document this resolution.",
+                        "cost":  "medium"
+                    }
+                ]
+}

@@ -1,0 +1,34 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] Само-выбор ОДОБРЕН по направлениям (твой план decisions/dec-20260620-044536-d0a7bd: «fail-loud+signal-hygiene» качество + «depth-aware routing» скорость, всё через существующее, без новых слоёв — отлично). НО атомы ещё не готовы к стройке — соглашаюсь с ТВОИМ ЖЕ red-team. Доточи план по своим же находкам red_team_findings:\n\n1. HIGH: проверь — РЕАЛЬНО ли depth-router снижает planner_ms/verify_ms, которую обещает Direction-2? Если депт-роутер НЕ управляет этой стоимостью (как написал твой red-team) — найди НАСТОЯЩИЙ рычаг скорости (что конкретно жрёт planner/verify время по metrics.jsonl) или честно сузь обещание.\n2. HIGH: разреши коллизию A15 (первый атом).\n3. Каждому атому — КОНКРЕТНЫЙ file:path (red-team: success_test #8 не выполнен).\n4. Разбей A10/A11 (и любые не-1-файловые) на истинные атомы: 1 файл / 1 проверяемая правка / свой тест (red-team: атомарность нарушена).\n\nНА ВЫХОДЕ: доточенный atom-список (decisions/), каждый атом готов к стройке (file, change, acceptance, тест, что переиспользуешь). Foundation #2 держи. Оператор глянет финальные атомы → даёшь внедрять сам, по одному, с самого безопасного. Это твоя инициатива — веди.",
+    "goal":  "Refine the existing atom-list plan based on red-team findings, ensuring each atom is fully defined, atomic, and ready for individual implementation, addressing specific performance claims and structural issues.",
+    "constraints":  [
+                        "All proposed solutions and refinements must utilize existing infrastructure/components, without introducing new layers.",
+                        "Each atom in the output list must have a concrete `file:path`.",
+                        "Any non-single-file atoms (e.g., A10/A11) must be broken down into true atomic units: 1 file / 1 verifiable change / its own dedicated test.",
+                        "Adhere to Foundation #2.",
+                        "The solver is responsible for leading this initiative and for implementing the approved atoms one by one, starting with the safest."
+                    ],
+    "known_context":  [
+                          "The self-selection plan (decisions/dec-20260620-044536-d0a7bd) for \u0027fail-loud+signal-hygiene\u0027 quality and \u0027depth-aware routing\u0027 speed (using existing components, no new layers) is approved in principle.",
+                          "The current atoms are not yet ready for construction, as identified by the red-team.",
+                          "Specific red-team findings have been identified and must be addressed.",
+                          "The `depth-router`\u0027s ability to reduce `planner_ms/verify_ms` (as promised by Direction-2) is questioned by the red-team.",
+                          "Collision A15 (the first atom) requires resolution.",
+                          "Red-team finding: `success_test #8` (concrete `file:path` for each atom) is not met.",
+                          "Red-team finding: Atomicity is violated (e.g., A10/A11 are not single-file atoms).",
+                          "The operator will review the final refined atom-list before implementation."
+                      ],
+    "output_format":  "A refined atom-list located in the `decisions/` directory, where each atom is fully prepared for construction, including `file`, `change`, `acceptance`, `test` details, and specification of any reused components.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The `decisions/` directory contains a refined atom-list.",
+                          "For each atom in the refined list: it has a concrete `file:path`, represents a single file/single verifiable change, and has its own dedicated test.",
+                          "The claim regarding `depth-router` reducing `planner_ms/verify_ms` is either definitively verified with evidence from `metrics.jsonl`, or a true lever for speed is identified, or the original promise is narrowed/adjusted.",
+                          "Collision A15 is resolved within the refined atom-list.",
+                          "A10/A11 (and any other atoms that were not single-file) are decomposed into true atomic units (1 file / 1 verifiable change / own test).",
+                          "Each atom in the refined list includes `file`, `change`, `acceptance`, and `test` details, and specifies any reused components.",
+                          "The refined atom-list is ready for operator review and subsequent self-implementation."
+                      ]
+}

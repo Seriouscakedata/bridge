@@ -1,0 +1,251 @@
+{
+  "decision_id": "dec-20260620-071425-784f10",
+  "status": "ready_for_operator_review",
+  "explicit_no_new_layer": true,
+  "atomicity_rule": "1 atom = exactly one concrete file path, one verifiable change, one dedicated acceptance test command/assertion.",
+  "scope": "bridge-self plan refinement only; no runtime code is modified by this artifact.",
+  "red_team_resolutions": [
+    {
+      "finding": "depth-router speed claim",
+      "resolution": "removed for Standard tasks",
+      "evidence": "lib/decision-depth.ps1 routes Decision Synthesis depth only; Standard plan-only tasks already use the lighter route when synthesisMode is disabled/shadow. It does not directly control planner_ms or verify_ms."
+    },
+    {
+      "finding": "true speed lever not verified",
+      "resolution": "speed atoms are limited to baseline + metrics report before behavior change",
+      "evidence": "current metrics.jsonl* sample: planner_ms n=145 median=276267 p90=1575403 max=8374834; verify_ms n=145 median=127 p90=469068 max=1947987. Top planner rows are synthesis/DISCUSS/canary-heavy; verify bottleneck attribution remains to be measured."
+    },
+    {
+      "finding": "A15 collision with existing duplicate compactor",
+      "resolution": "reuse existing duplicate_of / duplicate_key / resolved_reason='duplicate-of-root-cause' representation; do not add count/first_seen/last_seen as persisted fields",
+      "evidence": "Invoke-BacklogDuplicateCompactor already rejects duplicates through duplicate_of, duplicate_key, resolved_reason, and returns duplicate_count only in transient summary output."
+    },
+    {
+      "finding": "concrete file:path missing",
+      "resolution": "every retained atom below has exactly one concrete file field; rejected/deferred items are not build atoms"
+    },
+    {
+      "finding": "A10/A11 not decomposed",
+      "resolution": "old A10 is split into ATOM_007, ATOM_008, ATOM_014, ATOM_016; old A11 is split into ATOM_009a and ATOM_009b"
+    }
+  ],
+  "retained_atoms": [
+    {
+      "sequence": 1,
+      "atom_id": "ATOM_001",
+      "file": "channels/main/decisions/dec-20260620-071425-784f10/refined-atom-list.json",
+      "change": "Create the canonical machine-readable atom list with explicit_no_new_layer=true, rejected_atoms[], and one concrete file path per retained atom.",
+      "acceptance": "JSON parses; atom_id values are unique; each retained atom has exactly one non-placeholder file; old A10/A11/A15/A12/A13 are represented only as decomposed/rejected entries.",
+      "test": "PowerShell ConvertFrom-Json schema assertion over refined-atom-list.json.",
+      "reuses": "ConvertFrom-Json and existing decision artifact directory.",
+      "risk": "low",
+      "depends_on": []
+    },
+    {
+      "sequence": 2,
+      "atom_id": "ATOM_018",
+      "file": "channels/main/decisions/dec-20260620-071425-784f10/self-improvement-atom-plan.md",
+      "change": "Write the operator-facing plan summarizing the narrowed claims, true speed uncertainty, A15 reuse decision, ordering, and decomposed atom map.",
+      "acceptance": "Document states no new layers, removes the Standard-task depth-router speed promise, lists the A10/A11 decompositions, and names the operator review gate.",
+      "test": "PowerShell Select-String checks for 'Depth-router promise removed', 'A15 collision resolved', 'A10/A11 decomposition', and 'Operator review gate'.",
+      "reuses": "Existing decisions/ durable-plan convention.",
+      "risk": "low",
+      "depends_on": ["ATOM_001"]
+    },
+    {
+      "sequence": 3,
+      "atom_id": "ATOM_010a",
+      "file": "channels/main/decisions/dec-20260620-071425-784f10/self-improvement-atom-plan.md",
+      "change": "Correct Direction-2 wording: depth-router is not promised to reduce planner_ms or verify_ms for Standard tasks; speed promise is narrowed to measured synthesis-routing effects only.",
+      "acceptance": "The plan doc contains no claim that depth-router directly lowers verify_ms or Standard-task planner_ms.",
+      "test": "PowerShell Select-String negative check for 'depth-router reduces verify_ms' and positive check for 'Standard tasks: no speed promise'.",
+      "reuses": "Existing plan doc artifact; no code path.",
+      "risk": "low",
+      "depends_on": ["ATOM_018"]
+    },
+    {
+      "sequence": 4,
+      "atom_id": "ATOM_013",
+      "file": "lib/metrics.ps1",
+      "change": "Add pure Get-PhaseLatencyBaseline that aggregates existing task-latency phase_timings into count, median, p90, and max per phase.",
+      "acceptance": "Synthetic task-latency records return correct planner_ms and verify_ms median/p90/max without writing files.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-phase-latency-baseline.ps1",
+      "reuses": "Read-MetricsJsonl, Get-TaskLatencyRecords, and existing task-latency schema.",
+      "risk": "low",
+      "depends_on": []
+    },
+    {
+      "sequence": 5,
+      "atom_id": "ATOM_010b",
+      "file": "channels/main/decisions/dec-20260620-071425-784f10/metrics-latency-analysis.md",
+      "change": "Produce a metrics report using Get-PhaseLatencyBaseline; quantify planner_ms and verify_ms bottlenecks before any speed behavior change.",
+      "acceptance": "Report cites concrete counts and median/p90/max for planner_ms and verify_ms, states that verify_ms attribution to gate-regression is unproven until measured, and identifies synthesis/DISCUSS depth as the only current planner_ms hypothesis.",
+      "test": "PowerShell Select-String checks for planner_ms, verify_ms, counts, and 'unproven' attribution language.",
+      "reuses": "Get-PhaseLatencyBaseline and existing metrics.jsonl records.",
+      "risk": "low",
+      "depends_on": ["ATOM_013"]
+    },
+    {
+      "sequence": 6,
+      "atom_id": "ATOM_003",
+      "file": "tools/test-decision-synthesis.ps1",
+      "change": "Add test-only assertions for depth routing: plan-refinement DISCUSS without explicit high-stakes marker stays Standard; explicit [[HIGH-STAKES]] remains High-Stakes; broad architecture/design remains Deep.",
+      "acceptance": "The test fails on over-eager escalation and passes on the intended route split.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1",
+      "reuses": "Existing decision synthesis test harness.",
+      "risk": "low",
+      "depends_on": ["ATOM_010b"]
+    },
+    {
+      "sequence": 7,
+      "atom_id": "ATOM_005",
+      "file": "tools/test-backlog-duplicate-compactor.ps1",
+      "change": "Add test-only contract for typed audit duplicates: one representative remains open/approved and duplicates are rejected via duplicate_of / duplicate_key / resolved_reason.",
+      "acceptance": "A synthetic duplicate group yields one representative and N-1 rejected duplicates; no persisted duplicate_count, first_seen, or last_seen assertion is introduced.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-backlog-duplicate-compactor.ps1",
+      "reuses": "Existing backlog duplicate compactor tests.",
+      "risk": "low",
+      "depends_on": ["ATOM_001"]
+    },
+    {
+      "sequence": 8,
+      "atom_id": "ATOM_007",
+      "file": "tools/test-audit-launch-guard.ps1",
+      "change": "Add stale-start test cases: dead stale started run without terminal becomes abandoned and allows next admission; live pid blocks; recent dead pid inside TTL blocks.",
+      "acceptance": "The test distinguishes stale-dead, live, and recent-dead launch entries using the existing launch ledger schema.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1",
+      "reuses": "Existing audit launch guard test harness.",
+      "risk": "low",
+      "depends_on": ["ATOM_001"]
+    },
+    {
+      "sequence": 9,
+      "atom_id": "ATOM_009a",
+      "file": "tools/test-auditor-stale-alert.ps1",
+      "change": "Add test-only terminal-aware stale_audit cases: unresolved started entries trigger; completed_ok/completed_partial/skipped_not_idle/failed/abandoned terminals do not trigger as unresolved starts.",
+      "acceptance": "The stale alert tests prove benign terminal records do not count as active stale starts while incomplete windows still alert.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-auditor-stale-alert.ps1",
+      "reuses": "Existing stale_audit test harness and launch ledger JSONL fixtures.",
+      "risk": "low",
+      "depends_on": ["ATOM_001"]
+    },
+    {
+      "sequence": 10,
+      "atom_id": "ATOM_004",
+      "file": "lib/decision-depth.ps1",
+      "change": "Narrow synthesis routing for plan-refinement/DISCUSS atom-list tasks so generic refine/discuss wording alone does not elevate to Deep or High-Stakes without explicit high-risk markers.",
+      "acceptance": "ATOM_003 tests pass; explicit high-risk/high-stakes tasks still route high; broad architecture/design still routes Deep.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1",
+      "reuses": "Existing decision-depth router; no new router layer.",
+      "risk": "medium",
+      "depends_on": ["ATOM_003", "ATOM_010b"]
+    },
+    {
+      "sequence": 11,
+      "atom_id": "ATOM_006",
+      "file": "lib/backlog-workpack.ps1",
+      "change": "Strengthen existing Invoke-BacklogDuplicateCompactor / Get-BacklogDuplicateFindingType so typed audit duplicate findings collapse through existing duplicate_of / duplicate_key / resolved_reason fields only.",
+      "acceptance": "ATOM_005 tests pass; no new persisted duplicate_count, first_seen, or last_seen fields are added to backlog items.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-backlog-duplicate-compactor.ps1",
+      "reuses": "Invoke-BacklogDuplicateCompactor, Get-BacklogDuplicateFindingType, existing rejected duplicate record shape.",
+      "risk": "medium",
+      "depends_on": ["ATOM_005"]
+    },
+    {
+      "sequence": 12,
+      "atom_id": "ATOM_008",
+      "file": "driver/10-maintenance.ps1",
+      "change": "Terminalize stale dead-pid started launches as decision='abandoned' through existing Invoke-AuditLaunchStaleStartReconciliation / Write-AuditLaunchLedgerEntry; exclude abandoned run_id from attempt counts.",
+      "acceptance": "ATOM_007 tests pass; exactly one abandoned terminal is written for a stale dead run_id and next launch admission is allowed.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1",
+      "reuses": "Invoke-AuditLaunchStaleStartReconciliation, Write-AuditLaunchLedgerEntry, Get-AuditLaunchAttemptCount.",
+      "risk": "medium",
+      "depends_on": ["ATOM_007"]
+    },
+    {
+      "sequence": 13,
+      "atom_id": "ATOM_014",
+      "file": "driver/10-maintenance.ps1",
+      "change": "Emit additive decision='window_incomplete' with a reason when a launch window is known incomplete but not eligible for stale-dead abandoned terminalization.",
+      "acceptance": "Started-without-terminal window produces exactly one window_incomplete entry; stale-dead pid path still produces abandoned, not both.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1",
+      "reuses": "Write-AuditLaunchLedgerEntry and existing audit.launches.jsonl schema.",
+      "risk": "medium",
+      "depends_on": ["ATOM_008"]
+    },
+    {
+      "sequence": 14,
+      "atom_id": "ATOM_016",
+      "file": "driver/10-maintenance.ps1",
+      "change": "Teach existing stale-start reconciliation and attempt counting to treat window_incomplete as terminal-but-incomplete, avoiding false still-running classification.",
+      "acceptance": "A window_incomplete entry is not counted as an unresolved started launch, but remains visible as an incomplete terminal for audit signal hygiene.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1",
+      "reuses": "Get-AuditLaunchAttemptCount and Invoke-AuditLaunchStaleStartReconciliation.",
+      "risk": "medium",
+      "depends_on": ["ATOM_014"]
+    },
+    {
+      "sequence": 15,
+      "atom_id": "ATOM_009b",
+      "file": "lib/auditor.ps1",
+      "change": "Make Get-StaleAuditLaunchInfo terminal-aware: pair started run_id with terminal decisions and count only unresolved starts plus denied entries for stale_audit.",
+      "acceptance": "ATOM_009a tests pass; completed/failed/skipped/abandoned terminals suppress benign stale_audit starts; incomplete windows still surface.",
+      "test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-auditor-stale-alert.ps1",
+      "reuses": "Get-StaleAuditLaunchInfo and existing New-AuditorTrigger stale_audit emission.",
+      "risk": "medium",
+      "depends_on": ["ATOM_009a", "ATOM_016"]
+    }
+  ],
+  "rejected_atoms": [
+    {
+      "atom_id": "OLD_A12",
+      "reason": "commit-boundary/error-contract enforcement is underspecified and risks a new verification layer; not ready for this wave"
+    },
+    {
+      "atom_id": "OLD_A13",
+      "reason": "restart-attribution/error-contract link is underspecified and risks a new verification layer; not ready for this wave"
+    },
+    {
+      "atom_id": "OLD_A15_COUNT_FIELDS",
+      "reason": "parallel count/first_seen/last_seen collapse representation conflicts with existing duplicate_of/resolved_reason model"
+    },
+    {
+      "atom_id": "ATOM_015",
+      "reason": "persisted duplicate_count/last_seen field addition rejected; existing compactor may return duplicate_count in transient summary only"
+    },
+    {
+      "atom_id": "ATOM_017",
+      "reason": "gate-regression narrowing premise is currently false: changed-path scope already exists and is used; residual fallback call-sites require metrics proof before a build atom"
+    },
+    {
+      "atom_id": "ATOM_019",
+      "reason": "standalone file:path mandate folded into ATOM_001 schema"
+    },
+    {
+      "atom_id": "OLD_A10_MONOLITH",
+      "reason": "split into ATOM_007, ATOM_008, ATOM_014, and ATOM_016"
+    },
+    {
+      "atom_id": "OLD_A11_MONOLITH",
+      "reason": "split into ATOM_009a and ATOM_009b"
+    },
+    {
+      "atom_id": "OLD_ATOM_009_MULTI_FILE",
+      "reason": "split into one test-file atom and one lib/auditor.ps1 implementation atom"
+    },
+    {
+      "atom_id": "OLD_ATOM_010_BUNDLED",
+      "reason": "split into ATOM_010a claim correction and ATOM_010b metrics analysis"
+    }
+  ],
+  "operator_review_gate": {
+    "start_after_review": "ATOM_003 or ATOM_005; both are test-only and lowest runtime risk after plan artifacts",
+    "do_not_start": [
+      "ATOM_004 until ATOM_003 is green",
+      "ATOM_006 until ATOM_005 is green",
+      "ATOM_008/014/016 until ATOM_007 is green",
+      "ATOM_009b until ATOM_009a and ATOM_016 are green",
+      "any verify_ms narrowing until ATOM_010b proves the residual bottleneck"
+    ]
+  }
+}

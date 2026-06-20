@@ -1,0 +1,97 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно не внедрять код, а доточить утверждённый план до строительного atom-list: каждый атом должен иметь конкретный file:path, одну проверяемую правку, свой тест и явное переиспользование существующего механизма. Главная корректировка: depth-router не снижает verify_ms и не снижает обычный planner_ms normal-path задач; он может быть рычагом только для стоимости Decision Synthesis planner/synthesis depth. Поэтому speed-обещание надо сузить или отделить verify-fastpath как отдельный рычаг.",
+    "summary":  "Предлагаю записать refined atom-list в channels/main/decisions/dec-20260620-071425-784f10/refined_atom_list.json. Direction-1 оставить как fail-loud + signal-hygiene, но A15 заменить на усиление существующего rejection-based duplicate compactor, без count/first_seen/last_seen. A10/A11 разложить на пары test-only + implementation-only атомов. Direction-2 сузить: depth-router отвечает только за planner_ms Decision Synthesis depth на DISCUSS/plan-refinement задачах; verify_ms не обещать, пока отдельная done-gate fastpath-метрика не докажет рычаг.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "R0 | file: channels/main/decisions/dec-20260620-071425-784f10/refined_atom_list.json | change: создать канонический refined atom-list с полями atom_id, file, change, acceptance, test, reuses, sequence, risk и explicit_no_new_layer=true | acceptance: все retained atoms имеют один concrete file:path и не содержат multi-file правки | test: ConvertFrom-Json + проверка обязательных полей и уникальности atom_id | reuse: existing decisions/ artifact convention.",
+                               "reason":  "Это прямой выход задачи и место, где фиксируются сужение speed-claim, разрешение A15 и разбиение A10/A11.",
+                               "tradeoff":  "Это plan-only атом; он не улучшает runtime сам по себе, но делает последующее внедрение проверяемым.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "R1 | file: channels/main/decisions/dec-20260620-071425-784f10/refined_atom_list.json | change: явно отклонить старые A12/A13 из этой строительной волны как неготовые и потенциально новый verification layer | acceptance: refined list не содержит commit-boundary enforcement atoms без concrete path/test | test: JSON/assertion по rejected_atoms содержит A12/A13 с reason=\u0027new-layer-risk/underspecified\u0027 | reuse: Foundation #2/no-new-layer constraint.",
+                               "reason":  "Red-team указал, что A12/A13 маскируют новый gate/check под reuse ledger. Это противоречит Foundation #2 и отвлекает от approved directions.",
+                               "tradeoff":  "Теряется часть fail-loud амбиции, зато сохраняется фокус и атомарность.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "S1T | file: tools/test-decision-synthesis.ps1 | change: добавить dedicated assertions для depth-router: plan-refinement DISCUSS без [[HIGH-STAKES]] получает Standard depth; explicit [[HIGH-STAKES]] остаётся High-Stakes; broad architecture/design остаётся Deep | acceptance: тест падает до S1I и проходит после него | test: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-decision-synthesis.ps1 | reuse: existing decision-depth.ps1 and synthesis test harness.",
+                               "reason":  "Сначала фиксируем реальное speed-обещание в тесте: planner_ms можно снижать только через depth of synthesis, не через verify_ms.",
+                               "tradeoff":  "Тестовый атом отдельно от implementation; временно может быть red до paired implementation.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "S1I | file: lib/decision-depth.ps1 | change: сузить routing rule для plan-refinement/DISCUSS задач: не повышать их до Deep/High-Stakes только из-за слова discuss/refine/atom-list, если нет explicit [[HIGH-STAKES]] или high-risk domain; Standard synthesis remains routed, but with lighter stage set | acceptance: reduced planner_ms claim applies only to Decision Synthesis plan-refinement tasks; no verify_ms reduction claim | test: paired S1T | reuse: existing Get-SynthesisDepthDecision/Get-SynthesisRouteDecision, no new classifier.",
+                               "reason":  "Код показывает, что Standard normal tasks already stay on normal path and depth-router is shadow/synthesis routing. Это настоящий, но узкий, рычаг planner_ms.",
+                               "tradeoff":  "Есть риск недо-review планов; guardrails сохраняют explicit high-stakes and real high-risk domains.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "D15T | file: tools/test-backlog-duplicate-compactor.ps1 | change: заменить old A15 acceptance на existing representation: 5 identical typed audit findings with same root/finding_type -\u003e 1 representative open, 4 status=rejected with duplicate_of/resolved_reason, rerun idempotent; manual/running/untyped survive | acceptance: no count/first_seen/last_seen fields expected | test: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-backlog-duplicate-compactor.ps1 | reuse: existing compactor tests.",
+                               "reason":  "Разрешает A15 collision: не создаём второй collapse формат рядом с Invoke-BacklogDuplicateCompactor.",
+                               "tradeoff":  "Не даёт compact count metadata in-line, но сохраняет совместимость текущего backlog schema.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "D15I | file: lib/backlog-workpack.ps1 | change: усилить только existing Invoke-BacklogDuplicateCompactor/Get-BacklogDuplicateFindingType path, чтобы typed audit duplicates rejected through duplicate_of/duplicate_key/resolved_reason=\u0027duplicate-of-root-cause\u0027; не добавлять append-site collapse | acceptance: D15T passes; intake gate semantics remain unchanged | test: paired D15T plus tools/test-backlog-intake-gate.ps1 if touched behavior crosses intake | reuse: existing duplicate compactor and backlog store.",
+                               "reason":  "Foundation #2 требует укреплять существующий compactor, а не вводить count/first_seen/last_seen как новый слой.",
+                               "tradeoff":  "Сигнал представлен rejection records, не aggregated counter record.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "A10T | file: tools/test-audit-launch-guard.ps1 | change: dedicated stale-start tests: dead stale started run without terminal -\u003e abandoned written and next admission allowed; live pid still blocks; recent dead pid within TTL still blocks | acceptance: exactly one terminal per stale run_id and no launch storm | test: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-audit-launch-guard.ps1 | reuse: existing audit launch guard test harness.",
+                               "reason":  "Разбивает A10 test out of implementation and aligns with existing terminal state \u0027abandoned\u0027 instead of new \u0027window_incomplete\u0027.",
+                               "tradeoff":  "Если оператор всё же хочет имя window_incomplete, это надо решить до implementation; я предлагаю не плодить enum.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "A10I | file: driver/10-maintenance.ps1 | change: through existing Invoke-AuditLaunchStaleStartReconciliation/Write-AuditLaunchLedgerEntry, terminalize stale dead-pid started launches as decision=\u0027abandoned\u0027 and exclude abandoned run_id from Get-AuditLaunchAttemptCount | acceptance: A10T passes; no new ledger file/schema, only existing decision value path | test: paired A10T | reuse: Write-AuditLaunchLedgerEntry, Request-AuditLaunchAdmission, existing stale-start reconcile.",
+                               "reason":  "Это атомарная self-maintenance completion contract через уже существующий launch-ledger механизм.",
+                               "tradeoff":  "Новый terminal semantics должен оставаться backward-compatible для ledger readers.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "A11T | file: tools/test-auditor-stale-alert.ps1 | change: add terminal-aware stale_audit cases: stale started without terminal fires once; same run_id with completed_ok/failed/runner_timeout/skipped_not_idle/abandoned does not fire; denied still counts as activity | acceptance: incomplete window raises one alert, terminalized window raises none | test: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-auditor-stale-alert.ps1 | reuse: existing stale alert test harness.",
+                               "reason":  "Разбивает A11 test out and makes benign terminal reasons non-alerting without a new alert layer.",
+                               "tradeoff":  "More nuanced test fixture, but it prevents noisy stale_audit alerts after terminal reconciliation.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "A11I | file: lib/auditor.ps1 | change: make Get-StaleAuditLaunchInfo terminal-aware by pairing started run_id with existing terminal decisions; count only unresolved recent starts plus denied entries for stale_audit | acceptance: A11T passes and stale_audit detail reports unresolved starts, not all starts | test: paired A11T | reuse: existing auditor stale_audit trigger and audit.launches.jsonl.",
+                               "reason":  "Это fail-loud with signal hygiene: incomplete work surfaces, completed/abandoned work does not spam.",
+                               "tradeoff":  "Requires careful run_id handling; corrupt/no-run_id rows should remain fail-soft and visible only when needed.",
+                               "confidence":  0.84
+                           }
+                       ],
+    "assumptions":  [
+                        "Writable implementation step will create channels/main/decisions/dec-20260620-071425-784f10/refined_atom_list.json; this solver response is proposal-only.",
+                        "Foundation #2 means no new watcher, store, classifier, alert layer, or duplicate representation.",
+                        "Depth-router speed claim is narrowed to planner_ms caused by Decision Synthesis depth; verify_ms is explicitly out of scope unless a separate done-gate fastpath atom is approved.",
+                        "The existing audit launch terminal states completed_ok, completed_partial, failed, runner_timeout, skipped_not_idle and abandoned are preferred over adding window_incomplete."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Depth-router change may under-review genuinely risky DISCUSS architecture tasks.",
+                      "severity":  "high",
+                      "mitigation":  "Keep explicit [[HIGH-STAKES]], explicit high risk and high-risk domain rules above the plan-refinement Standard rule; add regression cases in S1T."
+                  },
+                  {
+                      "risk":  "Old A15 collapse format would create a second dedup layer and conflict with current intake/compactor semantics.",
+                      "severity":  "high",
+                      "mitigation":  "Reject count/first_seen/last_seen and use only existing duplicate_of/duplicate_key/resolved_reason representation."
+                  },
+                  {
+                      "risk":  "Strict one-file atoms split tests and implementation, which can create temporary red tests.",
+                      "severity":  "medium",
+                      "mitigation":  "Sequence as paired red/green atoms under operator review: test atom documents acceptance, implementation atom makes it pass, no bundled multi-file commit unless operator relaxes atomicity."
+                  },
+                  {
+                      "risk":  "Terminal-aware stale_audit could hide a real stuck audit if run_id pairing is wrong.",
+                      "severity":  "medium",
+                      "mitigation":  "Only suppress starts that have a same-run_id terminal; denied entries and corrupt/no-run_id cases remain visible/fail-soft."
+                  }
+              ],
+    "minimal_version":  "Write refined_atom_list.json with R0/R1, D15T/D15I, A10T/A10I, A11T/A11I, and the narrowed speed claim. First implementation after approval: D15T then D15I, because it is the safest signal-hygiene atom and reuses existing compactor behavior.",
+    "advanced_version":  "After minimal atoms pass, add S1T/S1I to reduce planner_ms for plan-refinement Decision Synthesis tasks only. If verify_ms remains a top-3 cost in metrics.jsonl for non-core/plan-only tasks, open a separate done-gate fastpath atom against driver/86-loop-completion.ps1 and tools/test-verify-chain-fastpath.ps1 rather than attributing verify_ms to depth-router."
+}

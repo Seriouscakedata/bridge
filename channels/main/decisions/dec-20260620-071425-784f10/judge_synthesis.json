@@ -1,0 +1,376 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ATOM_001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Foundational meta-structure: a single canonical JSON with required fields, one concrete file:path per atom, no multi-file changes, and explicit_no_new_layer=true. Machine-checkable test (ConvertFrom-Json + field/uniqueness assertions). This is the spine the rest of the wave hangs on; cheap, reversible, high-leverage.",
+                      "total":  0.9075
+                  },
+                  {
+                      "atom_id":  "ATOM_002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B). Correctly quarantines A12/A13 as underspecified new-verification-layer risk and defers error-contract enforcement to a separate direction. Strong scope-creep control with an explicit rejected_atoms assertion; directly serves the no-new-layer principle.",
+                      "total":  0.91
+                  },
+                  {
+                      "atom_id":  "ATOM_003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Test-only atom pinning router behavior: plan-refinement DISCUSS without [[HIGH-STAKES]] -\u003e Standard, explicit marker -\u003e High-Stakes, broad arch -\u003e Deep. Concrete named test file, zero behavior change. Lower impact (coverage), but locks the contract for ATOM_004.",
+                      "total":  0.865
+                  },
+                  {
+                      "atom_id":  "ATOM_004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.7,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Implementation pair to ATOM_003: narrows elevation in lib/decision-depth.ps1 so \u0027discuss/refine/atom-list\u0027 alone does not force Deep/High-Stakes. Consistent with ATOM_010\u0027s router-precision lever. Medium reversibility and a softly-specified \u0027paired S1T\u0027 test hold the score down; behavior change in a routing path warrants the test from ATOM_003 landing first.",
+                      "total":  0.78
+                  },
+                  {
+                      "atom_id":  "ATOM_005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Chosen resolution of the A15 conflict: reuse the existing duplicate_of/resolved_reason representation (1 representative open, 4 rejected), no new count/first_seen/last_seen fields. Best aligned with explicit_no_new_layer (ATOM_021) and minimal-change philosophy; concrete test. Judge resolves the A15 data-model collision in favor of this no-new-field approach.",
+                      "total":  0.865
+                  },
+                  {
+                      "atom_id":  "ATOM_006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Implementation pair to ATOM_005: strengthen the existing Invoke-BacklogDuplicateCompactor path to reject typed audit duplicates via duplicate_of/duplicate_key/resolved_reason, no append-site collapse. Reuses existing code; medium reversibility. Must be implemented to match ATOM_005\u0027s no-new-field record (not ATOM_012/015).",
+                      "total":  0.8025
+                  },
+                  {
+                      "atom_id":  "ATOM_007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Test-only stale-start coverage in test-audit-launch-guard.ps1: dead stale start -\u003e abandoned + next admission allowed; live pid blocks; recent dead pid within TTL still blocks. Cheap, reversible, encodes the exact contract ATOM_008 implements.",
+                      "total":  0.865
+                  },
+                  {
+                      "atom_id":  "ATOM_008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Implementation pair to ATOM_007: terminalize stale dead-pid starts as decision=\u0027abandoned\u0027 via existing reconciliation/ledger writers and exclude abandoned run_id from attempt count. Signal-hygiene win reusing existing infra; medium reversibility, \u0027paired A10T\u0027 test.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "ATOM_009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B). Makes Get-StaleAuditLaunchInfo terminal-aware and routes completion-contract results through the EXISTING auditor stale-alert, classifying benign terminal reasons as non-alerting. Strong false-alert reduction with a crisp criterion (incomplete window -\u003e exactly one alert, benign -\u003e none). Touches multiple behaviors, so simplicity/feasibility are tempered.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "ATOM_010",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Bundles claim-correction (plan doc) with metrics.jsonl analysis/report — violates the 1-file/1-test atomicity rule from ATOM_011; split into a claim-correction atom and a metrics-analysis atom.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Consensus (B,C) and the most important correction: deletes the false \u0027depth-router speeds up Standard plan-only tasks\u0027 claim and re-derives real levers from data (verify_ms = gate-regression scope narrowing; planner_ms = router precision on SYNTHESIS-routed DISCUSS). Correct and high-impact, but it bundles analysis + doc edits with a soft test, so modify and decompose.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "ATOM_011",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (B,C). Defines the atomicity invariant (1 atom = 1 impl file + 1 dedicated test) and decomposes A10/A11 accordingly. This is the rule that makes the whole list verifiable and safely sequenceable; cheap and reversible.",
+                      "total":  0.9025
+                  },
+                  {
+                      "atom_id":  "ATOM_012",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Blocking conflict: the \u0027add duplicate_count + last_seen\u0027 clause contradicts the chosen ATOM_005 (no count/first_seen/last_seen fields) and is internally inconsistent with its own \u0027drop the count/first_seen/last_seen collapse\u0027 directive.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Consensus intent (B,C) to resolve the A15 collision is sound, and dropping the parallel collapse representation is correct. But the embedded \u0027add duplicate_count+last_seen\u0027 instruction collides head-on with ATOM_005 and offers three divergent paths. Modify: keep the collision resolution and the \u0027safe fallback: drop A15 entirely\u0027 branch, strip the field-adding clause so it conforms to ATOM_005.",
+                      "total":  0.7475
+                  },
+                  {
+                      "atom_id":  "ATOM_013",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Adds a pure Get-PhaseLatencyBaseline in existing lib/metrics.ps1 (median/p90 per phase) with a dedicated synthetic-input test. A pure function in an existing lib is not a new layer; it supplies the verify_ms/planner_ms baseline ATOM_010/ATOM_017 depend on. Low risk, well-specified.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "ATOM_014",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Additive \u0027window_incomplete\u0027 ledger decision value with a reason in driver/10-maintenance.ps1, with a focused test (started-without-terminal =\u003e exactly one such entry). Reuses Write-AuditLaunchLedgerEntry; coordinate with ATOM_008/009/016 so the stale-launch family stays coherent.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "ATOM_015",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.55,
+                                     "feasibility":  0.8,
+                                     "impact":  0.6,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Directly conflicts with the chosen ATOM_005 (no count/first_seen/last_seen) and reinforces the contested clause in ATOM_012; introduces a new data-model field the plan otherwise disavows.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Well-specified in isolation, but it loses the A15 data-representation conflict: adding duplicate_count/last_seen contradicts ATOM_005 and the explicit no-new-field/no-new-layer stance. Reject in favor of ATOM_005\u0027s reuse of duplicate_of/resolved_reason; revive only if the project later decides it explicitly wants counts.",
+                      "total":  0.685
+                  },
+                  {
+                      "atom_id":  "ATOM_016",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Teaches the existing stale-start reconcile (driver/60-startup.ps1 / 10-maintenance.ps1) to treat the \u0027window_incomplete\u0027 value from ATOM_014 as terminal-but-incomplete, preventing false \u0027still-running\u0027. Sound dependency on ATOM_014; reconcile-case test, with \u0027expected state\u0027 the only soft spot.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "ATOM_017",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.6,
+                                     "impact":  0.9,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Low reversibility + high cost; narrowing verify scope risks missed regressions if the related-suite mapping is wrong — must land last in the safest-first ordering and behind the ATOM_013 baseline.",
+                                            "value":  0.02
+                                        }
+                                    ],
+                      "reason":  "The genuine verify_ms lever from ATOM_010: scope Get-GateRegressionScope to suites related to a single-file core change instead of the ~312.6s ceiling. Highest speed payoff, but riskiest (low reversibility). The test is well-designed to bound the risk — the narrowed scope must still include the suite catching a known-regression fixture and show zero missed regressions — so accept, sequenced last.",
+                      "total":  0.745
+                  },
+                  {
+                      "atom_id":  "ATOM_018",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Produces the human-facing plan doc (chosen+narrowed directions, quantified justification, ordered atom list, reuse map, explicit no-new-layer statement) with a no-code constraint. The synthesis deliverable of the wave; test (\u0027contains all sections, no implementation code\u0027) is adequate though section-presence is shallow.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "ATOM_019",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Redundant with ATOM_001, which already mandates one concrete file:path per retained atom; keeping both duplicates the requirement.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Correct requirement (every atom needs a concrete file:path to satisfy success_test #8) but it is subsumed by ATOM_001. Modify: fold this assertion into ATOM_001\u0027s schema validation rather than carrying it as a separate atom.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "ATOM_020",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Order the list safest -\u003e most impactful so self-implementation starts with the least risky atom (and lands ATOM_017 last). Strong risk control for a self-modifying bridge; cheap. Test (\u0027ordered by safety\u0027) is somewhat soft but workable given each atom\u0027s risk/reversibility fields.",
+                      "total":  0.865
+                  },
+                  {
+                      "atom_id":  "ATOM_021",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The governing constraint: reuse existing logger/config/test-harness, introduce zero new layers or frameworks. It is the principle that disambiguates the A15 conflict toward ATOM_005 and rejects scope creep (ATOM_002). Only weakness is the subjective \u0027code review confirms\u0027 test; pair with the structural checks in ATOM_001 to make it enforceable.",
+                      "total":  0.8725
+                  }
+              ]
+}
