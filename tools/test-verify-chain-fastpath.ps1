@@ -139,6 +139,47 @@ STATUS: DONE
   $timeoutInconclusiveRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutInconclusiveSuite
   Check 'Gate regression timeout inconclusive: exhausted retry schedule is 180,180,360' (@($script:GateTimeoutInconclusiveTimeouts) -join ',' -eq '180,180,360') $script:GateTimeoutInconclusiveTimeouts
   Check 'Gate regression timeout inconclusive: result is classified non-blocking' ([bool]$timeoutInconclusiveRuntime.GateRegression.TimeoutInconclusive -and (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $timeoutInconclusiveRuntime.GateRegression)) $timeoutInconclusiveRuntime.GateRegression
+  $syntheticTimeoutGate = [pscustomobject]@{ Ok=$false; TimedOut=$true; ExitCode=124; RuntimeError=''; Attempts=3; TimeoutRetryAdded=$true; TimeoutSchedule=@(180,180,360) }
+  Check 'Gate regression timeout inconclusive: synthetic exhausted 124 result is accepted' (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $syntheticTimeoutGate) $syntheticTimeoutGate
+
+  $script:CapturedGateMessages = @()
+  $script:ClearedGateFailureKinds = @()
+  $script:SetGateFailures = @()
+  $script:FakeGateState = [pscustomobject]@{
+    gate_regression_fail_count = 2
+    task_last_failure = [pscustomobject]@{ kind='gate_regression_failed'; text='old failure' }
+  }
+  function Add-Message {
+    param([string]$From, [string]$Text, [string]$Kind)
+    $script:CapturedGateMessages = @($script:CapturedGateMessages + [pscustomobject]@{ From=$From; Text=$Text; Kind=$Kind })
+  }
+  function Clear-TaskLastFailureKind {
+    param([string]$Kind = '')
+    $script:ClearedGateFailureKinds = @($script:ClearedGateFailureKinds + $Kind)
+    if ($script:FakeGateState.task_last_failure -and [string]$script:FakeGateState.task_last_failure.kind -eq $Kind) {
+      $script:FakeGateState.task_last_failure = $null
+    }
+  }
+  function Set-TaskLastFailure {
+    param([string]$Kind, [string]$Text)
+    $script:SetGateFailures = @($script:SetGateFailures + [pscustomobject]@{ Kind=$Kind; Text=$Text })
+  }
+  function Update-State {
+    param([scriptblock]$Mutation)
+    & $Mutation $script:FakeGateState | Out-Null
+    return $script:FakeGateState
+  }
+
+  $plannerStatus = 'DONE'
+  $timeoutInconclusiveRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $syntheticTimeoutGate -FailReason 'exit=124, timedOut=True'
+  $timeoutInconclusiveMessage = ''
+  if ($script:CapturedGateMessages.Count -gt 0) { $timeoutInconclusiveMessage = [string]$script:CapturedGateMessages[-1].Text }
+  Check 'Gate regression timeout inconclusive runtime: plannerStatus remains DONE' ($plannerStatus -eq 'DONE') $plannerStatus
+  Check 'Gate regression timeout inconclusive runtime: no gate_regression_failed is written' (-not (@($script:SetGateFailures | ForEach-Object { [string]$_.Kind }) -contains 'gate_regression_failed')) $script:SetGateFailures
+  Check 'Gate regression timeout inconclusive runtime: previous gate_regression_failed is cleared' ((@($script:ClearedGateFailureKinds) -contains 'gate_regression_failed') -and $null -eq $script:FakeGateState.task_last_failure) $script:ClearedGateFailureKinds
+  Check 'Gate regression timeout inconclusive runtime: state records inconclusive_timeout' ([string]$script:FakeGateState.gate_regression_last_outcome -eq 'inconclusive_timeout' -and [int]$script:FakeGateState.gate_regression_last_attempts -eq 3 -and (@($script:FakeGateState.gate_regression_last_budgets) -join ',') -eq '180,180,360') $script:FakeGateState
+  Check 'Gate regression timeout inconclusive runtime: event says final inconclusive outcome' ($timeoutInconclusiveMessage.Contains('final outcome=inconclusive_timeout') -and -not $timeoutInconclusiveMessage.Contains('закрываю как есть')) $timeoutInconclusiveMessage
+  Check 'Gate regression timeout inconclusive runtime: handler returns machine outcome' ([string]$timeoutInconclusiveRecord.Outcome -eq 'inconclusive_timeout') $timeoutInconclusiveRecord
   Check 'Gate regression timeout inconclusive: early timeout without retry remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; RuntimeError=''; Attempts=1; TimeoutRetryAdded=$false; TimeoutSchedule=@(180) }))) $null
   Check 'Gate regression timeout inconclusive: non-timeout failure remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=1; TimedOut=$false; RuntimeError='' }))) $null
 

@@ -543,6 +543,87 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   return $true
 }
 
+function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
+  param(
+    [AllowNull()][object]$GateResult,
+    [string]$FailReason = ''
+  )
+
+  $attempts = 0
+  $exitCode = 0
+  $timedOut = $false
+  $budget = @()
+  try { $attempts = [int]$GateResult.Attempts } catch {}
+  try { $exitCode = [int]$GateResult.ExitCode } catch {}
+  try { $timedOut = [bool]$GateResult.TimedOut } catch {}
+  try { $budget = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $budget = @() }
+
+  $attemptsText = ''
+  if ($attempts -gt 0) { $attemptsText = (" after {0} attempt(s)" -f $attempts) }
+
+  $budgetText = ''
+  if ($budget.Count -gt 0) { $budgetText = ("; budgets={0}" -f (($budget | ForEach-Object { [string]$_ }) -join ',')) }
+
+  $reasonText = ([string]$FailReason).Trim()
+  if ([string]::IsNullOrWhiteSpace($reasonText)) {
+    $reasonText = ("exit={0}, timedOut={1}" -f $exitCode, $timedOut)
+  }
+
+  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
+
+  return [pscustomobject][ordered]@{
+    Outcome = 'inconclusive_timeout'
+    Attempts = $attempts
+    Budgets = @($budget)
+    ExitCode = $exitCode
+    TimedOut = $timedOut
+    Message = $message
+  }
+}
+
+function Set-DriverDoneGateRegressionTimeoutInconclusiveState {
+  param([Parameter(Mandatory=$true)][object]$Record)
+
+  $outcome = [string]$Record.Outcome
+  $attempts = 0
+  $exitCode = 0
+  $timedOut = $false
+  $budgets = @()
+  try { $attempts = [int]$Record.Attempts } catch {}
+  try { $exitCode = [int]$Record.ExitCode } catch {}
+  try { $timedOut = [bool]$Record.TimedOut } catch {}
+  try { $budgets = @($Record.Budgets | ForEach-Object { [int]$_ }) } catch { $budgets = @() }
+  $ts = (Get-Date).ToString('o')
+
+  Update-State ({
+    param($s)
+    if ($null -eq $s.PSObject.Properties['gate_regression_fail_count']) {
+      $s | Add-Member -NotePropertyName gate_regression_fail_count -NotePropertyValue 0 -Force
+    } else {
+      $s.gate_regression_fail_count = 0
+    }
+    $s | Add-Member -NotePropertyName gate_regression_last_outcome -NotePropertyValue $outcome -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_attempts -NotePropertyValue $attempts -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_budgets -NotePropertyValue @($budgets) -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_exit_code -NotePropertyValue $exitCode -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_timed_out -NotePropertyValue $timedOut -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_at -NotePropertyValue $ts -Force
+  }.GetNewClosure()) | Out-Null
+}
+
+function Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling {
+  param(
+    [AllowNull()][object]$GateResult,
+    [string]$FailReason = ''
+  )
+
+  $record = New-DriverDoneGateRegressionTimeoutInconclusiveRecord -GateResult $GateResult -FailReason $FailReason
+  try { Clear-TaskLastFailureKind -Kind gate_regression_failed } catch {}
+  try { Set-DriverDoneGateRegressionTimeoutInconclusiveState -Record $record } catch {}
+  Add-Message -From system -Text $record.Message -Kind event | Out-Null
+  return $record
+}
+
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1760,18 +1841,7 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             $gateTimeoutInconclusive = $false
             try { $gateTimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $gateResult } catch {}
             if ($gateTimeoutInconclusive) {
-              try { Clear-TaskLastFailureKind -Kind gate_regression_failed } catch {}
-              try { Update-State { param($s) if ($null -ne $s.PSObject.Properties['gate_regression_fail_count']) { $s.gate_regression_fail_count = 0 } } | Out-Null } catch {}
-              $attemptsText = ''
-              try {
-                if ([int]$gateResult.Attempts -gt 0) { $attemptsText = (" after {0} attempt(s)" -f [int]$gateResult.Attempts) }
-              } catch {}
-              $budgetText = ''
-              try {
-                $budget = @($gateResult.TimeoutSchedule | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-                if ($budget.Count -gt 0) { $budgetText = ("; budgets={0}" -f ($budget -join ',')) }
-              } catch {}
-              Add-Message -From system -Text ("⚠️ Gate-regression timeout inconclusive{0} ({1}{2}) — закрываю как есть; timeout не является доказанной регрессией." -f $attemptsText, $failReason, $budgetText) -Kind event | Out-Null
+              Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $gateResult -FailReason $failReason | Out-Null
             } else {
               try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
               # 2-strike cap (2026-06-10, mirror auto-smoke above): the suite re-runs on EVERY
