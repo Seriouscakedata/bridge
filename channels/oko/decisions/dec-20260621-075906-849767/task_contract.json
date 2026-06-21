@@ -1,0 +1,25 @@
+{
+    "task":  "Возьми OKO VLM Глава 5 (финальная) в работу — честное демо + приёмка, сборка кода по атомам.",
+    "goal":  "Prepare OKO VLM Chapter 5 for a final, honest demonstration and formal acceptance, ensuring its codebase is modularly structured (\u0027by atoms\u0027).",
+    "constraints":  [
+                        "The demonstration must be honest and reflect the true state of the code.",
+                        "The work must lead to formal acceptance of OKO VLM Chapter 5.",
+                        "Code must be structured into atomic, modular components.",
+                        "This is the final iteration/stage for Chapter 5."
+                    ],
+    "known_context":  [
+                          "OKO VLM Chapter 5 exists and is in a state requiring final preparation.",
+                          "The project involves a VLM (Vision-Language Model) named OKO."
+                      ],
+    "output_format":  "A status report confirming readiness for demo and acceptance, along with a summary of code modularization efforts.",
+    "task_type":  "refactor",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "OKO VLM Chapter 5 code is demonstrably refactored into atomic, modular components.",
+                          "A successful \u0027honest demo\u0027 of OKO VLM Chapter 5 has been conducted.",
+                          "Formal acceptance of OKO VLM Chapter 5 has been received from stakeholders.",
+                          "All existing automated tests for OKO VLM Chapter 5 pass after refactoring.",
+                          "The refactored code adheres to defined coding standards and best practices."
+                      ]
+}

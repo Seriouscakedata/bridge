@@ -1,0 +1,97 @@
+{
+    "proposer":  "B",
+    "understanding":  "OKO is a home-security pipeline (camera → YOLO detector → tracker → zone resolver → event builder → deterministic decision engine → strict Bridge JSON) with an on-demand VLM gate that calls Google Gemini only for qualifying high-risk events. The \u0027OKO VLM\u0027 track was built chapter-by-chapter: Ch1 real GeminiVlmProvider, Ch2+3 assembly, Ch4.1 multi-frame request, Ch4.2 gate fail-safe prompt, Ch4.3 JPEG frame codec, Ch4.4 live wiring with debounce/cooldown. The code is ALREADY atomic and well-tested (src/oko/{domain,providers,vlm,tracking,zones,events,decision,bridge,pipeline,live,config}; ~189+ tests across phases). So Chapter 5 (final) is NOT a feature chapter — it is a final assembly + acceptance chapter: compose the existing atoms into one HONEST end-to-end VLM demo (real Gemini call, verbatim response, reproducible), keep the code modular (\u0027по атомам\u0027 = the PROGRESS.md atom-table convention used in prior phases), and prepare a formal acceptance package. The repeated \u0027честное демо\u0027 instruction is a hard constraint reacting to a project history of auto-driver commits where a fabricated/mocked demo would be the main failure mode.",
+    "summary":  "Deliver Chapter 5 as a thin final assembly, not new architecture: compose the existing atoms (frame_codec → VlmGate → GeminiVlmProvider → LivePipeline) into one honest, reproducible real-Gemini end-to-end demo using the key already present at ~/.bridge-private/secrets.json, capturing the VERBATIM Gemini response + latency + frame ids + exact command as committed evidence. Back it with a deterministic OFFLINE acceptance test (injected transport, asserts wiring/payload shape — never real model text) so CI stays green, surface real-call failures honestly instead of relying on the gate\u0027s production fail-open swallow, update the PROGRESS.md Chapter-5 atom table + README acceptance section, run lint/type/format over the new atoms, then present the acceptance checklist and request operator sign-off. Changes stay thin, additive, and standards-clean because this is the final iteration.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The \u0027honest demo\u0027 MUST be a real network call to Gemini using the existing key (env GEMINI_API_KEY, else ~/.bridge-private/secrets.json geminiApiKey), committing the verbatim model response text, latency_ms, model id, prompt, and source frame ids; no mocked/hand-written output may be presented as the demo result.",
+                               "reason":  "success_tests require an honest demo and the constraint \u0027reflect the true state of the code\u0027; project history of auto-driver commits makes a fabricated demo the single highest-impact failure. Reviewers must be able to re-run and reproduce.",
+                               "tradeoff":  "Introduces nondeterminism, API cost, and a network/key dependency into the demo; if the key is rate-limited or egress is blocked the demo cannot \u0027succeed\u0027 and must fail visibly rather than be faked.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Separate two verification tiers explicitly: (a) an OFFLINE deterministic acceptance test using an injected transport that asserts the frames→gate→Gemini-payload→Bridge wiring and never asserts on real model prose; (b) an ONLINE one-shot honest demo that is evidence-only, not a pass/fail unit test.",
+                               "reason":  "The automated suite must stay green and deterministic without network access, while honesty requires a real run; conflating them produces either a flaky test or a fake demo.",
+                               "tradeoff":  "Two artifacts to build and maintain (a test plus an evidence run), and reviewers must understand the offline test does not by itself prove the real API works.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Assemble Chapter 5 by composing existing atomic modules; add only thin atoms — a demo entrypoint, an evidence-writer, an end-to-end acceptance test, and a docs/atom-table update — rather than a new monolithic demo script or a parallel pipeline.",
+                               "reason":  "The codebase is already modular and the VLM path (frame_codec, VlmGate, GeminiVlmProvider, LivePipeline debounce) is complete and tested; the value-add of a final chapter is composition + evidence + sign-off, and DRY keeps one source of truth for wiring.",
+                               "tradeoff":  "Less visible \u0027new code\u0027 to show for a chapter, and it requires touching/extending shared live entrypoints (oko.live.webcam / oko.pipeline.live) to surface the VLM response, risking regressions in existing live tests.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "The demo path must surface VLM provider errors explicitly (exit nonzero, clear message) and never emit a fabricated description; do NOT rely on VlmGate.query_if_needed\u0027s production \u0027except Exception: response = None\u0027 fail-open, which would silently render a failed real call as \u0027no VLM response\u0027.",
+                               "reason":  "Reading gate.py and test_pipeline_vlm_provider_error_does_not_fail_event confirms the production path intentionally swallows provider errors so events still flow — correct for production, but in a demo it hides a failed real Gemini call and reads as honest \u0027no result\u0027 when it is actually an error.",
+                               "tradeoff":  "Requires a demo-specific error path distinct from production fail-open behavior, i.e. the demo checks the outcome/raw error rather than just the swallowed None.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Run a readiness preflight (reuse LiveReadinessChecker) before the demo; if the key/endpoint/network is unavailable, report \u0027blocked\u0027 honestly and abort — do not substitute fake camera/fake VLM output and call it the demo.",
+                               "reason":  "Prior phases already gate real runs behind readiness; honesty means a blocked demo is reported as blocked, matching the project\u0027s established \u0027real smoke blocked on credentials\u0027 pattern instead of silently downgrading to fakes.",
+                               "tradeoff":  "The demo may not run on demand in a constrained environment, forcing an explicit blocked status rather than a green checkmark.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Define formal acceptance as a concrete checklist: full pytest suite green (incl. the new offline VLM acceptance test), committed verbatim real-run evidence with a reproducible command, PROGRESS.md Chapter-5 atom table + README acceptance entry, lint/type/format clean, and committed-log secret scrubbing — then REQUEST operator sign-off (I prepare and request acceptance; I cannot self-grant it).",
+                               "reason":  "output_format asks for a readiness/acceptance report; success_tests demand demonstrable modular refactor, honest demo, passing tests, standards adherence, and stakeholder acceptance — which is an external human gate.",
+                               "tradeoff":  "Final acceptance depends on an external stakeholder, so the deliverable is \u0027acceptance package + request\u0027, not a unilaterally claimed acceptance.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Hold scope to assembly + demo + acceptance + light modular cleanup; defer new VLM features (streaming, structured/JSON response parsing, multi-camera fan-out, on-image annotations) to a follow-up, not Chapter 5.",
+                               "reason":  "This is explicitly the final iteration and the instruction is \u0027СБОРКА не обсуждение\u0027 (assembly, not discussion); adding features now reintroduces risk and undermines the \u0027final, honest, accepted\u0027 goal.",
+                               "tradeoff":  "Known nice-to-haves stay unbuilt and must be tracked as future work rather than landed here.",
+                               "confidence":  0.87
+                           }
+                       ],
+    "assumptions":  [
+                        "\u0027По атомам\u0027 means the PROGRESS.md atom-decomposition convention used in prior phases (atom → file(s) → test → status table), not a brand-new architecture.",
+                        "A valid Gemini API key is available at ~/.bridge-private/secrets.json (geminiApiKey) — verified present — and outbound HTTPS to generativelanguage.googleapis.com is permitted for the demo.",
+                        "\u0027Formal acceptance\u0027 requires a human operator/stakeholder sign-off; the agent can produce and submit the acceptance package but cannot grant acceptance itself.",
+                        "runs/vlm-demo-frame.png is from an earlier demo attempt; Chapter 5 should produce/refresh comparable evidence that additionally includes the verbatim Gemini text response and latency, not just a frame.",
+                        "The existing test suite (~189+ tests) is currently green; pytest could not be executed in this session (requires approval), so confirming green is part of the acceptance work, not a given.",
+                        "Runtime is CPython 3.14 (per __pycache__ tags) while pyproject targets 3.11+; the demo and tests must run on the actual installed interpreter.",
+                        "The committed live-webcam config and weights (models/yolov8n.pt / yolo11m.pt) remain valid for capturing real frames to feed the demo."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Dishonest or over-claimed demo: mocked/hand-written VLM text presented as a real Gemini response, or an \u0027expected\u0027 transcript passed off as live output.",
+                      "severity":  "high",
+                      "mitigation":  "Commit the verbatim raw Gemini response, latency, model id, prompt, and frame ids plus the exact reproducible command; keep the real call distinct from injected-transport tests; have the reviewer re-run before sign-off."
+                  },
+                  {
+                      "risk":  "Secret or PII leakage in committed evidence: API key in headers/logs, or identifiable persons in committed demo frames sent to Google.",
+                      "severity":  "high",
+                      "mitigation":  "Scrub x-goog-api-key and any secrets from committed logs; never commit the key; use a benign staged scene for the demo and document the third-party data-egress in the runbook."
+                  },
+                  {
+                      "risk":  "Real API dependency at demo time: key invalid, rate-limited, or network blocked, so the demo cannot run on demand.",
+                      "severity":  "medium",
+                      "mitigation":  "Run LiveReadinessChecker preflight; on any blocker report an explicit \u0027blocked\u0027 status and abort nonzero — never downgrade to fakes; record the blocker in the acceptance report."
+                  },
+                  {
+                      "risk":  "Gate\u0027s production fail-open swallow hides a failed real call, making a demo error look like a legitimate \u0027no VLM result\u0027.",
+                      "severity":  "medium",
+                      "mitigation":  "Demo path inspects the raw provider call/error explicitly and exits nonzero on failure, leaving the production fail-open behavior (and its test) untouched."
+                  },
+                  {
+                      "risk":  "Refactor/assembly regressions: extending shared live entrypoints to surface the VLM response breaks existing live/pipeline tests.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep changes thin and additive; run the full pytest suite before and after; gate acceptance on a green run and add the new test alongside, not in place of, existing ones."
+                  },
+                  {
+                      "risk":  "Flaky acceptance test if it asserts on real, nondeterministic Gemini prose.",
+                      "severity":  "medium",
+                      "mitigation":  "Offline acceptance asserts only on request/payload shape and wiring via injected transport; the online demo is evidence-only and excluded from the deterministic suite."
+                  },
+                  {
+                      "risk":  "Scope creep on the final chapter: features added instead of assembling, delaying or undermining acceptance.",
+                      "severity":  "medium",
+                      "mitigation":  "Enforce a fixed Chapter-5 atom list and an \u0027assembly-only, final iteration\u0027 rule; record any feature ideas as deferred follow-ups in PROGRESS.md."
+                  }
+              ],
+    "minimal_version":  "Compose the existing atomic modules into one honest end-to-end VLM demo: capture a few real webcam/staged frames, JPEG-base64 encode them via oko.vlm.frame_codec, run them through the existing VlmGate + GeminiVlmProvider using the real key from ~/.bridge-private/secrets.json, and print the Bridge JSON alongside the VERBATIM Gemini description; write run id, model, prompt, frame ids, response text, latency, and exit code to runs/ as committed, secret-scrubbed evidence with the exact reproducible command. Add ONE offline deterministic end-to-end VLM acceptance test (injected transport) asserting the frames→gate→Gemini-payload→Bridge wiring (never real prose). Surface provider/key errors honestly (nonzero, no fabricated text). Confirm the full pytest suite is green, update the PROGRESS.md Chapter-5 atom table and README acceptance section, run lint/format/type, then present the acceptance checklist and request operator sign-off.",
+    "advanced_version":  "All of minimal, plus: a dedicated thin `oko.vlm.demo` entrypoint atom that enables the gate, emits a structured evidence manifest (run id, model, frame ids, prompt, verbatim response, latency, exit code) and prints it next to the Bridge JSON; a LiveReadinessChecker preflight that makes the demo refuse (nonzero, \u0027blocked\u0027) rather than fall back to fakes when the key/network is absent; a record-once/replay-via-injected-transport regression harness so the real Gemini response becomes a labeled fixture (honestly noting it was captured live, not synthesized) giving deterministic coverage of the real payload shape; secret-scrubbing of all committed logs; a short DEMO.md runbook documenting the exact command, the third-party data egress, and the honest failure modes; and a ruff/black/mypy standards pass scoped to the Chapter-5 atoms with the atom→file→test→status table fully filled in PROGRESS.md and a Chapter-5 acceptance entry mirroring the prior-phase format for operator sign-off."
+}

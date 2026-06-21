@@ -1,0 +1,146 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.65,
+                                     "impact":  0.85,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.07,
+                                            "reason":  "Committing verbatim provider responses/prompts may expose sensitive data or create brittle evidence; require redaction policy and artifact location."
+                                        }
+                                    ],
+                      "reason":  "The honest-demo principle is correct and high-impact, but the evidence requirement should be constrained to reproducible artifacts with explicit redaction and separation from deterministic tests.",
+                      "total":  0.7385
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.5,
+                                     "impact":  0.78,
+                                     "simplicity":  0.25,
+                                     "risk_reduction":  0.68,
+                                     "specificity":  0.62
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.06,
+                                            "reason":  "Broad low-reversibility refactor risks scope creep unless bounded by existing module seams and acceptance tests."
+                                        }
+                                    ],
+                      "reason":  "Modular decomposition is directionally right, but should be narrowed to necessary Chapter 5 assembly cleanup rather than an open-ended architecture rewrite.",
+                      "total":  0.6285
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.82,
+                                     "impact":  0.82,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A formal acceptance package is concrete, reversible, and directly supports stakeholder validation without changing runtime behavior.",
+                      "total":  0.832
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.78,
+                                     "impact":  0.88,
+                                     "simplicity":  0.62,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Keeping real-call demos separate from offline deterministic tests is the right testing boundary and materially reduces regression risk.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.93,
+                                     "impact":  0.72,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A baseline commit or tag before refactoring is cheap, reversible, and improves traceability for Chapter 5 behavior.",
+                      "total":  0.852
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.88,
+                                     "impact":  0.82,
+                                     "simplicity":  0.82,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Demo-time provider failures must be explicit and nonzero so acceptance cannot confuse infrastructure failure with a legitimate empty VLM result.",
+                      "total":  0.8825
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.96,
+                                     "feasibility":  0.9,
+                                     "impact":  0.78,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A readiness preflight is simple, specific, and prevents fake or misleading demo output when credentials or network access are unavailable.",
+                      "total":  0.885
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.92,
+                                     "impact":  0.74,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.84
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The scope boundary is clear and keeps Chapter 5 focused on acceptance-critical assembly rather than new feature work.",
+                      "total":  0.858
+                  }
+              ]
+}

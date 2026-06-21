@@ -1,0 +1,100 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Conduct an honest and reproducible demo, showing only real working scenarios and explicitly documenting limitations/errors, without using mockups or fabricated output. The demo must use real network calls to Gemini and commit verbatim responses as evidence.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Demo",
+                      "test":  "Verify the demo execution uses the real Gemini API and commits verbatim responses (text, latency, model ID, prompt, frame IDs) as evidence. Confirm no mocked output is presented and limitations are documented.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Decompose the VLM codebase into atomic, modular components based on single-responsibility principles, or compose existing atomic modules into a final, clean structure.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Refactoring/Architecture",
+                      "test":  "Verify the VLM pipeline components are separated into distinct modules/files with clear interfaces, and the `PROGRESS.md` atom table reflects this structure.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Prepare a formal acceptance package including a demo script, test report, list of verified scenarios, known limitations, and sign-off criteria, then request stakeholder sign-off.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Acceptance",
+                      "test":  "Verify the existence of a comprehensive acceptance package (demo script, test report, scenario list, limitations, sign-off criteria/checklist) and documented request for stakeholder sign-off.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Ensure all existing automated tests pass after any refactoring, and implement new tests (e.g., offline deterministic acceptance tests) to prevent regressions and verify wiring, while keeping real-call demos separate from deterministic test suites.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Verify the full pytest suite runs green. Verify a new OFFLINE deterministic acceptance test exists, asserting wiring/payload shape without real model prose. Verify refactoring commits are small and test-verified.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "First, fixate the baseline of the current Chapter 5 without refactoring.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Project Management/Baseline",
+                      "test":  "Verify a specific commit/tag marks the baseline state of Chapter 5 before refactoring, and a report describes its current behavior and boundaries.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "The demo path must explicitly surface VLM provider errors (e.g., exit nonzero, clear message) and not rely on production fail-open mechanisms that silently swallow errors.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling/Demo",
+                      "test":  "Verify that a VLM provider failure during a demo run results in a non-zero exit code and an explicit error message, distinct from a \u0027no VLM response\u0027 outcome.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Run a readiness preflight check before the demo; if the key/endpoint/network is unavailable, report \u0027blocked\u0027 honestly and abort, without substituting fake output.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Demo/Readiness",
+                      "test":  "Verify that a preflight check is executed before the demo, and if it fails (e.g., missing API key), the demo aborts with a \u0027blocked\u0027 status and does not proceed with faked output.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Hold the scope of Chapter 5 to assembly, demo, acceptance, and light modular cleanup, deferring new VLM features (e.g., streaming, structured response parsing, multi-camera fan-out) to follow-up work.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Scope Management",
+                      "test":  "Verify that no new VLM features beyond core assembly/demo/acceptance are implemented in Chapter 5, and any feature ideas are documented as deferred.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

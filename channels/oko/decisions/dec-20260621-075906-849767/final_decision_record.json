@@ -1,0 +1,120 @@
+{
+    "final_answer":  "OKO VLM Chapter 5 proceeds to final demo and acceptance as an assembly-and-cleanup effort, not a feature or architecture sprint. The judge accepted six atoms outright (03, 04, 05, 06, 07, 08) and accepted two with modifications (01, 02). Concretely: (1) tag the current Chapter 5 as a frozen baseline before any change; (2) run an honest, reproducible demo using real Gemini network calls — no mocks, no fabricated output — and commit redacted, reproducible evidence (response text, latency, model ID, prompt, frame IDs) to a dedicated artifacts path, kept strictly separate from deterministic tests; (3) gate the demo with a readiness preflight that reports \u0027blocked\u0027 and aborts honestly when key/endpoint/network is unavailable, and make provider failures surface explicitly with a non-zero exit distinct from a legitimate empty VLM result (no reliance on production fail-open); (4) perform only a BOUNDED modular cleanup that composes existing atomic modules along their current seams into a clean final structure and updates the PROGRESS.md atom table — explicitly NOT an open-ended rewrite; (5) keep the full pytest suite green and add a new offline deterministic acceptance test that asserts wiring and payload shape without real model prose; (6) package a formal acceptance bundle (demo script, test report, verified-scenario list, known limitations, sign-off checklist) and request stakeholder sign-off; (7) hold scope here — defer streaming, structured-response parsing, and multi-camera fan-out to follow-up work. The two modifications exist to contain the only real risks in the set: uncontrolled data exposure from committed responses, and scope creep from a low-reversibility refactor.",
+    "decisions":  [
+                      {
+                          "decision":  "Conduct an honest, reproducible demo over real Gemini calls; commit REDACTED reproducible evidence (response text, latency, model ID, prompt, frame IDs) to a dedicated artifacts location; present no mocked output and document limitations/errors.",
+                          "rationale":  "atom_01 (modify, total 0.7385). Honest-demo is correct and high-impact (impact 0.85, risk_reduction 0.9), but the judge\u0027s 0.07 penalty flags that committing verbatim provider responses/prompts can expose sensitive data and create brittle evidence. Constraining to redacted, reproducible artifacts in a known path preserves the evidentiary value while removing the leakage/brittleness risk.",
+                          "alternatives_considered":  [
+                                                          "Scripted/mocked demo with fabricated output (violates the honest-demo constraint)",
+                                                          "Screen recording only with no committed artifacts (not reproducible)",
+                                                          "Commit raw, unredacted responses and prompts (sensitive-data exposure; brittle as evidence)"
+                                                      ],
+                          "risk":  "Sensitive data leakage in committed artifacts and evidence brittleness if responses drift. Mitigated by an explicit redaction policy, a fixed artifacts path, and treating model prose as observed-but-not-asserted evidence (asserted facts live in deterministic tests, atom_04).",
+                          "test":  "Demo execution hits the real Gemini API; redacted response metadata (text, latency, model ID, prompt, frame IDs) is committed under the designated artifacts path; no mocked output is presented; limitations are documented; raw secrets/PII are absent from committed files."
+                      },
+                      {
+                          "decision":  "Perform a bounded modular cleanup: compose existing atomic modules along their current seams into a clean final Chapter 5 structure with clear interfaces, and update the PROGRESS.md atom table — not an open-ended architecture rewrite.",
+                          "rationale":  "atom_02 (modify, total 0.6285). Direction is right (correctness 0.82) but feasibility (0.5) and simplicity (0.25) are low and the 0.06 penalty warns of scope creep on a low-reversibility refactor. Narrowing to necessary assembly cleanup along existing seams captures the \u0027by atoms\u0027 success test without an architecture rewrite.",
+                          "alternatives_considered":  [
+                                                          "Full architecture rewrite of the VLM codebase (scope creep, low reversibility, fails the Chapter-5 scope cap)",
+                                                          "Leave structure as-is (fails the atomic/modular success test)"
+                                                      ],
+                          "risk":  "Regression or scope creep from a low-reversibility refactor. Mitigated by the baseline tag (atom_05), small test-verified commits (atom_04), and the scope boundary (atom_08).",
+                          "test":  "VLM pipeline components are in distinct modules/files with clear interfaces; PROGRESS.md atom table reflects the structure; the full pytest suite remains green; each refactor commit is small and individually test-verified."
+                      },
+                      {
+                          "decision":  "Prepare a formal acceptance package — demo script, test report, verified-scenario list, known limitations, and sign-off criteria/checklist — and request stakeholder sign-off.",
+                          "rationale":  "atom_03 (accept, total 0.832). Concrete, reversible, high-specificity (0.88), and directly enables stakeholder validation without changing runtime behavior.",
+                          "alternatives_considered":  [
+                                                          "Informal verbal/demo-only acceptance with no documented package (not auditable, fails the acceptance success test)",
+                                                          "Defer acceptance artifacts until after refactor (loses traceability of what was accepted)"
+                                                      ],
+                          "risk":  "Low. Documentation-only; main risk is incompleteness, mitigated by an explicit checklist of required artifacts.",
+                          "test":  "A comprehensive acceptance package exists (demo script, test report, scenario list, limitations, sign-off checklist) and a documented request for stakeholder sign-off is present."
+                      },
+                      {
+                          "decision":  "Keep the full pytest suite green after refactoring and add a new OFFLINE deterministic acceptance test asserting wiring/payload shape without real model prose; keep real-call demos separate from the deterministic suite.",
+                          "rationale":  "atom_04 (accept, total 0.84). Highest-correctness atom (0.94) with strong risk_reduction (0.9) and specificity (0.9). Separating non-deterministic real-call demos from deterministic offline tests is the correct testing boundary and materially reduces regression risk during refactor.",
+                          "alternatives_considered":  [
+                                                          "Assert on real model prose in CI (flaky, non-deterministic, couples tests to provider output)",
+                                                          "Rely on the real-call demo as the only regression check (no offline guarantee, can\u0027t run in CI without keys)"
+                                                      ],
+                          "risk":  "Medium reversibility. Risk that the offline test under-asserts; mitigated by asserting payload shape, frame wiring, and call construction rather than prose.",
+                          "test":  "Full pytest suite runs green; a new offline deterministic acceptance test exists asserting wiring/payload shape with no real model prose; real-call demo is not part of the deterministic suite; refactor commits are small and test-verified."
+                      },
+                      {
+                          "decision":  "Fixate the current Chapter 5 baseline first: create a baseline commit/tag and a report describing current behavior and boundaries, before any refactoring.",
+                          "rationale":  "atom_05 (accept, total 0.852). Cheap (cost low), highly feasible (0.93) and simple (0.9), reversible, and improves traceability — establishes a known-good rollback point and a behavioral reference for the refactor.",
+                          "alternatives_considered":  [
+                                                          "Refactor first and reconstruct the baseline from git history later (loses an explicit behavioral reference and a clean rollback anchor)"
+                                                      ],
+                          "risk":  "Low. Purely additive (tag + report).",
+                          "test":  "A specific commit/tag marks the pre-refactor Chapter 5 state, and a report describes its current behavior and boundaries."
+                      },
+                      {
+                          "decision":  "Make the demo path surface VLM provider errors explicitly — non-zero exit and a clear message — distinct from a legitimate \u0027no VLM response\u0027 outcome, and never rely on production fail-open to silently swallow errors during the demo.",
+                          "rationale":  "atom_06 (accept, total 0.8825). Very high correctness (0.95) and risk_reduction (0.92). Prevents acceptance from confusing an infrastructure failure with a real empty VLM result — essential for an honest demo.",
+                          "alternatives_considered":  [
+                                                          "Reuse the production fail-open path in the demo (silently masks failures, undermines honesty)",
+                                                          "Treat all empty results identically (cannot distinguish provider failure from genuine empty response)"
+                                                      ],
+                          "risk":  "Medium. A demo-only error path diverging from production behavior; mitigated by keeping the divergence limited to error visibility/exit codes, not response handling.",
+                          "test":  "A simulated/real provider failure during a demo run yields a non-zero exit and an explicit error message, distinguishable from a \u0027no VLM response\u0027 outcome."
+                      },
+                      {
+                          "decision":  "Run a readiness preflight before the demo; if key/endpoint/network is unavailable, report \u0027blocked\u0027 honestly and abort without substituting any fake output.",
+                          "rationale":  "atom_07 (accept, total 0.885 — highest in the set). Highest correctness (0.96) and specificity (0.92), simple and feasible. Prevents misleading demo output when credentials or network are absent.",
+                          "alternatives_considered":  [
+                                                          "Proceed without a preflight and let calls fail mid-demo (noisier, can be mistaken for a model/logic problem)",
+                                                          "Fall back to cached/mock output when blocked (violates honest-demo constraint)"
+                                                      ],
+                          "risk":  "Medium. Preflight could give a false \u0027ready\u0027 (e.g., key present but quota exhausted); mitigated by a lightweight live reachability check and the explicit error surfacing of atom_06 as backstop.",
+                          "test":  "A preflight runs before the demo; on failure (e.g., missing API key/network) the demo aborts with a \u0027blocked\u0027 status and produces no faked output."
+                      },
+                      {
+                          "decision":  "Hold Chapter 5 scope to assembly, demo, acceptance, and light modular cleanup; defer new VLM features (streaming, structured response parsing, multi-camera fan-out) to documented follow-up work.",
+                          "rationale":  "atom_08 (accept, total 0.858). Clear, feasible (0.92), simple (0.9) boundary that keeps Chapter 5 focused on acceptance-critical assembly and protects the bounded-refactor decision (atom_02) from creep.",
+                          "alternatives_considered":  [
+                                                          "Bundle new VLM features into Chapter 5 (expands scope, raises risk, delays acceptance)"
+                                                      ],
+                          "risk":  "Low. Main risk is dropping good ideas; mitigated by recording each as an explicit deferred follow-up.",
+                          "test":  "No new VLM features beyond core assembly/demo/acceptance are implemented in Chapter 5; all feature ideas are recorded as deferred follow-ups."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Commit raw, unredacted verbatim provider responses and prompts as demo evidence.",
+                         "why":  "atom_01 penalty (0.07): risks exposing sensitive data (API material, PII in frames/prompts) and creates brittle evidence. Replaced by redacted, reproducible artifacts in a dedicated location, separated from deterministic tests."
+                     },
+                     {
+                         "decision":  "Open-ended architecture rewrite / broad low-reversibility refactor of the VLM codebase.",
+                         "why":  "atom_02 penalty (0.06) plus low feasibility (0.5) and simplicity (0.25): risks scope creep on a low-reversibility change. Replaced by bounded cleanup along existing module seams, guarded by baseline tag, small test-verified commits, and the scope cap."
+                     },
+                     {
+                         "decision":  "Implement new VLM features (streaming, structured response parsing, multi-camera fan-out) within Chapter 5.",
+                         "why":  "Out of scope per atom_08; these expand risk and delay acceptance. Deferred to follow-up work and recorded as such."
+                     },
+                     {
+                         "decision":  "Use mocked/fabricated demo output, or rely on production fail-open to mask failures during the demo.",
+                         "why":  "Directly contradicts the honest-demo constraint and atoms 01/06/07; would let infrastructure failure or absent credentials be presented as a working result."
+                     }
+                 ],
+    "open_questions":  [
+                           "Who are the named stakeholders / sign-off authority for Chapter 5 acceptance, and what is the explicit pass threshold on the sign-off checklist?",
+                           "What exactly counts as \u0027sensitive\u0027 for the redaction policy on committed Gemini responses/prompts (keys, PII in frames), and where do the evidence artifacts live — in-repo path vs. external store?",
+                           "Will a Gemini API key and network be available in the demo/CI environment, or should the demo be expected to report \u0027blocked\u0027 and run manually only?",
+                           "What is the acceptable latency and cost budget for the real-call demo, and how many demo scenarios must be exercised?",
+                           "How many module seams already exist versus need to be created, and what is the exact target atom structure to be reflected in PROGRESS.md?"
+                       ],
+    "implementation_plan":  [
+                                "Step 1 (atom_05): Freeze and tag the current Chapter 5 baseline commit; write a short report describing current behavior and boundaries. This is the rollback anchor and behavioral reference.",
+                                "Step 2 (atom_07, atom_06): Add a readiness preflight to the demo path (key/endpoint/network reachability → \u0027blocked\u0027 + abort, no fake output) and make provider errors surface explicitly (non-zero exit, clear message, distinct from a legitimate empty VLM response; no production fail-open in the demo).",
+                                "Step 3 (atom_02 + atom_04): Perform the bounded modular cleanup — compose existing atomic modules along current seams into the final structure with clear interfaces, in small commits, running the full pytest suite after each; update the PROGRESS.md atom table.",
+                                "Step 4 (atom_04): Add the offline deterministic acceptance test asserting wiring/payload shape (frame IDs, prompt construction, request shape) without real model prose; confirm the full suite is green.",
+                                "Step 5 (atom_01): Author the demo script and run the honest real-Gemini demo for the verified scenarios; commit redacted, reproducible evidence (text, latency, model ID, prompt, frame IDs) to the dedicated artifacts path; document observed limitations/errors.",
+                                "Step 6 (atom_03): Assemble the formal acceptance package — demo script, test report, verified-scenario list, known limitations, and sign-off checklist.",
+                                "Step 7 (atom_08): Record the scope boundary and the deferred feature list (streaming, structured response parsing, multi-camera fan-out) as explicit follow-ups.",
+                                "Step 8 (atom_03): Submit the acceptance package and request stakeholder sign-off against the checklist."
+                            ],
+    "next_step":  "Create and tag the frozen Chapter 5 baseline commit (atom_05) and write its behavior/boundaries report, before touching any module structure."
+}
