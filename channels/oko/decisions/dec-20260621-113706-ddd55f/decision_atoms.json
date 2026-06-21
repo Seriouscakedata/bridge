@@ -1,0 +1,120 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Ограничить изменение только типами person_entered_zone и animal_entered_zone.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Scope/Event Filtering",
+                      "test":  "Verify that other event types (e.g., object_left, camera_offline) continue to have immediate VLM processing and unchanged keyframes.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Откладывать не только VLM call, а весь этап построения key_frames.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Timing/Data Capture",
+                      "test":  "Assert that keyframes are built *after* the delay, using frames from the updated buffer, not at trigger time, and that VLM is called with these delayed keyframes.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Использовать неблокирующую очередь pending events с due_at, а не sleep внутри обработки триггера.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Architecture/Concurrency",
+                      "test":  "Verify that frame ingestion continues uninterrupted and the main event loop remains non-blocked during the delay period for pending events.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Задержку зафиксировать около 3.5 секунд как локальную константу в live.py.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Configuration/Timing",
+                      "test":  "Verify the delay duration is consistently 3.5 seconds in tests using a fake clock.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "В тесте использовать fake clock или injectable now/delay, чтобы не ждать реальные 3-4 секунды.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Ensure tests for delayed processing complete quickly and deterministically without wall-clock waits.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "Не менять events/builder.py, если текущий builder уже умеет принимать key_frames, собранные live.py после задержки.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Module Responsibility/Scope",
+                      "test":  "Verify that events/builder.py remains unmodified and functions correctly with keyframes provided by live.py after delay, without internal modifications, and that tests using ScriptedEventBuilder continue to pass.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Measure the 3-4s delay against frame timestamps (ready_at = trigger_frame.timestamp + ~3.5s), not time.monotonic().",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Timing/Measurement",
+                      "test":  "Verify that the delay is measured using frame timestamps, and that tests with synthetic timestamps behave deterministically.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Reserve the PipelineEventResult slot at trigger time and replace it in place (results[idx] = corrected) when the deferred VLM resolves.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Data Handling/Pipeline Output",
+                      "test":  "Verify that the final `PipelineEventResult` list maintains original event order and contains fully resolved VLM outcomes and keyframes.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Add a mandatory end-of-run flush that resolves all still-pending VLM queries before run() returns.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Pipeline Control/Edge Cases",
+                      "test":  "Verify that all pending VLM queries are resolved and processed before `run()` returns, especially for short streams, and that no VLM calls are missed.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Preserve the existing monotonic VLM debounce check-and-set at the point the dispatch/enqueue decision is made.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Existing Feature Integration",
+                      "test":  "Verify that VLM debounce logic continues to function correctly, preventing duplicate VLM calls for events within cooldown periods.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

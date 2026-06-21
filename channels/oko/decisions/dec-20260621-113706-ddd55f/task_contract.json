@@ -1,0 +1,28 @@
+{
+    "task":  "ФОКУСНЫЙ ФИКС (operator, не комбинировать). Баг keyframe-тайминга OKO: для person_entered_zone/animal_entered_zone 6 из 7 key_frames берутся из rolling-buffer ДО появления объекта (пустая комната) — VLM подтвердила вживую (\"кадры 1-6 пустые, человек только в кадре 7\"; в соседнем событии \"дали 1 кадр а не 7\"). КОРЕНЬ: src/oko/pipeline/live.py строит key_frames из буфера в МОМЕНТ триггера, объект ещё не в кадре. ФИКС (один концерн): отложить VLM-запрос для person/animal-событий на ~3-4с после триггера (продолжать кормить rolling-buffer), затем строить key_frames из обновлённого буфера (объект уже в кадре) и спрашивать VLM. Файлы: src/oko/pipeline/live.py (+ при необходимости events/builder.py). Acceptance ОБЯЗАН: тест \"объект входит на кадре T\" → БОЛЬШИНСТВО key_frames содержат объект, не пред-ролл. Фокусный атом, tsc/тесты зелёные.",
+    "goal":  "Ensure that for \u0027person_entered_zone\u0027 and \u0027animal_entered_zone\u0027 events, the generated key_frames accurately capture the object that triggered the event, rather than showing an empty scene from before the object\u0027s appearance.",
+    "constraints":  [
+                        "The fix must be focused and address a single concern (keyframe timing for person/animal entry events).",
+                        "Delay the VLM request for person/animal events by approximately 3-4 seconds after the initial trigger.",
+                        "During the delay, continue feeding the rolling-buffer.",
+                        "After the delay, build key_frames from the updated rolling-buffer (which should now contain the object).",
+                        "Only modify \u0027src/oko/pipeline/live.py\u0027 and potentially \u0027events/builder.py\u0027.",
+                        "All existing tsc/tests must remain green (no regressions)."
+                    ],
+    "known_context":  [
+                          "There is a bug in OKO\u0027s keyframe timing for \u0027person_entered_zone\u0027 and \u0027animal_entered_zone\u0027 events.",
+                          "Currently, 6 out of 7 key_frames for these events are taken from the rolling-buffer *before* the object appears, resulting in empty frames.",
+                          "VLM has confirmed this behavior (e.g., \u0027frames 1-6 empty, person only in frame 7\u0027).",
+                          "The root cause is that \u0027src/oko/pipeline/live.py\u0027 builds key_frames from the buffer at the exact moment of the trigger, when the object is not yet in the frame."
+                      ],
+    "output_format":  "JSON object matching the provided TaskContract schema.",
+    "task_type":  "bugfix",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Trigger a \u0027person_entered_zone\u0027 or \u0027animal_entered_zone\u0027 event where the object appears at frame T.",
+                          "Verify that the majority of the generated key_frames for this event contain the object, rather than frames from before its appearance.",
+                          "Confirm that the VLM request for these events is delayed by approximately 3-4 seconds after the initial trigger.",
+                          "Ensure that all existing automated tests (tsc/tests) pass after the change."
+                      ]
+}

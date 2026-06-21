@@ -1,0 +1,144 @@
+{
+    "final_answer":  "Fix the OKO keyframe-timing bug by deferring the entire evidence-capture step (key_frame construction AND the VLM request) for `person_entered_zone` and `animal_entered_zone` events by ~3.5 seconds of frame time, so the object that triggered the event is actually present in the buffered frames before key_frames are selected. The deferral is implemented as a non-blocking pending-events queue inside `src/oko/pipeline/live.py`: at trigger time we reserve the event\u0027s result slot and record `ready_at = trigger_frame.timestamp + DELAY` (DELAY = 3.5s, a named constant), but do NOT build key_frames or call the VLM yet. The rolling buffer keeps ingesting frames uninterrupted. As each new frame arrives, any pending event whose `ready_at` has been reached (measured against the latest frame timestamp, not `time.monotonic()`) is resolved: key_frames are rebuilt from the now-updated buffer (object in view), the VLM is queried, and the reserved result slot is replaced in place so event order is preserved. The existing monotonic VLM debounce is kept at the enqueue decision point so duplicates are still suppressed and cooldown is only consumed for events actually eligible for VLM. A mandatory end-of-run flush resolves any events still pending when the stream ends (short streams). `events/builder.py` stays unmodified — live.py rebuilds the key_frames using existing structures. Tests drive the clock with synthetic frame timestamps so the 3.5s window is deterministic and instant, with the acceptance test asserting that for an object entering at frame T, the majority of resulting key_frames contain the object rather than the empty pre-roll.",
+    "decisions":  [
+                      {
+                          "decision":  "Scope the deferral strictly to person_entered_zone and animal_entered_zone events; all other event types keep immediate processing.",
+                          "rationale":  "These are the only event types exhibiting the pre-roll bug and the only ones the contract authorizes changing; narrowing scope eliminates regression risk for object_left, camera_offline, etc. (atom_01, accept 0.915).",
+                          "alternatives_considered":  [
+                                                          "Apply the delay to all event types uniformly (broader blast radius, violates single-concern constraint)",
+                                                          "Make the affected-type list externally configurable (extra surface, not requested)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Assert other event types (object_left, camera_offline) still build key_frames and call VLM at trigger time with unchanged output."
+                      },
+                      {
+                          "decision":  "Defer the entire key_frame-building stage, not merely the VLM call.",
+                          "rationale":  "The root cause is that key_frames are selected from the buffer at trigger time when the object is absent; delaying only the VLM call would still feed it empty pre-roll frames. The frames themselves must be (re)selected after the delay from the updated buffer (atom_02, accept 0.8475).",
+                          "alternatives_considered":  [
+                                                          "Delay only the VLM request while keeping trigger-time key_frames (fails acceptance — frames remain empty)",
+                                                          "Post-filter empty frames out of an immediately-built set (loses evidence entirely when all frames are pre-roll)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Assert key_frames are constructed after the delay from the updated buffer and that the VLM is invoked with those delayed key_frames, not the trigger-time set."
+                      },
+                      {
+                          "decision":  "Implement the delay as a non-blocking pending-events queue keyed by a due/ready time, never a sleep inside the trigger handler.",
+                          "rationale":  "Frame ingestion must continue during the delay so the buffer actually fills with the object\u0027s frames; a blocking sleep would stall ingestion and defeat the fix while freezing the main loop (atom_03, accept 0.86).",
+                          "alternatives_considered":  [
+                                                          "time.sleep()/await asyncio.sleep() inside the trigger path (blocks ingestion, starves the very buffer we need to fill)",
+                                                          "Spawn a background timer/thread per event (concurrency complexity, ordering hazards, harder to test deterministically)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Assert frame ingestion continues and the main loop is not blocked while a pending event awaits its ready time."
+                      },
+                      {
+                          "decision":  "Define the deferral window as an exact named constant (DELAY = 3.5s) in live.py, overridable for tests via injection (MODIFIED from atom_04).",
+                          "rationale":  "Judge modify: pin an exact 3.5s value rather than ambiguous \u0027about 3-4s\u0027 semantics, and keep it overridable through the injected clock/delay so tests stay fast and deterministic (atom_04, modify 0.8075).",
+                          "alternatives_considered":  [
+                                                          "Hardcoded literal scattered at the call site (un-tunable, untestable)",
+                                                          "Pull the value from global config now (out of scope for a focused fix)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "With a fake clock, assert the resolution fires at exactly trigger + 3.5s and that an injected override changes it."
+                      },
+                      {
+                          "decision":  "Drive deferral timing in tests with an injectable clock / synthetic frame timestamps so no real 3-4s wall-clock wait occurs.",
+                          "rationale":  "Deterministic, fast tests require a controllable time source; combined with atom_07 the time source is the frame timestamp stream itself (atom_05, accept 0.855).",
+                          "alternatives_considered":  [
+                                                          "Real wall-clock sleeps in tests (slow, flaky, non-deterministic)",
+                                                          "Mocking time.monotonic globally (brittle, leaks across tests)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Assert the delayed-processing test completes near-instantly and deterministically using injected timestamps."
+                      },
+                      {
+                          "decision":  "Leave events/builder.py unmodified; rebuild the key_frames inside live.py after the delay using existing builder structures.",
+                          "rationale":  "The builder already accepts key_frames; the timing concern belongs in live.py. Keeping builder.py untouched preserves module boundaries and keeps ScriptedEventBuilder tests passing (atom_06, accept 0.86). Touch builder.py only if a concrete API gap forces it.",
+                          "alternatives_considered":  [
+                                                          "Move deferral logic into builder.py (mixes pipeline timing into event assembly, broadens scope)",
+                                                          "Add a new builder method for late key_frames (unnecessary if existing structures suffice)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Assert events/builder.py is byte-unchanged and ScriptedEventBuilder-based tests still pass with live.py-supplied delayed key_frames."
+                      },
+                      {
+                          "decision":  "Measure readiness against frame timestamps (ready_at = trigger_frame.timestamp + DELAY) compared to the latest ingested frame timestamp, not time.monotonic(); guard short/non-monotonic streams via the end-of-run flush (MODIFIED from atom_07).",
+                          "rationale":  "Judge modify: frame-timestamp measurement makes the delay track actual video time and stay deterministic under synthetic timestamps, but the design must still preserve the monotonic debounce and survive streams that end early or have non-monotonic stamps — which the flush (atom_09) covers (atom_07, modify 0.7975).",
+                          "alternatives_considered":  [
+                                                          "time.monotonic() wall-clock delay (non-deterministic, drifts from video time, requires real waits in tests)",
+                                                          "Frame-count-based delay (fragile across variable frame rates)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "With synthetic timestamps, assert resolution triggers when the latest frame timestamp \u003e= ready_at; assert a stream ending before ready_at is handled by the flush rather than dropped."
+                      },
+                      {
+                          "decision":  "Reserve the PipelineEventResult slot at trigger time and replace it in place (results[idx] = corrected) when the deferred VLM resolves.",
+                          "rationale":  "Reserving the slot preserves the original event ordering in the output list while still allowing the VLM verdict and key_frames to be filled in later, avoiding reordering or out-of-band appends (atom_08, accept 0.7975).",
+                          "alternatives_considered":  [
+                                                          "Append resolved events at the end (breaks chronological ordering of the result list)",
+                                                          "Hold all results until every pending event resolves (adds latency, complicates streaming output)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Assert the final PipelineEventResult list keeps original event order and each deferred slot holds a fully resolved VLM verdict plus delayed key_frames."
+                      },
+                      {
+                          "decision":  "Add a mandatory end-of-run flush that resolves all still-pending deferred events before run() returns.",
+                          "rationale":  "If a stream ends within the 3.5s window, the pending event would otherwise be silently dropped and produce no VLM result; the flush resolves whatever frames are available so no event is lost (atom_09, accept 0.89). This also backstops short/non-monotonic streams for atom_07.",
+                          "alternatives_considered":  [
+                                                          "Drop pending events at stream end (loses real detections on short clips — unacceptable)",
+                                                          "Extend the stream artificially (not possible for finite inputs)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Feed a stream that ends 1s after a person trigger; assert run() still emits a resolved VLM result built from the available (partial) buffer and no pending event is missed."
+                      },
+                      {
+                          "decision":  "Preserve the existing monotonic VLM debounce check-and-set at the enqueue/dispatch decision point, consuming cooldown only for events actually eligible/enqueued for VLM (MODIFIED from atom_10).",
+                          "rationale":  "Judge modify: keep debounce semantics as close to current behavior as possible — make the check-and-set when the enqueue decision is taken so duplicates are suppressed, but do not burn cooldown for events that are scoped out or never enqueued (atom_10, modify 0.7725).",
+                          "alternatives_considered":  [
+                                                          "Run the debounce check at resolution time after the delay (could admit duplicate enqueues during the 3.5s window)",
+                                                          "Set cooldown for every trigger regardless of eligibility (changes existing semantics, may suppress legitimate non-deferred events)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Assert two rapid identical triggers within cooldown enqueue only one VLM resolution, and that scoped-out/non-enqueued events do not consume the cooldown."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Block the trigger handler with sleep/await for 3.5s before building key_frames.",
+                         "why":  "Stalls frame ingestion and the main loop, so the rolling buffer never fills with the object\u0027s frames — it defeats the fix and risks dropping frames. Superseded by the non-blocking pending queue (atom_03)."
+                     },
+                     {
+                         "decision":  "Delay only the VLM call while keeping key_frames selected at trigger time.",
+                         "why":  "Trigger-time key_frames are exactly the empty pre-roll frames; feeding them to a later VLM call still fails the acceptance test. The key_frame selection itself must be deferred (atom_02)."
+                     },
+                     {
+                         "decision":  "Measure the delay with time.monotonic() / wall clock.",
+                         "why":  "Decouples the delay from actual video time, is non-deterministic, and forces real multi-second waits in tests. Replaced by frame-timestamp measurement (atom_07)."
+                     },
+                     {
+                         "decision":  "Apply the deferral to all event types.",
+                         "why":  "Violates the single-concern, scoped constraint and adds regression risk to unaffected events; only person/animal zone-entry events have the bug (atom_01)."
+                     },
+                     {
+                         "decision":  "Modify events/builder.py to own the deferral/timing.",
+                         "why":  "Timing is a pipeline concern, not an event-assembly concern; the builder already accepts key_frames. Changing it broadens scope and risks ScriptedEventBuilder tests for no benefit (atom_06)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Is a fixed 3.5s window sufficient for slow-moving animals or objects entering at the zone edge, or should the value be revisited against real footage? Contract allows 3-4s; 3.5s is the chosen midpoint.",
+                           "Does the rolling buffer retain enough duration/capacity to hold trigger_frame.timestamp + 3.5s plus the key_frame sampling window, so the resolved key_frames actually span the object\u0027s presence? Buffer length should be verified, not assumed.",
+                           "For streams that end inside the 3.5s window, the flush builds key_frames from a partially-updated buffer that may still lack the object — should such events be flagged lower-confidence rather than emitted as normal?",
+                           "Deferral pushes alert latency for person/animal events out by ~3.5s; is that acceptable against any downstream alerting/SLA expectation, or should it be surfaced in event metadata?"
+                       ],
+    "implementation_plan":  [
+                                "Add a module-level named constant DELAY_SECONDS = 3.5 in src/oko/pipeline/live.py, plumbed so tests can inject/override it.",
+                                "Introduce a pending-events structure (e.g., list/deque of records holding the reserved result index, trigger frame timestamp, ready_at = trigger_frame.timestamp + DELAY_SECONDS, and the minimal context needed to rebuild key_frames).",
+                                "In the trigger path for person_entered_zone / animal_entered_zone only: reserve the PipelineEventResult slot (results[idx] placeholder), perform the monotonic VLM debounce check-and-set at this enqueue decision, and enqueue a pending record instead of building key_frames / calling VLM now. All other event types keep the existing immediate path.",
+                                "On every ingested frame: keep feeding the rolling buffer, then scan pending records; for any whose ready_at \u003c= latest frame timestamp, rebuild key_frames from the current buffer (object now present), call the VLM, and replace results[idx] in place with the resolved event.",
+                                "Add an end-of-run flush in run() that resolves every remaining pending record (using whatever frames are available) before returning, so short streams are not dropped.",
+                                "Confirm events/builder.py needs no change (live.py reuses existing builder structures to assemble the delayed key_frames); only touch it if a concrete API gap is hit.",
+                                "Add/extend tests: synthetic frame timestamps with an object entering at frame T; assert the majority of resulting key_frames contain the object (not pre-roll); assert resolution fires at trigger + 3.5s via the fake clock; assert non-target event types are unchanged; assert the flush resolves a pending event when the stream ends early; assert debounce suppresses duplicates.",
+                                "Run the type-check and full test suite (tsc/pytest) and confirm green with no regressions."
+                            ],
+    "next_step":  "Implement the non-blocking pending-events deferral queue (reserve-slot + frame-timestamp ready_at + on-frame resolution + end-of-run flush) for person/animal zone-entry events in src/oko/pipeline/live.py, then run the type-check and tests to confirm the acceptance test (majority of key_frames contain the object) passes and nothing regresses."
+}

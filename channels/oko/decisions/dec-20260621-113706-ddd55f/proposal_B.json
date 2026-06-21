@@ -1,0 +1,86 @@
+{
+    "proposer":  "B",
+    "understanding":  "For person_entered_zone/animal_entered_zone events, EventBuilder._build_event calls select_key_frames over the RollingFrameBuffer at the exact trigger frame. The object only just appeared (it\u0027s in the trigger/event_frame), so the 5s rolling buffer is dominated by pre-trigger empty-room frames; with max 7 evenly-spaced frames, ~6/7 are empty pre-roll and only the event_frame shows the object. VLM confirmed this live. You cannot fix this by reselecting at trigger time because the post-appearance frames do not exist yet — they must be captured first. The correct fix is to defer the VLM request (and the key_frame set it consumes) for these two event types by ~3-4s while continuing to feed the rolling buffer, then rebuild key_frames from the now-populated buffer (object present) and query the VLM. The VLM query and its key_frame attachment happen in LivePipeline.run() (live.py lines 97-126), so the deferral belongs there; EventBuilder/decision timing stay untouched.",
+    "summary":  "In src/oko/pipeline/live.py only: gate a ~3.5s deferral (driven by frame timestamps, not wall-clock) on person/animal entered_zone events. Keep a pipeline-owned rolling FrameData buffer fed every frame; when such an event passes the existing monotonic cooldown gate, record the cooldown, append a placeholder result and enqueue a pending VLM record. Once a later frame\u0027s timestamp reaches trigger_ts+delay (or at end-of-run flush), rebuild key_frames via the already-exported select_key_frames over the updated buffer (object now in frame), encode, query the VLM, attach keyframe/description, and replace the reserved result slot in place. Non-person/animal and no-gate paths are unchanged. events/builder.py needs no change — select_key_frames and RollingFrameBuffer are reused. A mandatory end-of-run flush keeps finite/limit=1 streams (and current tests) green.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Defer only the VLM query and its key_frame construction in live.py; do NOT defer event emission, decision, or BuiltEvent creation.",
+                               "reason":  "The task scopes the fix to \u0027отложить VLM-запрос\u0027. The VLM call and key_frame attach already live in run() (lines 97-126), so confining changes there leaves EventBuilder, DecisionEngine, and all event-builder tests untouched, minimizing regression surface.",
+                               "tradeoff":  "event.timestamp stays at trigger time while the evidence key_frames reflect the post-trigger window — a small temporal mismatch between the event\u0027s stamp and its frames.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Measure the 3-4s delay against frame timestamps (ready_at = trigger_frame.timestamp + ~3.5s), not time.monotonic().",
+                               "reason":  "Tests feed synthetic timestamps (BASE + frame_id seconds) in a tight loop where monotonic barely advances; a wall-clock delay would never elapse deterministically. Camera frame timestamps are real wall-clock in production, so frame-ts-driven delay equals real seconds there too.",
+                               "tradeoff":  "A camera emitting non-monotonic or bogus timestamps could mis-time the delay; needs a frame-count fallback for robustness.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Keep deferral state and a pipeline-owned RollingFrameBuffer local to run(), rebuilding key_frames with select_key_frames imported from events.builder — leave events/builder.py unmodified.",
+                               "reason":  "ScriptedEventBuilder (the test double in test_live_pipeline.py) has no .buffer attribute, so reaching into the builder\u0027s buffer or a new builder method would break those tests. select_key_frames and RollingFrameBuffer are already module-level and reusable, keeping the fix in one file and decoupled from the builder\u0027s concrete type.",
+                               "tradeoff":  "Duplicates a ~5s rolling window that the real EventBuilder already maintains (minor redundant state).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Reserve the PipelineEventResult slot at trigger time and replace it in place (results[idx] = corrected) when the deferred VLM resolves.",
+                               "reason":  "Preserves result ordering and the existing one-result-per-event contract; the final result then carries the corrected key_frames, vlm_outcome, and attached keyframe_jpeg_b64/description without reordering events to the end of the list.",
+                               "tradeoff":  "The list transiently holds a placeholder (None outcome, trigger-time key_frames) until resolution; harmless since run() only returns after the flush resolves every slot.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Add a mandatory end-of-run flush that resolves all still-pending VLM queries before run() returns.",
+                               "reason":  "Finite/limit=1 streams end before the delay elapses. Without a flush, test_pipeline_vlm_gate_called_for_person_event (asserts 1 spy call, image_b64_frames==[\u0027encoded-1\u0027]) and test_run_attaches_keyframe_to_bridge_output would observe zero VLM calls and go red. Flush rebuilds from best-available post-trigger frames and queries.",
+                               "tradeoff":  "If the stream ends exactly at the trigger, the rebuilt frames may still be mostly pre-roll — future frames cannot be fabricated.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Gate the deferral strictly on event_type in {person_entered_zone, animal_entered_zone}; all other event types keep immediate VLM query.",
+                               "reason":  "Matches the task scope and avoids changing latency/behavior for camera_offline, object_appeared, etc. The active gate config (PERSON_ANIMAL_ONLY_GATE_CONFIG) already restricts to these two, so behavior is unchanged in practice.",
+                               "tradeoff":  "If a future gate config enabled other types, they would not benefit from the timing fix — acceptable for a focused atom.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Preserve the existing monotonic VLM debounce check-and-set at the point the dispatch/enqueue decision is made.",
+                               "reason":  "Keeps the debounce tests intact: same track within cooldown yields a single query (recorded at enqueue), different tracks or expired cooldown yield separate queries after flush.",
+                               "tradeoff":  "Cooldown timestamp is taken at enqueue rather than at the later actual query — negligible drift since both occur within the same run().",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The triggering object remains in frame for most of the ~3.5s post-trigger window (implied by the acceptance test \u0027object appears at frame T\u0027).",
+                        "Camera frame timestamps are monotonic-ish and reflect real elapsed time, so a timestamp-based delay equals ~3-4 real seconds.",
+                        "image_store (200-frame cap) still holds the post-trigger frames\u0027 images when the deferred query runs, which is true for ~3.5s windows and the small test streams.",
+                        "service.py\u0027s frame_batch is large enough that the delay plays out within one run() call; otherwise the cross-batch advanced design is needed.",
+                        "Default delay ~3.5s against a ~5s rolling window yields a majority of object-containing key_frames (≈3.5s of 5s is post-trigger).",
+                        "\u0027tsc\u0027 refers to the repo\u0027s type/lint gate (e.g. mypy/ruff); the change stays fully type-annotated to keep it green."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Cross-batch truncation: service.py calls run() with frame_batch; if a batch is shorter than the delay, the in-run pending queue flushes early and key_frames can still be pre-roll.",
+                      "severity":  "medium",
+                      "mitigation":  "Minimal version flushes best-available frames at batch end; advanced version persists the pending queue + buffer as pipeline instance attributes so deferral spans batches, or document/require frame_batch ≥ delay×fps."
+                  },
+                  {
+                      "risk":  "Reordering or placeholder leakage if the replace-in-place slot logic is wrong, exposing empty key_frames or None outcomes to consumers.",
+                      "severity":  "low",
+                      "mitigation":  "Use index-keyed replacement and resolve every pending entry before run() returns (timer fire + end flush); add an assertion that no placeholder remains unresolved."
+                  },
+                  {
+                      "risk":  "An existing test could assert exact trigger-time key_frames for a person/animal VLM call, which deferral would change.",
+                      "severity":  "low",
+                      "mitigation":  "Verified test_live_pipeline.py: scripted VLM cases use a single captured frame, so rebuilt key_frames equal the original frame and encode to the same [\u0027encoded-1\u0027]; encode/attach logic is kept byte-for-byte identical."
+                  },
+                  {
+                      "risk":  "Stream ends right at the trigger, so even after flush the rebuilt frames are still mostly empty.",
+                      "severity":  "low",
+                      "mitigation":  "The acceptance test must feed enough post-T frames; flush selects the post-trigger subset when present and otherwise degrades to current behavior (no worse than today)."
+                  },
+                  {
+                      "risk":  "Image eviction: a delay long enough to exceed the 200-frame image_store would drop the images needed to encode.",
+                      "severity":  "low",
+                      "mitigation":  "Keep delay well under the image_store cap; encode_frames_jpeg_b64 already skips None images, so missing frames are silently dropped rather than crashing."
+                  }
+              ],
+    "minimal_version":  "Edit only src/oko/pipeline/live.py. Import select_key_frames and RollingFrameBuffer from oko.events.builder; add a ctor param vlm_entry_delay_seconds: float = 3.5 (3-4s range). In run(): instantiate a local RollingFrameBuffer and a pending list; feed the buffer with captured.frame every iteration. When the gate exists and a built_event is person_entered_zone/animal_entered_zone and passes the existing monotonic cooldown check, record the cooldown, append a placeholder PipelineEventResult (vlm_outcome=None, base bridge_output), and enqueue a pending record {result_index, event, decision, base_bridge_output, trigger_frame, ready_at=trigger.timestamp+delay}. Each iteration, resolve any pending whose ready_at \u003c= current frame timestamp: rebuild key_frames = select_key_frames(buffer.frames(), trigger_frame, min, max), encode via the existing image_store lookup, query vlm_gate.query_if_needed, attach keyframe_jpeg_b64 (mid frame) and description exactly as today, and replace results[result_index] with a corrected PipelineEventResult carrying the new key_frames and vlm_outcome. After the loop, flush all remaining pending the same way. Non-person/animal events and the vlm_gate-None path keep today\u0027s immediate behavior. Fully type-annotated; events/builder.py untouched; all current tests pass via the end-of-run flush.",
+    "advanced_version":  "Lift the pending queue and rolling buffer to LivePipeline instance attributes so deferral spans multiple run() batches (service.py), honoring the full 3-4s delay regardless of frame_batch; resolve pending entries in later batches and emit corrected results only when ready, forcing a flush only on true end-of-stream. Anchor the key_frame rebuild to strictly post-trigger frames (filter buffer to timestamp \u003e= trigger.timestamp before select_key_frames) so ~100% of key_frames contain the object, with graceful fallback to the time-windowed selection when too few post-trigger frames exist. Make delay and window configurable via OkoConfig. Add a regression test (object detected starting at frame T; assert the majority — ideally all — of key_frame ids are \u003e= T) and emit a debug counter/log of pre-roll vs object frame counts for observability."
+}

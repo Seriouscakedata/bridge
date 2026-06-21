@@ -1,0 +1,62 @@
+{
+    "proposer":  "C",
+    "understanding":  "The bug is that for person_entered_zone and animal_entered_zone events, the keyframe extraction happens immediately at the trigger moment, when the rolling buffer still contains mostly frames from before the object entered. This results in 6 of 7 keyframes being empty. The fix delays the VLM request by 3-4 seconds for these specific event types, continuing to feed the rolling buffer during that delay, so that when keyframes are finally built, the buffer contains the object in most frames.",
+    "summary":  "Introduce a delayed keyframe extraction mechanism in live.py for person/animal entry events. When such an event triggers, instead of immediately building keyframes and calling VLM, we start a 3-4 second timer. During this timer, frames continue to be added to the rolling buffer. After the timer expires, we build the keyframes from the now-updated buffer and proceed with the VLM request. This ensures the object is present in the majority of keyframes.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Delay keyframe extraction for person_entered_zone and animal_entered_zone events by 3-4 seconds",
+                               "reason":  "The rolling buffer at trigger time contains frames from before the object appears. A delay allows the buffer to accumulate frames with the object present.",
+                               "tradeoff":  "Adds latency to VLM notifications for these event types, but ensures correct keyframe content. The delay is small relative to the overall pipeline latency.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Continue feeding the rolling buffer during the delay period",
+                               "reason":  "Without new frames, the buffer would remain stale. Continuing to feed ensures the delayed extraction sees recent frames containing the object.",
+                               "tradeoff":  "Requires the frame ingestion loop to remain active during the delay, which is already the case in the existing architecture.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Only apply the delay to person_entered_zone and animal_entered_zone event types",
+                               "reason":  "The bug is specific to entry events where the object is not yet in frame at trigger time. Other event types (e.g., object left, motion) have different timing characteristics.",
+                               "tradeoff":  "Adds conditional logic but keeps the fix focused and prevents unintended side effects on other event types.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Implement the delay using an asynchronous timer or deferred callback in live.py",
+                               "reason":  "The pipeline is event-driven; a non-blocking delay ensures other processing continues. This can be done with asyncio.sleep or a threading.Timer depending on the pipeline architecture.",
+                               "tradeoff":  "Introduces minor complexity in managing delayed tasks, but avoids blocking the main event loop.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The rolling buffer is shared between the trigger detection and keyframe extraction, and continues to be populated during the delay.",
+                        "The pipeline uses an asynchronous or multi-threaded architecture that supports non-blocking delays.",
+                        "The event type (person_entered_zone, animal_entered_zone) is identifiable at trigger time before keyframe extraction.",
+                        "A delay of 3-4 seconds is sufficient for the object to be fully visible in the buffer frames, based on typical camera frame rates and object entry speed.",
+                        "The existing tests cover the keyframe content validation and will pass after the fix."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The 3-4 second delay may not be sufficient in all scenarios (e.g., slow-moving objects, low frame rate cameras)",
+                      "severity":  "medium",
+                      "mitigation":  "Make the delay configurable via a parameter; monitor real-world performance and adjust if needed."
+                  },
+                  {
+                      "risk":  "Delayed VLM requests could pile up if multiple entry events occur in quick succession",
+                      "severity":  "low",
+                      "mitigation":  "Implement a queue or deduplication mechanism for pending delayed requests; ensure each event has its own timer context."
+                  },
+                  {
+                      "risk":  "The fix might introduce a race condition if the rolling buffer is modified during the delay by another thread",
+                      "severity":  "medium",
+                      "mitigation":  "Use thread-safe access to the rolling buffer (e.g., locks or copying the buffer state at extraction time)."
+                  },
+                  {
+                      "risk":  "Existing tests may fail if they assume immediate keyframe extraction for entry events",
+                      "severity":  "low",
+                      "mitigation":  "Update test expectations to account for the delay, or mock the timer in tests to simulate immediate extraction with updated buffer content."
+                  }
+              ],
+    "minimal_version":  "In live.py, after detecting a person_entered_zone or animal_entered_zone trigger, instead of immediately calling build_keyframes() and VLM, start a 3.5-second asyncio.sleep() (or equivalent non-blocking delay). After the sleep, build keyframes from the current rolling buffer and proceed with VLM. Ensure the buffer continues to be fed during the sleep. No changes to events/builder.py required.",
+    "advanced_version":  "In live.py, implement a deferred keyframe extraction system: maintain a dictionary of pending delayed events keyed by event ID. When an entry event triggers, schedule a delayed task (using asyncio.ensure_future or a background thread) that waits a configurable delay (default 3.5s), then atomically captures the rolling buffer state, builds keyframes, and triggers VLM. Add a configuration parameter for the delay duration. In events/builder.py, optionally add a timestamp check to validate that keyframes are from after the trigger time, logging a warning if not. Ensure all delayed tasks are properly cancelled on pipeline shutdown."
+}

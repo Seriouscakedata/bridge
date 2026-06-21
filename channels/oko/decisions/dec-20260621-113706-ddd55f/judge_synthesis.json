@@ -1,0 +1,174 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Scope is correctly limited to the requested person/animal zone-entry events and reduces regression risk for other event types.",
+                      "total":  0.915
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.75,
+                                     "impact":  0.95,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The key requirement is to capture evidence after the delay, so delayed key-frame selection is necessary; implementation is more invasive because current events are built immediately.",
+                      "total":  0.8475
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A pending queue preserves frame ingestion and avoids blocking the pipeline during the delay; this is the right concurrency shape.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Use an exact named constant of 3.5 seconds in live.py, but avoid ambiguous \u0027about\u0027 semantics and keep it test-overridable through clock/delay injection.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A fake clock or injectable timing source is required for deterministic tests and avoids slow wall-clock waits.",
+                      "total":  0.855
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Keeping builder.py unchanged preserves module boundaries; live.py can replace or rebuild BuiltEvent key_frames after the delay using existing structures.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Frame timestamps are appropriate for delayed key-frame readiness and deterministic tests, but the design must still preserve monotonic debounce and handle short or non-monotonic streams via flush safeguards.",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Reserving the result slot preserves event ordering while allowing deferred VLM/key-frame resolution.",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "End-of-run flush is necessary so short streams do not drop pending VLM work before run() returns.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.75,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Keep the monotonic debounce decision at enqueue time to suppress duplicates, but preserve existing semantics as closely as possible by only setting cooldown for events actually eligible/enqueued for VLM.",
+                      "total":  0.7725
+                  }
+              ]
+}

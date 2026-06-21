@@ -1,0 +1,79 @@
+{
+    "proposer":  "A",
+    "understanding":  "Причина бага в том, что live pipeline собирает key_frames синхронно в момент триггера person_entered_zone/animal_entered_zone, когда rolling-buffer в основном содержит pre-roll до появления объекта. Нужно отложить именно сбор key_frames и VLM-запрос для этих двух типов событий, при этом основной ingest кадров и обновление rolling-buffer должны продолжаться.",
+    "summary":  "Сделать в src/oko/pipeline/live.py неблокирующую отложенную обработку для person_entered_zone и animal_entered_zone: при триггере сохранить минимальный event context и due_at = now + ~3.5s, не строить key_frames сразу и не вызывать VLM. В основном цикле, после продолжения заполнения rolling-buffer, периодически дренировать due pending events: когда due_at наступил, собрать key_frames из актуального rolling-buffer и передать их в существующий builder/VLM путь. Остальные типы событий оставить без изменений. Добавить тест с контролируемым временем/кадрами: объект появляется на кадре T, событие триггерится на T, до задержки VLM не вызывается, после задержки большинство key_frames берутся из post-trigger кадров с объектом.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Ограничить изменение только типами person_entered_zone и animal_entered_zone.",
+                               "reason":  "Контракт описывает один конкретный баг keyframe-тайминга только для person/animal entry events.",
+                               "tradeoff":  "Другие события сохранят прежний latency и прежнее поведение, но если у них есть похожий дефект, он не будет исправлен этим атомарным фиксом.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Откладывать не только VLM call, а весь этап построения key_frames.",
+                               "reason":  "Если key_frames собрать в момент триггера и только потом отложить VLM, баг останется: кадры уже будут pre-roll.",
+                               "tradeoff":  "Нужно хранить pending event context до delayed processing, но это минимальная дополнительная сложность.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Использовать неблокирующую очередь pending events с due_at, а не sleep внутри обработки триггера.",
+                               "reason":  "Rolling-buffer должен продолжать получать новые кадры во время задержки; блокирующий sleep остановил бы ingest или ухудшил realtime behavior.",
+                               "tradeoff":  "Потребуется небольшой drain step в live loop, зато latency контролируемая и pipeline не блокируется.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Задержку зафиксировать около 3.5 секунд как локальную константу в live.py.",
+                               "reason":  "Это попадает в требуемый диапазон 3-4 секунды и делает поведение очевидным и тестируемым.",
+                               "tradeoff":  "Константа менее гибкая, чем конфиг, но для фокусного фикса снижает blast radius.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "В тесте использовать fake clock или injectable now/delay, чтобы не ждать реальные 3-4 секунды.",
+                               "reason":  "Acceptance требует проверить задержку и состав key_frames, но реальные sleeps сделают тест медленным и flaky.",
+                               "tradeoff":  "Может потребоваться небольшая тестовая seam в live.py, но без изменения пользовательского поведения.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Не менять events/builder.py, если текущий builder уже умеет принимать key_frames, собранные live.py после задержки.",
+                               "reason":  "Корень бага находится в live.py, а контракт просит фокусный атом.",
+                               "tradeoff":  "Если builder сам захватывает buffer слишком рано, потребуется минимальная правка builder.py для переноса capture point.",
+                               "confidence":  0.82
+                           }
+                       ],
+    "assumptions":  [
+                        "src/oko/pipeline/live.py содержит основной frame loop или event processing loop, где можно продолжать обновлять rolling-buffer и отдельно дренировать pending events.",
+                        "Для события достаточно сохранить event type, zone/object metadata и timestamp триггера; сами key_frames можно собрать позднее из актуального rolling-buffer.",
+                        "Существующий VLM/event builder путь можно переиспользовать после delayed keyframe capture без изменения формата события.",
+                        "Тестовая инфраструктура позволяет подменить время или вызвать обработку цикла детерминированно.",
+                        "Для acceptance можно маркировать synthetic frames как содержащие/не содержащие объект и проверять выбранные key_frames без реального VLM."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "За 3-4 секунды объект может уже выйти из кадра, особенно при коротком проходе.",
+                      "severity":  "medium",
+                      "mitigation":  "Использовать rolling-buffer, который покрывает и trigger frame, и несколько секунд после него; keyframe sampling должен брать диапазон из обновленного буфера, а не только самый последний кадр."
+                  },
+                  {
+                      "risk":  "Pending events могут накопиться при частых триггерах и увеличить память или нагрузку VLM пачкой.",
+                      "severity":  "medium",
+                      "mitigation":  "Хранить только легкий event context до due_at, не копировать кадры при триггере; при необходимости использовать существующие debounce/dedupe механизмы."
+                  },
+                  {
+                      "risk":  "Изменение порядка обработки может повлиять на event timestamp или downstream ожидания.",
+                      "severity":  "medium",
+                      "mitigation":  "Сохранять original trigger timestamp в event metadata, а delay применять только к моменту keyframe capture/VLM validation."
+                  },
+                  {
+                      "risk":  "Тест может стать flaky, если будет завязан на wall-clock sleep.",
+                      "severity":  "medium",
+                      "mitigation":  "Ввести контролируемый clock/delay override для теста и проверять due processing синхронно."
+                  },
+                  {
+                      "risk":  "Если keyframe builder находится в events/builder.py и сам берет snapshot слишком рано, фикса только в live.py будет недостаточно.",
+                      "severity":  "low",
+                      "mitigation":  "Проверить ownership keyframe capture; при необходимости сделать минимальную правку builder.py, чтобы он принимал delayed/current buffer snapshot."
+                  }
+              ],
+    "minimal_version":  "В live.py добавить pending queue только для person_entered_zone/animal_entered_zone. При триггере этих событий сохранить context и due_at = now + 3.5s, не строить key_frames и не вызывать VLM. В каждом проходе live loop после обновления rolling-buffer обработать due events: собрать key_frames из текущего rolling-buffer и вызвать существующий VLM/event path. Добавить один unit/integration test с fake clock: объект отсутствует до T, появляется с T, до due VLM не вызван, после due большинство key_frames содержат объект.",
+    "advanced_version":  "Поверх minimal version добавить небольшой bounded scheduler с метриками pending/delayed duration, configurable-but-default delay, и явный helper вроде should_delay_keyframe_capture(event_type). Также можно расширить тесты на animal_entered_zone, несколько pending events подряд и сохранение original trigger timestamp, но без изменения поведения других event types."
+}
