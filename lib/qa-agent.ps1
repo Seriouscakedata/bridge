@@ -282,6 +282,110 @@ function Invoke-QAAgentSingleScenario {
   }
 }
 
+function Invoke-QAAgentGit {
+  param(
+    [string]$BridgeRoot,
+    [string[]]$Arguments = @()
+  )
+  $raw = @()
+  $exitCode = 1
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $raw = @(& git -C $BridgeRoot @Arguments 2>$null)
+    $exitCode = $LASTEXITCODE
+  } catch {
+    $raw = @()
+    if ($LASTEXITCODE -is [int]) { $exitCode = $LASTEXITCODE }
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+  return [pscustomobject]@{
+    ExitCode = [int]$exitCode
+    Lines    = @($raw)
+  }
+}
+
+function Get-QAAgentCommitDiffCheck {
+  param(
+    [string]$BridgeRoot,
+    [string]$CommitSha = ''
+  )
+  $commitRef = [string]$CommitSha
+  if ([string]::IsNullOrWhiteSpace($commitRef)) { $commitRef = 'HEAD' }
+  $displayRef = $commitRef
+  if ($displayRef.Length -gt 7) { $displayRef = $displayRef.Substring(0, 7) }
+
+  $verifyResult = Invoke-QAAgentGit -BridgeRoot $BridgeRoot -Arguments @('rev-parse', '--verify', ($commitRef + '^{commit}'))
+  $verifyExit = [int]$verifyResult.ExitCode
+  $verifyLines = @($verifyResult.Lines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($verifyExit -ne 0 -or $verifyLines.Count -eq 0) {
+    return [pscustomobject]@{
+      Ok         = $false
+      HasChanges = $false
+      Short      = $displayRef
+      Command    = 'git rev-parse --verify ' + $commitRef + '^{commit}'
+      Detail     = 'unable to resolve commit ' + $commitRef + ' (exit ' + [string]$verifyExit + ')'
+    }
+  }
+
+  $resolvedCommit = ([string]$verifyLines[0]).Trim()
+  $short = $resolvedCommit
+  if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
+
+  $parentsResult = Invoke-QAAgentGit -BridgeRoot $BridgeRoot -Arguments @('rev-list', '--parents', '-n', '1', $resolvedCommit)
+  $parentsExit = [int]$parentsResult.ExitCode
+  $parentsLines = @($parentsResult.Lines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($parentsExit -ne 0 -or $parentsLines.Count -eq 0) {
+    return [pscustomobject]@{
+      Ok         = $false
+      HasChanges = $false
+      Short      = $short
+      Command    = 'git rev-list --parents -n 1 ' + $resolvedCommit
+      Detail     = 'unable to inspect commit parents for ' + $short + ' (exit ' + [string]$parentsExit + ')'
+    }
+  }
+
+  $parentParts = @(([string]$parentsLines[0] -split '\s+') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($parentParts.Count -lt 1) {
+    return [pscustomobject]@{
+      Ok         = $false
+      HasChanges = $false
+      Short      = $short
+      Command    = 'git rev-list --parents -n 1 ' + $resolvedCommit
+      Detail     = 'unable to parse commit parents for ' + $short
+    }
+  }
+
+  if ($parentParts.Count -gt 1) {
+    $baseRef = [string]$parentParts[1]
+    $command = 'git diff --stat ' + $baseRef + ' ' + $resolvedCommit
+    $statResult = Invoke-QAAgentGit -BridgeRoot $BridgeRoot -Arguments @('diff', '--stat', $baseRef, $resolvedCommit)
+  } else {
+    $command = 'git diff-tree --stat --root --no-commit-id -r ' + $resolvedCommit
+    $statResult = Invoke-QAAgentGit -BridgeRoot $BridgeRoot -Arguments @('diff-tree', '--stat', '--root', '--no-commit-id', '-r', $resolvedCommit)
+  }
+  $statExit = [int]$statResult.ExitCode
+  $statLines = @($statResult.Lines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($statExit -ne 0) {
+    return [pscustomobject]@{
+      Ok         = $false
+      HasChanges = $false
+      Short      = $short
+      Command    = $command
+      Detail     = 'git diff inspection failed for ' + $short + ' (exit ' + [string]$statExit + ')'
+    }
+  }
+
+  return [pscustomobject]@{
+    Ok         = $true
+    HasChanges = ($statLines.Count -gt 0)
+    Short      = $short
+    Command    = $command
+    Detail     = ''
+  }
+}
+
 function Invoke-QAAgentPostCommit {
   param(
     [string]$BridgeRoot,
@@ -295,21 +399,16 @@ function Invoke-QAAgentPostCommit {
   $qaPostChannel = Get-QAAgentChannel -Channel $Channel
   # Guard: reject empty commits before any channel-specific QA skip. Project channels do not run
   # bridge scenarios, but they still must prove the checked commit changed files.
-  $commitRef = [string]$CommitSha
-  if ([string]::IsNullOrWhiteSpace($commitRef)) { $commitRef = 'HEAD' }
-  $parentRef = $commitRef + '^'
-  $parentProbe = @(& git -C $BridgeRoot rev-parse --verify $parentRef 2>$null)
-  if ($LASTEXITCODE -eq 0 -and $parentProbe.Count -gt 0) {
-    $emptyCommitCheck = @(& git -C $BridgeRoot diff --stat $parentRef $commitRef 2>$null |
-                           Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-  } else {
-    $emptyCommitCheck = @(& git -C $BridgeRoot diff-tree --stat --root --no-commit-id $commitRef 2>$null |
-                           Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  $diffCheck = Get-QAAgentCommitDiffCheck -BridgeRoot $BridgeRoot -CommitSha $CommitSha
+  if (-not [bool]$diffCheck.Ok) {
+    $summary = 'post-commit ' + [string]$diffCheck.Short + ': GIT DIFF CHECK FAILED - ' + [string]$diffCheck.Detail + '; task is not done.'
+    if ($summary.Length -gt 900) { $summary = $summary.Substring(0, 900) }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'FAIL' -Summary $summary -Bugs @($summary) -BridgeRoot $BridgeRoot
   }
-  if ($emptyCommitCheck.Count -eq 0) {
-    $shortEc = [string]$CommitSha; if ($shortEc.Length -gt 7) { $shortEc = $shortEc.Substring(0,7) }
-    if ([string]::IsNullOrWhiteSpace($shortEc)) { $shortEc = '<unknown>' }
-    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'FAIL' -Summary ('post-commit ' + $shortEc + ': EMPTY COMMIT - git diff --stat ' + $parentRef + ' ' + $commitRef + ' shows no file changes; Codex did not modify files, task is not done.') -Bugs @() -BridgeRoot $BridgeRoot
+  if (-not [bool]$diffCheck.HasChanges) {
+    $summary = 'post-commit ' + [string]$diffCheck.Short + ': EMPTY COMMIT - ' + [string]$diffCheck.Command + ' shows no file changes; Codex did not modify files, task is not done.'
+    if ($summary.Length -gt 900) { $summary = $summary.Substring(0, 900) }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'FAIL' -Summary $summary -Bugs @($summary) -BridgeRoot $BridgeRoot
   }
   # 2026-06-11 W2b: post-commit QA runs the BRIDGE scenario suite (smoke + HTTP scenarios against
   # the bridge server). On a PROJECT channel the commit changed the project app, NOT the bridge,
