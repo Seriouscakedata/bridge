@@ -1,0 +1,174 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.95,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Core objective endorsed by all three proposals (A, B, C). Removing the stub and wiring in LivePipeline is the unambiguous central deliverable; its test is concrete and the \u0027wrapper that invokes it\u0027 clause leaves room for DA-010\u0027s worker abstraction without conflict. Highest-value, lowest-controversy atom.",
+                      "total":  0.8825
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.6,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sound scope-limiting constraint (A only): treating LivePipeline as a stable public dependency avoids destabilizing it and keeps the change blast radius small. Impact is modest since it is a guardrail rather than functionality, and \u0027no internal changes\u0027 is slightly soft, but it is verifiable and reduces risk.",
+                      "total":  0.8025
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Backed by A, B, C and names concrete fakes (FakeCameraSource + MovingSmokeDetector). Mock-based tests of init, invocation, and argument passing are the primary guard against regressions in the new integration; high risk reduction. Test authoring cost is the only minor drag on simplicity.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Endorsed by A, B, C and essential for a permanent service: fatal-vs-transient distinction, no-crash guarantee, and preservation of existing backoff/escalation/exit-code conventions. Highest risk reduction in the set. Simplicity scores lower because correctly classifying error types and integrating with LoopController/FatalError is genuinely non-trivial, but the payoff justifies it.",
+                      "total":  0.8225
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Low-cost observability win (A, C) that follows existing structured-logging conventions and aids debugging of pipeline startup/processing. Impact and risk reduction are secondary to functional atoms, and \u0027relevant information\u0027 is somewhat under-specified, but it is cheap, easy, and safe to add.",
+                      "total":  0.7925
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct lifecycle practice (B): instantiating LivePipeline and Reporter once and reusing across ticks avoids per-tick re-init cost and resource churn (e.g., camera/source handles), which matters for a long-running loop. Pairs naturally with DA-010\u0027s worker holding the state; requires that stateful structure, slightly lowering simplicity.",
+                      "total":  0.815
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.72,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        0.05
+                                    ],
+                      "reason":  "Bounded batch-per-tick (B) is the right cooperative model — let LoopController own cadence/backoff/heartbeat/shutdown and keep each tick non-blocking. Marked modify with a penalty because it presumes a specific `pipeline.run(limit=...)` signature that is unverified; the limit/batch mechanism should be conditioned on LivePipeline\u0027s actual public API rather than assumed verbatim.",
+                      "total":  0.719
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Reporting PipelineEventResult.bridge_output through the configured Reporter (B) is the actual functional output of the integration and is grounded in the existing reporters.py (per recent C2 work). Mild assumption about the bridge_output/report() shape, but well-specified and high-impact since without it the pipeline produces no externally visible result.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Env-var-sourced configuration (B) for config_path/rules_path/camera_id/mode is consistent with the service\u0027s existing OKO_* configuration pattern, cheap, and easily reversible. Impact is moderate (enables deployment flexibility rather than core behavior) but it is low-risk and high-feasibility.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A named, injectable LivePipelineWorker (B) is the architectural keystone that makes DA-001\u0027s replacement clean, DA-003\u0027s mocking straightforward, and DA-006\u0027s once-only construction natural to hold as worker state. Adds one abstraction layer (slightly lower simplicity) but the testability and reuse payoff is well worth it; consistent with DA-001\u0027s allowance for a wrapper.",
+                      "total":  0.795
+                  }
+              ]
+}

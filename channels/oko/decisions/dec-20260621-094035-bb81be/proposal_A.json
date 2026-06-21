@@ -1,0 +1,67 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно фокусно заменить заглушку в work функции service.py на реальное подключение LivePipeline, сохранив существующий контракт OKO Service и добавив минимальную проверку, что pipeline действительно стартует/обрабатывает рабочий цикл.",
+    "summary":  "Предлагаю сначала локализовать текущий stub в service.py и существующий API LivePipeline, затем заменить тело work на инициализацию LivePipeline, передачу актуального контекста/конфига сервиса и запуск через штатный метод pipeline. Изменение должно быть минимальным по площади, с логированием старта/ошибок и тестом, который доказывает, что work вызывает LivePipeline вместо placeholder-кода.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Интегрировать LivePipeline непосредственно внутри work в service.py.",
+                               "reason":  "Это прямое требование TaskContract, а также минимальный путь к восстановлению критичной функциональности сервиса.",
+                               "tradeoff":  "Логика orchestration останется в service.py, даже если позже ее лучше вынести в отдельный adapter/factory.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Использовать существующий публичный API LivePipeline без изменения его внутренней реализации.",
+                               "reason":  "Задача критичная и фокусная; изменение pipeline может увеличить blast radius.",
+                               "tradeoff":  "Если API LivePipeline неудобен для service.py, часть glue-кода может остаться в work или рядом с ним.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Полностью удалить placeholder/stub ветку, а не оставлять fallback на заглушку.",
+                               "reason":  "Success criteria явно требуют, чтобы work больше не содержал stub implementation.",
+                               "tradeoff":  "При ошибках LivePipeline сервис будет явно падать или логировать failure, вместо тихой деградации к заглушке.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Добавить или обновить тест work-функции через mock/fake LivePipeline.",
+                               "reason":  "Нужна проверка, что work инициализирует и запускает LivePipeline с ожидаемыми аргументами.",
+                               "tradeoff":  "Mock-тест не докажет end-to-end поведение pipeline, поэтому его нужно дополнить smoke/integration запуском сервиса при возможности.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Сохранить существующие service lifecycle, logging и error handling conventions.",
+                               "reason":  "OKO Service критичный компонент; изменение не должно ломать supervisor/reporter/exit-code поведение.",
+                               "tradeoff":  "Это может ограничить идеальную архитектурную чистоту, но снижает риск регрессии.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "LivePipeline уже существует в репозитории и имеет стабильный публичный способ запуска, например run/start/process.",
+                        "service.py уже содержит необходимые service context/config inputs либо их можно получить существующим способом рядом с work.",
+                        "Текущая заглушка находится только в work или может быть удалена без изменения внешнего CLI/API контракта сервиса.",
+                        "Для проверки доступны существующие unit/integration тесты или можно добавить узкий тест рядом с текущим тестовым набором."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Неправильно выбранный метод запуска LivePipeline приведет к сервису, который стартует, но фактически не обрабатывает данные.",
+                      "severity":  "high",
+                      "mitigation":  "Перед изменением найти все usages LivePipeline в репозитории и ориентироваться на существующий production/test паттерн вызова."
+                  },
+                  {
+                      "risk":  "work может иметь скрытый контракт по return value, loop behavior или exception handling.",
+                      "severity":  "high",
+                      "mitigation":  "Сравнить вызовы work, тесты и supervisor/service entrypoint; сохранить ожидаемые return/raise semantics."
+                  },
+                  {
+                      "risk":  "LivePipeline может требовать конфиг, зависимости или внешние ресурсы, которые не передаются текущей service.py.",
+                      "severity":  "medium",
+                      "mitigation":  "Использовать существующие config builders/factories; не hardcode значения; добавить понятное логирование отсутствующих обязательных параметров."
+                  },
+                  {
+                      "risk":  "Интеграционный запуск может быть недоступен без внешней инфраструктуры.",
+                      "severity":  "medium",
+                      "mitigation":  "Сделать unit-тест с fake pipeline обязательным, а smoke-тест выполнить с доступными env/mocks или документировать точный блокер."
+                  }
+              ],
+    "minimal_version":  "Заменить stub в service.py::work на создание LivePipeline через существующий импорт/factory, передать текущий config/context, вызвать штатный run/start метод, добавить логирование старта и ошибки, обновить/добавить unit-тест, подтверждающий вызов LivePipeline.",
+    "advanced_version":  "В дополнение к minimal version добавить небольшой adapter/factory для сборки LivePipeline из service config, integration/smoke test запуска OKO Service с fake или test-mode pipeline, метрики/structured logs активности pipeline и явную обработку shutdown/cancellation согласно lifecycle сервиса."
+}

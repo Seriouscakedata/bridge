@@ -1,0 +1,130 @@
+{
+    "final_answer":  "Replace the `lambda ctx: None` stub in service.py\u0027s work/run_once with a real LivePipeline integration, delivered through a named, injectable `LivePipelineWorker` that is the architectural keystone of the change. The worker constructs the LivePipeline and Reporter exactly once at initialization and reuses them across ticks; on each tick it executes a bounded batch so the existing LoopController retains ownership of cadence, backoff, escalation, heartbeat, and graceful shutdown. Each processed event\u0027s `PipelineEventResult.bridge_output` is emitted through the configured Reporter from reporters.py (the externally visible output of the integration). Configuration (config_path, rules_path, camera_id, mode, batch size) is sourced from OKO_* environment variables consistent with the existing service pattern. Errors are classified fatal-vs-transient: readiness/config failures raise FatalError (exit 1) instead of looping forever, while transient frame-grab/network errors are logged and retried via the LoopController, and no unhandled exception is allowed to crash the permanent service. Structured logging wraps pipeline startup and per-tick processing. LivePipeline itself is treated as a stable public dependency and is not modified. The integration is covered by mock-based tests using FakeCameraSource + MovingSmokeDetector that assert once-only construction, per-tick invocation, argument passing, reporter calls, and error classification. The judge accepted nine atoms and modified one (DA-007): the bounded-batch-per-tick principle stands, but the exact `pipeline.run(limit=...)` call must be conditioned on LivePipeline\u0027s actual public API rather than assumed verbatim — so the first action is to verify that seam before writing code.",
+    "decisions":  [
+                      {
+                          "decision":  "DA-001 — Remove the `lambda ctx: None` stub from service.py\u0027s work/run_once and wire in a real LivePipeline invocation (directly or via a wrapper).",
+                          "rationale":  "Unambiguous central deliverable endorsed by proposals A, B, and C; highest-value, lowest-controversy atom (judge total 0.8825). The \u0027wrapper that invokes it\u0027 clause leaves room for the DA-010 worker abstraction without conflict.",
+                          "alternatives_considered":  [
+                                                          "Keep the stub (defeats the task entirely)",
+                                                          "Inline the pipeline call directly inside the lambda (untestable, no state holder — superseded by DA-010 worker)"
+                                                      ],
+                          "risk":  "medium — touches the critical service hot path; mitigated by DA-003 tests and DA-004 error handling.",
+                          "test":  "Verify service.py no longer contains `lambda ctx: None` or an equivalent stub, and instead calls a LivePipeline method (e.g., process/run) or a wrapper that invokes it."
+                      },
+                      {
+                          "decision":  "DA-010 — Introduce a named, injectable `LivePipelineWorker` callable/factory encapsulating the integration logic, replacing the inline lambda.",
+                          "rationale":  "Architectural keystone: makes DA-001\u0027s replacement clean, DA-003\u0027s mocking straightforward, and DA-006\u0027s once-only construction natural to hold as worker state (judge total 0.795). Adds one abstraction layer but the testability and reuse payoff justifies it.",
+                          "alternatives_considered":  [
+                                                          "Module-level function plus globals (hard to inject/test)",
+                                                          "Inline lambda (untestable, cannot hold reusable state)"
+                                                      ],
+                          "risk":  "low-to-medium — slight added indirection; offset by clearer test seams.",
+                          "test":  "Verify a dedicated class/factory (e.g., LivePipelineWorker, build_work) exists to manage the integration and that the stub is replaced by an instance of it."
+                      },
+                      {
+                          "decision":  "DA-006 — Construct LivePipeline and Reporter instances exactly once at worker initialization and reuse them across all processing ticks.",
+                          "rationale":  "Correct long-running-loop lifecycle practice (judge total 0.815): avoids per-tick re-init cost and resource churn (camera/source handle re-open). Pairs naturally with the DA-010 worker holding the state.",
+                          "alternatives_considered":  [
+                                                          "Construct pipeline/reporter per run_once tick (resource churn, repeated handle acquisition, latency)"
+                                                      ],
+                          "risk":  "medium — stateful worker must be initialized before the loop and survive across ticks; verified by tests.",
+                          "test":  "Verify LivePipeline and Reporter objects are instantiated only once during startup and not per run_once call."
+                      },
+                      {
+                          "decision":  "DA-007 (modified) — Execute LivePipeline as a bounded batch-per-tick so the LoopController owns cadence, backoff, escalation, heartbeat, and shutdown; condition the concrete batch call on LivePipeline\u0027s actual public API.",
+                          "rationale":  "Bounded, non-blocking ticks are the right cooperative model (judge total 0.719). Judge marked this \u0027modify\u0027 (penalty 0.05) because the `pipeline.run(limit=OKO_FRAME_BATCH)` signature is unverified — the limit/batch mechanism must follow LivePipeline\u0027s real API rather than the assumed verbatim call.",
+                          "alternatives_considered":  [
+                                                          "Unbounded/blocking pipeline.run() inside a tick (blocks LoopController cadence, heartbeat, and shutdown)",
+                                                          "Custom sleep-based cadence inside the worker (duplicates LoopController responsibilities)",
+                                                          "Assume `run(limit=...)` verbatim without verification (rejected — see rejected list)"
+                                                      ],
+                          "risk":  "medium — depends on an unverified API surface; must inspect LivePipeline before committing to the call shape.",
+                          "test":  "Verify the per-tick call processes a bounded batch and that the LoopController continues to control overall cadence and shutdown; confirm the batch parameter matches LivePipeline\u0027s actual public API."
+                      },
+                      {
+                          "decision":  "DA-008 — Report each `PipelineEventResult.bridge_output` through the configured Reporter from reporters.py.",
+                          "rationale":  "This is the actual externally visible functional output of the integration (judge total 0.8175), grounded in the existing reporters.py C2 work. Without it the pipeline produces no observable result.",
+                          "alternatives_considered":  [
+                                                          "Custom inline output / direct stdout (bypasses the reporters.py C2 infrastructure)",
+                                                          "Discard bridge_output (no externally visible result)"
+                                                      ],
+                          "risk":  "medium — mild assumption about the bridge_output / report() shape; confirm signatures in reporters.py.",
+                          "test":  "Verify reporter.report() is called with PipelineEventResult.bridge_output for each processed event."
+                      },
+                      {
+                          "decision":  "DA-009 — Source LivePipeline configuration (config_path, rules_path, camera_id, mode, batch size) from OKO_* environment variables, consistent with the existing service config pattern.",
+                          "rationale":  "Consistent with the service\u0027s established OKO_* configuration convention, cheap, and easily reversible (judge total 0.81). Enables deployment flexibility without code changes.",
+                          "alternatives_considered":  [
+                                                          "Hardcoded configuration values (inflexible)",
+                                                          "CLI argument parsing (inconsistent with the OKO_* env pattern)"
+                                                      ],
+                          "risk":  "low — straightforward env reads; confirm exact variable names already in use vs newly added.",
+                          "test":  "Verify LivePipeline is initialized using values from environment variables (e.g., OKO_CONFIG_PATH, OKO_CAMERA_ID)."
+                      },
+                      {
+                          "decision":  "DA-004 — Implement fatal-vs-transient error handling that preserves existing lifecycle conventions and guarantees no unhandled exception crashes the service.",
+                          "rationale":  "Essential for a permanent service and the highest risk-reduction atom (judge total 0.8225, endorsed by A, B, C): readiness/config errors must surface as FatalError (exit 1) instead of looping forever, while transient frame-grab/network errors retry via the LoopController.",
+                          "alternatives_considered":  [
+                                                          "Let exceptions propagate (crashes the permanent service)",
+                                                          "Single catch-all that swallows everything (masks fatal config errors behind infinite retries)"
+                                                      ],
+                          "risk":  "medium — correctly classifying error types and integrating with LoopController/FatalError is non-trivial; mitigated by targeted tests.",
+                          "test":  "Verify transient errors are logged and retried via LoopController, critical startup/readiness failures raise FatalError (exit 1), and graceful shutdown remains functional."
+                      },
+                      {
+                          "decision":  "DA-005 — Add structured logging around LivePipeline initialization and per-tick execution, following existing service logging conventions.",
+                          "rationale":  "Low-cost, high-feasibility observability win (judge total 0.7925, A and C): aids debugging of pipeline startup and processing with success/failure and event-count information.",
+                          "alternatives_considered":  [
+                                                          "No logging (poor operability)",
+                                                          "Ad-hoc print statements (breaks structured-logging conventions)"
+                                                      ],
+                          "risk":  "low — additive and safe; ensure \u0027relevant information\u0027 (event counts, success/failure) is concretely specified during implementation.",
+                          "test":  "Verify logs are emitted during pipeline startup and processing, containing relevant info and following the structured logging format."
+                      },
+                      {
+                          "decision":  "DA-002 — Use LivePipeline\u0027s existing public API only; make no changes to its internal implementation.",
+                          "rationale":  "Sound scope-limiting guardrail (judge total 0.8025): treating LivePipeline as a stable public dependency keeps the change blast radius small and avoids destabilizing it.",
+                          "alternatives_considered":  [
+                                                          "Modify LivePipeline internals to fit the service (expands blast radius, couples the change to pipeline internals)"
+                                                      ],
+                          "risk":  "low — guardrail rather than functionality; \u0027no internal changes\u0027 is slightly soft but verifiable by diff review.",
+                          "test":  "Review the diff to confirm no modifications were made to LivePipeline source as part of this change."
+                      },
+                      {
+                          "decision":  "DA-003 — Add/update unit and integration tests for the work function using mock/fake LivePipeline implementations (FakeCameraSource + MovingSmokeDetector).",
+                          "rationale":  "Primary guard against regressions in the new integration (judge total 0.845, endorsed by A, B, C); names concrete fakes and asserts init, invocation, and argument passing.",
+                          "alternatives_considered":  [
+                                                          "Manual / integration-only testing (no automated regression guard)",
+                                                          "Real camera hardware in tests (non-deterministic, environment-dependent)"
+                                                      ],
+                          "risk":  "low — additive; test-authoring cost is the only drag.",
+                          "test":  "Verify new/updated tests mock LivePipeline and assert its once-only initialization, per-tick invocation, argument passing, reporter calls, and error classification within the work logic."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Hard-code LivePipeline execution to the exact `pipeline.run(limit=OKO_FRAME_BATCH)` signature as written verbatim in DA-007.",
+                         "why":  "Judge marked DA-007 \u0027modify\u0027 (penalty 0.05): the `run(limit=...)` API is unverified. The bounded-batch-per-tick principle is accepted and retained, but the concrete invocation must be derived from LivePipeline\u0027s actual public API after inspection, not assumed verbatim — otherwise the integration risks calling a method or argument that does not exist."
+                     }
+                 ],
+    "open_questions":  [
+                           "Does LivePipeline expose a bounded/batch execution method (e.g., run(limit=...), process(n)), or only an unbounded blocking run()? This determines how the per-tick batch in DA-007 is implemented.",
+                           "What is the exact shape of PipelineEventResult.bridge_output and the Reporter.report() signature in reporters.py (single event vs batch, positional vs keyword)? Needed to finalize DA-008.",
+                           "Does service.py\u0027s existing loop use a run_once(ctx) callback under a LoopController providing backoff, escalation, heartbeat, exit codes, and graceful shutdown, as the atoms assume? Confirm the integration seam for DA-001/DA-004/DA-007.",
+                           "Which OKO_* environment variables already exist versus need to be added (OKO_CONFIG_PATH, OKO_RULES_PATH, OKO_CAMERA_ID, OKO_MODE, OKO_FRAME_BATCH)? Needed for DA-009.",
+                           "Which specific LivePipeline initialization failures should be classified as fatal readiness/config errors (→ FatalError, exit 1) versus transient (→ LoopController backoff/retry)? Needed to make DA-004 precise."
+                       ],
+    "implementation_plan":  [
+                                "1. Inspect service.py to locate the `lambda ctx: None` stub and confirm the work/run_once + LoopController lifecycle (backoff, escalation, heartbeat, exit codes, graceful shutdown, FatalError). [DA-001, DA-004]",
+                                "2. Inspect LivePipeline\u0027s public API to confirm the execution method and whether a bounded batch (e.g., run(limit=...)) is supported; record the actual call shape. Do NOT modify LivePipeline internals. [DA-007, DA-002]",
+                                "3. Inspect reporters.py to confirm Reporter construction and report() signature, and the PipelineEventResult.bridge_output shape. [DA-008]",
+                                "4. Add env-var configuration reads (OKO_CONFIG_PATH, OKO_RULES_PATH, OKO_CAMERA_ID, OKO_MODE, OKO_FRAME_BATCH) following the existing OKO_* pattern; confirm which already exist. [DA-009]",
+                                "5. Implement a named, injectable LivePipelineWorker that constructs LivePipeline + Reporter exactly once at init and exposes a per-tick callable. [DA-010, DA-006]",
+                                "6. In the per-tick callable: run a bounded batch using the verified API, report each bridge_output via the Reporter, classify errors fatal-vs-transient (readiness/config → FatalError/exit 1; transient → log + LoopController retry), and guarantee no unhandled exception escapes. [DA-007, DA-008, DA-004]",
+                                "7. Add structured logging at initialization and per tick (success/failure, event counts) per existing conventions. [DA-005]",
+                                "8. Replace `lambda ctx: None` in service.py with the wired LivePipelineWorker instance. [DA-001]",
+                                "9. Add/extend unit and integration tests with FakeCameraSource + MovingSmokeDetector asserting once-only construction, per-tick invocation, argument passing, reporter calls, and fatal-vs-transient error classification. [DA-003]",
+                                "10. Run the service to confirm LivePipeline is active and producing reporter output, run the test suite green, and confirm graceful shutdown and exit-code behavior are preserved. [success_tests]"
+                            ],
+    "next_step":  "Read service.py to locate the `lambda ctx: None` stub and confirm the LoopController/run_once lifecycle, and inspect LivePipeline\u0027s public API and reporters.py — grounding the unverified assumptions in DA-007 (batch/run signature) and DA-008 (bridge_output/report shape) before writing the LivePipelineWorker."
+}

@@ -1,0 +1,25 @@
+{
+    "task":  "Возьми OKO Сервис КРИТИЧНО (подключить LivePipeline в work-функцию service.py вместо заглушки) в работу — сборка кода фокусно.",
+    "goal":  "Integrate the LivePipeline into the `work` function of `service.py`, replacing the existing stub, to enable critical functionality for the OKO Service.",
+    "constraints":  [
+                        "The LivePipeline must be integrated specifically into the `work` function of `service.py`.",
+                        "The existing stub/placeholder in the `work` function of `service.py` must be completely replaced.",
+                        "The task is critical and requires immediate prioritization."
+                    ],
+    "known_context":  [
+                          "The `service.py` file contains a `work` function.",
+                          "The `work` function currently contains a stub or placeholder implementation.",
+                          "A component or system named `LivePipeline` exists and is available for integration.",
+                          "The OKO Service is a critical system component."
+                      ],
+    "output_format":  "A pull request with the updated `service.py` file and any necessary supporting code or configuration.",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Verify that the `work` function in `service.py` no longer contains the placeholder/stub code.",
+                          "Verify that the `work` function in `service.py` contains code that correctly initializes, calls, or integrates with the `LivePipeline`.",
+                          "Execute the OKO Service and confirm that the `LivePipeline` is active and performing its intended function (e.g., processing data, making external calls, logging relevant events).",
+                          "Run unit and/or integration tests covering the `work` function to ensure correct and robust interaction with the `LivePipeline`."
+                      ]
+}

@@ -1,0 +1,121 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Replace the existing stub/placeholder in the service\u0027s work function (or its equivalent `run_once` callback) with a direct integration of LivePipeline, ensuring the stub is fully removed.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Core Integration",
+                      "test":  "Verify that `service.py` no longer contains the `lambda ctx: None` or similar stub, and instead calls a LivePipeline method (e.g., `process`, `run`) or a wrapper that invokes it.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Utilize the existing public API of LivePipeline without making changes to its internal implementation.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Integration Constraint",
+                      "test":  "Review LivePipeline source code to confirm no modifications were made as part of this change.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Add or update unit/integration tests for the service\u0027s work function, using mock or fake implementations of LivePipeline (e.g., FakeCameraSource + MovingSmokeDetector) to verify correct integration and invocation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Verify that new or updated tests exist which mock LivePipeline and assert its initialization, invocation, and argument passing within the service\u0027s work logic.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Implement robust error handling for LivePipeline calls, distinguishing between fatal (e.g., readiness, config errors) and transient (e.g., frame grab, network) errors, and ensuring unhandled exceptions do not crash the service. Preserve existing service lifecycle, logging, and error handling conventions (e.g., backoff, escalation, exit codes).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Error Handling \u0026 Resilience",
+                      "test":  "Verify that the service handles pipeline exceptions gracefully (e.g., logs, retries via LoopController for transient errors) and that critical startup failures (e.g., readiness blockers) result in a `FatalError` (exit 1) rather than indefinite retries. Check that existing service lifecycle (e.g., graceful shutdown) remains functional.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Add structured logging around LivePipeline initialization and execution, adhering to existing service logging conventions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Observability",
+                      "test":  "Verify that logs are emitted during pipeline startup and processing, containing relevant information (e.g., success/failure, event counts) and following structured logging format if applicable.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Construct LivePipeline and Reporter instances exactly once (e.g., at worker initialization) and reuse them across multiple processing ticks, avoiding re-initialization within the main loop.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Lifecycle Management",
+                      "test":  "Verify that LivePipeline and Reporter objects are instantiated only once during service startup and not per `run_once` call.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Implement LivePipeline execution using a bounded batch-per-tick model (e.g., `pipeline.run(limit=OKO_FRAME_BATCH)`), allowing the LoopController to manage cadence, backoff, escalation, heartbeat, and shutdown.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Execution Strategy",
+                      "test":  "Verify that `pipeline.run()` is called with a `limit` parameter and that the service\u0027s main loop (LoopController) continues to control the overall execution cadence and shutdown behavior.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Report `PipelineEventResult.bridge_output` directly through a configured Reporter (e.g., from `reporters.py`), leveraging its intended API.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Output \u0026 Reporting",
+                      "test":  "Verify that `reporter.report()` is called with `PipelineEventResult.bridge_output` as an argument for each processed event.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Source LivePipeline configuration parameters (e.g., `config_path`, `rules_path`, `camera_id`, `mode`) from environment variables, consistent with existing service configuration patterns.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Configuration",
+                      "test":  "Verify that LivePipeline is initialized using values retrieved from environment variables (e.g., `OKO_CONFIG_PATH`, `OKO_CAMERA_ID`).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "statement":  "Introduce a named, injectable `LivePipelineWorker` callable (or similar class/factory) to encapsulate the LivePipeline integration logic, replacing the inline `lambda ctx: None` and facilitating reuse and testability.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Architectural Design",
+                      "test":  "Verify that a dedicated class or factory (e.g., `LivePipelineWorker`, `build_work`) is created to manage the LivePipeline integration and that the `lambda ctx: None` stub is replaced by an instance of this worker.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

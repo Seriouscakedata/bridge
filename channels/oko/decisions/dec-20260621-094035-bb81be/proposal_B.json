@@ -1,0 +1,91 @@
+{
+    "proposer":  "B",
+    "understanding":  "The OKO \u0027Permanent Service\u0027 (src/oko/live/service.py) is a resilient supervisory loop: LoopController.run() ticks forever with exponential backoff, FailureEscalator (transient failures escalate to FatalError after N, FatalError stops immediately), Heartbeat, and graceful shutdown via StopToken + SIGTERM/SIGINT. It is configured from env (Settings.from_env). There is NO literal symbol named \u0027work\u0027 in the file — the contract\u0027s \u0027work function\u0027 is the run_once work callback that LoopController invokes each tick (signature run_once(context) with context={\u0027settings\u0027,\u0027logger\u0027}, and a no-arg fallback). The stub to replace is the literal `lambda ctx: None` passed into LoopController(...) inside main() at service.py:246. LivePipeline (src/oko/pipeline/live.py) is the real per-frame orchestrator (camera-\u003edetector-\u003etracker-\u003ezones-\u003eEventBuilder-\u003eDecisionEngine-\u003eBridgeOutput), built via LivePipeline.from_config(config, rules_path=..., camera_id=..., mode=...), with run(limit=N) returning a tuple of PipelineEventResult, each carrying .bridge_output: BridgeOutput. The downstream sink reporters.py (added in commit C2) is fully built (Stdout/Jsonl/HttpWebhook/Null/Multi, build_reporter_from_env()) but is wired to nothing yet — it consumes BridgeOutput directly. runtime.py already proves the exact wiring for a one-shot run (readiness -\u003e from_config -\u003e run -\u003e bridge_payload). The critical task is to fuse these three: make the service\u0027s per-tick work build a LivePipeline once, run a bounded batch of frames per tick, and report each result\u0027s bridge_output through a Reporter, while letting the LoopController own cadence/backoff/escalation/heartbeat/shutdown.",
+    "summary":  "Replace the `lambda ctx: None` stub in service.py main() with a stateful work callable (a LivePipelineWorker built once before the loop) that holds a config-built LivePipeline + an env-built Reporter. Each tick it runs the pipeline for a bounded frame batch and reports every PipelineEventResult.bridge_output downstream; transient errors propagate to the LoopController for backoff/escalation, while readiness/config failures raise FatalError. Readiness is checked once at startup. Pipeline and reporter are constructed once and reused across ticks to avoid reconnect/model-reload storms, and closed on shutdown. Proof of \u0027LivePipeline active\u0027 is delivered offline via FakeCameraSource + MovingSmokeDetector (mirroring smoke.py), since real RTSP/VLM/weights smoke remains operator-blocked per PROGRESS.md.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Map \u0027work function\u0027 to the run_once callback and replace the literal `lambda ctx: None` at service.py:246; introduce a named, injectable LivePipelineWorker callable (with __call__(self, context=None)) plus a build_work(...) factory rather than an inline lambda.",
+                               "reason":  "No symbol named \u0027work\u0027 exists; the only stub is the run_once lambda. A named class/factory makes the integration traceable to the success tests, lets the pipeline+reporter be built once and reused, and stays injectable so unit tests can substitute fakes (the existing tests already pass run_once via dependency injection).",
+                               "tradeoff":  "Adds a small new class/factory and an indirection vs. a one-line lambda; the contract literally says \u0027work function\u0027 so naming it `work`/LivePipelineWorker is partly cosmetic to satisfy the literal success criterion.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Build the LivePipeline and Reporter exactly once (before the loop / at worker construction) and reuse them across every tick; never construct them inside run_once.",
+                               "reason":  "camera_source.frames() backs real RTSP/ONVIF streams and detectors load model weights; rebuilding per tick would reconnect/reload every few seconds, causing latency, leaks, and reconnect storms. The LoopController is the steady-state owner, so the heavy objects must outlive a tick.",
+                               "tradeoff":  "The worker becomes stateful and must manage lifecycle (close reporter, release camera) on shutdown; a crash inside the pipeline object may require rebuild logic that a stateless approach wouldn\u0027t.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Use a bounded batch-per-tick model: each tick calls pipeline.run(limit=OKO_FRAME_BATCH) and reports each result, letting LoopController own cadence/backoff/escalation/heartbeat — do NOT run the pipeline as an unbounded inner loop in the minimal version.",
+                               "reason":  "LivePipeline.run() already collects-then-returns after `limit` frames, so a bounded batch maps cleanly onto the existing tick model with zero changes to LivePipeline. It keeps backoff/escalation/heartbeat/shutdown semantics intact and keeps complexity \u0027medium\u0027 as required for a critical, immediate change.",
+                               "tradeoff":  "Reporting is per-batch not strictly per-event, and shutdown latency is up to one batch (a signal sets StopToken but we are inside run()). Truly continuous \u0027live\u0027 operation with per-event flush and instant shutdown needs the streaming variant.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Report PipelineEventResult.bridge_output directly through a Reporter from reporters.py (build_reporter_from_env / MultiReporter), not bridge_payload dicts.",
+                               "reason":  "Reporter.report() takes a BridgeOutput and PipelineEventResult.bridge_output is exactly that; reporters.py was just added in C2 with no caller, so this integration is its intended consumer and closes the camera-\u003edecision-\u003edownstream loop.",
+                               "tradeoff":  "Couples the service to the reporter abstraction and its env config surface (OKO_REPORTER_*); a single non-Multi reporter that raises would bubble into the loop unless wrapped, so MultiReporter/guarded reporting is preferred.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Run LiveReadinessChecker once at worker construction; treat readiness blockers and config/load errors as FatalError, and let transient runtime errors (frame grab, detector, network) propagate normally so the escalator handles them.",
+                               "reason":  "runtime.py establishes readiness as the precondition for building a real pipeline. A blocked-readiness or invalid-config service can never recover by retrying, so it must stop fast (FatalError -\u003e exit 1); transient per-frame errors should ride the existing backoff/escalation path instead.",
+                               "tradeoff":  "Readiness is a startup snapshot, so a camera that goes offline later is handled only as a transient runtime failure, not re-preflighted; choosing what counts as \u0027fatal vs transient\u0027 is a judgment call that can mis-tune restart behavior.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Source config_path, rules_path, camera_id, and mode from environment variables (e.g. OKO_CONFIG_PATH, OKO_RULES_PATH, OKO_CAMERA_ID, OKO_MODE) inside main(), consistent with Settings.from_env, and prove the wiring offline with FakeCameraSource + MovingSmokeDetector.",
+                               "reason":  "service.py main() has no argparse and is entirely env-driven; matching that convention keeps the service deployable as a daemon without code change. PROGRESS.md states real RTSP/ONVIF/VLM/weights smoke is blocked on operator credentials, so a deterministic offline smoke (the smoke.py pattern) is the only CI-executable proof that LivePipeline is active and emitting bridge outputs.",
+                               "tradeoff":  "Env-only config is less discoverable than CLI flags and offline proof does not exercise real hardware paths; the \u0027execute the service and confirm LivePipeline active\u0027 success test is fully satisfiable only on operator hardware.",
+                               "confidence":  0.8
+                           }
+                       ],
+    "assumptions":  [
+                        "The contract\u0027s \u0027work function\u0027 denotes the LoopController run_once work callback; the concrete stub is `lambda ctx: None` at service.py:246 inside main(), since grep finds no symbol literally named `work`.",
+                        "Per-tick bounded-batch integration is acceptable for the critical/immediate need; fully continuous per-event streaming is an enhancement (advanced version).",
+                        "config path, rules path, camera_id, and mode are operator-supplied via env vars (or optional argparse); offline FakeCameraSource/MovingSmokeDetector proves wiring in CI.",
+                        "reporters.py (commit C2) is the intended downstream sink for bridge_output, and Reporter.report consumes BridgeOutput directly (confirmed by signatures).",
+                        "LivePipeline.from_config is the correct construction entrypoint and pipeline/reporter objects are safe to reuse across ticks.",
+                        "Per PROGRESS.md, real RTSP/ONVIF/VLM/local-weights smoke remains blocked on operator credentials, so the CI-level success proof is the offline smoke path.",
+                        "Exit codes 0 (graceful) / 1 (fatal) from LoopController.run() remain the service contract and must be preserved."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Misidentifying the integration target because there is no literal `work` function, leading to editing the wrong place or a reviewer rejecting the change as \u0027not the work function\u0027.",
+                      "severity":  "medium",
+                      "mitigation":  "Document explicitly in the PR that run_once is the work callback and the stub is `lambda ctx: None`; name the new callable `work`/LivePipelineWorker and reference service.py:246 so the change is unambiguous and literally satisfies the success test."
+                  },
+                  {
+                      "risk":  "Rebuilding the pipeline/camera/detector per tick (if built inside run_once) causes RTSP reconnect storms, model reloads, latency spikes, and resource/file-descriptor leaks.",
+                      "severity":  "high",
+                      "mitigation":  "Construct LivePipeline and Reporter once before the loop in a stateful worker; reuse across ticks; implement close()/cleanup on shutdown and on FatalError exit."
+                  },
+                  {
+                      "risk":  "Shutdown latency / unresponsive SIGTERM because a long or unbounded pipeline.run() blocks while StopToken is set, delaying graceful exit.",
+                      "severity":  "medium",
+                      "mitigation":  "Bound frames per tick via OKO_FRAME_BATCH in the minimal version; in the advanced version thread StopToken into the frame loop (stream results and break between frames) for sub-frame shutdown responsiveness."
+                  },
+                  {
+                      "risk":  "Wrong fatal-vs-transient classification: hard config/readiness errors retried forever (or slowly escalated) burning resources, or transient frame errors treated as fatal and killing the daemon.",
+                      "severity":  "medium",
+                      "mitigation":  "Raise FatalError for readiness blockers and config/load/validation errors (immediate exit 1); let per-frame/network/detector exceptions propagate to FailureEscalator for backoff and bounded escalation."
+                  },
+                  {
+                      "risk":  "A reporter raising (e.g. webhook/file IO) propagates into the loop and is misattributed as a pipeline failure, skewing escalation counts or crashing the service.",
+                      "severity":  "low",
+                      "mitigation":  "Report through MultiReporter (which already swallows and logs per-reporter failures) or guard reporting; keep reporting failures separate from pipeline-processing failures in logs."
+                  },
+                  {
+                      "risk":  "Success test \u0027execute the service and confirm LivePipeline active\u0027 cannot run in CI because real camera/VLM/weights are operator-blocked, risking an apparently incomplete deliverable.",
+                      "severity":  "medium",
+                      "mitigation":  "Deliver a deterministic offline service smoke (FakeCameraSource + MovingSmokeDetector + StdoutReporter capturing emitted bridge outputs) as executable proof, and clearly note that real-hardware smoke remains operator-gated per PROGRESS.md."
+                  },
+                  {
+                      "risk":  "Breaking existing service tests, which inject run_once and probe Settings/Backoff/Escalator/Heartbeat/StopToken via flexible kwargs (test_service.py).",
+                      "severity":  "low",
+                      "mitigation":  "Keep run_once injectable and the existing public API/signatures unchanged; add the worker as an additive factory wired only inside main(); add new deterministic tests for the worker rather than altering existing ones."
+                  }
+              ],
+    "minimal_version":  "In service.py, add a LivePipelineWorker class (and a build_work(...) factory) that is constructed once: it loads config (OKO_CONFIG_PATH/OKO_RULES_PATH), runs LiveReadinessChecker once and raises FatalError on blockers, builds LivePipeline.from_config(config, rules_path, camera_id=OKO_CAMERA_ID, mode=OKO_MODE), and builds a Reporter via build_reporter_from_env(). Its __call__(self, context=None) runs pipeline.run(limit=OKO_FRAME_BATCH) (default small, e.g. 1) and calls reporter.report(result.bridge_output) for each PipelineEventResult, logging an event count via the service logger; transient exceptions propagate to the LoopController (backoff/escalation) and FatalError exits 1. In main(), replace the `lambda ctx: None` at service.py:246 with this worker, and add reporter.close() on loop exit. Add deterministic unit/integration tests using FakeCameraSource + MovingSmokeDetector (smoke.py pattern) and a StdoutReporter (or capture stream) asserting: the stub is gone, run_once builds/calls LivePipeline, bridge_output is reported, readiness blockers raise FatalError, and a transient pipeline error still triggers backoff/escalation. This is a focused, additive change preserving all existing service semantics and the 0/1 exit contract.",
+    "advanced_version":  "Refactor LivePipeline to expose a streaming generator (e.g. iter_results(*, stop_token=None, limit=None) yielding PipelineEventResult per event) and have the existing run() delegate to it, so the service can operate as a true continuous live loop: the worker iterates results, reports each bridge_output immediately (per-event flush), and checks stop_token between frames for sub-frame graceful shutdown. Add structured per-event service logging (event_type, zone, decision, vlm outcome), Prometheus/health metrics (frames processed, events emitted, reporter failures, consecutive-failure count) exposed via the heartbeat, and a reporter configured from OkoConfig (promote ReporterConfig into the config schema) rather than env-only. Add bounded in-memory backpressure/queue so reporting IO cannot stall frame capture, optional re-preflight of readiness after a configurable number of consecutive transient failures (camera went offline mid-run), and clean resource teardown (camera release + reporter.close) on every exit path. Provide an integration test matrix over batch/streaming modes plus a documented operator runbook and live-template wiring; gate the real RTSP/ONVIF/VLM/weights smoke behind operator credentials as the final acceptance step."
+}
