@@ -88,6 +88,20 @@ function Get-SynthesisDepthDecision {
     return @{ depth = 'High-Stakes'; judge_task_type = $taskType; rationale = $why }
   }
 
+  # FAST PATH (2026-06-21): if the LLM intent classifier confidently identified a 'normal' mode
+  # task (straightforward implementation), skip the Deep/discussion synthesis overhead even when
+  # the task text name-drops architecture/design context. High-Stakes (marker + explicit risk +
+  # domain, handled above) still wins. Route by complexity only: trivial/simple -> Simple, else Standard.
+  $intentMode = (& $getIntent 'primary_mode').ToLowerInvariant()
+  $intentConf = 0.0
+  try { $intentConf = [double](& $getIntent 'confidence') } catch {}
+  if ($intentMode -eq 'normal' -and $intentConf -ge 0.7) {
+    if ($complexityHint -in @('trivial','simple')) {
+      return @{ depth = 'Simple'; judge_task_type = $taskType; rationale = "fast-path: intent=normal conf=$intentConf complexity=$complexityHint" }
+    }
+    return @{ depth = 'Standard'; judge_task_type = $taskType; rationale = "fast-path: intent=normal conf=$intentConf complexity=$complexityHint" }
+  }
+
   # 3. Explicit design/architecture discussion -> Deep. Takes precedence over the short-length
   #    heuristic: "обсуди X" is a discussion request even when short, and must not become Simple.
   if (($low -match 'обсуди|обсужден|обсуждать|обсуждени|\bdiscuss\b|архитектур|architect|\bdesign\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли') -and -not $isPlanRefinementDiscussTask) {

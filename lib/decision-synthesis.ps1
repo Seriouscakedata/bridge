@@ -913,15 +913,13 @@ function Test-SynthesisImplementationRequested {
   $plan = @(Get-SynthArrayField -Obj $Record -Name 'implementation_plan')
   if ($plan.Count -eq 0) { return $false }
 
-  $t = ([string]$Task).ToLowerInvariant()
-  if ($t -match 'сдела|реализ|встрой|внедр|исправ|почини|поменяй|замени|добавь|создай|настрой|подключ|implement|build|fix|change|update|wire|integrate') {
-    return $true
-  }
-  try {
-    $st = Read-State
-    if ($st -and -not [string]::IsNullOrWhiteSpace([string]$st.current_backlog_id)) { return $true }
-  } catch {}
-  return $false
+  # 2026-06-21 FALSE-DONE FIX: a non-empty implementation_plan (checked above) PROVES the
+  # synthesis decided code is needed -> hand off to Codex regardless of how the task was phrased
+  # (discuss vs normal). Previously this also required action-verbs in the task text or a
+  # current_backlog_id, so a "обсуди и спроектируй" task that produced a full implementation_plan
+  # closed as DISCUSS-ONLY without code (confirmed: needs_operator=false + plan present + DONE).
+  # needs_operator (checked above) stays the only gate that blocks auto-implementation.
+  return $true
 }
 
 function Format-SynthesisDecisionRecordForDriver {
