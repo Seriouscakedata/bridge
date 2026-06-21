@@ -1,0 +1,92 @@
+{
+    "proposer":  "B",
+    "understanding":  "The OKO live service must alert a user in Telegram, but ONLY for VLM-described events (human/animal → gemini description), formatted as «👁 ОКО: \u003cописание\u003e», and must work on a webcam out-of-the-box. Reading the code reveals the contract is partly out of sync with reality: (a) the real interface is the abstract `Reporter` in src/oko/live/reporters.py (report(self, payload: BridgeOutput)), not \u0027EventReporter\u0027; (b) a `TelegramReporter` ALREADY exists there but is richer (photo/video, verbose `_format`) and is gated on `payload.should_alert`, not on VLM description; (c) the secrets-loading pattern already exists in src/oko/providers/gemini_vlm.py via `_load_gemini_api_key_from_secrets()` reading ~/.bridge-private/secrets.json; (d) the current Settings default config_path is \u0027configs/fake-live.yaml\u0027 (not example.yaml), and `build_reporter_from_env` reads OKO_TELEGRAM_CHAT_ID/OKO_TELEGRAM_BOT_TOKEN, while the task wants OKO_TG_CHAT + token-from-secrets. So this is a focused EXTENSION/RECONCILIATION of existing code plus a default flip, not a greenfield build.",
+    "summary":  "Extend the existing TelegramReporter with an additive \u0027VLM-only OKO-alert\u0027 mode (gate on non-empty payload.description, emit «👁 ОКО: \u003cописание\u003e»), add a `_load_telegram_bot_token_from_secrets()` helper mirroring the gemini one, wire it through the service\u0027s existing reporter factory (`build_reporter_from_env`) so a TelegramReporter is appended only when OKO_TG_CHAT is set, and flip Settings.config_path default to configs/live-webcam.yaml. Keep all existing behavior/tests intact; add focused tests with injected transport. Disabled by default (no chat_id ⇒ not added).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Interpret \u0027EventReporter\u0027 as the existing abstract `Reporter` (src/oko/live/reporters.py) and implement against its `report(self, payload: BridgeOutput) -\u003e None`; optionally add `EventReporter = Reporter` as an alias for contract fidelity.",
+                               "reason":  "There is no `EventReporter` class in the repo; `Reporter` is the established ABC that all reporters and the pipeline worker already use. Building against it satisfies the intent without forking the interface.",
+                               "tradeoff":  "Slight literal mismatch with the contract\u0027s wording; the optional alias resolves it but adds a name that isn\u0027t otherwise used.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Add the behavior to the EXISTING TelegramReporter via an additive `vlm_only`/`alert_format=\u0027oko\u0027` flag (default off) rather than creating a second class; in that mode send iff `payload.description` is non-empty and post text `f\u0027👁 ОКО: {payload.description}\u0027`.",
+                               "reason":  "A TelegramReporter already exists with the required transport injection (`_http_post`) and retry logic; reusing it avoids duplication. Making the new gate/format opt-in preserves the ~20 existing should_alert-based tests (e.g. test at line 587 sends on should_alert with empty description).",
+                               "tradeoff":  "The class grows another mode/branch instead of being split into single-responsibility reporters; risk of mode confusion, mitigated by clear defaults and the service only enabling the new mode.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Use non-empty `BridgeOutput.description` (the gemini VLM text) as the discriminator for \u0027VLM event\u0027; object-only events keep the default `description=\u0027\u0027` and are not sent.",
+                               "reason":  "`description` is the only field carrying the gemini human/animal narrative; it is empty for object-only/non-VLM events. This needs no new domain field and directly satisfies the \u0027NOT object-events\u0027 success test.",
+                               "tradeoff":  "Couples alert gating to a string being populated upstream; if a non-VLM path ever sets description, it would leak an alert. Low likelihood given current pipeline.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Add `_load_telegram_bot_token_from_secrets()` reading field `telegramBotToken` from ~/.bridge-private/secrets.json, mirroring `_load_gemini_api_key_from_secrets()` (fail-soft: return None on missing file / bad JSON).",
+                               "reason":  "Reuses an established, tested pattern in the same codebase, keeping secrets handling consistent and offline-safe.",
+                               "tradeoff":  "Token source differs from the existing OKO_TELEGRAM_BOT_TOKEN env path, creating two token sources; documented precedence (secrets for the OKO_TG_CHAT path) keeps it predictable.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Wire enablement through the service\u0027s existing reporter factory `build_reporter_from_env()` (which service.py already injects as `_reporter_factory`): when OKO_TG_CHAT is set AND a token resolves, append a vlm_only «👁 ОКО:» TelegramReporter; otherwise add nothing.",
+                               "reason":  "service.py constructs its reporter via this factory, so extending it satisfies \u0027service adds TelegramReporter when OKO_TG_CHAT is set\u0027 while keeping reporter logic in reporters.py. OFF-by-default falls out naturally (no chat_id ⇒ not appended).",
+                               "tradeoff":  "Slightly looser than a literal edit in service.py; if a reviewer expects the branch physically in service.py, note this is the same wiring path. Avoid double-sending with the legacy telegram env reporter by not enabling both for the same chat.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Change Settings.config_path default from \u0027configs/fake-live.yaml\u0027 to \u0027configs/live-webcam.yaml\u0027 and update the corresponding service test assertion.",
+                               "reason":  "Makes the service run on a webcam out-of-the-box per the task; live-webcam.yaml already exists. The default is read by Settings.from_env and is trivially testable (Settings().config_path).",
+                               "tradeoff":  "live-webcam requires a real camera at runtime (readiness may block on machines without one); tests inject factories so they stay green, but a bare `python -m service` on a headless box now fails readiness instead of running the fake source.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Test exclusively through the injected `_http_post` transport, asserting (1) a VLM event posts to api.telegram.org with body text «👁 ОКО: \u003cописание\u003e» and the configured chat_id, and (2) an object-only event (description=\u0027\u0027) performs zero posts; plus a unit test that Settings default config_path == \u0027configs/live-webcam.yaml\u0027.",
+                               "reason":  "Mirrors the existing test_reporters.py convention (fake_post capturing urllib Request, `_sample_output(...)`), keeps tests offline and deterministic, and maps 1:1 to the success_tests.",
+                               "tradeoff":  "Tests the transport boundary, not real Telegram delivery; the real end-to-end success test (\u0027actually sends on webcam\u0027) stays manual/out of CI.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "\u0027EventReporter\u0027 in the contract refers to the existing abstract `Reporter` class; no separate EventReporter is required.",
+                        "Human/animal VLM events are exactly those where BridgeOutput.description (gemini text) is non-empty; object-only events leave description=\u0027\u0027.",
+                        "~/.bridge-private/secrets.json contains a `telegramBotToken` string field, consistent with the existing telegramBotToken/secrets references found in the repo.",
+                        "configs/live-webcam.yaml is a valid, present config and is the intended out-of-the-box webcam profile.",
+                        "pytest is the test runner and new tests belong in tests/ following test_reporters.py / test_service.py conventions.",
+                        "Keeping the legacy OKO_TELEGRAM_* env path working alongside the new OKO_TG_CHAT path is acceptable, with OKO_TG_CHAT driving the new vlm_only «👁 ОКО:» alert.",
+                        "Sending a plain sendMessage text (not photo/video) is sufficient for the minimal acceptance; HTTP body is UTF-8 encoded so emoji/Cyrillic round-trip."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Re-gating the existing TelegramReporter on description (instead of should_alert) would break the ~20 existing should_alert-based reporter tests.",
+                      "severity":  "high",
+                      "mitigation":  "Make the new gate/format an opt-in mode (default off). Default construction keeps should_alert behavior; only the OKO_TG_CHAT service path enables vlm_only. Run full pytest to confirm no regressions."
+                  },
+                  {
+                      "risk":  "Flipping the default config_path to live-webcam.yaml can break service tests asserting the old default and can fail live readiness on machines without a camera.",
+                      "severity":  "medium",
+                      "mitigation":  "Update the service test\u0027s expected default; tests inject config/readiness factories so they stay hermetic. Document that headless runs need OKO_CONFIG_PATH override or a camera; keep fake-live available via env."
+                  },
+                  {
+                      "risk":  "Two telegram env paths (OKO_TG_CHAT+secrets vs OKO_TELEGRAM_CHAT_ID+env token) could double-send or confuse operators.",
+                      "severity":  "medium",
+                      "mitigation":  "Define precedence and avoid registering two telegram reporters for the same chat; document OKO_TG_CHAT as the supported alert toggle. Optionally suppress the legacy path when OKO_TG_CHAT is set."
+                  },
+                  {
+                      "risk":  "Secrets file absent in CI ⇒ token None ⇒ reporter silently not added, which could mask a wiring bug or cause a false \u0027works\u0027 impression.",
+                      "severity":  "medium",
+                      "mitigation":  "Offline tests inject bot_token/chat_id directly (never depend on the real secrets file). The factory logs when OKO_TG_CHAT is set but no token resolves, so misconfiguration is visible."
+                  },
+                  {
+                      "risk":  "Contract \u0027EventReporter\u0027 naming mismatch leads a reviewer to expect a different base class or a renamed interface.",
+                      "severity":  "low",
+                      "mitigation":  "State the interpretation explicitly and optionally export `EventReporter = Reporter`; do not rename the established ABC, which the pipeline worker depends on."
+                  },
+                  {
+                      "risk":  "Emoji/Cyrillic mis-encoding garbles the «👁 ОКО:» message.",
+                      "severity":  "low",
+                      "mitigation":  "Encode the JSON body with .encode(\u0027utf-8\u0027) (as existing code does) and assert the exact decoded string in the test."
+                  }
+              ],
+    "minimal_version":  "1) In src/oko/live/reporters.py add an opt-in mode to TelegramReporter (e.g. ctor flag `vlm_only=False`, `alert_format` default unchanged): when enabled, `report` returns early unless `payload.description.strip()` is truthy, and posts a sendMessage JSON body {chat_id, text: f\u0027👁 ОКО: {payload.description}\u0027} via the injected `_http_post`. 2) Add `_load_telegram_bot_token_from_secrets()` mirroring the gemini secrets loader, reading `telegramBotToken`. 3) Extend `build_reporter_from_env()`: if OKO_TG_CHAT is set and a token resolves (secrets), append a vlm_only TelegramReporter; else add nothing (OFF by default). 4) In service.py change Settings.config_path default to \u0027configs/live-webcam.yaml\u0027. 5) Tests: with injected transport, a VLM event (description set) posts «👁 ОКО: \u003cописание\u003e» to the correct chat_id, an object-only event posts nothing, and Settings().config_path == \u0027configs/live-webcam.yaml\u0027; update any existing default-config assertion. pytest green.",
+    "advanced_version":  "Beyond the minimal: use «👁 ОКО: \u003cописание\u003e» as the caption when a keyframe/incident video is present so the user gets image/clip alerts; add config-file driven chat_id and an optional bot-token override (ReporterConfig.telegram_alert_format / telegram_chat_id_source) so YAML can enable it without env; suppress/dedupe against the legacy OKO_TELEGRAM_* reporter to prevent double alerts; export `EventReporter = Reporter` for contract fidelity; document OKO_TG_CHAT in configs/live-webcam.yaml and README; add an integration-style test driving a fake webcam frame through LivePipelineWorker to assert an alert is emitted end-to-end with the reporter factory; and structured logging of \u0027telegram_alert_sent\u0027 for observability."
+}

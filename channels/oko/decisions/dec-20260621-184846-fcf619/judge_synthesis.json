@@ -1,0 +1,140 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Foundational atom with A+B consensus. Building against the existing Reporter ABC and its report(payload: BridgeOutput) contract is the correct, low-surprise architectural fit and maximizes reuse. High impact since everything else depends on it. Specificity is strong (names file and method). Minor uncertainty: assumes the abstract interface and signature exist exactly as stated, so verification against the actual ABC is warranted before final commit.",
+                      "total":  0.8775
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A+B+C consensus. Gating on non-empty payload.description is a trivial, high-value guard that prevents noisy object-only events from spamming Telegram. Cheap, easily reversible, and directly reduces operational risk. Only caveat is the implicit assumption that a non-empty description is the canonical VLM indicator; sound given the stated design.",
+                      "total":  0.915
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B consensus on the exact message template \u0027👁 ОКО: \u003cdescription\u003e\u0027. Highly specific and trivially implemented/tested. Impact and risk-reduction are modest because it is a cosmetic formatting decision, but the precise string makes the assertion in DA-008 unambiguous, so accepting it as-is is correct.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B+C consensus. Reading telegramBotToken from ~/.bridge-private/secrets.json and mirroring existing secrets-loading patterns is the right reuse-driven choice and keeps credentials out of the repo. Secrets handling carries inherent risk, but reusing the established loader mitigates it. Should confirm the exact existing loader API and the field name during implementation.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B+C consensus. An injectable HTTP transport is a clean dependency-injection seam that enables fully offline, deterministic unit tests with no network. Strong risk-reduction and feasibility; the only open detail is the exact transport interface (e.g., a post(url, json) callable), which is easily pinned during implementation.",
+                      "total":  0.8675
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B+C consensus. Defaulting config_path to configs/live-webcam.yaml is a one-line, highly reversible convenience change. Slight risk-reduction discount because changing a global default can alter behavior for other callers that relied on the prior default, and it assumes the target YAML exists; verify the file is present and that no existing flow depends on the old default before committing.",
+                      "total":  0.84
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B+C consensus. Disabled-by-default with conditional activation only when a chat_id (OKO_TG_CHAT or config) and token are present is excellent fail-safe wiring that prevents accidental message sends, earning high risk-reduction. Routing through the existing build_reporter_from_env() factory maximizes reuse. Slightly lower simplicity due to the added wiring/branching, and \u0027preferably\u0027 leaves a small wiring choice open, but the safe-default intent is clear and correct.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A+B consensus. Focused pytest cases (VLM event posts correct text+chat_id via injected transport, object-only event posts zero times, and Settings.config_path default equals configs/live-webcam.yaml) directly lock in DA-002/003/005/006/007 behaviors and give the strongest risk-reduction in the set. Highly specific and feasible given the injectable transport. Minor note: the test references _http_post while DA-005 frames the seam as a transport object—align the mock target with the chosen seam so the assertions match the implementation.",
+                      "total":  0.875
+                  }
+              ]
+}

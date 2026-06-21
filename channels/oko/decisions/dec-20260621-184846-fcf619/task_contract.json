@@ -1,0 +1,41 @@
+{
+    "task":  "[Автозадача из бэклога] [operator] OKO Сервис — доставка алертов в Telegram + дефолт-конфиг. СБОРКА КОДА фокусно.\n1) TelegramReporter в src/oko/live/reporters.py (реализует EventReporter.report): шлёт в Telegram краткий алерт ТОЛЬКО на события с VLM-описанием (человек/животное → описание gemini), формат «👁 ОКО: \u003cописание\u003e». Токен из ~/.bridge-private/secrets.json поле telegramBotToken; chat_id из настройки (env OKO_TG_CHAT или конфиг). По умолчанию ВЫКЛЮЧЕН (включается заданием chat_id). transport инъектируется для офлайн-теста.\n2) service.py: дефолт config_path → configs/live-webcam.yaml (НЕ example.yaml), чтобы сервис работал на вебке из коробки. Если OKO_TG_CHAT задан — добавить TelegramReporter в список reporters.\nТесты tests: TelegramReporter с инъекцией transport шлёт корректный запрос ТОЛЬКО на VLM-события (не на object-события); дефолт config = live-webcam.\npytest зелёный. После этого сервис шлёт юзеру алерты при человеке/животном.",
+    "goal":  "To implement a Telegram alert system for the OKO service, specifically for events with VLM descriptions (human/animal detections), and to configure the service to work out-of-the-box with a webcam.",
+    "constraints":  [
+                        "TelegramReporter must be located at src/oko/live/reporters.py.",
+                        "TelegramReporter must implement EventReporter.report.",
+                        "Alerts must be sent ONLY for events with VLM descriptions (human/animal detections).",
+                        "Alert format must be «👁 ОКО: \u003cописание\u003e».",
+                        "Telegram bot token must be read from ~/.bridge-private/secrets.json, field \u0027telegramBotToken\u0027.",
+                        "Telegram chat_id must be read from environment variable OKO_TG_CHAT or service configuration.",
+                        "TelegramReporter must be OFF by default and enabled only when chat_id is provided.",
+                        "Transport mechanism for TelegramReporter must be injectable for offline testing.",
+                        "service.py must use configs/live-webcam.yaml as the default config_path (not example.yaml).",
+                        "If OKO_TG_CHAT is set, TelegramReporter must be added to the list of reporters in service.py.",
+                        "The focus of the task is on code implementation (\u0027СБОРКА КОДА фокусно\u0027)."
+                    ],
+    "known_context":  [
+                          "The OKO service processes events.",
+                          "There is an existing EventReporter interface.",
+                          "VLM-description refers to \u0027человек/животное → описание gemini\u0027.",
+                          "A secrets file ~/.bridge-private/secrets.json exists.",
+                          "Configuration files like configs/live-webcam.yaml and example.yaml exist.",
+                          "The service does not currently send Telegram alerts for human/animal detections."
+                      ],
+    "output_format":  "JSON object matching the TaskContract schema.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "The TelegramReporter class exists in src/oko/live/reporters.py and implements EventReporter.report.",
+                          "When TelegramReporter.report is called with a VLM-described event, it sends a POST request to the Telegram API.",
+                          "The Telegram API request body contains the alert in the format \u0027👁 ОКО: \u003cописание\u003e\u0027, where \u003cописание\u003e is from the VLM event.",
+                          "The Telegram API request uses the token from ~/.bridge-private/secrets.json and the chat_id from the configured source.",
+                          "TelegramReporter.report does NOT send a request when called with a non-VLM event (e.g., an object-only event).",
+                          "The default config_path in service.py is set to \u0027configs/live-webcam.yaml\u0027.",
+                          "If the OKO_TG_CHAT environment variable is set, the TelegramReporter is included in the service\u0027s active reporters list.",
+                          "If the OKO_TG_CHAT environment variable is NOT set, the TelegramReporter is NOT included or is disabled in the service\u0027s active reporters list.",
+                          "All pytest tests pass (pytest green).",
+                          "When the service is run with OKO_TG_CHAT configured and connected to a webcam, it successfully sends Telegram alerts upon detecting humans or animals."
+                      ]
+}

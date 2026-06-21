@@ -1,0 +1,92 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно фокусно добавить Telegram-доставку алертов в OKO service: репортер должен отправлять короткое сообщение только для событий, где уже есть VLM/Gemini-описание человека или животного, быть выключенным без chat_id, читать токен из приватного secrets.json, а service.py должен по умолчанию стартовать с configs/live-webcam.yaml и подключать TelegramReporter при наличии OKO_TG_CHAT.",
+    "summary":  "Предлагаю реализовать TelegramReporter как небольшой EventReporter с инъектируемым transport, ленивым чтением telegramBotToken из ~/.bridge-private/secrets.json и строгим фильтром по наличию VLM-описания. В service.py заменить дефолтный config_path на configs/live-webcam.yaml и добавлять TelegramReporter в reporters только если chat_id передан через OKO_TG_CHAT или конфиг. Покрыть тестами отправку VLM-события, игнор object-only события, default config и условное подключение репортера.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить TelegramReporter в src/oko/live/reporters.py и сделать его реализацией EventReporter.report.",
+                               "reason":  "Контракт явно фиксирует расположение и интерфейс; это сохраняет существующую модель репортеров.",
+                               "tradeoff":  "Логика Telegram окажется в live-слое, а не в отдельном integrations-модуле, но для фокусной задачи это проще и ближе к текущей архитектуре.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Отправлять сообщение только если событие содержит VLM-описание, используя существующее поле события или небольшой helper для извлечения описания.",
+                               "reason":  "Требование запрещает алерты на object-only события; фильтр должен быть на уровне репортера, чтобы не зависеть от вызывающего кода.",
+                               "tradeoff":  "Если структура событий неоднородна, helper должен быть немного терпимым к dict/dataclass/object-формам, но без широких эвристик, которые могут дать ложные отправки.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Формировать текст строго как `👁 ОКО: \u003cописание\u003e` и отправлять через Telegram Bot API sendMessage.",
+                               "reason":  "Это соответствует заданному формату и стандартному способу доставки текстовых сообщений в Telegram.",
+                               "tradeoff":  "Минимальная версия не добавляет rich formatting, retries и throttling, чтобы не расширять область задачи.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Читать token из `~/.bridge-private/secrets.json` поля `telegramBotToken`, preferably lazily during first send or construction with clear error handling.",
+                               "reason":  "Токен не должен лежать в конфиге проекта; ленивое чтение облегчает тесты и не ломает сервис, когда Telegram выключен.",
+                               "tradeoff":  "Ошибки секрета проявятся только при включенном TelegramReporter, зато режим по умолчанию остается безопасным.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Сделать transport инъектируемым, а default transport реализовать через стандартную HTTP-библиотеку или уже используемый в проекте клиент.",
+                               "reason":  "Инъекция позволяет offline unit-тесты без сети и без реального Telegram API.",
+                               "tradeoff":  "Небольшая дополнительная абстракция в конструкторе репортера, но она напрямую требуется контрактом.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "В service.py поставить default config_path = `configs/live-webcam.yaml`.",
+                               "reason":  "Сервис должен работать с вебкамерой из коробки, а не с example.yaml.",
+                               "tradeoff":  "Пользователи, рассчитывавшие на старый example default, должны будут явно передать старый путь.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "Подключать TelegramReporter в service.py только при наличии chat_id из `OKO_TG_CHAT` или конфигурации.",
+                               "reason":  "По умолчанию Telegram должен быть выключен; наличие chat_id является явным включением.",
+                               "tradeoff":  "Если token есть, но chat_id не задан, алерты не будут отправляться; это ожидаемое безопасное поведение.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Добавить focused pytest-тесты для TelegramReporter и service default/config wiring.",
+                               "reason":  "Success criteria требуют проверки отправки только VLM-событий, корректного body, default config и условного подключения репортера.",
+                               "tradeoff":  "Тесты будут зависеть от текущей формы событий и фабрик проекта; может понадобиться минимальная адаптация под существующие типы.",
+                               "confidence":  0.91
+                           }
+                       ],
+    "assumptions":  [
+                        "В проекте уже есть EventReporter interface или base class, который можно импортировать в src/oko/live/reporters.py.",
+                        "События с Gemini/VLM-описанием имеют стабильный признак или поле, например vlm_description, description, caption, summary или metadata с VLM payload.",
+                        "Object-only события можно отличить отсутствием VLM-описания.",
+                        "service.py уже формирует список reporters в одном месте, куда можно добавить условное подключение TelegramReporter.",
+                        "configs/live-webcam.yaml существует в репозитории.",
+                        "Тесты можно написать без сетевого доступа за счет fake transport и временного HOME/secrets.json."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Неочевидная структура event может привести к слишком широкому или слишком узкому фильтру VLM-событий.",
+                      "severity":  "medium",
+                      "mitigation":  "Сначала посмотреть существующие event-модели и тестовые фикстуры; реализовать явный extractor под реальные поля и покрыть object-only/VLM cases."
+                  },
+                  {
+                      "risk":  "Чтение secrets.json может ломать сервис при отсутствии файла, если репортер создается слишком рано.",
+                      "severity":  "medium",
+                      "mitigation":  "Не создавать TelegramReporter без chat_id; token читать лениво или выбрасывать понятную ошибку только при включенном Telegram."
+                  },
+                  {
+                      "risk":  "Синхронный HTTP-запрос в report может задерживать live pipeline.",
+                      "severity":  "medium",
+                      "mitigation":  "В минимальной версии держать короткий timeout; в advanced версии вынести отправку в очередь/worker с retry/backoff."
+                  },
+                  {
+                      "risk":  "Тесты service.py могут быть хрупкими, если создание сервиса запускает тяжелые зависимости камеры или модели.",
+                      "severity":  "medium",
+                      "mitigation":  "Тестировать конфиг/wiring через маленькие helper-функции или monkeypatch тяжелых компонентов."
+                  },
+                  {
+                      "risk":  "Конфиг и env могут конфликтовать по chat_id.",
+                      "severity":  "low",
+                      "mitigation":  "Зафиксировать приоритет: OKO_TG_CHAT перекрывает config, потому что env удобен для deployment."
+                  }
+              ],
+    "minimal_version":  "Реализовать TelegramReporter с constructor(chat_id, transport=None, token_path=None), extractor VLM-описания, sendMessage POST body, token read from ~/.bridge-private/secrets.json, no-op без VLM-описания; в service.py заменить default config_path на configs/live-webcam.yaml и добавить TelegramReporter только при OKO_TG_CHAT или config chat_id; добавить pytest на fake transport, object-only no-op, default config и env wiring.",
+    "advanced_version":  "Поверх минимальной версии добавить timeout/retry/backoff, async/background queue для отправки, structured logging ошибок Telegram без падения live pipeline, поддержку chat_id из явного config-секции telegram, дедупликацию/ rate limit похожих алертов и интеграционный dry-run тест с fake Telegram endpoint."
+}

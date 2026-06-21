@@ -1,0 +1,105 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Implement/extend TelegramReporter in `src/oko/live/reporters.py` against the existing abstract `Reporter` interface\u0027s `report(self, payload: BridgeOutput)` method.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Reporter Implementation",
+                      "test":  "Verify the new/extended TelegramReporter class is located in `src/oko/live/reporters.py` and correctly implements the `report` method of the `Reporter` ABC.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "The TelegramReporter must filter events, sending messages only if the event contains a VLM description, specifically when `payload.description` is non-empty.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Filtering Logic",
+                      "test":  "Write a test case where a `BridgeOutput` with an empty `description` is passed to the reporter, asserting no Telegram API call is made.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Formulate the Telegram message text strictly as `👁 ОКО: \u003cdescription\u003e` using the VLM description from the event.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "API Interaction",
+                      "test":  "Assert that the `text` field in the Telegram API `sendMessage` request body matches `f\u0027👁 ОКО: {payload.description}\u0027` for a VLM event.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Read the Telegram bot token from the `telegramBotToken` field within `~/.bridge-private/secrets.json`, mirroring existing secrets loading patterns.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Secrets Management",
+                      "test":  "Write a unit test that mocks `~/.bridge-private/secrets.json` and verifies the reporter correctly loads the `telegramBotToken`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "The TelegramReporter must accept an injectable transport parameter for HTTP requests, enabling offline unit testing.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Reporter Implementation",
+                      "test":  "Create a mock transport object and inject it into the TelegramReporter; verify that the reporter calls the mock transport\u0027s `post` method with the correct URL and payload.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Change the default `config_path` in `service.py` (or `Settings`) to `configs/live-webcam.yaml`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Configuration",
+                      "test":  "Add a unit test asserting that `Settings().config_path` (or equivalent) defaults to `configs/live-webcam.yaml`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "The TelegramReporter will be disabled by default and only conditionally added to the service\u0027s active reporters list when a `chat_id` is provided, specifically from the `OKO_TG_CHAT` environment variable or configuration, preferably via the existing `build_reporter_from_env()` factory.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Configuration / Service Wiring",
+                      "test":  "Write a test for `build_reporter_from_env()` (or service initialization) that asserts TelegramReporter is added when `OKO_TG_CHAT` is set and a token is available, and not added otherwise.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Add focused pytest-tests for the TelegramReporter and service wiring, specifically asserting that a VLM event posts with the correct format and chat_id via injected transport, an object-only event performs zero posts, and the `Settings.config_path` default is `configs/live-webcam.yaml`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "1. Mock `_http_post` and verify a VLM event (non-empty `payload.description`) triggers a call to `api.telegram.org/sendMessage` with `text: \"👁 ОКО: \u003cdescription\u003e\"` and the configured `chat_id`. 2. Mock `_http_post` and verify an object-only event (empty `payload.description`) does *not* trigger any `_http_post` calls. 3. Assert `Settings().config_path == \u0027configs/live-webcam.yaml\u0027`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

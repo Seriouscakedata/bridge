@@ -1,0 +1,77 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing a Telegram alert reporter for the OKO service that sends notifications only for VLM-described events (human/animal detections). The reporter must be in src/oko/live/reporters.py, implement EventReporter.report, use a specific alert format, read credentials from secrets file and environment/config, be disabled by default, and support injectable transport for testing. Additionally, service.py must default to configs/live-webcam.yaml and conditionally add TelegramReporter when OKO_TG_CHAT is set. All tests must pass.",
+    "summary":  "Implement TelegramReporter class in reporters.py that filters for VLM events and sends formatted alerts via Telegram API. Update service.py to use live-webcam.yaml as default config and conditionally register TelegramReporter based on OKO_TG_CHAT environment variable. Write tests verifying VLM-only filtering, correct API calls, and conditional activation.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "TelegramReporter will filter events by checking for VLM description presence before sending any alert",
+                               "reason":  "Constraint requires alerts ONLY for events with VLM descriptions (human/animal detections), not for object-only events",
+                               "tradeoff":  "Adds a conditional check in report() method, slightly increasing complexity but ensuring compliance with the filtering requirement",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "TelegramReporter will accept an injectable transport parameter for HTTP requests",
+                               "reason":  "Constraint requires transport to be injectable for offline testing, enabling test doubles to verify API calls without network",
+                               "tradeoff":  "Adds constructor parameter and dependency injection pattern, increasing testability at cost of slightly more complex initialization",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "TelegramReporter will read bot token from ~/.bridge-private/secrets.json and chat_id from environment variable or config",
+                               "reason":  "Constraints specify exact sources: token from secrets file field \u0027telegramBotToken\u0027, chat_id from OKO_TG_CHAT env var or service configuration",
+                               "tradeoff":  "Couples reporter to file system and environment, but provides flexibility for different deployment scenarios",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "TelegramReporter will be disabled by default and only enabled when chat_id is provided",
+                               "reason":  "Constraint requires reporter to be OFF by default and enabled only when chat_id is configured",
+                               "tradeoff":  "Requires initialization logic to check for chat_id presence, preventing accidental alerts but adding startup validation",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "service.py will default config_path to \u0027configs/live-webcam.yaml\u0027 instead of example.yaml",
+                               "reason":  "Constraint requires service to work with webcam out-of-the-box using live-webcam.yaml as default",
+                               "tradeoff":  "Changes default behavior from example to production-ready config, which may surprise developers expecting example config but satisfies the out-of-box requirement",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "service.py will conditionally add TelegramReporter to reporters list when OKO_TG_CHAT environment variable is set",
+                               "reason":  "Constraint requires TelegramReporter to be added to active reporters list only when OKO_TG_CHAT is configured",
+                               "tradeoff":  "Adds environment variable check in service initialization, coupling service to environment but enabling dynamic reporter activation",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "Event objects have a method or attribute to check for VLM description presence (e.g., has_vlm_description or vlm_description field)",
+                        "EventReporter interface defines a report(event) method signature",
+                        "The secrets file ~/.bridge-private/secrets.json exists and contains a \u0027telegramBotToken\u0027 field",
+                        "The Telegram API endpoint for sending messages is https://api.telegram.org/bot\u003ctoken\u003e/sendMessage",
+                        "The transport object has a post(url, json) method or similar interface",
+                        "configs/live-webcam.yaml exists and is a valid configuration file",
+                        "The service initialization code reads reporters from configuration or constructs them programmatically",
+                        "pytest test suite exists and can be extended with new tests"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Secrets file may not exist or have incorrect structure, causing runtime errors",
+                      "severity":  "medium",
+                      "mitigation":  "Implement graceful error handling with clear error messages when secrets file is missing or malformed"
+                  },
+                  {
+                      "risk":  "Telegram API rate limits or network failures could cause alert delivery failures",
+                      "severity":  "medium",
+                      "mitigation":  "Implement retry logic with exponential backoff and log failures without crashing the service"
+                  },
+                  {
+                      "risk":  "VLM description format may vary, causing alert format to be inconsistent",
+                      "severity":  "low",
+                      "mitigation":  "Sanitize and truncate description if needed, document expected VLM description format"
+                  },
+                  {
+                      "risk":  "Changing default config from example.yaml to live-webcam.yaml may break existing workflows expecting example config",
+                      "severity":  "low",
+                      "mitigation":  "Document the change clearly in commit messages and consider adding a command-line override for config path"
+                  }
+              ],
+    "minimal_version":  "Implement TelegramReporter class with VLM filtering, injectable transport, secrets/env config reading, and default-disabled behavior. Update service.py default config path and conditional TelegramReporter registration. Write basic tests verifying VLM-only filtering and correct API call format.",
+    "advanced_version":  "Add retry logic with exponential backoff for Telegram API calls, implement message queuing for offline scenarios, add structured logging for alert delivery status, support multiple chat_ids, add configuration validation on startup, and implement comprehensive integration tests with mock Telegram server."
+}

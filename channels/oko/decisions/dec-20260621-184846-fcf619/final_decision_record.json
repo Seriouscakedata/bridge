@@ -1,0 +1,129 @@
+{
+    "final_answer":  "All eight decision atoms (DA-001 through DA-008) reached A/B/C consensus, drew no conflicts, and were graded \u0027accept\u0027 by the judge with totals ranging 0.84–0.915. The micro-debate was skipped because there was nothing in dispute. Therefore the final record ACCEPTS every atom and REJECTS none. The agreed design: implement TelegramReporter in src/oko/live/reporters.py against the existing Reporter ABC\u0027s report(payload: BridgeOutput); send only when payload.description is non-empty (the VLM/human-animal indicator); format the message exactly as \u0027👁 ОКО: \u003cdescription\u003e\u0027; read the bot token from ~/.bridge-private/secrets.json (telegramBotToken) via the existing secrets loader; inject an HTTP transport for offline tests; flip service.py\u0027s default config_path to configs/live-webcam.yaml; keep the reporter OFF by default and only register it via build_reporter_from_env() when OKO_TG_CHAT (or config chat_id) AND a token are present; and add focused pytest cases. The one cross-atom resolution folded in: DA-008 originally referenced a private \u0027_http_post\u0027 mock target while DA-005 mandates an injectable transport seam — the tests MUST mock the injected transport object (e.g. a post(url, json) callable), not a private method, so assertions match the actual DI seam. Before committing, the implementation must verify the real ABC signature, the secrets-loader API/field name, the transport interface shape, and the existence of configs/live-webcam.yaml — these are the only residual unknowns the judge flagged.",
+    "decisions":  [
+                      {
+                          "decision":  "DA-001: Implement TelegramReporter in src/oko/live/reporters.py, implementing the existing Reporter ABC\u0027s report(self, payload: BridgeOutput) method.",
+                          "rationale":  "A+B consensus and the foundational atom — everything else depends on it. Building against the existing Reporter contract is the low-surprise architectural fit and maximizes reuse of the reporter dispatch pipeline. Judge total 0.8775.",
+                          "alternatives_considered":  [
+                                                          "Standalone notifier module/script that does not implement the Reporter interface (rejected: bypasses existing dispatch and reduces reuse)",
+                                                          "Introducing a new reporter interface (rejected: unnecessary churn; the existing ABC already fits)"
+                                                      ],
+                          "risk":  "Assumes the Reporter ABC and the exact report(payload: BridgeOutput) signature exist as stated; must be verified against the actual interface before final commit.",
+                          "test":  "Confirm the TelegramReporter class lives in src/oko/live/reporters.py and correctly implements the report method of the Reporter ABC."
+                      },
+                      {
+                          "decision":  "DA-002: Gate sending on a non-empty payload.description — emit a Telegram message only for VLM-described (human/animal) events.",
+                          "rationale":  "Full A+B+C consensus. A trivial, high-value guard that prevents noisy object-only events from spamming Telegram; cheap, reversible, and directly reduces operational risk. Judge total 0.915 (highest in set).",
+                          "alternatives_considered":  [
+                                                          "Check an explicit event-type/kind flag instead of description presence (viable but adds coupling; description-non-empty is the canonical VLM signal in the stated design)",
+                                                          "Send all events and filter on the Telegram side (rejected: spammy, wasteful API calls)"
+                                                      ],
+                          "risk":  "Relies on non-empty description being the canonical VLM indicator; sound given the stated design but confirm no VLM event can legitimately have an empty description.",
+                          "test":  "Pass a BridgeOutput with an empty description to the reporter and assert that no Telegram API call is made."
+                      },
+                      {
+                          "decision":  "DA-003: Format the message text strictly as \u0027👁 ОКО: \u003cdescription\u003e\u0027 using the VLM description.",
+                          "rationale":  "A+B consensus on the exact template. Highly specific and trivial to implement and assert; the precise string makes DA-008\u0027s assertion unambiguous. Judge total 0.8525.",
+                          "alternatives_considered":  [
+                                                          "Richer multi-line message with timestamp/metadata (rejected: out of scope; contract mandates this exact format)"
+                                                      ],
+                          "risk":  "Cosmetic only; low risk. Ensure the emoji and Cyrillic text are emitted as UTF-8 without mangling.",
+                          "test":  "Assert the text field in the sendMessage request body equals f\u0027👁 ОКО: {payload.description}\u0027 for a VLM event."
+                      },
+                      {
+                          "decision":  "DA-004: Read the bot token from the telegramBotToken field in ~/.bridge-private/secrets.json, reusing the existing secrets-loading pattern.",
+                          "rationale":  "A+B+C consensus. Reuse-driven and keeps credentials out of the repo. Reusing the established loader mitigates inherent secrets-handling risk. Judge total 0.85.",
+                          "alternatives_considered":  [
+                                                          "Read token directly from an environment variable (rejected: contract specifies the secrets file)",
+                                                          "Bespoke JSON parsing instead of the shared loader (rejected: duplicates logic and diverges from existing patterns)"
+                                                      ],
+                          "risk":  "Secrets handling carries inherent risk; must confirm the exact existing loader API and the precise field name during implementation.",
+                          "test":  "Unit test mocking ~/.bridge-private/secrets.json that verifies the reporter loads telegramBotToken correctly."
+                      },
+                      {
+                          "decision":  "DA-005: Accept an injectable HTTP transport parameter for requests, enabling fully offline unit tests.",
+                          "rationale":  "A+B+C consensus. A clean dependency-injection seam yielding deterministic, network-free tests. Strong risk-reduction and feasibility. Judge total 0.8675.",
+                          "alternatives_considered":  [
+                                                          "Monkeypatching the HTTP client at module level in tests (rejected: brittle, less explicit than DI)",
+                                                          "Mocking a private _http_post method (rejected per cross-atom resolution: the public injected transport is the canonical seam)"
+                                                      ],
+                          "risk":  "Exact transport interface must be pinned (e.g., a post(url, json=...) callable returning a response); default to the project\u0027s HTTP client when none injected.",
+                          "test":  "Inject a mock transport and verify the reporter calls its post method with the correct sendMessage URL and JSON payload."
+                      },
+                      {
+                          "decision":  "DA-006: Change the default config_path in service.py/Settings to configs/live-webcam.yaml.",
+                          "rationale":  "A+B+C consensus. One-line, highly reversible convenience change that makes the service work on a webcam out of the box. Judge total 0.84.",
+                          "alternatives_considered":  [
+                                                          "Keep example.yaml as default and require explicit override (rejected: fails the out-of-the-box webcam goal)"
+                                                      ],
+                          "risk":  "Changing a global default can alter behavior for callers relying on the prior default, and assumes the target YAML exists; verify configs/live-webcam.yaml is present and that no existing flow depends on the old default before committing.",
+                          "test":  "Unit test asserting Settings().config_path (or equivalent) defaults to \u0027configs/live-webcam.yaml\u0027."
+                      },
+                      {
+                          "decision":  "DA-007: Keep TelegramReporter disabled by default; conditionally register it (preferably via build_reporter_from_env()) only when a chat_id (OKO_TG_CHAT or config) AND a token are present.",
+                          "rationale":  "A+B+C consensus. Fail-safe wiring that prevents accidental sends — high risk-reduction. Routing through the existing factory maximizes reuse. Judge total 0.8525.",
+                          "alternatives_considered":  [
+                                                          "Always instantiate the reporter and no-op internally when unconfigured (rejected: less explicit, risks accidental sends if a token leaks in)",
+                                                          "Enable purely from config file with no env override (rejected: contract mandates OKO_TG_CHAT support)"
+                                                      ],
+                          "risk":  "Adds wiring/branching; \u0027preferably via build_reporter_from_env()\u0027 leaves a small wiring-location choice open — confirm the factory exists and is the right insertion point, else wire in service initialization.",
+                          "test":  "Test build_reporter_from_env()/service init: TelegramReporter is added when OKO_TG_CHAT is set and a token is available, and absent otherwise."
+                      },
+                      {
+                          "decision":  "DA-008: Add focused pytest cases — VLM event posts correct text + chat_id via the injected transport; object-only (empty description) event posts zero times; Settings.config_path default equals configs/live-webcam.yaml.",
+                          "rationale":  "A+B consensus. These cases lock in DA-002/003/005/006/007 and provide the strongest risk-reduction in the set; highly specific and feasible given the DI seam. Judge total 0.875.",
+                          "alternatives_considered":  [
+                                                          "Integration test hitting the real Telegram API (rejected: non-deterministic, requires network and live token)",
+                                                          "Mocking a private _http_post (superseded by the cross-atom resolution to mock the injected transport)"
+                                                      ],
+                          "risk":  "Mock target must align with the DI seam from DA-005 (the injected transport object), not a private _http_post, so assertions match the implementation.",
+                          "test":  "1) Inject mock transport; assert a VLM event triggers a POST to api.telegram.org/.../sendMessage with text \u0027👁 ОКО: \u003cdescription\u003e\u0027 and the configured chat_id. 2) Assert an object-only (empty description) event triggers zero transport calls. 3) Assert Settings().config_path == \u0027configs/live-webcam.yaml\u0027."
+                      }
+                  ],
+    "rejected":  [
+
+                 ],
+    "open_questions":  [
+                           "Does the existing Reporter ABC expose exactly report(self, payload: BridgeOutput), and does BridgeOutput carry a `description` field populated by the Gemini VLM step? (DA-001/DA-002 verification)",
+                           "What is the exact existing secrets-loader API and does the secrets.json field name match \u0027telegramBotToken\u0027 precisely? (DA-004)",
+                           "What is the concrete injectable transport interface — a callable post(url, json=...) returning a response, or a client object — and what is the default transport when none is injected? (DA-005)",
+                           "Does configs/live-webcam.yaml exist and is there any existing caller that relies on the previous default config_path (example.yaml)? (DA-006)",
+                           "Does build_reporter_from_env() already exist as the reporter factory, or should the conditional wiring live in service.py initialization instead? (DA-007)",
+                           "Should send failures (network errors / non-200 Telegram responses) be swallowed-and-logged so a Telegram outage never breaks the event pipeline? (implied operational concern, not explicitly in any atom)"
+                       ],
+    "implementation_plan":  [
+                                "Step 0 (verify prerequisites): Inspect src/oko/live/reporters.py and the Reporter ABC to confirm the report(payload: BridgeOutput) signature; confirm BridgeOutput.description; locate the existing secrets loader and the telegramBotToken field; locate build_reporter_from_env()/service.py wiring and the Settings.config_path default; confirm configs/live-webcam.yaml exists.",
+                                "Step 1 (DA-001/DA-003/DA-005): Implement TelegramReporter(Reporter) in src/oko/live/reporters.py with a constructor taking token, chat_id, and an injectable transport (defaulting to the project HTTP client). Implement report() to build text f\u0027👁 ОКО: {payload.description}\u0027 and POST to https://api.telegram.org/bot\u003ctoken\u003e/sendMessage with {chat_id, text} via the transport.",
+                                "Step 2 (DA-002): In report(), guard early-return when payload.description is empty/None so only VLM (human/animal) events are sent.",
+                                "Step 3 (DA-004): Load telegramBotToken from ~/.bridge-private/secrets.json using the existing secrets-loading helper.",
+                                "Step 4 (DA-007): In build_reporter_from_env() (or service init), read OKO_TG_CHAT (and/or config chat_id); only when both a chat_id and a token are available, instantiate and append TelegramReporter to the active reporters list — otherwise omit it (OFF by default).",
+                                "Step 5 (DA-006): Change the default config_path in service.py/Settings from example.yaml to configs/live-webcam.yaml.",
+                                "Step 6 (DA-008): Add pytest tests in tests/ using a mock injected transport: (a) VLM event posts to sendMessage with exact text and configured chat_id; (b) object-only/empty-description event makes zero transport calls; (c) Settings().config_path defaults to configs/live-webcam.yaml; plus a test that TelegramReporter is wired only when OKO_TG_CHAT + token are present.",
+                                "Step 7: Run pytest and confirm green; fix any drift between the chosen transport seam and the test mock target."
+                            ],
+    "next_step":  "Verify the actual contracts in the codebase first — the Reporter ABC / report(payload: BridgeOutput) signature and BridgeOutput.description, the secrets loader and telegramBotToken field, build_reporter_from_env(), and the presence of configs/live-webcam.yaml — since these are the only residual unknowns flagged by the judge; then implement DA-001.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The `vlm_only` gate (`report()` returns unless `payload.description` is non-empty) does NOT restrict alerts to VLM/human-animal events. In this codebase `BridgeOutput.description` is populated from `event.description` (contract.py:44), which `builder.py` sets to a non-empty human-readable string for EVERY event — `\u0027car entered zone\u0027`, `\u0027person moving\u0027`, `\u0027Motion detected\u0027`, `\u0027Camera feed is offline\u0027`. Gemini text only OVERWRITES it when the VLM actually runs (live.py:258-259). Therefore object-only / track / motion / camera-offline events all arrive with non-empty descriptions, and `service.py` reports every `result.bridge_output`. At runtime the service will DM the user `👁 ОКО: car entered zone`, `👁 ОКО: Motion detected`, etc.",
+                                  "why":  "Directly violates the contract\u0027s central constraint (\u0027Alerts ONLY for events with VLM descriptions (human/animal)\u0027) and success_test #5/#10. Worse, it is a FALSE GREEN: the proposed unit test fabricates an \u0027object-only event\u0027 with empty `description` (via `_sample_output()` default `description=\u0027\u0027`) — a state the real pipeline never produces — so the suite passes while the deployed behavior spams the user. The gate must key off whether the VLM actually produced text (e.g. a dedicated flag / the VlmOutcome), not off `description` non-emptiness, which is the wrong signal."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Even for genuine person/animal events, the gate emits the WRONG text whenever the VLM did not run for that specific reported event: on debounce cooldown (live.py:124-125 skips the VLM block, leaving `description` = base `\u0027person entered room\u0027`) or on VLM provider failure (gate.py:128-129 sets `response=None`, so description is never overwritten). In those cases `vlm_only` mode still fires `👁 ОКО: person entered room` — the base builder string, not the gemini description.",
+                                  "why":  "Violates the format/content intent of constraint «👁 ОКО: \u003cописание\u003e» where \u003cописание\u003e must be the gemini description. Repeated person events during the VLM cooldown window will each leak a non-gemini, mislabeled \u0027VLM\u0027 alert. This survives even if the gate were re-keyed to event_type, because the description field itself is not a reliable carrier of \u0027gemini ran for THIS payload\u0027."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-006\u0027s claim that flipping `Settings.config_path` to `configs/live-webcam.yaml` makes the service \u0027work on the webcam out of the box\u0027 is only validated by a `Path(...).is_file()` unit assertion. The real `main()` path runs `LiveReadinessChecker` (service.py:319-325) against a config that requires `models/yolo11m.pt` (a real file dependency), a `provider: webcam` device at index 0, and `GEMINI_API_KEY` (live-webcam.yaml:1-23). On any host missing any of these, readiness blocks → `FatalError` → exit 1.",
+                                  "why":  "The green unit test does not exercise the contract\u0027s actual runtime promise (success_test #10). \u0027Out of the box\u0027 is true only on a fully-provisioned host; on a fresh checkout/CI/dev machine without the YOLO weights or an API key the service now fails to start where the old `fake-live.yaml` default started cleanly. The decision flags this in open_questions but proceeds as if the unit assertion proves the runtime behavior — it doesn\u0027t."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-007 sets `vlm_only=True` only \u0027when chat_id resolves from the OKO_TG_CHAT path\u0027, but the implementation_plan collapses the resolution to a single `chat_id = os.getenv(\u0027OKO_TG_CHAT\u0027) or os.getenv(\u0027OKO_TELEGRAM_CHAT_ID\u0027)`, which discards which variable supplied it. If implemented naively the env-built reporter becomes either always-`vlm_only` (regressing existing `OKO_TELEGRAM_CHAT_ID` users from rich text + keyframe/incident-video alerts to a bare one-line message) or never-`vlm_only` (the new OKO_TG_CHAT feature silently ships disabled).",
+                                  "why":  "The existing test `test_build_reporter_from_env_telegram` only asserts `only_alerts is True` and never checks message format or `vlm_only`, so this behavioral regression for legacy users would pass green and ship undetected. The two env vars need to be tracked separately, not OR-folded, to preserve both behaviors — a subtlety the plan glosses over."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}
