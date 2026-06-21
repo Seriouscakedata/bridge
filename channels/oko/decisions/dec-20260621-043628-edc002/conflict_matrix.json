@@ -1,0 +1,16 @@
+{
+    "consensus_atoms":  [
+                            "config_default_yolo11m",
+                            "code_model_configurable",
+                            "config_add_conf_threshold",
+                            "code_apply_conf_threshold",
+                            "exec_proof_run_yolo11x",
+                            "output_save_proof_image_log"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

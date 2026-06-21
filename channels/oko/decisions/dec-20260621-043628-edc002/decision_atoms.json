@@ -1,0 +1,92 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "config_default_yolo11m",
+                      "statement":  "Set the default model to `yolo11m` in `configs/live-webcam.yaml`, specifically by pointing `model_file` to `models/yolo11m.pt` (with `model_size: m`, `model_family: yolo`) and ensuring it\u0027s not hardcoded.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Configuration",
+                      "test":  "Verify `configs/live-webcam.yaml` contains `model_file: models/yolo11m.pt` (or equivalent for yolo11m) and that the system loads yolo11m by default when no override is specified.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "code_model_configurable",
+                      "statement":  "Ensure the model is loaded via configuration or runtime override (e.g., CLI flag), explicitly avoiding hardcoding `yolo11x` or any other model directly in the code.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Code Architecture",
+                      "test":  "Verify no hardcoded model paths (e.g., `yolo11x.pt`) exist in `UltralyticsDetector` or related loading logic; confirm the model can be successfully overridden via config or CLI.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "config_add_conf_threshold",
+                      "statement":  "Add a `conf_threshold: float = 0.4` field to the `DetectorConfig` schema (e.g., in `src/oko/config/schema.py`).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Schema/Configuration",
+                      "test":  "Verify `DetectorConfig` class/schema includes `conf_threshold` with a default value of `0.4`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "code_apply_conf_threshold",
+                      "statement":  "Ensure `UltralyticsDetector` actually uses the `conf_threshold` from `DetectorConfig` during its inference calls (e.g., passing it as `conf` parameter to the underlying Ultralytics model), fixing any existing parameter dropping in the factory (e.g., `factory.py:26`).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Code Logic",
+                      "test":  "Run a detection with `conf_threshold=0.8` and `conf_threshold=0.2` on the same image; verify the number of detections changes accordingly, or inspect the `predict` call arguments to confirm `conf` is passed correctly.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "exec_proof_run_yolo11x",
+                      "statement":  "Perform a single demonstration run using `yolo11x` on `device 0` (a real camera), activated via a temporary override (config or CLI flag), not by changing the committed default configuration.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Execution/Demo",
+                      "test":  "Execute the proof run command; verify it uses `yolo11x` and `device 0` and runs only once, producing the expected output files.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "output_save_proof_image_log",
+                      "statement":  "Save the annotated proof frame as `runs/webcam-proof-v2.png` (with boxes and labels) and provide a structured log of detections (class, confidence, and potentially bbox, model, device, latency) alongside it, mirroring or extending the `webcam-proof-capture.json` format.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Output/Reporting",
+                      "test":  "After the proof run, verify `runs/webcam-proof-v2.png` exists and is an annotated image, and a corresponding structured detection log file (e.g., JSON) is present and contains class/confidence for detected objects.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "test_conf_threshold_flow",
+                      "statement":  "Add a unit test to verify that the `conf_threshold` configured in `DetectorConfig` is correctly passed to and applied by the `UltralyticsDetector`\u0027s inference method.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Run the unit test suite; specifically, the new test should pass, confirming `conf_threshold` is wired correctly and applied during detection.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

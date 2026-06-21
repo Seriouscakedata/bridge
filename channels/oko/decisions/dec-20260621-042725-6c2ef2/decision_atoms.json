@@ -1,0 +1,105 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "model_yolo11x_config_verify",
+                      "statement":  "Use YOLOv11x as the target model, explicitly configured and verified.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Model Selection",
+                      "test":  "Verify `model_file` in config points to `yolo11x.pt` and logs confirm `yolo11x` loaded.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "benchmark_recorded_clip",
+                      "statement":  "Perform before/after comparison on the same recorded clip from real camera device 0 to ensure fair, reproducible results.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Benchmark Strategy",
+                      "test":  "Verify that the same raw video clip from device 0 is used as input for both baseline and yolo11x inference runs.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "live_validation_separate_run",
+                      "statement":  "Conduct a separate live validation run on device 0 to confirm error-free real-time processing.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Benchmark Strategy",
+                      "test":  "Execute yolo11x live on device 0 and confirm continuous, error-free frame processing for a defined duration.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "threshold_optimization_quantitative",
+                      "statement":  "Optimize the confidence threshold using quantitative methods (e.g., F1/PR curve analysis, grid-search) on a labeled validation set, rather than manual tuning.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Metrics \u0026 Tuning",
+                      "test":  "Document the method (e.g., F1 sweep, grid-search) and the labeled dataset used for confidence threshold optimization, showing the chosen threshold and its justification.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "accuracy_metrics_labeled_data",
+                      "statement":  "Compute accuracy metrics (mAP, precision, recall, F1) on a labeled dataset, either a small proof-set from device 0 or a standard benchmark like COCO val.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Metrics \u0026 Tuning",
+                      "test":  "Verify that mAP, precision, recall, and F1 scores are calculated against a documented ground-truth labeled dataset.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "report_key_metrics",
+                      "statement":  "Generate a quantitative comparison report including accuracy metrics (mAP, precision, recall, F1) and performance metrics (FPS, latency, detection count).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Reporting",
+                      "test":  "Review the report for tables/sections detailing mAP, precision, recall, F1, FPS, and latency for both models.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "save_artifacts_visual_proof",
+                      "statement":  "Save all relevant artifacts, including the raw input clip, annotated before/after frames or video, metrics data (JSON/CSV), configuration snapshots, and a comprehensive report (Markdown/HTML).",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Reporting \u0026 Artifacts",
+                      "test":  "Verify that a designated artifact directory contains the raw clip, annotated visual proofs, metrics files, config, and the final report.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "performance_tradeoffs_report",
+                      "statement":  "Measure and report the inference cost (latency/FPS) of YOLOv11x, explicitly noting any performance tradeoffs or inability to run in real-time on the target hardware.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Performance",
+                      "test":  "Review the report for a dedicated section on YOLOv11x performance, including measured FPS/latency and a clear statement on real-time capability.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

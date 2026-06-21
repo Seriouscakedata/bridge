@@ -1,0 +1,123 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "config_default_yolo11m",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.75,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Clear, low-cost configuration change that preserves model configurability while setting the requested default.",
+                      "total":  0.895
+                  },
+                  {
+                      "atom_id":  "code_model_configurable",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Prevents brittle hardcoded model selection and preserves runtime/config override behavior; implementation may require checking multiple loading paths.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "config_add_conf_threshold",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.98,
+                                     "impact":  0.75,
+                                     "simplicity":  0.98,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Schema addition is precise, simple, reversible, and needed for configurable detector behavior.",
+                      "total":  0.9005
+                  },
+                  {
+                      "atom_id":  "code_apply_conf_threshold",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correctly closes the configuration-to-inference loop and addresses likely parameter dropping; testable via call inspection or behavior change.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "exec_proof_run_yolo11x",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.65,
+                                     "impact":  0.65,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        "Depends on availability of a real camera at device 0 and local yolo11x runtime/model assets."
+                                    ],
+                      "reason":  "Useful proof step, but should explicitly tolerate or document hardware/model unavailability and ensure the override is not committed.",
+                      "total":  0.7175
+                  },
+                  {
+                      "atom_id":  "output_save_proof_image_log",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        "Structured log path and required fields should be made explicit rather than optional."
+                                    ],
+                      "reason":  "Annotated image plus structured detection metadata is valuable evidence, but the atom should require a concrete JSON filename and minimum required fields.",
+                      "total":  0.8025
+                  },
+                  {
+                      "atom_id":  "test_conf_threshold_flow",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Focused unit coverage directly protects the new configuration path and is low-cost to add.",
+                      "total":  0.895
+                  }
+              ]
+}

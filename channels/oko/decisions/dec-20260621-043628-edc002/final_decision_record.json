@@ -1,0 +1,140 @@
+{
+    "final_answer":  "Accept all seven decision atoms; reject none. The four consensus code/config atoms fully satisfy the task\u0027s success tests and are low-risk: (1) set the committed default to yolo11m in configs/live-webcam.yaml via model_file/model_size, not hardcoded; (2) keep the model selectable via config/CLI with no hardcoded model path in UltralyticsDetector or its loader; (3) add conf_threshold: float = 0.4 to the DetectorConfig schema; (4) actually pass that conf_threshold into the Ultralytics inference call, fixing the parameter being dropped in the factory. The unit-test atom is accepted because it cheaply locks the new config-to-inference path. The two execution atoms are accepted WITH the judge\u0027s modifications folded in: the yolo11x demo runs exactly once on device 0 through a temporary, uncommitted override (CLI flag) — never by editing the committed default — and must explicitly handle the case where the physical camera or the yolo11x weights are unavailable (fail loudly with a documented reason, do not fake the frame); and the output must be two concrete artifacts, the annotated runs/webcam-proof-v2.png plus a structured runs/webcam-proof-v2.json log carrying the required fields (class, confidence, bbox, model, device, timestamp/latency) mirroring the existing webcam-proof-capture.json format. Net deliverable: balanced yolo11m default + working conf_threshold=0.4 wiring + a fresh real-camera yolo11x proof frame and its detection log.",
+    "decisions":  [
+                      {
+                          "decision":  "Set yolo11m as the committed default in configs/live-webcam.yaml (model_file: models/yolo11m.pt, model_size: m, model_family: yolo), not hardcoded.",
+                          "rationale":  "Judge accept 0.895, full proposal consensus (A/B/C). yolo11m is the stated FPS/accuracy balance for continuous cameras and directly satisfies success test #1 while leaving the value override-able.",
+                          "alternatives_considered":  [
+                                                          "Keep yolo11x as default (rejected by user feedback)",
+                                                          "Leave default unset/inherited (fails the explicit-default success test)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "configs/live-webcam.yaml contains model_file: models/yolo11m.pt (or equivalent); loading with no override resolves to yolo11m."
+                      },
+                      {
+                          "decision":  "Keep model selection driven entirely by config/CLI override; remove or confirm-absent any hardcoded model path (e.g. yolo11x.pt) in UltralyticsDetector and its loading path.",
+                          "rationale":  "Judge accept 0.875. Prevents brittle hardcoded selection and preserves runtime override — the core constraint of the task (\u0027model must remain configurable\u0027, \u0027do not hardcode yolo11x\u0027).",
+                          "alternatives_considered":  [
+                                                          "Branch on a hardcoded constant in code (violates constraint)",
+                                                          "Env-var-only selection (less discoverable than config + CLI)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Grep shows no literal model .pt path in detector/loader; overriding model_file via config and via CLI both load the specified weights."
+                      },
+                      {
+                          "decision":  "Add conf_threshold: float = 0.4 to DetectorConfig (src/oko/config/schema.py).",
+                          "rationale":  "Judge accept 0.9005 (highest), consensus A/B/C. Precise, reversible schema addition required by success test #3.",
+                          "alternatives_considered":  [
+                                                          "Different default (e.g. 0.25 Ultralytics default) — rejected, task specifies 0.4",
+                                                          "Per-call argument only without schema field — fails the schema success test"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "DetectorConfig instantiated with no args exposes conf_threshold == 0.4."
+                      },
+                      {
+                          "decision":  "Pass conf_threshold from DetectorConfig into the Ultralytics inference call (conf=...) in UltralyticsDetector, fixing the parameter being dropped in factory.py (~line 26).",
+                          "rationale":  "Judge accept 0.88, consensus A/B/C. Closes the config-to-inference loop so the new field has real effect (success test #4); the factory currently drops the value.",
+                          "alternatives_considered":  [
+                                                          "Apply threshold by post-filtering results in Python (works but wastes inference and is less idiomatic)",
+                                                          "Leave threshold unused (fails success test #4)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Running the same image with conf_threshold=0.8 vs 0.2 yields different detection counts; or assert the predict() call receives conf == configured value."
+                      },
+                      {
+                          "decision":  "Add a unit test asserting conf_threshold from DetectorConfig is passed to and applied by UltralyticsDetector inference.",
+                          "rationale":  "Judge accept 0.895. Low-cost regression guard that the new config path cannot silently regress (e.g. re-dropping the param in the factory).",
+                          "alternatives_considered":  [
+                                                          "Rely on the manual proof run only (no regression protection)",
+                                                          "Integration test against a real model (slower, flakier than mocking predict)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "New test passes: mock/stub the underlying model and assert predict is invoked with conf equal to the configured conf_threshold."
+                      },
+                      {
+                          "decision":  "[MODIFIED] Run yolo11x exactly once on device 0 via a temporary, uncommitted override (CLI flag, e.g. --model models/yolo11x.pt), NOT by editing the committed default; explicitly handle camera/model-unavailability by failing loudly with a documented reason rather than fabricating output.",
+                          "rationale":  "Judge modify 0.7175. The proof demonstrates the quality ceiling per the task, but feasibility depends on real hardware/weights; the override must not leak into the committed default (which stays yolo11m).",
+                          "alternatives_considered":  [
+                                                          "Temporarily edit live-webcam.yaml to yolo11x then revert (risk of committing the override — rejected)",
+                                                          "Use a recorded/sample frame instead of device 0 (violates \u0027device 0 real camera\u0027 constraint)",
+                                                          "Silently substitute a smaller model if yolo11x missing (misleading evidence — rejected)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Proof command runs once, log records model == yolo11x and device == 0; git diff shows the committed default is still yolo11m; if camera/weights absent, the run errors with a clear message and no proof artifact is forged."
+                      },
+                      {
+                          "decision":  "[MODIFIED] Save the annotated frame as runs/webcam-proof-v2.png AND a concrete structured log runs/webcam-proof-v2.json containing required fields per detection (class, confidence, bbox) plus run-level fields (model, device, timestamp, latency), mirroring the existing webcam-proof-capture.json format.",
+                          "rationale":  "Judge modify 0.8025. Annotated image plus machine-readable metadata is the deliverable; the judge required a concrete JSON filename and minimum required fields instead of leaving them optional.",
+                          "alternatives_considered":  [
+                                                          "Image only (fails the detection-log success test)",
+                                                          "Log printed to stdout only, not persisted (not reproducible evidence)",
+                                                          "Reuse webcam-proof-capture.json in place (would overwrite the prior v1 proof — use a distinct v2 file)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "runs/webcam-proof-v2.png exists and is an annotated image with boxes/labels; runs/webcam-proof-v2.json exists and lists each detection\u0027s class+confidence+bbox and the run\u0027s model/device."
+                      }
+                  ],
+    "rejected":  [
+
+                 ],
+    "open_questions":  [
+                           "Is a physical camera present at device 0 and are yolo11x weights available locally? If not, the proof run must report the unavailability explicitly and the proof artifacts cannot be produced this run.",
+                           "Should runs/webcam-proof-v2.json reuse the exact webcam-proof-capture.json schema verbatim or extend it with latency/model/device fields? Default chosen: extend, keeping existing keys.",
+                           "Confirm the CLI override flag name for one-off model selection (e.g. --model / --model-file) matches the existing entrypoint\u0027s argument surface."
+                       ],
+    "implementation_plan":  [
+                                "1. configs/live-webcam.yaml: set model_file: models/yolo11m.pt, model_size: m, model_family: yolo as the committed default.",
+                                "2. src/oko/config/schema.py: add conf_threshold: float = 0.4 to DetectorConfig.",
+                                "3. Fix factory.py (~line 26) so conf_threshold is forwarded into UltralyticsDetector and passed as conf=... to the Ultralytics predict/inference call; confirm no hardcoded model path remains in the detector/loader.",
+                                "4. Add a unit test asserting conf_threshold flows from DetectorConfig into the inference call (mock the underlying model\u0027s predict).",
+                                "5. Run the full test suite to confirm the conf_threshold wiring and config loading pass.",
+                                "6. Execute the one-time proof: invoke the webcam entrypoint with a temporary CLI override --model models/yolo11x.pt on device 0; do NOT modify the committed default. Handle missing camera/weights by erroring loudly.",
+                                "7. Emit runs/webcam-proof-v2.png (annotated) and runs/webcam-proof-v2.json (class, confidence, bbox per detection + model, device, timestamp, latency).",
+                                "8. Verify git diff: default still yolo11m, no committed yolo11x override; collect the proof image path and detection log for the deliverable."
+                            ],
+    "next_step":  "Edit configs/live-webcam.yaml to set yolo11m as the default model_file (step 1), then proceed through schema and factory changes before the one-time yolo11x proof run.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Switching the committed default to model_file: models/yolo11m.pt will make the default live runner FAIL its readiness gate, because that weight is not vendored (only models/yolov8n.pt exists on disk).",
+                                  "why":  "LiveReadinessChecker._detector_issues (src/oko/live/readiness.py:176-185) emits a \u0027blocker\u0027 (detector_model_file_not_found) when config.detector.model_file is not an existing file. webcam.py:36-39 calls this before running and returns exit 2 with {\"ok\": false} if any blocker exists. So `python -m oko.live.webcam` against the new default would never run — it fails preflight. This is a regression versus the current yolov8n.pt default, and success_test #1 (\u0027system loads yolo11m by default\u0027) fails at the gate before any load. The decision/open_questions only flag downloading yolo11x.pt; they never flag that the new committed DEFAULT (yolo11m.pt) must also be vendored or downloaded, which requires network. Implementation_plan step 10 (\u0027verify config still resolves to yolo11m\u0027) would pass on config text but the runner is broken."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The committed real-run evidence shows device 0 in this environment yields a near-unusable feed and only sub-0.4 false positives — combined with the new conf_threshold=0.4 default and the \u0027run once\u0027 constraint, the yolo11x proof is likely to produce an empty/garbage frame that fails the goal, with no allowed retry.",
+                                  "why":  "runs/webcam-proof-capture.json records 60 frames attempted but only 2 read, and the single detection was \u0027surfboard\u0027 @0.2832. runs/webcam-real-run.txt shows \u0027surfboard\u0027@0.3 and \u0027person\u0027@0.3. Every one of those confidences is below 0.4, so the new default threshold filters them to ZERO detections. The decision frames camera risk as binary (available vs unavailable) and plans only for clean unavailability; the evidenced failure mode is \u0027available-but-garbage feed yielding sub-threshold/false detections\u0027, which it does not plan for. Because the demo must run exactly once (constraint), a poor/empty first frame cannot be retried without violating the constraint — a catch-22 between failing the goal (\u0027good recognition quality\u0027 / success_test #5: a real detection result) and violating \u0027perform only once\u0027. The decision\u0027s \u0027documented failure\u0027 escape produces an artifact that explicitly fails success_test #5."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Adding conf_threshold default 0.4 and forwarding it from the factory silently raises the effective threshold from 0.25 to 0.4 for ALL ultralytics configs, not just live-webcam.",
+                                  "why":  "UltralyticsDetector currently defaults confidence=0.25 (ultralytics_detector.py:23) and already passes conf=self.confidence to predict (line 47). The wiring gap is only that build_detector (factory.py:26) constructs UltralyticsDetector(model_file=...) without forwarding confidence. Once the factory forwards config.conf_threshold (default 0.4), example.yaml and live-template.yaml — which also use provider: ultralytics — inherit 0.4 because they don\u0027t set the field. This is a behavior change beyond live-webcam: detections in the 0.25–0.40 band (exactly where the prior real run lived) disappear. It is not scoped, called out, or regression-tested as a global change."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027temporary CLI-flag override\u0027 path for the yolo11x demo does not exist, and no committed entrypoint produces the required annotated PNG + structured JSON — that tooling is ad-hoc/external and must be (re)written.",
+                                  "why":  "The webcam runner exposes only --config/--rules/--mode/--frames/--camera-id/--project-root (webcam.py:24-29); there is no --model or --conf flag. All three entrypoints (webcam/runtime/smoke) run the full pipeline and print bridge JSON — none call imwrite or emit a detection-capture JSON. The existing runs/webcam-proof.png + webcam-proof-capture.json were produced by ad-hoc code not present in src/. So the proof run requires writing a one-off capture script (added scope vs allowed_complexity \u0027low\u0027), and an \u0027ephemeral yolo11x config\u0027 run through webcam.py would still trip the same readiness blocker (readiness.py:177) unless yolo11x.pt is downloaded first. Open_question #3 (CLI flag vs ephemeral config) is left unresolved while the CLI-flag option is not actually available."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The proof step depends on TWO network downloads (yolo11x.pt ~109MB AND the new default yolo11m.pt), both gated by the same readiness blocker if absent; the decision only anticipates one.",
+                                  "why":  "open_questions only asks whether models/yolo11x.pt is present. But the committed default now needs models/yolo11m.pt too, and readiness.py:177 blocks the runner for any missing weight. If the environment is offline (plausible for an automated agent run), both the default config and the proof run are dead on arrival. The decision\u0027s graceful-failure plan covers camera/GPU but not weight-download failure for the default model."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "model_family and model_size are dead metadata; setting model_size: m is cosmetic and only model_file actually selects the model.",
+                                  "why":  "grep confirms model_family/model_size appear nowhere except their schema.py definitions (lines 12-13); build_detector (factory.py:26) loads strictly from config.model_file. The decision sets model_size: m and model_family: yolo alongside model_file, which is harmless but creates a foot-gun: a future maintainer changing model_size will not change the loaded model. Only the model_file edit is load-bearing for success_test #1."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Naming mismatch and factory branch hazard: DetectorConfig.conf_threshold maps to the detector\u0027s existing \u0027confidence\u0027 param, and the fake-detector branch must not receive the new kwarg.",
+                                  "why":  "The decision describes \u0027fix factory parameter-dropping\u0027 and \u0027wire conf= to predict\u0027, but predict already receives conf=self.confidence (ultralytics_detector.py:47) and nothing is currently \u0027dropped\u0027 (conf_threshold doesn\u0027t exist yet). The real one-line fix is factory.py:26 forwarding config.conf_threshold into UltralyticsDetector(confidence=...). Also, the fake branch (factory.py:24) calls FakeDetector(model_file=..., **kwargs); if conf_threshold is threaded naively it could be passed to a provider that doesn\u0027t accept it. Success_test #4 still passes by value-flow, but the conf_threshold vs confidence name divergence is left unreconciled."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Self-contradictory output-format spec: \u0027mirror the existing webcam-proof-capture.json format\u0027 conflicts with the new fields the decision lists.",
+                                  "why":  "runs/webcam-proof-capture.json uses keys label/box_xyxy/model_file/confidence_threshold and has no model/device/latency/bbox/class keys. The decision simultaneously says mirror that format and emit class/confidence/bbox/model/device/latency. These cannot both hold; the implementer must choose, and success_test #6 specifically requires class+confidence per detection — using \u0027label\u0027 (as the existing file does) would technically diverge from \u0027class\u0027."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

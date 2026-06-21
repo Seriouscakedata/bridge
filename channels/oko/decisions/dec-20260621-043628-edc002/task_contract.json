@@ -1,0 +1,30 @@
+{
+    "task":  "УТОЧНЕНИЕ к апгрейду (по фидбэку юзера) — это задача на ВЫПОЛНЕНИЕ, не обсуждение:\n1) НЕ хардкодь yolo11x дефолтом. Дефолт в configs/live-webcam.yaml = yolo11m (баланс FPS/точность для непрерывных камер). Модель остаётся настраиваемой через конфиг.\n2) Добавь conf_threshold=0.4 в DetectorConfig + примени в UltralyticsDetector.\n3) ДЕМО: прогони ОДИН раз yolo11x на реальной камере device 0 (показать потолок качества юзеру), сохрани runs/webcam-proof-v2.png + лог детекций (класс+conf).\nЦЕЛЬ: новый proof-кадр с хорошим распознаванием + сбалансированный дефолт. ВЫПОЛНИ (конфиг+код+прогон), верни реальный кадр.",
+    "goal":  "Generate a new proof image demonstrating good recognition quality and establish a balanced default model configuration.",
+    "constraints":  [
+                        "Do not hardcode \u0027yolo11x\u0027 as the default model.",
+                        "The model must remain configurable via the configuration file.",
+                        "The task is for execution, not discussion.",
+                        "The demo run using \u0027yolo11x\u0027 must be performed only once.",
+                        "The demo run must use \u0027device 0\u0027 (a real camera)."
+                    ],
+    "known_context":  [
+                          "The task is a refinement based on user feedback for an ongoing upgrade.",
+                          "The configuration file for the default model is \u0027configs/live-webcam.yaml\u0027.",
+                          "\u0027DetectorConfig\u0027 and \u0027UltralyticsDetector\u0027 are existing components that require modification.",
+                          "The output path for the demo proof image is \u0027runs/webcam-proof-v2.png\u0027.",
+                          "\u0027yolo11m\u0027 is considered a balanced model for FPS/accuracy on continuous cameras."
+                      ],
+    "output_format":  "A JSON object containing the path to the generated proof image (\u0027runs/webcam-proof-v2.png\u0027), and a structured log of detections (class and confidence) from the demo run. The updated configuration files and relevant code changes should also be part of the overall deliverable.",
+    "task_type":  "refactor",
+    "risk":  "low",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "The \u0027configs/live-webcam.yaml\u0027 file must specify \u0027yolo11m\u0027 as the default model.",
+                          "The system must allow overriding the default model (e.g., to \u0027yolo11x\u0027) via configuration.",
+                          "The \u0027DetectorConfig\u0027 class/structure must include a \u0027conf_threshold\u0027 parameter with a default value of \u00270.4\u0027.",
+                          "The \u0027UltralyticsDetector\u0027 implementation must utilize the \u0027conf_threshold\u0027 value from \u0027DetectorConfig\u0027 during detection.",
+                          "A file named \u0027runs/webcam-proof-v2.png\u0027 must be created, containing a detection result from \u0027yolo11x\u0027 on \u0027device 0\u0027.",
+                          "A log of detections (including class and confidence for each detected object) corresponding to the \u0027runs/webcam-proof-v2.png\u0027 image must be provided."
+                      ]
+}

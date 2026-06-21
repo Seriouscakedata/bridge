@@ -1,0 +1,80 @@
+{
+    "proposer":  "B",
+    "understanding":  "An execution task refining an in-progress webcam upgrade for the OKO project. Three concrete deliverables: (1) set the default model in configs/live-webcam.yaml to yolo11m (currently yolov8n) without hardcoding yolo11x, keeping the model config-driven via model_file; (2) add conf_threshold (default 0.4) to DetectorConfig (src/oko/config/schema.py) and actually apply it in UltralyticsDetector — note the factory at factory.py:26 currently constructs UltralyticsDetector(model_file=...) and silently drops the existing confidence param, so the wiring must be fixed; (3) perform a single yolo11x run on real device 0, saving runs/webcam-proof-v2.png plus a structured detection log (class+confidence). The default must stay yolo11m; yolo11x is a one-off quality-ceiling demo only.",
+    "summary":  "Edit live-webcam.yaml so the default resolves to yolo11m (model_file: models/yolo11m.pt, model_size: m); add conf_threshold: float = 0.4 to DetectorConfig and wire it through the factory into UltralyticsDetector\u0027s predict(conf=...) (fixing the dropped-confidence bug); then run yolo11x ONCE on device 0 via a one-off override (CLI flag/temp config), reusing the existing v1 capture path to write an annotated runs/webcam-proof-v2.png and a class+confidence log. Keep tests green and ensure the new default weight is fetchable/present so the balanced default is actually runnable.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Set the default by pointing model_file at models/yolo11m.pt (with model_size: m, model_family: yolo) in configs/live-webcam.yaml, not by introducing a new hardcoded model constant.",
+                               "reason":  "UltralyticsDetector and build_detector resolve the weight purely from config.model_file (no version baked in); changing the YAML keeps the model configurable and overridable, satisfying both the \u0027yolo11m default\u0027 and \u0027must remain configurable\u0027 success tests with one edit.",
+                               "tradeoff":  "yolo11m.pt (~40MB) is not in models/ yet (only yolov8n.pt), so the default is not runnable until the weight is fetched; readiness checks that validate file presence will fail until then.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Add conf_threshold: float = 0.4 to DetectorConfig and pass it through the factory as UltralyticsDetector(model_file=..., confidence=config.conf_threshold), keeping the detector\u0027s internal param name \u0027confidence\u0027.",
+                               "reason":  "The detector already accepts confidence and feeds it to predict(conf=...); the only real gap is factory.py:26 dropping it. Mapping conf_threshold-\u003econfidence at the factory is the lowest-churn fix that makes the threshold actually apply at detection time, satisfying the \u0027utilize conf_threshold during detection\u0027 test.",
+                               "tradeoff":  "A name mismatch (conf_threshold in config vs confidence in the detector) remains; clearer would be renaming the detector param, but that touches tests/constructors for marginal benefit.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Run yolo11x exactly once via a one-off override (a CLI --model-file flag or a throwaway temp config), never by editing the committed default.",
+                               "reason":  "Directly satisfies \u0027do not hardcode yolo11x\u0027 and \u0027demo run performed only once\u0027 while still producing the requested quality-ceiling proof; the committed config stays at yolo11m.",
+                               "tradeoff":  "The current webcam.py entrypoint has no model-override flag and does not save annotated images, so either a small flag is added or the existing v1 capture script is parameterized — minor extra code.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Produce runs/webcam-proof-v2.png as an annotated frame (boxes+labels via ultralytics result.plot()) plus a sidecar log mirroring the existing runs/webcam-proof-capture.json format (class, confidence, bbox, model, device, latency).",
+                               "reason":  "A v1 proof flow already exists (webcam-proof.png + webcam-proof-capture.json); matching that shape keeps the deliverable consistent and gives the user both a visual proof and the structured class+confidence log required by the output_format.",
+                               "tradeoff":  "Reusing/extending the existing capture script requires locating it (not webcam.py itself); a clean reusable --save-annotated path is slightly more work than an ad-hoc one-shot.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Add a unit test asserting the configured conf_threshold flows into the predict call, and rely on existing default values to keep current DetectorConfig constructions valid.",
+                               "reason":  "Existing tests (test_providers, test_live_readiness) build DetectorConfig without a threshold; a default of 0.4 keeps them passing, and a focused test prevents silent regressions of the dropped-confidence bug recurring.",
+                               "tradeoff":  "Slightly more test surface; but without it the wiring fix is unguarded and could silently break again.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "ultralytics and opencv (cv2) are installed in this environment (supported by runs/live-extras-install.txt and runs/webcam-real-run.txt from the prior real run); the dep-version check needed approval and was not confirmed live.",
+                        "Device 0 is a real, working webcam — the existing runs/webcam-proof.png (v1) implies a successful prior capture on device 0.",
+                        "Network access is available so ultralytics can auto-download yolo11x.pt (~110MB) and yolo11m.pt (~40MB) on first load, or the weights can be pre-fetched into models/.",
+                        "\u0027Log of detections\u0027 means a machine-readable sidecar file (JSON/text) with class+confidence per object, like the v1 webcam-proof-capture.json, in addition to being echoed in the final JSON output.",
+                        "The scene in front of device 0 contains recognizable COCO objects (e.g. a person) so \u0027good recognition\u0027 is demonstrable; detection quality is scene-dependent and cannot be guaranteed by code alone.",
+                        "There is an existing capture/annotation script behind v1 that can be parameterized; if not, adding a small one-off capture step is within the allowed low complexity.",
+                        "model_size/model_family in the config are descriptive metadata; the effective weight is whatever model_file points to."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "yolo11x.pt / yolo11m.pt weights are absent (only yolov8n.pt present) and the environment is offline or download-restricted, so the demo run and/or the new default cannot load.",
+                      "severity":  "high",
+                      "mitigation":  "Pre-fetch both weights into models/ and verify on disk before running; fail fast with a clear message if download is blocked; confirm the readiness check passes for the new yolo11m default."
+                  },
+                  {
+                      "risk":  "Physical camera at device 0 is unavailable/busy at run time, so the one-shot yolo11x capture fails and no real frame can be returned.",
+                      "severity":  "medium",
+                      "mitigation":  "Verify camera availability first (the v1 proof confirms it worked before); ensure no other process holds the device; capture is read-only and retried only within the single permitted run."
+                  },
+                  {
+                      "risk":  "conf_threshold is added to config but not actually applied because the factory keeps dropping it (current factory.py:26 ignores confidence), making the success test pass nominally while detection still uses the 0.25 default.",
+                      "severity":  "medium",
+                      "mitigation":  "Wire config.conf_threshold through build_detector into the constructor and assert via a unit test that predict receives conf=0.4."
+                  },
+                  {
+                      "risk":  "\u0027Good recognition\u0027 is subjective and scene-dependent; a sparse or poorly-lit frame yields a weak proof even with yolo11x.",
+                      "severity":  "medium",
+                      "mitigation":  "Stage a clear subject (person/common objects) in good lighting; apply conf 0.4 to suppress noise; include the full class+confidence log so quality is evidenced quantitatively."
+                  },
+                  {
+                      "risk":  "DetectorConfig uses extra=\u0027forbid\u0027; a config carrying conf_threshold against an un-updated schema (or stale checkout) raises a validation error.",
+                      "severity":  "low",
+                      "mitigation":  "Land the schema field and the config edit together; conf_threshold remains optional with default 0.4 so existing configs without it still validate."
+                  },
+                  {
+                      "risk":  "Switching the committed default from yolov8n to yolo11m changes runtime behavior/perf for anyone relying on the old default.",
+                      "severity":  "low",
+                      "mitigation":  "This is the explicitly requested balanced default; document the change in PROGRESS.md and keep the model fully overridable via model_file."
+                  }
+              ],
+    "minimal_version":  "1) In configs/live-webcam.yaml set model_family: yolo, model_size: m, model_file: models/yolo11m.pt. 2) In src/oko/config/schema.py add conf_threshold: float = 0.4 to DetectorConfig. 3) In src/oko/providers/factory.py change the ultralytics branch to UltralyticsDetector(model_file=config.model_file, confidence=config.conf_threshold) so the threshold actually applies. 4) Ensure models/yolo11m.pt is present (fetch if missing) so the default is runnable. 5) Run yolo11x ONCE on device 0 via a temp override config or CLI flag (committed default stays yolo11m), capture an annotated runs/webcam-proof-v2.png plus a class+confidence detection log, reusing the v1 capture path. 6) Run the existing test suite to confirm green. Return the real frame path and the detection log.",
+    "advanced_version":  "All of minimal, plus: rename the detector param to conf_threshold (with back-compat) so config and code agree; add a unit test asserting conf=config.conf_threshold is passed to predict; emit a richer structured log (class, confidence, bbox, model, device, latency_ms, timestamp) matching/extending webcam-proof-capture.json; add reproducible CLI flags to src/oko/live/webcam.py (--model-file override and --save-annotated \u003cpath\u003e) and a small annotate-and-save helper using result.plot(), so future proof runs need no temp configs; pre-fetch yolo11m/yolo11x into models/ and gitignore large weights; strengthen LiveReadinessChecker to validate weight presence with an actionable message; and record the default change and the v2 proof in PROGRESS.md."
+}

@@ -1,0 +1,30 @@
+{
+    "task":  "Канал, возьми approved-задачу СЕЙЧАС: апгрейд распознавания (yolo11x = максимальная модель + порог уверенности + перепрогон на реальной камере device 0, новый proof). У тебя полный доступ — pip install и устройства разрешены. Юзер ждёт сравнение до/после.",
+    "goal":  "Upgrade the recognition system\u0027s performance by integrating the yolo11x model, optimizing confidence thresholds, and validating it on a real camera (device 0), providing a clear before/after comparison to the user.",
+    "constraints":  [
+                        "Task must be started immediately.",
+                        "Recognition system must use yolo11x as the maximum model.",
+                        "Confidence thresholds must be optimized.",
+                        "Validation must be performed on real camera device 0.",
+                        "New proof of improved performance is required.",
+                        "A before/after comparison must be provided to the user."
+                    ],
+    "known_context":  [
+                          "Solver has full system access.",
+                          "`pip install` is permitted.",
+                          "Access to devices (specifically device 0) is permitted.",
+                          "There is an existing recognition system that requires an upgrade.",
+                          "The task is approved and ready for execution."
+                      ],
+    "output_format":  "A comprehensive report or presentation detailing the \u0027before\u0027 and \u0027after\u0027 recognition performance, including quantitative metrics, visual examples, and the new proof of improvement.",
+    "task_type":  "research",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The recognition system on device 0 is confirmed to be running the yolo11x model.",
+                          "A report is generated containing quantitative performance metrics (e.g., mAP, precision, recall, inference speed) for the recognition system \u0027before\u0027 and \u0027after\u0027 the upgrade.",
+                          "The report clearly demonstrates an improvement in at least one key recognition performance metric (e.g., higher mAP, reduced false positives/negatives).",
+                          "Visual examples (e.g., annotated images or video clips) from real camera device 0 are provided, showcasing the \u0027before\u0027 and \u0027after\u0027 recognition capabilities and highlighting the improvements.",
+                          "The upgraded system successfully processes live input from real camera device 0 without errors."
+                      ]
+}
