@@ -1,0 +1,80 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно добавить изолированный реальный Gemini VLM provider без подключения к factory, VlmGate, событиям или пайплайну. Провайдер должен повторять существующий контракт VlmProvider/VlmResponse, поддерживать offline-тестирование через инъектируемый transport, брать ключ из GEMINI_API_KEY с fallback на ~/.bridge-private/secrets.json:geminiApiKey и строго использовать модель gemini-2.5-flash по умолчанию.",
+    "summary":  "Я предлагаю реализовать src/oko/providers/gemini_vlm.py как небольшой независимый модуль: сбор payload из prompt и optional image, POST в Gemini generateContent endpoint через transport, строгий парсинг candidates[0].content.parts[].text и RuntimeError при отсутствии ключа или текста. Тесты в tests/test_gemini_vlm_provider.py должны полностью мокать transport и файловые/env источники, без сети.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "GeminiVlmProvider наследуется от VlmProvider и имеет name=\u0027gemini\u0027, default model=\u0027gemini-2.5-flash\u0027.",
+                               "reason":  "Это напрямую соответствует контракту и не затрагивает текущую архитектуру VlmGate.",
+                               "tradeoff":  "Провайдер пока не будет доступен в пайплайне без будущей главы factory/wiring.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "__init__ принимает model, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=10.0 и transport=None.",
+                               "reason":  "Так сохраняется проверяемость offline и совместимость с паттерном http_vlm.py.",
+                               "tradeoff":  "Нужно аккуратно адаптироваться к фактической сигнатуре существующего transport, если она отличается.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "API key резолвится лениво при query: сначала os.environ[api_key_env], затем ~/.bridge-private/secrets.json поле geminiApiKey.",
+                               "reason":  "Импорт модуля не должен требовать сети или секретов, а missing-key ошибка должна быть честной.",
+                               "tradeoff":  "Ошибка отсутствия ключа возникнет только во время query, не при создании объекта.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Payload строится как contents=[{\u0027parts\u0027:[{\u0027text\u0027: request.prompt}, optional inline_data]}].",
+                               "reason":  "Это соответствует Gemini generateContent API и требованиям для text+image запроса.",
+                               "tradeoff":  "MIME type для image_path придется определить консервативно через mimetypes с fallback image/jpeg или image/png в зависимости от существующего стиля.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "_gemini_inline_image(request) использует request.image_b64 при наличии, иначе читает request.image_path и кодирует base64.",
+                               "reason":  "Приоритет image_b64 исключает лишнее чтение файла и покрывает оба требуемых входа.",
+                               "tradeoff":  "Некорректный image_path будет приводить к файловой ошибке, которую не стоит маскировать фиктивным ответом.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "_extract_gemini_text(raw) собирает только непустые text из candidates[0].content.parts и выбрасывает RuntimeError(\u0027Gemini response did not contain text\u0027) при отсутствии текста.",
+                               "reason":  "Контракт прямо запрещает возвращать пустую строку или fake-text на мусорный/пустой JSON.",
+                               "tradeoff":  "Ответы Gemini без text, например tool-call-only, будут считаться ошибкой для этого провайдера.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "tests/test_gemini_vlm_provider.py использует fake transport, monkeypatch env/home и временные image files.",
+                               "reason":  "Так проверяются endpoint, headers, timeout, payload, key lookup и parsing без сетевой зависимости.",
+                               "tradeoff":  "Тесты будут проверять контракт transport на уровне текущего проекта, а не реальный Google SDK.",
+                               "confidence":  0.94
+                           }
+                       ],
+    "assumptions":  [
+                        "В src/oko/providers/http_vlm.py уже есть transport-интерфейс, который можно повторить без изменения общих абстракций.",
+                        "VlmRequest содержит prompt или аналогичное поле для текстового запроса, а также image_b64 и image_path согласно контракту.",
+                        "VlmResponse можно создать с text, provider, model и latency_ms без дополнительных обязательных полей.",
+                        "В проекте уже настроен pytest и импорт из src/oko работает в тестах.",
+                        "Fallback secrets.json должен читаться из Path.home()/.bridge-private/secrets.json."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Фактическая форма VlmRequest может отличаться от названий в контракте.",
+                      "severity":  "medium",
+                      "mitigation":  "Перед реализацией сверить существующие dataclass/protocol definitions и использовать текущие имена полей без изменения публичного контракта."
+                  },
+                  {
+                      "risk":  "Transport в http_vlm.py может ожидать другую форму вызова, например request объект вместо kwargs.",
+                      "severity":  "medium",
+                      "mitigation":  "Скопировать локальный паттерн вызова transport из http_vlm.py и закрепить его тестом на timeout/header/url/json."
+                  },
+                  {
+                      "risk":  "MIME type для image_path может быть неочевиден для файлов без расширения.",
+                      "severity":  "low",
+                      "mitigation":  "Использовать mimetypes.guess_type и безопасный fallback, при этом тестировать обычные расширения вроде .png."
+                  },
+                  {
+                      "risk":  "Malformed JSON/неожиданная структура ответа может случайно пройти как пустой текст.",
+                      "severity":  "high",
+                      "mitigation":  "Сделать _extract_gemini_text строгим: любые отсутствующие candidates/content/parts/text или пустой результат приводят к RuntimeError."
+                  }
+              ],
+    "minimal_version":  "Добавить только src/oko/providers/gemini_vlm.py и tests/test_gemini_vlm_provider.py. Реализовать provider, key lookup, inline image helper, strict text extraction и offline fake-transport тесты. Не менять __init__.py, factory, VlmGate, события, pipeline или demo.",
+    "advanced_version":  "После минимальной версии можно дополнительно покрыть fallback secrets.json отдельным тестом, добавить тест приоритетности image_b64 над image_path и проверить latency_ms как неотрицательное число. Это остается в рамках главы 1, если не происходит wiring в пайплайн."
+}

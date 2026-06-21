@@ -1,0 +1,200 @@
+{
+    "final_answer":  "Implement Chapter 1/5 as a standalone, network-free `GeminiVlmProvider` at `src/oko/providers/gemini_vlm.py` plus hermetic offline tests at `tests/test_gemini_vlm_provider.py`. All 11 decision atoms reached unanimous consensus (A/B/C) and passed the judge (all `accept`, totals 0.838–0.931); the micro-debate was skipped because the conflict matrix is empty. The provider subclasses `VlmProvider`, identifies as `name=\u0027gemini\u0027`, and defaults to the `gemini-2.5-flash` model (strictly — not pro, not 3-flash). `__init__(model, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=10.0, transport=None)` mirrors the `http_vlm.py` transport-injection pattern so nothing touches the network at import. `query()` resolves the API key lazily (env var, empty treated as absent → `~/.bridge-private/secrets.json` field `geminiApiKey` via a `Path.home()` helper → loud `RuntimeError` naming `api_key_env`), builds the v1beta `.../{model}:generateContent` URL at call time, authenticates only via the `x-goog-api-key` header (no `?key=` in the URL), sends `contents=[{parts:[{text:prompt}] (+ optional inline_data)}]`, times only the transport round-trip with `time.perf_counter()`, parses `candidates[0].content.parts[].text` strictly (concatenate text; never fabricate or return empty — raise `RuntimeError(\u0027Gemini response did not contain text\u0027)` on missing/empty/blocked), and returns `VlmResponse(text, provider=\u0027gemini\u0027, model=self.model, latency_ms=...)`. Image input goes through `_gemini_inline_image(request)` with `image_b64` taking precedence over a base64-encoded `image_path`, and mime type defaults to `image/jpeg` (guessed from path extension via `mimetypes`, override via `request.metadata[\u0027mime_type\u0027]`). Tests use a fake transport, monkeypatched env and `Path.home()`, and temp image files for full determinism. No factory, trigger, pipeline wiring, or demo is built — those are Chapters 2–5.",
+    "decisions":  [
+                      {
+                          "decision":  "Define GeminiVlmProvider(VlmProvider) with name=\u0027gemini\u0027 and default model \u0027gemini-2.5-flash\u0027.",
+                          "rationale":  "Unanimous A/B/C and highest-scoring atom (0.931). Establishes the foundational provider contract using the existing base class; the real default model is mandated by the task and overridable via constructor.",
+                          "alternatives_considered":  [
+                                                          "gemini-2.5-pro",
+                                                          "gemini-3-flash",
+                                                          "ad-hoc class not inheriting VlmProvider"
+                                                      ],
+                          "risk":  "Low reversibility, but provider identity rarely changes and the model is constructor-overridable.",
+                          "test":  "Assert GeminiVlmProvider.name == \u0027gemini\u0027 and the default model resolves to \u0027gemini-2.5-flash\u0027; assert isinstance of VlmProvider."
+                      },
+                      {
+                          "decision":  "Constructor signature __init__(self, model=\u003cdefault\u003e, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=10.0, transport=None).",
+                          "rationale":  "Consensus (0.904). Sensible defaults plus transport injection bake in offline testability without network at import; matches http_vlm.py ergonomics.",
+                          "alternatives_considered":  [
+                                                          "Pass api_key directly into __init__",
+                                                          "Eager network/client setup in constructor",
+                                                          "No transport seam"
+                                                      ],
+                          "risk":  "Medium reversibility on signature; mitigated by keyword defaults so future params append cleanly.",
+                          "test":  "Inspect __init__ signature/defaults; instantiate with no transport and assert no network call occurs at import or construction."
+                      },
+                      {
+                          "decision":  "Resolve the API key lazily in query(): os.environ[api_key_env] (empty == absent) → ~/.bridge-private/secrets.json field geminiApiKey via a module-level Path.home() helper → RuntimeError naming api_key_env.",
+                          "rationale":  "Consensus (0.880). Correct precedence, fails loud rather than silent, and the helper isolates the secrets read for hermetic testing (mirrors slopvid google_auth).",
+                          "alternatives_considered":  [
+                                                          "Resolve key at import/construction (breaks no-network-at-import)",
+                                                          "Silent empty-key fallthrough",
+                                                          "Read secrets without a Path.home() seam"
+                                                      ],
+                          "risk":  "Multi-source fallback adds slight complexity; justified by robustness and testability.",
+                          "test":  "query() with GEMINI_API_KEY set (used); env unset + secrets.json present (used); both absent → RuntimeError whose message contains \u0027GEMINI_API_KEY\u0027; empty env string treated as absent."
+                      },
+                      {
+                          "decision":  "Build payload as contents=[{parts:[{text:prompt}] + optional [{inline_data:{mime_type,data}}]}], emitting the image part only when an image is present.",
+                          "rationale":  "Consensus (0.8875). Matches the generateContent contract and keeps text-only requests clean.",
+                          "alternatives_considered":  [
+                                                          "Always include an (empty) inline_data part",
+                                                          "role-tagged multi-turn contents"
+                                                      ],
+                          "risk":  "API shape drift; pinned to documented v1beta structure and asserted in tests.",
+                          "test":  "Assert transport receives {\u0027contents\u0027:[{\u0027parts\u0027:[{\u0027text\u0027:...}]}]} for text-only and an additional inline_data part for image requests."
+                      },
+                      {
+                          "decision":  "Add helper _gemini_inline_image(request): use request.image_b64 if present, else read request.image_path and base64-encode; image_b64 takes precedence.",
+                          "rationale":  "Consensus (0.8665). Cohesive, testable abstraction with a clear precedence rule.",
+                          "alternatives_considered":  [
+                                                          "image_path takes precedence",
+                                                          "inline image logic embedded in query()"
+                                                      ],
+                          "risk":  "File-read errors on bad paths; surface as exceptions, covered by tests.",
+                          "test":  "_gemini_inline_image with image_b64 only, with image_path only, and with both set (assert image_b64 wins); verify inline_data.data equals expected base64."
+                      },
+                      {
+                          "decision":  "Strict response parsing in _extract_gemini_text(raw): walk candidates[0].content.parts, concatenate all part[\u0027text\u0027], and raise RuntimeError(\u0027Gemini response did not contain text\u0027) on missing/empty/blocked paths; never return empty or fabricated text.",
+                          "rationale":  "Consensus and highest risk-reduction value (0.897). The most correctness-critical behavior — guarantees no silent fake/empty results.",
+                          "alternatives_considered":  [
+                                                          "Return \u0027\u0027 on missing text",
+                                                          "Return only parts[0].text",
+                                                          "Swallow safety-block responses as empty"
+                                                      ],
+                          "risk":  "Over-strictness could reject valid edge shapes; acceptable given the honesty requirement.",
+                          "test":  "Empty JSON, missing candidates, empty parts, safety-blocked response → RuntimeError; multi-part text → concatenated string."
+                      },
+                      {
+                          "decision":  "Hermetic offline tests using a fake transport, monkeypatched env vars and Path.home(), and temp image files.",
+                          "rationale":  "Consensus (0.8825). Yields deterministic, network-free tests; isolating Path.home() prevents leaking the developer\u0027s real secrets.json.",
+                          "alternatives_considered":  [
+                                                          "Mock urllib/socket directly",
+                                                          "Hit the live API behind a skip flag",
+                                                          "Rely on the developer\u0027s real home dir"
+                                                      ],
+                          "risk":  "Low reversibility of strategy; standard pytest fixtures keep it maintainable.",
+                          "test":  "Run the suite with no network; assert Path.home() is monkeypatched to a temp dir in key-resolution tests and no real secrets are read."
+                      },
+                      {
+                          "decision":  "Reuse the HttpTransport Callable contract from http_vlm.py (url, payload, headers, timeout) -\u003e dict, with a module-level urllib POST default and test injection.",
+                          "rationale":  "Consensus (0.8755). Consistency across providers and zero runtime dependencies; reuse lowers risk vs reinvention.",
+                          "alternatives_considered":  [
+                                                          "requests library dependency",
+                                                          "A new bespoke transport interface"
+                                                      ],
+                          "risk":  "Medium reversibility; signature shared with existing provider so churn is centralized.",
+                          "test":  "Assert transport param accepts a callable with the http_vlm.py signature and that a urllib-based default exists when transport=None."
+                      },
+                      {
+                          "decision":  "Build endpoint at query time as f\u0027https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent\u0027 and authenticate via x-goog-api-key header (Content-Type: application/json), with no ?key= query parameter.",
+                          "rationale":  "Consensus (0.910). API-correct and safer — keeps the secret out of URLs, logs, and history.",
+                          "alternatives_considered":  [
+                                                          "?key=\u003cAPI_KEY\u003e query parameter",
+                                                          "Authorization: Bearer header",
+                                                          "Hardcoded URL ignoring model"
+                                                      ],
+                          "risk":  "Endpoint version drift (v1beta); pinned and asserted in tests.",
+                          "test":  "Assert transport receives the exact URL with the configured model and an \u0027x-goog-api-key\u0027 header, and that no key appears in the URL query string."
+                      },
+                      {
+                          "decision":  "Default inline image mime_type to \u0027image/jpeg\u0027, guess from image_path extension via mimetypes, and honor request.metadata[\u0027mime_type\u0027] when provided.",
+                          "rationale":  "Consensus (0.838). Pragmatic correctness improvement over a hardcoded type, supporting PNG and other formats.",
+                          "alternatives_considered":  [
+                                                          "Hardcode image/jpeg always",
+                                                          "Require caller to always pass mime_type"
+                                                      ],
+                          "risk":  "Wrong guess for extensionless paths defaults to jpeg; metadata override mitigates.",
+                          "test":  "image_b64 → default jpeg; image_path .png/.jpeg → guessed type; metadata[\u0027mime_type\u0027] override → honored."
+                      },
+                      {
+                          "decision":  "Measure latency_ms with time.perf_counter() wrapping only the transport call and return VlmResponse(text=text, provider=\u0027gemini\u0027, model=self.model, latency_ms=...).",
+                          "rationale":  "Consensus (0.886). Attributes latency to the network round-trip, excluding local encode/parse; simple and complete response object.",
+                          "alternatives_considered":  [
+                                                          "Time the entire query() including encode/parse",
+                                                          "Omit latency_ms",
+                                                          "Use time.time()"
+                                                      ],
+                          "risk":  "Low; deterministic tests assert latency_ms is present and non-negative.",
+                          "test":  "query() returns VlmResponse with provider=\u0027gemini\u0027, model=self.model, and latency_ms \u003e= 0."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Authenticate with a ?key=\u003cAPI_KEY\u003e URL query parameter.",
+                         "why":  "Leaks the secret into URLs/logs/history; the x-goog-api-key header is API-correct and safer (atom api_endpoint_authentication, 0.910)."
+                     },
+                     {
+                         "decision":  "Return an empty string when the response contains no text.",
+                         "why":  "Violates the honesty constraint and masks failures; _extract_gemini_text must raise RuntimeError instead (atom response_parsing_strict_error_handling, 0.897)."
+                     },
+                     {
+                         "decision":  "Resolve the API key eagerly at import or construction time.",
+                         "why":  "Would couple import/construction to environment/filesystem state and risks network/no-import-side-effects guarantees; lazy resolution in query() is required."
+                     },
+                     {
+                         "decision":  "Use the requests library or a bespoke transport interface.",
+                         "why":  "Adds a runtime dependency and diverges from the established http_vlm.py HttpTransport contract; a urllib default plus the shared Callable is preferred (atom transport_contract)."
+                     },
+                     {
+                         "decision":  "Default the model to gemini-2.5-pro or gemini-3-flash.",
+                         "why":  "Explicitly forbidden by the task contract; the model must be gemini-2.5-flash."
+                     },
+                     {
+                         "decision":  "Wire the provider into VlmGate/the pipeline, or add a factory/trigger/demo.",
+                         "why":  "Out of scope for Chapter 1/5; the contract forbids running ahead into later chapters and rewriting the event-driven architecture."
+                     },
+                     {
+                         "decision":  "Hardcode mime_type to image/jpeg unconditionally.",
+                         "why":  "Breaks PNG/other formats; mimetypes guessing with a metadata override is the accepted refinement (atom image_mime_type_handling)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact attribute/field names on the existing VlmProvider base and VlmResponse dataclass (e.g., is it a method `query` vs `__call__`, and does VlmResponse accept exactly text/provider/model/latency_ms) — must be confirmed by reading the existing modules before coding.",
+                           "Whether VlmRequest exposes a `metadata` dict for the optional `mime_type` override; if absent, the override path degrades gracefully to mimetypes/jpeg.",
+                           "Confirm the precise HttpTransport callable signature and default urllib helper name/location in http_vlm.py to reuse verbatim.",
+                           "Whether secrets.json may contain nested structure vs a flat geminiApiKey field, per the slopvid google_auth reference."
+                       ],
+    "implementation_plan":  [
+                                "Read src/oko/providers/http_vlm.py to copy the exact HttpTransport Callable signature, the default urllib POST helper, and the transport-injection pattern.",
+                                "Read the VlmProvider base class and VlmResponse / VlmRequest definitions to confirm method names and field names (text, provider, model, latency_ms; image_b64, image_path, prompt, metadata).",
+                                "Read bridge-projects/literary-slop-video/slopvid/providers.py (GeminiImageProvider) and google_auth.py for the secrets.json fallback pattern (Path.home(), geminiApiKey field).",
+                                "Create src/oko/providers/gemini_vlm.py: module-level secrets helper (Path.home()/.bridge-private/secrets.json -\u003e geminiApiKey) and a default urllib POST transport; no network at import.",
+                                "Implement GeminiVlmProvider(VlmProvider): name=\u0027gemini\u0027, default model \u0027gemini-2.5-flash\u0027; __init__(model, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=10.0, transport=None).",
+                                "Implement lazy _resolve_api_key(): env (empty==absent) → secrets helper → RuntimeError naming api_key_env.",
+                                "Implement _gemini_inline_image(request): image_b64 precedence over base64(image_path); mime_type default image/jpeg, mimetypes guess from path, request.metadata[\u0027mime_type\u0027] override.",
+                                "Implement _extract_gemini_text(raw): concatenate candidates[0].content.parts[].text; RuntimeError(\u0027Gemini response did not contain text\u0027) on missing/empty/blocked.",
+                                "Implement query(request): build v1beta {model}:generateContent URL, x-goog-api-key + Content-Type headers, contents payload (text + optional inline_data), time only the transport call with perf_counter, parse, return VlmResponse(text, provider=\u0027gemini\u0027, model=self.model, latency_ms).",
+                                "Write tests/test_gemini_vlm_provider.py with a fake transport capturing (url, payload, headers, timeout): assert endpoint/model/header/timeout; image_b64 and image_path both produce inline_data; mime_type cases; missing key → RuntimeError with var name (monkeypatch env + Path.home()); empty/malformed JSON → RuntimeError; latency_ms non-negative; full determinism, no network.",
+                                "Run pytest tests/test_gemini_vlm_provider.py and confirm green; do not touch VlmGate, the pipeline, factory, trigger, or demo."
+                            ],
+    "next_step":  "Read src/oko/providers/http_vlm.py together with the VlmProvider base and VlmResponse/VlmRequest definitions to lock the exact transport signature and field names before writing src/oko/providers/gemini_vlm.py.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Decision chooses `mimetypes.guess_type` for image_path mime detection, but the success_test mandates fully deterministic tests and this repo\u0027s own reference (slopvid `providers.py:_image_mime_type`) deliberately uses a hardcoded `.jpg/.jpeg→image/jpeg, .webp→image/webp, else image/png` map instead.",
+                                  "why":  "On Windows (the actual dev/CI platform here — Win 11), `mimetypes.init()` reads MIME associations from the registry (HKEY_CLASSES_ROOT), which can override stdlib defaults (e.g. `.png`→`image/x-png`, `.jpg`→`image/pjpeg`) and varies per machine. A test asserting `inline_data.mime_type == \u0027image/png\u0027` for a `.png` path may pass on one box and fail on another, directly violating the \u0027all tests deterministic / no network\u0027 success criterion. The reference code avoided this exact trap; the decision reintroduces it."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "`_extract_gemini_text` is described as walking `candidates[0].content.parts[].text` via direct indexing, but the success_test requires a `RuntimeError` on empty/malformed JSON (e.g. `{}`) and on safety/prompt-blocked responses.",
+                                  "why":  "Direct indexing on `{}` raises KeyError, on `{\u0027candidates\u0027:[]}` raises IndexError, and a prompt-blocked response returns only `promptFeedback.blockReason` with NO `candidates` key at all — all of which propagate as KeyError/IndexError/TypeError, NOT RuntimeError. A test written as `pytest.raises(RuntimeError)` would then error out instead of passing. Every access must be guarded and re-raised as `RuntimeError(\u0027Gemini response did not contain text\u0027)`; the indexing-based plan description invites the wrong exception type and the failing-test outcome it\u0027s meant to prevent."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The plan/tests never account for `VlmRequest` requiring a `provider` field (`provider: str`, no default, `model_config = ConfigDict(extra=\u0027forbid\u0027)`).",
+                                  "why":  "Existing tests always pass it (`VlmRequest(prompt=..., provider=\u0027http-json\u0027)`). If the test author follows the decision\u0027s request examples literally (`VlmRequest(prompt=..., image_b64=...)`), pydantic raises a ValidationError before the provider is ever exercised. Easy to fix (pass `provider=\u0027gemini\u0027`), but it\u0027s an unstated required field the plan glosses over."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Strict concatenation \u0027concatenate all part[\u0027text\u0027]\u0027 does not account for non-text parts that real gemini-2.5-flash can return (e.g. `thought` parts, `functionCall`, or inlineData-only parts).",
+                                  "why":  "A part lacking a `text` key raises KeyError under `part[\u0027text\u0027]`, and a part with `text: None` poisons a join. The reference response helper defensively uses `part.get(...)` and `isinstance(..., str)` checks. The decision must skip non-string/absent text rather than index, or a valid multi-part response with a non-text part will error instead of returning the concatenated text."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "API key handling diverges from the slopvid `google_auth` pattern the task explicitly names: the decision uses bare `os.environ[api_key_env]` with only an empty-string check and no `normalize_api_key` equivalent.",
+                                  "why":  "`if not value` treats a whitespace/control-char key like `\u0027  \u0027` as present, so it would be sent as the `x-goog-api-key` header value (urllib may even reject header values with control chars) rather than falling back to secrets.json. The referenced `normalize_api_key` strips and rejects such values. The literal spec says \u0027if empty → fallback\u0027, so this isn\u0027t a strict spec violation, but it\u0027s a robustness gap versus the pattern the task points at."
+                              }
+                          ],
+    "needs_operator":  true
+}

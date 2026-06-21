@@ -1,0 +1,52 @@
+{
+    "task":  "[Автозадача из бэклога] [operator] OKO VLM Глава 1/5 — GeminiVlmProvider (реальный провайдер, БЕЗ проводки в пайплайн). НЕ переписывать VlmGate/событийную архитектуру. Атомы:\n1) src/oko/providers/gemini_vlm.py: class GeminiVlmProvider(VlmProvider), name=gemini, model по умолчанию gemini-2.5-flash; __init__(model, api_key_env=GEMINI_API_KEY, timeout_seconds=10.0, transport=None) — transport инъектируется как в http_vlm.py для офлайн-тестов; без сети при импорте.\n2) query(request): POST https://generativelanguage.googleapis.com/v1beta/models/\u003cmodel\u003e:generateContent, заголовок x-goog-api-key; payload contents[].parts=[{text:prompt}] + {inline_data:{mime_type,data}} из request.image_b64 или image_path; парсить candidates[0].content.parts[].text; вернуть VlmResponse(text,provider=gemini,model,latency_ms). Ключ: сначала os.environ[api_key_env]; если пусто — fallback на ~/.bridge-private/secrets.json поле geminiApiKey (паттерн slopvid google_auth). Нет ключа нигде → RuntimeError с именем переменной (честно, НЕ пустой текст).\n3) Хелперы: _gemini_inline_image(request) — base64 image_path если image_b64 нет; _extract_gemini_text(raw) — RuntimeError(Gemini response did not contain text) на пустом, НЕ возвращать пустую строку.\n4) tests/test_gemini_vlm_provider.py (офлайн, инъект-transport): endpoint/model/x-goog-api-key/timeout переданы; image_b64 И image_path дают inline_data; нет ключа → RuntimeError с именем; пустой/мусорный JSON → RuntimeError (не фейк-текст). Детерминизм, без сети.\nШаблон gemini-вызова: bridge-projects/literary-slop-video/slopvid/providers.py (GeminiImageProvider) + google_auth.py. МОДЕЛЬ строго gemini-2.5-flash (НЕ pro, НЕ 3-flash). Проверка: pytest зелёный. Глава 1 из 5 (дальше factory, триггер, проводка, демо) — НЕ забегай вперёд.",
+    "goal":  "Implement a new `GeminiVlmProvider` class that integrates with the Google Gemini API (specifically `gemini-2.5-flash` model) to handle text and image inputs, parse responses, and manage API keys, all while adhering to existing architectural patterns and being fully testable offline.",
+    "constraints":  [
+                        "Do NOT rewrite VlmGate/event-driven architecture.",
+                        "Do NOT integrate the provider into the main pipeline yet.",
+                        "The default model MUST be `gemini-2.5-flash` (NOT pro, NOT 3-flash).",
+                        "Do NOT implement future chapters (factory, trigger, pipeline integration, demo).",
+                        "The `_extract_gemini_text` helper MUST NOT return an empty string; it must raise a `RuntimeError` if text is missing.",
+                        "The `RuntimeError` for a missing API key MUST include the variable name, not an empty text.",
+                        "The `GeminiVlmProvider` MUST NOT require network access upon import.",
+                        "Tests MUST be deterministic and run without network access (offline).",
+                        "The `transport` mechanism MUST be injectable for offline testing."
+                    ],
+    "known_context":  [
+                          "An existing `VlmProvider` base class is available.",
+                          "An existing `VlmResponse` data structure is available.",
+                          "The `http_vlm.py` module provides a pattern for `transport` injection.",
+                          "The `GEMINI_API_KEY` environment variable is the primary source for the API key.",
+                          "A fallback API key source is `~/.bridge-private/secrets.json` with the field `geminiApiKey` (following the `slopvid google_auth` pattern).",
+                          "Reference implementation for Gemini API calls and authentication can be found in `bridge-projects/literary-slop-video/slopvid/providers.py` (`GeminiImageProvider`) and `google_auth.py`.",
+                          "The Gemini API endpoint is `https://generativelanguage.googleapis.com/v1beta/models/\u003cmodel\u003e:generateContent`.",
+                          "The Gemini API requires an `x-goog-api-key` header.",
+                          "The Gemini API payload structure for content is `contents[].parts=[{text:prompt}]` and `inline_data:{mime_type,data}` for images.",
+                          "The Gemini API response text is located at `candidates[0].content.parts[].text`."
+                      ],
+    "output_format":  "A Python module `src/oko/providers/gemini_vlm.py` containing the `GeminiVlmProvider` class and its helper methods, along with a corresponding test file `tests/test_gemini_vlm_provider.py`.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "All `pytest` tests in `tests/test_gemini_vlm_provider.py` pass successfully.",
+                          "The `GeminiVlmProvider` class is located at `src/oko/providers/gemini_vlm.py` and inherits from `VlmProvider`.",
+                          "The `GeminiVlmProvider` has `name=\u0027gemini\u0027` and a default `model=\u0027gemini-2.5-flash\u0027`.",
+                          "The `__init__` method accepts `model`, `api_key_env` (default `GEMINI_API_KEY`), `timeout_seconds` (default `10.0`), and `transport` (default `None`).",
+                          "The `query` method sends a POST request to `https://generativelanguage.googleapis.com/v1beta/models/\u003cmodel\u003e:generateContent`.",
+                          "The `query` method includes the `x-goog-api-key` header in its requests.",
+                          "The `query` method correctly formats text prompts into `contents[].parts=[{text:prompt}]`.",
+                          "The `query` method correctly formats image data from `request.image_b64` or `request.image_path` into `inline_data:{mime_type,data}`.",
+                          "The `query` method correctly parses the response text from `candidates[0].content.parts[].text`.",
+                          "The `query` method returns a `VlmResponse` object with `text`, `provider=\u0027gemini\u0027`, `model`, and `latency_ms`.",
+                          "The API key lookup prioritizes `os.environ[api_key_env]` and falls back to `~/.bridge-private/secrets.json` (`geminiApiKey`).",
+                          "A `RuntimeError` is raised with the correct variable name if no API key is found.",
+                          "The `_gemini_inline_image` helper correctly converts `image_path` to base64 if `image_b64` is not provided.",
+                          "The `_extract_gemini_text` helper raises `RuntimeError(\"Gemini response did not contain text\")` if the extracted text is empty or missing, instead of returning an empty string.",
+                          "Tests in `tests/test_gemini_vlm_provider.py` verify that `endpoint`, `model`, `x-goog-api-key`, and `timeout` are correctly passed.",
+                          "Tests verify that both `image_b64` and `image_path` inputs result in correct `inline_data` in the request payload.",
+                          "Tests verify that a `RuntimeError` with the variable name is raised if no API key is found.",
+                          "Tests verify that a `RuntimeError` is raised for empty or malformed JSON responses, not returning fake text.",
+                          "All tests are deterministic and run successfully without any network access."
+                      ]
+}

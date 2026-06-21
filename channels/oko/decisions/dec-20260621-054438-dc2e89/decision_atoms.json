@@ -1,0 +1,147 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "gemini_provider_definition",
+                      "statement":  "GeminiVlmProvider inherits from VlmProvider, has name=\u0027gemini\u0027, and uses \u0027gemini-2.5-flash\u0027 as the default model.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Provider Definition",
+                      "test":  "Verify `GeminiVlmProvider.name` is \u0027gemini\u0027 and `GeminiVlmProvider.default_model` is \u0027gemini-2.5-flash\u0027.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "constructor_signature",
+                      "statement":  "`__init__` accepts `model`, `api_key_env=\u0027GEMINI_API_KEY\u0027`, `timeout_seconds=10.0`, and `transport=None` for offline testability.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Provider Definition",
+                      "test":  "Inspect `GeminiVlmProvider.__init__` signature for specified parameters and defaults.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "api_key_resolution_logic",
+                      "statement":  "API key is resolved lazily during `query()`: first from `os.environ[api_key_env]` (empty treated as absent), then from `~/.bridge-private/secrets.json` field `geminiApiKey`. If no key is found, raise `RuntimeError` mentioning `api_key_env`. The secrets read should be factored into a module-level helper using `Path.home()`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "API Key Management",
+                      "test":  "Test `query()` with `GEMINI_API_KEY` set, then unset with `secrets.json` present, then with both absent, asserting `RuntimeError` with the correct message.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "payload_construction_structure",
+                      "statement":  "The payload shape is `contents=[{parts:[{text:prompt}] + optional [{inline_data:{mime_type,data}}]}]; the image part is emitted only when an image is present.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Payload Construction",
+                      "test":  "Verify the `transport` receives a payload matching `{\u0027contents\u0027: [{\u0027parts\u0027: [{\u0027text\u0027: \u0027...\u0027}]}]}` for text-only, and with `inline_data` for image requests.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "image_input_handling",
+                      "statement":  "A helper `_gemini_inline_image(request)` uses `request.image_b64` if present, otherwise reads `request.image_path` and encodes it to base64, preferring `image_b64` over `image_path`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Image Handling",
+                      "test":  "Test `_gemini_inline_image` with `image_b64` set, then with `image_path` set (and `image_b64` unset), verifying correct `inline_data` structure and precedence.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "response_parsing_strict_error_handling",
+                      "statement":  "The `_extract_gemini_text(raw)` helper walks `candidates[0].content.parts`, concatenates all `part[\u0027text\u0027]`, and raises `RuntimeError(\u0027Gemini response did not contain text\u0027)` on any missing, empty, or blocked path, never returning an empty or fabricated string.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Response Parsing / Error Handling",
+                      "test":  "Test `_extract_gemini_text` with various malformed/empty responses, including safety-blocked, and multi-part text, asserting correct text concatenation or `RuntimeError`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "testing_strategy_hermeticity",
+                      "statement":  "Tests in `tests/test_gemini_vlm_provider.py` must use a fake transport, monkeypatch environment variables and `Path.home()`, and use temporary image files for hermetic offline testing.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Transport/Testing",
+                      "test":  "Verify test suite runs without network access, uses mock objects for external dependencies, and specifically isolates `Path.home()` for key resolution tests.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "transport_contract",
+                      "statement":  "The `HttpTransport` contract from `http_vlm.py` (Callable[[url:str, payload:dict, headers:dict, timeout:float], dict]) must be reused, with a module-level `urllib` POST helper as default and injection in tests.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Transport/Testing",
+                      "test":  "Verify the `transport` parameter in `__init__` expects a callable matching the `http_vlm.py` signature, and that a `urllib` based default is provided.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "api_endpoint_authentication",
+                      "statement":  "The API endpoint is built at query time using `f\u0027https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent\u0027`, authenticating solely via the `x-goog-api-key` header (Content-Type: application/json) without a `?key=` query parameter.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "API Interaction",
+                      "test":  "Verify the `transport` receives the correct URL format and `x-goog-api-key` header, and no API key in the URL query string.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "image_mime_type_handling",
+                      "statement":  "Default `mime_type` for inline images to `\u0027image/jpeg\u0027`, guessing from `image_path` extension via `mimetypes` when a path is supplied, and optionally honoring `request.metadata[\u0027mime_type\u0027]`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Image Handling",
+                      "test":  "Test image handling with `image_b64` (default JPEG), `image_path` with `.png` and `.jpeg` extensions, and `request.metadata[\u0027mime_type\u0027]` override, verifying correct `mime_type` in payload.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "latency_measurement",
+                      "statement":  "Measure `latency_ms` by wrapping only the transport call with `time.perf_counter()` and return `VlmResponse(text=text, provider=\u0027gemini\u0027, model=self.model, latency_ms=...)`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Timing/Metrics",
+                      "test":  "Verify `query()` returns a `VlmResponse` with a non-negative `latency_ms` value, and that timing is applied around the transport call.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

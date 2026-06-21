@@ -1,0 +1,21 @@
+{
+    "consensus_atoms":  [
+                            "gemini_provider_definition",
+                            "constructor_signature",
+                            "api_key_resolution_logic",
+                            "payload_construction_structure",
+                            "image_input_handling",
+                            "response_parsing_strict_error_handling",
+                            "testing_strategy_hermeticity",
+                            "transport_contract",
+                            "api_endpoint_authentication",
+                            "image_mime_type_handling",
+                            "latency_measurement"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

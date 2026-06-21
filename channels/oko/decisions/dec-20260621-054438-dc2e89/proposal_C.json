@@ -1,0 +1,88 @@
+{
+    "proposer":  "C",
+    "understanding":  "Implement a standalone GeminiVlmProvider class in src/oko/providers/gemini_vlm.py that inherits from VlmProvider, integrates with Google Gemini API (gemini-2.5-flash model), handles text+image inputs, parses responses, manages API keys via env var with secrets.json fallback, and is fully testable offline via transport injection. Must not modify VlmGate/event architecture or integrate into pipeline. Tests must be deterministic and network-free.",
+    "summary":  "Create GeminiVlmProvider with name=\u0027gemini\u0027, default model=\u0027gemini-2.5-flash\u0027, injectable transport, API key resolution from GEMINI_API_KEY env var or ~/.bridge-private/secrets.json (geminiApiKey field), POST to Gemini generateContent endpoint with x-goog-api-key header, parse candidates[0].content.parts[].text into VlmResponse, raise RuntimeError on missing key or empty response text. Include offline tests verifying endpoint/model/headers/timeout, image handling (b64 and path), key errors, and malformed JSON handling.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use transport injection pattern from http_vlm.py for offline testing",
+                               "reason":  "Allows deterministic tests without network by injecting a mock transport that returns predefined responses",
+                               "tradeoff":  "Adds one parameter to __init__ but maintains consistency with existing codebase patterns",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement two-stage API key resolution: os.environ[api_key_env] first, then ~/.bridge-private/secrets.json fallback",
+                               "reason":  "Matches slopvid google_auth pattern; env var is standard for production, secrets.json provides developer convenience",
+                               "tradeoff":  "File I/O on every query if env var missing; acceptable for key lookup frequency",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Raise RuntimeError with variable name when no API key found",
+                               "reason":  "Constraint requires honest error with variable name, not empty text; aids debugging",
+                               "tradeoff":  "Slightly more verbose error handling but provides clear failure reason",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Raise RuntimeError in _extract_gemini_text on empty/missing text instead of returning empty string",
+                               "reason":  "Explicit constraint; prevents silent failures downstream when Gemini returns no content",
+                               "tradeoff":  "Callers must handle RuntimeError; stricter than returning empty string but safer",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Default model strictly gemini-2.5-flash, not pro or 3-flash",
+                               "reason":  "Explicit constraint in task; gemini-2.5-flash is the specified model for this chapter",
+                               "tradeoff":  "Less capable than pro models but faster/cheaper; appropriate for VLM tasks in this context",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Parse response from candidates[0].content.parts[].text",
+                               "reason":  "Matches Gemini API response structure; extracts generated text from first candidate",
+                               "tradeoff":  "Assumes single candidate and text part; sufficient for current use case, may need extension for multi-turn",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Support both image_b64 and image_path in request, with _gemini_inline_image helper",
+                               "reason":  "Flexibility for callers; image_path auto-converts to base64 inline_data format",
+                               "tradeoff":  "Adds file I/O for image_path; acceptable for VLM provider responsibilities",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "VlmProvider base class exists with expected interface (query method signature, name attribute)",
+                        "VlmResponse dataclass/class exists with fields: text, provider, model, latency_ms",
+                        "http_vlm.py transport pattern uses a callable/object with a request method matching requests.Session interface",
+                        "~/.bridge-private/secrets.json is valid JSON with optional geminiApiKey field",
+                        "Gemini API endpoint and response structure remain stable as documented",
+                        "Image mime_type can be inferred or defaults to \u0027image/png\u0027 when reading from path",
+                        "Tests will use a mock transport that returns controlled responses",
+                        "No concurrent access concerns for secrets.json file reading"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Gemini API response structure changes (e.g., candidates array format)",
+                      "severity":  "medium",
+                      "mitigation":  "Isolate response parsing in _extract_gemini_text helper; add defensive checks for response structure; tests cover malformed JSON"
+                  },
+                  {
+                      "risk":  "secrets.json file missing or malformed causes unexpected errors",
+                      "severity":  "low",
+                      "mitigation":  "Catch JSON decode errors and file not found; raise clear RuntimeError; tests cover missing file scenario"
+                  },
+                  {
+                      "risk":  "Large image base64 encoding causes memory pressure",
+                      "severity":  "low",
+                      "mitigation":  "Document image size expectations; streaming/chunked encoding can be added later if needed"
+                  },
+                  {
+                      "risk":  "Timeout handling inconsistent with transport injection",
+                      "severity":  "medium",
+                      "mitigation":  "Pass timeout parameter to transport; tests verify timeout is propagated; document transport interface expectations"
+                  },
+                  {
+                      "risk":  "API key exposed in logs if error messages include it",
+                      "severity":  "high",
+                      "mitigation":  "Ensure RuntimeError messages reference variable name, not key value; sanitize any debug logging"
+                  }
+              ],
+    "minimal_version":  "Implement GeminiVlmProvider with __init__, query, _gemini_inline_image, _extract_gemini_text, and _get_api_key methods. Support text-only and text+image requests. API key from env or secrets.json. Basic error handling. Offline tests with mock transport covering success path, missing key, empty response.",
+    "advanced_version":  "Add support for multiple images, response streaming, automatic mime_type detection from image_path, configurable API endpoint, retry logic with exponential backoff, structured logging, and integration test suite with recorded HTTP cassettes."
+}

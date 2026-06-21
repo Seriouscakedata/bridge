@@ -1,0 +1,191 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "gemini_provider_definition",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.98,
+                                     "impact":  0.9,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Unanimous (A/B/C). Subclassing VlmProvider with name=\u0027gemini\u0027 and a real default model \u0027gemini-2.5-flash\u0027 is the correct foundational contract. Trivial to implement, highly specific, and conventional. Low reversibility is acceptable since the identity rarely changes; default model can be overridden via constructor.",
+                      "total":  0.931
+                  },
+                  {
+                      "atom_id":  "constructor_signature",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.97,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Explicit params (model, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=10.0, transport=None) give sensible defaults and bake in offline testability via transport injection. Clean, low-cost, and unambiguous.",
+                      "total":  0.904
+                  },
+                  {
+                      "atom_id":  "api_key_resolution_logic",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Lazy resolution (env → ~/.bridge-private/secrets.json geminiApiKey → RuntimeError naming api_key_env) is correct precedence, treats empty env as absent, and fails loud rather than silently. Factoring the secrets read into a Path.home()-based helper aids testing/hermeticity. Slight simplicity cost from the multi-source fallback, but justified.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "payload_construction_structure",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Shape contents=[{parts:[{text}] (+ optional inline_data)}] matches the generateContent API, and emitting the image part only when present keeps text-only requests clean. Correct and well-specified.",
+                      "total":  0.8875
+                  },
+                  {
+                      "atom_id":  "image_input_handling",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.92,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. A dedicated _gemini_inline_image(request) helper with image_b64 taking precedence over image_path (read+base64-encode) is the right abstraction and precedence rule. Testable and cohesive.",
+                      "total":  0.8665
+                  },
+                  {
+                      "atom_id":  "response_parsing_strict_error_handling",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and high-value. Walking candidates[0].content.parts, concatenating text, and raising RuntimeError on missing/empty/safety-blocked paths — never fabricating or returning empty — is the single most correctness-critical behavior. Strong risk reduction against silent failures.",
+                      "total":  0.897
+                  },
+                  {
+                      "atom_id":  "testing_strategy_hermeticity",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Fake transport + monkeypatched env and Path.home() + temp image files yields fully offline, deterministic tests. Isolating Path.home() is the key detail that prevents leaking the developer\u0027s real secrets.json into tests. Strong risk reduction.",
+                      "total":  0.8825
+                  },
+                  {
+                      "atom_id":  "transport_contract",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.92,
+                                     "impact":  0.82,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Reusing the existing HttpTransport Callable signature from http_vlm.py keeps providers consistent and enables injection; a module-level urllib POST default keeps zero runtime deps. Reuse over reinvention lowers risk.",
+                      "total":  0.8755
+                  },
+                  {
+                      "atom_id":  "api_endpoint_authentication",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Building the v1beta .../{model}:generateContent URL at query time and authenticating via the x-goog-api-key header (no ?key= in the URL) is both API-correct and the safer choice — keeps the secret out of URLs, logs, and history. Specific and cheap.",
+                      "total":  0.91
+                  },
+                  {
+                      "atom_id":  "image_mime_type_handling",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Defaulting to image/jpeg, guessing via mimetypes from the path extension, and honoring request.metadata[\u0027mime_type\u0027] is a pragmatic correctness improvement over a hardcoded type. Slightly lower impact/simplicity since it is a refinement of image_input_handling, but worth it for PNG/other formats.",
+                      "total":  0.838
+                  },
+                  {
+                      "atom_id":  "latency_measurement",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.97,
+                                     "impact":  0.78,
+                                     "simplicity":  0.92,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Wrapping only the transport call with time.perf_counter() correctly attributes latency to the network round-trip (excluding local encoding/parsing) and returns a complete VlmResponse(provider/model/latency_ms). Simple, low-cost metric.",
+                      "total":  0.886
+                  }
+              ]
+}
