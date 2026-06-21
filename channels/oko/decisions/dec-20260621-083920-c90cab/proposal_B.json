@@ -1,0 +1,98 @@
+{
+    "proposer":  "B",
+    "understanding":  "OKO already has a complete offline-and-live pipeline (LivePipeline / run_live_runtime in src/oko/live/runtime.py) that runs for a finite --frames N and emits strict Bridge JSON, plus LiveReadinessChecker for fail-closed preflight. Chapter C1 (\u0027вечный runner service.py\u0027) asks for a NEW root entrypoint service.py — analogous to the existing vlm_demo.py — whose single new responsibility is perpetual, supervised execution of that pipeline: run forever, survive transient failures, shut down gracefully on SIGTERM/SIGINT, and log its operational state. \u0027Сборка фокусно по атомам\u0027 means I must NOT rewrite the pipeline; I decompose the supervision concern itself into small single-responsibility atoms (stop-signal, restart policy, structured logger, heartbeat, loop controller), each injectable and unit-testable in milliseconds, and record them as a new \u0027Chapter C1 Atoms\u0027 table in PROGRESS.md per project convention.",
+    "summary":  "Implement service.py as a thin, dependency-injected supervisor over the EXISTING LivePipeline — not a new pipeline. The service runs LiveReadinessChecker once (fail-closed), then enters a cooperative loop that drives the pipeline in small batches, checking a threading.Event stop flag between ticks. SIGTERM/SIGINT handlers only set that flag (signal-safe), so the current tick drains cleanly and no partial Bridge output is corrupted. Transient per-tick errors are retried with bounded exponential backoff + jitter and a circuit breaker; structurally-fatal errors (bad config, missing weights) exit non-zero so an OS supervisor (systemd/Docker/NSSM) — not a hot Python crash-loop — owns process restart. An injected clock + sleeper + iteration cap let tests simulate \u0027eternal\u0027 deterministically, reaching ≥80% coverage without 24h waits, while a separate real soak harness produces 24h evidence logs (mirroring the project\u0027s runs/*.txt convention). stdlib-only JSON logging matches the existing Bridge JSON style; no new dependencies.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "service.py is a thin supervisor that REUSES LivePipeline/run_live_runtime/LiveReadinessChecker/load_config/bridge_payload; the only new \u0027atom\u0027 is the perpetual-supervision policy, never a pipeline rewrite.",
+                               "reason":  "The pipeline was already assembled atom-by-atom (Phases 1-10 + Live). Re-implementing camera/detector/decision logic in service.py would duplicate tested code and violate single-responsibility. The service\u0027s sole responsibility is \u0027run the tick forever, resiliently\u0027.",
+                               "tradeoff":  "Couples the service to the pipeline contract; mitigated by depending on a narrow injected \u0027tick\u0027 callable (e.g. a run(limit) batch) rather than internals.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Split supervision into orthogonal injectable atoms: StopSignal (threading.Event + signal handlers), RestartPolicy (backoff+circuit-breaker), ServiceLogger (stdlib JSON formatter), Heartbeat, and a LoopController that wires them.",
+                               "reason":  "Each atom is pure/deterministic and testable in milliseconds, which is the only way to hit the 80%-coverage + single-responsibility success tests for an inherently long-running service.",
+                               "tradeoff":  "More small modules/objects and a little wiring boilerplate versus one monolithic run() function.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Inject clock, sleeper, stop_event and a max-iterations cap so \u0027eternal\u0027 is simulated deterministically in unit tests.",
+                               "reason":  "The \u002724h without unhandled exception\u0027 and \u0027restarts correctly\u0027 tests cannot run in CI on wall-clock. Injection lets a fake sleeper advance virtual time and a fake tick raise/recover on cue, asserting behavior not elapsed time.",
+                               "tradeoff":  "Extra constructor params and a test-only iteration cap that must default to unbounded in production.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Graceful shutdown is cooperative: signal handlers ONLY set the stop Event; the loop checks it between ticks and drains the in-flight tick before exiting.",
+                               "reason":  "Signal handlers must be async-signal-safe. Draining the current tick prevents emitting a half-built Bridge output or leaving the camera in a bad state. Shutdown latency is bounded by one batch duration.",
+                               "tradeoff":  "Shutdown is not instantaneous; a long batch delays exit, so batch size must stay small (e.g. a few frames per tick).",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Distinguish transient vs fatal errors: bounded exponential backoff + jitter + circuit breaker for transient (camera disconnect, VLM/network blip); fail-fast non-zero exit for fatal/structural (invalid config, missing weights), after a fail-closed readiness preflight.",
+                               "reason":  "A naive \u0027while True: try/except: pass\u0027 on a persistent fault spins the CPU and floods logs, faking liveness. Backoff caps + circuit breaker + readiness-first make the runner resilient yet honest about unrecoverable states.",
+                               "tradeoff":  "Requires an error-classification atom and tuning of backoff/breaker thresholds; misclassification could over- or under-retry.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Adopt two-tier resilience: in-process supervisor handles per-tick transient faults; an external OS supervisor (systemd/Docker restart=always/NSSM) owns whole-process restarts. service.py exits with clean codes and does NOT daemonize itself.",
+                               "reason":  "Reimplementing process supervision in Python is fragile; PID-1-friendly exit codes let the platform restart cleanly after fatal exits and OOM, which is what production \u0027eternal\u0027 services actually rely on.",
+                               "tradeoff":  "Needs an operator unit file (out of strict C1 code scope — documented, not necessarily shipped); SIGTERM behavior differs across OSes.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Structured JSON logging via stdlib logging with a custom formatter atom (status / significant-event / error levels) plus a periodic heartbeat line; no new dependencies.",
+                               "reason":  "Matches the existing Bridge JSON output style, is machine-parseable for monitoring, and respects the project note \u0027Stack: Python stdlib + pydantic/pyyaml/pytest\u0027 with no extra deps. Heartbeat satisfies the \u0027monitor operational status\u0027 success test and enables stall detection.",
+                               "tradeoff":  "Less ergonomic than structlog/loguru; manual formatter and no log rotation in-process (delegated to the OS/journald).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Register SIGINT and SIGTERM where supported, guarding registration on Windows; test the stop path through the injected stop_event rather than real OS signals.",
+                               "reason":  "Dev platform is Windows (SIGTERM delivery is limited) but production is likely Linux/systemd. Guarded registration keeps the runner portable, and testing the cooperative flag (not raw signals) keeps tests deterministic and cross-platform.",
+                               "tradeoff":  "Cannot fully exercise real SIGTERM delivery on the Windows dev box; relies on Linux/container for the literal SIGTERM acceptance test.",
+                               "confidence":  0.84
+                           }
+                       ],
+    "assumptions":  [
+                        "service.py lives at the repo root next to vlm_demo.py, following the existing root-entrypoint convention, and is invoked as `python service.py --config ... --rules ...`.",
+                        "The \u0027service\u0027 is the continuous camera→...→Bridge loop emitting Bridge JSON perpetually, i.e. an unbounded analogue of run_live_runtime instead of `--frames N`.",
+                        "Implementation reuses existing modules (load_config, LiveReadinessChecker, LivePipeline/run_live_runtime, bridge_payload) and adds only supervision atoms; stdlib-only, Python 3.11+, no new third-party deps.",
+                        "The 24h success test is validated structurally in unit tests (injected clock/sleeper + iteration cap) for CI, with a separate operator soak run producing real evidence logs under runs/ (matching the project\u0027s evidence convention).",
+                        "Real camera/VLM/weights may be absent in CI, so default service tests run fully offline with fake camera/detector providers, exactly like existing live smoke/runtime tests.",
+                        "Atoms will be recorded as a new \u0027Chapter C1 Atoms\u0027 table in PROGRESS.md with file paths and test counts, consistent with prior chapters.",
+                        "Graceful shutdown means draining the in-flight batch and flushing logs; the OS supervisor (systemd/Docker/NSSM) is responsible for whole-process restart after exit."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Hot crash-loop and log flooding when a persistent/structural fault is misclassified as transient (e.g. permanently missing model weights), faking \u0027liveness\u0027 while burning CPU.",
+                      "severity":  "high",
+                      "mitigation":  "Fail-closed readiness preflight before the loop; capped exponential backoff + jitter; circuit breaker that escalates to a fatal non-zero exit after N consecutive failures; explicit transient-vs-fatal error classification atom with tests."
+                  },
+                  {
+                      "risk":  "Resource leakage over a multi-day run — leaked OpenCV camera handles on reconnect, unbounded growth of the JSONL memory store, or rolling-buffer creep — causing slow degradation or OOM well before 24h.",
+                      "severity":  "high",
+                      "mitigation":  "Release/recreate pipeline resources on each restart; reuse the memory layer\u0027s bounded append/trim; keep batch size and buffers bounded; add a long soak harness that records RSS/handle counts as evidence; let the OS supervisor restart on OOM."
+                  },
+                  {
+                      "risk":  "Silent stall: a hung camera read or network call blocks the tick indefinitely, so the process is \u0027up\u0027 but does no work and emits no Bridge output.",
+                      "severity":  "medium",
+                      "mitigation":  "Per-tick watchdog/timeout atom plus periodic heartbeat; if a tick exceeds its deadline, abort it, log a stall event, and apply restart policy; external monitor alerts on missing heartbeat."
+                  },
+                  {
+                      "risk":  "Windows SIGTERM semantics differ from POSIX, so the literal \u0027graceful termination via SIGTERM\u0027 acceptance test may not reproduce on the dev box.",
+                      "severity":  "medium",
+                      "mitigation":  "Guard signal registration per-platform; drive shutdown logic through the injected cooperative stop_event in unit tests; run the literal SIGTERM acceptance on Linux/container and document NSSM/Ctrl-Break behavior for Windows operators."
+                  },
+                  {
+                      "risk":  "The untestable 24h requirement tempts sleep-based or wall-clock-dependent tests that are slow and flaky.",
+                      "severity":  "medium",
+                      "mitigation":  "Inject clock + sleeper + iteration cap; assert on observable behavior (loop stops on flag, backoff sequence grows then caps, fatal error exits non-zero, heartbeat emitted) in milliseconds; keep real elapsed-time validation out of the unit suite."
+                  },
+                  {
+                      "risk":  "Tight coupling of service.py to an evolving LivePipeline contract makes the supervisor brittle as the pipeline changes.",
+                      "severity":  "low",
+                      "mitigation":  "Depend on a narrow injected \u0027tick\u0027 callable (run a small batch, return Bridge outputs) rather than pipeline internals; cover the seam with a fake tick in tests so pipeline refactors don\u0027t break the supervisor."
+                  }
+              ],
+    "minimal_version":  "A single root-level service.py exposing run_service(config_path, *, rules_path, stop_event=None, clock=None, sleeper=None, max_restarts=None, max_iterations=None, project_root=\u0027.\u0027) and a main(argv). Flow: load_config → LiveReadinessChecker (fail-closed, non-zero exit if blocked) → build LivePipeline → enter a cooperative loop that calls pipeline.run in small batches, emitting bridge_payload JSON lines and a periodic heartbeat via a stdlib JSON logger. SIGINT/SIGTERM handlers (guarded for Windows) set a threading.Event checked between ticks for graceful drain. Transient tick errors retry with bounded exponential backoff; structural errors exit non-zero. Injected clock/sleeper/stop_event/iteration-cap make it fully offline-testable: ~6-8 atom tests (stops on flag, backoff grows then caps, fatal exits non-zero, heartbeat emitted, readiness-blocked exits, drains in-flight tick) reach ≥80% coverage. No new dependencies; one \u0027Chapter C1 Atoms\u0027 row added to PROGRESS.md.",
+    "advanced_version":  "Extends the minimal supervisor with: a RestartPolicy atom (exponential backoff + full jitter + circuit breaker with consecutive-failure escalation); a per-tick watchdog timeout that aborts hung ticks; an explicit transient-vs-fatal error-classification atom; a Heartbeat atom that writes a health/heartbeat file (and optional minimal HTTP /healthz) plus liveness/restart counters for external monitors; graceful drain with a shutdown deadline; optional SIGHUP hot config reload; resource lifecycle management that releases and rebuilds camera/detector/VLM resources across restarts; and operator deliverables — a systemd unit (Restart=always) / Dockerfile with restart policy / Windows NSSM notes, plus a real 24h soak harness that records Bridge-output counts and RSS/handle metrics to runs/service-soak-*.txt as committed evidence, mirroring the project\u0027s existing real-run evidence convention. All supervision atoms remain stdlib-only and individually unit-tested, with the live integration validated through the existing fake camera/detector providers."
+}

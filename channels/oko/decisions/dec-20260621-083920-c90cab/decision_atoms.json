@@ -1,0 +1,116 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "core_arch_supervisor_entrypoint",
+                      "statement":  "`service.py` will be the main entry point and a thin supervisor responsible for the process lifecycle, orchestrating other atomic components and delegating business logic.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify `service.py` can be invoked directly, manages the main loop, delegates work to an injected `run_once` or pipeline tick function, and exits cleanly.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "modular_design_single_responsibility",
+                      "statement":  "Decompose the service into small, single-responsibility, injectable atoms (functions/classes) for concerns like settings, logging, stop token, signal binding, backoff, heartbeat, and the main loop controller.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that key components (e.g., `BackoffPolicy`, `StopToken`, `ServiceLogger`) are implemented as distinct, testable units with clear interfaces, and can be injected.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "graceful_shutdown_stop_token",
+                      "statement":  "Implement cooperative graceful shutdown using a `threading.Event` (or similar stop token) that is set by SIGTERM/SIGINT handlers, allowing in-flight work to complete before exiting.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resilience",
+                      "test":  "Simulate SIGTERM/SIGINT by setting the stop token; verify the service loop terminates within a bounded time after completing its current iteration, and that cleanup hooks are called.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "robust_error_handling_backoff_circuit_breaker",
+                      "statement":  "Implement robust error handling for each work iteration, including local exception handling, exponential backoff with jitter and a maximum retry limit, and a circuit breaker to distinguish and escalate fatal errors (leading to non-zero exit) from transient ones.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resilience",
+                      "test":  "Unit test the backoff policy (sequence, reset, max delay). Test the circuit breaker: verify it triggers a fatal exit after N consecutive transient failures, and that the service exits non-zero for explicitly fatal errors.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "structured_json_logging_heartbeat",
+                      "statement":  "Implement structured JSON logging using the standard library, capturing lifecycle events (start, tick, error, shutdown), contextual metadata for atomic operations, and emitting a periodic heartbeat for operational status monitoring.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Observability",
+                      "test":  "Verify log output is valid JSON, contains expected fields (timestamp, level, event, context), and that heartbeat messages are emitted at configured intervals.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "testability_dependency_injection",
+                      "statement":  "Ensure high testability by using dependency injection for external concerns like clock, sleeper functions, and the stop event, allowing deterministic simulation of long-running processes and error scenarios in unit tests.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Verify that the main loop and backoff policy can be tested deterministically by injecting mock clock/sleeper/stop_event, completing in milliseconds.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "external_os_supervision",
+                      "statement":  "Rely on external OS-level supervisors (e.g., systemd, Docker `restart=always`) for whole-process restarts after fatal errors, ensuring the `service.py` exits with clean, non-zero codes for unrecoverable states and does not self-daemonize.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Process Management",
+                      "test":  "Verify the service exits with a non-zero code for fatal errors (e.g., bad configuration) and a zero code for graceful shutdown.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "minimal_external_dependencies",
+                      "statement":  "Minimize external dependencies, primarily relying on the Python standard library to ensure stability, portability, and reduce the attack surface.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Review `requirements.txt` (or equivalent) to ensure only essential, approved third-party libraries are present, with a strong preference for standard library modules.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "pluggable_business_logic_interface",
+                      "statement":  "Design a clear, pluggable interface (e.g., `run_once(context)`) for the core business logic, allowing the service framework to remain stable while the OKO-specific operations evolve independently.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that the service can run with a simple placeholder `run_once` function and can be swapped with a more complex, actual business logic implementation without changing the supervisor\u0027s core loop.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

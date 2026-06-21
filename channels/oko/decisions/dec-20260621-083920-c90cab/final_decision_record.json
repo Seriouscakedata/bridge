@@ -1,0 +1,149 @@
+{
+    "final_answer":  "OKO Permanent Service Chapter C1 will be implemented in `service.py` as a thin supervisor entrypoint that owns the process lifecycle and delegates all OKO-specific work to a pluggable `run_once(context)` seam. The supervisor runs an eternal loop guarded by a cooperative stop token (`threading.Event`) set from SIGTERM/SIGINT handlers registered in the main thread, so in-flight work finishes and cleanup hooks run before a clean exit (code 0). Resilience comes from two separated concerns rather than one bundled \u0027circuit breaker\u0027: a stateless `BackoffPolicy` (exponential backoff + jitter + capped max delay, reset on success) for transient per-iteration failures, and a `FailureEscalator` that counts consecutive transient failures and, on reaching N, escalates to a fatal non-zero exit; explicitly fatal errors (e.g. bad config) bypass backoff and exit non-zero immediately. Whole-process restarts are delegated to an external OS supervisor (systemd / Docker `restart=always`)—the service never self-daemonizes. Observability is stdlib structured JSON logging of lifecycle events (start, tick, error, shutdown) plus a periodic heartbeat. The codebase is assembled atom-by-atom: small single-responsibility, injectable units (Settings, ServiceLogger, StopToken, BackoffPolicy, FailureEscalator, Heartbeat, LoopController) with clock/sleeper/stop_event injected so the loop and policies are deterministically testable in milliseconds, supporting ≥80% coverage. Dependencies stay stdlib-first. Of the nine atoms, eight are accepted as-is and one (the error-handling atom) is accepted-with-modification: split into backoff vs. escalation and the loose \u0027circuit breaker\u0027 framing is dropped in favor of escalate-and-exit + external restart.",
+    "decisions":  [
+                      {
+                          "decision":  "`service.py` is a thin supervisor entrypoint owning process lifecycle, delegating business logic to an injected tick/run_once function.",
+                          "rationale":  "Unanimous (A/B/C) and judge-accepted (0.895). A foundational pattern: everything else hangs off a stable, testable loop owner that does no business logic itself, keeping the entrypoint simple and the domain code swappable.",
+                          "alternatives_considered":  [
+                                                          "Monolithic script mixing loop and business logic",
+                                                          "Framework/scheduler dependency (e.g. APScheduler) to own the loop"
+                                                      ],
+                          "risk":  "Low reversibility — the seam shape is hard to change later; mitigated by keeping the delegation contract minimal (`run_once(context) -\u003e None`).",
+                          "test":  "Invoke `service.py` directly; confirm it manages the main loop, calls the injected run_once each tick, and exits cleanly (code 0) on stop."
+                      },
+                      {
+                          "decision":  "Decompose into small single-responsibility, injectable atoms: Settings, ServiceLogger, StopToken, BackoffPolicy, FailureEscalator, Heartbeat, LoopController.",
+                          "rationale":  "Unanimous, judge-accepted (0.8275). Concrete named units give clear interfaces, enable dependency injection/testing, and satisfy the atomic-construction mandate.",
+                          "alternatives_considered":  [
+                                                          "Single class with all responsibilities",
+                                                          "Free functions sharing module-global state"
+                                                      ],
+                          "risk":  "Over-engineering a relatively small service (judge dinged simplicity to 0.65); mitigated by capping the atom set to the listed concerns and avoiding speculative abstraction.",
+                          "test":  "Each component is instantiable and exercised in isolation with clear inputs/outputs and can be injected into the LoopController."
+                      },
+                      {
+                          "decision":  "Cooperative graceful shutdown via a `threading.Event` stop token set by SIGTERM/SIGINT handlers; loop finishes the current iteration, runs cleanup hooks, then exits 0.",
+                          "rationale":  "Canonical and correct; highest risk_reduction (0.95) and overall score (0.9025). Prevents mid-work corruption/loss by never killing in-flight iterations.",
+                          "alternatives_considered":  [
+                                                          "Hard kill / immediate exit on signal",
+                                                          "Daemon threads abandoned on exit",
+                                                          "asyncio cancellation"
+                                                      ],
+                          "risk":  "Signal handlers must be registered in the main thread or registration fails silently; a hung iteration could exceed the bounded shutdown window—mitigate with a shutdown grace timeout.",
+                          "test":  "Set the stop token (simulating SIGTERM/SIGINT); verify the loop terminates within a bounded time after the current iteration completes and cleanup hooks fire."
+                      },
+                      {
+                          "decision":  "BackoffPolicy: stateless exponential backoff with jitter and a capped maximum delay, reset on a successful iteration (split out from the original bundled atom).",
+                          "rationale":  "Modify verdict (0.785) on the error-handling atom required separating backoff from escalation. Backoff alone handles transient per-iteration faults without hammering downstreams.",
+                          "alternatives_considered":  [
+                                                          "Fixed-interval retry",
+                                                          "No jitter (thundering-herd risk)",
+                                                          "Bundling backoff with escalation in one component"
+                                                      ],
+                          "risk":  "Mis-tuned base/max/jitter parameters; mitigated by making them Settings-driven and unit-testing the delay sequence and reset behavior.",
+                          "test":  "Unit-test the delay sequence is monotonic up to the cap, jitter stays within bounds, and the policy resets to base after success."
+                      },
+                      {
+                          "decision":  "FailureEscalator: count consecutive transient failures and escalate to a fatal non-zero exit after N; explicitly fatal errors (e.g. bad config) bypass backoff and exit non-zero immediately. The term \u0027circuit breaker\u0027 is replaced by \u0027escalate-and-exit\u0027.",
+                          "rationale":  "Modify verdict clarified that the proposal\u0027s \u0027circuit breaker\u0027 was loose terminology meaning escalate-and-exit, not classic open/half-open call gating. Separating escalation from backoff yields a clean, single-responsibility policy that pairs with external OS restart.",
+                          "alternatives_considered":  [
+                                                          "Classic open/half-open call-gating circuit breaker",
+                                                          "Infinite in-process retry with no escalation",
+                                                          "Bundling escalation into BackoffPolicy"
+                                                      ],
+                          "risk":  "Wrong fatal-vs-transient classification could either mask a permanent fault (retry forever) or crash on a recoverable one; mitigated by an explicit FatalError type and a configurable N.",
+                          "test":  "Verify exit is non-zero after N consecutive transient failures and immediately non-zero for an explicit fatal error; a success before N resets the counter."
+                      },
+                      {
+                          "decision":  "Structured JSON logging (stdlib) of lifecycle events (start, tick, error, shutdown) with contextual metadata, plus a periodic heartbeat at a configured interval.",
+                          "rationale":  "Unanimous, judge-accepted (0.8325). Low-cost operational observability satisfying the robust-logging success test and enabling liveness monitoring.",
+                          "alternatives_considered":  [
+                                                          "Plain-text logging",
+                                                          "Third-party structured-logging libs (structlog/loguru)",
+                                                          "External metrics/Prometheus exporter"
+                                                      ],
+                          "risk":  "Heartbeat spam or unbounded log volume; mitigated by a configurable interval and level-based filtering.",
+                          "test":  "Assert log lines parse as JSON with timestamp/level/event/context fields and that heartbeats emit at the configured cadence."
+                      },
+                      {
+                          "decision":  "Dependency injection of clock, sleeper, and stop_event into the loop and policies for deterministic testing.",
+                          "rationale":  "Judge-accepted (0.8475); the key enabler for testing the shutdown and error-handling atoms in milliseconds and reaching ≥80% coverage.",
+                          "alternatives_considered":  [
+                                                          "monkeypatching time.sleep in tests",
+                                                          "freezegun-style time mocking",
+                                                          "real wall-clock sleeps in tests"
+                                                      ],
+                          "risk":  "Slight added indirection (simplicity 0.7); mitigated by sensible real defaults so production callers need no wiring.",
+                          "test":  "Run the full loop and BackoffPolicy with mock clock/sleeper/stop_event; tests complete deterministically in milliseconds."
+                      },
+                      {
+                          "decision":  "Delegate whole-process restarts to an external OS supervisor (systemd / Docker `restart=always`); exit clean non-zero on unrecoverable states, zero on graceful shutdown; never self-daemonize.",
+                          "rationale":  "Judge-accepted (0.885) despite single-proposal (B) support — low cost, high simplicity, highly reversible, 12-factor/container-aligned, and the natural recovery mechanism behind the FailureEscalator\u0027s fatal exit.",
+                          "alternatives_considered":  [
+                                                          "In-process self-restart loop",
+                                                          "Self-daemonizing (double-fork)",
+                                                          "Watchdog subprocess inside service.py"
+                                                      ],
+                          "risk":  "Relies on correct deployment-side supervisor config; mitigated by documenting required unit/compose settings and verifying exit-code semantics.",
+                          "test":  "Service exits non-zero for a fatal error (e.g. bad configuration) and zero for graceful shutdown."
+                      },
+                      {
+                          "decision":  "Stdlib-first: minimize third-party dependencies in `service.py`.",
+                          "rationale":  "Judge-accepted (0.835). Improves stability, portability, and reduces attack surface at near-zero cost; makes the minimal-dependencies success test trivially pass.",
+                          "alternatives_considered":  [
+                                                          "Adopt structlog/pydantic/APScheduler for convenience",
+                                                          "Vendor utility libraries"
+                                                      ],
+                          "risk":  "Guiding principle rather than a hard mechanism (specificity 0.65); mitigated by a requirements review gate—any addition must be justified.",
+                          "test":  "Review requirements.txt (or pyproject) confirms only essential approved third-party libs; core service relies on the standard library."
+                      },
+                      {
+                          "decision":  "Expose a stable pluggable `run_once(context)` interface for OKO business logic.",
+                          "rationale":  "Judge-accepted (0.885). Lets the supervisor framework freeze while OKO-specific Chapter C1 logic evolves independently; complements the supervisor and OS-supervision atoms.",
+                          "alternatives_considered":  [
+                                                          "Subclassing the supervisor to add logic",
+                                                          "Hard-coding OKO logic inside the loop",
+                                                          "Plugin discovery via entry points"
+                                                      ],
+                          "risk":  "Context object scope creep; mitigated by keeping context minimal (logger, stop_token, settings) and versioning the contract.",
+                          "test":  "Run the service with a placeholder run_once, then swap in a real implementation without changing the supervisor loop."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Classic open/half-open call-gating circuit breaker.",
+                         "why":  "Judge clarified the proposal used \u0027circuit breaker\u0027 loosely. For a single-loop runner there is no fan-out of downstream calls to gate; the correct semantics are escalate-and-exit on N consecutive failures, with recovery handled by the external OS supervisor. The call-gating pattern would add state and complexity with no matching need."
+                     },
+                     {
+                         "decision":  "Bundling backoff, escalation, and breaker into one error-handling component.",
+                         "why":  "The modify verdict (penalty 0.03, simplicity 0.55) flagged three distinct concerns crammed together. Split into BackoffPolicy (transient retry timing) and FailureEscalator (fatal escalation) for single responsibility and independent testability."
+                     },
+                     {
+                         "decision":  "In-process self-restart / self-daemonization (double-fork, watchdog subprocess).",
+                         "why":  "Conflicts with the accepted external_os_supervision atom. Self-restarting hides crashes from the supervisor, complicates the process model, and violates 12-factor/container norms; clean non-zero exit + systemd/Docker restart is simpler and more reversible."
+                     }
+                 ],
+    "open_questions":  [
+                           "What concrete work does OKO Chapter C1 `run_once(context)` perform per tick, and what is the desired tick/poll interval?",
+                           "Exact resilience parameters: backoff base/max/jitter, N consecutive failures before fatal escalation, and heartbeat interval.",
+                           "Domain definition of fatal vs. transient errors (e.g. config/import errors = fatal; network/IO/transient API = retryable) and the explicit FatalError taxonomy.",
+                           "Does in-flight work require checkpointing/idempotency so an external restart resumes safely without duplication?",
+                           "Target deployment supervisor (systemd unit vs. Docker compose `restart=always`) so exit-code and signal contracts are validated against the real environment.",
+                           "Where should logs/heartbeat be emitted (stdout for container capture vs. file/syslog) and at what level?"
+                       ],
+    "implementation_plan":  [
+                                "Scaffold service.py module skeleton with the atom boundaries: Settings, ServiceLogger, StopToken, BackoffPolicy, FailureEscalator, Heartbeat, LoopController, and a placeholder run_once(context).",
+                                "Implement Settings (stdlib, env/CLI-driven) for tick interval, backoff base/max/jitter, escalation N, heartbeat interval, and shutdown grace timeout.",
+                                "Implement ServiceLogger as stdlib JSON-structured logging (timestamp, level, event, context) writing to stdout.",
+                                "Implement StopToken wrapping threading.Event with SIGTERM/SIGINT handlers registered in the main thread and a guard for non-main-thread registration.",
+                                "Implement BackoffPolicy (exponential + jitter, capped max, reset-on-success) as a stateless/pure-ish unit with injected sleeper.",
+                                "Implement FailureEscalator (consecutive transient-failure counter, N threshold, FatalError fast-path) returning an exit decision.",
+                                "Implement Heartbeat emitting a periodic JSON liveness log based on injected clock.",
+                                "Implement LoopController: eternal loop calling run_once each tick, wrapping it in try/except, routing exceptions through FailureEscalator + BackoffPolicy, emitting heartbeat, and checking StopToken between iterations; inject clock/sleeper/stop_event.",
+                                "Wire main(): build Settings, logger, stop token, components; run LoopController; return proper exit codes (0 graceful, non-zero fatal); guard `if __name__ == \u0027__main__\u0027`.",
+                                "Write unit tests with injected mock clock/sleeper/stop_event: backoff sequence/reset/cap, escalation threshold + reset + fatal fast-path, graceful shutdown within bounded time, JSON log shape, heartbeat cadence, clean exit codes — target ≥80% coverage.",
+                                "Author deployment artifacts: requirements review (stdlib-first), a systemd unit and/or Docker compose snippet with restart=always, documenting signal and exit-code contract.",
+                                "Run a soak/liveness check (or fast-clock simulation) approximating 24h continuous operation and verify SIGTERM graceful restart end-to-end."
+                            ],
+    "next_step":  "Scaffold `service.py` with the thin-supervisor LoopController and the seven injectable atoms plus a placeholder `run_once(context)`, then immediately add the deterministic unit tests for BackoffPolicy and FailureEscalator."
+}

@@ -1,0 +1,27 @@
+{
+    "task":  "Возьми OKO Постоянный сервис Глава С1 (вечный runner service.py) в работу — сборка кода фокусно по атомам.",
+    "goal":  "To implement or refactor the \u0027OKO Permanent Service Chapter C1\u0027 (specifically the `service.py` file) as a robust, continuously running service, with its codebase meticulously assembled \u0027atom-by-atom\u0027 to ensure high modularity, maintainability, and reliability.",
+    "constraints":  [
+                        "The service must be implemented in `service.py`.",
+                        "The service must function as an \u0027eternal runner\u0027, implying continuous operation and resilience.",
+                        "Code assembly must be \u0027focused on atoms\u0027, meaning a highly modular, granular, and single-responsibility approach to code structure."
+                    ],
+    "known_context":  [
+                          "The service is identified as \u0027OKO Permanent Service Chapter C1\u0027.",
+                          "The service\u0027s primary implementation file is `service.py`.",
+                          "The service is expected to run perpetually.",
+                          "The development methodology emphasizes atomic code construction."
+                      ],
+    "output_format":  "Functional, well-structured Python code for `service.py` that implements the OKO Permanent Service Chapter C1, adhering to atomic design principles.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The `service.py` file successfully starts and remains active for at least 24 hours without unhandled exceptions or unexpected terminations.",
+                          "A code review confirms that functions and methods within `service.py` generally adhere to a single responsibility principle.",
+                          "A code review confirms that classes (if present) have clearly defined responsibilities and minimal coupling.",
+                          "Unit tests exist for all core logical \u0027atoms\u0027 (functions/methods/small classes) within `service.py`, achieving at least 80% code coverage.",
+                          "The service can be gracefully terminated via standard signals (e.g., SIGTERM) and restarts correctly.",
+                          "The service implements robust logging to monitor its operational status, significant events, and any potential issues."
+                      ]
+}
