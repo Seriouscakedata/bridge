@@ -102,6 +102,16 @@ function Get-SynthesisDepthDecision {
     return @{ depth = 'Standard'; judge_task_type = $taskType; rationale = "fast-path: intent=normal conf=$intentConf complexity=$complexityHint" }
   }
 
+  # #2 BACKSTOP (2026-06-21): an explicit implementation task the LLM intent mis-rated (not
+  # normal / low-confidence). A clear code VERB (реализуй/напиши/коммить/...) with NO discussion
+  # VERB (обсуди/выбери между/...) is a do-it task, not a design debate -> Standard, even when the
+  # text name-drops architecture/design NOUNS. Genuine "обсуди/выбери" still falls to Deep below.
+  $hasCodeVerb = ($low -match '(?<![а-яёa-z])(реализу|напиш|допиш|собери|закоммить|коммить|внедри|почини|исправь|добавь|подключи|implement|build|write|commit|wire|integrate|fix)')
+  $hasDiscussVerb = ($low -match 'обсуди|обсужден|обсуждать|обсуждени|\bdiscuss\b|выбери между|какой подход|следует ли|стоит ли|за и против|trade.?off|как лучше|whether to')
+  if ($hasCodeVerb -and -not $hasDiscussVerb) {
+    return @{ depth = 'Standard'; judge_task_type = $taskType; rationale = 'imperative code task (verb backstop) -> Standard' }
+  }
+
   # 3. Explicit design/architecture discussion -> Deep. Takes precedence over the short-length
   #    heuristic: "обсуди X" is a discussion request even when short, and must not become Simple.
   if (($low -match 'обсуди|обсужден|обсуждать|обсуждени|\bdiscuss\b|архитектур|architect|\bdesign\b|redesign|подход|approach|страте|strategy|как лучше|whether to|следует ли|стоит ли') -and -not $isPlanRefinementDiscussTask) {
