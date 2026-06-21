@@ -1,0 +1,108 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно спроектировать не VLM-слайдшоу, а отдельный надёжный путь записи плавного видео с камеры: примерно 10 секунд реального потока, MP4, архив в runs/incidents/\u003cevent_id\u003e.mp4, отправка в Telegram именно через sendVideo. VLM должен анализировать отдельно 1 кадр/сек, а YOLO не должен снижать FPS итогового видео.",
+    "summary":  "Основное решение: разделить incident video capture и аналитические пайплайны. Для каждого события запускать высокоприоритетный real-time video recorder на 10 секунд с целевым FPS 25-30 и H.264/AAC или H.264-only MP4, сохранять файл в runs/incidents/\u003cevent_id\u003e.mp4, валидировать длительность/FPS через метаданные, затем отправлять файл в Telegram через sendVideo. VLM получает не видеофайл как слайдшоу, а отдельный 1 FPS sampler из того же источника или из уже записанного MP4. Если текущий YOLO loop отдаёт мало кадров или блокирует камеру, recorder должен использовать отдельный capture path: отдельный VideoCapture/GStreamer/FFmpeg input, camera broker, RTSP duplicate stream или ring-buffer producer.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Разделить запись видео и VLM-анализ на два независимых конвейера.",
+                               "reason":  "Требование явно фиксирует плавное видео и VLM-анализ только 1 кадр/сек; смешивание этих задач приведёт к 1 FPS MP4 или нестабильной записи.",
+                               "tradeoff":  "Появится больше координационного кода и очередей, но исчезнет зависимость качества видео от скорости VLM.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Для incident video recorder целиться в 25-30 FPS и писать MP4 длительностью около 10 секунд.",
+                               "reason":  "Плавное видео практически проверяется FPS \u003e= 25 и нормальной длительностью, а не количеством кадров VLM.",
+                               "tradeoff":  "Больше размер файла и нагрузка на CPU/IO по сравнению с 1 FPS, но это соответствует подтверждённому формату.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Сохранять итоговый файл строго как runs/incidents/\u003cevent_id\u003e.mp4 до отправки в Telegram.",
+                               "reason":  "Архив является частью контракта и нужен для повторной отправки, аудита и диагностики.",
+                               "tradeoff":  "Telegram отправка начнётся после финализации MP4, зато файл будет воспроизводимым и доступным локально.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Использовать sendVideo, а не sendDocument/sendAnimation/sendPhoto.",
+                               "reason":  "Контракт требует именно Telegram video message, чтобы клиент TG показывал файл как видео.",
+                               "tradeoff":  "Нужно соблюдать ограничения Telegram по размеру/кодеку, но пользовательский UX будет правильным.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "VLM-сэмплер должен брать 1 кадр/сек из live stream или из записанного MP4, но не управлять FPS записи.",
+                               "reason":  "Так VLM получает ровно нужную частоту анализа, а recorder сохраняет полный поток.",
+                               "tradeoff":  "Если VLM анализируется после записи из MP4, результат придёт позже; если live, нужен отдельный sampler.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Добавить FPS watchdog для YOLO/capture path и автоматический fallback на отдельный capture для video recorder.",
+                               "reason":  "Контракт прямо указывает, что YOLO может давать мало FPS и тогда нужен отдельный capture для плавности.",
+                               "tradeoff":  "Открытие второй камеры/RTSP-сессии может быть невозможно на части устройств; нужен broker или backend-specific fallback.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Предпочесть FFmpeg/GStreamer для записи MP4, если текущий OpenCV VideoWriter нестабилен.",
+                               "reason":  "FFmpeg/GStreamer лучше сохраняют таймстемпы, кодеки, constant frame rate и корректную MP4-финализацию.",
+                               "tradeoff":  "Нужна внешняя зависимость и диагностика команды, но качество и совместимость выше.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "После записи валидировать файл: exists, duration 8-12 секунд, avg_frame_rate \u003e= 25, читаемый контейнер.",
+                               "reason":  "Без автоматической проверки можно отправить битый MP4 или фактически 1 FPS слайдшоу.",
+                               "tradeoff":  "Небольшая задержка перед sendVideo, зато сбои становятся явными.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Событийный API должен возвращать пути к video_mp4, vlm_frames/vlm_result и telegram_message_id/status.",
+                               "reason":  "Это упростит трассировку incident pipeline и позволит success tests проверять все требования.",
+                               "tradeoff":  "Потребуется расширить структуру события/логов, но диагностика станет намного проще.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "Камера доступна как RTSP/USB/OpenCV-compatible источник или через уже существующий camera abstraction.",
+                        "Telegram bot token/chat_id уже настроены, и в проекте есть рабочая отправка медиа или HTTP-клиент Telegram Bot API.",
+                        "В системе можно установить или использовать ffmpeg/ffprobe, либо есть эквивалентная библиотека для записи и проверки MP4.",
+                        "event_id уже генерируется существующим incident/event pipeline.",
+                        "YOLO и VLM уже существуют, но их текущий FPS не считается достаточным источником для плавного видео.",
+                        "Звук не является обязательным, если исходная камера не предоставляет аудиопоток; ключевое требование касается smooth video."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Камера не поддерживает одновременное открытие двумя capture-клиентами.",
+                      "severity":  "high",
+                      "mitigation":  "Ввести camera broker/ring buffer: один producer читает камеру на максимальном стабильном FPS, recorder пишет все кадры, YOLO/VLM получают downsampled копии. Для RTSP также рассмотреть split через ffmpeg/gstreamer tee."
+                  },
+                  {
+                      "risk":  "CPU не успевает одновременно делать YOLO, VLM sampling и H.264 encoding.",
+                      "severity":  "high",
+                      "mitigation":  "Вынести recorder в отдельный процесс/поток с приоритетом, использовать hardware encoder при наличии, ограничить VLM до 1 FPS, а YOLO не должен блокировать запись."
+                  },
+                  {
+                      "risk":  "OpenCV VideoWriter создаёт MP4 с неправильным FPS или битым контейнером.",
+                      "severity":  "medium",
+                      "mitigation":  "Использовать FFmpeg/GStreamer backend и обязательную post-record проверку ffprobe; при провале помечать событие как video_failed и не отправлять битый файл."
+                  },
+                  {
+                      "risk":  "Telegram отклоняет MP4 из-за размера, кодека или таймаута.",
+                      "severity":  "medium",
+                      "mitigation":  "Кодировать H.264 yuv420p, ограничить bitrate/resolution для 10 секунд, отправлять через sendVideo multipart, логировать response и retry с backoff."
+                  },
+                  {
+                      "risk":  "Запись начинается слишком поздно после события и теряет важный контекст.",
+                      "severity":  "medium",
+                      "mitigation":  "В advanced version держать rolling buffer последних N секунд и при событии сохранять pre-roll + post-roll; в minimal version запускать запись немедленно при event trigger."
+                  },
+                  {
+                      "risk":  "VLM результаты не соответствуют видео, если sampling идёт из другого источника/тайминга.",
+                      "severity":  "medium",
+                      "mitigation":  "Привязывать VLM frames к event_id и timestamp; предпочтительно сэмплировать из сохранённого MP4 для точного соответствия или из общего broker с общими timestamps."
+                  },
+                  {
+                      "risk":  "Длительность получается не около 10 секунд из-за блокирующих reads или variable FPS.",
+                      "severity":  "high",
+                      "mitigation":  "Записывать по monotonic clock, не по количеству кадров; проверять duration после записи; при низком FPS переключаться на отдельный capture/broker path."
+                  }
+              ],
+    "minimal_version":  "PLAN minimal: 1) На событие создать runs/incidents и вычислить video_path = runs/incidents/\u003cevent_id\u003e.mp4. 2) Запустить отдельный recorder, который читает камеру напрямую примерно 10 секунд по monotonic time и пишет MP4 с target_fps 25 или 30. 3) Параллельно или после записи выполнить VLM sampling строго 1 кадр/сек: взять 10 кадров с timestamp offsets 0..9 секунд из live stream или из готового MP4. 4) Проверить MP4 через ffprobe/OpenCV metadata: файл существует, duration примерно 8-12 секунд, avg FPS \u003e= 25, frame_count достаточный. 5) Отправить video_path в Telegram через sendVideo, сохранить telegram status/message_id в event log. 6) Если измеренный FPS recorder ниже порога, пометить текущий путь как degraded и включить separate capture mode для следующих событий.",
+    "advanced_version":  "PLAN advanced: построить camera broker с одним high-FPS producer и несколькими consumers. Producer читает камеру в реальном времени, кладёт кадры с monotonic timestamps в bounded ring buffer. Incident recorder при event_id забирает full-rate кадры из ring buffer и пишет 10 секунд MP4, включая pre-roll при необходимости. YOLO consumer получает свой поток и может пропускать кадры без влияния на recorder. VLM consumer получает downsampled 1 FPS кадры или извлекает их из финального MP4 для идеального соответствия архиву. Если broker невозможен, fallback: отдельная FFmpeg/GStreamer capture session для recorder, независимая от YOLO. Добавить health metrics: capture_fps, encoded_fps, dropped_frames, duration, ffprobe_fps, telegram_send_status, vlm_frame_count. Success gate: sendVideo выполняется только после валидного MP4; при ошибке создаётся incident diagnostic record с причиной и, если доступно, fallback thumbnail/log."
+}

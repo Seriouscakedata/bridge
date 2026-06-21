@@ -1,0 +1,142 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Decouple real-time video capture and recording from analytical pipelines (YOLO/VLM) using a dedicated, continuous capture process/thread and a ring buffer.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture / Video Capture",
+                      "test":  "Verify video recording FPS is independent of YOLO/VLM processing load and that a continuous capture buffer is maintained.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Record incident video as H.264 MP4, targeting 25-30 FPS and approximately 10 seconds duration, using real presentation timestamps (PTS) for constant frame rate and including +faststart for streaming.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Video Recording / Encoding",
+                      "test":  "Verify recorded MP4 duration is 8-12s, average FPS is \u003e= 25, uses CFR from PTS, and includes +faststart flag.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Archive the final MP4 file to `runs/incidents/\u003cevent_id\u003e.mp4` as the durable source of truth before attempting Telegram delivery.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Archiving / Persistence",
+                      "test":  "Verify `runs/incidents/\u003cevent_id\u003e.mp4` exists and is a valid MP4 file after recording, before Telegram send.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Utilize Telegram\u0027s `sendVideo` API for sending the incident video, with graceful degradation to `sendPhoto` or text if video upload fails.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Telegram Integration",
+                      "test":  "Verify Telegram message is sent via `sendVideo` API and appears as an inline video, and fallback logic is triggered on `sendVideo` failure.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Perform VLM analysis at exactly 1 frame per second by sampling from the shared decoded frames or the ring buffer, ensuring it does not control or affect the video recording FPS.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "VLM Analysis",
+                      "test":  "Verify VLM processes exactly 1 frame per second, independent of video recording FPS, by sampling from the designated source.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Implement an FPS watchdog for the YOLO/capture path with automatic fallback to a separate capture mechanism (e.g., camera sub-stream, dedicated accessor, or ffmpeg stream-copy) for the video recorder if FPS degrades due to processing load.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Video Capture / Resilience",
+                      "test":  "Simulate YOLO FPS degradation and verify video recorder switches to a separate capture path, maintaining target FPS for smooth video.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Prefer FFmpeg/GStreamer or hardware-accelerated encoders (e.g., NVENC, VAAPI) for MP4 recording, especially if OpenCV VideoWriter is unstable, to ensure robust encoding, timestamp handling, and constant frame rate.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Encoding",
+                      "test":  "Verify MP4 files produced by the chosen encoder are stable, have correct timestamps, and are playable across various players, with a fallback to a robust software encoder if hardware is unavailable.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "After recording, validate the MP4 file for existence, duration (8-12 seconds), average frame rate (\u003e= 25 FPS), and container integrity before sending to Telegram.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Error Handling / Validation",
+                      "test":  "Verify post-recording validation checks duration, FPS, and container integrity using ffprobe before Telegram send, and prevents sending invalid files.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Extend the event API to return paths to `video_mp4`, `vlm_frames`/`vlm_result`, and `telegram_message_id`/`status` for incident traceability.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "API / Event Reporting",
+                      "test":  "Verify event API response includes `video_mp4` path, VLM results, and Telegram message ID/status.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "statement":  "Offload video recording, encoding, and Telegram upload to an asynchronous worker queue to prevent blocking the real-time detection/decision/alert loop, with graceful degradation on failure.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Performance / Concurrency",
+                      "test":  "Verify detection/decision loop remains responsive and does not block during video encoding or Telegram upload, and that alerts are still sent even if video processing fails.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "statement":  "Implement memory-efficient buffering for pre-roll, using compressed JPEG frames or rolling FFmpeg segments with a hard memory/disk cap and garbage collection, rather than buffering raw frames.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Memory Management / Buffering",
+                      "test":  "Verify memory usage remains within configured limits during continuous capture and that pre-roll is included in recorded clips without OOM errors.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}

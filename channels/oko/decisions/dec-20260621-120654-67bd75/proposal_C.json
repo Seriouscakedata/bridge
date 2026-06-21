@@ -1,0 +1,75 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires building a video capture pipeline that records approximately 10 seconds of smooth, real-time camera footage (\u003e=25 FPS), encodes it as MP4, sends it via Telegram\u0027s sendVideo, archives it to runs/incidents/\u003cevent_id\u003e.mp4, and simultaneously performs VLM analysis at 1 frame/second. A critical constraint is that if the existing YOLO pipeline degrades frame rate below smoothness thresholds, a separate capture stream must be used to decouple video recording from heavy processing.",
+    "summary":  "A dual-stream architecture where a dedicated, lightweight capture thread continuously grabs frames from the camera at high FPS into a ring buffer. When an incident is triggered, the last 10 seconds of buffered frames are encoded to MP4 via hardware-accelerated encoding, saved to disk, and sent to Telegram. In parallel, a separate VLM analysis subscriber samples frames at exactly 1 FPS from the same buffer or a secondary stream. If the YOLO pipeline shares the camera and causes FPS drops, the capture stream is isolated via a separate camera accessor or frame-copy mechanism to guarantee smoothness.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use a dedicated capture thread with a ring buffer for real-time frame acquisition, decoupled from all processing pipelines.",
+                               "reason":  "Ensures that frame grabbing operates at maximum camera FPS without being blocked by YOLO, VLM, or encoding latency, meeting the \u0027smooth video\u0027 and \u0027real-time\u0027 constraints.",
+                               "tradeoff":  "Increases memory usage (buffer for 10s of high-FPS frames) and adds slight architectural complexity versus a single-threaded grab-and-process loop.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement a conditional second physical camera accessor or frame-copy stream when YOLO pipeline is active and detected to cause FPS degradation.",
+                               "reason":  "Directly addresses the constraint: \u0027If YOLO-pipeline gives low FPS for smoothness — separate capture for video.\u0027 Prevents processing bottlenecks from starving the video encoder of frames.",
+                               "tradeoff":  "Requires runtime monitoring of YOLO pipeline FPS impact and logic to switch capture sources, adding state management overhead.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Encode video to MP4 using hardware-accelerated encoding (e.g., NVENC, VAAPI) on the buffered frames after incident trigger.",
+                               "reason":  "Hardware encoding minimizes CPU load and encoding latency, ensuring the 10-second clip is written quickly without introducing frame drops or delays that could affect real-time behavior.",
+                               "tradeoff":  "Ties the solution to hardware with encoding capabilities; software fallback may be needed for compatibility, potentially increasing encoding time.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Perform VLM analysis at exactly 1 frame per second by sampling from the ring buffer or a separate frame queue, not by slowing the main capture.",
+                               "reason":  "Satisfies the \u0027VLM analysis at 1 frame/sec\u0027 requirement without compromising video smoothness. Decouples analysis rate from capture rate cleanly.",
+                               "tradeoff":  "VLM analysis may process slightly older frames (up to 1 second delay) if buffer sampling is used, but this is acceptable for incident analysis.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Archive video to runs/incidents/\u003cevent_id\u003e.mp4 and send via Telegram sendVideo as sequential steps after encoding completes.",
+                               "reason":  "Ensures the file is persistently stored before attempting network transfer; if sendVideo fails, the archive still exists. Meets both archiving and Telegram notification requirements.",
+                               "tradeoff":  "Adds latency between incident trigger and Telegram delivery (must wait for encoding + disk write), but reliability is prioritized over minimal latency.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "Camera supports at least 25 FPS capture natively.",
+                        "Hardware-accelerated MP4 encoding is available on the target system.",
+                        "Telegram bot token and chat ID are pre-configured and sendVideo API is functional.",
+                        "The YOLO pipeline can be monitored for its FPS impact or exposes a status interface.",
+                        "Incident events are triggered with a unique event_id before video capture begins.",
+                        "Sufficient RAM exists to hold a 10-second ring buffer of uncompressed frames (e.g., ~300 frames at 1080p).",
+                        "VLM analysis can accept individual frames as input and operates asynchronously."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Ring buffer overflow if encoding or disk I/O is slower than expected, causing lost frames and non-smooth video.",
+                      "severity":  "high",
+                      "mitigation":  "Use a sufficiently large buffer (e.g., 15 seconds capacity) and monitor buffer utilization; drop oldest frames gracefully if overflow imminent, logging the event."
+                  },
+                  {
+                      "risk":  "Hardware encoder not available or fails, falling back to software encoding which may be too slow and cause pipeline stalls.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement a fast software encoder (e.g., libx264 with ultrafast preset) as fallback; pre-allocate encoding threads to minimize latency."
+                  },
+                  {
+                      "risk":  "YOLO pipeline FPS impact detection is inaccurate, leading to unnecessary stream duplication or failure to switch when needed.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a simple moving average of capture FPS over 2-second windows; define clear hysteresis thresholds for switching to/from separate capture mode."
+                  },
+                  {
+                      "risk":  "Telegram sendVideo fails due to network issues or file size limits, losing notification.",
+                      "severity":  "low",
+                      "mitigation":  "Implement retry logic with exponential backoff (up to 3 attempts); compress video if needed to stay under Telegram\u0027s 50MB limit."
+                  },
+                  {
+                      "risk":  "VLM analysis at 1 FPS falls behind if processing time per frame exceeds 1 second, causing queue buildup.",
+                      "severity":  "medium",
+                      "mitigation":  "Run VLM analysis in a separate process/thread with a drop-oldest policy; monitor queue depth and alert if sustained backlog occurs."
+                  }
+              ],
+    "minimal_version":  "Single-threaded capture loop that grabs frames at camera max FPS, writes directly to MP4 container via OpenCV VideoWriter with hardware encoder, saves to runs/incidents/\u003cevent_id\u003e.mp4, sends via Telegram, and runs VLM on every Nth frame (where N = camera FPS) synchronously after recording. If YOLO is active, pause YOLO during the 10-second capture window to guarantee smoothness.",
+    "advanced_version":  "Multi-threaded architecture: Thread-1 (Capture) continuously fills a thread-safe ring buffer at max camera FPS. Thread-2 (Encoder) on incident trigger drains the last 10s from buffer, encodes MP4 via GStreamer pipeline with hardware acceleration, archives, and sends to Telegram. Thread-3 (VLM) subscribes to buffer at 1 FPS sampling rate, processing asynchronously. A Monitor service tracks YOLO pipeline FPS via shared metrics; if YOLO causes capture FPS \u003c 25, a separate camera accessor (e.g., second VideoCapture instance or GStreamer tee) is activated for the capture thread to isolate streams completely."
+}

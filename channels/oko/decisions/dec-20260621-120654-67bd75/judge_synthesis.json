@@ -1,0 +1,197 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.95,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Unanimous (A/B/C) and the correct foundational pattern: a dedicated capture thread feeding a ring buffer decouples recording FPS from YOLO/VLM load, which is the root cause being addressed. High impact and risk reduction. Simplicity is the only weak point (threads + buffer add complexity) and reversibility is low, but the architectural payoff justifies it.",
+                      "total":  0.8375
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Highly specific and technically sound: H.264 MP4 with PTS-derived CFR and +faststart is standard best practice for playable, streamable incident clips. Concrete, testable targets (8-12s, \u003e=25 FPS). Backed by A and B; medium cost is reasonable for the deliverable quality it guarantees.",
+                      "total":  0.8575
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.97,
+                                     "impact":  0.8,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Best-scoring atom: archive-before-deliver establishes a durable source of truth independent of fragile Telegram delivery. Unanimous, trivially cheap, fully reversible, highly specific path, and strong risk reduction against data loss. Near-zero downside.",
+                      "total":  0.919
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "sendVideo is the correct API to produce an inline video, and graceful degradation to sendPhoto/text guarantees the alert still reaches operators when upload fails. Unanimous, high risk reduction. The only minor cost is the added fallback branching, slightly lowering simplicity.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sampling VLM at exactly 1 FPS from the shared/ring buffer (rather than letting VLM gate decode) cleanly enforces the capture/analysis decoupling and bounds VLM cost. Unanimous and specific. Depends on DA-001\u0027s buffer existing, but consistent with it.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.6,
+                                     "impact":  0.75,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Partial overlap/redundancy with DA-001 decoupling; offers several alternative fallback mechanisms without committing to one, and dynamic mid-flight capture switching is hard to implement safely.",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "The resilience goal is sound and unanimous, but if DA-001 already isolates the recorder from analytics load, a watchdog that switches capture mechanisms mid-stream is partly redundant and adds significant complexity (high cost, low simplicity). Modify: keep the FPS watchdog/alerting but commit to a single fallback path (e.g., camera sub-stream or ffmpeg stream-copy) with defined switch hysteresis rather than an open menu.",
+                      "total":  0.6925
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.82,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct: OpenCV VideoWriter is notoriously unstable for timestamps/CFR, so preferring FFmpeg/GStreamer (with optional NVENC/VAAPI and a software fallback) materially improves encoding robustness. Unanimous. Slightly lower specificity because it lists multiple encoder options rather than fixing one, and adds an external dependency.",
+                      "total":  0.8065
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.78,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A cheap, high-value validation gate: ffprobe checks on existence, duration, FPS, and container integrity prevent shipping broken clips to operators. Unanimous, low cost, fully reversible, very specific thresholds. Pairs naturally with DA-003 and DA-002.",
+                      "total":  0.896
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.85,
+                                     "impact":  0.65,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Exposing video_mp4, vlm_result, and telegram_message_id/status improves incident traceability and observability. Specific and feasible (A/B), but it is a reporting enhancement rather than core to the recording fix, so impact and risk reduction are moderate.",
+                      "total":  0.795
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.85,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Offloading encode/upload to an async worker keeps the real-time detection/decision/alert loop responsive and lets alerts fire even when video processing lags or fails — correct and high impact (B/C). Cost is high and it lowers simplicity (queue infra, low reversibility), but it complements DA-001 rather than duplicating it.",
+                      "total":  0.775
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.65,
+                                     "impact":  0.65,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Single-proposal support (B only) and risks premature optimization: the JPEG-frames vs rolling-FFmpeg-segments choice should be driven by measured memory, not pre-committed.",
+                                            "amount":  0.02
+                                        }
+                                    ],
+                      "reason":  "The principle is right — never buffer raw frames for pre-roll; impose a hard memory/disk cap with eviction. But it is the weakest-supported atom (B only), high cost, and prescribes a specific mechanism prematurely. Modify: adopt the bounded-buffer + cap requirement, but select JPEG-encoded frames vs rolling FFmpeg segments after profiling the actual pre-roll memory footprint.",
+                      "total":  0.7075
+                  }
+              ]
+}

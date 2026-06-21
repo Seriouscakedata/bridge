@@ -1,0 +1,150 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.9,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Unbounded frame list growth — no max-frame/duration cap mentioned; long-lived pending events risk memory pressure since each frame is a full ndarray.",
+                                            "value":  0.02
+                                        }
+                                    ],
+                      "reason":  "Consensus across A/B/C and the necessary data-model foundation: buffering captured.image on _PendingVlmEvent from trigger to resolution is the only way to reconstruct the incident clip. Highly specific (names the attribute, the timing, and the source field) and trivially feasible. Only deduction is the absence of a frame/duration cap, which is a real but minor risk given the scope is bounded deferred person/animal events with short resolution windows.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "atom-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus encoder module. cv2.VideoWriter with fourcc \u0027mp4v\u0027 at fps=10 is the standard, well-trodden path and matches the user-confirmed smooth-video format. Cleanly isolated in its own module (high reversibility). Minor latent caveat: \u0027mp4v\u0027 is not always browser/H.264-friendly for downstream playback, but it is correct for storage and cv2 readback, so no penalty. Spec is precise on signature, codec, and fps.",
+                      "total":  0.8825
+                  },
+                  {
+                      "atom_id":  "atom-03",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Dict-style assignment bridge_output[\u0027incident_video_path\u0027] under extra=\u0027forbid\u0027 fails unless atom-05\u0027s real field exists — atom is only correct when coupled to atom-05.",
+                                            "value":  0.02
+                                        },
+                                        {
+                                            "reason":  "Hardcodes runs/incidents path, overlapping/conflicting with atom-08\u0027s injectable incidents_dir and hurting testability.",
+                                            "value":  0.01
+                                        }
+                                    ],
+                      "reason":  "Right intent and high impact (this is the user-visible deliverable: persisted clip + path on output). Downgraded to modify because correctness is conditional: setting the path on a pydantic BridgeOutput under extra=\u0027forbid\u0027 requires the real field from atom-05, and the hardcoded runs/incidents directory should defer to atom-08\u0027s injectable param. Adopt as: write via encode_incident_video, persist under the injectable incidents_dir, and assign through the declared field rather than dict-style.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "atom-04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and the primary risk-reduction lever. Both layers are validated — unit (synthetic frames → encode → cv2.VideoCapture readback \u003e1 frame) and integration (delayed resolve → incident_video_path set → file exists → readback \u003e1 frame) — and the pytest.importorskip(\u0027cv2\u0027) guard keeps the suite green in cv2-less environments. Very specific assertions. Slight simplicity cost from the end-to-end harness, but fully justified.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "atom-05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Highest-scoring atom. Although only proposal B raised it, it is the correct and load-bearing fix: declaring incident_video_path: str | None = None as a real field is what makes atom-03 actually work under extra=\u0027forbid\u0027 instead of raising ValidationError. Trivial, low-risk, self-contained, and directly de-risks the persistence path.",
+                      "total":  0.92
+                  },
+                  {
+                      "atom_id":  "atom-06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Strong robustness contract: returning str|None and no-op\u0027ing on missing cv2/numpy, \u003c1 usable ndarray frame, or writer.isOpened()==False makes the feature safe to ship without destabilizing the live pipeline when the optional dependency or frame buffer is degraded. Enumerated failure modes give it high specificity and risk reduction; the only cost is added branching.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "atom-07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.92,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sound scoping decision: confining video writing to the pending-resolve path (_resolve_pending_vlm_event → _resolve_vlm_event) limits Step 1 to deferred person/animal events, which aligns with the recent keyframe-deferral work and keeps blast radius small. Verifiable by the negative test (immediate events produce no video). Low complexity, high reversibility.",
+                      "total":  0.874
+                  },
+                  {
+                      "atom_id":  "atom-08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.92,
+                                     "impact":  0.82,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Refines and supersedes atom-03\u0027s hardcoded path: an injectable incidents_dir (default Path(\u0027runs/incidents\u0027)) enables tmp_path-based integration tests, lazy mkdir(parents=True, exist_ok=True) avoids startup side effects, and sanitizing event_id into the filename guards against invalid/path-traversal filenames. Precisely specified, low cost, materially improves testability and safety; should be implemented jointly with atom-03.",
+                      "total":  0.8905
+                  }
+              ]
+}

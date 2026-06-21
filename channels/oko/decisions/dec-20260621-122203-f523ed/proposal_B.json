@@ -1,0 +1,85 @@
+{
+    "proposer":  "B",
+    "understanding":  "Step 1/2 of incident video for OKO: when a deferred person/animal VLM event (_PendingVlmEvent in src/oko/pipeline/live.py) resolves at ready_at, persist an MP4 of the incident window (trigger→resolve) to runs/incidents/\u003cevent_id\u003e.mp4 and surface the path on bridge_output.incident_video_path. The encoder lives in a new src/oko/live/video.py using cv2.VideoWriter with the mp4v codec at fps=10. Acceptance is a pytest that drives a delayed event to resolution, then reads the MP4 back via cv2 and asserts \u003e1 frame. This is a code+commit task, one concern, no regressions.",
+    "summary":  "Accumulate incident frames on each _PendingVlmEvent across its delay window, add encode_incident_video(frames, out_path, fps=10) in src/oko/live/video.py (mp4v, graceful no-op when cv2/numpy/frames unusable), write runs/incidents/\u003cevent_id\u003e.mp4 at resolve time, add an incident_video_path field to BridgeOutput and set it via model_copy. Cover with a unit test (encode→readback) and an integration test (delayed event resolves→file exists→readback\u003e1 frame), guarded by importorskip so existing dict-image tests stay green.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add `frames: list[Any] = field(default_factory=list, compare=False)` to the frozen _PendingVlmEvent and append `captured.image` to every still-pending event each loop iteration (including the trigger iteration), before _resolve_ready_vlm_events runs.",
+                               "reason":  "Captures the full trigger→resolve window with minimal change; frozen dataclass forbids rebinding the attribute but appending to the referenced list is allowed, so mutation works without unfreezing.",
+                               "tradeoff":  "A mutable list on a frozen dataclass is slightly surprising; without compare=False, equality/hash semantics involve an unhashable list (list.remove still works via __eq__, but hash() would raise). compare=False keeps identity-based behavior clean.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Add `incident_video_path: str | None = None` as a real field on BridgeOutput rather than smuggling it through model_copy.",
+                               "reason":  "BridgeOutput uses model_config extra=\u0027forbid\u0027; an unknown key via model_copy(update=...) is fragile/non-serializable. A declared optional field is the correct, validated, backward-compatible carrier.",
+                               "tradeoff":  "Touches the domain model (slightly wider than \u0027just live.py\u0027), but it is the only correct way to satisfy the \u0027place path in bridge_output\u0027 constraint without breaking the forbid policy.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "encode_incident_video returns str|None and is a graceful no-op (returns None, writes nothing) when cv2/numpy are unavailable, when there are \u003c1 usable ndarray frames, or when the VideoWriter fails to open (writer.isOpened()==False).",
+                               "reason":  "Existing pipeline tests feed dict images ({\u0027frame\u0027: id}); a hard dependency on real arrays would regress them. None-on-failure mirrors the existing encode_frames_jpeg_b64 contract and keeps the pipeline crash-free.",
+                               "tradeoff":  "Silent failure can hide a misconfiguration; mitigated by returning None (so incident_video_path simply stays unset) and by an explicit unit test on the happy path.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Wire video writing into the pending-resolve path only (_resolve_pending_vlm_event → _resolve_vlm_event), scoping Step 1 to deferred person/animal events.",
+                               "reason":  "Those events already own a frame buffer and a clear trigger→ready_at window; immediate events have no accumulated window. Keeps the change to \u0027Один концерн\u0027.",
+                               "tradeoff":  "Immediate (non-deferred) events get no video in this step; that is deliberately deferred to Step 2 and should be stated as a boundary, not an omission.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Add an injectable `incidents_dir: Path = Path(\u0027runs/incidents\u0027)` constructor param on LivePipeline; mkdir(parents=True, exist_ok=True) lazily before writing; filename is `\u003csanitized event_id\u003e.mp4`.",
+                               "reason":  "Default satisfies the literal runs/incidents/\u003cevent_id\u003e.mp4 constraint while letting the integration test target tmp_path for isolation (no repo pollution, deterministic assertions).",
+                               "tradeoff":  "One extra constructor arg; negligible API surface and fully backward-compatible via the default.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Acceptance = two tests guarded by pytest.importorskip(\u0027cv2\u0027): a unit test (N synthetic uint8 BGR ndarrays → encode → cv2.VideoCapture readback frame count \u003e1) and an integration test (BufferingEventBuilder-style run with real ndarray captured.image, deferred event resolves → bridge_output.incident_video_path set → file exists under tmp incidents_dir → readback \u003e1 frame).",
+                               "reason":  "Directly matches every success_test (delayed event, file at path, openable, \u003e1 frame, no regressions) and isolates the encoder for fast failure localization.",
+                               "tradeoff":  "Two tests instead of one add a little surface, but the unit test pinpoints encoder bugs the integration test would only report obscurely.",
+                               "confidence":  0.87
+                           }
+                       ],
+    "assumptions":  [
+                        "cv2 (opencv) and numpy are installed in the runtime/test env — strongly indicated since src/oko/providers/camera.py uses cv2.VideoCapture and src/oko/vlm/frame_codec.py uses cv2.imencode; tests still guard with importorskip for safety.",
+                        "Real camera frames are uint8 BGR numpy ndarrays of consistent (H, W); test/fake frames are plain dicts and must be tolerated as \u0027no video\u0027.",
+                        "event_id (built_event.event.event_id) is unique-enough and filesystem-safe after light sanitization to use as the MP4 filename.",
+                        "The mp4v fourcc is available on the target OS (Windows 11) for VideoWriter; if the writer fails to open, encode returns None and the path stays unset.",
+                        "The incident window (person_animal_vlm_delay_seconds ≈ 3.5s) is short, so buffering raw frames per pending event is memory-bounded and acceptable.",
+                        "It is acceptable to add one optional field to BridgeOutput (domain change) to honor the bridge_output.incident_video_path constraint under extra=\u0027forbid\u0027."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "extra=\u0027forbid\u0027 on BridgeOutput rejects/garbles incident_video_path if injected only via model_copy without declaring the field.",
+                      "severity":  "high",
+                      "mitigation":  "Declare incident_video_path: str | None = None on the model; set it through model_copy(update=...) which then targets a real, serializable field."
+                  },
+                  {
+                      "risk":  "cv2.VideoWriter with mp4v silently fails to open (missing codec/backend), producing a 0-byte or unreadable file.",
+                      "severity":  "medium",
+                      "mitigation":  "Check writer.isOpened() before writing; return None on failure; assert file existence AND cv2.VideoCapture readback frame count \u003e1 in the test so a broken writer fails loudly in CI."
+                  },
+                  {
+                      "risk":  "Adding a mutable list to a frozen dataclass breaks hashing/equality assumptions used by list.remove during resolution.",
+                      "severity":  "medium",
+                      "mitigation":  "Mark frames with field(compare=False) so equality stays based on stable identifying fields; never hash _PendingVlmEvent (it is only stored in/removed from a list)."
+                  },
+                  {
+                      "risk":  "Existing tests feed dict images; a real-array assumption in the encoder or unconditional file write would regress them.",
+                      "severity":  "medium",
+                      "mitigation":  "Encoder filters non-ndarray/None frames and no-ops to None; pipeline only sets incident_video_path when a path is returned, so dict-image runs are unaffected."
+                  },
+                  {
+                      "risk":  "Writing into the repo\u0027s real runs/incidents during tests pollutes the working tree and makes assertions flaky.",
+                      "severity":  "low",
+                      "mitigation":  "Inject incidents_dir=tmp_path in tests; keep the default of runs/incidents only for production."
+                  },
+                  {
+                      "risk":  "Mixed frame sizes or grayscale frames in the buffer cause VideoWriter to drop/garble frames.",
+                      "severity":  "low",
+                      "mitigation":  "Minimal: derive size from the first frame and skip mismatched frames. Advanced: resize to the first frame\u0027s size and convert grayscale→BGR."
+                  }
+              ],
+    "minimal_version":  "1) src/oko/live/video.py: encode_incident_video(frames, out_path, fps=10) -\u003e str|None — drop None/non-ndarray frames; if \u003c1 remain or cv2/numpy missing return None; size from first frame; fourcc=cv2.VideoWriter_fourcc(*\u0027mp4v\u0027); mkdir parents; if not writer.isOpened() return None; write same-size frames, skip mismatches; release; return str(out_path). 2) src/oko/pipeline/live.py: add frames list (compare=False) to _PendingVlmEvent; in run() append captured.image to each still-pending event each iteration before resolving; add incidents_dir param (default Path(\u0027runs/incidents\u0027)); on _resolve_pending_vlm_event compute incidents_dir/\u0027\u003cevent_id\u003e.mp4\u0027, call encoder, and if path returned set bridge_output via model_copy(update={\u0027incident_video_path\u0027: path}). 3) src/oko/domain/bridge.py: add incident_video_path: str | None = None. 4) tests/test_incident_video.py: unit encode→readback\u003e1 frame, and integration delayed-event-resolves→file exists→readback\u003e1 frame, both importorskip(\u0027cv2\u0027) and using tmp_path. Run pytest; commit as a single focused change.",
+    "advanced_version":  "All of minimal, plus: resize/convert frames to the first frame\u0027s (H, W) and BGR so heterogeneous buffers still encode; expose fps and codec via OkoConfig instead of hardcoding; emit incident_video_path only after fsync/size\u003e0 verification and add structured logging on writer-open failure; thread the path into evidence_references as well; add a tiny CLI/reporter hook to point at the saved clip; parametrize the test across frame counts and a grayscale case; and stub Step 2 (immediate-event video + retention/cleanup of runs/incidents) behind a clear TODO without implementing it here."
+}

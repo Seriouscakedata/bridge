@@ -1,0 +1,230 @@
+{
+    "final_answer":  "Adopt a capture-first architecture that fully decouples real-time video recording from the analytical pipelines. A dedicated, continuously running capture thread feeds a bounded ring buffer; the incident recorder and the VLM sampler both read from that buffer instead of competing with YOLO for decode/FPS. On a trigger, the recorder emits a ~10s H.264 MP4 (25–30 FPS, constant frame rate derived from real PTS, +faststart) preferring an FFmpeg/GStreamer encoder (optionally NVENC/VAAPI, with a software fallback) rather than the unstable OpenCV VideoWriter. The clip is archived to runs/incidents/\u003cevent_id\u003e.mp4 as the durable source of truth, then validated with ffprobe (exists, 8–12s, \u003e=25 FPS, container intact) before any delivery. Delivery uses Telegram sendVideo with graceful degradation to sendPhoto/text so the alert always reaches operators. VLM analysis samples exactly 1 frame/sec from the shared buffer and never gates recording FPS. Encoding and upload are offloaded to an async worker so the detection/decision/alert loop never blocks. An FPS watchdog protects smoothness with a single committed fallback capture path (camera sub-stream or ffmpeg stream-copy) and switch hysteresis — not an open menu of mechanisms. Pre-roll is buffered under a hard memory/disk cap with eviction (never raw frames), with the concrete encoding of the buffer chosen after profiling. The event API is extended to expose video_mp4, vlm_result, and telegram_message_id/status for traceability. Two atoms (DA-006, DA-011) are accepted in modified form per the judge; nothing was rejected wholesale — only the over-broad sub-options within those two were dropped.",
+    "decisions":  [
+                      {
+                          "decision":  "Decouple real-time capture/recording from YOLO/VLM via a dedicated continuous capture thread feeding a bounded ring buffer (DA-001).",
+                          "rationale":  "Unanimous (A/B/C) and addresses the root cause: recording FPS is currently coupled to analytics load. A dedicated capture thread guarantees the recorder\u0027s frame rate is independent of YOLO/VLM, which is the precondition for every other smoothness guarantee. Judge total 0.8375.",
+                          "alternatives_considered":  [
+                                                          "Single shared decode loop where YOLO/VLM and recording share the same thread (rejected: couples FPS to processing load)",
+                                                          "Periodic snapshot/stitching of detector frames (rejected: produces 1fps-slide output the user explicitly rejected)"
+                                                      ],
+                          "risk":  "Low reversibility and added concurrency complexity (thread lifecycle, buffer thread-safety, back-pressure). Mitigated by keeping the capture thread minimal (read+timestamp+enqueue only).",
+                          "test":  "Verify recording FPS stays at target while YOLO/VLM load is artificially raised, and that a continuous capture buffer is maintained without starving the recorder."
+                      },
+                      {
+                          "decision":  "Record incident video as H.264 MP4 at 25–30 FPS, ~10s, using real PTS for constant frame rate and +faststart (DA-002).",
+                          "rationale":  "Standard best practice for playable, seekable, streamable incident clips. PTS-derived CFR prevents the variable-timing artifacts that make clips look like slides; +faststart enables progressive playback. Concrete, testable targets. Judge total 0.8575.",
+                          "alternatives_considered":  [
+                                                          "Variable frame rate from wall-clock writes (rejected: jittery playback, unreliable duration)",
+                                                          "Higher FPS/bitrate (deferred: unnecessary cost for 10s incident clips)"
+                                                      ],
+                          "risk":  "Medium reversibility; mismatched source/wall-clock timing can still skew duration if PTS handling is wrong.",
+                          "test":  "ffprobe confirms recorded MP4 duration 8–12s, average FPS \u003e= 25, CFR derived from PTS, and the +faststart/moov-atom-at-front flag present."
+                      },
+                      {
+                          "decision":  "Archive the final MP4 to runs/incidents/\u003cevent_id\u003e.mp4 as the durable source of truth BEFORE attempting Telegram delivery (DA-003).",
+                          "rationale":  "Best-scoring atom (0.919). Establishes persistence independent of fragile network delivery, so an incident is never lost when Telegram fails. Trivially cheap, fully reversible, highly specific.",
+                          "alternatives_considered":  [
+                                                          "Send to Telegram first, archive on success (rejected: data loss if upload fails)",
+                                                          "Archive only on operator demand (rejected: race against eviction, loses incidents)"
+                                                      ],
+                          "risk":  "Negligible. Disk-full is the only real failure mode; covered by the memory/disk cap in DA-011.",
+                          "test":  "After recording and before any send, assert runs/incidents/\u003cevent_id\u003e.mp4 exists and is a structurally valid MP4."
+                      },
+                      {
+                          "decision":  "Deliver via Telegram sendVideo with graceful degradation to sendPhoto/text on failure (DA-004).",
+                          "rationale":  "sendVideo is the correct API to render an inline, playable video for operators; the fallback guarantees the alert still arrives when upload fails or the file is rejected. Unanimous, high risk reduction. Judge total 0.88.",
+                          "alternatives_considered":  [
+                                                          "sendDocument (rejected: not inline-playable)",
+                                                          "sendVideo only with no fallback (rejected: operator gets nothing on failure)"
+                                                      ],
+                          "risk":  "Added fallback branching slightly lowers simplicity; must ensure fallback fires on both network and API-validation failures.",
+                          "test":  "Confirm a successful send appears as an inline video; force a sendVideo failure and verify sendPhoto/text fallback fires and the alert is still delivered."
+                      },
+                      {
+                          "decision":  "Run VLM analysis at exactly 1 frame/sec by sampling from the shared ring buffer, never gating recording FPS (DA-005).",
+                          "rationale":  "Enforces the capture/analysis decoupling from the consumer side and bounds VLM cost deterministically. Sampling from the buffer (not driving decode) keeps recording smoothness independent of VLM latency. Judge total 0.8425.",
+                          "alternatives_considered":  [
+                                                          "VLM drives the decode/frame pull (rejected: VLM latency would throttle recording FPS)",
+                                                          "VLM on every frame (rejected: cost, and violates the 1fps requirement)"
+                                                      ],
+                          "risk":  "Medium reversibility; depends on DA-001\u0027s buffer existing. Sampling cadence must be wall-clock-anchored, not frame-count-anchored, to stay at true 1fps.",
+                          "test":  "Verify VLM processes exactly one frame per wall-clock second sampled from the buffer, with recording FPS unchanged across VLM load."
+                      },
+                      {
+                          "decision":  "Add an FPS watchdog on the capture/YOLO path with a SINGLE committed fallback capture path and defined switch hysteresis (DA-006, modified per judge).",
+                          "rationale":  "Resilience goal is sound and unanimous, but with DA-001 already isolating the recorder, a watchdog that switches among an open menu of mechanisms mid-stream is partly redundant and hard to do safely. Modified: keep FPS monitoring/alerting, but commit to ONE fallback (camera sub-stream OR ffmpeg stream-copy) with explicit enter/exit thresholds to avoid flapping. Judge total 0.6925.",
+                          "alternatives_considered":  [
+                                                          "Open menu of fallbacks (sub-stream / dedicated accessor / ffmpeg stream-copy) selected dynamically (rejected by judge: complexity, unsafe mid-flight switching)",
+                                                          "No watchdog, rely solely on DA-001 isolation (rejected: no recovery if the primary capture source itself degrades)"
+                                                      ],
+                          "risk":  "Mid-stream capture switching can drop frames at the seam; hysteresis and a clean handoff are required. Medium reversibility.",
+                          "test":  "Simulate sustained FPS degradation; verify the watchdog switches to the single committed fallback after the enter-threshold, holds target FPS, and switches back only after the exit-threshold (no flapping)."
+                      },
+                      {
+                          "decision":  "Prefer FFmpeg/GStreamer for MP4 encoding (optional NVENC/VAAPI hardware accel) with a robust software encoder fallback (DA-007).",
+                          "rationale":  "OpenCV VideoWriter is notoriously unstable for timestamps/CFR across platforms; an FFmpeg/GStreamer pipeline gives reliable PTS handling, CFR, and broad player compatibility. Hardware accel reduces encode cost; software fallback preserves portability. Judge total 0.8065.",
+                          "alternatives_considered":  [
+                                                          "OpenCV VideoWriter (rejected: unstable timestamps/CFR)",
+                                                          "Hardware-only encode (rejected: fails where NVENC/VAAPI absent)"
+                                                      ],
+                          "risk":  "Adds an external dependency; encoder selection at runtime must probe capability and degrade cleanly. Medium reversibility.",
+                          "test":  "MP4s from the chosen encoder play across multiple players with correct timestamps/CFR; with hardware accel disabled, software fallback produces an equivalent valid clip."
+                      },
+                      {
+                          "decision":  "Validate the MP4 with ffprobe (existence, 8–12s duration, \u003e=25 FPS, container integrity) before Telegram send (DA-008).",
+                          "rationale":  "Cheap, high-value gate that prevents shipping broken clips to operators and pairs naturally with DA-002/DA-003. Unanimous, low cost, fully reversible, specific thresholds. Judge total 0.896.",
+                          "alternatives_considered":  [
+                                                          "Trust the encoder, no post-check (rejected: silent corruption reaches operators)",
+                                                          "Validate only file existence (rejected: misses truncated/zero-FPS clips)"
+                                                      ],
+                          "risk":  "Negligible; only adds a sub-second ffprobe call. Must define behavior when validation fails (fall back to sendPhoto/text per DA-004).",
+                          "test":  "ffprobe gate runs before send; a deliberately corrupted/short/low-FPS file is blocked from sendVideo and routed to fallback."
+                      },
+                      {
+                          "decision":  "Extend the event API to expose video_mp4 path, vlm_frames/vlm_result, and telegram_message_id/status (DA-009).",
+                          "rationale":  "Improves incident traceability and observability — operators/tools can correlate the archived clip, analysis, and delivery outcome. Specific and feasible (A/B). Reporting enhancement, so moderate impact. Judge total 0.795.",
+                          "alternatives_considered":  [
+                                                          "Log-only, no API surface (rejected: not queryable/traceable)",
+                                                          "Separate sidecar metadata file (deferred: API is the existing integration point)"
+                                                      ],
+                          "risk":  "Medium reversibility (API contract change); keep additions additive/back-compatible.",
+                          "test":  "Event API response includes video_mp4 path, VLM result, and Telegram message id/status for a completed incident."
+                      },
+                      {
+                          "decision":  "Offload recording/encoding/Telegram upload to an asynchronous worker queue so the real-time detection/decision/alert loop never blocks, with graceful degradation on failure (DA-010).",
+                          "rationale":  "Keeps the live loop responsive and lets alerts fire even when encoding/upload lags or fails. Complements DA-001 (capture isolation) rather than duplicating it — this isolates the heavy post-trigger work. Judge total 0.775.",
+                          "alternatives_considered":  [
+                                                          "Encode/upload inline in the detection loop (rejected: blocks real-time path, drops detections)",
+                                                          "Fully external message broker (deferred: in-process worker pool likely sufficient; revisit if scale demands)"
+                                                      ],
+                          "risk":  "High cost, low reversibility (queue infra, ordering, retry semantics). Must bound queue depth and define drop/retry policy.",
+                          "test":  "Under encode/upload load (or induced failure), the detection/decision loop stays responsive and alerts still fire; video work completes or degrades without stalling the loop."
+                      },
+                      {
+                          "decision":  "Buffer pre-roll under a hard memory/disk cap with eviction (never raw frames); choose JPEG-encoded frames vs rolling FFmpeg segments AFTER profiling (DA-011, modified per judge).",
+                          "rationale":  "Principle is right — never buffer raw frames; impose a bounded buffer with a hard cap and GC/eviction. But it is the weakest-supported atom (B only) and prescribes a mechanism prematurely. Modified: adopt the bounded-buffer + cap requirement now; defer the JPEG-vs-segment decision to measured pre-roll memory footprint. Judge total 0.7075.",
+                          "alternatives_considered":  [
+                                                          "Buffer raw decoded frames (rejected: OOM risk)",
+                                                          "Pre-commit to JPEG frames (rejected by judge: premature; profile first)",
+                                                          "Pre-commit to rolling FFmpeg segments (rejected by judge: premature; profile first)"
+                                                      ],
+                          "risk":  "High cost; the chosen mechanism affects encode latency and seam quality at the pre-roll/live boundary. Cap must be enforced to prevent OOM/disk-full.",
+                          "test":  "Memory/disk stays within configured caps during continuous capture; pre-roll is included in recorded clips with no OOM; profiling data recorded to justify the buffer-encoding choice."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "DA-006 as originally stated — an open menu of interchangeable fallback capture mechanisms (sub-stream / dedicated accessor / ffmpeg stream-copy) selected dynamically.",
+                         "why":  "Partly redundant with DA-001\u0027s recorder isolation, and dynamic mid-flight switching among multiple mechanisms is hard to implement safely (frame-drop seams, flapping). Replaced by a single committed fallback path with switch hysteresis."
+                     },
+                     {
+                         "decision":  "DA-011 as originally stated — pre-committing to JPEG-encoded frames vs rolling FFmpeg segments for the pre-roll buffer.",
+                         "why":  "Single-proposal support (B only) and premature optimization. The mechanism choice should be driven by measured memory footprint, not pre-committed. The bounded-buffer + hard-cap requirement is kept; the specific encoding is deferred to profiling."
+                     }
+                 ],
+    "open_questions":  [
+                           "Which single fallback capture path is actually available on the target cameras — a second RTSP profile/sub-stream, or ffmpeg stream-copy from the primary RTSP — and what are its FPS/resolution characteristics?",
+                           "What is the measured pre-roll memory footprint at target FPS/resolution, to choose JPEG-encoded frames vs rolling FFmpeg segments for DA-011?",
+                           "Is hardware encoding (NVENC/VAAPI) available on the deployment hardware, or must the software encoder be the default path?",
+                           "How many seconds of pre-roll (before the trigger) should the clip include within the ~10s total?",
+                           "Should the async worker be an in-process thread pool or an external queue, given expected concurrent-incident volume?",
+                           "What are the concrete FPS enter/exit thresholds and dwell time for the watchdog hysteresis (DA-006) to avoid flapping?",
+                           "What Telegram size/duration limits apply, and what bitrate/resolution keeps the 10s clip under them while staying \u003e=25 FPS?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "P0 — Foundation: capture isolation",
+                                    "atoms":  [
+                                                  "DA-001"
+                                              ],
+                                    "tasks":  [
+                                                  "Stand up a dedicated capture thread that only reads frames, stamps real PTS, and enqueues into a bounded ring buffer.",
+                                                  "Refactor YOLO and the recorder/VLM to consume from the buffer instead of pulling from the camera directly.",
+                                                  "Add back-pressure/drop policy so a slow consumer cannot stall capture.",
+                                                  "Benchmark recording FPS under induced YOLO/VLM load to prove independence."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P1 — Recording \u0026 encoding",
+                                    "atoms":  [
+                                                  "DA-002",
+                                                  "DA-007"
+                                              ],
+                                    "tasks":  [
+                                                  "Implement an FFmpeg/GStreamer-based recorder writing H.264 MP4 at 25–30 FPS, ~10s, CFR from PTS, +faststart.",
+                                                  "Add encoder capability probing: prefer NVENC/VAAPI, fall back to software x264.",
+                                                  "Wire pre-roll frames from the buffer into the front of each clip."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P2 — Archive \u0026 validate",
+                                    "atoms":  [
+                                                  "DA-003",
+                                                  "DA-008"
+                                              ],
+                                    "tasks":  [
+                                                  "Write the clip to runs/incidents/\u003cevent_id\u003e.mp4 atomically (temp file + rename) before any delivery.",
+                                                  "Add an ffprobe validation gate (exists, 8–12s, \u003e=25 FPS, container integrity); block delivery and route to fallback on failure."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P3 — Delivery",
+                                    "atoms":  [
+                                                  "DA-004"
+                                              ],
+                                    "tasks":  [
+                                                  "Send the validated MP4 via Telegram sendVideo.",
+                                                  "Implement graceful degradation: on sendVideo failure, sendPhoto (keyframe) then text, so the alert always reaches operators.",
+                                                  "Capture telegram_message_id/status."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P4 — VLM sampling",
+                                    "atoms":  [
+                                                  "DA-005"
+                                              ],
+                                    "tasks":  [
+                                                  "Sample exactly 1 frame/sec (wall-clock-anchored) from the ring buffer for VLM.",
+                                                  "Confirm VLM latency does not affect recording FPS; persist vlm_frames/vlm_result."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P5 — Resilience \u0026 concurrency",
+                                    "atoms":  [
+                                                  "DA-006",
+                                                  "DA-010"
+                                              ],
+                                    "tasks":  [
+                                                  "Add an FPS watchdog with a single committed fallback capture path and enter/exit hysteresis thresholds.",
+                                                  "Move encoding + upload onto an async worker queue with bounded depth and a retry/drop policy so the detection/decision/alert loop never blocks."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P6 — Memory bounding \u0026 API",
+                                    "atoms":  [
+                                                  "DA-011",
+                                                  "DA-009"
+                                              ],
+                                    "tasks":  [
+                                                  "Enforce a hard memory/disk cap with eviction on the pre-roll buffer; never buffer raw frames.",
+                                                  "Profile real pre-roll memory footprint, then select JPEG-encoded frames vs rolling FFmpeg segments based on the data.",
+                                                  "Extend the event API to return video_mp4, vlm_result, and telegram_message_id/status."
+                                              ]
+                                },
+                                {
+                                    "phase":  "P7 — End-to-end verification",
+                                    "atoms":  [
+                                                  "DA-002",
+                                                  "DA-003",
+                                                  "DA-004",
+                                                  "DA-005",
+                                                  "DA-008"
+                                              ],
+                                    "tasks":  [
+                                                  "Run the full success-test suite: MP4 created at runs/incidents/\u003cevent_id\u003e.mp4, 8–12s, \u003e=25 FPS smooth playback, sendVideo delivered inline, VLM at 1fps, and watchdog fallback verified under simulated FPS degradation."
+                                              ]
+                                }
+                            ],
+    "next_step":  "Implement P0/DA-001: introduce the dedicated capture thread + bounded ring buffer and prove (benchmark) that recording FPS is independent of YOLO/VLM load — this is the foundation every other decision depends on."
+}

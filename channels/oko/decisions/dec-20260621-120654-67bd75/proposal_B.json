@@ -1,0 +1,103 @@
+{
+    "proposer":  "B",
+    "understanding":  "OKO is a single-threaded, pull-based surveillance pipeline: LivePipeline.run() calls CameraSource.frames(limit) and, per frame, runs YOLO detection, tracking, zoning, decision, and (sampled) VLM inline. Because the camera read shares the loop with YOLO/VLM inference, effective capture cadence collapses to a few fps — producing the \u00271fps slide\u0027 artifact the user rejected. Today the only outbound media is a single keyframe via Telegram sendPhoto; there is no MP4 encoder, no sendVideo, and runs/incidents/ does not yet exist. The task is to add a robust path that records ~10s of genuinely smooth (\u003e=25fps) real-time camera video, encodes MP4, archives it to runs/incidents/\u003cevent_id\u003e.mp4, sends it via Telegram sendVideo, and runs VLM at exactly 1 frame/sec — decoupling video smoothness from the YOLO pipeline, with a dedicated/separate capture path when YOLO starves the frame rate.",
+    "summary":  "Introduce a long-lived ContinuousRecorder that captures the camera at native fps independently of the YOLO/VLM loop and maintains a rolling pre-roll buffer; on alert it materializes a ~10s clip (pre-roll + post-roll) as a constant-frame-rate MP4 using real presentation timestamps, archives it to runs/incidents/\u003cevent_id\u003e.mp4 (durable source of truth), then a non-blocking worker sends it via a new Telegram sendVideo multipart path (degrading to sendPhoto/text on failure). For RTSP/ONVIF cameras prefer a near-zero-cost ffmpeg stream-copy segment recorder (uses the camera\u0027s own H.264 — perfectly smooth, no re-encode, fully decoupled from YOLO); for webcams use a dedicated capture thread + ring buffer + encode. Keep YOLO and VLM on a single shared decode at their own slow rate, and feed VLM a 1-fps decimation of the same 10s window so video and VLM share one capture without a redundant decode. Only fall back to a second independent capture stream (or the camera sub-stream) if single-decode fan-out still can\u0027t sustain smoothness.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a long-lived ContinuousRecorder service that runs the camera capture continuously in its own thread/process, separate from the batch CameraSource.frames(limit) interface that YOLO consumes.",
+                               "reason":  "Pre-roll (capturing the moment that triggers the event) is impossible with a per-event batch pull, and smoothness is impossible while capture shares the single pipeline loop with YOLO/VLM. Continuous capture into a rolling buffer is the only way to get both pre-roll and native-fps smoothness.",
+                               "tradeoff":  "Introduces concurrency, lifecycle management, and a second consumer of the camera; the existing frames(limit) abstraction no longer fully owns the camera.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Primary architecture: single decode with fan-out (or ffmpeg stream-copy for RTSP) rather than naively opening a second full-decode VideoCapture on the same URL; reserve a truly separate capture stream / camera sub-stream as a documented fallback.",
+                               "reason":  "Two independent full decodes double CPU and bandwidth and many cameras cap concurrent RTSP sessions. For RTSP/ONVIF, ffmpeg -c copy segments give native-smooth video at near-zero CPU with no decode at all; YOLO+VLM decode once at their own rate. This satisfies the \u0027separate capture\u0027 constraint efficiently.",
+                               "tradeoff":  "Capability-detection branching by source type (RTSP stream-copy vs webcam re-encode) adds code paths; the true second-stream fallback is only validated when needed.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Encode the clip as constant-frame-rate H.264 MP4 using the frames\u0027 real wall/monotonic timestamps (PTS), not a hardcoded VideoWriter fps; add -movflags +faststart and supports_streaming.",
+                               "reason":  "If you tag a 14-real-fps capture as 25fps the clip plays fast and jerky and fails the smoothness test. Driving CFR from measured PTS (frame-dup/drop to a target) guarantees a faithful, smoothly playable, Telegram-inline clip whose duration is genuinely ~10s.",
+                               "tradeoff":  "Smoothness is bounded by camera native fps; a natively sub-25fps camera can only be frame-duplicated to a 25fps container, not given real motion detail.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Never buffer 10s of raw frames; buffer compressed JPEG frames or rolling ffmpeg .ts/.mp4 segments, with a hard memory/disk cap and segment GC, and a configurable pre/post-roll (default ~4s pre / 6s post).",
+                               "reason":  "10s of raw 1080p30 is ~1.8GB and will OOM the host; compressed buffering (~tens of MB) or stream-copy segments are bounded and cheap, and pre-roll guarantees the triggering moment is in the clip.",
+                               "tradeoff":  "JPEG/segment buffering adds encode/IO bookkeeping and a temp-segment directory that must be reaped; concat-on-trigger adds a small mux step.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Archive-first then send: write runs/incidents/\u003cevent_id\u003e.mp4 as the source of truth, add a new TelegramReporter sendVideo multipart path that reads that file, and make the reporter prefer video -\u003e photo -\u003e text, attaching the VLM description as caption. Carry the path on BridgeOutput (e.g. incident_video_path) keyed by event_id.",
+                               "reason":  "Reuses the existing multipart/keyframe/MultiReporter patterns and the existing graceful-degradation model; a durable file decouples archiving from a possibly-slow upload and makes sends idempotent/retryable.",
+                               "tradeoff":  "Requires threading event_id and a video path through BridgeOutput and the reporter, plus handling Telegram\u0027s 50MB sendVideo limit (bitrate/resolution cap).",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Run VLM at exactly 1fps over the same 10s window by decimating the shared decoded frames (reuse YOLO\u0027s decode), wired into the existing deferred-VLM machinery rather than a third decode or stream.",
+                               "reason":  "The pipeline already samples ~1fps key-frames and already defers VLM (PERSON_ANIMAL_VLM_DELAY_SECONDS, pending-VLM queue); aligning VLM\u0027s 1fps sample window with the recorded clip gives one capture, two sample rates, and no redundant decode.",
+                               "tradeoff":  "Couples VLM timing to the recording window (~10s post-roll latency before VLM result), which is acceptable for the deferred person/animal events but adds end-to-end latency.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Offload recording, encoding, and upload to a worker queue so they never block the detection/decision/alert loop, and degrade to the existing keyframe alert if recording/encode/upload fails.",
+                               "reason":  "Encoding and a multi-MB Telegram upload on the single pipeline thread would stall detection and cause missed events; isolation keeps real-time detection intact and preserves an alert even when video fails.",
+                               "tradeoff":  "Adds a worker/queue and back-pressure handling; under sustained alert bursts, video jobs may be dropped/queued while keyframe alerts still fire.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "A stable event_id is available on the event/BridgeOutput to key runs/incidents/\u003cevent_id\u003e.mp4; if absent, derive a deterministic id from camera_id + event_type + event timestamp.",
+                        "Production cameras are RTSP/ONVIF with an encoded H.264 stream (enabling cheap stream-copy); webcam (OpenCV) is the dev/test path producing raw frames that must be encoded.",
+                        "ffmpeg is available (or installable) on the deployment host; OpenCV is already a dependency. ffmpeg/codec availability should be checked in LiveReadinessChecker, with cv2.VideoWriter as fallback.",
+                        "Camera native fps is \u003e= 25-30; for cameras natively below 25fps, \u0027smooth \u003e=25fps\u0027 is interpreted as native CFR (optionally frame-duplicated into a 25fps container), not synthesized motion.",
+                        "Audio is not required; a video-only MP4 sent via sendVideo is acceptable.",
+                        "runs/incidents/ is writable and is created on first write (same pattern as JsonlFileReporter mkdir parents).",
+                        "The ~10s window is a configurable pre-roll + post-roll around the trigger (default ~4s/6s).",
+                        "Telegram is reachable but may be slow; asynchronous upload from the archived file is acceptable, subject to the 50MB sendVideo bot limit."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Opening a second full RTSP decode for video doubles CPU/bandwidth and may exceed the camera\u0027s concurrent-connection limit.",
+                      "severity":  "high",
+                      "mitigation":  "Prefer single-decode fan-out or ffmpeg stream-copy segments; if a separate stream is truly needed, use the camera\u0027s lower-res sub-stream for YOLO and main-stream for video, and cap concurrent decode sessions."
+                  },
+                  {
+                      "risk":  "Encoding/uploading on the single-threaded pipeline loop stalls detection and causes missed events.",
+                      "severity":  "high",
+                      "mitigation":  "Move record/encode/upload to a bounded worker queue; the detection/decision/alert path only enqueues a job and never blocks on encode or network IO."
+                  },
+                  {
+                      "risk":  "Hardcoding VideoWriter fps higher than the real captured fps yields fast/choppy playback that fails the smoothness test.",
+                      "severity":  "medium",
+                      "mitigation":  "Derive CFR from measured PTS (frame dup/drop to target), and post-encode validate duration (~10s) and fps (\u003e=25) before sending; log measured real fps."
+                  },
+                  {
+                      "risk":  "Buffering raw frames for 10s of pre/post-roll exhausts memory (1080p raw ~1.8GB).",
+                      "severity":  "medium",
+                      "mitigation":  "Buffer compressed JPEG frames or rolling ffmpeg segments with a hard size cap and ring-buffer eviction; never hold raw 10s."
+                  },
+                  {
+                      "risk":  "ffmpeg/codec absent or different on Windows dev vs Linux prod, breaking encode.",
+                      "severity":  "medium",
+                      "mitigation":  "Probe ffmpeg + required encoder in LiveReadinessChecker; fall back to cv2.VideoWriter; surface a clear readiness failure rather than a silent broken clip."
+                  },
+                  {
+                      "risk":  "Clock skew between the event timestamp and the capture buffer selects the wrong 10s window or misses the trigger moment.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a single shared monotonic clock; tag every buffered frame/segment with monotonic + wall time; map event time to the buffer window via that clock."
+                  },
+                  {
+                      "risk":  "Telegram sendVideo 50MB limit or non-faststart MP4 prevents inline playback/upload.",
+                      "severity":  "medium",
+                      "mitigation":  "Cap resolution/bitrate for the 10s clip, add -movflags +faststart and supports_streaming, set width/height/duration metadata, and retry/degrade to sendPhoto on rejection."
+                  },
+                  {
+                      "risk":  "Unbounded growth of runs/incidents/ and the temp segment directory; duplicate sends for the same event_id.",
+                      "severity":  "low",
+                      "mitigation":  "Add a retention/GC policy for incidents and segments; make the archive idempotent (write-once keyed by event_id) with a send-once guard."
+                  }
+              ],
+    "minimal_version":  "Add a ContinuousRecorder for the active camera that runs in a dedicated thread and fills a fixed-size ring buffer of JPEG-encoded frames (~10s at native fps) with a small pre-roll. On an alerting event, dump the buffer and encode a CFR MP4 at the measured native fps via ffmpeg (cv2.VideoWriter fallback) with +faststart, writing runs/incidents/\u003cevent_id\u003e.mp4 (mkdir parents). Extend TelegramReporter with a _build_video_multipart + sendVideo path that prefers the archived MP4 over the existing keyframe (photo) and falls back photo-\u003etext, using the VLM text as caption; carry incident_video_path/event_id on BridgeOutput. Keep the current ~1fps key-frame VLM path unchanged. Single camera, single source type (webcam/RTSP re-encode), synchronous-but-isolated encode is acceptable. This alone passes all six success tests for the dev camera.",
+    "advanced_version":  "Capability-detected, fully decoupled pipeline: for RTSP/ONVIF run an ffmpeg sidecar doing stream-copy (-c copy) into rolling short segments (zero re-encode, native-smooth), and on trigger concat the segments covering [t-pre, t+post] into runs/incidents/\u003cevent_id\u003e.mp4 with +faststart; use the camera sub-stream for YOLO and main-stream for video where supported, only escalating to a separate full capture if single-decode fan-out starves. Record/encode/upload run on a bounded async worker queue with back-pressure so detection never blocks; failures degrade to keyframe alerts. VLM samples the same 10s window at exactly 1fps from the shared decoded frames (no extra decode), wired into the existing deferred-VLM machinery so the clip and its description ship together. Add: LiveReadinessChecker probes for ffmpeg/codecs; post-encode validation of duration/fps; idempotent write-once archive keyed by event_id with send-once guard; configurable pre/post-roll, resolution ladder and bitrate; supports_streaming + width/height/duration metadata; retention/GC for incidents and segments; and metrics for measured real captured fps, encode latency, and upload outcome."
+}

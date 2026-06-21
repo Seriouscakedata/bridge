@@ -1,0 +1,61 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно точечно реализовать первый шаг записи видео инцидента: для отложенных person/animal VLM-событий накапливать кадры с момента триггера до ready_at, при резолве кодировать их в MP4 через cv2.VideoWriter с codec mp4v и fps=10, сохранять в runs/incidents/\u003cevent_id\u003e.mp4, а путь добавить в bridge_output как incident_video_path. Обязательно добавить pytest, который доказывает, что отложенное событие резолвится, MP4 создан, читается cv2 и содержит больше одного кадра.",
+    "summary":  "Фокусный фикс: расширить _PendingVlmEvent списком frames, добавить src/oko/live/video.py с encode_incident_video(), подключить сохранение видео в live.py при резолве события и покрыть это тестом delayed VLM event -\u003e readable MP4 \u003e1 frame.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить поле frames в _PendingVlmEvent и пополнять его копиями кадров на каждом шаге жизни pending-события до ready_at.",
+                               "reason":  "Требование фиксирует интервал записи от триггера до резолва; хранение кадров рядом с pending-состоянием минимально меняет архитектуру.",
+                               "tradeoff":  "Кадры будут храниться в памяти до резолва события; для текущего шага это проще и безопаснее, чем потоковая запись с управлением ресурсами.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Создать src/oko/live/video.py с функцией encode_incident_video(frames, out_path, fps=10), использующей cv2.VideoWriter и fourcc mp4v.",
+                               "reason":  "Это изолирует кодирование видео от pipeline-логики и напрямую выполняет контракт по codec/fps.",
+                               "tradeoff":  "Новый модуль добавляет небольшой API, но держит live.py сфокусированным на lifecycle события.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "При резолве pending-события сохранять видео в runs/incidents/\u003cevent_id\u003e.mp4 и добавлять строковый путь в bridge_output[\u0027incident_video_path\u0027].",
+                               "reason":  "Это точка, где event_id уже известен и bridge_output формируется для внешнего потребителя.",
+                               "tradeoff":  "Если кадров мало или VideoWriter недоступен, нужно явно падать в тестах либо аккуратно не ломать событие; минимальная реализация должна проверять успешность записи.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Тестировать через pytest реальным read-back MP4 с cv2.VideoCapture, а не только существование файла.",
+                               "reason":  "Acceptance требует, чтобы файл был читаемым и содержал больше одного кадра.",
+                               "tradeoff":  "Тест зависит от доступности OpenCV video backend в окружении, но это совпадает с runtime-зависимостью задачи.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "В src/oko/pipeline/live.py уже есть жизненный цикл _PendingVlmEvent с моментом создания/триггера и резолвом по ready_at.",
+                        "Текущий кадр доступен в live pipeline в формате numpy array, совместимом с cv2.VideoWriter после нормализации размера/цветности.",
+                        "bridge_output формируется как dict или совместимая структура, куда можно добавить incident_video_path без изменения внешнего контракта.",
+                        "Тестовая среда уже имеет cv2 или проект допускает зависимость OpenCV, раз контракт прямо требует cv2.VideoWriter."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Размеры кадров внутри одного инцидента могут отличаться, из-за чего VideoWriter запишет битый или пустой файл.",
+                      "severity":  "medium",
+                      "mitigation":  "В encode_incident_video зафиксировать размер по первому кадру и приводить последующие кадры к нему через cv2.resize."
+                  },
+                  {
+                      "risk":  "Кадры могут быть RGB, grayscale или иметь неожиданный dtype.",
+                      "severity":  "medium",
+                      "mitigation":  "Нормализовать кадры перед записью: uint8, BGR/3 канала, корректная форма HxWx3."
+                  },
+                  {
+                      "risk":  "Хранение кадров в памяти может стать дорогим при длинном pending-окне или множестве одновременных событий.",
+                      "severity":  "low",
+                      "mitigation":  "В рамках шага 1 оставить простой список; в следующем шаге можно добавить лимиты, ring buffer или потоковую запись."
+                  },
+                  {
+                      "risk":  "Тест с MP4 может быть нестабилен на системах без полноценной поддержки mp4v.",
+                      "severity":  "medium",
+                      "mitigation":  "Проверять isOpened()/ret при записи и чтении; если OpenCV установлен без video backend, это будет явный инфраструктурный сбой, а не тихий pass."
+                  }
+              ],
+    "minimal_version":  "Изменить только live.py, добавить oko/live/video.py и один pytest: pending event получает несколько synthetic frames, резолвится, создает runs/incidents/\u003cevent_id\u003e.mp4, bridge_output содержит incident_video_path, cv2.VideoCapture читает больше одного кадра.",
+    "advanced_version":  "После минимального фикса добавить защитные проверки encode_incident_video: создание директории, нормализация кадров, понятные ошибки при пустом frames/неоткрывшемся writer, resize кадров к первому размеру и, при необходимости, ограничение накопления кадров конфигом."
+}

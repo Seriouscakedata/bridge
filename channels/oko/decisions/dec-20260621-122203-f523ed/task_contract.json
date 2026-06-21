@@ -1,0 +1,30 @@
+{
+    "task":  "ФОКУСНЫЙ ФИКС (operator, РЕАЛИЗУЙ+КОММИТЬ КОД, НЕ discuss/НЕ анализ-документ). OKO видео инцидента, шаг 1/2 — захват и сохранение mp4. КОНКРЕТНО: (1) src/oko/pipeline/live.py — в отложенном захвате person/animal (_PendingVlmEvent) копить кадры инцидента (от триггера до резолва ready_at) в список frames; (2) новый src/oko/live/video.py: функция encode_incident_video(frames, out_path, fps=10) через cv2.VideoWriter (кодек mp4v); (3) при резолве события сохранять mp4 в runs/incidents/\u003cevent_id\u003e.mp4 и класть путь в bridge_output (поле incident_video_path). Acceptance ОБЯЗАН: pytest — отложенное событие резолвится → mp4 существует, читается обратно, \u003e1 кадра. Один концерн, тесты зелёные. Это РЕАЛИЗАЦИЯ кода с коммитом, не decision-документ.",
+    "goal":  "Implement the first step of incident video recording: capture and save an MP4 video of detected incidents.",
+    "constraints":  [
+                        "The output must be code implementation and a commit, not a discussion or analysis document.",
+                        "Use \u0027mp4v\u0027 codec for video encoding.",
+                        "Default FPS for video encoding must be 10.",
+                        "Output MP4 files must be saved to \u0027runs/incidents/\u003cevent_id\u003e.mp4\u0027.",
+                        "The path to the saved MP4 must be placed in \u0027bridge_output\u0027 under the field \u0027incident_video_path\u0027.",
+                        "The solution must be focused (\u0027Один концерн\u0027) and not introduce regressions (\u0027тесты зелёные\u0027)."
+                    ],
+    "known_context":  [
+                          "There is an existing module \u0027src/oko/pipeline/live.py\u0027 and a class \u0027_PendingVlmEvent\u0027 for delayed event capture (person/animal).",
+                          "Incidents have a lifecycle from \u0027trigger\u0027 to \u0027resolve ready_at\u0027.",
+                          "There is an existing \u0027bridge_output\u0027 mechanism.",
+                          "The \u0027cv2.VideoWriter\u0027 function should be used for video encoding.",
+                          "Pytest is the testing framework."
+                      ],
+    "output_format":  "Code implementation and commit.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "A pytest test exists that simulates a delayed VLM event.",
+                          "Upon resolution of the simulated event, an MP4 file is created at the specified path (\u0027runs/incidents/\u003cevent_id\u003e.mp4\u0027).",
+                          "The created MP4 file can be opened and read back using a video library (e.g., cv2).",
+                          "The read-back video contains more than one frame.",
+                          "All existing tests (including new ones) pass without regressions."
+                      ]
+}

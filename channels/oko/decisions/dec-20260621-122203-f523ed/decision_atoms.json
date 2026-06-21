@@ -1,0 +1,100 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom-01",
+                      "statement":  "Accumulate frames in a list attribute on `_PendingVlmEvent` from trigger time until resolution, specifically appending `captured.image` on each loop iteration.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Model Change",
+                      "test":  "Assert `_PendingVlmEvent.frames` list is populated with `captured.image` on each loop iteration until resolution.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-02",
+                      "statement":  "Create `src/oko/live/video.py` with `encode_incident_video(frames, out_path, fps=10)` using `cv2.VideoWriter` and `fourcc mp4v`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "New Module/API",
+                      "test":  "Unit test `encode_incident_video` with synthetic frames, verify it creates a valid MP4 file readable by `cv2.VideoCapture` and uses `fps=10` and `mp4v` codec.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-03",
+                      "statement":  "Upon pending event resolution, save the encoded video to `runs/incidents/\u003cevent_id\u003e.mp4` and add the file path to `bridge_output[\u0027incident_video_path\u0027]`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Output/Persistence",
+                      "test":  "Integration test: after a delayed event resolves, verify `runs/incidents/\u003cevent_id\u003e.mp4` exists and `bridge_output[\u0027incident_video_path\u0027]` is set to this path.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-04",
+                      "statement":  "Implement comprehensive pytest validation, including a unit test for the encoder (synthetic frames → encode → `cv2.VideoCapture` readback `\u003e1` frame) and an integration test for the end-to-end flow (delayed event resolves → `bridge_output.incident_video_path` set → file exists → `cv2.VideoCapture` readback `\u003e1` frame), both guarded by `pytest.importorskip(\u0027cv2\u0027)`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing/Validation",
+                      "test":  "Unit test: `encode_incident_video` with synthetic frames, verify it returns a path, and `cv2.VideoCapture` reads \u003e1 frame. Integration test: delayed event resolves, `bridge_output.incident_video_path` set, file exists, `cv2.VideoCapture` reads \u003e1 frame.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-05",
+                      "statement":  "Add `incident_video_path: str | None = None` as a real field on `BridgeOutput` to correctly carry the path under `extra=\u0027forbid\u0027` policy.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Data Model Change",
+                      "test":  "Verify `BridgeOutput` can be serialized/deserialized with `incident_video_path` set, without `ValidationError` due to `extra=\u0027forbid\u0027`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-06",
+                      "statement":  "`encode_incident_video` returns `str|None` and acts as a graceful no-op (returns `None`, writes nothing) when `cv2`/`numpy` are unavailable, when there are `\u003c1` usable `ndarray` frames, or when `VideoWriter` fails to open (`writer.isOpened()==False`).",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Error Handling/Robustness",
+                      "test":  "Unit test `encode_incident_video` with empty frames, non-ndarray frames, or `cv2` unavailable, verify it returns `None` and no file is written.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-07",
+                      "statement":  "Wire video writing into the pending-resolve path only (`_resolve_pending_vlm_event` → `_resolve_vlm_event`), scoping Step 1 to deferred person/animal events.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Configuration/Scope",
+                      "test":  "Integration test: immediate (non-deferred) event does NOT produce an incident video.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-08",
+                      "statement":  "Add an injectable `incidents_dir: Path = Path(\u0027runs/incidents\u0027)` constructor parameter on `LivePipeline`; ensure `mkdir(parents=True, exist_ok=True)` is called lazily before writing; filename is `\u003csanitized event_id\u003e.mp4`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Configuration/Scope",
+                      "test":  "Integration test: `LivePipeline` initialized with `tmp_path` for `incidents_dir`, verify MP4 is written to `tmp_path` and directory is created.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

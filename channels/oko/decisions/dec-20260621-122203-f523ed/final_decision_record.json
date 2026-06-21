@@ -1,0 +1,153 @@
+{
+    "final_answer":  "Ship Step 1 of OKO incident video recording as focused, committed code (one concern, green tests) — not a discussion document. All eight decision atoms are adopted: seven accepted outright and atom-03 accepted-with-modification. Concretely: (1) buffer the incident\u0027s `captured.image` frames in a list on `_PendingVlmEvent` from trigger until the deferred event resolves; (2) add a self-contained `src/oko/live/video.py` exposing `encode_incident_video(frames, out_path, fps=10)` built on `cv2.VideoWriter` with the `mp4v` fourcc; (3) on pending-resolve, encode the buffered frames and persist them to `\u003cincidents_dir\u003e/\u003csanitized event_id\u003e.mp4`, then carry the path on `bridge_output`. The judge\u0027s modify verdict on atom-03 is folded in by coupling it to atom-05 and atom-08: the path is assigned through a real declared `incident_video_path: str | None = None` field on `BridgeOutput` (so it survives `extra=\u0027forbid\u0027`), and the directory is an injectable `incidents_dir: Path = Path(\u0027runs/incidents\u0027)` constructor param with lazy `mkdir(parents=True, exist_ok=True)`. The encoder is defensive — it returns `str | None` and no-ops (returns `None`, writes nothing) when cv2/numpy are missing, when there are \u003c1 usable ndarray frames, or when `VideoWriter` fails to open. Video writing is wired only into the deferred person/animal resolve path (`_resolve_pending_vlm_event` → `_resolve_vlm_event`), keeping blast radius minimal. Validation is a `pytest.importorskip(\u0027cv2\u0027)`-guarded unit test (synthetic frames → encode → `cv2.VideoCapture` readback \u003e1 frame) plus an integration test (delayed event resolves → `bridge_output.incident_video_path` set → file exists → readback \u003e1 frame), with the existing suite kept green. No atoms were rejected; what is rejected are two sub-approaches the judge flagged inside atom-03 — dict-style assignment under `extra=\u0027forbid\u0027` and a hardcoded output path.",
+    "decisions":  [
+                      {
+                          "decision":  "Accumulate incident frames in a list attribute (e.g. `frames`) on `_PendingVlmEvent`, appending `captured.image` on each capture-loop iteration from trigger time until the event resolves at `ready_at`.",
+                          "rationale":  "Consensus across proposals A/B/C and the load-bearing data-model foundation: buffering the per-iteration `captured.image` is the only way to reconstruct the incident clip later. Highly specific (names the attribute, the timing window, and the source field) and trivially feasible. Judge: accept, 0.88.",
+                          "alternatives_considered":  [
+                                                          "Re-derive frames from a global ring buffer at resolve time (more decoupled but adds shared mutable state and timing ambiguity)",
+                                                          "Persist each frame to disk during capture and re-read at encode time (more I/O, more failure surface, no benefit at this scope)"
+                                                      ],
+                          "risk":  "Unbounded list growth — each frame is a full ndarray, so a long-lived pending event could create memory pressure. Mitigated by scope (short deferred person/animal resolution windows); a max-frame/duration cap is a noted follow-up, out of Step 1\u0027s single-concern boundary.",
+                          "test":  "Assert `_PendingVlmEvent.frames` is populated with `captured.image` on each loop iteration and contains \u003e1 frame at resolution."
+                      },
+                      {
+                          "decision":  "Create `src/oko/live/video.py` with `encode_incident_video(frames, out_path, fps=10)` using `cv2.VideoWriter` and fourcc `mp4v`.",
+                          "rationale":  "Consensus encoder module. `cv2.VideoWriter` with `mp4v` at fps=10 is the standard, well-trodden encoding path, matches the user-confirmed smooth-video (not 1fps-slides) format, and is cleanly isolated in its own module for high reversibility. Precise on signature, codec, and fps. Judge: accept, 0.8825.",
+                          "alternatives_considered":  [
+                                                          "imageio/ffmpeg-python writer (heavier dependency, not already in use)",
+                                                          "H.264 (`avc1`) fourcc for browser-friendly playback (deferred — `mp4v` is correct for storage and cv2 readback; downstream transcode is a later concern)"
+                                                      ],
+                          "risk":  "`mp4v` output is not always directly browser/H.264-friendly for downstream playback; acceptable for Step 1 storage + cv2 readback. Codec availability depends on the OpenCV build, handled by the no-op contract (atom-06).",
+                          "test":  "Unit: encode synthetic frames, then `cv2.VideoCapture` reopens the file and reads \u003e1 frame; confirm fps=10 / mp4v path is exercised."
+                      },
+                      {
+                          "decision":  "Add `incident_video_path: str | None = None` as a real declared field on `BridgeOutput`.",
+                          "rationale":  "Highest-scoring atom (0.92) and the correct, load-bearing fix even though only proposal B raised it: under `extra=\u0027forbid\u0027`, dict-style assignment would raise `ValidationError`. Declaring the field is what makes the persistence path actually work — trivial, low-risk, self-contained. Judge: accept.",
+                          "alternatives_considered":  [
+                                                          "Dict-style `bridge_output[\u0027incident_video_path\u0027] = ...` (rejected — fails under `extra=\u0027forbid\u0027`)",
+                                                          "Loosen the model to `extra=\u0027allow\u0027` (rejected — weakens schema validation globally for one field)"
+                                                      ],
+                          "risk":  "Minimal — additive optional field defaulting to `None` preserves backward compatibility of serialization/deserialization.",
+                          "test":  "Serialize/deserialize a `BridgeOutput` with `incident_video_path` set and assert no `ValidationError`; default remains `None` when unset."
+                      },
+                      {
+                          "decision":  "Add an injectable `incidents_dir: Path = Path(\u0027runs/incidents\u0027)` constructor parameter on `LivePipeline`; lazily `mkdir(parents=True, exist_ok=True)` before the first write; filename is `\u003csanitized event_id\u003e.mp4`.",
+                          "rationale":  "Refines and supersedes atom-03\u0027s hardcoded directory. Injectability enables `tmp_path`-based integration tests, lazy mkdir avoids startup side effects, and sanitizing `event_id` guards against invalid/path-traversal filenames. Precisely specified, low cost, materially improves testability and safety. Judge: accept, 0.8905; implement jointly with atom-03.",
+                          "alternatives_considered":  [
+                                                          "Hardcoded `runs/incidents` (rejected — hurts testability and conflicts with injection)",
+                                                          "Global config/env var for the directory (heavier than needed for Step 1)"
+                                                      ],
+                          "risk":  "Low. Sanitization must reject path separators and traversal sequences; default path preserves production behavior.",
+                          "test":  "Integration: construct `LivePipeline(incidents_dir=tmp_path)`, resolve an event, assert the MP4 lands under `tmp_path` and the directory was created."
+                      },
+                      {
+                          "decision":  "On pending-event resolution, call `encode_incident_video(...)` on the buffered frames, persist to `\u003cincidents_dir\u003e/\u003csanitized event_id\u003e.mp4`, and set the returned path on `bridge_output.incident_video_path` via the declared field.",
+                          "rationale":  "The user-visible deliverable (persisted clip + path on output). Adopted as the judge\u0027s modify verdict: write via the encoder, persist under the injectable `incidents_dir` (atom-08), and assign through the declared field (atom-05) rather than dict-style. High impact; correctness is conditional on atom-05 + atom-08, which are both accepted. Judge: modify, 0.825.",
+                          "alternatives_considered":  [
+                                                          "Hardcoded directory + dict-style assignment (rejected per judge — fails under `extra=\u0027forbid\u0027` and hurts testability)",
+                                                          "Encode eagerly during capture (rejected — wastes work for events that never escalate; resolve-time encode is sufficient)"
+                                                      ],
+                          "risk":  "If the encoder no-ops (missing cv2 / no frames / writer fails to open), `incident_video_path` stays `None` — consumers must treat the field as optional.",
+                          "test":  "Integration: after a delayed event resolves, assert `\u003cincidents_dir\u003e/\u003cevent_id\u003e.mp4` exists and `bridge_output.incident_video_path` equals that path."
+                      },
+                      {
+                          "decision":  "`encode_incident_video` returns `str | None` and acts as a graceful no-op (returns `None`, writes nothing) when cv2/numpy are unavailable, when there are \u003c1 usable ndarray frames, or when `writer.isOpened() == False`.",
+                          "rationale":  "Strong robustness contract that keeps the live pipeline stable when the optional dependency or frame buffer is degraded — the feature is safe to ship without destabilizing production. Enumerated failure modes give high specificity and risk reduction; only cost is added branching. Judge: accept, 0.88.",
+                          "alternatives_considered":  [
+                                                          "Raise on missing cv2 / empty frames (rejected — would crash the live pipeline for an optional, best-effort feature)",
+                                                          "Silently swallow without a sentinel return (rejected — callers need `None` to leave `incident_video_path` unset)"
+                                                      ],
+                          "risk":  "Silent no-op could mask a real encoding regression; mitigated by logging on the no-op branches and by the unit tests asserting the no-op explicitly.",
+                          "test":  "Unit: call with empty frames, with non-ndarray frames, and with cv2 unavailable; assert it returns `None` and writes no file."
+                      },
+                      {
+                          "decision":  "Wire video writing into the pending-resolve path only (`_resolve_pending_vlm_event` → `_resolve_vlm_event`), scoping Step 1 to deferred person/animal events.",
+                          "rationale":  "Sound scoping that confines the change to deferred person/animal resolution, aligning with the recent keyframe-deferral work and keeping blast radius small. Verifiable by a negative test. Low complexity, high reversibility. Judge: accept, 0.874.",
+                          "alternatives_considered":  [
+                                                          "Emit incident video for all event types including immediate/non-deferred (rejected — out of Step 1 scope, larger blast radius)"
+                                                      ],
+                          "risk":  "Low — immediate events are unaffected, so no regression to the non-deferred path.",
+                          "test":  "Integration (negative): an immediate, non-deferred event produces no incident video and leaves `incident_video_path` unset."
+                      },
+                      {
+                          "decision":  "Implement `pytest.importorskip(\u0027cv2\u0027)`-guarded validation in two layers: a unit test (synthetic frames → encode → `cv2.VideoCapture` readback \u003e1 frame) and an integration test (delayed event resolves → `bridge_output.incident_video_path` set → file exists → readback \u003e1 frame).",
+                          "rationale":  "Consensus and the primary risk-reduction lever, satisfying every acceptance criterion in the contract. Both layers are asserted, and the importorskip guard keeps the suite green in cv2-less environments. Very specific assertions; slight harness complexity is justified. Judge: accept, 0.89.",
+                          "alternatives_considered":  [
+                                                          "Unit-only or integration-only coverage (rejected — the contract explicitly requires both encoder-level and end-to-end validation)",
+                                                          "Hard-require cv2 in CI (rejected — importorskip keeps the suite green where cv2 is absent)"
+                                                      ],
+                          "risk":  "Codec/container quirks could make readback flaky across OpenCV builds; mitigated by asserting frame-count \u003e1 rather than exact byte content, and by the no-op contract.",
+                          "test":  "Unit asserts encode returns a path and readback \u003e1 frame; integration asserts resolve sets the path, the file exists, and readback \u003e1 frame; full suite passes with no regressions."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Set the output path via dict-style assignment `bridge_output[\u0027incident_video_path\u0027] = ...`.",
+                         "why":  "`BridgeOutput` uses `extra=\u0027forbid\u0027`, so dict-style assignment to an undeclared key raises `ValidationError`. Superseded by the declared field in atom-05 with attribute assignment."
+                     },
+                     {
+                         "decision":  "Hardcode the output directory to `runs/incidents` inside the resolve path.",
+                         "why":  "Hurts testability and conflicts with atom-08\u0027s injectable `incidents_dir`. Superseded by the injectable constructor parameter (default `Path(\u0027runs/incidents\u0027)`) with lazy mkdir."
+                     }
+                 ],
+    "open_questions":  [
+                           "Should the buffered-frame list have a max-frame or max-duration cap to bound memory for long-lived pending events? (Noted by the judge as a minor risk; deferred beyond Step 1\u0027s single concern.)",
+                           "Step 2 concern: `mp4v` is not reliably browser/H.264-friendly — does downstream consumption need an `avc1`/H.264 transcode or a separate playback-ready artifact?",
+                           "How should `event_id` be sanitized into a filename (allowed charset, collision handling on re-resolve)?"
+                       ],
+    "implementation_plan":  [
+                                "Add `frames: list = field(default_factory=list)` (or equivalent) to `_PendingVlmEvent` and append `captured.image` on each capture-loop iteration from trigger until resolution.",
+                                "Create `src/oko/live/video.py` with `encode_incident_video(frames, out_path, fps=10) -\u003e str | None` using `cv2.VideoWriter` + `mp4v` fourcc; derive width/height from the first valid ndarray frame; no-op (return `None`, write nothing) when cv2/numpy are missing, frames \u003c1 usable ndarray, or `writer.isOpened() == False`; release the writer in all paths.",
+                                "Add `incident_video_path: str | None = None` as a real declared field on `BridgeOutput`.",
+                                "Add `incidents_dir: Path = Path(\u0027runs/incidents\u0027)` to `LivePipeline.__init__`; sanitize `event_id` into `\u003cevent_id\u003e.mp4`; lazily `mkdir(parents=True, exist_ok=True)` before the first write.",
+                                "In `_resolve_pending_vlm_event` → `_resolve_vlm_event`, call `encode_incident_video(pending.frames, incidents_dir/\u003cevent_id\u003e.mp4, fps=10)` and, if it returns a path, set `bridge_output.incident_video_path` via the declared field; wire this only into the deferred person/animal resolve path.",
+                                "Add tests guarded by `pytest.importorskip(\u0027cv2\u0027)`: (a) unit — synthetic frames → encode → `cv2.VideoCapture` readback \u003e1 frame, plus no-op cases (empty frames, non-ndarray, cv2 unavailable → returns `None`, no file); (b) integration — `LivePipeline(incidents_dir=tmp_path)`, delayed event resolves → `bridge_output.incident_video_path` set → file exists → readback \u003e1 frame; (c) negative — immediate event produces no video.",
+                                "Run the full pytest suite to confirm green (no regressions), then commit as a single focused change (e.g. `feat(oko): capture \u0026 save incident mp4 on deferred vlm resolve (step 1/2)`)."
+                            ],
+    "next_step":  "Implement the change end-to-end on `src/oko/pipeline/live.py`, the new `src/oko/live/video.py`, and the `BridgeOutput` model, add the importorskip-guarded unit + integration tests, run the full pytest suite to green, and commit.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The MANDATORY acceptance test (\u0027Acceptance ОБЯЗАН: mp4 существует, читается, \u003e1 кадра\u0027) is gated behind `pytest.importorskip(\u0027cv2\u0027)`, so it silently SKIPS when cv2 is unavailable — leaving pytest green while none of success_tests #2/#3/#4 ever execute. This is a live risk here: the interpreter is Python 3.14.3 (very new), opencv-python is declared but NOT present in any project venv/site-packages I could find, and cp314 opencv wheels may not exist. A skipped mandatory acceptance is an unmet acceptance.",
+                                  "why":  "The contract makes the readback test obligatory (\u0027ОБЯЗАН\u0027). importorskip converts a hard requirement into a conditional one; on any CI/dev box lacking cv2 the feature ships unverified. The design should either make cv2 a hard test dependency (no importorskip on the acceptance test) or the plan must confirm cv2 actually imports on Python 3.14 before claiming the acceptance is satisfied."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Every existing CapturedFrame fixture supplies a DICT image (`image={\"frame\": frame_id}`, tests/test_live_pipeline.py:162) and the existing delayed-event test monkeypatches `encode_frames_jpeg_b64`. The encoder (atom-06) is a no-op on non-ndarray frames, so if the new integration test is modeled on the existing `_captured`/delayed-event helpers, `pending.frames` will contain dicts → encoder returns None → no file written → the \u0027runs/incidents/\u003cevent_id\u003e.mp4 exists\u0027 assertion FAILS. The plan never calls out that brand-new real-ndarray fixtures (and likely un-patching encode_frames_jpeg_b64) are required.",
+                                  "why":  "The acceptance test must produce a real, readable MP4, which requires real numpy frames flowing through the deferred path — a pattern that does not exist anywhere in the current suite. Reusing the established test scaffolding (the natural move) produces dict frames the encoder rejects, so the integration test fails on \u0027file exists\u0027 unless the author builds a new ndarray fixture path the decision record doesn\u0027t mention."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The \u0027\u003e1 frame\u0027 acceptance is fragile and coupling-dependent. Frame count in the clip = number of outer-loop iterations the event stays pending = function of (person_animal_vlm_delay_seconds vs camera frame cadence). With append at top-of-loop the trigger frame is excluded; if the resolve frame is the first pending frame (e.g. short delay or sparse frames where ts_{trigger+1} \u003e= ready_at), the clip has exactly 1 frame. The no-op guard threshold is \u0027\u003c1 usable ndarray\u0027 (atom-06), NOT \u0027\u003c2\u0027 — so a 1-frame clip is still encoded to a valid file whose readback == 1, failing the \u0027\u003e1 frame\u0027 assertion rather than no-op\u0027ing.",
+                                  "why":  "The contract requires \u003e1 frame, but nothing in the design guarantees \u003e=2 frames accumulate, and the guard that would catch degenerate clips stops at 0, not 1. The acceptance passes only because the chosen fixture happens to space enough frames (e.g. the existing 8-frame/1s-spaced/3.5s-delay shape yields ~4). It is a latent test-fragility and a real production gap (single-frame incidents emit a file that violates the stated \u003e1 contract)."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "atom-03 (modified) and atom-07 are mechanically inconsistent. atom-03 says surface the path by \u0027extending the existing resolve-site updates pattern (src/oko/pipeline/live.py:240-247)\u0027, but that updates/model_copy block lives inside the SHARED `_resolve_vlm_event` (lines 245-251). atom-07 insists the write happen ONLY in `_resolve_pending_vlm_event`, where `pending.frames` is accessible. The frames list does not exist in the shared method\u0027s scope, so the literal plan is unimplementable without either (a) widening `_resolve_vlm_event`\u0027s signature to take a path — which also touches the immediate path, contradicting atom-07 — or (b) a SECOND model_copy in `_resolve_pending_vlm_event`, which is NOT \u0027extending the existing pattern at 240-247\u0027.",
+                                  "why":  "The decision presents the wiring as a single clean reuse of the existing updates dict, but the chosen scoping (frames only on _PendingVlmEvent) forces a different mechanism than the one it cites. This is an internal contradiction in the plan that the implementer must silently resolve, risking either scope creep into the immediate path or a deviation from the stated approach."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Clip length and fps conflict with the latest USER-CONFIRMED intent. The task scopes frames to \u0027от триггера до резолва ready_at\u0027 = trigger→trigger+person_animal_vlm_delay_seconds (default 3.5s), encoded at a fixed fps=10 regardless of actual capture cadence. But the most recent commit (a8ee26a) records \u0027ФОРМАТ ВИДЕО ПОДТВЕРЖДЁН ЮЗЕРОМ ... ПЛАВНОЕ видео (не 1fps-слайды) ... ~реалтайм 10с\u0027. A 3.5s capture window encoded at a fixed 10fps (decoupled from real frame timestamps) yields wrong-speed, non-realtime playback and a ~3.5s (not ~10s) clip.",
+                                  "why":  "Following the task contract literally diverges from the user-confirmed product spec captured in the head commit. The decision\u0027s open-questions touch fps \u0027semantics\u0027 but never flag that (a) the clip window is bounded by the VLM delay (~3.5s, not 10s) and (b) fixed fps=10 over variable-cadence frames produces slow/fast-motion video — exactly the \u0027not smooth\u0027 artifact the user just rejected."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "`runs/` is NOT in .gitignore (verified — .gitignore has no runs/incidents/mp4 entry), and this repo runs an auto-commit driver (see recent \u0027[task:...] auto-commit (driver)\u0027 commits and the tracked runs/oko-events.jsonl). Writing real-run incident MP4s to runs/incidents/\u003cevent_id\u003e.mp4 (the default incidents_dir) means binary video artifacts can be auto-committed into git history, bloating the repo.",
+                                  "why":  "The constraint mandates the default output path runs/incidents/, but nothing excludes that directory from version control in a repo that auto-commits its runs/ tree. The plan addresses test isolation (tmp_path) but not the default-path operational consequence of committing binaries. A .gitignore entry for runs/incidents/ (or runs/*.mp4) should be part of this change."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "`_PendingVlmEvent` is `@dataclass(frozen=True)` (live.py:33). The plan (step 2) adds `frames: list = field(default_factory=list)` and accumulates via append. In-place `pending.frames.append(...)` works, but any reassignment (e.g. `pending.frames = pending.frames + [img]`, or seeding via attribute set) raises FrozenInstanceError. The plan doesn\u0027t note the frozen constraint, leaving an easy implementation trap.",
+                                  "why":  "It\u0027s a correctness landmine for the implementer: the only legal mutation is in-place list ops, and a natural-looking reassignment crashes the live loop at resolve/accumulate time. Worth an explicit note that frames must be mutated in place (or the dataclass made non-frozen / frames excluded from frozen semantics)."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Frame-uniformity policy is unresolved (decision\u0027s own open question #3) but has concrete failure modes: cv2.VideoWriter is opened with the first frame\u0027s frameSize and SILENTLY drops any later frame of a different shape (potentially collapsing the clip below 2 frames), requires BGR uint8 3-channel input (RGB or grayscale frames produce corrupt/mis-encoded video), and mp4v frequently requires even width/height. Real camera frames or any resize/colorspace step upstream can trigger all three.",
+                                  "why":  "The encoder treats frames as already-uniform BGR uint8, but the live pipeline gives no such guarantee, so production clips can be short, color-wrong, or unreadable — and an odd-dimension synthetic test frame can make even the unit test produce an unreadable file. The design needs an explicit normalize (resize to a fixed even WxH + ensure 3-channel BGR uint8) before write, or at minimum a documented precondition."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

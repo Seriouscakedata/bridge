@@ -1,0 +1,33 @@
+{
+    "task":  "ФОРМАТ ВИДЕО ПОДТВЕРЖДЁН ЮЗЕРОМ: ПЛАВНОЕ видео (не 1fps-слайды). Записывать поток камеры ~реалтайм 10с → mp4 (sendVideo в TG + архив runs/incidents/\u003cevent_id\u003e.mp4). VLM-анализ отдельно по 1 кадру/сек. Если YOLO-пайплайн даёт мало fps для плавности — отдельный capture для видео. Заложи в PLAN.",
+    "goal":  "To implement a robust system for capturing 10 seconds of smooth, real-time camera video, saving it as MP4, sending it to Telegram, archiving it, and performing VLM analysis at 1 frame/second, potentially using a separate capture stream if other processing pipelines (like YOLO) impact video smoothness.",
+    "constraints":  [
+                        "Video must be \u0027smooth\u0027 (not 1 FPS slides).",
+                        "Video capture duration: approximately 10 seconds.",
+                        "Video output format: MP4.",
+                        "Video must be sent via `sendVideo` to Telegram.",
+                        "Video must be archived to `runs/incidents/\u003cevent_id\u003e.mp4`.",
+                        "VLM analysis must be performed at 1 frame/second.",
+                        "If the YOLO pipeline causes low FPS for smoothness, a separate video capture stream must be used.",
+                        "Capture must be \u0027real-time\u0027."
+                    ],
+    "known_context":  [
+                          "The video format requirements are user-confirmed.",
+                          "A YOLO pipeline exists and might interfere with video capture FPS.",
+                          "A VLM analysis component exists.",
+                          "Telegram integration with `sendVideo` capability is available.",
+                          "An archiving system for `runs/incidents/` exists."
+                      ],
+    "output_format":  "A detailed plan or architectural description for implementing the video capture and processing pipeline.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "An MP4 file is successfully created at `runs/incidents/\u003cevent_id\u003e.mp4`.",
+                          "The archived MP4 video is approximately 10 seconds long.",
+                          "The archived MP4 video exhibits smooth playback (e.g., frame rate \u003e= 25 FPS).",
+                          "A video message is successfully sent to Telegram using `sendVideo` with the captured MP4.",
+                          "VLM analysis results are available, indicating processing at a rate of 1 frame per second from the video stream.",
+                          "If a YOLO pipeline was active during capture, and it impacted FPS, a separate capture mechanism was correctly employed to ensure video smoothness."
+                      ]
+}

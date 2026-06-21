@@ -1,0 +1,69 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing the first step of an incident video recording system for an OKO video pipeline. Specifically: (1) modify _PendingVlmEvent in src/oko/pipeline/live.py to accumulate frames from trigger to resolution; (2) create a new src/oko/live/video.py module with an encode_incident_video function using cv2.VideoWriter with mp4v codec at 10 FPS; (3) on event resolution, save the MP4 to runs/incidents/\u003cevent_id\u003e.mp4 and expose the path via bridge_output under incident_video_path. The deliverable is working code with passing pytest tests that verify MP4 creation, readability, and multi-frame content.",
+    "summary":  "Implement incident video capture and MP4 encoding: buffer frames in _PendingVlmEvent during the pending window, encode them to MP4 on resolution using a new video utility module, save to runs/incidents/\u003cevent_id\u003e.mp4, and expose the path in bridge_output. Include pytest validation ensuring the MP4 is created, readable, and contains more than one frame.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Frames will be accumulated in a list attribute on _PendingVlmEvent from trigger time until resolution.",
+                               "reason":  "The task explicitly requires storing frames in a list on the pending event object, providing a simple in-memory buffer for the incident window.",
+                               "tradeoff":  "Memory usage scales with incident duration and frame size; acceptable for short incidents (seconds to minutes) but may need a ring buffer or disk spooling for longer windows in future iterations.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Video encoding will use cv2.VideoWriter with \u0027mp4v\u0027 codec in a new src/oko/live/video.py module.",
+                               "reason":  "The task mandates mp4v codec and cv2.VideoWriter; a separate module keeps encoding logic isolated and testable.",
+                               "tradeoff":  "mp4v may not be universally supported in all browsers/players without additional container metadata; H.264 would be more portable but is explicitly ruled out by the constraint.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "The MP4 file path will be runs/incidents/\u003cevent_id\u003e.mp4, and the path will be stored in bridge_output[\u0027incident_video_path\u0027].",
+                               "reason":  "Directly follows the task specification for output location and bridge_output field naming.",
+                               "tradeoff":  "Hardcoded relative path assumes runs/incidents/ directory exists; the code must ensure directory creation to avoid runtime errors.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Default FPS for encoding is 10, matching the task constraint.",
+                               "reason":  "10 FPS balances file size and temporal resolution for incident review; explicitly required by the task.",
+                               "tradeoff":  "Lower FPS may miss fast-moving details; higher FPS would increase file size. 10 FPS is a reasonable default for surveillance-style incident capture.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Pytest tests will simulate a delayed VLM event, trigger resolution, and verify MP4 creation with \u003e1 frame.",
+                               "reason":  "The acceptance criteria require a test that creates an MP4, reads it back, and confirms multiple frames, ensuring end-to-end functionality.",
+                               "tradeoff":  "Test depends on cv2 being available in the test environment and writes to disk; temporary directory usage mitigates pollution of the runs/ directory.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The _PendingVlmEvent class already has a mechanism to receive frames (e.g., a method or callback) during its lifecycle; we will add a frames list and append logic there.",
+                        "The bridge_output is a dictionary or object accessible at resolution time where incident_video_path can be set.",
+                        "The runs/incidents/ directory can be created programmatically if it does not exist.",
+                        "cv2 (OpenCV) is available in the project environment.",
+                        "Event IDs are unique strings suitable for use in filenames.",
+                        "The existing test suite uses pytest and can be extended without breaking existing tests."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Memory pressure from unbounded frame accumulation in long-running incidents.",
+                      "severity":  "medium",
+                      "mitigation":  "Document the limitation; in a future advanced version, implement a configurable max buffer size or disk spooling for frames."
+                  },
+                  {
+                      "risk":  "mp4v codec may produce files that are not playable in standard media players without additional metadata or conversion.",
+                      "severity":  "low",
+                      "mitigation":  "Test playback in VLC or similar; if issues arise, consider post-processing with ffmpeg or switching to a more compatible FourCC code in a future iteration."
+                  },
+                  {
+                      "risk":  "Race condition if frames are added while resolution is in progress.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a thread-safe collection (e.g., queue.Queue) or a lock around frame accumulation and encoding in the advanced version; for the minimal version, document the assumption of single-threaded access."
+                  },
+                  {
+                      "risk":  "Directory runs/incidents/ may not exist, causing write failure.",
+                      "severity":  "low",
+                      "mitigation":  "Ensure os.makedirs(out_dir, exist_ok=True) is called before writing the MP4 file."
+                  }
+              ],
+    "minimal_version":  "Modify _PendingVlmEvent to accumulate frames in a list. On resolution, call encode_incident_video from the new video.py module, save MP4 to runs/incidents/\u003cevent_id\u003e.mp4, set bridge_output[\u0027incident_video_path\u0027]. Add a single pytest test that creates a pending event, feeds it synthetic frames, resolves it, and asserts the MP4 exists, is readable, and has \u003e1 frame. Ensure all existing tests still pass.",
+    "advanced_version":  "Add configurable FPS and codec parameters. Implement a ring buffer with max size to limit memory. Use thread-safe frame collection. Add support for pre-trigger frames (buffer N seconds before trigger). Include metadata overlay (timestamp, event type) on frames. Generate thumbnail alongside video. Add cleanup policy for old incident videos. Expand test coverage to edge cases: empty frame list, single frame, very long incidents, missing directories, codec fallback."
+}
