@@ -78,6 +78,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'git rev-parse root commit failed' }
 
   $script:ScenarioCalls = 0
+  $rootDiffCheck = Get-QAAgentCommitDiffCheck -BridgeRoot $tmp -CommitSha $rootCommit
+  Assert-True ([bool]$rootDiffCheck.Ok) 'root real commit diff check succeeds' ([string]$rootDiffCheck.Detail)
+  Assert-True ([bool]$rootDiffCheck.HasChanges) 'root real commit diff check sees changes' ([string]$rootDiffCheck.Command)
+  Assert-True ($rootDiffCheck.Command -like 'git diff-tree --stat --root*') 'root real commit uses root diff-tree stat' ([string]$rootDiffCheck.Command)
   $rootResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $rootCommit -TaskId 'qa-empty-root-real' -TaskTitle 'root real commit' -Channel 'main'
   Assert-True ($rootResult.Verdict -eq 'PASS') 'root real commit returns PASS' ('verdict=' + [string]$rootResult.Verdict + '; summary=' + [string]$rootResult.Summary)
   Assert-True ($script:ScenarioCalls -eq 1) 'root real commit runs scenario suite' ('calls=' + [string]$script:ScenarioCalls)
@@ -91,6 +95,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'git rev-parse real commit failed' }
 
   $script:ScenarioCalls = 0
+  $realDiffCheck = Get-QAAgentCommitDiffCheck -BridgeRoot $tmp -CommitSha $realCommit
+  Assert-True ([bool]$realDiffCheck.Ok) 'real commit diff check succeeds' ([string]$realDiffCheck.Detail)
+  Assert-True ([bool]$realDiffCheck.HasChanges) 'real commit diff check sees changes' ([string]$realDiffCheck.Command)
+  Assert-True ($realDiffCheck.Command -like 'git diff --stat *') 'real commit uses git diff --stat' ([string]$realDiffCheck.Command)
   $realResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $realCommit -TaskId 'qa-empty-real' -TaskTitle 'real commit' -Channel 'main'
   Assert-True ($realResult.Verdict -eq 'PASS') 'real commit returns PASS' ('verdict=' + [string]$realResult.Verdict + '; summary=' + [string]$realResult.Summary)
   Assert-True ($script:ScenarioCalls -eq 1) 'real commit runs scenario suite' ('calls=' + [string]$script:ScenarioCalls)
@@ -106,6 +114,10 @@ try {
   Assert-True ($script:ScenarioCalls -eq 1) 'real commit sha after HEAD advanced runs scenario suite' ('calls=' + [string]$script:ScenarioCalls)
 
   $script:ScenarioCalls = 0
+  $emptyDiffCheck = Get-QAAgentCommitDiffCheck -BridgeRoot $tmp -CommitSha $emptyCommit
+  Assert-True ([bool]$emptyDiffCheck.Ok) 'empty commit diff check succeeds' ([string]$emptyDiffCheck.Detail)
+  Assert-True (-not [bool]$emptyDiffCheck.HasChanges) 'empty commit diff check sees no changes' ([string]$emptyDiffCheck.Command)
+  Assert-True ($emptyDiffCheck.Command -like 'git diff --stat *') 'empty commit uses git diff --stat' ([string]$emptyDiffCheck.Command)
   $emptyResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $emptyCommit -TaskId 'qa-empty-empty' -TaskTitle 'empty commit' -Channel 'main'
   Assert-True ($emptyResult.Verdict -eq 'FAIL') 'empty commit returns FAIL' ('verdict=' + [string]$emptyResult.Verdict + '; summary=' + [string]$emptyResult.Summary)
   Assert-True ($emptyResult.Summary -like '*EMPTY COMMIT*') 'empty commit summary names EMPTY COMMIT' ([string]$emptyResult.Summary)
@@ -143,6 +155,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'git rev-parse empty root failed' }
 
   $script:ScenarioCalls = 0
+  $emptyRootDiffCheck = Get-QAAgentCommitDiffCheck -BridgeRoot $tmpEmptyRoot -CommitSha $emptyRootCommit
+  Assert-True ([bool]$emptyRootDiffCheck.Ok) 'empty root commit diff check succeeds' ([string]$emptyRootDiffCheck.Detail)
+  Assert-True (-not [bool]$emptyRootDiffCheck.HasChanges) 'empty root commit diff check sees no changes' ([string]$emptyRootDiffCheck.Command)
+  Assert-True ($emptyRootDiffCheck.Command -like 'git diff-tree --stat --root*') 'empty root commit uses root diff-tree stat' ([string]$emptyRootDiffCheck.Command)
   $emptyRootResult = Invoke-QAAgentPostCommit -BridgeRoot $tmpEmptyRoot -CommitSha $emptyRootCommit -TaskId 'qa-empty-root-empty' -TaskTitle 'empty root commit' -Channel 'main'
   Assert-True ($emptyRootResult.Verdict -eq 'FAIL') 'empty root commit returns FAIL' ('verdict=' + [string]$emptyRootResult.Verdict + '; summary=' + [string]$emptyRootResult.Summary)
   Assert-True ($emptyRootResult.Summary -like '*EMPTY COMMIT*') 'empty root commit summary names EMPTY COMMIT' ([string]$emptyRootResult.Summary)
