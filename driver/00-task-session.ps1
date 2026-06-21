@@ -454,6 +454,15 @@ function Test-CoderClaims {
       $null = & git -C $shaRepoRoot cat-file -e $sha 2>$null
       $exists = ($LASTEXITCODE -eq 0)
     } catch {}
+    # B4 (2026-06-21): a sha may live in the OTHER repo (project atoms commit to the project
+    # repo, bridge tasks to the bridge repo). Retry the bridge root before declaring a phantom
+    # violation; only a violation if BOTH repos miss it. Prevents false dispute loops.
+    if (-not $exists -and -not [string]::IsNullOrWhiteSpace($BridgeRoot) -and $shaRepoRoot -ne $BridgeRoot) {
+      try {
+        $null = & git -C $BridgeRoot cat-file -e $sha 2>$null
+        $exists = ($LASTEXITCODE -eq 0)
+      } catch {}
+    }
     if ($exists) {
       [void]$checks.Add(@{ kind='git-sha'; claim="commit $sha"; actual='существует' })
     } else {
