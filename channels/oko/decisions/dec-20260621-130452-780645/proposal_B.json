@@ -1,0 +1,86 @@
+{
+    "proposer":  "B",
+    "understanding":  "Step 2/2 of the OKO incident-video feature. Step 1/2 already added `incident_video_path: str | None` and `description: str` to `BridgeOutput` (confirmed in src/oko/domain/bridge.py). Now `TelegramReporter.report()` (src/oko/live/reporters.py) must, when `payload.incident_video_path` is set AND the file exists, send the MP4 via Telegram `sendVideo` as `multipart/form-data` (binary in the `video` field) with `caption=payload.description` (VLM text); otherwise keep the existing behavior, which today is `sendPhoto(keyframe)` and then a `sendMessage` text fallback. The reporter already has the exact infrastructure to reuse: `_post_with_retries(url, body, content_type, failure_label=...)`, a `_build_photo_multipart` static helper, and dependency-injected `_http_post` so HTTP is mockable in pytest. Existing tests never set `incident_video_path` (default None), so a video branch that activates only when the path is set and the file exists is automatically backward-compatible. Acceptance adds two pytest cases (video-present → sendVideo with file+caption; no-video-but-keyframe → sendPhoto), HTTP mocked.",
+    "summary":  "Add a video branch as the highest-priority media path at the top of `report()` (after the `only_alerts`/`should_alert` guard, before the keyframe block): resolve `incident_video_path` to a `pathlib.Path`, and only if `is_file()` succeeds and bytes read cleanly, build a `multipart/form-data` body with the MP4 in field `video` (filename `incident.mp4`, Content-Type `video/mp4`) and `caption = payload.description or self._format(payload)`, then POST to the `sendVideo` URL via the existing `_post_with_retries`. On success return; otherwise fall through to the unchanged keyframe→photo→message cascade. Reuse `_post_with_retries` and `_http_post` so the same HTTP mocking pattern as the existing Telegram tests applies. Add two new tests using a real temp MP4 file (tmp_path) and a fake `_http_post` that records requests.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Order the media cascade as video → photo → message, with the video branch placed first inside report() right after the should_alert guard.",
+                               "reason":  "The contract explicitly states video is preferred when present and valid, with sendPhoto as the fallback; the existing code already establishes a photo→message fallback chain, so prepending video extends the same idiom and gives graceful degradation if a video send fails.",
+                               "tradeoff":  "Slightly longer report() method and three sequential network attempts in the worst case; acceptable since each branch short-circuits on success.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Gate the video branch on pathlib.Path(incident_video_path).is_file() plus a guarded read_bytes(), and fall through (not raise) on a missing/unreadable path.",
+                               "reason":  "Acceptance requires that a payload without a video (or an invalid/non-existent path) falls back to sendPhoto; checking is_file() and catching OSError on read makes \u0027invalid path\u0027 behave identically to \u0027no path\u0027, preserving the no-raise contract the existing tests assert.",
+                               "tradeoff":  "Reads the entire MP4 into memory (mirrors how the photo branch holds JPEG bytes); fine for short incident clips at low complexity but not ideal for large files.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Set caption = payload.description or self._format(payload), not strictly payload.description.",
+                               "reason":  "Literal spec says caption=description, but description defaults to empty string; mirroring the photo branch\u0027s `description or _format` guarantees a non-empty, informative caption when VLM text is absent, while still using description verbatim when present (which is exactly what the acceptance test checks).",
+                               "tradeoff":  "Marginally deviates from the literal \u0027caption=description\u0027 wording; mitigated because when description is set it is used unchanged, so the acceptance assertion still holds.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Reuse the existing _post_with_retries(...) and _http_post injection rather than writing a new HTTP path for video.",
+                               "reason":  "It already implements retries, content-type header handling, token-safe error logging, and response cleanup, and it is the exact seam the existing Telegram tests mock; reusing it keeps the change single-concern and ensures the new tests can mock HTTP the same way.",
+                               "tradeoff":  "_post_with_retries lives outside report(), so the change isn\u0027t 100% physically inside report(); but it is called from report() and not modified, honoring the spirit of the constraint.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Interpret \u0027confined to report()\u0027 pragmatically: keep the decision logic in report() but allow a small _build_video_multipart helper (mirroring _build_photo_multipart) to avoid duplicating multipart assembly.",
+                               "reason":  "Duplicating ~15 lines of boundary/CRLF multipart code inline bloats report() and diverges from house style; a parallel private helper keeps the diff readable and consistent. The strictly-literal alternative (inline everything) is offered as the minimal version.",
+                               "tradeoff":  "Technically adds a method outside report(), a minor deviation from the literal constraint; the minimal version stays fully inline if strict compliance is required.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Build the sendVideo URL inline in report() as f\"https://api.telegram.org/bot{self.bot_token}/sendVideo\" instead of adding a class constant + __init__ attribute.",
+                               "reason":  "Avoids touching __init__/class body, keeping changes closer to report()-only; the URL pattern is already used twice as constants but a third inline use is a smaller, self-contained change for a single-concern atom.",
+                               "tradeoff":  "Slight inconsistency with the existing _SEND_URL/_SEND_PHOTO_URL constant style; advanced version can promote it to _SEND_VIDEO_URL for symmetry.",
+                               "confidence":  0.68
+                           },
+                           {
+                               "statement":  "Multipart video part uses field name \u0027video\u0027, filename \u0027incident.mp4\u0027, Content-Type \u0027video/mp4\u0027; reuse the chat_id and caption fields exactly as the photo builder does.",
+                               "reason":  "Telegram sendVideo expects the binary under the `video` form field; matching the photo builder\u0027s structure for chat_id/caption keeps parsing and tests uniform.",
+                               "tradeoff":  "Hardcoded filename ignores the source filename; harmless for Telegram delivery.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "BridgeOutput already exposes incident_video_path (str|None) and description (str) — verified in src/oko/domain/bridge.py — so no domain/contract changes are needed in this step.",
+                        "The \u0027no video → sendPhoto\u0027 acceptance test will supply a valid keyframe_jpeg_b64 on the payload (otherwise the existing code path leads to sendMessage, not sendPhoto); the new test must set the keyframe.",
+                        "Reading the full MP4 into memory is acceptable at the stated low complexity (incident clips are short); no streaming/chunked upload is required.",
+                        "The injected _http_post seam and _post_with_retries are the intended HTTP mocking points, matching all existing Telegram tests.",
+                        "\u0027File exists\u0027 means a regular readable file; a path that points to a directory or is unreadable is treated as \u0027no video\u0027 and falls through to the photo/message cascade.",
+                        "Telegram caption length (~1024 chars) is acceptable for typical VLM descriptions; no truncation is mandated by the contract for the minimal version."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Literal constraint says modifications must be confined to report(), but a clean implementation needs a URL and multipart assembly that naturally live as helpers/constants.",
+                      "severity":  "low",
+                      "mitigation":  "Offer a strictly-inline minimal version (URL string + multipart built inside report()) for literal compliance, and a helper-based advanced version; recommend the pragmatic helper but make compliance explicit."
+                  },
+                  {
+                      "risk":  "Loading a large MP4 fully into memory could spike memory for big clips.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep clips short by design (incident windows); document the memory tradeoff; advanced version can switch to a streaming multipart upload if file sizes grow."
+                  },
+                  {
+                      "risk":  "VLM description may exceed Telegram\u0027s caption limit, causing sendVideo to be rejected at runtime (not caught by unit tests since HTTP is mocked).",
+                      "severity":  "low",
+                      "mitigation":  "Truncate caption to the Telegram limit in the advanced version; for minimal, rely on the existing _post_with_retries error logging (token-safe) and the photo/message fallback is not triggered on HTTP 4xx — note this limitation."
+                  },
+                  {
+                      "risk":  "A subtle regression if the video branch accidentally activates for existing payloads (which set keyframe but not video) and changes asserted behavior.",
+                      "severity":  "low",
+                      "mitigation":  "Activate the branch only when incident_video_path is truthy AND is_file() returns True; existing tests leave incident_video_path=None (default), so they are unaffected — verify by running the full suite."
+                  },
+                  {
+                      "risk":  "Cross-platform path handling (Windows dev env) when tests create temp MP4 files.",
+                      "severity":  "low",
+                      "mitigation":  "Use pathlib.Path throughout and pytest tmp_path for the test fixture; pass the path as str into incident_video_path to mirror real payloads."
+                  }
+              ],
+    "minimal_version":  "Strictly inside TelegramReporter.report(): immediately after the `if self.only_alerts and not payload.should_alert: return` guard, add — `video_path = payload.incident_video_path` (or getattr for safety); if truthy, `p = pathlib.Path(video_path)`; if `p.is_file()`, try `video_bytes = p.read_bytes()` (except OSError → skip). If bytes obtained: `caption = payload.description or self._format(payload)`; build the multipart body inline (boundary via uuid4, fields chat_id + caption + a `video`/`incident.mp4`/`video/mp4` binary part — same CRLF pattern as _build_photo_multipart); `video_url = f\"https://api.telegram.org/bot{self.bot_token}/sendVideo\"`; if `self._post_with_retries(video_url, body, content_type, failure_label=\"Telegram video alert\")` returns True → return. Otherwise fall through unchanged to the existing keyframe→photo→message logic. Add two pytest tests in tests/test_reporters.py: (1) write fake MP4 bytes to tmp_path, set incident_video_path + description, fake _http_post records requests, assert exactly one call, \u0027sendVideo\u0027 in URL, Content-Type starts with \u0027multipart/form-data\u0027, file bytes present in req.data, and caption/description bytes present; (2) payload with keyframe_jpeg_b64 and incident_video_path=None (and a variant with a non-existent path) → assert \u0027sendPhoto\u0027 in URL. Run full suite to confirm all existing tests stay green.",
+    "advanced_version":  "Same behavior, but factor a shared `_build_media_multipart(chat_id, caption, *, field_name, filename, mime, data)` static helper and refactor `_build_photo_multipart` to delegate to it, eliminating duplication for photo and video; promote the URL to a `_SEND_VIDEO_URL` constant + `self._video_url` in __init__ for symmetry with the existing constants. Implement the full video→photo→message cascade so a failed sendVideo gracefully retries via photo then message (add a test asserting the cascade like the existing test_telegram_reporter_falls_back_to_message_when_send_photo_fails). Truncate caption to Telegram\u0027s 1024-char limit, optionally distinguish HTTP 4xx (do-not-retry, fall back) from network errors, and add a config/env flag (e.g. telegram_send_video / OKO_TELEGRAM_SEND_VIDEO) to disable video sending. Consider streaming/chunked multipart for large MP4s to bound memory, and add tests for non-file paths (directory), unreadable file, empty description caption fallback, and oversized caption truncation."
+}

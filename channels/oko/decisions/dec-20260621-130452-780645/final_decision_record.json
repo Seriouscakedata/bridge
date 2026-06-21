@@ -1,0 +1,139 @@
+{
+    "final_answer":  "Enhance TelegramReporter.report() in src/oko/live/reporters.py to send the incident MP4 via Telegram sendVideo when bridge_output.incident_video_path is set and points to a readable file, otherwise preserve the existing sendPhoto(keyframe) fallback — a strict video → photo → message cascade. The video is uploaded as multipart/form-data under a \u0027video\u0027 field (filename=\u0027incident.mp4\u0027, Content-Type=\u0027video/mp4\u0027), reusing chat_id and routing through the existing _post_with_retries/_http_post injection so retry and mock semantics are unchanged. The caption uses payload.description when present and falls back to self._format(payload) when it is empty, so videos are never captionless (this folds the strict DA-004 into the more robust DA-005). Multipart assembly is delegated to a private _build_video_multipart helper mirroring _build_photo_multipart, and the behavior is locked in by two pytest cases: a valid temp-MP4 path asserts the sendVideo URL/multipart body/caption, and a None-or-missing path asserts the unchanged sendPhoto fallback. Scope is confined to report() plus a sibling helper, all existing tests stay green, and the result is committed as a single focused code atom.",
+    "decisions":  [
+                      {
+                          "decision":  "Implement a strict video → photo → message media cascade in TelegramReporter.report(): if incident_video_path is valid and the file exists, call sendVideo; otherwise fall through to the unchanged sendPhoto path. (DA-001)",
+                          "rationale":  "Triple-proposal consensus (A/B/C) and the load-bearing feature of the change; it adds the new capability while explicitly preserving the existing keyframe path. Judge accept, total 0.915.",
+                          "alternatives_considered":  [
+                                                          "Replace sendPhoto entirely with sendVideo — rejected: breaks the existing keyframe behavior the task requires preserving.",
+                                                          "Send both video and photo for every incident — rejected: redundant, out of scope, and violates the single-concern constraint."
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Payload with a valid incident_video_path → sendVideo is called; payload with None/non-existent path → sendPhoto is called with behavior unchanged."
+                      },
+                      {
+                          "decision":  "Guard the video branch with pathlib.Path.is_file() plus a try-guarded read_bytes(); on missing, unreadable, or directory paths, fall through silently to sendPhoto without raising. (DA-002)",
+                          "rationale":  "Primary safety net for the cascade in DA-001; high risk-reduction at low cost — a bad path degrades to a photo rather than dropping the alert. Judge accept, total 0.9.",
+                          "alternatives_considered":  [
+                                                          "Existence check only via os.path.exists — rejected: passes on directories and unreadable files.",
+                                                          "Let read exceptions propagate — rejected: a malformed path would lose the incident notification entirely instead of degrading."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "incident_video_path pointing at a non-existent file, an unreadable file, or a directory all route to sendPhoto with no exception raised."
+                      },
+                      {
+                          "decision":  "Issue Telegram sendVideo as multipart/form-data with the MP4 bytes in a \u0027video\u0027 field (filename=\u0027incident.mp4\u0027, Content-Type=\u0027video/mp4\u0027), reusing chat_id and caption. (DA-003)",
+                          "rationale":  "Matches Telegram\u0027s sendVideo contract exactly; highly specific and verifiable through mocked HTTP. Multipart cost is contained by the DA-008 helper. Judge accept, total 0.895.",
+                          "alternatives_considered":  [
+                                                          "Send video by URL or file_id — rejected: no hosted URL/file_id exists; we hold a local mp4 file.",
+                                                          "application/json request body — rejected: Telegram requires multipart/form-data for file uploads."
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Mocked HTTP asserts the sendVideo endpoint, multipart/form-data content type, video bytes under the \u0027video\u0027 field with the specified filename/MIME, and correct chat_id and caption."
+                      },
+                      {
+                          "decision":  "Caption the video with payload.description when present, falling back to self._format(payload) when the description is empty; the strict description-only variant is folded in here. (DA-005, incorporating modified DA-004)",
+                          "rationale":  "Resolves the high-impact DA-004/DA-005 conflict in the more robust direction per the judge (modify DA-004) and the micro-debate resolution (prioritize an informative caption). Reuses an existing formatter, so cost stays low. Judge accept, total 0.855.",
+                          "alternatives_considered":  [
+                                                          "Strict caption = bridge_output.description only (DA-004) — rejected: yields captionless videos when description is empty.",
+                                                          "Always use self._format(payload) — rejected: discards the richer VLM description when it is available."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "description set → that exact text is the caption; description empty → the self._format(payload) result is used as caption."
+                      },
+                      {
+                          "decision":  "Add two pytest cases mocking the HTTP layer: (1) a temp MP4 + incident_video_path asserts the sendVideo URL, multipart/form-data, video bytes in the request, and correct caption; (2) incident_video_path None/non-existent asserts the sendPhoto URL. (DA-006)",
+                          "rationale":  "Consensus testing atom that locks the cascade contract and is mandated by the task\u0027s acceptance criteria; strong risk-reduction guarding the riskiest behaviors of DA-001/DA-003. Judge accept, total 0.88.",
+                          "alternatives_considered":  [
+                                                          "Single combined test — rejected: weaker isolation between the two branches.",
+                                                          "Integration test against the live Telegram API — rejected: out of scope, non-deterministic, requires network and credentials."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Both pytest cases pass and each asserts the correct endpoint and request body for its branch."
+                      },
+                      {
+                          "decision":  "Route the sendVideo request through the existing _post_with_retries/_http_post injection rather than a new HTTP path. (DA-007)",
+                          "rationale":  "Preserves retry semantics, content-type handling, and mockability, and avoids a parallel HTTP code path. Low cost, strong consistency. Judge accept, total 0.8675.",
+                          "alternatives_considered":  [
+                                                          "Direct requests/urllib call inside report() — rejected: loses the retry logic and complicates test mocking."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Mock confirms the sendVideo call flows through _post_with_retries/_http_post like the existing sendPhoto call."
+                      },
+                      {
+                          "decision":  "Delegate multipart assembly to a private _build_video_multipart(payload) helper mirroring _build_photo_multipart, keeping report() focused on decision logic. (DA-008)",
+                          "rationale":  "Structure improvement that avoids duplicated assembly and supports DA-003 while keeping report() readable. Quality rather than new behavior, so moderate impact. Judge accept, total 0.7725.",
+                          "alternatives_considered":  [
+                                                          "Inline the multipart assembly directly in report() — rejected: clutters the decision logic and duplicates the photo-builder code."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Code review confirms report() delegates assembly to the helper and the existing _build_photo_multipart is untouched."
+                      },
+                      {
+                          "decision":  "Construct the sendVideo URL following the established sendPhoto URL convention in the same file — a class constant if sendPhoto uses one, an inline f-string otherwise. (DA-009, modified)",
+                          "rationale":  "Judge modified DA-009 away from dogmatically inlining; consistency with the existing convention outweighs the marginal benefit of a localized diff. Low-stakes and easily reversible. Judge modify, total 0.7425.",
+                          "alternatives_considered":  [
+                                                          "Always inline the URL as an f-string (DA-009 original) — rejected: risks diverging from the existing photo-URL construction convention.",
+                                                          "Always introduce a new class constant — rejected when the photo URL is built inline, as it diverges in the opposite direction."
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Code review confirms the sendVideo URL construction mirrors the sendPhoto URL style already present in src/oko/live/reporters.py."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Caption the video strictly from bridge_output.description with no fallback (DA-004 as a standalone atom).",
+                         "why":  "Conflicts with DA-005 and can send captionless videos when description is empty (judge correctness 0.7, risk_reduction 0.5). Folded into DA-005\u0027s description-first-with-_format-fallback, preserving the description-first intent while guaranteeing an informative caption."
+                     },
+                     {
+                         "decision":  "Dogmatically inline the sendVideo URL to keep the diff localized (DA-009 as originally stated).",
+                         "why":  "Risks inconsistency with the existing sendPhoto URL construction convention; superseded by the modified DA-009 decision to follow whatever convention the file already uses."
+                     }
+                 ],
+    "open_questions":  [
+                           "Does the existing sendPhoto URL use a class constant or an inline f-string? This determines the concrete DA-009 implementation and must be confirmed by reading reporters.py before coding.",
+                           "Are bridge_output.description and payload.description the same field? The judge and micro-debate assumed yes; verify against the payload/bridge_output model so the caption logic binds to the correct attribute.",
+                           "Telegram\u0027s caption limit is 1024 characters — should a long description or _format(payload) output be truncated to avoid a 400 from the API? Not covered by any atom; flag as a follow-up if real captions can exceed the limit."
+                       ],
+    "implementation_plan":  [
+                                "Read src/oko/live/reporters.py to confirm the existing TelegramReporter internals: sendPhoto URL construction style, _build_photo_multipart shape, _post_with_retries/_http_post signatures, and the payload/bridge_output fields (incident_video_path, description, _format).",
+                                "Add a private _build_video_multipart(payload) mirroring _build_photo_multipart: a \u0027video\u0027 field with the mp4 bytes (filename=\u0027incident.mp4\u0027, Content-Type=\u0027video/mp4\u0027), chat_id, and caption = payload.description or self._format(payload).",
+                                "In report(): if payload.incident_video_path and Path(path).is_file() and the bytes are readable (try-guarded), build the sendVideo request (URL per the existing convention) and POST via _post_with_retries/_http_post; on any read failure fall through to the existing sendPhoto branch unchanged.",
+                                "Add two pytest cases per DA-006: (1) temp MP4 + incident_video_path → assert sendVideo URL, multipart/form-data, video bytes, and caption; (2) None/non-existent path → assert sendPhoto, mocking the HTTP layer.",
+                                "Run the full pytest suite; confirm the new tests pass and all existing tests stay green.",
+                                "Commit as a single focused atom (code + tests) confined to src/oko/live/reporters.py and its test file."
+                            ],
+    "next_step":  "Read src/oko/live/reporters.py to confirm the existing sendPhoto URL/multipart/_post_with_retries conventions and the payload field names, then implement the sendVideo branch plus the _build_video_multipart helper.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Constraint #2 (\u0027Modifications must be confined to the TelegramReporter.report() method\u0027) is violated by the decision\u0027s own structure. DA-008 adds a new sibling method _build_video_multipart, and DA-009 follows the existing convention (a _SEND_PHOTO_URL class constant plus self._photo_url assigned in __init__), which forces adding a _SEND_VIDEO_URL class constant AND a self._video_url line in __init__. That is three edits outside report() (class body, __init__, new method). The decision explicitly REJECTED the one alternative that satisfies the constraint — \u0027Inline the multipart assembly directly in report()\u0027 — trading a hard stated constraint for readability.",
+                                  "why":  "The task statement and constraint both scope changes to report(); the chosen design knowingly steps outside it. Either the constraint is wrong (then it should be challenged explicitly) or the decision is non-compliant. A reviewer enforcing the contract literally would reject it."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "success_test #2 / DA-006 test (2) is under-specified and will NOT call sendPhoto as written. In the actual report() cascade, sendPhoto only runs when keyframe_jpeg_b64 is present and decodes; a payload that merely omits incident_video_path (e.g. the existing _sample_output() default, which has no keyframe) routes to sendMessage, not sendPhoto. The decision\u0027s test description (\u0027incident_video_path None/non-existent asserts the sendPhoto URL\u0027) never states the payload must also carry a valid keyframe_jpeg_b64.",
+                                  "why":  "A literal implementation of the described test (set incident_video_path=None, assert \u0027sendPhoto\u0027 in URL) fails because the request goes to sendMessage. The implementer must add a keyframe to that payload — an unstated precondition that, if missed, either breaks the test or gets \u0027fixed\u0027 by weakening the assertion."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The claim that _build_video_multipart(payload) \u0027mirrors _build_photo_multipart\u0027 is structurally inaccurate. The real _build_photo_multipart is a @staticmethod with signature (chat_id, caption, jpeg_bytes); it does NOT take payload, does NOT call _format, and the caption fallback (payload.description or self._format(payload)) is computed in report() at line 153, not in the builder. A _build_video_multipart(payload) that internally calls self._format(payload) cannot be static and relocates caption logic, so it diverges from the pattern it claims to follow.",
+                                  "why":  "The implementation_plan was written against an imagined structure. Following it verbatim produces an inconsistent helper (instance method computing captions) rather than the intended mirror, undermining the DA-008 rationale of \u0027mirroring\u0027 for consistency."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The entire MP4 is loaded into memory via read_bytes() and then concatenated into a multipart body (a second full copy), with no size guard. Unlike the keyframe path (small JPEG bytes), incident videos can be multi-MB to tens of MB, so peak memory is ~2x the file size per alert, in a live pipeline.",
+                                  "why":  "Buffering large videos fully in memory and duplicating them for multipart assembly is a real resource concern that does not exist for the keyframe case the design copied. No streaming or size cap is considered."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Telegram\u0027s 1024-char caption limit is acknowledged in open_questions but handled by no atom. A long VLM description (or _format fallback) exceeding 1024 chars makes Telegram return HTTP 400; _post_with_retries treats that as a failure and the cascade silently degrades video -\u003e photo -\u003e message.",
+                                  "why":  "A perfectly valid incident with a verbose VLM description would fail to deliver the video and the operator gets a downgraded alert, with the root cause (caption too long) invisible. The decision defers this rather than truncating."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The branch \u0027incident_video_path valid + file readable, but sendVideo HTTP POST fails\u0027 is not covered by either mandated test. DA-006 only tests (1) valid path -\u003e sendVideo and (2) missing path -\u003e sendPhoto; DA-002 covers file-level failures. The HTTP-failure fall-through (video -\u003e photo -\u003e message) is asserted nowhere for the video branch, even though it is new behavior.",
+                                  "why":  "The riskiest new runtime path — what happens when the video upload itself fails mid-flight — is exactly the one with no regression test, so a future change could break the degradation path undetected."
+                              }
+                          ]
+}

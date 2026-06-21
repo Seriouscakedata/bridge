@@ -1,0 +1,57 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires modifying TelegramReporter.report() in src/oko/live/reporters.py to check if bridge_output.incident_video_path exists and points to a valid file. If so, send the video via Telegram sendVideo API using multipart/form-data with the MP4 file in the \u0027video\u0027 field and bridge_output.description as the caption. Otherwise, fall back to the existing sendPhoto(keyframe) mechanism. Implementation must be minimal, committed directly, and all tests must pass.",
+    "summary":  "Add conditional logic in TelegramReporter.report() to prioritize sendVideo when incident_video_path is present and the file exists, using description as caption; otherwise preserve existing sendPhoto fallback.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Check bridge_output.incident_video_path existence and file validity before choosing sendVideo vs sendPhoto",
+                               "reason":  "The task explicitly requires sendVideo only when the path is set and the file exists; otherwise fallback to sendPhoto. This single concern keeps the change minimal.",
+                               "tradeoff":  "Adds one conditional branch and file-existence check, slightly increasing method complexity but fully backward-compatible.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Use bridge_output.description as the caption parameter in sendVideo",
+                               "reason":  "Task specifies caption=bridge_output.description (VLM-generated text). This provides context for the video incident.",
+                               "tradeoff":  "If description is empty/None, Telegram will simply receive no caption, which is acceptable and matches the spec\u0027s intent.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Keep existing sendPhoto(keyframe) call unchanged as the else branch",
+                               "reason":  "Preserves backward compatibility for all cases without video, ensuring zero regression on existing functionality.",
+                               "tradeoff":  "None — pure additive change with fallback preservation.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Implement sendVideo using multipart/form-data with the MP4 file in the \u0027video\u0027 field",
+                               "reason":  "Telegram Bot API requires multipart/form-data for file uploads; the \u0027video\u0027 field name is the API parameter for sendVideo.",
+                               "tradeoff":  "Requires proper file handling (opening in binary mode) and correct MIME type, but this is standard for Telegram API integration.",
+                               "confidence":  0.99
+                           }
+                       ],
+    "assumptions":  [
+                        "bridge_output is an object with attributes incident_video_path (str or None) and description (str or None)",
+                        "The existing TelegramReporter class has access to a Telegram client/bot instance capable of sendVideo and sendPhoto",
+                        "The MP4 file at incident_video_path is a valid video file readable by the process",
+                        "The existing sendPhoto method signature and behavior remain unchanged",
+                        "Tests will mock HTTP calls to Telegram API to verify correct endpoint selection"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Large video files may cause timeout or memory issues during upload",
+                      "severity":  "medium",
+                      "mitigation":  "Consider adding file size validation or streaming upload in a future iteration; for now, rely on Telegram\u0027s 50MB limit and ensure reasonable video lengths from VLM pipeline"
+                  },
+                  {
+                      "risk":  "Race condition if incident_video_path file is deleted between existence check and sendVideo call",
+                      "severity":  "low",
+                      "mitigation":  "Wrap sendVideo in try/except for FileNotFoundError and fall back to sendPhoto in that edge case"
+                  },
+                  {
+                      "risk":  "bridge_output.description may contain characters that break Telegram caption formatting",
+                      "severity":  "low",
+                      "mitigation":  "Telegram API handles standard UTF-8 text; no special escaping needed unless markdown mode is used, which is not specified here"
+                  }
+              ],
+    "minimal_version":  "Add os.path.isfile check for incident_video_path; if True, call sendVideo with open(path,\u0027rb\u0027) as video and caption=description; else call existing sendPhoto. Single if/else block, no other changes.",
+    "advanced_version":  "Add file size validation, MIME type detection, async upload with progress tracking, retry logic for network failures, and structured logging of video send success/failure metrics — all while maintaining the same fallback contract."
+}

@@ -1,0 +1,18 @@
+{
+    "skipped":  false,
+    "topics":  [
+                   {
+                       "atom_ids":  [
+                                        "DA-004",
+                                        "DA-005"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "Strictly using `bridge_output.description` (DA-004) simplifies the logic and ensures the caption reflects only the explicitly provided information, avoiding potentially unwanted or redundant auto-generated text.",
+                                          "against":  "Implementing a fallback to `self._format(payload)` for empty descriptions (DA-005) ensures every video message is informative, improving user experience and preventing uncontextualized media from being sent.",
+                                          "resolution":  "The system should prioritize ensuring an informative caption, even if it requires a fallback mechanism for empty primary descriptions."
+                                      }
+                                  ]
+                   }
+               ]
+}

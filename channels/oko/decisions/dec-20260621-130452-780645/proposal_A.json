@@ -1,0 +1,67 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно точечно изменить TelegramReporter.report() в src/oko/live/reporters.py: при наличии bridge_output.incident_video_path и существующего файла отправлять его через Telegram sendVideo multipart/form-data с полем video и caption из bridge_output.description; при отсутствии или несуществующем видео сохранить текущий sendPhoto fallback по keyframe. Добавить pytest-покрытие для обоих путей, замокав HTTP, затем убедиться, что тесты проходят, и сделать коммит.",
+    "summary":  "Реализация должна быть минимальной: внутри TelegramReporter.report() добавить ветку sendVideo перед существующей логикой sendPhoto, не меняя остальные классы и контракты. Тесты должны проверять URL/метод sendVideo, multipart files[\u0027video\u0027], caption, а также прежний sendPhoto путь без видео.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить проверку incident_video_path внутри TelegramReporter.report() до sendPhoto fallback.",
+                               "reason":  "Это сохраняет текущую архитектуру и выполняет требование ограничить изменение одним методом.",
+                               "tradeoff":  "Метод станет чуть более ветвистым, но без лишних абстракций для одного нового кейса.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Использовать os.path.exists или Path.exists для валидации файла перед sendVideo.",
+                               "reason":  "Контракт требует отправлять видео только если путь задан и файл существует.",
+                               "tradeoff":  "Не проверяется MIME/расширение сверх существования файла, но задача явно требует только mp4-файл по переданному пути.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Отправлять Telegram sendVideo через multipart/form-data с files={\u0027video\u0027: opened_file} и data caption/chat_id.",
+                               "reason":  "Такой формат соответствует Bot API для загрузки локального видеофайла.",
+                               "tradeoff":  "Файл нужно открывать в бинарном режиме и закрывать через context manager; тесты должны учитывать форму requests-вызова.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Caption для видео брать строго из bridge_output.description.",
+                               "reason":  "Acceptance явно требует использовать VLM-текст как caption.",
+                               "tradeoff":  "Не переиспользуется существующий caption builder, если он отличается; это соответствует контракту.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Добавить два pytest-кейса: валидное видео вызывает sendVideo, отсутствие видео вызывает sendPhoto.",
+                               "reason":  "Это минимально покрывает acceptance и защищает fallback от регрессии.",
+                               "tradeoff":  "Кейс несуществующего пути можно покрыть отдельно только если текущая структура тестов делает это дешево; обязательный минимум уже закрывает отсутствие видео.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "В TelegramReporter уже использует requests или совместимый HTTP-клиент, который можно замокать в существующем стиле тестов.",
+                        "bridge_output доступен в report() как объект с атрибутами description, incident_video_path и текущими keyframe-полями.",
+                        "Существующий sendPhoto fallback уже покрыт или легко проверяется через мок HTTP-вызова.",
+                        "Рабочее дерево содержит постороннее изменение runs/oko-events.jsonl, которое не нужно включать в коммит."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Можно случайно изменить существующий caption/keyframe fallback behavior.",
+                      "severity":  "medium",
+                      "mitigation":  "Вставить sendVideo как раннюю ветку только при валидном видео, а существующий sendPhoto код оставить без смысловых изменений."
+                  },
+                  {
+                      "risk":  "Файл видео может остаться открытым при исключении HTTP-клиента.",
+                      "severity":  "low",
+                      "mitigation":  "Открывать файл через with open(..., \u0027rb\u0027) вокруг HTTP-вызова."
+                  },
+                  {
+                      "risk":  "Тест может стать хрупким из-за проверки file object напрямую.",
+                      "severity":  "low",
+                      "mitigation":  "Проверять endpoint sendVideo, наличие ключа video в files, имя файла/прочитываемый content и caption в data, не завязываясь на внутренний repr объекта."
+                  },
+                  {
+                      "risk":  "Коммит может захватить unrelated dirty файл runs/oko-events.jsonl.",
+                      "severity":  "medium",
+                      "mitigation":  "Перед коммитом staged должны быть только src/oko/live/reporters.py и соответствующий test-файл."
+                  }
+              ],
+    "minimal_version":  "Только добавить sendVideo ветку в TelegramReporter.report(), два pytest-теста для sendVideo и sendPhoto fallback, прогнать релевантные тесты и закоммитить измененные код/тесты без unrelated файлов.",
+    "advanced_version":  "Дополнительно покрыть несуществующий incident_video_path отдельным pytest-кейсом, если это укладывается в существующую тестовую структуру без расширения scope; полный pytest прогон перед коммитом."
+}

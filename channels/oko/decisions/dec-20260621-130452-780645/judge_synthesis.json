@@ -1,0 +1,157 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.95,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Triple-proposal consensus and the load-bearing feature of the change. The video → photo → message cascade adds capability while explicitly preserving the existing sendPhoto path, so it is correct, low-cost, and high-impact. Specificity is good; minor simplicity hit from added branching.",
+                      "total":  0.915
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Guarded is_file()/read_bytes() validation with silent fall-through to the photo path is the primary safety net for the cascade in DA-001. High risk-reduction value; cheap and feasible. Impact is moderate since it is robustness rather than new behavior.",
+                      "total":  0.9
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.95,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Matches Telegram\u0027s sendVideo contract exactly (multipart/form-data, \u0027video\u0027 field, filename incident.mp4, video/mp4 MIME, reused chat_id/caption). Highly specific and verifiable via mocked HTTP. Simplicity is slightly lower due to multipart assembly (medium cost), which DA-008 helps contain.",
+                      "total":  0.895
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.95,
+                                     "impact":  0.6,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.5,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "conflicts with DA-005 (high impact); strict description source can yield empty captions"
+                                    ],
+                      "reason":  "Two-proposal support and simple, but directly conflicts with DA-005. Strictly binding the caption to bridge_output.description risks sending captionless videos when description is empty, lowering correctness and risk_reduction. Modify to keep the description-first intent while adopting DA-005\u0027s fallback; assuming bridge_output.description and payload.description are the same field, this folds into DA-005.",
+                      "total":  0.755
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Resolves the DA-004/DA-005 conflict in the more robust direction: use payload.description when present, else fall back to self._format(payload), guaranteeing an informative caption. Single-proposal origin but it is the recommended reconciliation; reuses an existing formatter so cost stays low.",
+                      "total":  0.855
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus testing atom that locks in the cascade contract: a valid-video case asserting the sendVideo URL, multipart body, video bytes, and caption, plus a None/missing-path case asserting the sendPhoto fallback. Strong risk-reduction; medium effort but directly guards the riskiest behaviors of DA-001/DA-003.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Routing the sendVideo call through the existing _post_with_retries/_http_post injection preserves retry semantics, content-type handling, and mockability, and avoids a parallel HTTP path. Strong consistency and risk-reduction value at low cost; specificity slightly lower as it depends on existing internals behaving identically for multipart.",
+                      "total":  0.8675
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.6,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A _build_video_multipart helper mirroring _build_photo_multipart keeps report() focused on decision logic and avoids duplicated assembly, supporting DA-003. It is a quality/structure improvement rather than functional behavior, so impact is moderate and it adds a small amount of code (slight simplicity cost).",
+                      "total":  0.7725
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.95,
+                                     "impact":  0.4,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        "risks inconsistency with the existing photo-URL construction convention"
+                                    ],
+                      "reason":  "Low-stakes, easily reversible style choice. Inlining the sendVideo URL keeps the diff localized, but dogmatically avoiding a constant can diverge from how the existing sendPhoto URL is built. Modify to follow whatever the established convention is (constant if photo uses one, inline otherwise); impact and risk-reduction are inherently low either way.",
+                      "total":  0.7425
+                  }
+              ]
+}

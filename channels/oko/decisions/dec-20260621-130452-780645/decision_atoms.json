@@ -1,0 +1,110 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Implement conditional logic in `TelegramReporter.report()` to prioritize sending video if `incident_video_path` is valid and exists, otherwise fall back to the existing `sendPhoto` mechanism, preserving its behavior. The media cascade should be video → photo → message.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Logic/Control Flow",
+                      "test":  "Verify that if `incident_video_path` is valid and the file exists, `sendVideo` is called. If `incident_video_path` is `None` or points to a non-existent/invalid file, `sendPhoto` is called, and the existing `sendPhoto` behavior is unchanged.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Validate the video file\u0027s existence and readability using `pathlib.Path.is_file()` and a guarded `read_bytes()` call; if the file is missing or unreadable, gracefully fall through to the `sendPhoto` fallback without raising an exception.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Data Handling / Error Handling",
+                      "test":  "Create test cases where `incident_video_path` points to a non-existent file, an unreadable file, or a directory, ensuring `sendPhoto` is called and no exceptions are raised.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Implement the Telegram `sendVideo` API call using `multipart/form-data`, with the MP4 file content provided in a form field named `video`, specifying `filename=\u0027incident.mp4\u0027` and `Content-Type=\u0027video/mp4\u0027`. Reuse `chat_id` and `caption` fields as per existing photo builder.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "API Interaction",
+                      "test":  "Mock HTTP calls to Telegram, assert the `sendVideo` endpoint is hit, the request `Content-Type` is `multipart/form-data`, and the request body contains the video bytes under the `video` field with specified filename and MIME type, along with correct `chat_id` and `caption`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "The caption for the video should be taken strictly from `bridge_output.description`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Data Handling",
+                      "test":  "Verify that the `caption` field in the `sendVideo` request body exactly matches `bridge_output.description` when `description` is provided.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "The caption for the video should be `payload.description` or, if empty, fall back to `self._format(payload)` to ensure an informative caption.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Data Handling",
+                      "test":  "Test with `payload.description` set, assert it\u0027s used. Test with `payload.description` empty, assert `self._format(payload)` result is used as caption.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Add pytest coverage including at least two cases: one where a valid video path triggers `sendVideo` (verifying URL, multipart data, and caption), and another where the absence of a valid video path (e.g., `None` or non-existent file) correctly triggers the `sendPhoto` fallback.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "(1) Create a temporary MP4 file, set `incident_video_path`, mock HTTP to record requests, assert `sendVideo` URL, `multipart/form-data` Content-Type, video bytes in `req.data`, and correct caption. (2) Set `incident_video_path=None` (or non-existent path), assert `sendPhoto` URL is called.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Reuse the existing `_post_with_retries(...)` and `_http_post` dependency injection for HTTP communication, ensuring retry logic, content-type handling, and mockability are preserved.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Code Structure / API Interaction",
+                      "test":  "Verify through mocking that the `sendVideo` call utilizes `_post_with_retries` and `_http_post` for its network operations.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "To avoid duplicating multipart assembly code and keep `report()` clean, allow the creation of a small private helper method (e.g., `_build_video_multipart`) mirroring `_build_photo_multipart`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Code Structure",
+                      "test":  "Code review to confirm `report()`\u0027s primary responsibility is decision logic, with multipart assembly delegated to a dedicated helper method.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Build the `sendVideo` URL inline within `report()` using an f-string, rather than adding a new class constant or `__init__` attribute, to keep changes localized to `report()`.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Code Structure",
+                      "test":  "Code review to confirm the `sendVideo` URL is constructed inline within the `report()` method and no new class-level constants or `__init__` modifications are made for the URL.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

@@ -1,0 +1,26 @@
+{
+    "task":  "ФОКУСНЫЙ КОДОВЫЙ атом (operator, РЕАЛИЗУЙ+КОММИТЬ КОД, НЕ discuss/документ). OKO видео шаг 2/2: TelegramReporter шлёт ВИДЕО инцидента. КОНКРЕТНО: src/oko/live/reporters.py — в TelegramReporter.report(): если bridge_output.incident_video_path задан и файл существует → Telegram sendVideo (multipart/form-data, поле video=mp4-файл) с caption=bridge_output.description (VLM-текст); иначе текущий sendPhoto(keyframe)-fallback. Acceptance ОБЯЗАН: pytest — payload с incident_video_path → reporter дёргает sendVideo с файлом (HTTP мокнуть); payload без видео → sendPhoto. Один концерн, тесты зелёные. Это РЕАЛИЗАЦИЯ кода с коммитом, не decision-документ.",
+    "goal":  "To enhance `TelegramReporter` to send incident videos via `Telegram sendVideo` when `bridge_output.incident_video_path` is provided and valid, using `bridge_output.description` as the video caption, while maintaining the existing `sendPhoto` fallback for keyframes.",
+    "constraints":  [
+                        "Implement and commit code directly; no discussion or documentation is required.",
+                        "Modifications must be confined to the `TelegramReporter.report()` method within `src/oko/live/reporters.py`.",
+                        "The `Telegram sendVideo` call must use `multipart/form-data` with the MP4 file in the `video` field and `bridge_output.description` as the `caption`.",
+                        "The existing `sendPhoto` (keyframe) fallback mechanism must be preserved if `incident_video_path` is not provided or the file does not exist.",
+                        "The implementation must address a single concern.",
+                        "All existing tests must remain green."
+                    ],
+    "known_context":  [
+                          "This task is step 2/2 of the OKO video feature implementation.",
+                          "The `bridge_output` object may contain `incident_video_path` (a file path) and `description` (VLM-generated text).",
+                          "An existing `TelegramReporter` class and its `sendPhoto` mechanism are in place."
+                      ],
+    "output_format":  "Implemented and committed code.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "A pytest test case exists where a payload with a valid `incident_video_path` causes `TelegramReporter.report()` to call `Telegram sendVideo` with the specified video file and `caption` from `bridge_output.description` (mocking HTTP calls to Telegram API).",
+                          "A pytest test case exists where a payload without `incident_video_path` (or with an invalid/non-existent path) causes `TelegramReporter.report()` to call `Telegram sendPhoto` (mocking HTTP calls to Telegram API).",
+                          "All existing tests pass after the changes."
+                      ]
+}
