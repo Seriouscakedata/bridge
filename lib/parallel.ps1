@@ -2045,11 +2045,16 @@ function Collect-ParallelDispatchWorkerOutput {
       }
     }
 
+    # B1 (2026-06-21): a SINGLE stream has no peer to conflict with, so the strict
+    # outside-touch-set deny below only causes false wedges of related changes (~17 min/phase
+    # wasted on OKO). The sequential touch-set check above (with operator-auth) is the real gate
+    # for single-stream; collect ALL of its changes. Keep strict deny only for multi-stream batches.
+    $isSingleStream = (@($Context.workers).Count -eq 1)
     $allowedPaths = New-Object 'System.Collections.Generic.List[string]'
     $deniedPaths = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rel in $changed) {
       if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-      if (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $declaredFiles) {
+      if ($isSingleStream -or (Test-ParallelCollectedPathAllowed -RelativePath $rel -DeclaredFiles $declaredFiles)) {
         [void]$allowedPaths.Add($rel)
       } else {
         [void]$deniedPaths.Add($rel)
