@@ -93,10 +93,27 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'git rev-parse empty commit failed' }
 
   $script:ScenarioCalls = 0
+  $staleHeadRealResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $realCommit -TaskId 'qa-empty-stale-head' -TaskTitle 'real commit after head advanced' -Channel 'main'
+  Assert-True ($staleHeadRealResult.Verdict -eq 'PASS') 'real commit sha returns PASS after HEAD advanced' ('verdict=' + [string]$staleHeadRealResult.Verdict + '; summary=' + [string]$staleHeadRealResult.Summary)
+  Assert-True ($script:ScenarioCalls -eq 1) 'real commit sha after HEAD advanced runs scenario suite' ('calls=' + [string]$script:ScenarioCalls)
+
+  $script:ScenarioCalls = 0
   $emptyResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $emptyCommit -TaskId 'qa-empty-empty' -TaskTitle 'empty commit' -Channel 'main'
   Assert-True ($emptyResult.Verdict -eq 'FAIL') 'empty commit returns FAIL' ('verdict=' + [string]$emptyResult.Verdict + '; summary=' + [string]$emptyResult.Summary)
   Assert-True ($emptyResult.Summary -like '*EMPTY COMMIT*') 'empty commit summary names EMPTY COMMIT' ([string]$emptyResult.Summary)
   Assert-True ($script:ScenarioCalls -eq 0) 'empty commit skips scenario suite' ('calls=' + [string]$script:ScenarioCalls)
+
+  $script:ScenarioCalls = 0
+  $projectRealResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $realCommit -TaskId 'qa-empty-project-real' -TaskTitle 'project real commit' -Channel 'oko'
+  Assert-True ($projectRealResult.Verdict -eq 'PASS') 'project real commit returns PASS' ('verdict=' + [string]$projectRealResult.Verdict + '; summary=' + [string]$projectRealResult.Summary)
+  Assert-True ($projectRealResult.Summary -like '*bridge QA scenarios skipped*') 'project real commit skips bridge scenarios' ([string]$projectRealResult.Summary)
+  Assert-True ($script:ScenarioCalls -eq 0) 'project real commit does not run scenario suite' ('calls=' + [string]$script:ScenarioCalls)
+
+  $script:ScenarioCalls = 0
+  $projectEmptyResult = Invoke-QAAgentPostCommit -BridgeRoot $tmp -CommitSha $emptyCommit -TaskId 'qa-empty-project-empty' -TaskTitle 'project empty commit' -Channel 'oko'
+  Assert-True ($projectEmptyResult.Verdict -eq 'FAIL') 'project empty commit returns FAIL' ('verdict=' + [string]$projectEmptyResult.Verdict + '; summary=' + [string]$projectEmptyResult.Summary)
+  Assert-True ($projectEmptyResult.Summary -like '*EMPTY COMMIT*') 'project empty commit summary names EMPTY COMMIT' ([string]$projectEmptyResult.Summary)
+  Assert-True ($script:ScenarioCalls -eq 0) 'project empty commit does not run scenario suite' ('calls=' + [string]$script:ScenarioCalls)
 } catch {
   $failed++
   Write-Host ("FAIL: unexpected exception - " + $_.Exception.Message)

@@ -292,26 +292,34 @@ function Invoke-QAAgentPostCommit {
     [switch]$IncludeUnsafe
   )
   if ([string]::IsNullOrWhiteSpace($BridgeRoot)) { $BridgeRoot = Get-QAAgentBridgeRoot }
+  $qaPostChannel = Get-QAAgentChannel -Channel $Channel
+  # Guard: reject empty commits before any channel-specific QA skip. Project channels do not run
+  # bridge scenarios, but they still must prove the checked commit changed files.
+  $commitRef = [string]$CommitSha
+  if ([string]::IsNullOrWhiteSpace($commitRef)) { $commitRef = 'HEAD' }
+  $parentRef = $commitRef + '^'
+  $parentProbe = @(& git -C $BridgeRoot rev-parse --verify $parentRef 2>$null)
+  if ($LASTEXITCODE -eq 0 -and $parentProbe.Count -gt 0) {
+    $emptyCommitCheck = @(& git -C $BridgeRoot diff --stat $parentRef $commitRef 2>$null |
+                           Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  } else {
+    $emptyCommitCheck = @(& git -C $BridgeRoot diff-tree --stat --root --no-commit-id $commitRef 2>$null |
+                           Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  }
+  if ($emptyCommitCheck.Count -eq 0) {
+    $shortEc = [string]$CommitSha; if ($shortEc.Length -gt 7) { $shortEc = $shortEc.Substring(0,7) }
+    if ([string]::IsNullOrWhiteSpace($shortEc)) { $shortEc = '<unknown>' }
+    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'FAIL' -Summary ('post-commit ' + $shortEc + ': EMPTY COMMIT - git diff --stat ' + $parentRef + ' ' + $commitRef + ' shows no file changes; Codex did not modify files, task is not done.') -Bugs @() -BridgeRoot $BridgeRoot
+  }
   # 2026-06-11 W2b: post-commit QA runs the BRIDGE scenario suite (smoke + HTTP scenarios against
   # the bridge server). On a PROJECT channel the commit changed the project app, NOT the bridge,
   # so these scenarios are irrelevant AND fail (sandbox/HTTP) -> qa_failed -> the same close-lag
   # loop W2 fixed for gate-regression (the second onion layer the slopvid benchmark exposed).
   # Skip bridge scenarios off main; project acceptance is owned by the project-contract flow.
-  $qaPostChannel = Get-QAAgentChannel -Channel $Channel
   if (-not [string]::IsNullOrWhiteSpace($qaPostChannel) -and $qaPostChannel -ne 'main') {
     $short = [string]$CommitSha; if ($short.Length -gt 7) { $short = $short.Substring(0,7) }
     if ([string]::IsNullOrWhiteSpace($short)) { $short = '<unknown>' }
     return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel $qaPostChannel -Verdict 'PASS' -Summary ('post-commit ' + $short + ': bridge QA scenarios skipped (project channel ' + $qaPostChannel + ' — bridge smoke is not relevant to project changes)') -Bugs @() -BridgeRoot $BridgeRoot
-  }
-  # Guard: reject empty commits; git diff --stat HEAD~1 HEAD must show file changes.
-  # An empty commit means Codex did not change files; QA PASS here would let the done-gate
-  # close a task that produced nothing, losing the turn.
-  $emptyCommitCheck = @(& git -C $BridgeRoot diff --stat HEAD~1 HEAD 2>$null |
-                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-  if ($emptyCommitCheck.Count -eq 0) {
-    $shortEc = [string]$CommitSha; if ($shortEc.Length -gt 7) { $shortEc = $shortEc.Substring(0,7) }
-    if ([string]::IsNullOrWhiteSpace($shortEc)) { $shortEc = '<unknown>' }
-    return New-QAAgentResult -TaskId $TaskId -TaskTitle $TaskTitle -Channel (Get-QAAgentChannel -Channel $Channel) -Verdict 'FAIL' -Summary ('post-commit ' + $shortEc + ': EMPTY COMMIT - git diff --stat HEAD~1 HEAD shows no file changes; Codex did not modify files, task is not done.') -Bugs @() -BridgeRoot $BridgeRoot
   }
   $qaCfg = Get-QAAgentConfig -BridgeRoot $BridgeRoot
   $runUnsafe = [bool]$IncludeUnsafe -or [bool]$qaCfg.RunUnsafeScenarios
