@@ -243,11 +243,36 @@ all stage docs + `PROJECT_MAP.md + PROJECT_PLAN.md + .bridge/project-contract.js
 `Test-ProjectPlanApproved` returns false and autopilot waits for re-approval instead of expanding
 stale scope.
 
+**Bridge Spec Layer (2026-06-21):**
+Project Autopilot now supports profile-based planning depth inspired by spec-first tools, without depending
+on external CLIs. The profile is read from `.bridge/project-contract.json` as `spec_profile` or `project_size`
+and is stored on approval as `plan_spec_profile`; signatures use `bridge-spec-v1`.
+
+- `lite` (`small`, `tiny`, `simple`, `mvp` aliases): for narrow projects. Requires `PROJECT_BRIEF.md`,
+  `.bridge/constitution.md`, `.bridge/specs/acceptance.md`, `PROJECT_MAP.md`, `PROJECT_PLAN.md`, and the
+  contract. It does not require the full `DISCUSS_*` bureaucracy or `planning_flow`.
+- `standard` (`medium`, `normal`, `default` aliases): for normal multi-surface apps. Requires the existing
+  staged discussion flow plus `.bridge/constitution.md`, `.bridge/specs/product.md`, and
+  `.bridge/specs/acceptance.md`.
+- `full` (`large`, `complex`, `strict`, `production` aliases): for large/high-risk projects. Requires deeper
+  staged docs plus `.bridge/specs/product.md`, `.bridge/specs/ux.md`, `.bridge/specs/architecture.md`, and
+  `.bridge/specs/acceptance.md`.
+- `legacy`: used only when no profile is declared, preserving existing staged-v1 projects.
+
+For `full`/large work, coordinator prompts require change packages under
+`.bridge/changes/<change-id>/proposal.md`, `design.md`, `tasks.md`, and `acceptance.md` before implementation
+atoms, with completed packages archived under `.bridge/archive/<change-id>`. This ceremony is intentionally
+not required for `lite`.
+
+The spec layer does not relax parallelism. Every implementation atom still needs explicit `files`,
+`depends_on`, `parallel_group`, acceptance checks, and `serial_reason` when it cannot run in parallel.
+
 Minimal `.bridge/project-contract.json` shape:
 
 ```json
 {
   "project_goal": "Concrete outcome, not a slogan.",
+  "spec_profile": "standard",
   "planning_flow": {
     "stages": [
       {

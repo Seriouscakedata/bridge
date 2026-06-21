@@ -1,0 +1,106 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "factory_add_gemini_branch",
+                      "statement":  "Add a `provider == \u0027gemini\u0027` branch to `build_vlm` in `factory.py` to instantiate `GeminiVlmProvider`, including necessary imports.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Factory Integration",
+                      "test":  "Add a factory test in `tests/test_providers.py` asserting `isinstance(provider, GeminiVlmProvider)`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "factory_gemini_defaults",
+                      "statement":  "Configure `GeminiVlmProvider` instantiation in `build_vlm` to use `model=\u0027gemini-2.5-flash\u0027`, `api_key_env=\u0027GEMINI_API_KEY\u0027`, and `timeout_seconds=config.timeout_seconds` as defaults or when specified in config.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Factory Configuration",
+                      "test":  "Assert `provider.model == \u0027gemini-2.5-flash\u0027` in the factory test in `tests/test_providers.py`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "provider_constructor_network_safety",
+                      "statement":  "Ensure the `GeminiVlmProvider` constructor does not perform network calls, only validating and storing attributes.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Provider Design",
+                      "test":  "Add a test in `tests/test_providers.py` asserting that `GeminiVlmProvider` construction makes no network call (e.g., by mocking network dependencies).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "config_update_yaml_vlm_block",
+                      "statement":  "Update `configs/example.yaml` and `configs/live-webcam.yaml` with a `vlm` block specifying `provider: gemini`, `model: gemini-2.5-flash`, `api_key_env: GEMINI_API_KEY`, and `timeout_seconds: 15`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Configuration Update",
+                      "test":  "Add config-validity assertions in `tests/test_config.py` and ensure `test_example_config_drives_providers` passes with the new `gemini` provider.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "gate_config_person_animal_only",
+                      "statement":  "Implement person/animal-only VLM triggering exclusively via `VlmGateConfig`, setting `event_types=(\u0027person_entered_zone\u0027, \u0027animal_entered_zone\u0027)`, `risk_levels=()`, `min_risk_score=1.01`, and `max_normality_score=-0.01`, without modifying `_trigger_reason`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Event Filtering Configuration",
+                      "test":  "Update `tests/test_vlm_gate.py` with scenarios verifying `should_query` is `True` for `person_entered_zone` and `animal_entered_zone`, and `False` for other event types (e.g., `camera_offline`, `object_appeared`, high-risk-only events).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "builder_expand_coco_animals",
+                      "statement":  "Expand the `_class_is_animal` predicate (or equivalent) to include the full COCO animal set: `cat`, `dog`, `bird`, `horse`, `sheep`, `cow`, `elephant`, `bear`, `zebra`, `giraffe` (and `animal`). Consider using a module-level `frozenset`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Model Extension",
+                      "test":  "Add parametrized tests to `tests/test_event_builder.py` (or similar) to verify all specified COCO animal classes correctly trigger `animal_entered_zone`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "testing_strategy_new_suites",
+                      "statement":  "Place new tests for Gemini factory integration, configuration validity, and VLM gate triggering in their respective existing test suites: `tests/test_providers.py`, `tests/test_config.py`, and `tests/test_vlm_gate.py`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing Strategy",
+                      "test":  "Ensure new test files or sections are added to `tests/test_providers.py`, `tests/test_config.py`, and `tests/test_vlm_gate.py` covering the new functionality.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "gate_extract_config_profile",
+                      "statement":  "Extract the person/animal-only `VlmGateConfig` profile as a named, importable constant or classmethod (e.g., `PERSON_ANIMAL_ONLY_GATE_CONFIG`) in `src/oko/vlm/gate.py` for reuse in tests and future live wiring.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "API Design / Refactoring",
+                      "test":  "Verify `PERSON_ANIMAL_ONLY_GATE_CONFIG` (or equivalent) is defined in `src/oko/vlm/gate.py` and imported/used in `tests/test_vlm_gate.py`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

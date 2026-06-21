@@ -651,22 +651,147 @@ function Get-ProjectAcceptancePlanningStageDefinitions {
   )
 }
 
+function Normalize-ProjectAcceptanceSpecProfile {
+  param([string]$Profile)
+  $p = ([string]$Profile).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($p)) { return 'legacy' }
+  if ($p -in @('tiny','small','simple','light','lite','minimal','mvp')) { return 'lite' }
+  if ($p -in @('medium','normal','default','standard','regular')) { return 'standard' }
+  if ($p -in @('large','big','complex','strict','full','production','enterprise')) { return 'full' }
+  if ($p -in @('legacy','staged-v1')) { return 'legacy' }
+  return 'standard'
+}
+
+function Get-ProjectAcceptanceSpecProfile {
+  param($Contract)
+  if (-not $Contract) { return 'legacy' }
+  $value = [string](Get-ProjectAcceptanceObjectValue -Obj $Contract -Names @('spec_profile','specProfile','project_size','projectSize','project_profile','projectProfile') -Default '')
+  if (-not [string]::IsNullOrWhiteSpace($value)) { return (Normalize-ProjectAcceptanceSpecProfile -Profile $value) }
+  foreach ($containerName in @('bridge_spec','bridgeSpec','spec_layer','specLayer','project_spec','projectSpec')) {
+    $container = Get-ProjectAcceptanceObjectValue -Obj $Contract -Names @($containerName) -Default $null
+    if ($container) {
+      $value = [string](Get-ProjectAcceptanceObjectValue -Obj $container -Names @('profile','spec_profile','project_size','size') -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($value)) { return (Normalize-ProjectAcceptanceSpecProfile -Profile $value) }
+    }
+  }
+  return 'legacy'
+}
+
+function Get-ProjectAcceptancePlanContractObject {
+  param([string]$ProjectRoot)
+  $path = Get-ProjectAcceptancePlanContractPath -ProjectRoot $ProjectRoot
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try { return ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) } catch { return $null }
+}
+
+function Get-ProjectAcceptanceSpecRules {
+  param([string]$Profile = 'legacy')
+  $profileName = Normalize-ProjectAcceptanceSpecProfile -Profile $Profile
+  switch ($profileName) {
+    'lite' {
+      return [pscustomobject]@{
+        profile = 'lite'
+        stage_ids = @('brief')
+        stage_min_overrides = @{ brief = 500 }
+        map_min_chars = 800
+        plan_min_chars = 1000
+        constitution_min_chars = 500
+        spec_min_chars = 500
+        required_specs = @('.bridge\specs\acceptance.md')
+        requirements_min = 1
+        surfaces_min = 1
+        journeys_min = 1
+        acceptance_min = 1
+        interface_min = 0
+        require_planning_flow = $false
+        integration_dep_min = 0
+      }
+    }
+    'standard' {
+      return [pscustomobject]@{
+        profile = 'standard'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{}
+        map_min_chars = 1500
+        plan_min_chars = 2000
+        constitution_min_chars = 700
+        spec_min_chars = 700
+        required_specs = @('.bridge\specs\product.md','.bridge\specs\acceptance.md')
+        requirements_min = 3
+        surfaces_min = 2
+        journeys_min = 2
+        acceptance_min = 3
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+    'full' {
+      return [pscustomobject]@{
+        profile = 'full'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{ brief = 1000; product = 1200; ux = 1200; ui = 1000; backend = 1200; qa = 1200; integration = 1200 }
+        map_min_chars = 2500
+        plan_min_chars = 3000
+        constitution_min_chars = 900
+        spec_min_chars = 900
+        required_specs = @('.bridge\specs\product.md','.bridge\specs\ux.md','.bridge\specs\architecture.md','.bridge\specs\acceptance.md')
+        requirements_min = 5
+        surfaces_min = 3
+        journeys_min = 3
+        acceptance_min = 5
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+    default {
+      return [pscustomobject]@{
+        profile = 'legacy'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{}
+        map_min_chars = 1500
+        plan_min_chars = 2000
+        constitution_min_chars = 0
+        spec_min_chars = 0
+        required_specs = @()
+        requirements_min = 3
+        surfaces_min = 2
+        journeys_min = 2
+        acceptance_min = 3
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+  }
+}
+
 function Get-ProjectAcceptancePlanSignatureFiles {
+  param([string]$ProjectRoot = '')
   $files = New-Object 'System.Collections.Generic.List[string]'
+  $contract = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $null } else { Get-ProjectAcceptancePlanContractObject -ProjectRoot $ProjectRoot }
+  $rules = Get-ProjectAcceptanceSpecRules -Profile (Get-ProjectAcceptanceSpecProfile -Contract $contract)
+  $stageIds = @($rules.stage_ids | ForEach-Object { [string]$_ })
   foreach ($stage in @(Get-ProjectAcceptancePlanningStageDefinitions)) {
+    if ($stageIds -notcontains [string]$stage.id) { continue }
     [void]$files.Add([string]$stage.path)
+  }
+  if ([int]$rules.constitution_min_chars -gt 0) { [void]$files.Add('.bridge\constitution.md') }
+  foreach ($rel in @($rules.required_specs)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$rel)) { [void]$files.Add([string]$rel) }
   }
   foreach ($rel in @('PROJECT_MAP.md','PROJECT_PLAN.md','.bridge\project-contract.json')) {
     [void]$files.Add([string]$rel)
   }
-  return @($files.ToArray())
+  return @($files.ToArray() | Select-Object -Unique)
 }
 
 function Get-ProjectAcceptancePlanSignature {
   param([string]$ProjectRoot)
   if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
   $parts = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($rel in @(Get-ProjectAcceptancePlanSignatureFiles)) {
+  foreach ($rel in @(Get-ProjectAcceptancePlanSignatureFiles -ProjectRoot $ProjectRoot)) {
     $path = Join-Path $ProjectRoot $rel
     [void]$parts.Add($rel.Replace('\','/') + "`n" + (Get-ProjectAcceptanceFileText -Path $path))
   }
@@ -731,19 +856,43 @@ function Read-ProjectAcceptancePlanContract {
 function Get-ProjectAcceptancePlanContractSteps {
   param([string]$ProjectRoot)
   $steps = New-Object 'System.Collections.Generic.List[object]'
+  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
+  $rules = Get-ProjectAcceptanceSpecRules -Profile 'legacy'
+  if ($info.contract) {
+    $rules = Get-ProjectAcceptanceSpecRules -Profile (Get-ProjectAcceptanceSpecProfile -Contract $info.contract)
+  }
   $mapPath = Join-Path $ProjectRoot 'PROJECT_MAP.md'
   $planPath = Join-Path $ProjectRoot 'PROJECT_PLAN.md'
   $mapText = Get-ProjectAcceptanceFileText -Path $mapPath
   $planText = Get-ProjectAcceptanceFileText -Path $planPath
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_MAP.md-depth' -Ok ($mapText.Length -ge 1500) -Details ("chars=" + [string]$mapText.Length)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_PLAN.md-depth' -Ok ($planText.Length -ge 2000) -Details ("chars=" + [string]$planText.Length)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_MAP.md-depth' -Ok ($mapText.Length -ge [int]$rules.map_min_chars) -Details ("chars=" + [string]$mapText.Length + " min=" + [string]$rules.map_min_chars)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan:PROJECT_PLAN.md-depth' -Ok ($planText.Length -ge [int]$rules.plan_min_chars) -Details ("chars=" + [string]$planText.Length + " min=" + [string]$rules.plan_min_chars)))
+  $stageIds = @($rules.stage_ids | ForEach-Object { [string]$_ })
   foreach ($stageDef in @(Get-ProjectAcceptancePlanningStageDefinitions)) {
+    $sid = [string]$stageDef.id
+    if ($stageIds -notcontains $sid) { continue }
     $stagePath = Join-Path $ProjectRoot ([string]$stageDef.path)
     $stageText = Get-ProjectAcceptanceFileText -Path $stagePath
-    [void]$steps.Add((New-ProjectAcceptanceStep -Name ("plan-stage-doc:" + [string]$stageDef.id) -Ok ($stageText.Length -ge [int]$stageDef.min_chars) -Details (([string]$stageDef.path) + " chars=" + [string]$stageText.Length + " min=" + [string]$stageDef.min_chars)))
+    $minChars = [int]$stageDef.min_chars
+    try {
+      if ($rules.stage_min_overrides -and $rules.stage_min_overrides.ContainsKey($sid)) {
+        $minChars = [int]$rules.stage_min_overrides[$sid]
+      }
+    } catch {}
+    [void]$steps.Add((New-ProjectAcceptanceStep -Name ("plan-stage-doc:" + $sid) -Ok ($stageText.Length -ge $minChars) -Details (([string]$stageDef.path) + " chars=" + [string]$stageText.Length + " min=" + [string]$minChars)))
+  }
+  if ([int]$rules.constitution_min_chars -gt 0) {
+    $constitutionRel = '.bridge\constitution.md'
+    $constitutionText = Get-ProjectAcceptanceFileText -Path (Join-Path $ProjectRoot $constitutionRel)
+    [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-spec:constitution' -Ok ($constitutionText.Length -ge [int]$rules.constitution_min_chars) -Details ($constitutionRel + " chars=" + [string]$constitutionText.Length + " min=" + [string]$rules.constitution_min_chars)))
+  }
+  foreach ($specRel in @($rules.required_specs)) {
+    if ([string]::IsNullOrWhiteSpace([string]$specRel)) { continue }
+    $specText = Get-ProjectAcceptanceFileText -Path (Join-Path $ProjectRoot ([string]$specRel))
+    $safeName = ([string]$specRel).Replace('\','/').Replace('.bridge/specs/','').Replace('.md','')
+    [void]$steps.Add((New-ProjectAcceptanceStep -Name ('plan-spec:' + $safeName) -Ok ($specText.Length -ge [int]$rules.spec_min_chars) -Details (([string]$specRel) + " chars=" + [string]$specText.Length + " min=" + [string]$rules.spec_min_chars)))
   }
 
-  $info = Read-ProjectAcceptancePlanContract -ProjectRoot $ProjectRoot
   [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:present' -Ok ([bool]$info.exists -and $null -ne $info.contract) -Details ($(if ($info.contract) { [string]$info.path } elseif (-not [string]::IsNullOrWhiteSpace([string]$info.error)) { [string]$info.error } else { [string]$info.path }))))
   if (-not $info.contract) { return @($steps.ToArray()) }
 
@@ -755,30 +904,36 @@ function Get-ProjectAcceptancePlanContractSteps {
   $interfaceCount = [int](Get-ProjectAcceptanceContractCount -Obj $info.contract -Names @('ux_contract','ux','interface_contract','experience_principles','interaction_model'))
   $planningFlow = Get-ProjectAcceptanceObjectValue -Obj $info.contract -Names @('planning_flow','planningFlow','discussion_flow') -Default $null
   $stageById = Get-ProjectAcceptancePlanningStageById -PlanningFlow $planningFlow
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:spec-profile' -Ok ($true) -Details ([string]$rules.profile)))
   [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:goal' -Ok ($goal.Trim().Length -ge 40) -Details ("chars=" + [string]$goal.Trim().Length)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:requirements' -Ok ($reqCount -ge 3) -Details ("count=" + [string]$reqCount)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:surfaces' -Ok ($surfaceCount -ge 2) -Details ("count=" + [string]$surfaceCount)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:journeys' -Ok ($journeyCount -ge 2) -Details ("count=" + [string]$journeyCount)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:acceptance' -Ok ($acceptanceCount -ge 3) -Details ("count=" + [string]$acceptanceCount)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:interface' -Ok ($interfaceCount -ge 1) -Details ("count=" + [string]$interfaceCount)))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:planning-flow' -Ok ($null -ne $planningFlow -and [int]$stageById.Count -ge 7) -Details ("count=" + [string]$stageById.Count)))
-  foreach ($stageDef in @(Get-ProjectAcceptancePlanningStageDefinitions)) {
-    $sid = [string]$stageDef.id
-    $stageOk = $false
-    $details = 'missing'
-    if ($stageById.ContainsKey($sid)) {
-      $stage = $stageById[$sid]
-      $status = ([string](Get-ProjectAcceptanceObjectValue -Obj $stage -Names @('status','state') -Default '')).Trim().ToLowerInvariant()
-      $summary = ([string](Get-ProjectAcceptanceObjectValue -Obj $stage -Names @('summary','outcome','decision_summary') -Default '')).Trim()
-      $stageOk = ($status -in @('complete','approved','done') -and $summary.Length -ge 40)
-      $details = 'status=' + $status + ' summary_chars=' + [string]$summary.Length
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:requirements' -Ok ($reqCount -ge [int]$rules.requirements_min) -Details ("count=" + [string]$reqCount + " min=" + [string]$rules.requirements_min)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:surfaces' -Ok ($surfaceCount -ge [int]$rules.surfaces_min) -Details ("count=" + [string]$surfaceCount + " min=" + [string]$rules.surfaces_min)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:journeys' -Ok ($journeyCount -ge [int]$rules.journeys_min) -Details ("count=" + [string]$journeyCount + " min=" + [string]$rules.journeys_min)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:acceptance' -Ok ($acceptanceCount -ge [int]$rules.acceptance_min) -Details ("count=" + [string]$acceptanceCount + " min=" + [string]$rules.acceptance_min)))
+  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:interface' -Ok ($interfaceCount -ge [int]$rules.interface_min) -Details ("count=" + [string]$interfaceCount + " min=" + [string]$rules.interface_min)))
+  if ([bool]$rules.require_planning_flow) {
+    [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:planning-flow' -Ok ($null -ne $planningFlow -and [int]$stageById.Count -ge $stageIds.Count) -Details ("count=" + [string]$stageById.Count + " min=" + [string]$stageIds.Count)))
+    foreach ($stageDef in @(Get-ProjectAcceptancePlanningStageDefinitions)) {
+      $sid = [string]$stageDef.id
+      if ($stageIds -notcontains $sid) { continue }
+      $stageOk = $false
+      $details = 'missing'
+      if ($stageById.ContainsKey($sid)) {
+        $stage = $stageById[$sid]
+        $status = ([string](Get-ProjectAcceptanceObjectValue -Obj $stage -Names @('status','state') -Default '')).Trim().ToLowerInvariant()
+        $summary = ([string](Get-ProjectAcceptanceObjectValue -Obj $stage -Names @('summary','outcome','decision_summary') -Default '')).Trim()
+        $stageOk = ($status -in @('complete','approved','done') -and $summary.Length -ge 40)
+        $details = 'status=' + $status + ' summary_chars=' + [string]$summary.Length
+      }
+      [void]$steps.Add((New-ProjectAcceptanceStep -Name ('plan-contract-stage:' + $sid) -Ok ([bool]$stageOk) -Details $details))
     }
-    [void]$steps.Add((New-ProjectAcceptanceStep -Name ('plan-contract-stage:' + $sid) -Ok ([bool]$stageOk) -Details $details))
   }
   $integration = $null
   try { if ($stageById.ContainsKey('integration')) { $integration = $stageById['integration'] } } catch {}
   $integrationDeps = @(Get-ProjectAcceptanceContractArray -Obj $integration -Names @('depends_on','dependsOn','validated_stages'))
-  [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:integration-validates-prior-stages' -Ok ($integrationDeps.Count -ge 5) -Details ('depends_on=' + (($integrationDeps | ForEach-Object { [string]$_ }) -join ','))))
+  if ([int]$rules.integration_dep_min -gt 0) {
+    [void]$steps.Add((New-ProjectAcceptanceStep -Name 'plan-contract:integration-validates-prior-stages' -Ok ($integrationDeps.Count -ge [int]$rules.integration_dep_min) -Details ('depends_on=' + (($integrationDeps | ForEach-Object { [string]$_ }) -join ','))))
+  }
   return @($steps.ToArray())
 }
 

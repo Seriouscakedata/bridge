@@ -1,0 +1,98 @@
+{
+    "final_answer":  "Adopt the multi-frame VLM path as a strictly additive, backward-compatible change. Extend `VlmRequest` with a new optional `image_b64_frames: list[str]` (safe default) while leaving `image_b64: str | None` untouched, so single-frame callers and existing tests keep working. `GeminiVlmProvider.query` emits one ordered `inline_data` part per frame when `image_b64_frames` is populated, and otherwise falls back to the existing single-image (and path-based) handling. A dedicated, centralized constant carries the exact sequence prompt for multi-frame requests, with the legacy single-frame prompt retained. JPEG→base64 encoding lives in the wiring/pipeline layer behind a small injectable codec that imports `cv2` lazily, keeping `VlmGate` and the domain models free of `cv2`. Crucially, the pipeline does not invent its own frame-selection logic: it reuses the existing `select_key_frames` mechanism for the 3-7 bound and chronological ordering, decodes/buffers images keyed by `(camera_id, frame_id)`, and encodes only the selected frames it can actually resolve from the buffer — gracefully degrading when fewer than 3 frames are available. Five atoms are accepted as-is (DA001, DA002, DA004, DA005, DA006); DA003 is accepted in a narrowed form (resolve-only-buffered, preserve order, handle short buffers) rather than its original absolute phrasing.",
+    "decisions":  [
+                      {
+                          "decision":  "Add a new optional field `image_b64_frames: list[str]` to `VlmRequest`, with a safe default (e.g. `default_factory=list` or `None`), leaving the existing `image_b64: str | None` field completely unchanged.",
+                          "rationale":  "Accepted atom DA001 (judge total 0.9315). A purely additive optional field is a backward-compatible API extension: existing single-frame callers and tests are unaffected, while the new sequence path has a typed home for ordered frames. Highest-scoring atom on simplicity and risk-reduction.",
+                          "alternatives_considered":  [
+                                                          "Overload/repurpose `image_b64` to accept either a str or a list (rejected: type ambiguity and breaking change for existing tests)",
+                                                          "Replace `image_b64` entirely with a list field (rejected: breaks backward compatibility)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Unit test `VlmRequest` to confirm `image_b64_frames` exists as `list[str]` with a safe default and that `image_b64` remains `str | None` with unchanged behavior."
+                      },
+                      {
+                          "decision":  "Modify `GeminiVlmProvider.query` to append one ordered `inline_data` part per frame from `image_b64_frames` in a single `generateContent` call when the list is non-empty; otherwise preserve the existing single-image fallback (both `image_b64` and any path-based handling).",
+                          "rationale":  "Accepted atom DA002 (judge total 0.869). Gemini 2.5 Flash supports multiple inline_data parts per request, so emitting one part per frame in order is the direct way to give the model motion/action context. Preserving the full single-image fallback prevents regressions.",
+                          "alternatives_considered":  [
+                                                          "Send each frame as a separate request and merge responses (rejected: loses cross-frame temporal context, higher cost/latency)",
+                                                          "Encode frames into a single composited image grid (rejected: lower fidelity, not required, complicates prompt)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Unit test `GeminiVlmProvider` payload structure: N ordered `inline_data` parts for N frames, exactly 1 `inline_data` part for a single `image_b64`, and unchanged path-based behavior."
+                      },
+                      {
+                          "decision":  "Wire Chapter 4 so the pipeline reuses the already-selected `key_frames`, buffers decoded images keyed by `(camera_id, frame_id)`, resolves selected key-frame IDs to pixels, encodes only the frames it can resolve from the buffer (JPEG→base64), preserves chronological order, passes the ordered list to `VlmGate` which populates `image_b64_frames`, and degrades gracefully when fewer than 3 resolvable frames exist.",
+                          "rationale":  "Atom DA003 accepted in MODIFIED form (judge verdict \u0027modify\u0027, total 0.663). The data-flow goal is correct and high-impact, but the original phrasing was too absolute/broad. Narrowing it to encode only buffer-resolvable selected frames, preserve order, and handle short buffers raises correctness and feasibility while keeping the change scoped.",
+                          "alternatives_considered":  [
+                                                          "Encode all keyframes unconditionally regardless of buffer resolution (rejected: fails when frames are evicted/unavailable, low simplicity)",
+                                                          "Buffer raw JPEG bytes instead of decoded images (viable, but decoded+keyed-by-(camera_id, frame_id) aligns with existing resolution flow and avoids double work)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Integration test verifying 3-7 selected keyframes are resolved from the buffer, encoded in chronological order, and passed to `VlmRequest.image_b64_frames` via `VlmGate`; plus a case with \u003c3 resolvable frames confirming graceful degradation."
+                      },
+                      {
+                          "decision":  "Use the exact Russian multi-frame prompt \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027 as a centralized constant, applied when `image_b64_frames` is present, while retaining the existing single-frame prompt for single-image requests.",
+                          "rationale":  "Accepted atom DA004 (judge total 0.892). The prompt is specified verbatim by the task contract, is low-cost and high-specificity, and centralizing it avoids drift. Keeping the legacy prompt for single-frame requests minimizes regression risk.",
+                          "alternatives_considered":  [
+                                                          "Inline the string at the call site (rejected: duplication/drift risk)",
+                                                          "Replace the single-frame prompt too (rejected: out of scope, regression risk)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Unit test the prompt-selection logic to assert the exact sequence string is used when `image_b64_frames` is non-empty, and the existing prompt is used otherwise."
+                      },
+                      {
+                          "decision":  "Perform JPEG→base64 encoding in the wiring/pipeline layer via a small injectable frame-codec that imports `cv2` lazily (e.g. `cv2.imencode`), keeping `VlmGate` and the domain models free of any `cv2` dependency.",
+                          "rationale":  "Accepted atom DA005 (judge total 0.8405). Encoding is an infrastructure concern; placing it behind an injectable codec keeps core domain models and `VlmGate` lightweight and unit-testable, and lazy import avoids forcing `cv2` on consumers that never encode.",
+                          "alternatives_considered":  [
+                                                          "Encode inside `VlmGate` or domain models (rejected: couples core to cv2, hurts testability)",
+                                                          "Eagerly import cv2 at module load (rejected: imposes heavy dependency on all importers)"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Assert no `cv2` imports in `VlmGate`/domain models; unit-test the codec with a mocked or isolated real `cv2` to confirm JPEG→base64 output."
+                      },
+                      {
+                          "decision":  "Rely on the existing `select_key_frames` mechanism to enforce the 3-7 frame count and chronological ordering; the wiring encodes only the frames it returns and does not reimplement selection or bounds logic.",
+                          "rationale":  "Accepted atom DA006 (judge total 0.908). Reusing `select_key_frames` avoids duplicated, divergent selection logic, preserves chronological ordering as the single source of truth, and handles short-buffer cases at the right layer.",
+                          "alternatives_considered":  [
+                                                          "Reimplement 3-7 clamping and ordering in the wiring (rejected: duplicates logic, drift risk)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Unit test the wiring to confirm it encodes exactly the frames returned by `select_key_frames`, respecting the 3-7 bound and chronological order, including the fewer-than-3 case."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Original absolute form of DA003: unconditionally extract and encode keyframes, including frames that cannot be resolved from the image buffer, without short-buffer handling.",
+                         "why":  "Too broad and brittle (judge \u0027modify\u0027, simplicity 0.34): fails when selected frames are evicted/unavailable and provides no graceful degradation below 3 frames. Superseded by the narrowed resolve-only/ordered/short-buffer-aware decision."
+                     },
+                     {
+                         "decision":  "Place JPEG→base64 encoding or `cv2` imports inside `VlmGate` or the domain models.",
+                         "why":  "Violates the architectural boundary established by DA005; couples core domain logic to `cv2`, harming testability and forcing a heavy dependency on the domain layer."
+                     },
+                     {
+                         "decision":  "Reimplement frame-selection and 3-7 count/ordering enforcement in the pipeline wiring.",
+                         "why":  "Duplicates the existing `select_key_frames` logic (contradicts DA006), creating two sources of truth that can diverge."
+                     },
+                     {
+                         "decision":  "Replace or overload the existing `image_b64` field with a list to carry frames.",
+                         "why":  "Breaking change that violates the contract constraint to retain `image_b64` for compatibility/testing; introduces type ambiguity and breaks single-frame tests."
+                     }
+                 ],
+    "open_questions":  [
+                           "When fewer than 3 resolvable frames are available, should the pipeline fall back to the single-frame `image_b64` path (with the legacy prompt) or still send 1-2 frames with the sequence prompt? Recommended default: fall back to the single-frame path to honor the 3-7 contract.",
+                           "If `select_key_frames` could ever return more than 7 frames, must the wiring clamp to 7, or is the upper bound already guaranteed at the selection layer? Verify the cap lives in `select_key_frames`.",
+                           "What JPEG quality/resolution and total payload size are acceptable for up to 7 inline images per Gemini request, given token/cost and request-size limits?",
+                           "Are `key_frames` guaranteed to carry monotonic timestamps/frame_ids so chronological ordering of `inline_data` parts is reliable?"
+                       ],
+    "implementation_plan":  [
+                                "1. Domain model (Ch.1): Add optional `image_b64_frames: list[str]` to `VlmRequest` with a safe default; leave `image_b64: str | None` unchanged. (DA001)",
+                                "2. Prompt (Ch.1/config): Add a centralized constant holding the exact sequence prompt \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027; keep the existing single-frame prompt. (DA004)",
+                                "3. Provider (Ch.1): Update `GeminiVlmProvider.query` to emit one ordered `inline_data` part per frame from `image_b64_frames` when non-empty, selecting the sequence prompt; otherwise preserve the existing single-image and path-based handling with the legacy prompt. (DA002, DA004)",
+                                "4. Codec (infra): Introduce a small injectable frame-codec with lazy `cv2` import for JPEG→base64; ensure `VlmGate` and domain models import no `cv2`. (DA005)",
+                                "5. Wiring (Ch.4): In the pipeline, buffer decoded images keyed by `(camera_id, frame_id)`; consume `select_key_frames` output (3-7, chronological); resolve only buffered frames; encode via the codec; pass the ordered list to `VlmGate` to populate `image_b64_frames`; degrade gracefully when \u003c3 resolvable frames per the resolved open question. (DA003-modified, DA006)",
+                                "6. Tests: Unit tests for `VlmRequest` field, provider payload (N parts vs 1), prompt selection, codec, and cv2-isolation; integration test for end-to-end 3-7 frame selection→encode→request, plus short-buffer and single-frame regression cases.",
+                                "7. Regression check: Confirm existing single-`image_b64` flows and tests pass unchanged."
+                            ],
+    "next_step":  "Implement step 1 — add the optional `image_b64_frames: list[str]` field (with a safe default) to `VlmRequest` while leaving `image_b64` unchanged — and add the unit test asserting the new field and preserved single-frame field."
+}

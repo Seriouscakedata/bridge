@@ -199,6 +199,47 @@ try {
   try { Set-ProjectPlanApproved -Channel $script:TestChannel | Out-Null } catch { $legacyAliasOnlyThrow = $true }
   Assert-True $legacyAliasOnlyThrow 'approval must throw when explicit semantic sections are opted in but absent'
 
+  $genericProfileContract = Copy-OrderedMap -Map $contract
+  $genericProfileContract['profile'] = 'consumer-facing-fixture'
+  [System.IO.File]::WriteAllText($contractPath, (($genericProfileContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $genericProfileGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True ([bool]$genericProfileGate.ready) 'generic top-level profile must not opt old contracts into bridge spec layer'
+  Assert-True ([string]$genericProfileGate.spec_profile -eq 'legacy') 'generic top-level profile must keep legacy spec profile'
+
+  [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $specDir = Join-Path (Join-Path $projectRoot '.bridge') 'specs'
+  New-Item -ItemType Directory -Path $specDir -Force | Out-Null
+  $constitutionText = ((1..45 | ForEach-Object { "Constitution line $($_): preserve scope, acceptance evidence, parallel execution boundaries, rollback paths, and operator approval gates for this project." }) -join "`n")
+  $acceptanceSpecText = ((1..45 | ForEach-Object { "Acceptance spec line $($_): every deliverable traces to contract requirements, checks, risk controls, and observable verification evidence." }) -join "`n")
+  $productSpecText = ((1..45 | ForEach-Object { "Product spec line $($_): requirements, surfaces, workflows, non-goals, and release boundaries are explicit before implementation atoms." }) -join "`n")
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $projectRoot '.bridge') 'constitution.md'), $constitutionText, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $specDir 'acceptance.md'), $acceptanceSpecText, (New-Object System.Text.UTF8Encoding($false)))
+
+  $liteContract = Copy-OrderedMap -Map $contract
+  $liteContract['spec_profile'] = 'lite'
+  $liteContract.Remove('planning_flow')
+  $backendDoc = Join-Path $projectRoot 'DISCUSS_BACKEND.md'
+  Remove-Item -LiteralPath $backendDoc -Force
+  [System.IO.File]::WriteAllText($contractPath, (($liteContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $liteGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True ([bool]$liteGate.ready) ('lite spec profile must not require full staged DISCUSS docs; issues=' + ((@($liteGate.issues) -join ' | ')))
+  Assert-True ([string]$liteGate.spec_profile -eq 'lite') 'lite gate must expose selected spec profile'
+  $liteSignatureFiles = @(Get-ProjectAutopilotPlanSignatureFiles -ProjectRoot $projectRoot)
+  Assert-True ($liteSignatureFiles -contains '.bridge\constitution.md') 'lite signature must include constitution'
+  Assert-True ($liteSignatureFiles -contains '.bridge\specs\acceptance.md') 'lite signature must include acceptance spec'
+  Assert-True (-not ($liteSignatureFiles -contains 'DISCUSS_BACKEND.md')) 'lite signature must not require backend DISCUSS doc'
+
+  [System.IO.File]::WriteAllText($backendDoc, ((1..45 | ForEach-Object { "Backend discussion line $($_): this fixture records durable decisions, previous-stage inputs, risks, open questions, and acceptance traceability for the staged planning flow." }) -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $standardContract = Copy-OrderedMap -Map $contract
+  $standardContract['spec_profile'] = 'standard'
+  [System.IO.File]::WriteAllText($contractPath, (($standardContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $standardMissingSpecGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True (-not [bool]$standardMissingSpecGate.ready) 'standard spec profile must require product spec'
+  Assert-True ((@($standardMissingSpecGate.issues) | Where-Object { $_ -match 'product\.md' }).Count -gt 0) ('standard missing product spec must be reported; issues=' + ((@($standardMissingSpecGate.issues) -join ' | ')))
+  [System.IO.File]::WriteAllText((Join-Path $specDir 'product.md'), $productSpecText, (New-Object System.Text.UTF8Encoding($false)))
+  $standardReadyGate = Test-ProjectPlanContractReady -ProjectRoot $projectRoot
+  Assert-True ([bool]$standardReadyGate.ready) ('standard spec profile should pass after required specs exist; issues=' + ((@($standardReadyGate.issues) -join ' | ')))
+
   [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
   & git -C $projectRoot add . | Out-Null
   & git -C $projectRoot commit --allow-empty -m 'restore valid planning contract' | Out-Null

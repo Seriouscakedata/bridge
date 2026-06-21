@@ -1,0 +1,37 @@
+{
+    "task":  "[Автозадача из бэклога] [operator] OKO VLM Главы 2+3/5 (обе мелкие, делаем вместе, это СБОРКА не обсуждение).\nГЛАВА 2 — Factory + config для gemini:\n- src/oko/providers/factory.py build_vlm: ветка provider==gemini -\u003e GeminiVlmProvider(model=config.model or gemini-2.5-flash, api_key_env=config.api_key_env or GEMINI_API_KEY, timeout_seconds=config.timeout_seconds) + импорт. Тест: build_vlm(VlmConfig(provider=gemini,...)) даёт GeminiVlmProvider, model gemini-2.5-flash, БЕЗ сети при конструировании.\n- configs/example.yaml И configs/live-webcam.yaml: блок vlm -\u003e provider: gemini, model: gemini-2.5-flash, api_key_env: GEMINI_API_KEY, timeout_seconds: 15. Тест валидности конфига.\nГЛАВА 3 — Триггер person/animal-only через КОНФИГ (НЕ правкой _trigger_reason):\n- Профиль VlmGateConfig(event_types=(person_entered_zone,animal_entered_zone), risk_levels=(), min_risk_score=1.01, max_normality_score=-0.01) — только person/animal триггерит, score/risk нейтрализованы.\n- _class_is_animal в src/oko/events/builder.py: расширить до полного COCO-набора (cat,dog,bird,horse,sheep,cow,elephant,bear,zebra,giraffe).\n- tests/test_vlm_gate.py: person_entered_zone -\u003e should_query True; animal_entered_zone -\u003e True; camera_offline/object_appeared/high-risk-only -\u003e False.\nПроверка: pytest зелёный. МОДЕЛЬ строго gemini-2.5-flash (НЕ pro/3-flash). Главы 2-3 из 5 (дальше Гл4 проводка в live + мульти-кадр, Гл5 демо).",
+    "goal":  "Integrate Gemini VLM as a new provider, configure its default model to `gemini-2.5-flash`, and implement event triggering logic to query the VLM only for person or animal detection events, all via configuration.",
+    "constraints":  [
+                        "This is an assembly task, not a discussion.",
+                        "The `GeminiVlmProvider` must be instantiated without making network calls.",
+                        "The person/animal-only trigger logic must be implemented via configuration, not by modifying `_trigger_reason`.",
+                        "The VLM model used must strictly be `gemini-2.5-flash` (not pro/3-flash)."
+                    ],
+    "known_context":  [
+                          "The project uses `src/oko/providers/factory.py` for VLM provider creation.",
+                          "`VlmConfig` is used for VLM configuration.",
+                          "`GeminiVlmProvider` requires `model`, `api_key_env`, and `timeout_seconds` parameters.",
+                          "Configuration files `configs/example.yaml` and `configs/live-webcam.yaml` exist and contain a `vlm` block.",
+                          "`VlmGateConfig` is used to define VLM triggering logic based on event types, risk levels, and scores.",
+                          "`src/oko/events/builder.py` contains the `_class_is_animal` function.",
+                          "`tests/test_vlm_gate.py` exists for testing VLM gate behavior.",
+                          "Relevant event types include: `person_entered_zone`, `animal_entered_zone`, `camera_offline`, `object_appeared`, `high-risk-only`.",
+                          "The full COCO animal set includes: `cat`, `dog`, `bird`, `horse`, `sheep`, `cow`, `elephant`, `bear`, `zebra`, `giraffe`."
+                      ],
+    "output_format":  "Code changes to specified files, updated configuration files, and a passing test suite.",
+    "task_type":  "architecture",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "`build_vlm(VlmConfig(provider=\u0027gemini\u0027, ...))` returns an instance of `GeminiVlmProvider`.",
+                          "The constructed `GeminiVlmProvider` uses `model=\u0027gemini-2.5-flash\u0027` by default or from config.",
+                          "The `GeminiVlmProvider` is constructed without making network calls.",
+                          "`configs/example.yaml` and `configs/live-webcam.yaml` are updated with the specified Gemini VLM block and pass configuration validity tests.",
+                          "`VlmGateConfig` is configured such that only `person_entered_zone` and `animal_entered_zone` events trigger a VLM query, with neutralized risk/score thresholds.",
+                          "`_class_is_animal` in `src/oko/events/builder.py` correctly identifies all specified COCO animal classes (cat, dog, bird, horse, sheep, cow, elephant, bear, zebra, giraffe).",
+                          "`tests/test_vlm_gate.py` passes: `person_entered_zone` event leads to `should_query True`.",
+                          "`tests/test_vlm_gate.py` passes: `animal_entered_zone` event leads to `should_query True`.",
+                          "`tests/test_vlm_gate.py` passes: `camera_offline`, `object_appeared`, and `high-risk-only` events lead to `should_query False`.",
+                          "All `pytest` checks pass (pytest green)."
+                      ]
+}

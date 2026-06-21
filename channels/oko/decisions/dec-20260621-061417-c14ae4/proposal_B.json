@@ -1,0 +1,86 @@
+{
+    "proposer":  "B",
+    "understanding":  "The OKO pipeline detects events and, for high-risk ones, may call a VLM (Gemini 2.5 Flash via GeminiVlmProvider) for a natural-language description. Today the VLM sees at most one image. The change: feed Gemini a chronological SEQUENCE of the 3-7 key frames OKO already selects, so it perceives motion/action rather than a static scene. Concretely: (1) add a list field to VlmRequest (image_b64_frames) while keeping image_b64; (2) make GeminiVlmProvider emit one inline_data part per frame in a single generateContent call, falling back to single-image behavior when no frames are supplied; (3) wire the pipeline so the 3-7 selected key frames are JPEG-\u003ebase64 encoded and passed as that list; (4) use the exact sequence prompt. A non-obvious blocker found in the code: FrameData (what RollingFrameBuffer and select_key_frames carry, and what VlmGate receives) holds ONLY metadata (camera_id, frame_id, timestamp, w, h) — the decoded pixels live transiently in CapturedFrame.image inside LivePipeline and are never buffered. Also VlmGate is not yet called from LivePipeline and currently puts no image in the request at all. So Chapter 4 is genuinely new plumbing: buffer images keyed by frame_id, map selected key-frame ids -\u003e pixels, encode, and inject.",
+    "summary":  "Add image_b64_frames: list[str] to VlmRequest (keep image_b64); teach GeminiVlmProvider to append one inline_data part per frame (frames win when present, else current single-image path is untouched so all existing payload tests pass); add a frame-codec helper with lazily-imported/injectable cv2.imencode(\u0027.jpg\u0027)-\u003eb64; have the pipeline maintain a per-(camera_id,frame_id) image buffer, resolve the 3-7 selected key frames to pixels, encode them in chronological order, and pass them plus the exact sequence prompt through VlmGate to the provider; keep cv2 and pixels out of the pure domain/gate layer.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a new field image_b64_frames: list[str] = [] to VlmRequest and retain image_b64 unchanged; do not overload image_b64 into a list.",
+                               "reason":  "VlmRequest uses pydantic extra=\u0027forbid\u0027, so a clean optional list is additive and backward-compatible; reusing image_b64 as a list would break its str|None typing and every existing test that sets/asserts a single string.",
+                               "tradeoff":  "Two image fields create a precedence question (frames vs single) that must be defined and tested, versus one unified field that would be conceptually simpler but break compatibility.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "In GeminiVlmProvider, when image_b64_frames is non-empty, append one {inline_data:{mime_type,data}} part per frame in order; otherwise keep the existing _gemini_inline_image single-image branch exactly as-is.",
+                               "reason":  "Gemini 2.5 Flash accepts multiple inline_data parts in contents[0].parts; gating on \u0027frames present\u0027 leaves the legacy path byte-for-byte identical so test_gemini_vlm_provider payload assertions keep passing.",
+                               "tradeoff":  "Frames-take-precedence means a request that sets both image_b64 and image_b64_frames sends only the frames; the single image is silently ignored unless we document that precedence.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Do JPEG-\u003eb64 encoding in the wiring/pipeline layer via a small injectable frame-codec (lazy \u0027import cv2\u0027, cv2.imencode(\u0027.jpg\u0027, img) -\u003e bytes -\u003e base64), NOT inside VlmGate or the domain models.",
+                               "reason":  "VlmGate and domain types are pure (frozen dataclasses / pydantic, no cv2) and unit-tested without OpenCV; camera.py already imports cv2 lazily, so keeping pixels+cv2 at the edge preserves test isolation and lets tests inject a fake encoder.",
+                               "tradeoff":  "Adds a thin codec seam and an extra parameter to thread through the gate, rather than the shorter path of encoding directly where key frames are selected.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "The pipeline must buffer decoded images keyed by (camera_id, frame_id) and resolve the selected key-frame FrameData ids back to pixels; pass the resulting ordered b64 list to VlmGate (e.g. via a key_frame_images_b64 argument) which puts it in image_b64_frames.",
+                               "reason":  "FrameData carries no pixels and select_key_frames returns FrameData; the only place pixels exist is CapturedFrame.image, which is currently dropped each iteration — so a parallel image buffer is required to honor \u0027protthrough the images of the 3-7 key_frames\u0027.",
+                               "tradeoff":  "A second buffer adds memory and a lifecycle to manage (eviction window must match RollingFrameBuffer); the alternative of passing CapturedFrame into the gate would leak heavy image arrays into the domain layer.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "Send the exact sequence prompt \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027 as a centralized constant/config default used in sequence mode, keeping the existing event-templated prompt for the single/no-frame legacy path.",
+                               "reason":  "success_test #4 requires that exact string be sent to Gemini; centralizing it avoids drift (trailing period, Cyrillic) and the structured event context is still preserved in request.metadata, not lost.",
+                               "tradeoff":  "The action-focused sentence drops inline event details (risk/zone) from the human-readable prompt; we trade prompt richness for the exact-match requirement, relying on metadata to retain context.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Rely on the existing select_key_frames (min 3 / max 7, chronologically sorted, event frame included) for the 3-7 bound and ordering; the wiring only encodes whatever it returns, defensively sending available frames and falling back gracefully if some pixels are missing.",
+                               "reason":  "The 3-7 constraint and temporal ordering are already enforced upstream in EventBuilder (min_key_frames=3, max_key_frames=7) and select_key_frames sorts by (timestamp, frame_id); re-implementing bounds would duplicate logic.",
+                               "tradeoff":  "select_key_frames can return \u003c3 when the buffer is small and has no lower clamp, so the \u0027always 3-7\u0027 guarantee is best-effort; we accept sending fewer rather than fabricating frames.",
+                               "confidence":  0.82
+                           }
+                       ],
+    "assumptions":  [
+                        "OpenCV (cv2) is the JPEG encoder and CapturedFrame.image is a numpy BGR array compatible with cv2.imencode(\u0027.jpg\u0027, ...).",
+                        "Gemini 2.5 Flash accepts N inline_data parts (one per frame) within a single contents[0].parts array (stated constraint, treated as confirmed).",
+                        "Key frames from select_key_frames are already chronologically ordered and bounded to 3-7, so the VLM sees frames in temporal sequence.",
+                        "All JPEG frames use mime_type image/jpeg (the provider\u0027s existing default), unless metadata.mime_type overrides.",
+                        "Tests will inject a fake transport and a fake encoder so neither real OpenCV nor real network is required in CI.",
+                        "Wiring VlmGate into LivePipeline (currently absent) is in-scope for \u0027Chapter 4 проводка\u0027, since without it no images can flow; if out-of-scope, the codec+gate parameter still land and only the call site is deferred.",
+                        "Memory/cost of buffering recent decoded frames is acceptable within the existing rolling window."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "FrameData has no pixels and the live pipeline discards CapturedFrame.image each loop; without a correctly keyed image buffer the gate receives empty or mismatched frames.",
+                      "severity":  "high",
+                      "mitigation":  "Introduce an image buffer keyed by (camera_id, frame_id) with the same time window as RollingFrameBuffer; unit-test that selected key-frame ids map to the exact buffered images, and skip/degrade cleanly when an id is absent."
+                  },
+                  {
+                      "risk":  "Hard cv2 dependency creeping into pure/domain/test paths breaks the existing OpenCV-free unit tests and CI.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep cv2 import lazy and behind an injectable encoder callable (mirroring providers/camera.py); domain and VlmGate stay cv2-free; tests inject a fake encoder."
+                  },
+                  {
+                      "risk":  "Existing GeminiVlmProvider payload tests assert an exact single-inline-data structure; altering the single-image branch would regress them.",
+                      "severity":  "medium",
+                      "mitigation":  "Branch strictly on image_b64_frames being non-empty; leave _gemini_inline_image and its call path untouched for the legacy case; add new tests only for the frames case."
+                  },
+                  {
+                      "risk":  "Sending up to 7 images per VLM call multiplies tokens, latency, and cost.",
+                      "severity":  "medium",
+                      "mitigation":  "Encoding only fires inside the already-restrictive VlmGate (high-risk events), hard cap at 7 via select_key_frames, and expose JPEG quality/max-frames as config to tune cost."
+                  },
+                  {
+                      "risk":  "The exact-prompt success test is brittle to whitespace/Cyrillic/trailing-period drift between the constant and the test expectation.",
+                      "severity":  "low",
+                      "mitigation":  "Define the sequence prompt as one shared module-level constant referenced by both the gate and the test, so they cannot diverge."
+                  },
+                  {
+                      "risk":  "Precedence ambiguity when both image_b64 and image_b64_frames are set could send the wrong evidence.",
+                      "severity":  "low",
+                      "mitigation":  "Define and document: non-empty image_b64_frames wins; otherwise fall back to image_b64 then image_path; cover both branches with tests."
+                  }
+              ],
+    "minimal_version":  "1) VlmRequest: add image_b64_frames: list[str] = [] (keep image_b64, image_path). 2) GeminiVlmProvider._gemini_payload: if request.image_b64_frames -\u003e append one {inline_data:{mime_type,data}} part per frame (mime via existing _request_mime_type, default image/jpeg) in list order; else unchanged single-image path. 3) Add a frame-codec helper encode_jpeg_b64(image) with lazy cv2.imencode(\u0027.jpg\u0027) -\u003e base64, injectable for tests. 4) Pipeline: maintain a (camera_id,frame_id)-\u003eimage buffer alongside the frame metadata buffer; on a gate trigger, resolve the 3-7 selected key frames to pixels, encode each, and pass the ordered b64 list into VlmGate (new key_frame_images_b64 arg) which sets image_b64_frames and uses the exact sequence prompt constant. 5) Tests: provider emits N inline_data parts for N frames; legacy single-image payload unchanged; VlmRequest holds both fields; pipeline maps key-frame ids to encoded images; exact prompt string asserted. cv2 stays lazy/injected.",
+    "advanced_version":  "Everything in minimal, plus: (a) a dedicated oko/frames codec module with injectable encoder, configurable JPEG quality and max_frames; (b) interleave short per-frame text labels (e.g. \u0027кадр i/N\u0027 with relative timestamp) between inline_data parts to strengthen Gemini\u0027s temporal grounding, with metadata carrying per-frame timestamps; (c) graceful degradation: if pixels for some ids are missing, send the available subset and fall back to single image_b64 when none are available, logging the downgrade; (d) extend HttpJsonVlmProvider in parallel to accept image_b64_frames so the abstraction stays provider-agnostic; (e) config flags for sequence-mode on/off and prompt override, plus a golden test asserting frame order == chronological order; (f) optional frame down-scaling before encode to bound payload size/cost; (g) actually wire VlmGate.query_if_needed into LivePipeline.run end-to-end with an acceptance test proving 3-7 encoded frames reach the (fake) transport for a high-risk event."
+}

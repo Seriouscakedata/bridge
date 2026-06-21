@@ -101,6 +101,53 @@ try {
   $fails = @($steps | Where-Object { -not [bool]$_.ok })
   Assert-True ($fails.Count -eq 0) ('expected valid contract, failed: ' + (($fails | ForEach-Object { [string]$_.name }) -join ', '))
 
+  $contractPath = Join-Path (Join-Path $project '.bridge') 'project-contract.json'
+  $genericProfileContract = [ordered]@{}
+  foreach ($entry in $contract.GetEnumerator()) { $genericProfileContract[[string]$entry.Key] = $entry.Value }
+  $genericProfileContract['profile'] = 'consumer-facing-fixture'
+  [System.IO.File]::WriteAllText($contractPath, (($genericProfileContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $genericProfileSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
+  $genericProfileFails = @($genericProfileSteps | Where-Object { -not [bool]$_.ok })
+  Assert-True ($genericProfileFails.Count -eq 0) 'generic top-level profile must not opt old contracts into bridge spec layer'
+  Assert-True (@($genericProfileSteps | Where-Object { [string]$_.name -eq 'plan-contract:spec-profile' -and [string]$_.details -eq 'legacy' }).Count -eq 1) 'generic top-level profile must keep legacy spec profile'
+  [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+  $specDir = Join-Path (Join-Path $project '.bridge') 'specs'
+  New-Item -ItemType Directory -Path $specDir -Force | Out-Null
+  $constitutionText = ((1..45 | ForEach-Object { "Constitution line $($_): preserve project scope, explicit acceptance, safe parallel ownership, change control, and operator approval." }) -join "`n")
+  $acceptanceSpecText = ((1..45 | ForEach-Object { "Acceptance spec line $($_): map contract requirements, routes, workflows, risks, checks, and final evidence into observable gates." }) -join "`n")
+  $productSpecText = ((1..45 | ForEach-Object { "Product spec line $($_): define bounded release value, surfaces, users, non-goals, workflows, and success criteria before coding." }) -join "`n")
+  [System.IO.File]::WriteAllText((Join-Path (Join-Path $project '.bridge') 'constitution.md'), $constitutionText, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $specDir 'acceptance.md'), $acceptanceSpecText, (New-Object System.Text.UTF8Encoding($false)))
+
+  $liteContract = [ordered]@{}
+  foreach ($entry in $contract.GetEnumerator()) { $liteContract[[string]$entry.Key] = $entry.Value }
+  $liteContract['spec_profile'] = 'lite'
+  $liteContract.Remove('planning_flow')
+  $backendDoc = Join-Path $project 'DISCUSS_BACKEND.md'
+  Remove-Item -LiteralPath $backendDoc -Force
+  [System.IO.File]::WriteAllText($contractPath, (($liteContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $liteSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
+  $liteFails = @($liteSteps | Where-Object { -not [bool]$_.ok })
+  Assert-True ($liteFails.Count -eq 0) ('lite profile should not fail on absent full DISCUSS/planning_flow; failed=' + (($liteFails | ForEach-Object { [string]$_.name }) -join ', '))
+  Assert-True (@($liteSteps | Where-Object { [string]$_.name -eq 'plan-contract:spec-profile' -and [string]$_.details -eq 'lite' }).Count -eq 1) 'lite acceptance steps must expose selected spec profile'
+  Assert-True (@($liteSteps | Where-Object { [string]$_.name -eq 'plan-stage-doc:backend' }).Count -eq 0) 'lite acceptance steps must not require backend DISCUSS doc'
+
+  [System.IO.File]::WriteAllText($backendDoc, ((1..45 | ForEach-Object { "Backend discussion line $($_): this fixture records durable decisions, previous-stage inputs, risks, open questions, and acceptance traceability for the staged planning flow." }) -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $standardContract = [ordered]@{}
+  foreach ($entry in $contract.GetEnumerator()) { $standardContract[[string]$entry.Key] = $entry.Value }
+  $standardContract['spec_profile'] = 'standard'
+  [System.IO.File]::WriteAllText($contractPath, (($standardContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $standardSteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
+  $standardFails = @($standardSteps | Where-Object { -not [bool]$_.ok })
+  Assert-True (@($standardFails | Where-Object { [string]$_.name -eq 'plan-spec:product' }).Count -eq 1) 'standard profile must require product spec'
+  [System.IO.File]::WriteAllText((Join-Path $specDir 'product.md'), $productSpecText, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText($contractPath, (($standardContract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $standardReadySteps = @(Get-ProjectAcceptancePlanContractSteps -ProjectRoot $project)
+  $standardReadyFails = @($standardReadySteps | Where-Object { -not [bool]$_.ok })
+  Assert-True ($standardReadyFails.Count -eq 0) ('standard profile should pass after required specs exist; failed=' + (($standardReadyFails | ForEach-Object { [string]$_.name }) -join ', '))
+  [System.IO.File]::WriteAllText($contractPath, (($contract | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
   $entryPath = Join-Path $project 'src\app-entry.ts'
   New-Item -ItemType Directory -Path (Split-Path -Parent $entryPath) -Force | Out-Null
   [System.IO.File]::WriteAllText($entryPath, "import { RealImageProvider } from './real'`nconst provider = RealImageProvider`n", (New-Object System.Text.UTF8Encoding($false)))

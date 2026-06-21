@@ -1,0 +1,62 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task refines the VLM integration by feeding a sequence of 3-7 keyframes (already buffered by OCO) to Gemini 2.5 Flash instead of a single static image. This requires updating GeminiVlmProvider.query to accept multiple inline_data parts, extending VlmRequest with a list field while keeping the single image field for backward compatibility, adjusting the Chapter 4 pipeline to extract, convert (JPEG-\u003eb64), and pass keyframes, and using a specific Russian prompt about describing actions across the sequence. The goal is more accurate motion/action understanding.",
+    "summary":  "Modify GeminiVlmProvider to send multiple base64-encoded keyframes in one generateContent call, extend VlmRequest with image_b64_frames: list[str] while preserving image_b64, update the pipeline to pass 3-7 keyframes from OCO\u0027s buffer, and set the VLM prompt to \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027 No other plan changes.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Extend VlmRequest with a new field image_b64_frames: list[str] instead of overloading image_b64.",
+                               "reason":  "Preserves backward compatibility for existing single-frame tests and consumers, while clearly separating the multi-frame mode.",
+                               "tradeoff":  "Slightly larger request objects and need for conditional logic in providers, but avoids breaking changes.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Modify GeminiVlmProvider.query to accept a list of base64 images and construct multiple inline_data parts.",
+                               "reason":  "Gemini 2.5 Flash supports multiple images per request; sending them as separate parts in the contents array is the documented approach.",
+                               "tradeoff":  "Increases complexity of the query method and requires validation of frame count (3-7), but enables motion understanding.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Use a fixed Russian-language prompt for the multi-frame VLM request.",
+                               "reason":  "The task explicitly specifies the exact prompt string to ensure consistent, action-oriented descriptions.",
+                               "tradeoff":  "Hardcoding the prompt reduces flexibility for other use cases, but meets the current requirement precisely.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Pipeline (Chapter 4) extracts 3-7 keyframes from OCO\u0027s key_frames buffer, converts each JPEG to base64, and populates image_b64_frames.",
+                               "reason":  "OCO already buffers keyframes; the pipeline must bridge the gap by selecting the appropriate number and encoding them.",
+                               "tradeoff":  "Adds encoding overhead and selection logic (e.g., picking evenly spaced frames if buffer \u003e 7), but is necessary for the feature.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "OCO\u0027s key_frames buffer contains JPEG-encoded frames ready for base64 conversion.",
+                        "The pipeline can reliably select 3-7 representative keyframes (e.g., first, last, and evenly spaced intermediates).",
+                        "GeminiVlmProvider already handles authentication and basic request structure; only the parts array needs modification.",
+                        "Existing single-frame callers will continue to use image_b64 and will not be affected by the new field.",
+                        "The VLM response format remains a textual description; no changes to response parsing are needed."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Increased latency and token usage due to multiple images per request.",
+                      "severity":  "medium",
+                      "mitigation":  "Limit to max 7 frames; consider adaptive frame selection based on scene complexity in future iterations."
+                  },
+                  {
+                      "risk":  "Gemini API rate limits or size limits exceeded with multiple high-resolution frames.",
+                      "severity":  "medium",
+                      "mitigation":  "Resize/compress frames before base64 encoding; implement retry with fewer frames if request fails."
+                  },
+                  {
+                      "risk":  "Existing single-frame functionality regresses due to changes in shared code paths.",
+                      "severity":  "low",
+                      "mitigation":  "Keep image_b64 path untouched; add unit tests for both single-frame and multi-frame modes."
+                  },
+                  {
+                      "risk":  "Keyframe selection logic (3-7 from buffer) may miss critical action if not sampled properly.",
+                      "severity":  "low",
+                      "mitigation":  "Start with simple uniform sampling; later integrate scene-change detection for smarter keyframe selection."
+                  }
+              ],
+    "minimal_version":  "Add image_b64_frames: list[str] to VlmRequest. In GeminiVlmProvider.query, if image_b64_frames is non-empty, build parts array with multiple inline_data entries and use the specified prompt. In Chapter 4 pipeline, after OCO buffers key_frames, take up to 7 frames, base64-encode each, set in request. Keep existing image_b64 logic unchanged.",
+    "advanced_version":  "Implement intelligent keyframe selection (e.g., motion saliency, uniform temporal sampling with scene boundary detection) to pick the most informative 3-7 frames. Add configurable prompt templates. Support fallback to single-frame mode if multi-frame request fails. Add caching of base64-encoded frames to avoid redundant conversions. Extend VLM response parsing to extract structured action descriptions."
+}

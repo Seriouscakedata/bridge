@@ -1,0 +1,70 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires integrating Gemini VLM as a new provider in the OKO system, configuring it to use the gemini-2.5-flash model by default, and implementing event filtering so that VLM queries are only triggered for person_entered_zone and animal_entered_zone events. This must be done through configuration (VlmGateConfig) rather than modifying internal trigger logic. Additionally, the animal detection helper must be expanded to cover the full COCO animal set. All changes must pass existing and new pytest tests.",
+    "summary":  "Implement Chapter 2 (Gemini provider factory + configs) and Chapter 3 (person/animal-only trigger via VlmGateConfig + expanded animal classes) as an assembly task. The factory will instantiate GeminiVlmProvider without network calls, configs will be updated with Gemini blocks, VlmGateConfig will filter events to only person/animal types with neutralized risk/score thresholds, and _class_is_animal will cover all 10 COCO animal classes. Tests will validate all behaviors.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add Gemini branch in build_vlm factory function to instantiate GeminiVlmProvider",
+                               "reason":  "The task explicitly requires supporting provider==\u0027gemini\u0027 in the factory, returning a properly configured GeminiVlmProvider instance.",
+                               "tradeoff":  "Adds a new dependency import but keeps factory extensible for future providers.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use gemini-2.5-flash as default model when config.model is not specified",
+                               "reason":  "Task constraints mandate strict use of gemini-2.5-flash (not pro/3-flash) and the factory must default to this model.",
+                               "tradeoff":  "Hardcoding the default model string in the factory is acceptable since it\u0027s the only supported Gemini model for this task.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Configure VlmGateConfig with event_types filter for person_entered_zone and animal_entered_zone only",
+                               "reason":  "The trigger logic must be implemented via configuration, not by modifying _trigger_reason. Setting event_types to the desired tuple and neutralizing risk/score thresholds achieves this.",
+                               "tradeoff":  "This approach is purely config-driven and doesn\u0027t require code changes to the gate logic, maintaining separation of concerns.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Expand _class_is_animal to include all 10 COCO animal classes",
+                               "reason":  "The current implementation likely only covers a subset; the task requires full COCO animal set (cat, dog, bird, horse, sheep, cow, elephant, bear, zebra, giraffe).",
+                               "tradeoff":  "Slightly larger set lookup but negligible performance impact; ensures comprehensive animal detection.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "Update both example.yaml and live-webcam.yaml with Gemini VLM configuration block",
+                               "reason":  "Both config files need the vlm block with provider: gemini, model: gemini-2.5-flash, api_key_env: GEMINI_API_KEY, timeout_seconds: 15 as specified.",
+                               "tradeoff":  "Duplicating config across files is acceptable for now; future refactoring could use shared templates.",
+                               "confidence":  0.97
+                           }
+                       ],
+    "assumptions":  [
+                        "GeminiVlmProvider class already exists and accepts model, api_key_env, timeout_seconds parameters",
+                        "VlmConfig dataclass has provider, model, api_key_env, timeout_seconds fields",
+                        "VlmGateConfig dataclass has event_types, risk_levels, min_risk_score, max_normality_score fields",
+                        "The _trigger_reason function or VLM gate logic checks VlmGateConfig to determine should_query",
+                        "The test file tests/test_vlm_gate.py exists and follows pytest conventions",
+                        "The project structure has src/oko/providers/factory.py and src/oko/events/builder.py in expected locations",
+                        "GEMINI_API_KEY environment variable will be set at runtime; factory construction doesn\u0027t validate it"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "GeminiVlmProvider constructor might make network calls during initialization",
+                      "severity":  "medium",
+                      "mitigation":  "Ensure the provider class uses lazy initialization or only stores config; test that construction without network succeeds."
+                  },
+                  {
+                      "risk":  "VlmGateConfig changes might break existing gate logic if not backward compatible",
+                      "severity":  "low",
+                      "mitigation":  "Run full test suite including existing gate tests to verify no regressions."
+                  },
+                  {
+                      "risk":  "Missing animal classes in _class_is_animal could cause false negatives",
+                      "severity":  "medium",
+                      "mitigation":  "Explicitly test all 10 COCO animal classes in unit tests to ensure complete coverage."
+                  },
+                  {
+                      "risk":  "Configuration validation might reject new VLM block structure",
+                      "severity":  "low",
+                      "mitigation":  "Test configuration loading and validation as part of the success criteria."
+                  }
+              ],
+    "minimal_version":  "Implement Gemini provider factory branch with gemini-2.5-flash default, update both YAML configs with minimal vlm block, expand _class_is_animal to 10 COCO classes, configure VlmGateConfig with event_types filter and neutralized thresholds, add basic tests for factory and gate behavior.",
+    "advanced_version":  "Minimal version plus: add comprehensive edge case tests (empty config, missing env var handling), implement config validation for Gemini-specific parameters, add integration test with mock GeminiVlmProvider, document the new provider configuration in project README, and prepare for Chapter 4 multi-frame wiring."
+}

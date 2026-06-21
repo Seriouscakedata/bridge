@@ -33,6 +33,9 @@ if ($autopilotBlock -match 'Каждый atom:\s*`slug`,\s*`title`,\s*`task`,\s*
 Assert-Contains -Text $autopilotBlock -Needle 'STRICT JSON array' -Message 'driver prompt must require STRICT JSON array'
 Assert-Contains -Text $autopilotBlock -Needle 'deterministic gate' -Message 'driver prompt must mention deterministic gate rejection'
 Assert-Contains -Text $autopilotBlock -Needle 'backlog.jsonl' -Message 'driver prompt must forbid manual backlog.jsonl edits'
+Assert-Contains -Text $autopilotBlock -Needle 'spec_profile' -Message 'driver prompt must mention spec_profile'
+Assert-Contains -Text $autopilotBlock -Needle '.bridge/constitution.md' -Message 'driver prompt must mention bridge constitution'
+Assert-Contains -Text $autopilotBlock -Needle '.bridge/changes' -Message 'driver prompt must mention bridge change packages'
 
 $backlogText = [System.IO.File]::ReadAllText($backlogAutopilotPath, [System.Text.Encoding]::UTF8)
 $coordStart = $backlogText.IndexOf('function New-ProjectAutopilotCoordinatorTaskText', [System.StringComparison]::Ordinal)
@@ -50,5 +53,10 @@ if (($coordBlock.IndexOf('"risk"', [System.StringComparison]::OrdinalIgnoreCase)
 Assert-Contains -Text $coordBlock -Needle 'workpack_touch_set' -Message 'coordinator prompt should document optional workpack_touch_set'
 Assert-Contains -Text $coordBlock -Needle 'workpack_conflict_group' -Message 'coordinator prompt should document optional workpack_conflict_group'
 Assert-Contains -Text $coordBlock -Needle 'deterministic ingest gate' -Message 'coordinator prompt must mention deterministic ingest gate'
+Assert-Contains -Text $coordBlock -Needle 'spec_profile' -Message 'coordinator prompt must mention spec_profile/project_size'
+Assert-Contains -Text $coordBlock -Needle '.bridge/constitution.md' -Message 'coordinator prompt must mention bridge constitution'
+Assert-Contains -Text $coordBlock -Needle '.bridge/specs' -Message 'coordinator prompt must mention bridge specs'
+Assert-Contains -Text $coordBlock -Needle '.bridge/changes' -Message 'coordinator prompt must mention bridge change packages'
+Assert-Contains -Text $coordBlock -Needle 'PARALLELISM' -Message 'coordinator prompt must keep parallelism as a planning requirement'
 
 Write-Output 'PROJECT BACKLOG PROMPT CONTRACT TEST OK'

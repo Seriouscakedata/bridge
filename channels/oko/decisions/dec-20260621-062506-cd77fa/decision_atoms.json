@@ -1,0 +1,102 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Adhere to existing task factory, configuration, and trigger patterns in the repository.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that the new factory, config, and trigger components follow the established architectural patterns and interfaces of similar tasks in the repository (e.g., using existing `build_vlm` for factory, `OkoConfig` for config, and `LivePipeline` for trigger integration).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Define a dedicated, typed configuration schema/class for OKO VLM Chapters 2+3, ensuring validation and integration with existing configuration structures (e.g., `VlmConfig`, `OkoConfig`).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Configuration",
+                      "test":  "Verify that a dedicated configuration schema/class exists, is typed, includes validation, and can be loaded/parsed correctly by the factory and trigger mechanisms, including specific fields for VLM provider and gate parameters, and integrates with `VlmConfig` and `OkoConfig`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Implement a factory component (e.g., a class or a branch in an existing factory function like `build_vlm`) that accepts the dedicated configuration and returns an instantiated OKO VLM Chapters 2+3 task instance.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Implementation",
+                      "test":  "Verify that the factory can successfully instantiate an `OKO VLM Chapters 2+3` task using a valid configuration object, specifically by adding a \u0027gemini\u0027 branch to `build_vlm` that returns `GeminiVlmProvider`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Implement a dedicated trigger mechanism (e.g., a function or integration into `LivePipeline` via `VlmGate`) to initiate the OKO VLM Chapters 2+3 task using existing entrypoints, event systems, or scheduler mechanisms.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Integration",
+                      "test":  "Verify that the trigger mechanism successfully initiates the `OKO VLM Chapters 2+3` task, specifically by integrating `VlmGate.query_if_needed(event)` into `LivePipeline.run()` and attaching the `VlmResponse` to `PipelineEventResult`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Add focused unit and integration tests for the configuration, factory, and trigger components, including tests for provider instantiation, config loading, and trigger invocation, ensuring existing tests remain green.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Execute dedicated unit tests for the config schema, factory instantiation, and trigger logic, and integration tests verifying end-to-end task creation and invocation (e.g., `test_providers`, `test_config`, `test_pipeline` as described in B\u0027s minimal version), ensuring no regressions in existing test suites.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "The VLM result must be advisory-only, enriching `PipelineEventResult`/evidence/summary but never altering `DecisionOutput.recommended_action` or any bridge command.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Safety",
+                      "test":  "Verify through integration tests that even when VLM provides a response, `DecisionOutput.recommended_action` and any generated bridge commands remain identical to a run where VLM is disabled or absent, and that VLM output is only present in `PipelineEventResult`/evidence/summary.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "The VLM functionality must be default-off and fail-safe: if `config.vlm` is `None` or the gate is disabled, the pipeline behaves exactly as today; VLM provider/transport errors must degrade gracefully to no enrichment rather than failing the event.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Robustness",
+                      "test":  "Run the pipeline with VLM disabled or missing credentials and assert that its behavior (e.g., `PipelineEventResult` without VLM enrichment, `DecisionOutput`) is byte-identical to the current production behavior. Simulate VLM provider errors (e.g., timeout, malformed response) and verify the event is processed without failure, with VLM enrichment absent or marked as degraded in the result.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Place all new components (config, factory, trigger) for OKO VLM Chapters 2+3 in a dedicated module or namespace.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Code Organization",
+                      "test":  "Verify that all new files and classes related to OKO VLM Chapters 2+3 are located within a clearly defined, dedicated module or namespace (e.g., `src/oko/vlm_chapters_2_3/`), adhering to project conventions.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

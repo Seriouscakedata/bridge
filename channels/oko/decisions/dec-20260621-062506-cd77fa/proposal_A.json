@@ -1,0 +1,67 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно реализовать уже approved-задачу OKO VLM Chapters 2+3 как исполняемый инфраструктурный набор: отдельный factory, конфигурация и trigger, интегрированные в существующую архитектуру запуска задач.",
+    "summary":  "Предлагаю добавить dedicated-компоненты для OKO VLM Chapters 2+3 по текущим паттернам репозитория: конфигурационную сущность/схему, factory для создания задачи из этой конфигурации и trigger для запуска задачи через существующий механизм оркестрации. Минимальная версия должна быть небольшой и тестируемой, без изменения общей архитектуры.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Использовать существующие паттерны task factory/config/trigger в репозитории.",
+                               "reason":  "Задача инфраструктурная, и риск ниже при встраивании в уже принятую архитектуру запуска задач.",
+                               "tradeoff":  "Меньше свободы в структуре нового кода, зато выше совместимость и проще тестирование.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Сделать отдельную конфигурацию именно для OKO VLM Chapters 2+3.",
+                               "reason":  "Success tests требуют dedicated configuration definition, доступную для factory и trigger.",
+                               "tradeoff":  "Появится дополнительный config-класс или schema, но это делает задачу явной и расширяемой.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Factory должна принимать config и возвращать готовый экземпляр задачи OKO VLM Chapters 2+3.",
+                               "reason":  "Это напрямую закрывает требование успешной инстанциации задачи через defined configuration.",
+                               "tradeoff":  "Factory останется тонким адаптером, но это правильная granularity для infra-компонента.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Trigger должен запускать задачу через существующий entrypoint/event/scheduler механизм.",
+                               "reason":  "Требуется dedicated trigger mechanism, способный инициировать задачу без ручного вызова factory из тестов.",
+                               "tradeoff":  "Нужно аккуратно выбрать ближайшую существующую точку интеграции, чтобы не плодить параллельные механизмы запуска.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Добавить focused unit/integration tests для config, factory и trigger.",
+                               "reason":  "Success tests явно требуют проверки создания и запуска задачи, а риск задачи medium.",
+                               "tradeoff":  "Потребуется немного больше времени на тестовую обвязку, но это снизит риск регрессии в инфраструктуре задач.",
+                               "confidence":  0.84
+                           }
+                       ],
+    "assumptions":  [
+                        "В репозитории уже есть аналогичные задачи, построенные из factory, config и trigger компонентов.",
+                        "OKO VLM Chapters 2+3 имеет уже утвержденные параметры, которые можно выразить в конфигурации без дополнительного approval.",
+                        "Существующий runner/orchestrator позволяет зарегистрировать новый trigger без изменения базовой архитектуры.",
+                        "Тестовая инфраструктура проекта уже поддерживает unit или integration tests для подобных task-компонентов."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Неочевидное место регистрации trigger в существующей архитектуре.",
+                      "severity":  "medium",
+                      "mitigation":  "Найти ближайший существующий trigger аналогичной задачи и повторить его registration pattern."
+                  },
+                  {
+                      "risk":  "Неполное знание финальных параметров OKO VLM Chapters 2+3 внутри TaskContract.",
+                      "severity":  "medium",
+                      "mitigation":  "Извлечь параметры из существующего backlog/config/source-of-truth в репозитории и зафиксировать их в dedicated config."
+                  },
+                  {
+                      "risk":  "Factory может нарушить контракт runner/task base class.",
+                      "severity":  "medium",
+                      "mitigation":  "Писать factory через существующие base interfaces и добавить тест на instantiation плюс smoke-run trigger."
+                  },
+                  {
+                      "risk":  "Trigger может запускать задачу дважды или с неправильным scope.",
+                      "severity":  "medium",
+                      "mitigation":  "Сделать idempotent trigger registration и проверить expected task id/name в тестах."
+                  }
+              ],
+    "minimal_version":  "Добавить config-класс или schema для OKO VLM Chapters 2+3, factory-функцию/класс для создания задачи из config, trigger-entrypoint для запуска задачи и тесты на создание и вызов trigger по существующему шаблону проекта.",
+    "advanced_version":  "Помимо минимального набора, добавить строгую валидацию config, typed task id/metadata, интеграцию с scheduler/event registry, observability hooks для логирования запуска, idempotency guard и integration test через реальный runner/orchestrator."
+}

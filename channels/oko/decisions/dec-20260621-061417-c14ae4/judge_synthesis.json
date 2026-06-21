@@ -1,0 +1,106 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.98,
+                                     "impact":  0.86,
+                                     "simplicity":  0.96,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct backward-compatible API extension. Implement as an optional list field, preferably with a safe empty default or default_factory, while leaving image_b64 unchanged.",
+                      "total":  0.9315
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.86,
+                                     "impact":  0.88,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.86,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correct provider-side behavior for Gemini multi-frame input. Implementation should append one ordered inline_data part per frame and preserve all existing single-image fallback behavior, including image_b64 and path-based handling.",
+                      "total":  0.869
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.68,
+                                     "feasibility":  0.55,
+                                     "impact":  0.92,
+                                     "simplicity":  0.34,
+                                     "risk_reduction":  0.74,
+                                     "specificity":  0.74
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The data-flow goal is right, but the atom is too absolute and broad. It should reuse the existing selected key_frames, encode only frames that can be resolved from the image buffer, preserve ordering, and explicitly handle short buffers with fewer than 3 frames.",
+                      "total":  0.663
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.96,
+                                     "impact":  0.78,
+                                     "simplicity":  0.94,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.98
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The exact sequence prompt is specific, low-cost, and appropriate for multi-frame requests. Keeping it centralized while retaining the existing single-frame prompt minimizes regression risk.",
+                      "total":  0.892
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.91,
+                                     "feasibility":  0.84,
+                                     "impact":  0.76,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Good architectural boundary. Encoding belongs in pipeline wiring or an injectable codec, with lazy cv2 usage so core domain models and VlmGate remain lightweight and testable.",
+                      "total":  0.8405
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.95,
+                                     "impact":  0.82,
+                                     "simplicity":  0.92,
+                                     "risk_reduction":  0.91,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correctly avoids duplicating frame-selection logic. It aligns with the existing select_key_frames behavior, preserves chronological ordering, and handles early short-buffer cases gracefully.",
+                      "total":  0.908
+                  }
+              ]
+}

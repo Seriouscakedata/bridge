@@ -1,0 +1,26 @@
+{
+    "task":  "Возьми approved-задачу OKO VLM Главы 2+3 в РАБОТУ и собери (factory+config+триггер). Это код, не обсуждение.",
+    "goal":  "Implement the approved \u0027OKO VLM Chapters 2+3\u0027 task by creating its dedicated factory, configuration, and trigger components.",
+    "constraints":  [
+                        "The output must be executable code.",
+                        "No discussion, design deliberation, or further approval processes are required for the task itself; focus solely on implementation.",
+                        "The task \u0027OKO VLM Chapters 2+3\u0027 is already approved."
+                    ],
+    "known_context":  [
+                          "The task pertains to a specific project or module identified as \u0027OKO VLM Chapters 2+3\u0027.",
+                          "The system architecture requires tasks to be composed of a factory, a configuration, and a trigger.",
+                          "The requirements for \u0027OKO VLM Chapters 2+3\u0027 are finalized and accepted."
+                      ],
+    "output_format":  "Code for the factory, configuration, and trigger components specifically tailored for the \u0027OKO VLM Chapters 2+3\u0027 task.",
+    "task_type":  "infra",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "A dedicated factory component for \u0027OKO VLM Chapters 2+3\u0027 is implemented and integrated into the codebase.",
+                          "A dedicated configuration definition (e.g., class, schema) for \u0027OKO VLM Chapters 2+3\u0027 is implemented and available.",
+                          "A dedicated trigger mechanism (e.g., function, event listener, scheduler entry) for \u0027OKO VLM Chapters 2+3\u0027 is implemented.",
+                          "The implemented factory can successfully instantiate the \u0027OKO VLM Chapters 2+3\u0027 task using its defined configuration.",
+                          "The implemented trigger mechanism can successfully initiate the \u0027OKO VLM Chapters 2+3\u0027 task.",
+                          "All implemented components pass relevant unit and integration tests."
+                      ]
+}

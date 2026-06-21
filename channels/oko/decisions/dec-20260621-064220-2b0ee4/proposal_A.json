@@ -1,0 +1,85 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно собрать главы 2 и 3: добавить Gemini как VLM provider через factory/config с моделью строго gemini-2.5-flash, обновить example/live configs, и настроить VLM gate так, чтобы запросы уходили только для person_entered_zone и animal_entered_zone без изменения _trigger_reason.",
+    "summary":  "Решение: добавить ветку provider == gemini в build_vlm с ленивым созданием GeminiVlmProvider без сети, прописать Gemini-блоки в обоих YAML, расширить COCO animal detection в builder.py и обновить тесты VLM gate через конфигурацию VlmGateConfig(event_types=(person_entered_zone, animal_entered_zone), risk_levels=(), min_risk_score=1.01, max_normality_score=-0.01).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "В factory.py добавить импорт GeminiVlmProvider и ветку build_vlm для provider == \u0027gemini\u0027.",
+                               "reason":  "Это сохраняет единый путь создания VLM провайдеров через существующую фабрику.",
+                               "tradeoff":  "Появляется прямая зависимость factory от Gemini provider, но это соответствует текущей архитектуре provider factory.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Значения по умолчанию для Gemini задать как model=\u0027gemini-2.5-flash\u0027, api_key_env=\u0027GEMINI_API_KEY\u0027, timeout_seconds=config.timeout_seconds.",
+                               "reason":  "Контракт требует строго gemini-2.5-flash и стандартную env-переменную ключа.",
+                               "tradeoff":  "Если timeout_seconds отсутствует или None, поведение будет зависеть от текущей модели VlmConfig/GeminiVlmProvider; при необходимости можно оставить дефолт provider-класса.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Конструктор GeminiVlmProvider не должен выполнять сетевые вызовы; тест должен проверять только тип и поля экземпляра.",
+                               "reason":  "Сборка provider должна быть безопасной в CI и без API ключа/сети.",
+                               "tradeoff":  "Интеграционная проверка реального Gemini API откладывается на отдельный live/demo этап.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "configs/example.yaml и configs/live-webcam.yaml обновить одинаковым vlm-блоком provider: gemini, model: gemini-2.5-flash, api_key_env: GEMINI_API_KEY, timeout_seconds: 15.",
+                               "reason":  "Оба конфига должны валидироваться и отражать новую сборочную настройку.",
+                               "tradeoff":  "Live webcam конфиг станет указывать на Gemini по умолчанию, но фактическая live-проводка отложена до главы 4.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Person/animal-only поведение реализовать только через VlmGateConfig, не изменяя _trigger_reason.",
+                               "reason":  "Контракт явно запрещает переносить эту логику в _trigger_reason.",
+                               "tradeoff":  "Конфиг с min_risk_score=1.01 и max_normality_score=-0.01 выглядит неочевидно, но эффективно нейтрализует score/risk ветки.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "_class_is_animal расширить до полного COCO-набора: cat, dog, bird, horse, sheep, cow, elephant, bear, zebra, giraffe.",
+                               "reason":  "animal_entered_zone должен корректно строиться для всех COCO animal классов.",
+                               "tradeoff":  "Это остается COCO-специфичным списком, но он явно задан контрактом.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "tests/test_vlm_gate.py обновить сценариями: person_entered_zone true, animal_entered_zone true, camera_offline/object_appeared/high-risk-only false.",
+                               "reason":  "Тесты фиксируют требуемое поведение gate и защищают от регрессии score/risk триггеров.",
+                               "tradeoff":  "Тесты проверяют policy на уровне gate, а не полный pipeline event builder -\u003e gate.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "VlmConfig уже поддерживает provider, model, api_key_env и timeout_seconds.",
+                        "GeminiVlmProvider уже существует и принимает model, api_key_env, timeout_seconds без обязательной сети в __init__.",
+                        "Существующая схема YAML-конфигов допускает vlm-блок с указанными полями.",
+                        "VlmGateConfig принимает event_types, risk_levels, min_risk_score и max_normality_score в указанном формате.",
+                        "События person_entered_zone, animal_entered_zone, camera_offline и object_appeared уже представлены в текущих enum/string типах проекта."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "GeminiVlmProvider может делать сетевой вызов или проверку ключа в __init__.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавить тест с monkeypatch/mock на сетевой клиент или убедиться, что __init__ только сохраняет параметры; сетевую инициализацию перенести в метод запроса при необходимости."
+                  },
+                  {
+                      "risk":  "Значение provider в VlmConfig может быть enum, а не строка.",
+                      "severity":  "medium",
+                      "mitigation":  "Следовать существующему стилю factory для других providers: сравнивать с enum-значением или нормализованной строкой так же, как в соседних ветках."
+                  },
+                  {
+                      "risk":  "Нейтрализация risk/score порогов может быть сломана будущим изменением логики сравнения.",
+                      "severity":  "medium",
+                      "mitigation":  "Зафиксировать отдельными тестами, что high-risk-only и object_appeared не вызывают VLM при данном VlmGateConfig."
+                  },
+                  {
+                      "risk":  "YAML-конфиги могут иметь дополнительные обязательные поля или другую структуру vlm.",
+                      "severity":  "low",
+                      "mitigation":  "Прогнать существующие config validity tests и адаптировать блок к текущей схеме без изменения требуемых значений Gemini."
+                  },
+                  {
+                      "risk":  "Animal class names могут приходить с разным регистром или с пробелами.",
+                      "severity":  "low",
+                      "mitigation":  "Если текущий builder уже нормализует классы, использовать этот путь; иначе добавить локальную нормализацию lower/strip в _class_is_animal."
+                  }
+              ],
+    "minimal_version":  "Сделать ровно требуемое: factory branch для gemini с gemini-2.5-flash, обновить два YAML, расширить _class_is_animal, добавить/обновить focused tests для factory, config validity и VLM gate. Прогнать pytest.",
+    "advanced_version":  "Дополнительно вынести Gemini defaults в константы, добавить negative test на отсутствие сетевой инициализации через monkeypatch, покрыть все COCO animal классы параметризованным тестом builder.py и добавить config regression test, который явно запрещает модели pro/3-flash в example/live configs."
+}

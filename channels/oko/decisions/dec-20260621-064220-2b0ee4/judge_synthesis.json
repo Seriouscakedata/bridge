@@ -1,0 +1,140 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "factory_add_gemini_branch",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.9,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Unanimous (A/B/C) and the keystone of the integration: without a `gemini` branch in `build_vlm`, none of the other atoms are reachable. Names the exact file, function, target class, and an isinstance test — fully actionable. Standard factory dispatch, low cost, medium reversibility. No concerns.",
+                      "total":  0.9125
+                  },
+                  {
+                      "atom_id":  "factory_gemini_defaults",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and concrete: `gemini-2.5-flash`, `GEMINI_API_KEY`, and `timeout_seconds=config.timeout_seconds` are all valid, testable defaults. Minor watch-item — keep the factory default as a true fallback so it does not silently diverge from the YAML in atom config_update_yaml_vlm_block; the \u0027defaults or when specified in config\u0027 phrasing already covers this, so no penalty. Assertable via `provider.model`.",
+                      "total":  0.885
+                  },
+                  {
+                      "atom_id":  "provider_constructor_network_safety",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Strong design invariant: a side-effect-free constructor keeps factory construction, config validation, and tests offline and deterministic (highest risk_reduction in the set). High reversibility. Slight specificity deduction because \u0027assert no network call by mocking\u0027 proves a negative — pin it concretely (e.g. patch the SDK client/transport and assert not-called) rather than a loose mock.",
+                      "total":  0.9025
+                  },
+                  {
+                      "atom_id":  "config_update_yaml_vlm_block",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus, fully reversible, and wires the feature end-to-end through both example and live-webcam configs. Stores only an env-var name (`GEMINI_API_KEY`), not a secret, so no credential-exposure concern. `test_example_config_drives_providers` gives a clean regression anchor. Ensure the YAML values stay the single source of truth vs the factory defaults in factory_gemini_defaults.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "gate_config_person_animal_only",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.92,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+                                        "magic sentinel thresholds (min_risk_score=1.01, max_normality_score=-0.01) silently assume risk/normality scores are bounded in [0,1]; if any score can exceed that range the gate misfires, and intent is non-obvious to a reader"
+                                    ],
+                      "reason":  "Achieving person/animal-only triggering purely through `VlmGateConfig` without touching `_trigger_reason` is the right call — zero code change, fully config-reversible, and precisely specified. Accepted, but the out-of-band sentinels (1.01 / -0.01) are the one real fragility: they encode \u0027never trigger by risk/normality\u0027 via assumed score bounds. Document that assumption (or expose explicit disable flags) and pair with gate_extract_config_profile to centralize them. Test coverage across positive and negative event types is well chosen.",
+                      "total":  0.837
+                  },
+                  {
+                      "atom_id":  "builder_expand_coco_animals",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.8,
+                                     "simplicity":  0.92,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and unambiguous: the listed classes are exactly the COCO animal set, so completeness is verifiable. Module-level `frozenset` is the idiomatic, O(1)-lookup choice and reads cleanly. Parametrized tests per class make coverage explicit and regression-proof. High reversibility, low cost.",
+                      "total":  0.9005
+                  },
+                  {
+                      "atom_id":  "testing_strategy_new_suites",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sound, low-friction strategy: extend the existing `test_providers.py`, `test_config.py`, and `test_vlm_gate.py` rather than spawning parallel suites — keeps discovery and conventions intact. Impact is organizational rather than functional, hence the modest impact score, but it materially lowers regression risk and is trivially simple. Aligns one-to-one with the testable atoms above.",
+                      "total":  0.8775
+                  },
+                  {
+                      "atom_id":  "gate_extract_config_profile",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.72,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-proposal (B) but a genuinely additive refactor: a named `PERSON_ANIMAL_ONLY_GATE_CONFIG` in `gate.py` removes duplication between tests and wiring and, crucially, gives the fragile sentinel values from gate_config_person_animal_only one documented home — directly mitigating that atom\u0027s main weakness. The \u0027future live wiring\u0027 rationale is mildly speculative (YAGNI), but the test-reuse and centralization benefits stand on their own. Low cost, high reversibility.",
+                      "total":  0.8565
+                  }
+              ]
+}

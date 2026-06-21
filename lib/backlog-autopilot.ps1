@@ -380,15 +380,140 @@ function Get-ProjectAutopilotPlanningStageDefinitions {
   )
 }
 
+function Normalize-ProjectAutopilotSpecProfile {
+  param([string]$Profile)
+  $p = ([string]$Profile).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($p)) { return 'legacy' }
+  if ($p -in @('tiny','small','simple','light','lite','minimal','mvp')) { return 'lite' }
+  if ($p -in @('medium','normal','default','standard','regular')) { return 'standard' }
+  if ($p -in @('large','big','complex','strict','full','production','enterprise')) { return 'full' }
+  if ($p -in @('legacy','staged-v1')) { return 'legacy' }
+  return 'standard'
+}
+
+function Get-ProjectAutopilotSpecProfile {
+  param($Contract)
+  if (-not $Contract) { return 'legacy' }
+  $value = [string](Get-ProjectAutopilotContractValue -Obj $Contract -Names @('spec_profile','specProfile','project_size','projectSize','project_profile','projectProfile') -Default '')
+  if (-not [string]::IsNullOrWhiteSpace($value)) { return (Normalize-ProjectAutopilotSpecProfile -Profile $value) }
+  foreach ($containerName in @('bridge_spec','bridgeSpec','spec_layer','specLayer','project_spec','projectSpec')) {
+    $container = Get-ProjectAutopilotContractValue -Obj $Contract -Names @($containerName) -Default $null
+    if ($container) {
+      $value = [string](Get-ProjectAutopilotContractValue -Obj $container -Names @('profile','spec_profile','project_size','size') -Default '')
+      if (-not [string]::IsNullOrWhiteSpace($value)) { return (Normalize-ProjectAutopilotSpecProfile -Profile $value) }
+    }
+  }
+  return 'legacy'
+}
+
+function Get-ProjectAutopilotPlanContractObject {
+  param([string]$ProjectRoot)
+  $path = Get-ProjectAutopilotPlanContractPath -ProjectRoot $ProjectRoot
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try { return ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) } catch { return $null }
+}
+
+function Get-ProjectAutopilotSpecRules {
+  param([string]$Profile = 'legacy')
+  $profileName = Normalize-ProjectAutopilotSpecProfile -Profile $Profile
+  switch ($profileName) {
+    'lite' {
+      return [pscustomobject]@{
+        profile = 'lite'
+        stage_ids = @('brief')
+        stage_min_overrides = @{ brief = 500 }
+        map_min_chars = 800
+        plan_min_chars = 1000
+        constitution_min_chars = 500
+        spec_min_chars = 500
+        required_specs = @('.bridge\specs\acceptance.md')
+        requirements_min = 1
+        surfaces_min = 1
+        journeys_min = 1
+        acceptance_min = 1
+        interface_min = 0
+        require_planning_flow = $false
+        integration_dep_min = 0
+      }
+    }
+    'standard' {
+      return [pscustomobject]@{
+        profile = 'standard'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{}
+        map_min_chars = 1500
+        plan_min_chars = 2000
+        constitution_min_chars = 700
+        spec_min_chars = 700
+        required_specs = @('.bridge\specs\product.md','.bridge\specs\acceptance.md')
+        requirements_min = 3
+        surfaces_min = 2
+        journeys_min = 2
+        acceptance_min = 3
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+    'full' {
+      return [pscustomobject]@{
+        profile = 'full'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{ brief = 1000; product = 1200; ux = 1200; ui = 1000; backend = 1200; qa = 1200; integration = 1200 }
+        map_min_chars = 2500
+        plan_min_chars = 3000
+        constitution_min_chars = 900
+        spec_min_chars = 900
+        required_specs = @('.bridge\specs\product.md','.bridge\specs\ux.md','.bridge\specs\architecture.md','.bridge\specs\acceptance.md')
+        requirements_min = 5
+        surfaces_min = 3
+        journeys_min = 3
+        acceptance_min = 5
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+    default {
+      return [pscustomobject]@{
+        profile = 'legacy'
+        stage_ids = @('brief','product','ux','ui','backend','qa','integration')
+        stage_min_overrides = @{}
+        map_min_chars = 1500
+        plan_min_chars = 2000
+        constitution_min_chars = 0
+        spec_min_chars = 0
+        required_specs = @()
+        requirements_min = 3
+        surfaces_min = 2
+        journeys_min = 2
+        acceptance_min = 3
+        interface_min = 1
+        require_planning_flow = $true
+        integration_dep_min = 5
+      }
+    }
+  }
+}
+
 function Get-ProjectAutopilotPlanSignatureFiles {
+  param([string]$ProjectRoot = '')
   $files = New-Object 'System.Collections.Generic.List[string]'
+  $contract = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $null } else { Get-ProjectAutopilotPlanContractObject -ProjectRoot $ProjectRoot }
+  $rules = Get-ProjectAutopilotSpecRules -Profile (Get-ProjectAutopilotSpecProfile -Contract $contract)
+  $stageIds = @($rules.stage_ids | ForEach-Object { [string]$_ })
   foreach ($stage in @(Get-ProjectAutopilotPlanningStageDefinitions)) {
+    if ($stageIds -notcontains [string]$stage.id) { continue }
     [void]$files.Add([string]$stage.path)
+  }
+  if ([int]$rules.constitution_min_chars -gt 0) { [void]$files.Add('.bridge\constitution.md') }
+  foreach ($rel in @($rules.required_specs)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$rel)) { [void]$files.Add([string]$rel) }
   }
   foreach ($rel in @('PROJECT_MAP.md','PROJECT_PLAN.md','.bridge\project-contract.json')) {
     [void]$files.Add([string]$rel)
   }
-  return @($files.ToArray())
+  return @($files.ToArray() | Select-Object -Unique)
 }
 
 function Get-ProjectAutopilotFileText {
@@ -412,7 +537,7 @@ function Get-ProjectAutopilotPlanSignature {
   param([string]$ProjectRoot)
   if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
   $parts = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($rel in @(Get-ProjectAutopilotPlanSignatureFiles)) {
+  foreach ($rel in @(Get-ProjectAutopilotPlanSignatureFiles -ProjectRoot $ProjectRoot)) {
     $path = Join-Path $ProjectRoot $rel
     [void]$parts.Add($rel.Replace('\','/') + "`n" + (Get-ProjectAutopilotFileText -Path $path))
   }
@@ -447,7 +572,7 @@ function Test-ProjectAutopilotPlanFilesUnchangedSinceGitHead {
     if ($verifyResult.TimedOut -or $verifyResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$verify)) {
       return [pscustomobject]@{ ok=$false; unchanged=$false; reason='approval-git-head-not-found' }
     }
-    $files = @(Get-ProjectAutopilotPlanSignatureFiles | ForEach-Object { ([string]$_).Replace('\','/') })
+    $files = @(Get-ProjectAutopilotPlanSignatureFiles -ProjectRoot $ProjectRoot | ForEach-Object { ([string]$_).Replace('\','/') })
     if ($files.Count -eq 0) {
       return [pscustomobject]@{ ok=$false; unchanged=$false; reason='no-plan-files' }
     }
@@ -566,17 +691,46 @@ function Invoke-ProjectAutopilotDeliveryContractValidation {
 }
 
 function Get-ProjectAutopilotPlanStageDocLengths {
-  param([string]$ProjectRoot, $Issues)
+  param([string]$ProjectRoot, $Issues, $Rules = $null)
+  if (-not $Rules) { $Rules = Get-ProjectAutopilotSpecRules -Profile 'legacy' }
   $stageDocLengths = [ordered]@{}
+  $stageIds = @($Rules.stage_ids | ForEach-Object { [string]$_ })
   foreach ($stageDef in @(Get-ProjectAutopilotPlanningStageDefinitions)) {
+    $sid = [string]$stageDef.id
+    if ($stageIds -notcontains $sid) { continue }
     $stagePath = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { '' } else { Join-Path $ProjectRoot ([string]$stageDef.path) }
     $stageText = Get-ProjectAutopilotFileText -Path $stagePath
-    $stageDocLengths[[string]$stageDef.id] = [int]$stageText.Length
-    if ($stageText.Length -lt [int]$stageDef.min_chars) {
-      [void]$Issues.Add(([string]$stageDef.path + ' is missing or too shallow (<' + [string]$stageDef.min_chars + ' chars)'))
+    $minChars = [int]$stageDef.min_chars
+    try {
+      if ($Rules.stage_min_overrides -and $Rules.stage_min_overrides.ContainsKey($sid)) {
+        $minChars = [int]$Rules.stage_min_overrides[$sid]
+      }
+    } catch {}
+    $stageDocLengths[$sid] = [int]$stageText.Length
+    if ($stageText.Length -lt $minChars) {
+      [void]$Issues.Add(([string]$stageDef.path + ' is missing or too shallow (<' + [string]$minChars + ' chars)'))
     }
   }
   return $stageDocLengths
+}
+
+function Add-ProjectAutopilotSpecLayerIssues {
+  param([string]$ProjectRoot, $Rules, $Issues)
+  if (-not $Rules -or [string]::IsNullOrWhiteSpace($ProjectRoot)) { return }
+  if ([int]$Rules.constitution_min_chars -gt 0) {
+    $constitutionRel = '.bridge\constitution.md'
+    $constitutionText = Get-ProjectAutopilotFileText -Path (Join-Path $ProjectRoot $constitutionRel)
+    if ($constitutionText.Length -lt [int]$Rules.constitution_min_chars) {
+      [void]$Issues.Add($constitutionRel + ' is missing or too shallow (<' + [string]$Rules.constitution_min_chars + ' chars)')
+    }
+  }
+  foreach ($rel in @($Rules.required_specs)) {
+    if ([string]::IsNullOrWhiteSpace([string]$rel)) { continue }
+    $specText = Get-ProjectAutopilotFileText -Path (Join-Path $ProjectRoot ([string]$rel))
+    if ($specText.Length -lt [int]$Rules.spec_min_chars) {
+      [void]$Issues.Add(([string]$rel + ' is missing or too shallow (<' + [string]$Rules.spec_min_chars + ' chars)'))
+    }
+  }
 }
 
 function Test-ProjectAutopilotDeliveryContractReady {
@@ -672,6 +826,8 @@ function Test-ProjectPlanContractReady {
   $mapText = Get-ProjectAutopilotFileText -Path $mapPath
   $planText = Get-ProjectAutopilotFileText -Path $planPath
   $contract = $null
+  $specRules = Get-ProjectAutopilotSpecRules -Profile 'legacy'
+  $stageDocLengths = [ordered]@{}
   $deliveryContractOk = $false
   $deliveryContractScore = $null
   $deliveryContractMissing = @()
@@ -682,14 +838,6 @@ function Test-ProjectPlanContractReady {
   if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
     [void]$issues.Add('project_root is missing')
   }
-  if ($mapText.Length -lt 1500) {
-    [void]$issues.Add('PROJECT_MAP.md is missing or too shallow (<1500 chars)')
-  }
-  if ($planText.Length -lt 2000) {
-    [void]$issues.Add('PROJECT_PLAN.md is missing or too shallow (<2000 chars)')
-  }
-
-  $stageDocLengths = Get-ProjectAutopilotPlanStageDocLengths -ProjectRoot $ProjectRoot -Issues $issues
 
   if ([string]::IsNullOrWhiteSpace($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
     [void]$issues.Add('.bridge/project-contract.json is missing')
@@ -700,6 +848,19 @@ function Test-ProjectPlanContractReady {
       [void]$issues.Add('.bridge/project-contract.json is not valid JSON')
     }
   }
+
+  if ($contract) {
+    $specRules = Get-ProjectAutopilotSpecRules -Profile (Get-ProjectAutopilotSpecProfile -Contract $contract)
+  }
+  if ($mapText.Length -lt [int]$specRules.map_min_chars) {
+    [void]$issues.Add('PROJECT_MAP.md is missing or too shallow (<' + [string]$specRules.map_min_chars + ' chars)')
+  }
+  if ($planText.Length -lt [int]$specRules.plan_min_chars) {
+    [void]$issues.Add('PROJECT_PLAN.md is missing or too shallow (<' + [string]$specRules.plan_min_chars + ' chars)')
+  }
+
+  $stageDocLengths = Get-ProjectAutopilotPlanStageDocLengths -ProjectRoot $ProjectRoot -Issues $issues -Rules $specRules
+  Add-ProjectAutopilotSpecLayerIssues -ProjectRoot $ProjectRoot -Rules $specRules -Issues $issues
 
   $goalText = ''
   $reqCount = 0
@@ -727,16 +888,18 @@ function Test-ProjectPlanContractReady {
     $stageById = Get-ProjectAutopilotPlanningStageById -PlanningFlow $planningFlow
     $planningStageCount = [int]$stageById.Count
     if ($goalText.Trim().Length -lt 40) { [void]$issues.Add('project contract goal is missing or too short') }
-    if ($reqCount -lt 3) { [void]$issues.Add('project contract needs at least 3 requirements/capabilities/features') }
-    if ($surfaceCount -lt 2) { [void]$issues.Add('project contract needs at least 2 screens/routes/interfaces/modules') }
-    if ($journeyCount -lt 2) { [void]$issues.Add('project contract needs at least 2 user journeys/workflows/scenarios') }
-    if ($acceptanceCount -lt 3) { [void]$issues.Add('project contract needs at least 3 acceptance scenarios/checks') }
-    if ($interfaceCount -lt 1) { [void]$issues.Add('project contract needs ux_contract or interface_contract') }
-    if (-not $planningFlow) {
+    if ($reqCount -lt [int]$specRules.requirements_min) { [void]$issues.Add('project contract needs at least ' + [string]$specRules.requirements_min + ' requirements/capabilities/features') }
+    if ($surfaceCount -lt [int]$specRules.surfaces_min) { [void]$issues.Add('project contract needs at least ' + [string]$specRules.surfaces_min + ' screens/routes/interfaces/modules') }
+    if ($journeyCount -lt [int]$specRules.journeys_min) { [void]$issues.Add('project contract needs at least ' + [string]$specRules.journeys_min + ' user journeys/workflows/scenarios') }
+    if ($acceptanceCount -lt [int]$specRules.acceptance_min) { [void]$issues.Add('project contract needs at least ' + [string]$specRules.acceptance_min + ' acceptance scenarios/checks') }
+    if ($interfaceCount -lt [int]$specRules.interface_min) { [void]$issues.Add('project contract needs ux_contract or interface_contract') }
+    if ([bool]$specRules.require_planning_flow -and -not $planningFlow) {
       [void]$issues.Add('project contract needs planning_flow with staged discussions')
-    } else {
+    } elseif ($planningFlow) {
+      $requiredStageIds = @($specRules.stage_ids | ForEach-Object { [string]$_ })
       foreach ($stageDef in @(Get-ProjectAutopilotPlanningStageDefinitions)) {
         $sid = [string]$stageDef.id
+        if ($requiredStageIds -notcontains $sid) { continue }
         if (-not $stageById.ContainsKey($sid)) {
           [void]$issues.Add('planning_flow missing stage: ' + $sid)
           continue
@@ -750,13 +913,16 @@ function Test-ProjectPlanContractReady {
       $integration = $null
       try { if ($stageById.ContainsKey('integration')) { $integration = $stageById['integration'] } } catch {}
       $integrationDeps = @(Get-ProjectAutopilotContractArray -Obj $integration -Names @('depends_on','dependsOn','validated_stages'))
-      if ($integrationDeps.Count -lt 5) { [void]$issues.Add('planning_flow integration stage must depend on/validate prior stages') }
+      if ([int]$specRules.integration_dep_min -gt 0 -and $integrationDeps.Count -lt [int]$specRules.integration_dep_min) {
+        [void]$issues.Add('planning_flow integration stage must depend on/validate prior stages')
+      }
     }
   }
 
   return [pscustomobject]@{
     ready = ($issues.Count -eq 0)
     issues = @($issues.ToArray())
+    spec_profile = [string]$specRules.profile
     signature = (Get-ProjectAutopilotPlanSignature -ProjectRoot $ProjectRoot)
     map_path = $mapPath
     plan_path = $planPath
@@ -798,17 +964,19 @@ Plan gate status:
 
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
-- Read PROJECT_BRIEF.md, DISCUSS_PRODUCT.md, DISCUSS_UX.md, DISCUSS_UI.md, DISCUSS_BACKEND.md, DISCUSS_QA.md, DISCUSS_INTEGRATION.md, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
+- Read the Bridge spec layer first: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, PROJECT_BRIEF.md, DISCUSS_*.md when present, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
 - Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
-- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must describe explicit scope plus explicit non_goals, explicit users/roles/personas, data/backend ownership, checks, risk, parallel_policy, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
+- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must include spec_profile/project_size plus explicit scope plus explicit non_goals, explicit users/roles/personas, data/backend ownership, checks, risk, parallel_policy, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
+- Choose the lightest valid spec_profile: lite for small/narrow projects, standard for normal multi-surface apps, full for large/complex/production projects. Lite avoids unnecessary DISCUSS_* bureaucracy; full requires deeper specs before implementation.
 - requirements/capabilities/features do NOT replace explicit scope plus non_goals. user_journeys/journeys/flows/workflows do NOT replace explicit users/roles/personas/actors.
 - Treat planning as staged: brief -> product -> UX -> UI -> backend -> QA -> integration. Every later stage must explicitly use decisions from earlier stages. The integration stage resolves cross-stage conflicts before implementation.
-- If the stage docs, map, plan, or contract are shallow/missing/stale, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen PROJECT_BRIEF.md, DISCUSS_*.md, PROJECT_MAP.md, PROJECT_PLAN.md, and .bridge/project-contract.json.
+- If the constitution, required .bridge/specs/*.md files, stage docs, map, plan, or contract are shallow/missing/stale for the selected spec_profile, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen the missing spec/planning files and .bridge/project-contract.json.
 - Determine the next approved/incomplete chapter from the contract and plan, not from a guessed feature list.
 - Treat the approved contract/plan as a bounded current release, not open-ended permission to invent future product areas.
 - Before creating a new chapter after the previous chapter appears complete, check the current acceptance/report/check status. If the approved release can now be accepted, or only nice-to-have/future work remains, finish without PROJECT_BACKLOG and emit concise durable memory/operator-review notes.
 - Do not expand into new surfaces such as dashboards, admin panels, regeneration tools, web UIs, APIs, analytics, or background services unless that surface is explicitly in the approved current-release contract. "Could be useful" is not enough.
 - If the contract does not explicitly authorize the next chapter/wave, do not create atoms for it; emit [[PROJECT_OPEN_QUESTION: release scope needs approval before new chapter]] and finish without PROJECT_BACKLOG.
+- For full/large projects and high-risk changes, create or update .bridge/changes/<change-id>/proposal.md, design.md, tasks.md, and acceptance.md before implementation atoms, and archive completed change packages under .bridge/archive/<change-id>. Do not force change-package ceremony on lite/small work.
 - Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Keep each atom to a SINGLE focused concern with a SMALL diff (ideally one function/class/area). Do NOT bundle multiple changes into one atom (e.g., new implementation + a refactor + cross-file tests): a large diff makes the completion-critic find many issues per pass and iterate for many slow rounds. Tests for a module are their own atom, separate from the implementation atoms they cover; a bug fix is its own atom. Small single-concern diffs let the critic converge in 1-2 rounds even when atoms run batched in parallel.
@@ -924,8 +1092,9 @@ function Set-ProjectPlanApproved {
   $raw | Add-Member -NotePropertyName plan_approved_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
   if ($Approved -and $contractReady) {
     $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue ([string]$contractReady.signature) -Force
-    $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue 'staged-v1' -Force
-    $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @(Get-ProjectAutopilotPlanSignatureFiles) -Force
+    $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue 'bridge-spec-v1' -Force
+    $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @(Get-ProjectAutopilotPlanSignatureFiles -ProjectRoot $projectRoot) -Force
+    $raw | Add-Member -NotePropertyName plan_spec_profile -NotePropertyValue ([string]$contractReady.spec_profile) -Force
     $raw | Add-Member -NotePropertyName plan_approved_git_head -NotePropertyValue (Get-ProjectAutopilotGitHead -ProjectRoot $projectRoot) -Force
     $raw | Add-Member -NotePropertyName plan_contract_path -NotePropertyValue ([string]$contractReady.contract_path) -Force
     $raw | Add-Member -NotePropertyName plan_contract_score -NotePropertyValue $contractReady.delivery_contract_score -Force
@@ -934,6 +1103,7 @@ function Set-ProjectPlanApproved {
     $raw | Add-Member -NotePropertyName plan_approved_signature -NotePropertyValue '' -Force
     $raw | Add-Member -NotePropertyName plan_approved_signature_version -NotePropertyValue '' -Force
     $raw | Add-Member -NotePropertyName plan_approved_files -NotePropertyValue @() -Force
+    $raw | Add-Member -NotePropertyName plan_spec_profile -NotePropertyValue '' -Force
     $raw | Add-Member -NotePropertyName plan_approved_git_head -NotePropertyValue '' -Force
   }
   [System.IO.File]::WriteAllText($cj, (($raw | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
@@ -992,6 +1162,7 @@ function Start-ProjectAutopilotIfNeeded {
       channel = $slug
       project_root = $root
       issues = @($planContract.issues)
+      spec_profile = [string]$planContract.spec_profile
       contract_path = [string]$planContract.contract_path
       delivery_contract_ok = $planContract.delivery_contract_ok
       delivery_contract_score = $planContract.delivery_contract_score

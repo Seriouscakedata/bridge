@@ -1,0 +1,146 @@
+{
+    "final_answer":  "All eight decision atoms passed the judge with accept verdicts (totals 0.84–0.91), the conflict matrix records zero conflicts, and the micro-debate was skipped — so the final record accepts the full set and rejects only the forbidden alternatives implied by the task constraints. The accepted plan integrates Gemini as a VLM provider end-to-end without breaking the assembly contract: (1) a `provider == \u0027gemini\u0027` dispatch branch in `build_vlm`, (2) configured with the mandated defaults `model=\u0027gemini-2.5-flash\u0027`, `api_key_env=\u0027GEMINI_API_KEY\u0027`, `timeout_seconds=config.timeout_seconds`, (3) a side-effect-free `GeminiVlmProvider` constructor (lazy SDK client, no network on construct), (4) a `vlm` block in both `configs/example.yaml` and `configs/live-webcam.yaml`, (5) person/animal-only triggering achieved purely through `VlmGateConfig` sentinels — never by editing `_trigger_reason`, (6) `_class_is_animal` widened to the full COCO animal frozenset, (7) tests added to the existing `test_providers.py`/`test_config.py`/`test_vlm_gate.py`/`test_event_builder.py` suites, and (8) the person/animal gate profile extracted as a named `PERSON_ANIMAL_ONLY_GATE_CONFIG` constant so the fragile threshold sentinels live in one documented place. The one real fragility — the magic sentinels `min_risk_score=1.01` / `max_normality_score=-0.01` assume risk/normality are bounded in [0,1] — is accepted but flagged: document the bound assumption and centralize it via the named constant. Strict model pinning to `gemini-2.5-flash` (not pro / 3-flash) is honored throughout.",
+    "decisions":  [
+                      {
+                          "decision":  "Add a `provider == \u0027gemini\u0027` branch to `build_vlm` in `src/oko/providers/factory.py` that constructs and returns `GeminiVlmProvider`, with the necessary import.",
+                          "rationale":  "Unanimous (A/B/C) and the keystone: no other atom is reachable without the factory dispatch. Standard, low-cost factory pattern that matches the existing provider dispatch in the file.",
+                          "alternatives_considered":  [
+                                                          "Instantiate GeminiVlmProvider directly at call sites, bypassing the factory",
+                                                          "Add a generic plugin registry instead of an explicit branch"
+                                                      ],
+                          "risk":  "Low. Medium reversibility — branch is self-contained and easy to remove.",
+                          "test":  "tests/test_providers.py: build_vlm(VlmConfig(provider=\u0027gemini\u0027, ...)) → assert isinstance(provider, GeminiVlmProvider)."
+                      },
+                      {
+                          "decision":  "In the gemini branch instantiate `GeminiVlmProvider(model=config.model or \u0027gemini-2.5-flash\u0027, api_key_env=config.api_key_env or \u0027GEMINI_API_KEY\u0027, timeout_seconds=config.timeout_seconds)`.",
+                          "rationale":  "Consensus, concrete, and testable. Defaults act as true fallbacks so config can override them while still satisfying the strict `gemini-2.5-flash` requirement when unset.",
+                          "alternatives_considered":  [
+                                                          "Hardcode \u0027gemini-2.5-flash\u0027 ignoring config.model",
+                                                          "Use gemini-2.5-pro or gemini-3-flash",
+                                                          "Require model to be set in YAML and raise on missing"
+                                                      ],
+                          "risk":  "Low. Watch-item: the factory default must remain a pure fallback so it cannot silently diverge from the YAML single source of truth.",
+                          "test":  "tests/test_providers.py: assert provider.model == \u0027gemini-2.5-flash\u0027 for a VlmConfig with no model set."
+                      },
+                      {
+                          "decision":  "Guarantee `GeminiVlmProvider.__init__` performs no network I/O — it only validates and stores attributes; the SDK client is created lazily on first inference.",
+                          "rationale":  "Highest risk_reduction in the set: a side-effect-free constructor keeps factory construction, config validation, and the entire test suite offline and deterministic.",
+                          "alternatives_considered":  [
+                                                          "Eagerly construct the genai client in __init__",
+                                                          "Validate the API key by making a probe request at construction time"
+                                                      ],
+                          "risk":  "Low, high reversibility.",
+                          "test":  "tests/test_providers.py: patch the genai SDK client/transport (not a loose generic mock) and assert it is NOT called during construction."
+                      },
+                      {
+                          "decision":  "Add/replace the `vlm` block in BOTH `configs/example.yaml` and `configs/live-webcam.yaml` with provider: gemini, model: gemini-2.5-flash, api_key_env: GEMINI_API_KEY, timeout_seconds: 15.",
+                          "rationale":  "Wires the feature end-to-end through both the example and the live path. Stores only the env-var name, not a secret, so there is no credential-exposure concern.",
+                          "alternatives_considered":  [
+                                                          "Update only example.yaml",
+                                                          "Embed the API key value directly in YAML",
+                                                          "Leave model unset and rely solely on factory default"
+                                                      ],
+                          "risk":  "Low, fully reversible. Keep the YAML values as the single source of truth versus the factory fallbacks.",
+                          "test":  "tests/test_config.py: config-validity assertions plus test_example_config_drives_providers passing with the gemini provider."
+                      },
+                      {
+                          "decision":  "Implement person/animal-only VLM triggering exclusively via `VlmGateConfig(event_types=(\u0027person_entered_zone\u0027,\u0027animal_entered_zone\u0027), risk_levels=(), min_risk_score=1.01, max_normality_score=-0.01)` — without modifying `_trigger_reason`.",
+                          "rationale":  "Honors the hard constraint (no `_trigger_reason` edit), is zero-code and fully config-reversible, and precisely neutralizes risk/normality so only the two event types fire.",
+                          "alternatives_considered":  [
+                                                          "Special-case person/animal inside _trigger_reason (forbidden by constraint)",
+                                                          "Add a hardcoded class filter in the builder",
+                                                          "Add explicit boolean disable flags to VlmGateConfig instead of sentinels"
+                                                      ],
+                          "risk":  "Medium. The sentinels 1.01 / -0.01 assume risk and normality scores are bounded in [0,1]; if any score can exceed that range the gate misfires. Mitigate by documenting the bound and centralizing the values via the named constant.",
+                          "test":  "tests/test_vlm_gate.py: person_entered_zone → should_query True; animal_entered_zone → True; camera_offline / object_appeared / high-risk-only → False."
+                      },
+                      {
+                          "decision":  "Expand `_class_is_animal` in `src/oko/events/builder.py` to the full COCO animal set as a module-level frozenset: cat, dog, bird, horse, sheep, cow, elephant, bear, zebra, giraffe (retaining the existing \u0027animal\u0027 token).",
+                          "rationale":  "Consensus and verifiable — the listed classes are exactly the COCO animal set. A module-level frozenset gives O(1) membership and reads cleanly.",
+                          "alternatives_considered":  [
+                                                          "Inline list/tuple membership check rebuilt per call",
+                                                          "Partial subset of common pets only"
+                                                      ],
+                          "risk":  "Low, high reversibility.",
+                          "test":  "tests/test_event_builder.py: parametrized test per class asserting each maps to animal_entered_zone."
+                      },
+                      {
+                          "decision":  "Place all new tests in the existing suites — `tests/test_providers.py` (factory), `tests/test_config.py` (config validity), `tests/test_vlm_gate.py` (gate), and `tests/test_event_builder.py` (animal classes) — rather than spawning parallel suites.",
+                          "rationale":  "Keeps pytest discovery and project conventions intact and maps one-to-one with the testable atoms, materially lowering regression risk at trivial cost.",
+                          "alternatives_considered":  [
+                                                          "Create new parallel test modules per feature",
+                                                          "Consolidate everything into one mega test file"
+                                                      ],
+                          "risk":  "Low. Impact is organizational rather than functional.",
+                          "test":  "Confirm the new sections exist in each named suite and the full pytest run is green."
+                      },
+                      {
+                          "decision":  "Extract the person/animal-only gate profile as a named importable constant `PERSON_ANIMAL_ONLY_GATE_CONFIG` in `src/oko/vlm/gate.py`, reused by tests and future wiring.",
+                          "rationale":  "Additive refactor that removes duplication between tests and wiring and gives the fragile sentinel thresholds a single documented home — directly mitigating the main weakness of the gate_config_person_animal_only decision.",
+                          "alternatives_considered":  [
+                                                          "Inline the VlmGateConfig literal in each test",
+                                                          "Expose it as a classmethod/factory on VlmGateConfig"
+                                                      ],
+                          "risk":  "Low, high reversibility. The \u0027future live wiring\u0027 justification is mildly speculative (YAGNI), but the test-reuse and centralization benefits stand on their own.",
+                          "test":  "Assert PERSON_ANIMAL_ONLY_GATE_CONFIG is defined in gate.py and imported/used by tests/test_vlm_gate.py."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Modify `_trigger_reason` to special-case person/animal events.",
+                         "why":  "Explicitly forbidden by the task constraint. The same behavior is achievable with zero code change and full reversibility through VlmGateConfig (gate_config_person_animal_only)."
+                     },
+                     {
+                         "decision":  "Hardcode the model string `gemini-2.5-flash` directly in the provider/factory, ignoring config.model.",
+                         "why":  "Breaks the config-driven design; the factory default must remain a fallback with the YAML blocks as the single source of truth, while still defaulting to gemini-2.5-flash when unset."
+                     },
+                     {
+                         "decision":  "Use `gemini-2.5-pro` or `gemini-3-flash`.",
+                         "why":  "Violates the strict model constraint — the VLM model must be exactly gemini-2.5-flash."
+                     },
+                     {
+                         "decision":  "Eagerly construct the genai SDK client or validate the API key over the network in the constructor.",
+                         "why":  "Would make factory construction, config validation, and tests perform network I/O, defeating provider_constructor_network_safety and breaking the \u0027construct without network\u0027 success test."
+                     }
+                 ],
+    "open_questions":  [
+                           "Are risk and normality scores guaranteed bounded in [0,1]? The gate sentinels (min_risk_score=1.01, max_normality_score=-0.01) silently depend on that bound; if a score can exceed it, prefer explicit disable flags on VlmGateConfig over magic thresholds.",
+                           "Does the current `VlmConfig` already expose `model` and `api_key_env` fields, or must they be added for the factory\u0027s `config.model or ...` / `config.api_key_env or ...` fallbacks to work?",
+                           "Should the gemini default model live only in YAML (factory raising on missing model) or retain the dual factory+YAML fallback? Current decision keeps the fallback with YAML as source of truth."
+                       ],
+    "implementation_plan":  [
+                                "Confirm VlmConfig exposes model, api_key_env, and timeout_seconds fields (add them if absent) so the factory fallbacks resolve.",
+                                "In src/oko/providers/factory.py: import GeminiVlmProvider and add the `provider == \u0027gemini\u0027` branch in build_vlm using model=config.model or \u0027gemini-2.5-flash\u0027, api_key_env=config.api_key_env or \u0027GEMINI_API_KEY\u0027, timeout_seconds=config.timeout_seconds.",
+                                "Verify GeminiVlmProvider.__init__ is side-effect-free (lazy client); refactor to lazy initialization if it currently constructs the SDK client or probes the network.",
+                                "In src/oko/vlm/gate.py: define module-level PERSON_ANIMAL_ONLY_GATE_CONFIG = VlmGateConfig(event_types=(\u0027person_entered_zone\u0027,\u0027animal_entered_zone\u0027), risk_levels=(), min_risk_score=1.01, max_normality_score=-0.01) with a comment documenting the [0,1]-bound assumption behind the sentinels.",
+                                "In src/oko/events/builder.py: replace the _class_is_animal body with membership in a module-level frozenset of the full COCO animal set (cat, dog, bird, horse, sheep, cow, elephant, bear, zebra, giraffe) plus the existing \u0027animal\u0027 token.",
+                                "Update configs/example.yaml and configs/live-webcam.yaml vlm blocks: provider: gemini, model: gemini-2.5-flash, api_key_env: GEMINI_API_KEY, timeout_seconds: 15.",
+                                "Add tests: test_providers.py (isinstance + model == \u0027gemini-2.5-flash\u0027 + no-network-on-construct via patched SDK client); test_config.py (validity + test_example_config_drives_providers); test_vlm_gate.py (person/animal True, camera_offline/object_appeared/high-risk-only False, importing PERSON_ANIMAL_ONLY_GATE_CONFIG); test_event_builder.py (parametrized per COCO animal class).",
+                                "Run pytest and confirm the suite is green; fix any field/signature mismatches surfaced by the open questions."
+                            ],
+    "next_step":  "Add the `provider == \u0027gemini\u0027` branch (with import and the mandated gemini-2.5-flash / GEMINI_API_KEY / timeout_seconds defaults) to build_vlm in src/oko/providers/factory.py, after confirming VlmConfig exposes the model/api_key_env/timeout_seconds fields.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Flipping configs/example.yaml AND configs/live-webcam.yaml to `provider: gemini` breaks at least three existing passing tests, because LiveReadinessChecker is never updated to recognize `gemini`. In src/oko/live/readiness.py:188, _vlm_issues emits a `vlm_provider_unknown` BLOCKER for any provider not in {fake,stub,test} or {http-json,http,openai-compatible}; `gemini` is in neither set. Concretely this breaks: (1) tests/test_live_readiness.py::test_live_webcam_config_blocks_only_on_missing_model_file (asserts blockers == [\u0027detector_model_file_not_found\u0027], will become [\u0027detector_model_file_not_found\u0027,\u0027vlm_provider_unknown\u0027]); (2) tests/test_live_runtime.py::test_live_runtime_returns_readiness_blockers_without_building_real_pipeline (same exact-list assertion on example.yaml); (3) tests/test_live_smoke.py::test_offline_live_smoke_uses_injected_fakes_and_reports_real_readiness_blockers (same on example.yaml). The decision\u0027s scope and implementation_plan contain NO step touching readiness.py.",
+                                  "why":  "Directly violates the success_test \u0027All pytest checks pass (pytest green)\u0027 and the constraint that this is a clean assembly. The decision approved the config flip with rationale that it \u0027makes the provider exercisable end-to-end,\u0027 but the opposite is true for the live path: run_live_runtime (runtime.py:30) and webcam.py:43 treat any readiness blocker as fatal and skip the pipeline, so a real gemini-configured webcam deployment would be PERMANENTLY blocked at readiness even once the model file exists. The flip makes live-webcam.yaml strictly worse, not better."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The fix is not the naive \u0027add gemini to _REAL_VLM_PROVIDERS.\u0027 That set drives http-specific checks immediately below it (readiness.py:204-222): it requires endpoint_url to be non-empty and treats api_key_env presence as a blocker. The Gemini block in the YAMLs has no endpoint_url (GeminiVlmProvider builds its own endpoint internally) and uses api_key_env=GEMINI_API_KEY which won\u0027t be set in CI/offline. So simply whitelisting gemini would instead produce `vlm_endpoint_missing` (and possibly `vlm_api_key_env_missing`) blockers — still red. Gemini needs its own readiness branch, which is entirely unscoped in the decision.",
+                                  "why":  "Means the only obvious remediation an implementer would reach for still fails the readiness tests and still blocks the live runtime. The decision underestimates the blast radius of the config flip; correctly supporting gemini in readiness is a non-trivial change the record does not budget for."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The rationale for rejecting PERSON_ANIMAL_ONLY_GATE_CONFIG and the open_questions rest on a false premise: \u0027the live person/animal profile is already defined by the YAML vlm/gate block.\u0027 No such block exists. VlmConfig (src/oko/config/schema.py:45) has only provider/model/endpoint_url/api_key_env/timeout_seconds — no event_types, risk_levels, min_risk_score, or max_normality_score. Furthermore LivePipeline.from_config (src/oko/pipeline/live.py:40) constructs NO VlmGate at all — the gate is unwired in every runnable path. Therefore VlmGateConfig.person_animal_only() is the ONLY source of truth and it is test-only, so the goal\u0027s \u0027query the VLM only for person or animal\u0027 is realized in no executable path.",
+                                  "why":  "The decision rejected the constant to avoid \u0027drift from the YAML-driven live profile\u0027 that does not exist. Open question #2 (\u0027Will Chapter 4 consume the gate profile from YAML or from the classmethod?\u0027) is unanswerable as framed — YAML cannot drive a gate profile without schema fields that are explicitly out of scope. This misleads Chapter 4 planning and leaves the modified atom #8 justified by a non-existent artifact. Within the Chapter 2-3 contract the success_tests still pass (they only require VlmGateConfig configured + tests green), so it is not a hard failure for this chapter, but the reasoning is unsound."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The decision cites test_example_config_drives_providers (tests/test_providers.py:187) as evidence the gemini path is exercised (\u0027producing a GeminiVlmProvider\u0027), but that test only asserts `isinstance(vlm, VlmProvider)`. GeminiVlmProvider, FakeVlm, and HttpJsonVlmProvider all satisfy it, so the assertion would pass even if the gemini branch were missing or returned the wrong provider — it provides no real coverage of the new branch.",
+                                  "why":  "The factory-dispatch correctness for gemini is effectively only covered by the dedicated test_providers.py additions the plan adds; the cited end-to-end config test gives false confidence. Minor, but the decision\u0027s \u0027test\u0027 field overstates what is verified."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

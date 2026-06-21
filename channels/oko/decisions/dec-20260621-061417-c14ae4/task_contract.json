@@ -1,0 +1,30 @@
+{
+    "task":  "УТОЧНЕНИЕ ко ВСЕМ VLM-главам (фидбэк юзера, ВАЖНО): VLM получает НЕ один кадр, а СЕРИЮ ключевых кадров (3-7, ОКО уже буферизует их в key_frames) — чтобы gemini видел ДВИЖЕНИЕ/действие, а не статичный кадр. gemini-2.5-flash поддерживает несколько картинок в одном запросе (несколько inline_data parts). Правки:\n- Глава 1 GeminiVlmProvider.query: принимать СПИСОК изображений (несколько inline_data parts в одном generateContent), не одно. Поле в VlmRequest для списка кадров (напр. image_b64_frames: list[str]) ИЛИ переиспользовать существующее, расширив до списка; одиночное image_b64 оставить для совместимости/тестов.\n- Глава 4 проводка: протягивать изображения 3-7 key_frames (JPEG-\u003eb64 каждый) в VlmRequest, не один кадр.\n- Промпт VLM: «Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают».\nЭто делает понимание «что происходит» точнее. Остальное по плану без изменений.",
+    "goal":  "To enhance the VLM\u0027s understanding of motion and action by providing a sequence of 3-7 keyframes instead of a single static image, thereby improving the accuracy of its \u0027what is happening\u0027 descriptions.",
+    "constraints":  [
+                        "The VLM used is Gemini 2.5 Flash.",
+                        "Gemini 2.5 Flash supports multiple images (inline_data parts) in a single `generateContent` request.",
+                        "The number of keyframes provided must be between 3 and 7.",
+                        "Keyframes must be converted from JPEG to base64 encoding.",
+                        "The existing `image_b64` field in `VlmRequest` must be retained for compatibility and testing purposes.",
+                        "No other changes to the existing plan beyond these specified modifications."
+                    ],
+    "known_context":  [
+                          "OCO component already buffers keyframes in a `key_frames` structure.",
+                          "The current VLM input mechanism provides only a single static image.",
+                          "The system utilizes a `GeminiVlmProvider`.",
+                          "There is a `VlmRequest` data structure for VLM interactions."
+                      ],
+    "output_format":  "The VLM is expected to produce a textual description of the events occurring across the sequence of frames, specifically identifying people/animals and their actions.",
+    "task_type":  "refactor",
+    "risk":  "medium",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Verify that `GeminiVlmProvider.query` now accepts a list of base64 encoded image strings.",
+                          "Verify that `VlmRequest` includes a field capable of holding a list of base64 encoded image strings (e.g., `image_b64_frames: list[str]`), while retaining the single `image_b64` field.",
+                          "Verify that the pipeline (Chapter 4) correctly extracts 3-7 keyframes from OCO\u0027s `key_frames`, converts each to JPEG-\u003eb64, and passes them as a list to the `VlmRequest`.",
+                          "Verify that the VLM prompt sent to Gemini 2.5 Flash is exactly: \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027",
+                          "Verify that VLM responses, when provided with a sequence of frames, accurately describe motion, actions, and interactions over time, rather than just static scene elements.",
+                          "Verify that existing functionalities relying on a single `image_b64` frame continue to operate correctly without regressions."
+                      ]
+}

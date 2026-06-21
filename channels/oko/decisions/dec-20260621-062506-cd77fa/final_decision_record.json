@@ -1,0 +1,146 @@
+{
+    "final_answer":  "Implement \u0027OKO VLM Chapters 2+3\u0027 (Gemini provider gate + pipeline enrichment) by extending the repository\u0027s existing extension points rather than building a parallel subsystem. Concretely: (1) extend the existing typed configuration (VlmConfig within OkoConfig) with VLM provider selection and gate parameters, default-off; (2) add a \u0027gemini\u0027 branch to the existing build_vlm factory that returns the already-built GeminiVlmProvider, conforming to the VlmProvider interface; (3) wire the trigger through LivePipeline.run() by calling VlmGate.query_if_needed(event) and attaching the resulting VlmResponse to PipelineEventResult as optional, advisory-only enrichment. The VLM output must never alter DecisionOutput.recommended_action or any bridge command, must be byte-identical to current behavior when disabled or when credentials are missing, and must degrade gracefully on provider/transport errors. Cover the change with focused unit/integration tests (config parsing, build_vlm provider selection, pipeline trigger, advisory-only invariant, disabled-path parity) and keep existing suites green. The proposed dedicated vlm_chapters_2_3 namespace is rejected in favor of the established modules (config.schema, providers.factory, oko.vlm, pipeline.live).",
+    "decisions":  [
+                      {
+                          "decision":  "Build all three components on the repository\u0027s existing extension points: build_vlm for the factory, VlmConfig/OkoConfig for configuration, and LivePipeline for trigger integration (DA-001).",
+                          "rationale":  "The judge scored this highest (0.8975) and the conflict matrix marks it consensus. The repo already exposes these seams, and Chapter 1 already landed GeminiVlmProvider, so the lowest-risk, most-coherent path is to slot into them rather than introduce new abstractions.",
+                          "alternatives_considered":  [
+                                                          "Create a standalone task subsystem with its own factory/config/trigger abstractions",
+                                                          "Subclass the pipeline to inject VLM behavior"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Confirm the new factory branch, config fields, and trigger call use the existing build_vlm / VlmConfig / OkoConfig / LivePipeline interfaces with no new parallel abstractions."
+                      },
+                      {
+                          "decision":  "Extend the existing typed VlmConfig (nested in OkoConfig) with validated fields for VLM provider selection and gate parameters, instead of defining a separate task-specific configuration island (DA-002, modified per judge).",
+                          "rationale":  "Judge verdict \u0027modify\u0027 (0.783): a typed, validated schema is required, but simplicity drops if it duplicates configuration. Extending VlmConfig/OkoConfig keeps a single source of truth and lets the factory and trigger read one config object.",
+                          "alternatives_considered":  [
+                                                          "A new dedicated dataclass/schema decoupled from VlmConfig/OkoConfig",
+                                                          "Loosely-typed dict-based config"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Load/parse a config containing VLM provider + gate fields; assert validation rejects bad values and that build_vlm and the trigger consume the same VlmConfig instance."
+                      },
+                      {
+                          "decision":  "Add a \u0027gemini\u0027 branch to build_vlm that returns the existing GeminiVlmProvider, conforming to the VlmProvider return type — not a separate \u0027task instance\u0027 (DA-003, modified per judge).",
+                          "rationale":  "Judge verdict \u0027modify\u0027 (0.8175): the factory work is a provider-selection branch, and the return contract must stay VlmProvider so downstream code is provider-agnostic. Phrasing it as a distinct task instance would misrepresent the integration.",
+                          "alternatives_considered":  [
+                                                          "A bespoke factory class for the task",
+                                                          "Instantiating GeminiVlmProvider directly at call sites, bypassing build_vlm"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Call build_vlm with provider=\u0027gemini\u0027 and a valid config; assert it returns a GeminiVlmProvider that satisfies the VlmProvider interface."
+                      },
+                      {
+                          "decision":  "Trigger the task by calling VlmGate.query_if_needed(event) inside LivePipeline.run() and attaching the VlmResponse to PipelineEventResult as optional enrichment (DA-004).",
+                          "rationale":  "Consensus atom, judge accept (0.829). LivePipeline is the live entrypoint and VlmGate is the existing gating mechanism, so enrichment slots in without a new event/scheduler system.",
+                          "alternatives_considered":  [
+                                                          "A standalone scheduler/event listener outside the pipeline",
+                                                          "Calling the provider unconditionally on every event without a gate"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "Run an event through LivePipeline with the gate enabled; assert VlmGate.query_if_needed is invoked and the VlmResponse appears on PipelineEventResult."
+                      },
+                      {
+                          "decision":  "Make VLM output advisory-only: it may enrich PipelineEventResult/evidence/summary but must never change DecisionOutput.recommended_action or any bridge command (DA-006).",
+                          "rationale":  "Highest-scoring safety atom (0.95). This preserves the safety boundary — model output cannot drive actuation — while still surfacing useful evidence.",
+                          "alternatives_considered":  [
+                                                          "Allow VLM to influence or override recommended_action",
+                                                          "Feed VLM output into the decision scoring path"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Integration test comparing a VLM-enabled run to a VLM-disabled run on the same event: DecisionOutput.recommended_action and emitted bridge commands must be identical; VLM data appears only in PipelineEventResult/evidence/summary."
+                      },
+                      {
+                          "decision":  "Make the VLM path default-off and fail-safe: if config.vlm is None or the gate is disabled the pipeline behaves exactly as today, and provider/transport errors degrade to no enrichment rather than failing the event (DA-007).",
+                          "rationale":  "Judge accept (0.9195). Default-off plus byte-identical disabled behavior is a strong regression guard for production, and graceful degradation protects against missing credentials and provider outages.",
+                          "alternatives_considered":  [
+                                                          "Default-on with VLM enabled out of the box",
+                                                          "Hard-fail the event on VLM/provider error"
+                                                      ],
+                          "risk":  "medium",
+                          "test":  "With VLM disabled/credentials missing, assert PipelineEventResult and DecisionOutput are byte-identical to current behavior; inject provider timeout/malformed response and assert the event still completes with enrichment absent or marked degraded."
+                      },
+                      {
+                          "decision":  "Add focused unit and integration tests for config parsing, build_vlm provider selection, and the pipeline trigger, keeping existing suites green (DA-005).",
+                          "rationale":  "Consensus atom, judge accept (0.8755). These tests fit the current layout (e.g., test_providers, test_config, test_pipeline) and lock in the factory, config, trigger, advisory-only, and disabled-parity invariants.",
+                          "alternatives_considered":  [
+                                                          "Ship without dedicated tests, relying on manual verification",
+                                                          "Only end-to-end tests with no unit coverage of build_vlm/config"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Run the new and existing suites; assert config parse, build_vlm(\u0027gemini\u0027), trigger invocation, advisory-only, and disabled-path parity tests pass with no regressions."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Place all new config/factory/trigger components in a dedicated vlm_chapters_2_3 module or namespace (DA-008).",
+                         "why":  "Judge reject (0.455): a task-specific namespace conflicts with the established repository organization and fragments the codebase. The components belong in the existing modules — config.schema (config), providers.factory/build_vlm (factory), oko.vlm/VlmGate (trigger logic), and pipeline.live (integration)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact gate parameters and defaults (confidence threshold, cooldown/rate limit, sampling cadence) — Chapter 1 introduced a balanced default model and confidence threshold; confirm which knobs VlmGate exposes for Chapters 2+3.",
+                           "Does VlmGate already exist with query_if_needed, or must it be created/extended as part of this task?",
+                           "How is the Gemini API credential provided and named (env var vs. config field), and what is the behavior when it is absent beyond graceful no-enrichment?",
+                           "Cost/rate-limit controls for live VLM queries (per-event budget, max calls/min) — needed to keep the live pipeline safe under load."
+                       ],
+    "implementation_plan":  [
+                                "Extend VlmConfig (within OkoConfig) in config.schema with typed, validated fields for VLM provider selection (\u0027gemini\u0027) and gate parameters; default the whole VLM block to off (config.vlm = None / gate disabled).",
+                                "Add a \u0027gemini\u0027 branch to build_vlm in providers.factory that constructs and returns the existing GeminiVlmProvider, typed as VlmProvider; raise a clear error only when explicitly enabled with invalid config.",
+                                "Ensure/extend VlmGate.query_if_needed(event) in oko.vlm to consult the gate config, call the provider, and return a VlmResponse (or None), catching provider/transport errors and degrading to no enrichment.",
+                                "Integrate the trigger into pipeline.live: in LivePipeline.run() call VlmGate.query_if_needed(event) and attach the VlmResponse to PipelineEventResult as optional enrichment, leaving DecisionOutput/bridge commands untouched.",
+                                "Enforce advisory-only and default-off invariants in code review and assertions: VLM output flows only into PipelineEventResult/evidence/summary.",
+                                "Add tests: config parse/validation, build_vlm(\u0027gemini\u0027) returns GeminiVlmProvider, trigger invocation, advisory-only parity (enabled vs disabled), and graceful degradation on simulated provider errors.",
+                                "Run the full test suite to confirm no regressions and that disabled-path behavior is byte-identical to current production."
+                            ],
+    "next_step":  "Extend VlmConfig/OkoConfig in config.schema with typed VLM provider + gate fields defaulting to off, then run the config-parsing test to lock the schema before wiring build_vlm and the LivePipeline trigger.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The central safety invariant targets a field that does not exist. The decision (final_answer, DA-006, DA-007) repeatedly asserts VLM \u0027must never alter DecisionOutput.recommended_action\u0027, and DA-006\u0027s test compares \u0027DecisionOutput.recommended_action\u0027 across runs. But DecisionOutput (src/oko/domain/decision.py) has only action/confidence/reasoning/should_alert — there is NO recommended_action field. recommended_action lives on BridgeOutput (src/oko/domain/bridge.py:23) and is derived to equal DecisionOutput.action (bridge/contract.py:40, asserted by existing test_recommended_action_is_decision_owned at tests/test_bridge_contract.py:166).",
+                                  "why":  "The load-bearing safety contract of the whole feature is written against a nonexistent attribute. An implementer following it literally writes a test that errors on attribute access or mislocates the actuation boundary. The real invariant must be \u0027DecisionOutput.action and BridgeOutput.recommended_action / bridge commands are unchanged\u0027 — different types than stated."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The fail-safe invariant is assumed to already hold in the gate, but the existing VlmGate.query_if_needed does NOT catch provider errors. src/oko/vlm/gate.py:99 calls self.provider.query(decision.request) with no try/except. GeminiVlmProvider raises RuntimeError on missing API key (gemini_vlm.py:70) and urllib timeouts/transport/JSON errors propagate from _post_json. So with VLM enabled, a provider/transport failure will raise straight up through LivePipeline.run() and FAIL THE EVENT — directly violating the \u0027any provider/transport error degrades gracefully without failing the event\u0027 hard invariant.",
+                                  "why":  "The decision presents VlmGate as the fail-safe boundary (\u0027isolating provider calls behind VlmGate, and graceful degradation on error\u0027) but the actual gate provides no such protection. The catch must be added at the gate or the LivePipeline call site, and modifying the already-tested gate (tests/test_vlm_gate.py, test_acceptance.py) risks regressions the decision does not account for."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-004 assumes query_if_needed returns a VlmResponse to attach to PipelineEventResult (\u0027attaches VlmResponse to PipelineEventResult\u0027). The real signature returns a VlmGateOutcome (src/oko/vlm/gate.py:87-99), which wraps decision: VlmGateDecision + response: VlmResponse | None. It also requires an OkoEvent plus keyword-only key_frames/camera_id — not \u0027query_if_needed(event)\u0027 where LivePipeline iterates BuiltEvent (you must pass built_event.event and captured.frame.camera_id).",
+                                  "why":  "The trigger test as written (\u0027attaches VlmResponse\u0027) is factually wrong about the return type and would not pass. Attaching only VlmResponse also discards should_query/reason and any degraded marker, which the open_questions explicitly need. The integration must thread BuiltEvent→OkoEvent and camera_id correctly."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-008\u0027s implementation_plan says to \u0027Implement VlmGate in a dedicated module (e.g., src/oko/vlm/)\u0027 as if it is new work. VlmGate, VlmGateConfig, VlmGateDecision, and VlmGateOutcome ALREADY EXIST in src/oko/vlm/gate.py and are covered by tests/test_vlm_gate.py and tests/test_acceptance.py. The actual remaining work is far narrower (gemini branch + pipeline wiring + error handling).",
+                                  "why":  "An implementer following the plan literally may re-create a parallel/conflicting gate or duplicate config. The decision misjudges scope and risks colliding with existing, tested abstractions — the opposite of DA-001\u0027s \u0027no parallel abstractions\u0027 goal."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-002 / implementation_plan put gate parameters (\u0027enabled, confidence_threshold, rate limit, target event classes\u0027) on the pydantic VlmConfig. But (a) VlmConfig already exists nested in OkoConfig with None default (config/schema.py:45,75) carrying provider/model/endpoint_url/api_key_env/timeout_seconds and NO gate params; (b) gate params already live in a separate VlmGateConfig dataclass with DIFFERENT names (min_risk_score, max_normality_score, risk_levels, event_types, require_key_frames); (c) \u0027confidence_threshold\u0027 and \u0027rate limit\u0027 exist NOWHERE in the codebase.",
+                                  "why":  "This creates two competing sources of truth for gate configuration and invents parameters that don\u0027t map to the existing gate. \u0027rate limit\u0027 is net-new scope (no rate limiting exists anywhere) inconsistent with allowed_complexity=medium, and contradicts DA-004\u0027s claim that the gate already provides \u0027rate/condition control\u0027 — it does not."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Unhandled edge case in the proposed gemini branch. GeminiVlmProvider raises ValueError on empty model and empty api_key_env (gemini_vlm.py:36-39), but VlmConfig defaults both to \u0027\u0027 (config/schema.py:49,51). A naive branch — GeminiVlmProvider(model=config.model, api_key_env=config.api_key_env, timeout_seconds=config.timeout_seconds) — raises ValueError for the common case \u0027provider: gemini\u0027 with no model/key specified. GeminiVlmProvider also does not accept endpoint_url, unlike the existing http-json branch.",
+                                  "why":  "DA-003 says \u0027constructs GeminiVlmProvider from VlmConfig\u0027 without noting the branch must inject DEFAULT_GEMINI_MODEL / \u0027GEMINI_API_KEY\u0027 when those config fields are empty. Without that mapping, the headline factory path fails for the documented minimal gemini config."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The default-off invariant has a silent trap: build_vlm(None) returns a FakeVlm, not \u0027no provider\u0027 (providers/factory.py:64-65; test_providers.py:117). If the wiring builds the gate unconditionally (e.g. VlmGate(build_vlm(config.vlm))), then with config.vlm=None it gets a FakeVlm-backed gate whose default VlmGateConfig.enabled=True fires on triggering events and attaches enrichment — so the pipeline does NOT \u0027behave exactly as today\u0027.",
+                                  "why":  "The \u0027behaves exactly as today when config.vlm is None\u0027 guarantee depends entirely on the call site gating on \u0027config.vlm is not None\u0027, which the factory\u0027s None→FakeVlm behavior makes easy to violate. The regression test must specifically assert the None case, not just the disabled-gate case."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Internal contradiction between the contract and the decision. The contract constraints state requirements are \u0027finalized and accepted\u0027 and \u0027No ... further approval processes are required\u0027, yet the decision\u0027s open_questions list core undefined items: the concrete gate parameters (threshold, rate limit, which event classes), the degraded-marker presentation, and the Gemini credential/transport settings.",
+                                  "why":  "If these are genuinely open, the implementer must either guess (risking rework that DA-005\u0027s tests would lock in incorrectly) or seek clarification (violating the \u0027no further approval\u0027 framing). The decision cannot simultaneously be \u0027ready to implement with no discussion\u0027 and depend on three unresolved design questions."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "No discrete \u0027OKO VLM Chapters 2+3 task\u0027 artifact is produced. success_tests #4 (\u0027factory can successfully instantiate the ... task\u0027) and #5 (\u0027trigger ... initiate the task\u0027) assume a cohesive task entity, but the decision explicitly rejects returning a task object from build_vlm (returns a provider) and there is no task class anywhere; the \u0027task\u0027 is dissolved across VlmConfig + build_vlm + VlmGate + LivePipeline.",
+                                  "why":  "The success_tests are met only by reinterpretation. A reviewer checking literally for an instantiable/triggerable \u0027task\u0027 object will find none, leaving acceptance dependent on a generous reading of the contract."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

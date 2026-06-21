@@ -1,0 +1,78 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "statement":  "Add a new optional field `image_b64_frames: list[str]` to `VlmRequest`, retaining the existing `image_b64` field unchanged to preserve backward compatibility.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "API Contract / Data Model",
+                      "test":  "Unit test `VlmRequest` to confirm `image_b64_frames` exists as `list[str]` and `image_b64` is still `str | None`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "statement":  "Modify `GeminiVlmProvider.query` to construct multiple `inline_data` parts (one per frame) from `image_b64_frames` when present, otherwise maintain the existing single-image handling for `image_b64`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Provider Logic",
+                      "test":  "Unit test `GeminiVlmProvider` to verify payload structure: N `inline_data` parts for N frames, and 1 `inline_data` part for a single `image_b64`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "statement":  "The pipeline (Chapter 4) must extract 3-7 keyframes from the OCO\u0027s buffer, buffer decoded images keyed by (camera_id, frame_id), resolve selected key-frame IDs to pixels, convert each JPEG to base64, and pass the ordered list to `VlmGate` which populates `image_b64_frames`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Pipeline Wiring / Data Flow",
+                      "test":  "Integration test to verify that 3-7 keyframes are selected, buffered, encoded, and correctly passed to `VlmRequest` via `VlmGate`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "statement":  "Set the VLM prompt to the exact Russian string: \u0027Опиши, что происходит на этой последовательности кадров: есть ли человек/животное и что они делают.\u0027, preferably as a centralized constant, and retain the existing prompt for single-frame requests.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Prompting / Configuration",
+                      "test":  "Unit test `VlmGate` or the prompt generation logic to assert the exact prompt string is used when `image_b64_frames` is present.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "statement":  "Perform JPEG to base64 encoding within the wiring/pipeline layer using a small, injectable frame-codec (e.g., lazy `import cv2`, `cv2.imencode`), ensuring `VlmGate` and domain models remain free of `cv2` dependencies.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Architecture / Encoding",
+                      "test":  "Unit test `VlmGate` and domain models to ensure no `cv2` imports; unit test the codec with a mock `cv2` or real `cv2` in an isolated environment.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "statement":  "Rely on the existing `select_key_frames` mechanism for enforcing the 3-7 frame count and chronological ordering, with the pipeline wiring encoding only the frames returned by this function, and gracefully handling cases where fewer than 3 frames are available.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Pipeline Logic / Frame Selection",
+                      "test":  "Unit test the pipeline\u0027s frame selection and encoding logic to confirm it respects the 3-7 bounds and chronological order from `select_key_frames`, and handles cases with fewer than 3 frames.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

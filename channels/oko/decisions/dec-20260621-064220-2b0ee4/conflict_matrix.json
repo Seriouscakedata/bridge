@@ -1,0 +1,17 @@
+{
+    "consensus_atoms":  [
+                            "factory_add_gemini_branch",
+                            "factory_gemini_defaults",
+                            "provider_constructor_network_safety",
+                            "config_update_yaml_vlm_block",
+                            "gate_config_person_animal_only",
+                            "builder_expand_coco_animals",
+                            "testing_strategy_new_suites"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

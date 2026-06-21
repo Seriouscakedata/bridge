@@ -1,0 +1,74 @@
+{
+    "proposer":  "B",
+    "understanding":  "Chapter 1/5 already landed a real GeminiVlmProvider (src/oko/providers/gemini_vlm.py) explicitly committed \u0027БЕЗ проводки\u0027 (without wiring). Chapters 2+3 are the wiring: (2) register that provider in the build_vlm factory and surface its selection + the VLM gate triggers in the OkoConfig YAML schema; (3) integrate the existing-but-orphaned VlmGate (src/oko/vlm/gate.py) as the on-demand trigger inside LivePipeline so qualifying events actually call the VLM. The contract\u0027s \u0027factory + config + trigger\u0027 is therefore not three brand-new green-field files but three precise integration seams: factory=build_vlm gemini branch, config=VlmConfig \u0027gemini\u0027 provider + a vlm_gate schema section mapping to VlmGateConfig, trigger=VlmGate fired per BuiltEvent in the pipeline. The task is implementation, already approved, no further deliberation.",
+    "summary":  "Wire the already-built GeminiVlmProvider end-to-end without changing the existing deterministic pipeline\u0027s behavior: add a \u0027gemini\u0027 branch to build_vlm, add an optional vlm_gate section to OkoConfig (so triggers are YAML-driven, not hardcoded), and integrate VlmGate.query_if_needed into LivePipeline.run as an advisory-only trigger that enriches results but never overrides the deterministic decision/commands. Keep everything injectable and offline-testable (transport/provider injection), keep the VLM path default-off when config.vlm is absent, and preserve all currently-green tests by making new params keyword-only with safe defaults.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement \u0027factory\u0027 as a \u0027gemini\u0027 branch added to build_vlm in src/oko/providers/factory.py, importing GeminiVlmProvider and passing model (default gemini-2.5-flash), api_key_env, and timeout_seconds from VlmConfig.",
+                               "reason":  "build_vlm already resolves fake/http-json by config.provider; gemini is the one missing branch and Chapter 1 left the provider unreachable. This is the smallest change that makes provider selection config-only and satisfies the \u0027factory can instantiate the task from its config\u0027 success test.",
+                               "tradeoff":  "Reuses the existing factory rather than introducing a separate VLM factory module; less architectural ceremony but keeps a single source of truth and avoids a parallel registry that could drift.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Implement \u0027config\u0027 two ways: (a) accept provider==\u0027gemini\u0027 against the existing VlmConfig fields (no new fields needed — endpoint_url is unused for Gemini since it is URL-templated), and (b) add an optional VlmGateSchema/section to OkoConfig that maps to the VlmGateConfig dataclass (enabled, min_risk_score, max_normality_score, risk_levels, event_types, require_key_frames).",
+                               "reason":  "The trigger thresholds currently live only as a frozen dataclass with no YAML path, so triggers cannot be tuned per deployment. Surfacing them keeps the \u0027NO hardcoded provider/threshold\u0027 principle stated in PROGRESS.md and gives the trigger a real, testable configuration definition.",
+                               "tradeoff":  "Adds a pydantic\u003c-\u003edataclass mapping layer (slight duplication of field names), but keeps domain dataclasses free of pydantic and the YAML schema strict (extra=\u0027forbid\u0027 on VlmConfig, extra=\u0027allow\u0027 on OkoConfig makes this additive and non-breaking).",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Implement \u0027trigger\u0027 by integrating the existing VlmGate into LivePipeline: add an optional keyword-only vlm_gate param, build it in from_config from config.vlm (via build_vlm) + the vlm_gate section, call gate.query_if_needed(event) per BuiltEvent in run(), and attach the optional VlmResponse to PipelineEventResult.",
+                               "reason":  "VlmGate is the project\u0027s purpose-built on-demand trigger but is currently orphaned (LivePipeline imports neither). Wiring it there satisfies \u0027a dedicated trigger mechanism that can initiate the task\u0027 and reuses the risk-gated logic instead of inventing a new trigger.",
+                               "tradeoff":  "Calling the VLM inside the frame loop couples pipeline latency to network latency; mitigated by gating (most events do not trigger), injectable transport in tests, and keeping the call synchronous in the minimal version with an async/queued upgrade deferred to advanced.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "The VLM result is advisory-only: it enriches PipelineEventResult/evidence/summary but must never alter DecisionOutput.recommended_action or any bridge command.",
+                               "reason":  "Phase 9 (\u0027Bridge Integration Contract\u0027) explicitly states the deterministic decision owns the action and VLM free-form text is ignored for commands. Preserving that invariant prevents a non-deterministic model from driving control output.",
+                               "tradeoff":  "VLM cannot escalate/de-escalate actions in this iteration even when it \u0027sees\u0027 something the rules miss; that is intentional safety and can be revisited as a separate approved task.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Default-off and fail-safe: when config.vlm is None or the gate is disabled, the pipeline behaves exactly as today; a VLM provider/transport error degrades to no enrichment rather than failing the event.",
+                               "reason":  "189+ tests are currently green and the live runtime must keep working with no VLM credentials; making VLM a hard dependency would break offline runs and acceptance tests.",
+                               "tradeoff":  "Swallowing provider errors into a degraded path can mask misconfiguration; mitigated by logging the failure reason on the result and a readiness/preflight check (advanced) for the Gemini API key env.",
+                               "confidence":  0.86
+                           }
+                       ],
+    "assumptions":  [
+                        "\u0027OKO VLM Chapters 2+3\u0027 = Chapter 2 (factory registration of GeminiVlmProvider + config surface for provider and triggers) and Chapter 3 (VlmGate trigger integration into LivePipeline), inferred from the commit \u0027Глава 1/5 — GeminiVlmProvider ... БЕЗ проводки\u0027 and the 5-chapter VLM plan.",
+                        "The existing VlmConfig fields (provider, model, api_key_env, timeout_seconds) are sufficient for Gemini; endpoint_url is intentionally unused because the Gemini endpoint is templated from the model name.",
+                        "Tests must stay fully offline and deterministic: Gemini is exercised via an injected HttpTransport stub and the gate via a FakeVlm, with no real network or real API key in CI.",
+                        "Stack is pydantic v2 models for YAML schema, frozen dataclasses for domain/gate config, Python with `from __future__ import annotations`; new constructor params are keyword-only with defaults to avoid breaking call sites.",
+                        "VLM output remains advisory and is excluded from deterministic commands, consistent with the Phase 9 bridge contract.",
+                        "API key resolution continues to flow through the provider\u0027s existing env/secrets logic; the key is never placed in event metadata, logs, or bridge output."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Wiring the VLM call synchronously into LivePipeline.run couples frame-loop throughput to Gemini network latency and could stall the live pipeline.",
+                      "severity":  "medium",
+                      "mitigation":  "Gate ensures only high-risk events call out; keep the call behind the configurable gate (default conservative thresholds), inject transport in tests, and provide an async/queued execution path in the advanced version."
+                  },
+                  {
+                      "risk":  "Changing LivePipeline\u0027s constructor or PipelineEventResult shape breaks the 189+ existing tests and the runtime/smoke CLIs.",
+                      "severity":  "medium",
+                      "mitigation":  "Add only keyword-only params with safe defaults and an optional new field (vlm_response: VlmResponse | None = None) on PipelineEventResult; run the full pytest suite and assert the no-VLM path is byte-identical to current output."
+                  },
+                  {
+                      "risk":  "A VLM provider/transport error (timeout, missing key, malformed response) propagates and fails an otherwise-valid event.",
+                      "severity":  "medium",
+                      "mitigation":  "Catch provider errors at the trigger seam, record a degraded reason on the result, and continue; surface configuration problems via a readiness preflight rather than at frame time."
+                  },
+                  {
+                      "risk":  "Gemini API key leakage into logs, event metadata, or committed config.",
+                      "severity":  "high",
+                      "mitigation":  "Resolve the key only inside the provider (env var / ~/.bridge-private/secrets.json), never serialize it into VlmRequest.metadata or BridgeOutput, keep configs/ templates env-only, and add a test asserting no key appears in emitted JSON."
+                  },
+                  {
+                      "risk":  "Scope creep — interpreting \u0027config\u0027 and \u0027trigger\u0027 as new bespoke subsystems instead of integrating the existing VlmConfig/VlmGate, duplicating logic and violating the \u0027no hardcoded provider\u0027 principle.",
+                      "severity":  "low",
+                      "mitigation":  "Bind the deliverables explicitly to existing seams (build_vlm, OkoConfig, VlmGate, LivePipeline) and reuse VlmGateConfig rather than re-deriving thresholds."
+                  }
+              ],
+    "minimal_version":  "1) factory.py: add `if provider == \u0027gemini\u0027: return GeminiVlmProvider(model=config.model or DEFAULT_GEMINI_MODEL, api_key_env=config.api_key_env or \u0027GEMINI_API_KEY\u0027, timeout_seconds=config.timeout_seconds, **kwargs)` to build_vlm (import GeminiVlmProvider). 2) schema.py: add an optional pydantic `VlmGateSchema` (enabled, min_risk_score, max_normality_score, risk_levels, event_types, require_key_frames) and a `vlm_gate: VlmGateSchema | None = None` field on OkoConfig, plus a `.to_gate_config()` mapping to the VlmGateConfig dataclass; no change to VlmConfig fields. 3) live.py: add keyword-only `vlm_gate: VlmGate | None = None` to LivePipeline.__init__; in from_config build the gate from build_vlm(config.vlm) + config.vlm_gate when vlm is present; in run(), for each BuiltEvent call `outcome = self.vlm_gate.query_if_needed(event)` guarded by try/except, and attach `outcome.response` to a new optional `vlm_response` field on PipelineEventResult; deterministic decision/bridge output unchanged. 4) tests: test_providers (gemini built via injected transport, returns VlmResponse), test_config (vlm_gate loads and round-trips to VlmGateConfig), test pipeline (fake provider gate fires on high-risk event, records response, and recommended_action is identical to the no-gate run). All existing tests stay green via default-None gate.",
+    "advanced_version":  "Everything in minimal, plus: capture key frames from the camera buffer and populate VlmRequest.image_b64/image_path so Gemini receives the actual scene (multimodal), with mime-type metadata; persist each VlmResponse into the memory store and events.jsonl alongside the event; fold the VLM summary into BridgeOutput.evidence/summary as advisory text (still never touching recommended_action); add a LiveReadinessChecker rule and a runtime/smoke CLI surface for Gemini (validates api_key_env presence and provider==\u0027gemini\u0027 config) so real smoke can be unblocked the moment a key exists; move the VLM call off the frame-critical path via a bounded async/queued worker with a per-interval call budget/rate-limit guard to cap Gemini spend and latency; and add an end-to-end acceptance test that runs the full offline pipeline with a stubbed Gemini transport proving the trigger fires only on gated events and the deterministic output is byte-identical with and without VLM enrichment."
+}
