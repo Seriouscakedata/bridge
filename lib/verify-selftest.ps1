@@ -479,5 +479,6 @@ function Invoke-GateRegressionSuite {
     ExitCode = [int]$run.ExitCode
     Elapsed = $stopwatch.Elapsed
     TimedOut = [bool]$run.TimedOut
+    Output   = @($run.Output)
   }
 }

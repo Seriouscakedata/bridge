@@ -571,7 +571,8 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
 function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   param(
     [AllowNull()][object]$GateResult,
-    [string]$FailReason = ''
+    [string]$FailReason = '',
+    [string[]]$TimedOutTests = @()
   )
 
   $attempts = 0
@@ -602,6 +603,11 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   if ([string]::IsNullOrWhiteSpace($reasonText)) {
     $reasonText = ("exit={0}, timedOut={1}" -f $exitCode, $timedOut)
   }
+  $timedOutTestsText = ''
+  $timedOutTestsList = @($TimedOutTests | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+  if ($timedOutTestsList.Count -gt 0) {
+    $timedOutTestsText = ("; timed_out_tests={0}" -f ($timedOutTestsList -join ','))
+  }
 
   # A pure wall-clock timeout is ALWAYS fail-open (inconclusive), regardless of attempt count:
   # the suite reported no failing test — it was killed on wall-clock under contention, which is
@@ -609,7 +615,7 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   # the hard 2-strike path, never here. The operator still sees this ⚠️ event and state records
   # the inconclusive outcome, so a persistently slow gate stays visible without blocking DONE.
   $outcome = 'inconclusive_timeout'
-  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText$fallbackText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
+  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
 
   return [pscustomobject][ordered]@{
     Outcome = $outcome
@@ -654,10 +660,11 @@ function Set-DriverDoneGateRegressionTimeoutInconclusiveState {
 function Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling {
   param(
     [AllowNull()][object]$GateResult,
-    [string]$FailReason = ''
+    [string]$FailReason = '',
+    [string[]]$TimedOutTests = @()
   )
 
-  $record = New-DriverDoneGateRegressionTimeoutInconclusiveRecord -GateResult $GateResult -FailReason $FailReason
+  $record = New-DriverDoneGateRegressionTimeoutInconclusiveRecord -GateResult $GateResult -FailReason $FailReason -TimedOutTests @($TimedOutTests)
   if ([string]$record.Outcome -eq 'timeout_fail') {
     try { Set-DriverDoneGateRegressionTimeoutInconclusiveState -Record $record } catch {}
     Add-Message -From system -Text $record.Message -Kind event | Out-Null
@@ -695,7 +702,7 @@ function Format-DriverDoneGateRegressionBudgetSuffix {
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false }
+  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false; LastTimedOutTests=@() }
   try {
     $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
     $inProcessSuite = $script:DriverDoneGateInProcessSuiteOverride
@@ -733,6 +740,15 @@ $script:DriverDoneGateRegressionJob = {
         $result.Scope = @($RawGateResult.Scope)
         if (-not [bool]$RawGateResult.Ok -and -not [bool]$RawGateResult.TimedOut -and [int]$RawGateResult.ExitCode -ne 124) {
           $result.NonTimeoutFailureSeen = $true
+        }
+        # Extract timed-out test names from process output for diagnostics
+        if ([bool]$RawGateResult.TimedOut -or [int]$RawGateResult.ExitCode -eq 124) {
+          $rawOutput = @()
+          try { $rawOutput = @($RawGateResult.Output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+          $timedOutTests = @($rawOutput | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+          if ($timedOutTests.Count -gt 0) {
+            $result.LastTimedOutTests = @($timedOutTests)
+          }
         }
       }
     }
@@ -838,6 +854,7 @@ function New-DriverDoneGateMissingResult {
         TimeoutFallbackBudget = 0
         TimeoutInconclusive = $false
         NonTimeoutFailureSeen = $false
+        LastTimedOutTests = @()
       }
     }
     'integrity' {
@@ -2059,7 +2076,7 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             try { $gateTimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $gateResult } catch {}
             $gateTimeoutHandledAsInconclusive = $false
             if ($gateTimeoutInconclusive) {
-              $timeoutRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $gateResult -FailReason $failReason
+              $timeoutRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $gateResult -FailReason $failReason -TimedOutTests @($gateResult.LastTimedOutTests)
               $gateTimeoutHandledAsInconclusive = ($timeoutRecord -and [string]$timeoutRecord.Outcome -ne 'timeout_fail')
             }
             if (-not $gateTimeoutHandledAsInconclusive) {
