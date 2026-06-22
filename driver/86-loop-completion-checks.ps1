@@ -938,6 +938,13 @@ function Invoke-DriverDoneGateChecksSequential {
           $gateResult.ExitCode = [int]$RawGateResult.ExitCode
           $gateResult.TimedOut = [bool]$RawGateResult.TimedOut
           $gateResult.Scope = @($RawGateResult.Scope)
+          if ([bool]$RawGateResult.TimedOut -or [int]$RawGateResult.ExitCode -eq 124) {
+            $rawOutput = @($RawGateResult.Output)
+            $timedOutTests = @($rawOutput | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+            if ($timedOutTests.Count -gt 0) {
+              $gateResult.LastTimedOutTests = @($timedOutTests)
+            }
+          }
           if (-not [bool]$RawGateResult.Ok -and -not [bool]$RawGateResult.TimedOut -and [int]$RawGateResult.ExitCode -ne 124) {
             $gateResult.NonTimeoutFailureSeen = $true
           }

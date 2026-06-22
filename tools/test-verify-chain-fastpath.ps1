@@ -121,12 +121,13 @@ STATUS: DONE
   $timeoutFailSuite = {
     param([string]$BridgeRoot, [int]$TimeoutSec, [string[]]$ChangedPaths)
     $script:GateTimeoutFailTimeouts = @($script:GateTimeoutFailTimeouts + $TimeoutSec)
-    return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
+    return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths); Output=@('INCONCL test-hanging-gate.ps1 timeout after budget') }
   }
   $timeoutFailRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutFailSuite
   Check 'Gate regression timeout fail: first timeout triggers 600s fallback then resumes fixed schedule' (@($script:GateTimeoutFailTimeouts) -join ',' -eq '60,600,60,120') $script:GateTimeoutFailTimeouts
   Check 'Gate regression timeout fail: fallback timeout exhausts fixed schedule before inconclusive evidence' ([int]$timeoutFailRuntime.GateRegression.Attempts -eq 4 -and -not [bool]$timeoutFailRuntime.GateRegression.Ok -and [bool]$timeoutFailRuntime.GateRegression.TimeoutRetryAdded -and [bool]$timeoutFailRuntime.GateRegression.TimeoutFallbackAdded -and [int]$timeoutFailRuntime.GateRegression.TimeoutFallbackBudget -eq 600) $timeoutFailRuntime.GateRegression
   Check 'Gate regression exhausted timeout is inconclusive (fail-open)' ([bool]$timeoutFailRuntime.GateRegression.TimeoutInconclusive -and (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $timeoutFailRuntime.GateRegression)) $timeoutFailRuntime.GateRegression
+  Check 'Gate regression timeout diagnostics: captures timed-out test name from INCONCL output' ((@($timeoutFailRuntime.GateRegression.LastTimedOutTests) -join ',') -eq 'test-hanging-gate.ps1') $timeoutFailRuntime.GateRegression
   $syntheticFallbackOnlyTimeoutGate = [pscustomobject]@{ Ok=$false; TimedOut=$true; ExitCode=124; RuntimeError=''; Attempts=2; TimeoutRetryAdded=$false; TimeoutFallbackAdded=$true; TimeoutFallbackBudget=600; TimeoutSchedule=@(60,600) }
   Check 'Gate regression synthetic fallback-only 124 result is incomplete (blocking)' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $syntheticFallbackOnlyTimeoutGate)) $syntheticFallbackOnlyTimeoutGate
   $syntheticTimeoutGate = [pscustomobject]@{ Ok=$false; TimedOut=$true; ExitCode=124; RuntimeError=''; Attempts=4; TimeoutRetryAdded=$true; TimeoutFallbackAdded=$true; TimeoutFallbackBudget=600; TimeoutSchedule=@(60,600,60,120) }
@@ -176,13 +177,14 @@ STATUS: DONE
   }
 
   $plannerStatus = 'DONE'
-  $timeoutFailRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $syntheticTimeoutGate -FailReason 'exit=124, timedOut=True'
+  $timeoutFailRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $syntheticTimeoutGate -FailReason 'exit=124, timedOut=True' -TimedOutTests @($timeoutFailRuntime.GateRegression.LastTimedOutTests)
   $timeoutFailMessage = ''
   if ($script:CapturedGateMessages.Count -gt 0) { $timeoutFailMessage = [string]$script:CapturedGateMessages[-1].Text }
   Check 'Gate regression inconclusive timeout runtime: plannerStatus remains DONE (fail-open)' ($plannerStatus -eq 'DONE') $plannerStatus
   Check 'Gate regression inconclusive timeout runtime: stale gate_regression_failed is cleared (fail-open)' (@($script:ClearedGateFailureKinds) -contains 'gate_regression_failed') $script:ClearedGateFailureKinds
   Check 'Gate regression inconclusive timeout runtime: state records inconclusive_timeout' ([string]$script:FakeGateState.gate_regression_last_outcome -eq 'inconclusive_timeout' -and [int]$script:FakeGateState.gate_regression_last_attempts -eq 4 -and (@($script:FakeGateState.gate_regression_last_budgets) -join ',') -eq '60,600,60,120') $script:FakeGateState
   Check 'Gate regression inconclusive timeout runtime: event says final inconclusive_timeout outcome with fallback' ($timeoutFailMessage.Contains('final outcome=inconclusive_timeout') -and $timeoutFailMessage.Contains('budgets=60,600,60,120') -and $timeoutFailMessage.Contains('fallback=600s')) $timeoutFailMessage
+  Check 'Gate regression timeout diagnostics: event names timed-out test' ($timeoutFailMessage.Contains('timed_out_tests=test-hanging-gate.ps1')) $timeoutFailMessage
   Check 'Gate regression inconclusive timeout runtime: handler returns machine outcome' ([string]$timeoutFailRecord.Outcome -eq 'inconclusive_timeout') $timeoutFailRecord
   Check 'Gate regression early/incomplete timeout (1 attempt) remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; RuntimeError=''; Attempts=1; TimeoutRetryAdded=$false; TimeoutSchedule=@(60) }))) $null
   Check 'Gate regression scheduled 60,60,120 timeout is inconclusive' (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; RuntimeError=''; Attempts=3; TimeoutRetryAdded=$true; TimeoutSchedule=@(60,60,120) })) $null
