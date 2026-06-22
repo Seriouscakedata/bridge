@@ -74,6 +74,52 @@ function Test-DoctorCommitFamineReason {
   return (([string]$Reason).Trim().ToLowerInvariant() -match '(^|:)commit_famine$')
 }
 
+function Invoke-DoctorCriticPingPongAutoCommit {
+  # Fast-path: when Doctor is triggered by critic_pingpong, check for uncommitted working-tree
+  # changes. If found and all .ps1 files pass ParseFile, commit them and resolve Doctor without
+  # launching Codex. Returns $true if auto-commit succeeded and Doctor state was cleared.
+  param([object]$State)
+  $reason = [string]$State.doctor_reason
+  if ($reason -notmatch 'critic_pingpong') { return $false }
+  $root = Get-BridgeRoot
+  $git = 'C:\Program Files\Git\cmd\git.exe'
+  if (-not (Test-Path $git)) { return $false }
+  $diffFiles = @()
+  try {
+    $tracked   = @(& $git -C $root diff HEAD --name-only 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $untracked = @(& $git -C $root ls-files --others --exclude-standard 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $diffFiles = @($tracked) + @($untracked) | Select-Object -Unique | Where-Object { $_ }
+  } catch { $diffFiles = @() }
+  if ($diffFiles.Count -eq 0) { return $false }
+  $ps1Files = @($diffFiles | Where-Object { [string]$_ -match '\.ps1$' })
+  foreach ($rel in $ps1Files) {
+    $full = Join-Path $root $rel
+    if (-not (Test-Path $full)) { continue }
+    try {
+      $t = $null; $e = $null
+      [System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$t, [ref]$e) | Out-Null
+      if ($e -and $e.Count -gt 0) {
+        try { Add-Message -From system -Text ("🩺 critic_pingpong auto-commit: ParseFile fail in $rel — falling back to normal repair.") -Kind event | Out-Null } catch {}
+        try { Write-DoctorLog ("critic_pingpong auto-commit: ParseFile error in $rel; abort") } catch {}
+        return $false
+      }
+    } catch { return $false }
+  }
+  try {
+    & $git -C $root add -A 2>$null | Out-Null
+    $msg = "repair(uncommitted-diff): doctor auto-commit on critic_pingpong ($($diffFiles.Count) files)"
+    & $git -C $root commit -m $msg 2>$null | Out-Null
+    $newHead = ([string](& $git -C $root rev-parse --short HEAD 2>$null)).Trim()
+    try { Add-Message -From system -Text ("🩺 Доктор (critic_pingpong): uncommitted diff обнаружен и закоммичен ($newHead, $($diffFiles.Count) файлов). Возобновляю задачу без Codex.") -Kind event | Out-Null } catch {}
+    try { Write-DoctorLog ("critic_pingpong auto-commit OK: $newHead, files=$($diffFiles.Count)") } catch {}
+  } catch {
+    try { Write-DoctorLog ("critic_pingpong auto-commit: git error: " + $_.Exception.Message) } catch {}
+    return $false
+  }
+  try { Complete-Doctor } catch {}
+  return $true
+}
+
 function Get-DoctorStateText {
   param($State, [string[]]$Names, [string]$Default = '')
   if (-not $State) { return $Default }

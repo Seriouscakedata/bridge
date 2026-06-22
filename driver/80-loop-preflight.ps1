@@ -229,6 +229,11 @@
   }
   if ([bool]$state.doctor_active -and [string]::IsNullOrWhiteSpace([string]$state.current_task)) {
     try {
+      if (Invoke-DoctorCriticPingPongAutoCommit -State $state) {
+        $state = Read-State; Start-Sleep -Seconds $loopDelay; continue
+      }
+    } catch {}
+    try {
       $state = Sync-DoctorRepairCounterOwner -State $state
       if (Test-DoctorHeldWorkReady -State $state) {
         if (Complete-Doctor -ResolveHeldDone) {
