@@ -76,6 +76,26 @@ function Read-Body {
   $body = $sr.ReadToEnd(); $sr.Close()
   return $body
 }
+function Read-TextFileShared {
+  param(
+    [string]$Path,
+    [System.Text.Encoding]$Encoding = [System.Text.Encoding]::UTF8
+  )
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  $fs = $null
+  $sr = $null
+  try {
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $sr = [System.IO.StreamReader]::new($fs, $Encoding)
+    return $sr.ReadToEnd()
+  } finally {
+    if ($null -ne $sr) {
+      $sr.Dispose()
+    } elseif ($null -ne $fs) {
+      $fs.Dispose()
+    }
+  }
+}
 function Get-QueryParamUtf8 {
   param($ctx, [string]$Name)
   $raw = ''
@@ -457,7 +477,7 @@ try {
         $stateObj = $null
         if (Test-Path -LiteralPath $statePath) {
           try {
-            $stateText = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+            $stateText = Read-TextFileShared -Path $statePath
             if (-not [string]::IsNullOrWhiteSpace($stateText)) { $stateObj = $stateText | ConvertFrom-Json }
           } catch { $stateObj = $null }
         }
@@ -485,12 +505,12 @@ try {
         try {
           # 2026-06-03: .git moved off OneDrive (separate-git-dir) -> $root\.git may be a gitlink FILE.
           $gitDirSrv = Join-Path $root '.git'
-          try { if (Test-Path -LiteralPath $gitDirSrv -PathType Leaf) { $gc = [string](Get-Content -LiteralPath $gitDirSrv -Raw -ErrorAction SilentlyContinue); if ($gc -match 'gitdir:\s*(.+)') { $gitDirSrv = ($matches[1].Trim() -replace '/', '\') } } } catch {}
+          try { if (Test-Path -LiteralPath $gitDirSrv -PathType Leaf) { $gc = [string](Read-TextFileShared -Path $gitDirSrv); if ($gc -match 'gitdir:\s*(.+)') { $gitDirSrv = ($matches[1].Trim() -replace '/', '\') } } } catch {}
           $headFile = Join-Path $gitDirSrv 'HEAD'
           $gitStamp = if (Test-Path -LiteralPath $headFile) { (Get-Item -LiteralPath $headFile).LastWriteTimeUtc } else { [datetime]::MinValue }
           $refFile = $null
           if ($gitStamp -ne [datetime]::MinValue) {
-            $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
+            $headLine = (Read-TextFileShared -Path $headFile).Trim()
             if ($headLine -like 'ref: *') {
               $refName = $headLine.Substring(5).Trim() -replace '/', '\'
               $refFile = Join-Path $gitDirSrv $refName
@@ -500,12 +520,12 @@ try {
           if ($gitStamp -ne $healthGitStamp) {
             $newHead = ''
             if (Test-Path -LiteralPath $headFile) {
-              $headLine = [System.IO.File]::ReadAllText($headFile, [System.Text.Encoding]::UTF8).Trim()
+              $headLine = (Read-TextFileShared -Path $headFile).Trim()
               if ($headLine -like 'ref: *') {
                 $refName = $headLine.Substring(5).Trim() -replace '/', '\'
                 $refFile = Join-Path (Join-Path $root '.git') $refName
                 if (Test-Path -LiteralPath $refFile) {
-                  $sha = [System.IO.File]::ReadAllText($refFile, [System.Text.Encoding]::UTF8).Trim()
+                  $sha = (Read-TextFileShared -Path $refFile).Trim()
                   if ($sha.Length -ge 7) { $newHead = $sha.Substring(0,7) }
                 }
               } elseif ($headLine.Length -ge 7) {
