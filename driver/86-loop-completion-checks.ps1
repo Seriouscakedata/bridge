@@ -533,25 +533,37 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   $attempts = 0
   $retryAdded = $false
   $timeoutSchedule = @()
+  $fallbackUsed = $false
+  $fallbackBudget = 0
   try { $attempts = [int]$GateResult.Attempts } catch {}
   try { $retryAdded = [bool]$GateResult.TimeoutRetryAdded } catch {}
   try { $timeoutSchedule = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $timeoutSchedule = @() }
+  try { $fallbackUsed = [bool]$GateResult.TimeoutFallbackAdded } catch {}
+  try { $fallbackBudget = [int]$GateResult.TimeoutFallbackBudget } catch {}
+
+  $baseTimeoutSchedule = @($timeoutSchedule)
+  if ($fallbackUsed -and $fallbackBudget -gt 0 -and $baseTimeoutSchedule.Count -ge 2 -and [int]$baseTimeoutSchedule[1] -eq $fallbackBudget) {
+    $withoutFallback = New-Object 'System.Collections.Generic.List[int]'
+    for ($scheduleIndex = 0; $scheduleIndex -lt $baseTimeoutSchedule.Count; $scheduleIndex++) {
+      if ($scheduleIndex -eq 1) { continue }
+      [void]$withoutFallback.Add([int]$baseTimeoutSchedule[$scheduleIndex])
+    }
+    $baseTimeoutSchedule = @($withoutFallback.ToArray())
+  }
 
   # A PURE wall-clock timeout (exit 124 / TimedOut) with ZERO failing tests is "no signal",
   # not a proven regression -> classify INCONCLUSIVE (fail-open) instead of hard-failing the
   # task on contention noise. A real regression surfaces as a NON-timeout failure
   # (exit!=0, TimedOut=$false), already filtered out above via NonTimeoutFailureSeen.
-  if ($attempts -ge 2 -and $timeoutSchedule.Count -le 2) { return $true }
-
   if ($attempts -lt 3) { return $false }
-  if ($timeoutSchedule.Count -lt 3) { return $false }
+  if ($baseTimeoutSchedule.Count -lt 3) { return $false }
 
-  $firstBudget = [int]$timeoutSchedule[0]
-  $secondBudget = [int]$timeoutSchedule[1]
-  $retryBudget = [int]$timeoutSchedule[2]
+  $firstBudget = [int]$baseTimeoutSchedule[0]
+  $secondBudget = [int]$baseTimeoutSchedule[1]
+  $retryBudget = [int]$baseTimeoutSchedule[2]
   if ($firstBudget -le 0 -or $secondBudget -le 0) { return $false }
   if ($retryBudget -lt (2 * [Math]::Max($firstBudget, $secondBudget))) { return $false }
-  if (-not $retryAdded -and $timeoutSchedule.Count -ge 3) { return $false }
+  if (-not $retryAdded) { return $false }
 
   return $true
 }
@@ -748,8 +760,11 @@ $script:DriverDoneGateRegressionJob = {
         & $recordGateResult -RawGateResult $gateResult
         if ($gateResult -and [bool]$gateResult.Ok) {
           $result.Ok = $true
+          break
         }
-        break
+        $gateFallbackTimedOut = $false
+        if ($gateResult) { $gateFallbackTimedOut = ([bool]$gateResult.TimedOut -or [int]$gateResult.ExitCode -eq 124) }
+        if (-not $gateFallbackTimedOut) { break }
       }
     }
     $result.TimeoutInconclusive = $false
@@ -935,8 +950,11 @@ function Invoke-DriverDoneGateChecksSequential {
           & $recordGateResult -RawGateResult $rawGateResult
           if ($rawGateResult -and [bool]$rawGateResult.Ok) {
             $gateResult.Ok = $true
+            break
           }
-          break
+          $gateFallbackTimedOut = $false
+          if ($rawGateResult) { $gateFallbackTimedOut = ([bool]$rawGateResult.TimedOut -or [int]$rawGateResult.ExitCode -eq 124) }
+          if (-not $gateFallbackTimedOut) { break }
         }
       }
       $gateResult.TimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]$gateResult)
