@@ -5380,12 +5380,14 @@ async function send(){
   setComposerStatus('Отправка...');
   try{
     const payload = {text};
+    const activeChannel = (channelsCache && channelsCache.active) ? String(channelsCache.active) : '';
+    if(activeChannel) payload.channel = activeChannel;
     if(screensToSend.length) payload.attachments = screensToSend;
     await requestOk('/api/say', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     rememberLastSent(draft);
     setComposerStatus('Отправлено', 'ok');
     clearComposerStatusSoon('Отправлено');
-    poll();
+    await poll();
   }catch(e){
     input.value = draft;
     pendingScreenshots = [...screensToSend];

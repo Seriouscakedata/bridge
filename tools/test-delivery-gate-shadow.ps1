@@ -84,6 +84,28 @@ try {
     -SelfModelRefreshed $true `
     -ParallelObligationOk $true
   $result = Get-DeliveryGateResult -InputFacts $facts
+  # Test: acceptance_pending does not make ok=false (only release_allowed=false).
+  $acceptancePendingFacts = New-DeliveryGateInputFacts `
+    -BridgeRoot $tempRoot `
+    -Channel 'main' `
+    -TaskText 'test' `
+    -BaseCommit '' `
+    -HeadCommit '' `
+    -Events @() `
+    -AcceptancePassed $false `
+    -QaPassed $true `
+    -ParsePassed $true `
+    -SmokePassed $true `
+    -CriticPassed $true `
+    -ParallelObligationOk $false `
+    -MemoryUpdated $true `
+    -SelfModelRefreshed $true
+  $acceptancePendingResult = Get-DeliveryGateResult -InputFacts $acceptancePendingFacts
+  Check 'acceptance_pending: risk=high' ([string]$acceptancePendingResult.risk -eq 'high') $acceptancePendingResult.risk
+  Check 'acceptance_pending: ok=true (does not block)' ($acceptancePendingResult.ok -eq $true) $acceptancePendingResult.ok
+  Check 'acceptance_pending: merge_allowed=true' ($acceptancePendingResult.merge_allowed -eq $true) $acceptancePendingResult.merge_allowed
+  Check 'acceptance_pending: release_allowed=false' ($acceptancePendingResult.release_allowed -eq $false) $acceptancePendingResult.release_allowed
+
   $write = Write-DeliveryGateShadowRecord `
     -BridgeRoot $tempRoot `
     -Channel 'main' `

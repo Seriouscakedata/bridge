@@ -244,6 +244,10 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
     if (String.IsNullOrWhiteSpace(logPath)) throw new InvalidOperationException("logPath is empty");
     if (String.IsNullOrWhiteSpace(comSpec)) comSpec = Environment.GetEnvironmentVariable("ComSpec");
     if (String.IsNullOrWhiteSpace(comSpec)) comSpec = "cmd.exe";
+    const UInt32 SAFE_MAX_MS = 3600000; // 1 hour
+    if (timeoutMs == 0 || timeoutMs == INFINITE) {
+      timeoutMs = SAFE_MAX_MS;
+    }
 
     string logDir = Path.GetDirectoryName(logPath);
     if (!String.IsNullOrWhiteSpace(logDir)) Directory.CreateDirectory(logDir);
@@ -484,6 +488,7 @@ function Start-BridgeJob {
   $logLit = ConvertTo-BridgeJobPsLiteral $log
   $readyLit = ConvertTo-BridgeJobPsLiteral $ready
   $timeoutMs = [UInt32]([math]::Min([long]$TimeoutHours * 3600000, [UInt32]::MaxValue - 1))
+  if ($timeoutMs -eq 0 -or $timeoutMs -eq [UInt32]::MaxValue) { $timeoutMs = [UInt32]3600000 }
   $doneLit = ConvertTo-BridgeJobPsLiteral $done
 
   # Runner creates the named Windows Job Object, starts cmd.exe suspended, assigns it

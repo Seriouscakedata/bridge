@@ -530,6 +530,9 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   try { $retryAdded = [bool]$GateResult.TimeoutRetryAdded } catch {}
   try { $timeoutSchedule = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $timeoutSchedule = @() }
 
+  # Fixed schedule: 2 attempts x 120s, no third retry. Two timeouts are a real failure.
+  if ($attempts -ge 2 -and $timeoutSchedule.Count -le 2) { return $false }
+
   if ($attempts -lt 3) { return $false }
   if (-not $retryAdded) { return $false }
   if ($timeoutSchedule.Count -lt 3) { return $false }
@@ -569,10 +572,15 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
     $reasonText = ("exit={0}, timedOut={1}" -f $exitCode, $timedOut)
   }
 
+  $outcome = 'inconclusive_timeout'
   $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
+  if ($attempts -ge 2) {
+    $outcome = 'timeout_fail'
+    $message = "🚨 Gate-regression timeout final outcome=timeout_fail$attemptsText ($reasonText$budgetText) — timeout считается реальной регрессией."
+  }
 
   return [pscustomobject][ordered]@{
-    Outcome = 'inconclusive_timeout'
+    Outcome = $outcome
     Attempts = $attempts
     Budgets = @($budget)
     ExitCode = $exitCode
@@ -618,6 +626,11 @@ function Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling {
   )
 
   $record = New-DriverDoneGateRegressionTimeoutInconclusiveRecord -GateResult $GateResult -FailReason $FailReason
+  if ([string]$record.Outcome -eq 'timeout_fail') {
+    try { Set-DriverDoneGateRegressionTimeoutInconclusiveState -Record $record } catch {}
+    Add-Message -From system -Text $record.Message -Kind event | Out-Null
+    return $record
+  }
   try { Clear-TaskLastFailureKind -Kind gate_regression_failed } catch {}
   try { Set-DriverDoneGateRegressionTimeoutInconclusiveState -Record $record } catch {}
   Add-Message -From system -Text $record.Message -Kind event | Out-Null
@@ -639,9 +652,8 @@ $script:DriverDoneGateRegressionJob = {
     }
     $gateResult = $null
     $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-    [void]$gateTimeoutSchedule.Add(180)
-    [void]$gateTimeoutSchedule.Add(180)
-    $gateTimeoutFailures = 0
+    [void]$gateTimeoutSchedule.Add(120)
+    [void]$gateTimeoutSchedule.Add(120)
     for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
       $gateAttempt = $gateIndex + 1
       $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
@@ -669,22 +681,9 @@ $script:DriverDoneGateRegressionJob = {
         $result.Ok = $true
         break
       }
-      $isGateTimeout = ($gateResult -and ([bool]$gateResult.TimedOut -or [int]$gateResult.ExitCode -eq 124))
-      if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
-      if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
-        [void]$gateTimeoutSchedule.Add(360)
-        $result.TimeoutRetryAdded = $true
-      }
+      # Fixed schedule: 2 attempts x 120s, no third retry
     }
-    $timeoutSchedule = @($result.TimeoutSchedule | ForEach-Object { [int]$_ })
-    $retryBudgetConfirmed = $false
-    if ($timeoutSchedule.Count -ge 3) {
-      $firstBudget = [int]$timeoutSchedule[0]
-      $secondBudget = [int]$timeoutSchedule[1]
-      $retryBudget = [int]$timeoutSchedule[2]
-      $retryBudgetConfirmed = ($firstBudget -gt 0 -and $secondBudget -gt 0 -and $retryBudget -ge (2 * [Math]::Max($firstBudget, $secondBudget)))
-    }
-    $result.TimeoutInconclusive = ((-not [bool]$result.Ok) -and [string]::IsNullOrWhiteSpace([string]$result.RuntimeError) -and ([bool]$result.TimedOut -or [int]$result.ExitCode -eq 124) -and [int]$result.Attempts -ge 3 -and [bool]$result.TimeoutRetryAdded -and $retryBudgetConfirmed)
+    $result.TimeoutInconclusive = $false
   } catch {
     $result.RuntimeError = ($_.Exception.Message -replace '\s+',' ').Trim()
   }
@@ -811,9 +810,8 @@ function Invoke-DriverDoneGateChecksSequential {
       }
       $rawGateResult = $null
       $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-      [void]$gateTimeoutSchedule.Add(180)
-      [void]$gateTimeoutSchedule.Add(180)
-      $gateTimeoutFailures = 0
+      [void]$gateTimeoutSchedule.Add(120)
+      [void]$gateTimeoutSchedule.Add(120)
       for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
         $gateAttempt = $gateIndex + 1
         $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
@@ -841,12 +839,7 @@ function Invoke-DriverDoneGateChecksSequential {
           $gateResult.Ok = $true
           break
         }
-        $isGateTimeout = ($rawGateResult -and ([bool]$rawGateResult.TimedOut -or [int]$rawGateResult.ExitCode -eq 124))
-        if ($isGateTimeout) { $gateTimeoutFailures++ } else { $gateTimeoutFailures = 0 }
-        if ($gateAttempt -eq 2 -and $gateTimeoutFailures -ge 2) {
-          [void]$gateTimeoutSchedule.Add(360)
-          $gateResult.TimeoutRetryAdded = $true
-        }
+        # Fixed schedule: 2 attempts x 120s, no third retry
       }
       $gateResult.TimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]$gateResult)
     } catch {
@@ -1840,13 +1833,16 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             }
             $gateTimeoutInconclusive = $false
             try { $gateTimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $gateResult } catch {}
+            $gateTimeoutHandledAsInconclusive = $false
             if ($gateTimeoutInconclusive) {
-              Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $gateResult -FailReason $failReason | Out-Null
-            } else {
+              $timeoutRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $gateResult -FailReason $failReason
+              $gateTimeoutHandledAsInconclusive = ($timeoutRecord -and [string]$timeoutRecord.Outcome -ne 'timeout_fail')
+            }
+            if (-not $gateTimeoutHandledAsInconclusive) {
               try { Set-TaskLastFailure -Kind gate_regression_failed -Text $failReason } catch {}
               # 2-strike cap (2026-06-10, mirror auto-smoke above): the suite re-runs on EVERY
               # DONE attempt with task-lifetime scope and no cache. Non-timeout failures still
-              # get a bounded retry loop; timeout/exit=124 is handled above as inconclusive.
+              # get a bounded retry loop; timeout/exit=124 now fails under the fixed 2x120s schedule.
               $gateFails = 0
               try { $gateFails = [int](Read-State).gate_regression_fail_count } catch {}
               if ($gateFails -lt 2) {

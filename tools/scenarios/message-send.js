@@ -7,10 +7,20 @@ async function scenario(s) {
   const B = window.__bridge;
   if (!B) { s.fail('window.__bridge not exposed'); return; }
 
-  // Wait for chat to be ready (channelsCache populated + log container present).
-  await s.waitFor(() => B.channelsCache && document.getElementById('log'), 5000, 'chat UI ready');
+  // Wait for the chat shell to settle before typing.
+  await s.waitFor(() => {
+    const log = document.getElementById('log');
+    return !!(
+      B.channelsCache &&
+      B.channelsCache.active &&
+      log &&
+      !B.channelSwitchInProgress &&
+      !log.classList.contains('channel-switching')
+    );
+  }, 8000, 'chat UI ready');
   const initialMsgCount = document.querySelectorAll('#log .msg').length;
   s.log('initial msg count: ' + initialMsgCount);
+  s.log('active channel: ' + String((B.channelsCache && B.channelsCache.active) || ''));
 
   // Find composer input (textarea or contenteditable).
   const composer = document.querySelector('#composer textarea, textarea#composer, [data-composer="input"], textarea');
@@ -24,16 +34,17 @@ async function scenario(s) {
   s.log('typed: ' + marker);
 
   // Find Send button.
-  const sendBtn = document.querySelector('button#sendBtn, button[type="submit"]#send, button.send, [data-send]')
+  const sendBtn = document.querySelector('button#send, button#sendBtn, button[type="submit"]#send, button.send, [data-send]')
     || Array.from(document.querySelectorAll('button')).find(b => /отправ|send/i.test(b.textContent || ''));
   if (!sendBtn) { s.fail('no Send button found'); return; }
+  await s.waitFor(() => !sendBtn.disabled, 2000, 'send button enabled');
   sendBtn.click();
   s.log('clicked Send');
 
-  // Wait for poll to pick up the new message — up to 4s (poll runs every 1.5s).
+  // Wait for POST + immediate poll + one interval retry if the first poll raced persistence.
   const found = await s.waitFor(() => {
     return Array.from(document.querySelectorAll('#log .msg')).some(el => (el.textContent || '').includes(marker));
-  }, 6000, 'message appears in #log');
+  }, 8000, 'message appears in #log');
 
   s.assert(found, 'message rendered in log');
   const newCount = document.querySelectorAll('#log .msg').length;

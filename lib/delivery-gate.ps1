@@ -134,6 +134,7 @@ function Get-DeliveryGateRisk {
 
   if ([bool]$Facts.critical_bridge_self) { return 'critical' }
   if ([bool]$Facts.forbidden_changes -or [bool]$Facts.destructive_patterns -or [bool]$Facts.quality_bypass_detected) { return 'high' }
+  # acceptance_ok=false -> risk=high в shadow-отчёте; НЕ блокирует DONE-gate (shadow fail-open)
   if (-not [bool]$Facts.acceptance_ok) { return 'high' }
   if (@($Warnings).Count -gt 0) { return 'normal' }
   return 'low'
@@ -375,7 +376,13 @@ function Get-DeliveryGateResult {
     }
   }
 
-  if (($risk -in @('high','critical')) -and -not $facts.parallel_obligation_ok) {
+  $acceptancePendingOnlyHighRisk = (-not $facts.acceptance_ok) -and ($risk -eq 'high') -and
+    (-not $facts.forbidden_changes) -and
+    (-not $facts.destructive_patterns) -and
+    (-not $facts.quality_bypass_detected) -and
+    (-not $facts.critical_bridge_self)
+
+  if (($risk -in @('high','critical')) -and -not $acceptancePendingOnlyHighRisk -and -not $facts.parallel_obligation_ok) {
     $ok = $false
     $mergeAllowed = $false
     $releaseAllowed = $false

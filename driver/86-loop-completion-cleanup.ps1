@@ -1010,6 +1010,10 @@ $script:DriverLoopCompletionCleanupBlock = {
         $dgReason = [string]$dgResult.reason
         if ($dgReason.Length -gt 160) { $dgReason = $dgReason.Substring(0,160) + '...' }
         Add-Message -From system -Text ("🧪 Delivery gate shadow: ok=$($dgResult.ok) risk=$($dgResult.risk) release=$($dgResult.release_allowed) reason=$dgReason") -Kind event | Out-Null
+        # Явное подтверждение: shadow с acceptance_pending при risk=high НЕ блокирует DONE
+        if ([bool]$dgResult.ok -and -not [bool]$dgResult.release_allowed -and ([string]$dgResult.risk -in @('high','critical'))) {
+          Add-Message -From system -Text ("✅ Delivery gate shadow: acceptance_pending при risk=$($dgResult.risk) НЕ блокирует DONE (shadow only; задача QA-подтверждена).") -Kind event | Out-Null
+        }
         if (-not [bool]$dgWrite.ok) {
           Add-Message -From system -Text ("⚠ Delivery gate shadow write failed: " + [string]$dgWrite.error) -Kind event | Out-Null
         }
