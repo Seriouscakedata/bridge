@@ -1,0 +1,27 @@
+{
+    "task":  "[Автозадача из бэклога] при тяжёлом DONE-gate (smoke + gate-regression \u003e20мин) driver не качает heartbeat → watchdog видит ложный stale и рестартует. Корень: нет heartbeat-pump во время блокирующих subprocess-вызовов. Фикс: запускать heartbeat в фоновом job\u0027е на время тяжёлых gate-шагов, а не только основным thread\u0027ом.",
+    "goal":  "Ensure the driver\u0027s heartbeat is continuously pumped during long-running, blocking subprocess calls within heavy DONE-gate steps to prevent the watchdog from falsely detecting a stale state and initiating an unnecessary restart.",
+    "constraints":  [
+                        "The solution must not introduce new deadlocks or race conditions.",
+                        "The solution must not significantly increase CPU or memory usage beyond acceptable operational limits.",
+                        "The solution must maintain the integrity and functionality of existing DONE-gate processes."
+                    ],
+    "known_context":  [
+                          "A \u0027heavy DONE-gate\u0027 involves `smoke` and `gate-regression` tests, which can take over 20 minutes.",
+                          "The driver\u0027s main thread performs blocking subprocess calls during these heavy gate steps.",
+                          "The current heartbeat mechanism relies solely on the main thread.",
+                          "The watchdog monitors the driver\u0027s heartbeat to determine its operational status.",
+                          "Lack of heartbeat during blocking calls leads to the watchdog seeing a \u0027false stale\u0027 state.",
+                          "The watchdog responds to a false stale state by restarting the driver."
+                      ],
+    "output_format":  "A description of the implemented code changes (e.g., file paths, function modifications, new background job/thread implementation), along with verification steps and results.",
+    "task_type":  "bugfix",
+    "risk":  "high",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "Run a heavy DONE-gate (smoke + gate-regression \u003e20min) and verify that the driver does not get restarted by the watchdog.",
+                          "Monitor the driver\u0027s heartbeat during heavy DONE-gate steps and confirm it remains active and consistent throughout the blocking operations.",
+                          "Verify that the introduction of the background heartbeat job does not introduce new performance regressions, deadlocks, or race conditions.",
+                          "Confirm that the driver correctly handles the completion of heavy gate steps and transitions back to normal operation without issues related to the background heartbeat mechanism."
+                      ]
+}

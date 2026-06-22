@@ -1,0 +1,38 @@
+{
+    "consensus_atoms":  [
+                            "HB_PUMP_001",
+                            "HB_PUMP_002",
+                            "HB_PUMP_003",
+                            "HB_PUMP_004",
+                            "HB_PUMP_005",
+                            "HB_PUMP_006"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "HB_PUMP_002",
+                                           "HB_PUMP_003"
+                                       ],
+                          "axis":  "Thread Lifecycle Management / Teardown Strategy",
+                          "impact":  "medium"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "HB_PUMP_001",
+                                           "HB_PUMP_004",
+                                           "HB_PUMP_007"
+                                       ],
+                          "axis":  "Purpose of Heartbeat Pump / Definition of Liveness",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "HB_PUMP_004",
+                        "severity":  "minor",
+                        "why":  "The statement \u0027preserving the existing main-thread heartbeat mechanism for all other operations\u0027 in HB_PUMP_004, combined with HB_PUMP_001\u0027s \u0027activates only during heavy DONE-gate steps to refresh the heartbeat,\u0027 creates an ambiguity regarding the main thread\u0027s heartbeat behavior during heavy gate steps. If the main thread is blocked, it cannot emit heartbeats, implying the pump takes over entirely. However, HB_PUMP_005\u0027s test explicitly mentions \u0027concurrent writes from main thread and pump thread (if applicable),\u0027 suggesting potential concurrent access. This inconsistency needs clarification to ensure correct design and testing of the heartbeat writing mechanism.",
+                        "fix":  "Clarify whether the main thread\u0027s heartbeat mechanism is entirely suspended or overridden when the background pump is active during heavy gate steps. If the pump is the sole emitter during these steps, adjust HB_PUMP_005\u0027s test case to remove the \u0027concurrent writes from main thread\u0027 scenario. If concurrent writes are indeed possible (e.g., main thread attempts to write but is blocked, while pump writes), then this interaction needs explicit design consideration and robust synchronization.",
+                        "cost":  "low"
+                    }
+                ]
+}

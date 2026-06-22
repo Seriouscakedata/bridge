@@ -1,0 +1,111 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "HB_PUMP_001",
+                      "statement":  "Implement a background heartbeat pump (e.g., as an in-process daemon thread or job) that activates only during heavy DONE-gate steps to refresh the heartbeat.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Heartbeat Mechanism",
+                      "test":  "Run a simulated long-running gate (e.g., 20+ min sleeping child process) and confirm that heartbeats are continuously emitted throughout the blocking period, and the watchdog does not restart the driver.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_002",
+                      "statement":  "Scope the heartbeat pump with a context manager or try/finally block, using a thread-safe event to signal start/stop, and ensuring guaranteed teardown (stop event + join with timeout) on all exit paths.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Thread Management \u0026 Lifecycle",
+                      "test":  "Verify that the background thread terminates cleanly and no thread leaks occur after the heavy gate step completes, regardless of success, failure, or exception. Ensure `join()` has a bounded timeout.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_003",
+                      "statement":  "Make the background heartbeat thread a daemon thread to ensure it terminates automatically with the main process and does not block driver shutdown.",
+                      "source_proposals":  [
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Thread Management \u0026 Lifecycle",
+                      "test":  "Confirm that the driver process exits cleanly even if the background thread is still theoretically running (e.g., during an abrupt shutdown).",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_004",
+                      "statement":  "Limit the background heartbeat pump activation to only known long-running heavy DONE-gate steps (e.g., smoke and gate-regression), preserving the existing main-thread heartbeat mechanism for all other operations.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Scope \u0026 Activation",
+                      "test":  "Verify that the background pump is *not* active during short gate steps or normal driver operation, and the main thread continues to emit heartbeats as expected.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_005",
+                      "statement":  "Utilize the existing heartbeat writer and format, ensuring thread-safe and atomic updates (e.g., write to temp file then `os.replace`) to prevent torn reads or corruption from concurrent access.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Heartbeat Data Integrity",
+                      "test":  "Test concurrent writes from main thread and pump thread (if applicable) to ensure no data corruption or torn reads. Verify the heartbeat file content is always valid.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_006",
+                      "statement":  "Derive the heartbeat pump interval from a shared configuration, ensuring it is significantly shorter than the watchdog\u0027s stale timeout (e.g., ≤ 1/3 of the threshold) to guarantee multiple updates within the watchdog window.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Configuration",
+                      "test":  "Add a unit test asserting that the configured pump interval is always less than or equal to 1/3 of the watchdog stale threshold.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_007",
+                      "statement":  "Gate each heartbeat pump tick on observed subprocess liveness (e.g., `proc.poll() is None`) rather than ticking unconditionally on a timer, to ensure genuine hangs are still detected by the watchdog.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Liveness Detection",
+                      "test":  "Simulate a gate subprocess that hangs (stops making progress) while still running. Verify that the heartbeat pump stops ticking, allowing the watchdog to detect the true hang.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_008",
+                      "statement":  "Implement comprehensive unit and regression tests using fake subprocess waits and a fake heartbeat recorder to validate pump behavior during blocking operations and ensure correct lifecycle management.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "A unit test should simulate a blocking subprocess call lasting several heartbeat intervals, confirm multiple heartbeats are recorded during blocking, and verify that heartbeats cease after the subprocess completes.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_009",
+                      "statement":  "(Advanced) Emit structured phase markers from the driver (e.g., `phase`, `started_at`, `expected_max`, `last_progress_at`) and integrate with the watchdog to adapt its stale threshold based on these markers, allowing for more nuanced hang detection.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Advanced Watchdog Integration",
+                      "test":  "Verify that the watchdog correctly adapts its stale threshold during a known-heavy phase and still restarts the driver if output stalls or the step duration exceeds `expected_max`.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}

@@ -1,0 +1,85 @@
+{
+    "proposer":  "B",
+    "understanding":  "The autonomous \u0027driver\u0027 orchestrator runs backlog tasks and, as a DONE-gate, executes heavy quality steps (`smoke` + `gate-regression`, \u003e20 min) via blocking subprocess calls. While the main thread is parked inside such a call it cannot refresh the liveness heartbeat the watchdog polls; once the heartbeat age exceeds the watchdog\u0027s stale threshold the watchdog declares the driver dead and restarts it mid-gate. This is a false positive: the driver is alive and making progress. The fix must keep the heartbeat fresh during the blocking step WITHOUT blinding the watchdog to genuine hangs, and without adding deadlocks, races, or meaningful overhead. Verification must show: a \u003e20min gate completes without restart; heartbeat stays continuous; no thread/job leak or perf regression; and the driver returns to normal heartbeat cadence after the step.",
+    "summary":  "Wrap each heavy DONE-gate phase in a small `HeartbeatPump` context manager backed by an in-process daemon thread that atomically refreshes the heartbeat at an interval well below the watchdog\u0027s stale threshold. Crucially, the pump ticks only while it observes real liveness (the gate\u0027s child subprocess still running), and a try/finally guarantees the pump is torn down on success, failure, exception, or timeout — so we eliminate the false-stale restart without converting it into a false-alive (a hung gate must still be catchable). The driver is restructured to launch the heavy step via a non-blocking handle (Popen/poll) instead of a fully opaque blocking call, so the pump has a liveness signal to gate on. Watchdog changes are optional in the minimal version and only needed for genuine-hang detection in the advanced version.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Pump the heartbeat from an in-process daemon thread, not a separate OS process / detached job.",
+                               "reason":  "A daemon thread shares the existing atomic heartbeat-write code and, decisively, dies automatically with the driver process — so it can never keep refreshing the heartbeat after the driver has actually died. A separate process/Start-Job can orphan and indefinitely mask a dead driver, which is the worst possible failure for a liveness system.",
+                               "tradeoff":  "Co-located with the main thread, so a hard native crash (e.g. COM/segfault) takes both down — acceptable and in fact desirable (no zombie heartbeat). Requires minimal thread-safety discipline; mitigated by keeping the pump lock-free.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Gate each heartbeat tick on observed subprocess liveness rather than ticking unconditionally on a timer.",
+                               "reason":  "An unconditional timer-based heartbeat trades a false-stale for a false-alive: if smoke/gate-regression genuinely hangs, an always-on pump would keep the heartbeat fresh forever and the watchdog would never recover. Ticking only while `proc.poll() is None` preserves the watchdog\u0027s real job — detecting true death.",
+                               "tradeoff":  "Requires launching the heavy step via a non-blocking handle (Popen/poll loop) instead of an opaque blocking `subprocess.run`, a small refactor at the call sites. For the minimal version \u0027child still alive\u0027 is sufficient liveness; output-stall detection is deferred to advanced.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Scope the pump with a context manager / try-finally that guarantees teardown on every exit path (success, exception, timeout, kill).",
+                               "reason":  "An orphaned pump is strictly worse than the original bug: it silently disables staleness detection for the rest of the driver\u0027s life. Deterministic stop-Event + thread.join() in `finally` makes leakage structurally impossible.",
+                               "tradeoff":  "Slight structural change to wrap the heavy phase; negligible cost. join() must have a bounded timeout so teardown itself can\u0027t hang.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Write the heartbeat atomically (write temp + os.replace/rename) and keep a single writer during the heavy phase.",
+                               "reason":  "With both the pump and (possibly) the main thread touching the same heartbeat file/timestamp, a non-atomic write risks a torn read by the watchdog. Atomic replace plus single-writer ownership during the heavy step removes the race entirely.",
+                               "tradeoff":  "os.replace is atomic only within one filesystem/volume — the temp file must live alongside the target. Marginal extra I/O per tick, irrelevant at tens-of-seconds cadence.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Derive the pump interval and the watchdog stale threshold from a single shared config, with interval ≤ threshold/3.",
+                               "reason":  "A comfortable margin guarantees several heartbeats land inside any stale window. Sourcing both from one config prevents a future edit to the threshold from silently re-opening this exact bug, and lets a unit test assert the invariant.",
+                               "tradeoff":  "Introduces light coupling between driver and watchdog config; acceptable since they already share the heartbeat contract.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "(Advanced) Have the driver emit a structured phase marker (phase, started_at, expected_max, last_progress_at) and teach the watchdog to consume it.",
+                               "reason":  "Rather than faking liveness, this tells the watchdog \u0027I\u0027ll be in a known-heavy phase for ~N minutes\u0027 so it adapts its threshold honestly while still restarting on output-stall \u003e X or step-duration \u003e expected_max — keeping true-hang protection intact.",
+                               "tradeoff":  "Requires coordinated changes on the watchdog side and a clear progress definition; higher blast radius, hence reserved for the advanced version.",
+                               "confidence":  0.7
+                           }
+                       ],
+    "assumptions":  [
+                        "The \u0027driver\u0027 is an orchestrator process outside the tracked `cc` package; its heartbeat is a file whose timestamp/contents a separate watchdog process polls (the driver/watchdog source was not found in the tracked tree).",
+                        "The heavy DONE-gate steps run as blocking child processes (e.g. `subprocess.run`/`.wait` invoking pytest smoke + gate-regression) that the driver can instead launch via a non-blocking handle.",
+                        "The watchdog currently uses a fixed stale threshold shorter than the ~20+ minute heavy step (otherwise no false stale would occur).",
+                        "A heartbeat write is cheap, idempotent, and safe to perform from a non-main thread.",
+                        "There is exactly one heartbeat target shared by driver and watchdog; no other component writes it.",
+                        "Restarting the driver mid-gate is genuinely disruptive (lost work / re-run cost), justifying a high-risk fix here."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Orphaned/zombie pump keeps the heartbeat fresh after the driver has actually died, permanently blinding the watchdog.",
+                      "severity":  "high",
+                      "mitigation":  "Use an in-process daemon thread (dies with the process), enforce stop-Event + bounded join() in a finally block, and in the advanced version have the pump self-check parent liveness before each tick."
+                  },
+                  {
+                      "risk":  "Background pump masks a genuinely hung gate subprocess (false-alive), so a real hang is never recovered.",
+                      "severity":  "high",
+                      "mitigation":  "Tick only while the child process is alive (minimal); add output-stall detection and a per-step max-duration cap that the watchdog can still act on (advanced)."
+                  },
+                  {
+                      "risk":  "Torn/corrupt heartbeat read due to concurrent writes from pump and main thread.",
+                      "severity":  "medium",
+                      "mitigation":  "Atomic temp-write + os.replace on the same volume; single-writer ownership of the heartbeat during the heavy phase."
+                  },
+                  {
+                      "risk":  "Deadlock introduced by locking shared driver state from the pump thread.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the pump lock-free: it only writes its own heartbeat file and reads an immutable child handle; no shared mutable locks acquired on the tick path."
+                  },
+                  {
+                      "risk":  "Future change lowers the watchdog threshold below the pump interval, silently reopening the bug.",
+                      "severity":  "low",
+                      "mitigation":  "Source interval and threshold from one config and add a unit test asserting interval ≤ threshold/3."
+                  },
+                  {
+                      "risk":  "Excessive CPU/wakeups from a too-frequent pump.",
+                      "severity":  "low",
+                      "mitigation":  "Interval on the order of tens of seconds (threshold/3..4); the thread sleeps on the stop-Event between ticks (no busy-wait)."
+                  }
+              ],
+    "minimal_version":  "Add a `HeartbeatPump` context manager (e.g. driver/heartbeat_pump.py) wrapping the heavy DONE-gate phase in the driver. On __enter__ it starts a daemon thread that loops: wait on a stop Event for `interval` (= stale_threshold/4 from shared config); if not stopped and the gate child is still alive (proc.poll() is None), atomically refresh the heartbeat (write temp + os.replace). The driver launches smoke/gate-regression via subprocess.Popen (non-blocking) instead of a fully blocking call, passing the handle to the pump for liveness gating, then waits with its own bounded loop. __exit__ (try/finally) sets the stop Event and joins the thread with a timeout — guaranteeing teardown on success, failure, exception, or timeout. No watchdog changes required. Verification: (1) run a real or simulated \u003e20min gate (long-sleeping child) and confirm zero watchdog restarts; (2) tail the heartbeat and confirm timestamps advance every ~interval throughout the blocking step; (3) run the gate twice and assert thread count returns to baseline and no pump thread leaks; (4) confirm normal main-thread heartbeat cadence resumes after the step and the gate result is unchanged.",
+    "advanced_version":  "Make the heartbeat progress-aware and the watchdog hang-aware. Stream the gate child\u0027s stdout/stderr; the pump records last_progress_at and refreshes the heartbeat only while output is flowing OR the step is under a configured per-step expected_max. The driver also emits a structured phase marker (phase=heavy-gate, started_at, expected_max, last_progress_at) that the watchdog consumes to (a) extend its stale threshold for the duration of the known-heavy phase and (b) still restart on output-stall \u003e X seconds or step-duration \u003e expected_max — so genuine hangs are caught, not hidden. Add per-tick metrics/log lines and the pump\u0027s own parent-liveness self-check. Tests: a simulated 25-min step with steady output → no restart; a hung child (no output, exceeds expected_max) → watchdog still restarts; an abrupt driver death → heartbeat goes stale promptly (no zombie pump); teardown leaves zero residual threads and the heartbeat returns to main-thread cadence; and a config-invariant test asserting interval ≤ threshold/3."
+}

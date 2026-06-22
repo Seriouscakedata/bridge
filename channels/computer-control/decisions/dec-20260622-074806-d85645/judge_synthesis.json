@@ -1,0 +1,175 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "HB_PUMP_001",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.82,
+                                     "impact":  0.9,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.74,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.06,
+                                            "reason":  "Needs an explicit upper bound or progress/liveness contract so the pump does not mask a genuinely stuck heavy gate."
+                                        }
+                                    ],
+                      "reason":  "The core mechanism directly addresses watchdog restarts while the driver is blocked in known long gates, but the statement is too broad unless paired with bounded activation and hang-detection semantics.",
+                      "total":  0.791
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.9,
+                                     "impact":  0.82,
+                                     "simplicity":  0.82,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A scoped lifecycle wrapper with event-based shutdown and bounded join is the right way to prevent thread leaks and preserve predictable teardown across success and failure paths.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.84,
+                                     "feasibility":  0.98,
+                                     "impact":  0.62,
+                                     "simplicity":  0.96,
+                                     "risk_reduction":  0.72,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.02,
+                                            "reason":  "Daemon status should complement, not replace, explicit stop and join teardown."
+                                        }
+                                    ],
+                      "reason":  "Daemonizing the pump is a useful fail-safe for abrupt process exit, provided HB_PUMP_002 remains the primary lifecycle mechanism.",
+                      "total":  0.832
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_004",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.82,
+                                     "feasibility":  0.9,
+                                     "impact":  0.82,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.76
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.04,
+                                            "reason":  "Ambiguous interaction with the main-thread heartbeat during heavy gates."
+                                        }
+                                    ],
+                      "reason":  "Restricting activation to known long gates is important, but the design should explicitly state whether the pump is the sole heartbeat writer during those gates or may run concurrently with main-thread writes.",
+                      "total":  0.832
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.93,
+                                     "feasibility":  0.86,
+                                     "impact":  0.84,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.02,
+                                            "reason":  "Concurrent-write testing depends on the clarified emitter model from HB_PUMP_004."
+                                        }
+                                    ],
+                      "reason":  "Reusing the existing heartbeat format and preserving atomic writes is necessary to avoid corrupting the watchdog contract, especially if concurrent writes remain possible.",
+                      "total":  0.8565
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.94,
+                                     "impact":  0.76,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Deriving the interval from shared configuration and keeping it well below the stale timeout is simple, testable, and reduces drift between driver and watchdog behavior.",
+                      "total":  0.872
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_007",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.38,
+                                     "feasibility":  0.58,
+                                     "impact":  0.48,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.42,
+                                     "specificity":  0.72
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.08,
+                                            "reason":  "Subprocess liveness via proc.poll() only proves the process exists; it cannot detect a running but hung subprocess."
+                                        }
+                                    ],
+                      "reason":  "The stated test contradicts the mechanism: a process that is hung but still running will still have proc.poll() == None, so the pump would continue ticking and could mask the hang.",
+                      "total":  0.496
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.88,
+                                     "impact":  0.78,
+                                     "simplicity":  0.76,
+                                     "risk_reduction":  0.86,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Fake subprocess waits and fake heartbeat recorders are a practical way to validate pump timing, teardown, and post-completion silence without slow wall-clock tests.",
+                      "total":  0.847
+                  },
+                  {
+                      "atom_id":  "HB_PUMP_009",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.84,
+                                     "feasibility":  0.46,
+                                     "impact":  0.74,
+                                     "simplicity":  0.28,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.72
+                                 },
+                      "penalties":  [
+                                        {
+                                            "amount":  0.06,
+                                            "reason":  "High implementation cost and cross-component coupling make it unsuitable as part of the initial heartbeat pump change."
+                                        }
+                                    ],
+                      "reason":  "Structured phase markers are a better long-term model for distinguishing expected long work from hangs, but this should be staged after the simpler scoped pump is proven.",
+                      "total":  0.646
+                  }
+              ]
+}

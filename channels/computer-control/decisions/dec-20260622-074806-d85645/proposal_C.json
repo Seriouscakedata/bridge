@@ -1,0 +1,62 @@
+{
+    "proposer":  "C",
+    "understanding":  "The driver\u0027s main thread blocks during heavy DONE-gate steps (smoke + gate-regression \u003e20min) because it executes subprocess calls synchronously. Since the heartbeat pump runs only on the main thread, it stops during these blocking calls. The watchdog interprets the absence of heartbeats as a stale driver and triggers a restart. The fix requires decoupling the heartbeat pump from the main thread by running it in a background job/thread during heavy gate steps, ensuring continuous heartbeat emission without altering the gate logic or introducing concurrency issues.",
+    "summary":  "Introduce a background heartbeat pump that activates when the driver enters a heavy DONE-gate step and deactivates upon step completion. The main thread spawns a lightweight daemon thread or async job that periodically sends heartbeats while the main thread is blocked in subprocess calls. The mechanism uses a shared flag or token to coordinate start/stop, ensuring no race conditions or resource leaks. The existing heartbeat logic is preserved for normal operation; the background pump only supplements during long blocking phases.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement a background heartbeat thread/job that runs only during heavy DONE-gate steps.",
+                               "reason":  "The main thread cannot pump heartbeats while blocked in subprocess calls. A dedicated background thread ensures continuous heartbeat emission without modifying the blocking subprocess logic.",
+                               "tradeoff":  "Adds a small amount of complexity in thread lifecycle management and coordination, but avoids restructuring the entire gate execution model.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use a thread-safe flag or event to signal when the background heartbeat should start and stop.",
+                               "reason":  "Prevents the background thread from running indefinitely or conflicting with the main thread\u0027s normal heartbeat logic. Ensures clean activation/deactivation tied to gate step boundaries.",
+                               "tradeoff":  "Requires careful placement of flag updates before and after blocking calls, but this is localized and easy to verify.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Keep the existing main-thread heartbeat mechanism intact for all non-heavy-gate operations.",
+                               "reason":  "Minimizes change surface and preserves proven behavior for the majority of execution time. The background thread is purely supplemental.",
+                               "tradeoff":  "Dual heartbeat sources could theoretically conflict if not properly synchronized, but the flag-based gating prevents overlap.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Make the background heartbeat thread a daemon thread so it does not block driver shutdown.",
+                               "reason":  "Ensures the driver process can exit cleanly even if the background thread is still running. Daemon threads are terminated automatically on process exit.",
+                               "tradeoff":  "If the driver shuts down during a heavy gate step, the background thread terminates abruptly, but this is acceptable since no state corruption occurs.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "The driver process allows creation of additional threads or async jobs without violating architectural constraints.",
+                        "The heartbeat emission function is thread-safe or can be made thread-safe with minimal changes (e.g., using a lock or atomic operations).",
+                        "The watchdog expects heartbeats at a fixed interval and does not require them to come exclusively from the main thread.",
+                        "The heavy DONE-gate steps have well-defined entry and exit points where the background pump can be started and stopped.",
+                        "The subprocess calls during heavy gates are truly blocking and do not release the GIL (if Python) or otherwise allow the main thread to context-switch."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Race condition between main thread stopping the background pump and the background thread still sending a heartbeat.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a thread-safe Event or atomic boolean checked before each heartbeat emission; join the background thread after clearing the flag to ensure it has stopped."
+                  },
+                  {
+                      "risk":  "Resource leak if the background thread is not properly terminated after heavy gate completion.",
+                      "severity":  "low",
+                      "mitigation":  "Wrap the start/stop logic in a context manager or try/finally block to guarantee cleanup even on exceptions."
+                  },
+                  {
+                      "risk":  "Increased CPU or memory usage from an additional thread.",
+                      "severity":  "low",
+                      "mitigation":  "The background thread only runs during heavy gates and sleeps most of the time between heartbeat intervals; resource impact is negligible."
+                  },
+                  {
+                      "risk":  "Heartbeat function not thread-safe, causing corrupted state or crashes.",
+                      "severity":  "high",
+                      "mitigation":  "Audit the heartbeat function for shared state; add a threading.Lock or use atomic operations if shared resources are accessed. Test under high concurrency."
+                  }
+              ],
+    "minimal_version":  "In driver.py (or equivalent main module), add a global threading.Event `_heavy_gate_active` and a function `_background_heartbeat()` that loops while the event is set, sending heartbeats at the normal interval. In the heavy gate step function, set the event before the blocking subprocess call and clear it after, then join the background thread. Ensure the heartbeat sender uses a lock if it accesses shared state.",
+    "advanced_version":  "Create a `HeartbeatPump` class that manages a thread pool or asyncio task for heartbeat emission. The class exposes `start()` and `stop()` methods and supports multiple concurrent heavy steps if needed. Integrate with the driver\u0027s configuration to allow tuning the heartbeat interval during heavy gates separately. Add metrics/logging for background heartbeat activity. Use a context manager `with heavy_gate_heartbeat():` around blocking calls to automate lifecycle management. Write unit tests that simulate long subprocess calls and verify heartbeat continuity via mock watchdog."
+}

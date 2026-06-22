@@ -1,0 +1,79 @@
+{
+    "proposer":  "A",
+    "understanding":  "Тяжёлый DONE-gate запускает smoke и gate-regression через блокирующие subprocess-вызовы. Пока основной поток ждёт завершения процесса, он не обновляет heartbeat, поэтому watchdog ошибочно считает driver зависшим и рестартует его. Нужно добавить фоновую heartbeat-pump только на время долгих gate-шагов, сохранив текущую семантику gate и завершения subprocess.",
+    "summary":  "Предлагаю вынести долгие gate subprocess-вызовы в единый wrapper/context manager, который перед входом в blocking wait запускает lightweight background thread/job для периодического вызова существующего heartbeat writer, а в finally гарантированно останавливает и join-ит этот thread с коротким timeout. Изменение должно быть локальным для DONE-gate runner: smoke и gate-regression оборачиваются в heartbeat-enabled run, обычные короткие шаги остаются без фонового job.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить HeartbeatPump context manager вокруг blocking subprocess calls тяжёлых DONE-gate шагов.",
+                               "reason":  "Heartbeat должен обновляться независимо от main thread, пока main thread заблокирован на subprocess.run, communicate или wait.",
+                               "tradeoff":  "Появится один дополнительный thread на время heavy gate; это минимальная цена за устранение false stale без переписывания gate runner на async.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Использовать существующий heartbeat writer и тот же heartbeat format/state file, не вводя второй канал статуса.",
+                               "reason":  "Watchdog уже доверяет текущему heartbeat, значит безопаснее сохранить контракт и только изменить источник периодического обновления.",
+                               "tradeoff":  "Если текущий writer не thread-safe, потребуется защитить его lock-ом или атомарной записью; это чуть усложняет shared heartbeat module.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Запускать pump только для шагов, известных как long-running: smoke и gate-regression, либо для gate subprocess wrapper с флагом heartbeat=True.",
+                               "reason":  "Проблема возникает на heavy DONE-gate, а постоянный background heartbeat для всего driver увеличил бы поверхность гонок и мог бы скрывать реальные зависания main loop.",
+                               "tradeoff":  "Нужно точно покрыть все тяжёлые call sites; если появится новый долгий gate-step, его надо запускать через тот же wrapper.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Останавливать pump через threading.Event и stop_event.wait(interval), а cleanup выполнять в finally.",
+                               "reason":  "Так thread быстро завершается после subprocess completion, не busy-wait-ит и не остаётся жить при исключениях или failed gate.",
+                               "tradeoff":  "Heartbeat может сделать ещё один tick сразу перед остановкой; это приемлемо и не меняет результат gate.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Интервал pump выбрать существенно меньше watchdog stale timeout, например min(existing_heartbeat_interval, stale_timeout / 3), с clamp до разумного диапазона.",
+                               "reason":  "Нужно гарантировать несколько heartbeat updates внутри окна watchdog, не создавая лишнюю нагрузку.",
+                               "tradeoff":  "Слишком частый interval увеличит I/O noise; слишком редкий не устранит false stale. Конфиг должен переиспользовать существующие параметры, если они есть.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Добавить unit/regression tests с fake subprocess wait и fake heartbeat recorder.",
+                               "reason":  "20+ минутный реальный gate непрактичен для обычного CI, но тест должен доказать, что heartbeat вызывается во время блокировки и pump останавливается после выхода.",
+                               "tradeoff":  "Unit test не заменяет live heavy gate, поэтому нужен отдельный manual/acceptance check для полного watchdog сценария.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "В driver уже есть централизованная функция или объект для записи heartbeat, который можно безопасно вызвать из фонового job-а или защитить lock-ом.",
+                        "Smoke и gate-regression запускаются из ограниченного числа call sites, которые можно заменить на общий run_gate_subprocess_with_heartbeat wrapper.",
+                        "Watchdog stale timeout больше нормального heartbeat interval, и эти значения доступны из конфигурации или констант driver.",
+                        "Heartbeat update сам по себе быстрый и не зависит от завершения gate subprocess.",
+                        "Фоновый heartbeat не должен означать успешность gate; он только подтверждает, что driver жив и ожидает subprocess."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Фоновый pump может маскировать реальное зависание самого driver, если его запускать слишком широко.",
+                      "severity":  "high",
+                      "mitigation":  "Ограничить область действия heavy DONE-gate subprocess wait-ами и логировать active gate step/reason в heartbeat metadata, если формат это поддерживает."
+                  },
+                  {
+                      "risk":  "Concurrent writes heartbeat из main thread и pump thread могут повредить файл или состояние.",
+                      "severity":  "high",
+                      "mitigation":  "Использовать один shared heartbeat writer с mutex/atomic replace; добавить тест на несколько последовательных ticks и корректное завершение."
+                  },
+                  {
+                      "risk":  "Pump thread может остаться жить после exception, timeout или KeyboardInterrupt.",
+                      "severity":  "medium",
+                      "mitigation":  "Останавливать через finally, использовать daemon=True как страховку и join(timeout\u003c=2s), логировать невозможность clean stop."
+                  },
+                  {
+                      "risk":  "Heartbeat tick exception может убить pump silently, вернув false stale.",
+                      "severity":  "medium",
+                      "mitigation":  "Ловить исключения внутри loop, логировать throttled warning и продолжать, если ошибка transient; при постоянной ошибке сохранять gate failure semantics неизменной."
+                  },
+                  {
+                      "risk":  "Реальный heavy gate может иметь несколько subprocess внутри одного шага, часть которых останется необёрнутой.",
+                      "severity":  "medium",
+                      "mitigation":  "Централизовать запуск gate subprocess в одном helper-е и запретить прямые subprocess.run/wait для smoke/gate-regression через regression test или code review check."
+                  }
+              ],
+    "minimal_version":  "Добавить локальный HeartbeatPump context manager в модуль DONE-gate runner: thread с threading.Event, interval из конфигурации, вызов существующего pump_heartbeat(), cleanup в finally. Обернуть только subprocess calls для smoke и gate-regression. Добавить unit test: fake blocking subprocess длится несколько heartbeat intervals, recorder видит \u003e=2 ticks до завершения, после выхода ticks прекращаются, exit code/error subprocess пробрасываются без изменений.",
+    "advanced_version":  "Вынести heartbeat pumping в reusable driver.runtime.heartbeat module с reference-counted scoped leases: start(reason, interval), nested scopes не создают лишние threads, heartbeat metadata содержит current_blocking_step и elapsed_seconds, shutdown централизован. Добавить watchdog integration test с маленьким stale timeout и fake long gate, плюс operational metrics/logs: pump_start, pump_tick_lag, pump_stop, missed_tick_count."
+}

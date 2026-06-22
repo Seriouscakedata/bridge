@@ -1,0 +1,158 @@
+{
+    "final_answer":  "Adopt a scoped, bounded background heartbeat pump to eliminate false-stale watchdog restarts during heavy DONE-gate steps (smoke + gate-regression, \u003e20 min). During a heavy gate the driver\u0027s main thread is blocked inside the subprocess call, so a daemon thread becomes the SOLE heartbeat writer for that window, refreshing the existing heartbeat at an interval derived from shared config and held at \u003c= 1/3 of the watchdog stale threshold. The pump\u0027s lifetime is bound by a context manager / try-finally that signals a threading.Event and join()s with a timeout on every exit path (success, failure, exception); daemon status is only a fail-safe for abrupt process death, not the primary teardown. Critically, the pump is NOT unconditional: it ticks only while the step is within a per-step hard upper bound (expected_max), after which it stops emitting so the watchdog can still recover a genuinely stuck gate. This is the synthesis of the micro-debate (prefer detecting real task-progress stalls over merely proving the process exists) with the judge\u0027s rejection of proc.poll() (which cannot distinguish a hung-but-running subprocess from a healthy one). Heartbeat writes reuse the existing format and remain atomic (temp file + os.replace) to guard start/stop boundary overlap. Structured phase markers with adaptive watchdog thresholds are a better long-term model but are deferred to a follow-up after the simpler pump is proven.",
+    "decisions":  [
+                      {
+                          "decision":  "Introduce an in-process background heartbeat pump as a daemon thread, activated only for the duration of heavy DONE-gate steps, that refreshes the existing heartbeat while the main thread is blocked in the gate subprocess. (HB_PUMP_001 modified, HB_PUMP_003)",
+                          "rationale":  "Directly resolves the root cause: the watchdog falsely sees a stale heartbeat because the only writer (the main thread) is blocked inside a \u003e20 min subprocess call. A daemon thread keeps emitting during that block. Highest-impact atom (judge impact 0.90). Daemon status guarantees the pump cannot wedge driver shutdown if teardown is somehow skipped.",
+                          "alternatives_considered":  [
+                                                          "Out-of-process heartbeat sidecar (rejected: heavier, more moving parts than allowed_complexity=medium, and harder to scope to gate boundaries)",
+                                                          "Refactor gate calls to non-blocking/async so the main loop keeps writing (rejected: large invasive change to proven DONE-gate code, violates \u0027maintain integrity of existing DONE-gate processes\u0027)",
+                                                          "Simply raising the watchdog stale timeout globally (rejected: blinds the watchdog to real hangs in all other phases)"
+                                                      ],
+                          "risk":  "A background thread can leak or outlive the step if teardown is missed; mitigated by HB_PUMP_002\u0027s guaranteed stop+join and daemon fail-safe.",
+                          "test":  "Run a simulated 20+ min sleeping child process under the pump and confirm heartbeats are emitted continuously throughout the block and the watchdog does not restart the driver (success_test 1 \u0026 2)."
+                      },
+                      {
+                          "decision":  "Scope the pump with a context manager / try-finally that signals a threading.Event to stop and join()s the thread with a bounded timeout on every exit path. This is the PRIMARY lifecycle mechanism; daemon status is only a fail-safe. (HB_PUMP_002 accepted; resolves HB_PUMP_002 vs HB_PUMP_003 conflict)",
+                          "rationale":  "Highest-scoring atom (0.88). Guarantees deterministic, leak-free teardown across success, failure, and exception, which is essential for the \u0027no new deadlocks/race conditions\u0027 constraint. Bounded join() prevents teardown itself from hanging.",
+                          "alternatives_considered":  [
+                                                          "Relying solely on daemon auto-kill at process exit (rejected: leaves the thread running between gate steps, racing the main-thread writer and confusing the watchdog)",
+                                                          "Killing the thread forcibly (rejected: Python has no safe thread kill; cooperative stop via Event is the correct idiom)"
+                                                      ],
+                          "risk":  "If the pump thread blocks on its own I/O, join(timeout) could expire; surfaced via a logged warning rather than a hang, and the daemon flag still guarantees eventual process-exit cleanup.",
+                          "test":  "Assert the thread terminates and no thread leaks remain after the step under success, raised-exception, and early-return paths; assert join() is always called with a finite timeout (success_test 3 \u0026 4)."
+                      },
+                      {
+                          "decision":  "Activate the pump only for the known heavy gates (smoke, gate-regression) and make the pump the SOLE heartbeat writer for the duration of each heavy-gate subprocess call; the unchanged main-thread heartbeat covers all other operation. (HB_PUMP_004 modified; resolves the HB_PUMP_004/005 review)",
+                          "rationale":  "Limits new concurrency surface and preserves existing behavior everywhere else (judge: restricting activation is important). Resolves the ambiguity flagged in the conflict review: during a heavy gate the main thread is blocked inside the subprocess call and physically cannot write, so there is no steady-state concurrent writing — the pump owns the window. Overlap is possible only at the start/stop boundary, which atomic writes handle.",
+                          "alternatives_considered":  [
+                                                          "Run the pump globally for all gate steps (rejected: needless concurrency and CPU for sub-second steps; widens race surface)",
+                                                          "Let main thread and pump write concurrently throughout (rejected: no benefit since main thread is blocked; only adds a torn-write hazard)"
+                                                      ],
+                          "risk":  "If a future heavy step is added but not wrapped, it regresses to false-stale; mitigated by a single shared \u0027heavy gate\u0027 wrapper helper that all long steps must route through.",
+                          "test":  "Verify the pump is inactive during short gate steps and normal operation, and that exactly one writer is active at any instant during a heavy gate."
+                      },
+                      {
+                          "decision":  "Reuse the existing heartbeat writer and format; perform atomic updates (write temp file then os.replace) for every heartbeat. (HB_PUMP_005 accepted, test adjusted)",
+                          "rationale":  "Preserves the watchdog contract (judge 0.93 correctness) and prevents torn reads at the start/stop boundary where pump and main-thread writes can momentarily overlap. Reusing the format avoids divergence between the two writers.",
+                          "alternatives_considered":  [
+                                                          "A separate pump-only heartbeat file (rejected: watchdog would need to read two files; doubles the contract)",
+                                                          "Non-atomic in-place writes (rejected: watchdog could read a half-written/torn heartbeat and false-restart)"
+                                                      ],
+                          "risk":  "os.replace semantics differ subtly across platforms; on Windows the target must not be open for reading at replace time. Mitigated by the same atomic-write path already used by the main thread.",
+                          "test":  "Stress the start/stop boundary (rapid pump-on/pump-off) and assert the heartbeat file is always parseable and never torn; remove the steady-state \u0027concurrent main+pump writes\u0027 scenario since the main thread is blocked during the window."
+                      },
+                      {
+                          "decision":  "Derive the pump interval from shared configuration and assert it is \u003c= 1/3 of the watchdog stale threshold. (HB_PUMP_006 accepted)",
+                          "rationale":  "Guarantees multiple refreshes inside every watchdog window, eliminating drift between driver and watchdog (judge 0.872, simplest high-value atom). Sourcing both from one config prevents the two components diverging over time.",
+                          "alternatives_considered":  [
+                                                          "Hard-coding the interval (rejected: silently breaks if the watchdog threshold is later tuned)"
+                                                      ],
+                          "risk":  "Very low; an overly small interval slightly increases write frequency but stays well within CPU/memory limits.",
+                          "test":  "Unit test asserting pump_interval \u003c= stale_threshold / 3 for the configured values."
+                      },
+                      {
+                          "decision":  "Bound pump activation by a per-step hard upper limit (expected_max, configured generously above the observed \u003e20 min runtime). Once exceeded, the pump stops emitting so the watchdog can recover a genuinely stuck gate. (synthesis of HB_PUMP_001 penalty + micro-debate resolution, replacing rejected HB_PUMP_007)",
+                          "rationale":  "Resolves the high-impact liveness conflict (001/004/007) and the judge\u0027s 001 penalty: an unconditional pump would mask a true hang. The micro-debate concluded we should prioritize detecting real task-progress stalls. We honor that intent WITHOUT the broken proc.poll() mechanism (which only proves the process exists, not that it is progressing). A hard duration cap is a correct, simple liveness contract; optionally, if the subprocess streams output, tightening it with an output-progress timeout (no output for N minutes -\u003e stop pumping) is a low-cost refinement.",
+                          "alternatives_considered":  [
+                                                          "Gate ticks on proc.poll() is None (REJECTED — see rejected list; cannot detect a hung-but-running subprocess)",
+                                                          "No upper bound at all (rejected: indefinitely masks a real hang, the exact failure the watchdog exists to catch)",
+                                                          "Output-progress watermark only (kept as optional refinement: stronger signal but requires reading the child\u0027s stdout, slightly more complexity)"
+                                                      ],
+                          "risk":  "If expected_max is set too tight, a legitimately slow gate could still be restarted; mitigated by setting it with generous headroom over observed runtime and making it per-step configurable.",
+                          "test":  "Simulate a gate that runs past expected_max (or stops producing output) and confirm the pump ceases ticking, allowing the watchdog to restart — while a within-bound long gate is never restarted."
+                      },
+                      {
+                          "decision":  "Add unit/regression tests using fake subprocess waits and a fake heartbeat recorder. (HB_PUMP_008 accepted)",
+                          "rationale":  "Validates pump timing, sole-writer behavior, bounded teardown, and post-completion silence deterministically without 20-minute wall-clock tests (judge 0.847).",
+                          "alternatives_considered":  [
+                                                          "Only end-to-end wall-clock tests (rejected: too slow for CI, flaky, can\u0027t easily assert the hang/upper-bound path)"
+                                                      ],
+                          "risk":  "Fakes can drift from real subprocess/heartbeat behavior; mitigated by keeping at least one short integration test exercising the real writer.",
+                          "test":  "Simulate a blocking subprocess lasting several pump intervals; assert multiple heartbeats recorded during the block, zero after completion, and the cap path stops emission as designed."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "HB_PUMP_007 — Gate each pump tick on subprocess liveness via proc.poll() is None.",
+                         "why":  "proc.poll() only proves the process still exists; a subprocess that is hung but still running returns poll() == None, so the pump would keep ticking and mask the very hang the watchdog must catch — the stated test contradicts the mechanism (judge total 0.496). The valid underlying concern (don\u0027t mask real hangs) is preserved through the per-step hard upper bound and optional output-progress timeout instead."
+                     },
+                     {
+                         "decision":  "HB_PUMP_009 — Emit structured phase markers (phase, started_at, expected_max, last_progress_at) and make the watchdog adapt its stale threshold from them, in this change.",
+                         "why":  "Better long-term model but high implementation cost, low simplicity (judge simplicity 0.28), and cross-component coupling between driver and watchdog. Out of scope for an initial medium-complexity bugfix; deferred to a follow-up after the scoped pump is proven (see open questions)."
+                     }
+                 ],
+    "open_questions":  [
+                           "What is the exact watchdog stale threshold value, and is it already exposed in a shared config the driver can read, or must one be introduced?",
+                           "What is a safe expected_max for smoke and for gate-regression given real-world worst-case runtimes (need observed p99 durations to set headroom)?",
+                           "Do the gate subprocesses stream stdout/stderr incrementally? If so, the optional output-progress watermark becomes a cheap, stronger liveness signal than a bare duration cap.",
+                           "Should the deferred phase-marker / adaptive-watchdog work (HB_PUMP_009) be scheduled as an explicit follow-up task once the pump is in production?",
+                           "Where does the heartbeat writer currently live (driver orchestration layer is external to this repo) and does it already use atomic temp+os.replace writes we can reuse directly?"
+                       ],
+    "implementation_plan":  [
+                                "1. Locate the existing heartbeat writer in the driver orchestration layer and confirm it uses atomic temp-file + os.replace writes; if not, harden it to do so (HB_PUMP_005).",
+                                "2. Add a \u0027pump_interval\u0027 to shared config derived from the watchdog stale threshold, with a startup/unit assertion that pump_interval \u003c= stale_threshold/3 (HB_PUMP_006).",
+                                "3. Implement a HeartbeatPump context manager: on enter, start a daemon thread that loops { write heartbeat; wait(pump_interval) on a threading.Event }; the loop also exits once elapsed \u003e= step expected_max (HB_PUMP_001/003 + bounded-activation synthesis).",
+                                "4. On context exit (try/finally), set the stop Event and join the thread with a bounded timeout, logging a warning if join times out (HB_PUMP_002; resolves 002-vs-003 — explicit teardown primary, daemon fail-safe).",
+                                "5. Wrap ONLY the heavy gate steps (smoke, gate-regression) with the pump via a single shared helper so the pump is the sole heartbeat writer for that blocked window; leave all other steps on the existing main-thread heartbeat (HB_PUMP_004).",
+                                "6. Add per-step expected_max config values with generous headroom over observed runtimes; optionally add an output-progress watermark if subprocesses stream output (synthesis atom).",
+                                "7. Add unit/regression tests with fake subprocess waits + fake heartbeat recorder: (a) heartbeats emitted across multiple intervals during a block, (b) zero heartbeats after completion, (c) thread joined/no leak on success/exception/early-return, (d) pump stops emitting once expected_max is exceeded so the watchdog can fire (HB_PUMP_008).",
+                                "8. Run a real (or scaled-down) heavy DONE-gate end-to-end and confirm no false-stale restart, then capture CPU/memory to confirm no regression (success_tests 1-4).",
+                                "9. File a follow-up ticket for HB_PUMP_009 (structured phase markers + adaptive watchdog) to be tackled after the pump is proven in production."
+                            ],
+    "next_step":  "Locate the driver\u0027s existing heartbeat writer and the watchdog stale-threshold config, confirm/atomic-harden the write path, then implement the HeartbeatPump context manager (steps 1-4).",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The \u0027sole-writer\u0027 safety invariant rests on the unverified assumption that the main thread is fully blocked during the gate subprocess. Open_question 3 (\u0027Do the gate subprocesses stream stdout/stderr incrementally?\u0027) is unresolved, yet the entire correctness argument for sole-writer depends on the answer being \u0027no\u0027.",
+                                  "why":  "Capturing 20+ minutes of test output almost always requires a streaming read loop (proc.stdout.readline / communicate-with-timeout). In that case the main thread is NOT blocked — it wakes repeatedly and may also write the heartbeat. That turns the boundary-only torn/out-of-order write hazard into a STEADY-STATE concurrent-writer condition for the full 20-min window, which is exactly the race the design claims is impossible. The decision commits to the mechanism before resolving the question its safety proof depends on."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The expected_max cap reintroduces the very bug the task exists to fix. A legitimately slow gate that exceeds expected_max gets its pump silenced and is then falsely restarted by the watchdog.",
+                                  "why":  "The task explicitly says gate-regression takes \u0027\u003e20 min\u0027 (open-ended), and open_question 2 admits no p99 runtime is known. Under heavy host load a normally-25-min gate can take 50+ min and blow past any \u0027generous\u0027 headroom. The cap is simultaneously the safety mechanism AND a direct violation of success_test 1 (\u0027driver does not get restarted\u0027). Setting headroom is a guess against an unknown distribution, so the success criterion is not robustly met — the fix trades a deterministic false-stale for a load-dependent one."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Windows os.replace contention. On the confirmed win32 platform, os.replace fails with PermissionError/AccessDenied if another process holds the destination open. The watchdog reads the heartbeat file frequently; the pump now writes it every interval (far more often than the original infrequent main-thread writes).",
+                                  "why":  "High write frequency × frequent watchdog reads = recurring replace collisions. If the pump loop does not catch and retry this, the write raises, the pump thread dies, heartbeats stop, and the watchdog false-restarts — the exact failure being fixed, now made platform-intrinsic. The decision dismisses this as \u0027mitigated by the same atomic path the main thread uses,\u0027 but the main thread\u0027s whole problem was that it writes rarely; the pump\u0027s higher cadence changes the collision probability by orders of magnitude. The fakes-based test plan cannot reproduce this."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "No specified exception handling inside the pump loop. The risk notes cover join() timeout but never the case of a write raising mid-loop (disk full, AV file lock, the os.replace race above, transient permission error).",
+                                  "why":  "A single uncaught transient write error kills the daemon thread silently. There is no main-thread supervision because the main thread is blocked in the subprocess. Result: heartbeat stops, watchdog restarts — silently reintroducing the bug. A correct pump must catch transient write errors, log, and continue; the decision does not state this."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Orphaned subprocess on cap-triggered restart is unaddressed. When expected_max fires on a genuinely hung gate and the watchdog restarts the driver, the hung gate subprocess (which the main thread was blocked inside) is still alive.",
+                                  "why":  "Restart semantics for the orphaned child are unspecified. The hung process can hold ports, file locks, or test fixtures, causing the freshly restarted driver\u0027s gate to fail or duplicate work, and leaking processes/resources across restart cycles. The design treats \u0027let the watchdog restart\u0027 as the recovery path but never closes the loop on killing the child it was blocked on."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Atomicity is not monotonicity at the stop boundary. os.replace guarantees no torn read, but does not guarantee write ordering between the pump\u0027s final write and the main thread\u0027s first resumed write.",
+                                  "why":  "If the pump\u0027s last (older-timestamp) payload lands after the main thread resumes and writes a newer one, the heartbeat can go backwards in time. Whether this matters depends on whether the watchdog checks file mtime or an in-file timestamp — which is unknown (open_question 5). The decision asserts atomic writes fully handle the boundary, but they only handle tearing, not stale-overwrite ordering. This is an unverified contract dependency on a system that isn\u0027t even in this repo."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Heartbeat payload semantics are assumed, not known. \u0027Reuse the existing format\u0027 is committed to while open_question 5 admits the writer\u0027s location and behavior are unconfirmed.",
+                                  "why":  "If the existing heartbeat carries a phase/progress/sequence field that the watchdog uses for stall detection BEYOND freshness, then a dumb pump that re-stamps the same payload either (a) omits a required field and breaks the contract, or (b) blindly refreshes a \u0027progress\u0027 field and masks real stalls even before expected_max — defeating stall detection the watchdog already had. Either outcome violates the \u0027maintain integrity of existing DONE-gate processes\u0027 constraint. The design cannot guarantee format reuse is safe without knowing the format."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Verification of success_test 3 (no new races/regressions) relies primarily on fakes (fake subprocess wait + fake heartbeat recorder), with only one acknowledged \u0027short\u0027 integration test.",
+                                  "why":  "Every genuinely dangerous failure mode here — the Windows os.replace race, watchdog read contention, concurrent-writer timing under streaming, ordering at the boundary — is precisely what a fake recorder cannot reproduce, because the fake removes real file I/O and real concurrent readers. A high-risk concurrency change validated mainly by mocks leaves success_test 3 effectively unverified for the conditions that actually break it."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "join(timeout) expiry leaves a live pump thread that can become a concurrent writer in the next gate. The fallback is \u0027log a warning and rely on daemon,\u0027 but daemon cleanup only happens at process exit.",
+                                  "why":  "If two heavy gates run back-to-back, a pump whose join() timed out is still in its loop until its blocked write returns. The next gate\u0027s context manager spawns a second pump → two daemon threads writing the heartbeat concurrently — the multi-writer race the sole-writer design was built to avoid. The decision treats join-timeout as benign, but it is benign only if no further gate starts before the thread actually dies."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Elapsed-time measurement for expected_max does not specify a monotonic clock, and Windows AV/temp-file overhead under a small interval is unaccounted for.",
+                                  "why":  "(1) If elapsed uses wall-clock time, an NTP step or host suspend/resume can prematurely trip the cap (false restart) or extend it (masked hang); time.monotonic() is required but unstated. (2) On Windows, creating a temp file + replace every pump_interval triggers Defender to scan each new file; with an aggressive stale_threshold the interval shrinks (\u003c=threshold/3), multiplying per-file AV scans over 20+ minutes — a CPU/latency cost that pushes against the \u0027must not significantly increase CPU\u0027 constraint and is never measured in the plan."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  false
+}
