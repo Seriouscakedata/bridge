@@ -568,6 +568,18 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   return $true
 }
 
+function Get-DriverGateRegressionTimedOutTests {
+  param([AllowNull()][object]$Output)
+
+  $lines = @()
+  try {
+    $lines = @($Output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  } catch {
+    $lines = @()
+  }
+  return @($lines | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+}
+
 function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   param(
     [AllowNull()][object]$GateResult,
@@ -743,9 +755,7 @@ $script:DriverDoneGateRegressionJob = {
         }
         # Extract timed-out test names from process output for diagnostics
         if ([bool]$RawGateResult.TimedOut -or [int]$RawGateResult.ExitCode -eq 124) {
-          $rawOutput = @()
-          try { $rawOutput = @($RawGateResult.Output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
-          $timedOutTests = @($rawOutput | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+          $timedOutTests = @(Get-DriverGateRegressionTimedOutTests -Output $RawGateResult.Output)
           if ($timedOutTests.Count -gt 0) {
             $result.LastTimedOutTests = @($timedOutTests)
           }
@@ -939,8 +949,7 @@ function Invoke-DriverDoneGateChecksSequential {
           $gateResult.TimedOut = [bool]$RawGateResult.TimedOut
           $gateResult.Scope = @($RawGateResult.Scope)
           if ([bool]$RawGateResult.TimedOut -or [int]$RawGateResult.ExitCode -eq 124) {
-            $rawOutput = @($RawGateResult.Output)
-            $timedOutTests = @($rawOutput | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+            $timedOutTests = @(Get-DriverGateRegressionTimedOutTests -Output $RawGateResult.Output)
             if ($timedOutTests.Count -gt 0) {
               $gateResult.LastTimedOutTests = @($timedOutTests)
             }
