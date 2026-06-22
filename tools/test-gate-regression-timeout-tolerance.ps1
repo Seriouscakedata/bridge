@@ -10,7 +10,9 @@ function Assert { param([string]$Name,[bool]$Condition,[string]$Detail='')
 }
 
 $toolsDir = $PSScriptRoot
+$repoRoot = Split-Path -Parent $toolsDir
 $runTests  = Join-Path $toolsDir 'run-tests.ps1'
+$verifySelftest = Join-Path $repoRoot 'lib\verify-selftest.ps1'
 $ps = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 if (-not (Test-Path -LiteralPath $ps)) { $ps = Join-Path $PSHOME 'powershell.exe' }
 
@@ -52,6 +54,25 @@ try {
 } finally {
   Remove-Item -LiteralPath $hangFile -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $passFile -Force -ErrorAction SilentlyContinue
+}
+
+. $verifySelftest
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-grtt-suite-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+try {
+  New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'tools') -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'lib') -Force | Out-Null
+  Copy-Item -LiteralPath $runTests -Destination (Join-Path $tmpRoot 'tools\run-tests.ps1') -Force
+  [System.IO.File]::WriteAllText((Join-Path $tmpRoot 'lib\foo.ps1'), "function Test-Foo { 'ok' }`n", (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText((Join-Path $tmpRoot 'tools\test-foo-hang.ps1'), "Start-Sleep 999`n", (New-Object System.Text.UTF8Encoding($false)))
+  & git -C $tmpRoot init | Out-Null
+  & git -C $tmpRoot -c user.name=bridge-test -c user.email=bridge-test@example.invalid add . | Out-Null
+  & git -C $tmpRoot -c user.name=bridge-test -c user.email=bridge-test@example.invalid commit -m init | Out-Null
+
+  $suite = Invoke-GateRegressionSuite -BridgeRoot $tmpRoot -TimeoutSec 3 -ChangedPaths @('lib/foo.ps1')
+  Assert 'scoped suite uses caller timeout as wrapper cap' ([bool]$suite.TimedOut -and [int]$suite.ExitCode -eq 124) ("exit=$($suite.ExitCode) timedOut=$($suite.TimedOut)")
+  Assert 'scoped suite does not use selected-test expansion budget' ($suite.Elapsed.TotalSeconds -lt 15) ("elapsed=$($suite.Elapsed.TotalSeconds)")
+} finally {
+  Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ''

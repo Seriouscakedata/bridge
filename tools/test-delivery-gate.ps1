@@ -117,8 +117,10 @@ $parallelFailFacts = New-GreenFacts
 $parallelFailFacts.acceptance_ok = $false
 $parallelFailFacts.parallel_obligation_ok = $false
 $parallelFail = Get-DeliveryGateResult -InputFacts $parallelFailFacts
-Check '10 parallel high risk not ok' (-not [bool]$parallelFail.ok) $parallelFail
-Check '10 parallel high risk failure present' ((@($parallelFail.failures) | Where-Object { $_ -match 'parallel' }).Count -gt 0) $parallelFail
+Check '10 acceptance pending high risk still ok' ([bool]$parallelFail.ok) $parallelFail
+Check '10 acceptance pending high risk merge true' ([bool]$parallelFail.merge_allowed) $parallelFail
+Check '10 acceptance pending high risk release false' (-not [bool]$parallelFail.release_allowed) $parallelFail
+Check '10 acceptance pending high risk warning present' ((@($parallelFail.warnings) | Where-Object { $_ -match 'acceptance' }).Count -gt 0) $parallelFail
 
 $canaryFacts = New-GreenFacts
 $canaryFacts.critical_bridge_self = $true
