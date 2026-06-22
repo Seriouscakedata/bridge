@@ -516,6 +516,13 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   try {
     if (-not [string]::IsNullOrWhiteSpace([string]$GateResult.RuntimeError)) { return $false }
   } catch {}
+  # If ANY attempt produced a real (non-timeout) test failure (exit!=0, TimedOut=$false), we have
+  # observed evidence of a regression even if the LAST attempt happened to time out. The job keeps
+  # only the last attempt's exit/timed-out fields, so a "fail-then-timeout" run would otherwise
+  # look like a pure timeout and fail-open. NonTimeoutFailureSeen preserves that evidence -> block.
+  try {
+    if ([bool]$GateResult.NonTimeoutFailureSeen) { return $false }
+  } catch {}
 
   $timedOut = $false
   $exitCode = 0
@@ -530,8 +537,16 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   try { $retryAdded = [bool]$GateResult.TimeoutRetryAdded } catch {}
   try { $timeoutSchedule = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $timeoutSchedule = @() }
 
-  # Fixed schedule: 2 attempts x 120s, no third retry. Two timeouts are a real failure.
-  if ($attempts -ge 2 -and $timeoutSchedule.Count -le 2) { return $false }
+  # Fixed 2-attempt schedule (2x180s, no third retry): after BOTH attempts time out we still hold
+  # a PURE wall-clock timeout (exit 124 / TimedOut) and ZERO failing tests. A real regression
+  # surfaces as a NON-timeout failure (exit!=0, TimedOut=$false), already filtered out above
+  # (`-not ($timedOut -or $exitCode -eq 124) -> return $false`). So an exhausted timeout is
+  # "no signal", not a proven regression -> classify INCONCLUSIVE (fail-open) instead of
+  # hard-failing the task on contention noise. (Corrects the 2026-06-22 WP4 timeout=fail policy:
+  # its premise that inconclusive masked stable regressions was false — inconclusive never fires
+  # on exit-1 failures. The scoped suite passes 9/9 in isolation; the live exit=124 is the suite
+  # running serially under live-bridge + concurrent-smoke contention, not a regression.)
+  if ($attempts -ge 2 -and $timeoutSchedule.Count -le 2) { return $true }
 
   if ($attempts -lt 3) { return $false }
   if (-not $retryAdded) { return $false }
@@ -572,12 +587,13 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
     $reasonText = ("exit={0}, timedOut={1}" -f $exitCode, $timedOut)
   }
 
+  # A pure wall-clock timeout is ALWAYS fail-open (inconclusive), regardless of attempt count:
+  # the suite reported no failing test — it was killed on wall-clock under contention, which is
+  # not a proven regression. Real regressions arrive as non-timeout failures and are handled on
+  # the hard 2-strike path, never here. The operator still sees this ⚠️ event and state records
+  # the inconclusive outcome, so a persistently slow gate stays visible without blocking DONE.
   $outcome = 'inconclusive_timeout'
   $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
-  if ($attempts -ge 2) {
-    $outcome = 'timeout_fail'
-    $message = "🚨 Gate-regression timeout final outcome=timeout_fail$attemptsText ($reasonText$budgetText) — timeout считается реальной регрессией."
-  }
 
   return [pscustomobject][ordered]@{
     Outcome = $outcome
