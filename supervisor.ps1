@@ -129,10 +129,27 @@ function Invoke-TaskkillTree {
     $ErrorActionPreference = 'Continue'
     & $taskkillPath /PID $TargetPid /F /T 1>$stdoutPath 2>$stderrPath
     $taskkillExitCode = [int]$LASTEXITCODE
+    # Harden 2026-06-22 (operator, control-plane reliability): taskkill's exit code is an
+    # UNRELIABLE success signal -- it returns non-0 when the PID has ALREADY exited (a false
+    # failure), and 0 does not guarantee a reparented/zombie child actually died (a false
+    # success -> orphaned worker). So verify the REAL outcome: poll briefly for the target to
+    # disappear; if a straggler remains, force-kill it via Stop-Process; report success on
+    # ACTUAL termination. That is what every caller of .success really wants ("is it dead").
+    $stillAlive = $true
+    for ($vi = 0; $vi -lt 10; $vi++) {
+      if (-not (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) { $stillAlive = $false; break }
+      Start-Sleep -Milliseconds 300
+    }
+    if ($stillAlive) {
+      try { Stop-Process -Id $TargetPid -Force -ErrorAction SilentlyContinue } catch {}
+      Start-Sleep -Milliseconds 300
+      $stillAlive = [bool](Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)
+    }
     $stdoutText = Read-SupervisorTempFirstLine -Path $stdoutPath -Label 'taskkill stdout'
     $stderrText = Read-SupervisorTempFirstLine -Path $stderrPath -Label 'taskkill stderr'
     return [pscustomobject]@{
-      success = ($taskkillExitCode -eq 0)
+      success = (-not $stillAlive)
+      stillAlive = $stillAlive
       exitCode = $taskkillExitCode
       stdout = $stdoutText
       stderr = $stderrText
