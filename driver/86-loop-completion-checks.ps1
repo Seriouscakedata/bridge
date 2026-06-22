@@ -735,6 +735,17 @@ $script:DriverDoneGateRegressionJob = {
     [void]$gateTimeoutSchedule.Add(120)
     $gateFallbackBudgetSec = 600
     $gateFallbackTried = $false
+    $getTimedOutTests = {
+      param([AllowNull()][object]$Output)
+
+      $lines = @()
+      try {
+        $lines = @($Output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      } catch {
+        $lines = @()
+      }
+      return @($lines | Where-Object { $_ -match '(?i)INCONCL\s+(test-\S+)' } | ForEach-Object { $Matches[1] } | Select-Object -Unique)
+    }
     $invokeGateRegressionOnce = {
       param([int]$TimeoutSec)
       if ($UseChangedPathScope) {
@@ -759,7 +770,7 @@ $script:DriverDoneGateRegressionJob = {
         }
         # Extract timed-out test names from process output for diagnostics
         if ([bool]$RawGateResult.TimedOut -or [int]$RawGateResult.ExitCode -eq 124) {
-          $timedOutTests = @(Get-DriverGateRegressionTimedOutTests -Output $RawGateResult.Output)
+          $timedOutTests = @(& $getTimedOutTests -Output $RawGateResult.Output)
           if ($timedOutTests.Count -gt 0) {
             $result.LastTimedOutTests = @($timedOutTests)
           }

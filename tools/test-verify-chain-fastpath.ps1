@@ -184,6 +184,12 @@ STATUS: DONE
   $driverCheckTokens = $null
   $driverCheckErrors = $null
   $driverChecksAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'driver\86-loop-completion-checks.ps1'), [ref]$driverCheckTokens, [ref]$driverCheckErrors)
+  $backgroundHelperDependencySites = @($script:DriverDoneGateRegressionJob.Ast.FindAll({
+      param($Node)
+      if ($Node -isnot [System.Management.Automation.Language.CommandAst]) { return $false }
+      return ([string]$Node.GetCommandName() -eq 'Get-DriverGateRegressionTimedOutTests')
+    }, $true))
+  Check 'Gate regression timeout diagnostics: background job is self-contained' ($backgroundHelperDependencySites.Count -eq 0) $backgroundHelperDependencySites.Extent.Text
   $timeoutHandlerCallSites = @($driverChecksAst.FindAll({
       param($Node)
       if ($Node -isnot [System.Management.Automation.Language.CommandAst]) { return $false }
