@@ -128,7 +128,7 @@ if (-not (Test-ProcAlive 'supervisor.ps1')) {
   $needRespawn = $false
   if ($wdProcs.Count -eq 0) {
     ELog "watchdog DEAD -> respawn"; $needRespawn = $true
-  } elseif ($wdStaleMin -gt 25) {
+  } elseif ($wdStaleMin -gt 45) {  # 2026-06-22: 25->45 (operator harden: the watchdog's own cycle legitimately blocks ~30min while it tolerates a busy driver (hbAge up to 1800s) + runs smoke; a 25min staleness bar false-respawned a WORKING watchdog mid-cycle, which itself caused churn). 45min still catches a genuinely dead watchdog.
     # 2026-06-20: 12->25 min (operator directive: add time where a timeout kills a WORKING process).
     # The watchdog's own smoke cycle (parse 307 ps1 + endpoint checks) legitimately takes ~12.5 min,
     # so a 12-min staleness bar false-killed a HEALTHY-but-slow watchdog mid-smoke (~2/3 of cycles
