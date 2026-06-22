@@ -879,6 +879,103 @@ function Invoke-DriverDoneGateChecksSequential {
   }
 }
 
+# Watchdog stale threshold the driver heartbeat must beat (mirrors watchdog.ps1: `$age -lt 1800`).
+# The DONE-gate heartbeat pump keeps its interval well under 1/3 of this so several beats land
+# inside every stale window even when a single state write is slow/contended on OneDrive.
+$script:DriverWatchdogStaleThresholdSec = 1800
+
+function Get-DriverHeartbeatPumpInterval {
+  # Clamp the requested pump interval into a safe band: never faster than 5s (avoid hammering
+  # state.json) and never slower than stale/3 (HB_PUMP_006 invariant: >=3 beats per stale window).
+  param([int]$Requested = 30)
+  $staleThird = [int]([math]::Floor($script:DriverWatchdogStaleThresholdSec / 3))
+  if ($staleThird -lt 5) { $staleThird = 5 }
+  $value = $Requested
+  if ($value -lt 5) { $value = 5 }
+  if ($value -gt $staleThird) { $value = $staleThird }
+  return $value
+}
+
+function Wait-DriverDoneGateJobsWithHeartbeat {
+  # Heartbeat pump for the heavy DONE-gate window (parse + smoke + gate-regression + integrity).
+  #
+  # Root cause (2026-06-22, watchdog false-stale restart): the driver used to block its main thread
+  # in a bare `Wait-Job` for the WHOLE gate, which can run past the watchdog stale threshold
+  # (1800s) on a heavy cycle. state.heartbeat stayed frozen the entire time, so a HEALTHY-but-
+  # finalizing driver looked STALE -> watchdog restarted it mid-finalization (self-reinforcing: the
+  # restart re-queued the same heavy task).
+  #
+  # Fix: the gate checks already run in background jobs, so the main thread has nothing to do but
+  # wait. Instead of blocking, it POLLS the jobs and refreshes the heartbeat on a short interval.
+  # The main thread is the SOLE state writer while these jobs run (the jobs only return facts and
+  # never touch state.json), so this reuses the normal Update-State path and preserves the state
+  # integrity hash -- no second process writes state.json (which would both race os.replace on
+  # Windows and break the integrity SHA).
+  #
+  # Bounded activation: a genuinely DEADLOCKED gate (a job that never returns) must still surface,
+  # otherwise the pump would mask it forever. After MaxWaitSec the pump stops and returns; the
+  # caller then force-removes the still-running jobs and collects missing results, so a stuck gate
+  # fails closed under the driver's own control instead of relying on a destructive watchdog
+  # rollback. MaxWaitSec sits far above the observed worst-case (~20-27min) so a merely-slow gate is
+  # never killed.
+  #
+  # Returns a small record { Ended; HeartbeatCount; ElapsedSec; CapHit } for diagnostics/tests.
+  param(
+    [object[]]$Jobs = @(),
+    [int]$HeartbeatIntervalSec = 30,
+    [int]$PollIntervalMs = 1000,
+    [int]$MaxWaitSec = 2700,
+    [scriptblock]$HeartbeatAction = $null,
+    [scriptblock]$JobsRunningCheck = $null,
+    [scriptblock]$NowProvider = $null
+  )
+
+  $jobList = @($Jobs | Where-Object { $_ })
+  $record = [ordered]@{ Ended = 'completed'; HeartbeatCount = 0; ElapsedSec = 0; CapHit = $false }
+  if ($jobList.Count -eq 0) { return [pscustomobject]$record }
+
+  $HeartbeatIntervalSec = Get-DriverHeartbeatPumpInterval -Requested $HeartbeatIntervalSec
+  if ($PollIntervalMs -lt 1) { $PollIntervalMs = 1 }
+  if ($MaxWaitSec -lt 1) { $MaxWaitSec = 1 }
+
+  if (-not $NowProvider) { $NowProvider = { [DateTime]::UtcNow } }
+  if (-not $HeartbeatAction) {
+    $HeartbeatAction = {
+      if (Get-Command Update-DriverHeartbeat -ErrorAction SilentlyContinue) { Update-DriverHeartbeat }
+    }
+  }
+  if (-not $JobsRunningCheck) {
+    $JobsRunningCheck = {
+      param($js)
+      [bool]((@($js | Where-Object { $_.State -eq 'Running' -or $_.State -eq 'NotStarted' })).Count -gt 0)
+    }
+  }
+
+  $start = & $NowProvider
+  # Emit one beat immediately so the window opens fresh even if it ends before the first interval.
+  try { & $HeartbeatAction; $record.HeartbeatCount++ } catch {}
+  $lastBeat = $start
+
+  while ($true) {
+    $running = $false
+    try { $running = [bool](& $JobsRunningCheck $jobList) } catch { $running = $false }
+    if (-not $running) { $record.Ended = 'completed'; break }
+
+    $now = & $NowProvider
+    if (($now - $start).TotalSeconds -ge $MaxWaitSec) {
+      $record.Ended = 'cap'; $record.CapHit = $true; break
+    }
+    if (($now - $lastBeat).TotalSeconds -ge $HeartbeatIntervalSec) {
+      try { & $HeartbeatAction; $record.HeartbeatCount++ } catch {}
+      $lastBeat = $now
+    }
+    Start-Sleep -Milliseconds $PollIntervalMs
+  }
+
+  $record.ElapsedSec = [int]((& $NowProvider) - $start).TotalSeconds
+  return [pscustomobject]$record
+}
+
 function Invoke-DriverDoneGateChecks {
   param(
     [Parameter(Mandatory=$true)][string]$BridgeRoot,
@@ -921,7 +1018,15 @@ function Invoke-DriverDoneGateChecks {
     }
 
     if ($startedJobs.Count -gt 0) {
-      Wait-Job -Job @($startedJobs.Values) | Out-Null
+      # Heartbeat pump (2026-06-22): a heavy DONE-gate can run past the watchdog stale threshold
+      # (watchdog.ps1: hbAge >= 1800s). Blocking in a bare Wait-Job here froze state.heartbeat for
+      # the whole window -> a HEALTHY-but-finalizing driver looked STALE -> false watchdog restart
+      # that interrupted finalization. Poll the jobs and pump the heartbeat instead (this thread is
+      # the sole state writer while the jobs run). A genuinely stuck gate still fails closed: after
+      # the cap the pump returns and the Receive/Remove-Job below force-kills the hung jobs.
+      $hbIntervalSec = if ($env:BRIDGE_DONEGATE_HB_INTERVAL_SEC) { [int]$env:BRIDGE_DONEGATE_HB_INTERVAL_SEC } else { 30 }
+      $hbMaxWaitSec  = if ($env:BRIDGE_DONEGATE_MAX_WAIT_SEC) { [int]$env:BRIDGE_DONEGATE_MAX_WAIT_SEC } else { 2700 }
+      [void](Wait-DriverDoneGateJobsWithHeartbeat -Jobs @($startedJobs.Values) -HeartbeatIntervalSec $hbIntervalSec -MaxWaitSec $hbMaxWaitSec)
     }
 
     $results = @{}

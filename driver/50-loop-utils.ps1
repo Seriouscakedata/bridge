@@ -91,6 +91,14 @@ function Set-BridgeStatusText {
   Update-State ({ param($s) $s.status_text=$Text; $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
 }
 
+function Update-DriverHeartbeat {
+  # Refresh ONLY the driver heartbeat timestamp (not status_text). Used by the DONE-gate heartbeat
+  # pump (Wait-DriverDoneGateJobsWithHeartbeat) so a long but HEALTHY gate window keeps the watchdog
+  # satisfied without clobbering the visible status line. Reuses the atomic Update-State write path
+  # so the state integrity hash stays valid.
+  Update-State ({ param($s) $s.heartbeat=(Get-Date).ToString('o') }.GetNewClosure()) | Out-Null
+}
+
 function Write-TurnLog {
   param(
     [string]$Speaker,
