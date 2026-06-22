@@ -657,6 +657,29 @@ function Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling {
   return $record
 }
 
+function Format-DriverDoneGateRegressionBudgetSuffix {
+  param([AllowNull()][object]$GateResult)
+
+  if ($null -eq $GateResult) { return '' }
+  $budget = @()
+  $fallbackUsed = $false
+  $fallbackBudget = 0
+  try { $budget = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $budget = @() }
+  try { $fallbackUsed = [bool]$GateResult.TimeoutFallbackAdded } catch {}
+  try { $fallbackBudget = [int]$GateResult.TimeoutFallbackBudget } catch {}
+
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  if ($budget.Count -gt 0) {
+    [void]$parts.Add(("budgets={0}" -f (($budget | ForEach-Object { [string]$_ }) -join ',')))
+  }
+  if ($fallbackUsed) {
+    if ($fallbackBudget -gt 0) { [void]$parts.Add(("fallback={0}s" -f $fallbackBudget)) }
+    else { [void]$parts.Add('fallback=used') }
+  }
+  if ($parts.Count -eq 0) { return '' }
+  return (" ({0})" -f ([string]::Join('; ', $parts.ToArray())))
+}
+
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -2000,7 +2023,8 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
           }
           $gateResult = $gateChecks.GateRegression
           if ($gateResult -and [bool]$gateResult.Ok) {
-            Add-Message -From system -Text "✅ Gate-regression: snapshot suite PASS." -Kind event | Out-Null
+            $gateBudgetSuffix = Format-DriverDoneGateRegressionBudgetSuffix -GateResult $gateResult
+            Add-Message -From system -Text "✅ Gate-regression: snapshot suite PASS$gateBudgetSuffix." -Kind event | Out-Null
             try { Update-State { param($s) if ($null -ne $s.PSObject.Properties['gate_regression_fail_count']) { $s.gate_regression_fail_count = 0 } } | Out-Null } catch {}
           } else {
             $failReason = if ($gateResult) {
@@ -2008,6 +2032,8 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             } else {
               'no result'
             }
+            $gateBudgetSuffix = Format-DriverDoneGateRegressionBudgetSuffix -GateResult $gateResult
+            if ($gateBudgetSuffix) { $failReason = "$failReason$gateBudgetSuffix" }
             if ($gateChecks.Plan.GateScopeError) {
               $failReason = ("scope error: {0}; suite: {1}" -f $gateChecks.Plan.GateScopeError, $failReason)
             }

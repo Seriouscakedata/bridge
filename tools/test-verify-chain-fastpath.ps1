@@ -142,6 +142,8 @@ STATUS: DONE
   $fallbackPassRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $fallbackPassSuite
   Check 'Gate regression fallback pass: budgets are 60,600' (@($script:GateFallbackPassTimeouts) -join ',' -eq '60,600') $script:GateFallbackPassTimeouts
   Check 'Gate regression fallback pass: result is PASS and non-blocking' ([bool]$fallbackPassRuntime.GateRegression.Ok -and [bool]$fallbackPassRuntime.GateRegression.TimeoutFallbackAdded -and [int]$fallbackPassRuntime.GateRegression.TimeoutFallbackBudget -eq 600) $fallbackPassRuntime.GateRegression
+  $fallbackPassBudgetSuffix = Format-DriverDoneGateRegressionBudgetSuffix -GateResult $fallbackPassRuntime.GateRegression
+  Check 'Gate regression fallback pass: log suffix shows budgets and fallback' ($fallbackPassBudgetSuffix -eq ' (budgets=60,600; fallback=600s)') $fallbackPassBudgetSuffix
 
   $script:CapturedGateMessages = @()
   $script:ClearedGateFailureKinds = @()
