@@ -1,0 +1,126 @@
+{
+    "proposer":  "B",
+    "understanding":  "LAPA already has reliable \u0027hands\u0027 — a fail-closed 5-gate loop, the open/type/telegram skills, and vision-for-canvas — but it only executes concrete actions that the operator has already decomposed; there is no planner, so high-level task planning still lives with the operator. The task (Discuss-First, no atoms until the plan is approved) is to design an ADDITIVE planner layer that accepts a high-level operator goal and autonomously decomposes it into a sequence of loop actions (open→perceive→navigate→act), invoking vision when stuck, while strictly preserving the existing fail-closed guarantees and adding (a) a declared-risk ladder where system-settings/sends require operator confirmation and (b) a STOP mechanism. The required output is a reviewable document chain (PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract) that the operator approves BEFORE implementation. This proposal is the design core that those documents would carry; it deliberately stops at design and generates no atoms.",
+    "summary":  "Add the planner as a strictly additive layer ABOVE the existing 5-gate loop: it only chooses WHICH typed loop-action to run next and never bypasses a gate, so the current fail-closed envelope remains the final authority even if the LLM hallucinates. Use a hybrid hierarchical model — a coarse, mutable task-graph of subgoals (each with precondition, machine-checkable postcondition, declared risk tier, and recovery policy) realized reactively step-by-step, with verification failure driving local→global replanning. Constrain the planner to a schema-validated vocabulary limited to declared capabilities (no free-form code). Make the risk ladder fail-closed and evasion-resistant by classifying risk on the concrete EFFECT at execution time via an independent deterministic policy (not the planner\u0027s self-declaration), defaulting unknown effects to the highest tier and blocking on operator confirm. Verify every step (executed ≠ effected) before marking it done; unverifiable success counts as failure. Weave vision into planning at four points beyond element-location — structured screen-understanding for the world-model, expectation-vs-observation mismatch as a replan trigger, progress/stuck/oscillation detection, and vision-as-judge postcondition verification — gated behind cheaper perception to control cost. Bound autonomy with step/time/cost budgets and a two-form STOP (operator hard-stop checked at every gate, leaving a safe state; planner self-STOP on budget/low-confidence/repeated-failure/unresolvable-ambiguity/unexpected-high-risk, handing back with a diagnostic). Ship Discuss-First: BRIEF→DISCUSS_*→MAP→PLAN→contract, operator approval gate, then an MVP scoped to the existing skill domains, expanding by domain.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The planner is a strictly additive layer above the existing 5-gate loop; it only selects which typed loop-action runs next, and every concrete action still passes through all existing gates unchanged.",
+                               "reason":  "Keeps the proven fail-closed safety envelope as the final authority, so an LLM hallucination or bad plan cannot weaken the hands; satisfies the \u0027maintain existing fail-closed guarantees\u0027 constraint by construction rather than by trust.",
+                               "tradeoff":  "The planner cannot optimize past or short-circuit the gates, adding some latency and redundant checks; the gate interface becomes a hard contract the planner must respect.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use a hybrid hierarchical design — a coarse, mutable task-graph of subgoals realized reactively step-by-step with dynamic replanning — rather than a pure static upfront plan or pure one-step-at-a-time ReAct.",
+                               "reason":  "GUI state is nondeterministic and partially observable, so static plans break; pure reactive loops lack the structure, preconditions, and auditability needed for high-risk autonomy. A living graph gives both structure and adaptivity.",
+                               "tradeoff":  "More moving parts than either extreme; graph mutation/replanning logic and node-state management add implementation and reasoning complexity.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Constrain the planner to a schema-validated, typed action vocabulary limited to declared capabilities (existing skills + perceive + vision-locate); no free-form code or invented actions.",
+                               "reason":  "Bounds the risk surface, makes every planner output machine-checkable, and forces the agent to STOP/ask when a needed capability does not exist instead of improvising something unsafe.",
+                               "tradeoff":  "The planner can do nothing that is not yet a skill, so capability gaps surface as stops/handoffs and require explicit skill additions rather than ad-hoc workarounds.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Classify risk on the concrete EFFECT at execution time via an independent deterministic policy with default-to-highest-tier on uncertainty; tier ≥ threshold (sends, system settings, destructive) blocks on synchronous operator confirmation.",
+                               "reason":  "Prevents the planner from evading the risk ladder by self-declaring low risk or by decomposing a risky action into individually-innocuous sub-steps; fail-closed because anything unclassifiable is treated as high-risk and confirmed.",
+                               "tradeoff":  "Maintaining an accurate effect-classifier/policy and its mapping from actions to reversibility is ongoing work, and conservative defaults may over-prompt the operator for confirmations.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Every step carries a machine-checkable postcondition that must be positively verified via perception (with vision fallback) before the step is marked done; unverifiable success is treated as failure, and \u0027action executed\u0027 is never conflated with \u0027effect achieved\u0027.",
+                               "reason":  "This is the heart of fail-closed at the planning layer: it stops false-progress, especially for fire-and-forget actions like sends, and gives recovery a reliable trigger.",
+                               "tradeoff":  "Verification adds cost/latency, and some real effects are hard to observe (e.g., a message delivered remotely), forcing conservative handling or explicit operator confirmation.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Integrate vision into PLANNING at four points beyond element-location: structured screen-understanding feeding the world-model, expectation-vs-observation mismatch as a replan trigger, progress/stuck/oscillation detection, and vision-as-judge for postcondition verification.",
+                               "reason":  "Directly answers the explicit requirement to embed vision in planning (not just locate); makes the planner robust on canvas and ambiguous UIs where the accessibility tree is insufficient, and lets vision drive decisions rather than only clicks.",
+                               "tradeoff":  "Vision is slower and costlier and can mis-ground, so it must be gated behind cheaper perception and confidence thresholds, adding a dual perception path and a stuck-detector.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Bound autonomy with explicit step/time/cost budgets and a two-form STOP: operator hard-stop checked at every gate and leaving the system in a safe/known state, plus planner self-STOP on budget exhaustion, low confidence, repeated verification failure/oscillation, unresolvable ambiguity, or unexpected high-risk state — handing back to the operator with a diagnostic.",
+                               "reason":  "Satisfies the STOP requirement, prevents runaway loops and cost, and keeps the agent fail-closed by halting under uncertainty rather than pushing forward.",
+                               "tradeoff":  "A conservative self-STOP may halt tasks a more aggressive agent could finish, shifting some load back to the operator; STOP-safety requires risky actions to be designed so a stop cannot interrupt them mid-commit.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Apply generator–verifier separation: the component that proposes a step is not the sole judge that the step succeeded or is safe; an independent verification/risk path confirms before the step is accepted and before a high-risk action proceeds.",
+                               "reason":  "Reduces correlated LLM errors (a planner that is confidently wrong also confidently self-approves) and raises trust for high-risk autonomy.",
+                               "tradeoff":  "More LLM/inference calls and orchestration complexity, and the verifier itself must be kept simple/independent enough to avoid sharing the planner\u0027s blind spots.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Use cheap-perception-first escalation: rely on the accessibility/UI tree where available and escalate to vision only on canvas, ambiguity, or detected stuck/progress-stall.",
+                               "reason":  "Controls latency and cost while preserving vision\u0027s power exactly where it is needed, operationalizing the \u0027use vision when stuck\u0027 intent.",
+                               "tradeoff":  "Requires a reliable stuck/ambiguity detector and two perception code paths that must stay consistent; a weak detector either over-uses vision or misses when vision is required.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Deliver as a Discuss-First document chain (PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract) with a mandatory operator approval gate before any atom/implementation, plus a plan-only dry-run preview mode and a full structured audit trace (plan, decisions, risk classifications, confirmations, verifications); ship an MVP scoped to existing skill domains (telegram/open/type) first and expand by domain.",
+                               "reason":  "Matches the contract\u0027s process constraints exactly, lets the operator review the planned decomposition before live execution, gives accountability/replay for a high-risk autonomous system, and de-risks rollout by staging scope.",
+                               "tradeoff":  "Slower path to full autonomy and extra plumbing for dry-run and audit; a dry-run preview cannot perfectly predict reactive replans that depend on live screen state.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing 5-gate loop is the trusted safety envelope and remains the final authority; the planner can be implemented strictly above it without modifying or bypassing any gate.",
+                        "The existing skills (open/type/telegram) and vision-for-canvas expose a programmatic, typed interface the planner can invoke and that returns structured success/failure signals usable for verification.",
+                        "A multimodal (vision-capable) LLM is available and acceptable for planning and verification, with cost/latency within budgets the operator will accept.",
+                        "Perception provides at least screenshots, and ideally an accessibility/UI tree, with vision filling the gaps for canvas and ambiguous surfaces.",
+                        "\u0027Confirm\u0027 relies on a synchronous operator-approval channel (e.g., the same Telegram/console the operator already uses) that can block execution until the operator responds.",
+                        "Target workloads are predominantly sequential GUI tasks on a single host; parallel or multi-agent control is out of scope for the first version.",
+                        "Per-action reversibility/effect can be enumerated well enough to build a deterministic risk-classifier (which skills are read-only vs. side-effecting vs. destructive).",
+                        "The operator wants a reviewable design before any code, so this proposal stops at design and generates no atoms until the PROJECT_PLAN and contract are approved."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The LLM planner produces an incorrect or harmful decomposition (hallucinated steps, wrong element, unsafe action), causing damage despite the gates.",
+                      "severity":  "high",
+                      "mitigation":  "Typed schema-validated action vocabulary limited to declared capabilities; all actions still flow through the existing 5 gates; independent risk gate and verification; dry-run preview and operator confirm on risk tiers; no free-form code execution."
+                  },
+                  {
+                      "risk":  "Risk-ladder evasion or mis-classification — the planner self-reports low risk, or splits a risky action into individually-innocuous sub-steps, so a send/system-change runs without confirmation.",
+                      "severity":  "high",
+                      "mitigation":  "Classify risk on the concrete effect at execution time via an independent deterministic policy rather than planner self-declaration; default unknown/unclassifiable effects to the highest tier; only an explicit whitelist of low-risk action types is auto-approved."
+                  },
+                  {
+                      "risk":  "Verification false-positive — a step is marked done but the intended effect was not achieved (especially for fire-and-forget sends), so the plan proceeds on a false premise.",
+                      "severity":  "high",
+                      "mitigation":  "Machine-checkable postconditions verified via perception plus vision-as-judge; explicitly distinguish executed from effected; require positive evidence of effect for irreversible actions; treat unverifiable success as failure (fail-closed)."
+                  },
+                  {
+                      "risk":  "STOP is not honored while an irreversible action is mid-commit, leaving the system in an unsafe half-state.",
+                      "severity":  "high",
+                      "mitigation":  "Check STOP at every gate; design risky actions so STOP either pre-empts before the commit point or the commit is the single uninterruptible step; enforce a safe-state invariant that must hold after any STOP."
+                  },
+                  {
+                      "risk":  "Runaway behavior — infinite replanning, oscillation between states, or unbounded vision/LLM cost.",
+                      "severity":  "medium",
+                      "mitigation":  "Step/time/cost budgets, monotone-progress requirement, oscillation/loop detection, bounded retries, and planner self-STOP that escalates to the operator with a diagnostic."
+                  },
+                  {
+                      "risk":  "Vision unreliability — misreads the screen, grounds to the wrong element, or is too slow, leading to wrong or stalled actions.",
+                      "severity":  "medium",
+                      "mitigation":  "Cheap perception (accessibility tree) first, vision only on canvas/ambiguity/stuck; confidence thresholds; verify-after-act; require operator confirmation when vision confidence is low on any risk-bearing step."
+                  },
+                  {
+                      "risk":  "Stale world-model under partial observability — the screen changes between perceive and act, so the chosen action lands in the wrong context.",
+                      "severity":  "medium",
+                      "mitigation":  "Re-perceive immediately before any committing/risky action; run a vision expectation-check before commit; keep perceive→act windows short; invalidate the plan and replan on expectation-vs-observation mismatch."
+                  },
+                  {
+                      "risk":  "Over-trust and scope creep — the operator relies on autonomy beyond tested domains, or capability gaps get improvised around.",
+                      "severity":  "medium",
+                      "mitigation":  "Capability registry so the planner plans only over declared skills; STOP/ask when a capability is missing; configurable autonomy levels (plan-only, supervised, autonomous-within-tier); staged per-domain rollout; keep the Discuss-First approval gate."
+                  },
+                  {
+                      "risk":  "Accountability gap for autonomous high-risk actions — hard to reconstruct why the agent did what it did.",
+                      "severity":  "medium",
+                      "mitigation":  "Full structured, replayable audit trace of plans, decisions, risk classifications, confirmations, and verifications, retained for post-hoc review."
+                  }
+              ],
+    "minimal_version":  "A single reactive ReAct-style planner that, given a goal plus current perception, proposes the next single loop action drawn from a schema-validated vocabulary of existing capabilities (open/type/telegram/perceive/vision-locate), attaches a machine-checkable postcondition, and verifies it via existing perception with vision fallback before continuing. No upfront full task-graph — the plan emerges step-by-step with bounded retries. Risk ladder is a static rule-based classifier on action type/effect (sends and system-settings require confirmation); the planner may self-declare but an independent deterministic gate enforces it and defaults unknowns to confirm. STOP supports operator hard-stop (checked at every gate, safe-state guaranteed) plus self-STOP on step/time budget and N consecutive verification failures. Vision is used for locate-fallback, postcondition verification, and simple stuck-detection. Every action still passes through the existing 5 gates unchanged. A plan-only dry-run mode lets the operator preview the intended decomposition. Scope is restricted to the domains where skills already exist (telegram/open/type) so the safety story can be validated before expansion.",
+    "advanced_version":  "A hierarchical planner that builds an upfront, mutable task-graph of subgoals — each with precondition, machine-checkable postcondition, declared risk tier, and recovery policy — then realizes each subgoal reactively through the loop, with dynamic replanning that mutates the graph on verification failure (local replan → global replan → STOP). An independent risk-classifier model plus a deterministic policy engine evaluates the concrete effect at execution time and resists decomposition-based evasion; ensemble/self-consistency checks guard the highest-risk steps. A vision-driven structured world-model is the substrate the planner reasons over, with expectation-vs-observation mismatch as an explicit replan trigger, progress/oscillation detection, and vision-as-judge verification. Generator–verifier separation uses a distinct verifier/critic that audits the plan before execution and confirms each step\u0027s success and safety independently of the planner. Adds episodic + semantic memory with a growing library of reusable, verified subplans (self-improvement), confidence calibration, configurable autonomy levels, optional sandbox/simulation dry-runs of risky branches before live commit, and full replayable audit. Coverage expands across application domains as new capabilities are declared in the registry, always behind the Discuss-First approval gate and the unchanged 5-gate fail-closed envelope."
+}

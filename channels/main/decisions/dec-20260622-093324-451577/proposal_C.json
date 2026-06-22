@@ -1,0 +1,81 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to design a Planner Layer for the LAPA project that enables autonomous high-level task execution. Currently, LAPA has reliable low-level capabilities (5-gate loop, open/type/telegram skills, vision-for-canvas) but requires an operator to decompose tasks into specific actions. The new layer must self-decompose high-level tasks into sequences of loop actions (open→perceive→navigate→act), use vision during planning (not just element location), maintain fail-closed guarantees, implement a declared-risk ladder with confirmations for system settings/sends, and include a STOP mechanism. The process must follow Discuss-First mode: produce PROJECT_BRIEF, DISCUSS_*, PROJECT_MAP, PROJECT_PLAN, and a contract for operator review BEFORE any implementation.",
+    "summary":  "Proposal for a hierarchical LLM-based Planner Layer that sits atop LAPA\u0027s existing reliable hands. The planner uses a task-graph representation with recursive decomposition, embeds vision at the planning stage for pre-condition verification and state estimation, enforces fail-closed semantics through a three-tier risk ladder (auto, confirm, stop), and maintains the existing 5-gate loop as its execution substrate. The design introduces a Plan-Verify-Execute-Recover cycle where each step is verified before and after execution, with vision integrated into both planning (scene understanding, pre-condition checks) and recovery (anomaly detection, re-planning triggers).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use LLM-based hierarchical task decomposition with a task-graph representation.",
+                               "reason":  "LLMs excel at semantic understanding of high-level goals and can break them into context-appropriate sub-tasks. A task-graph (DAG) captures dependencies, allows parallel branches, and supports partial re-planning on failure.",
+                               "tradeoff":  "LLM outputs are non-deterministic; we trade absolute predictability for flexibility. Mitigated by structured output schemas, verification gates, and the existing fail-closed loop.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Integrate vision into the planning phase, not just element location.",
+                               "reason":  "The task explicitly requires vision in planning. Before decomposing a task, the planner should capture the current screen state to understand context, verify pre-conditions, and inform decomposition (e.g., \u0027is the target application already open?\u0027).",
+                               "tradeoff":  "Adds latency to planning (vision calls are expensive). Mitigated by caching screen state during the perceive phase and using lightweight vision prompts for planning-specific queries.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Implement a three-tier declared-risk ladder: auto (safe actions), confirm (system settings/sends), stop (unsafe/unknown).",
+                               "reason":  "This directly satisfies the constraint for a declared-risk ladder. Actions like opening apps are auto; changing system settings or sending messages require operator confirmation; actions outside known safe boundaries trigger STOP.",
+                               "tradeoff":  "Confirmation dialogs interrupt autonomy. The ladder must be carefully calibrated to avoid excessive confirmations while maintaining safety.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Each planned step goes through a Plan-Verify-Execute-Recover cycle within the existing 5-gate loop.",
+                               "reason":  "The 5-gate loop (open→perceive→navigate→act) is the proven execution substrate. The planner outputs steps that map to this loop. Verification gates before and after each step ensure fail-closed behavior: if pre-conditions aren\u0027t met, re-plan; if post-conditions fail, recover.",
+                               "tradeoff":  "Adds overhead per step but is necessary for autonomous reliability. The existing loop already has some of this structure; we extend it.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Use a STOP mechanism triggered by: risk-ladder escalation, repeated step failures, or explicit operator-defined boundaries.",
+                               "reason":  "The constraint requires a STOP mechanism. This prevents infinite loops, unsafe cascading failures, and respects operator boundaries (e.g., \u0027never open this folder\u0027).",
+                               "tradeoff":  "STOP requires operator intervention to resume, reducing autonomy. Necessary for safety in high-risk tasks.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "The planner outputs a structured TaskContract (JSON) that the operator reviews before execution.",
+                               "reason":  "The Discuss-First mode and constraint require operator review. The TaskContract captures the decomposed plan, risk levels per step, and expected outcomes, giving the operator visibility and veto power.",
+                               "tradeoff":  "Breaks full autonomy for high-risk steps but builds trust and allows iterative refinement of the planner\u0027s judgment.",
+                               "confidence":  0.97
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing 5-gate loop (open→perceive→navigate→act) is stable and well-tested.",
+                        "Vision-for-canvas can return structured scene descriptions (elements, text, layout) suitable for planning queries.",
+                        "An LLM (local or API-based) is available with sufficient context window for task decomposition and scene understanding.",
+                        "The operator is available for confirmations during execution (not fully unattended).",
+                        "System settings and send actions are identifiable and can be intercepted for the confirm tier.",
+                        "The LAPA codebase allows insertion of a planner module between task reception and loop execution.",
+                        "Tasks are given in natural language with clear intent (ambiguous tasks may require clarification)."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "LLM hallucinates plausible but incorrect task decompositions.",
+                      "severity":  "high",
+                      "mitigation":  "Structured output schemas with strict typing; pre-condition verification via vision before each step; operator review of TaskContract for high-risk tasks; STOP on repeated verification failures."
+                  },
+                  {
+                      "risk":  "Vision misinterprets screen state, leading to incorrect planning decisions.",
+                      "severity":  "medium",
+                      "mitigation":  "Confidence thresholds on vision outputs; fallback to conservative planning (assume nothing is open); cross-validation with element-location vision calls during execution."
+                  },
+                  {
+                      "risk":  "Confirmation fatigue: operator approves risky steps without scrutiny.",
+                      "severity":  "medium",
+                      "mitigation":  "Clear risk summaries in confirmation prompts; cooldown on repeated confirmations; option to escalate to STOP if pattern detected."
+                  },
+                  {
+                      "risk":  "Planner introduces latency that makes LAPA feel sluggish.",
+                      "severity":  "low",
+                      "mitigation":  "Cache vision results; use streaming LLM responses; allow operator to skip planning for known task templates."
+                  },
+                  {
+                      "risk":  "Task-graph deadlocks or infinite loops in complex dependencies.",
+                      "severity":  "high",
+                      "mitigation":  "DAG validation before execution; cycle detection; step timeout with escalation to STOP; maximum graph depth limit."
+                  }
+              ],
+    "minimal_version":  "Planner as a thin LLM wrapper: receives high-level task → calls LLM to decompose into a flat list of loop actions → each action is executed sequentially with pre/post vision verification → risk ladder is a hardcoded keyword check (if action contains \u0027settings\u0027 or \u0027send\u0027, confirm) → STOP on any verification failure or 3 consecutive step failures. No task-graph, no parallel execution, no learning from past tasks.",
+    "advanced_version":  "Full hierarchical task-graph planner: LLM decomposes tasks into a DAG with parallel branches and dependencies → vision integrated at planning stage for scene understanding and pre-condition inference → dynamic risk ladder with learned action profiles → recovery strategies per failure type (retry, alternative path, skip, escalate) → task template library that caches successful decompositions → operator review only for novel or high-risk branches → continuous improvement from operator corrections."
+}

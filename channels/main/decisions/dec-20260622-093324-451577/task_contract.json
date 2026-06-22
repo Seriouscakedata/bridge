@@ -1,0 +1,31 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] Проект ЛАПА (C:\\Users\\rafie\\bridge-projects\\lapa): добавить слой-ПЛАНИРОВЩИК поверх существующих надёжных рук (5-гейтовый loop + навыки open/type/telegram + vision-для-canvas). ЦЕЛЬ оператора: лапа автономно выполняет ВЫСОКОУРОВНЕВЫЕ задачи, САМА декомпозируя их в последовательность loop-действий (open→perceive→navigate→act), используя vision когда застряла, с теми же fail-closed гарантиями + declared-risk ladder (системные настройки/отправки требуют confirm) + STOP. Сейчас лапа выполняет ЗАДАННЫЕ конкретные действия, но НЕ планирует задачу сама — планирование на операторе. Это главный пробел к «лапа делает всё, что и оператор, автономно». РЕЖИМ Discuss-First: обсуди дизайн (LLM-декомпозиция задачи в шаги? task-graph? верификация и восстановление каждого шага? как встроить vision в ПЛАНИРОВАНИЕ, а не только в locate элемента?), сделай PROJECT_BRIEF→DISCUSS_*→PROJECT_MAP→PROJECT_PLAN→contract, дай оператору на ревью ДО реализации. НЕ генерить атомы до утверждения плана.",
+    "goal":  "Lapa autonomously executes high-level tasks by self-decomposing them into a sequence of loop actions (open→perceive→navigate→act), bridging the gap towards Lapa doing everything the operator does, autonomously.",
+    "constraints":  [
+                        "Do not generate atoms until the plan is approved.",
+                        "The process must follow a \u0027Discuss-First\u0027 mode.",
+                        "The new planner layer must maintain existing fail-closed guarantees.",
+                        "The new planner layer must incorporate a declared-risk ladder (system settings/sends require confirmation).",
+                        "The new planner layer must include a STOP mechanism.",
+                        "The output must be reviewed by the operator BEFORE implementation."
+                    ],
+    "known_context":  [
+                          "Project name: LAPA (C:\\Users\\rafie\\bridge-projects\\lapa).",
+                          "Existing capabilities (\u0027reliable hands\u0027) include: a 5-gate loop, open/type/telegram skills, and vision-for-canvas.",
+                          "Currently, Lapa executes *given* specific actions but does NOT plan tasks itself; planning is done by the operator."
+                      ],
+    "output_format":  "A sequence of documents: PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract (JSON object matching this schema).",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "A PROJECT_BRIEF document is created.",
+                          "DISCUSS_* documents (covering design questions like LLM decomposition, task-graph, step verification/recovery, vision integration into planning) are created.",
+                          "A PROJECT_MAP document is created.",
+                          "A PROJECT_PLAN document is created.",
+                          "A TaskContract (this JSON object) is created.",
+                          "The operator reviews and approves the PROJECT_PLAN and the TaskContract before any implementation begins.",
+                          "The proposed design in the PROJECT_PLAN addresses the integration of vision into the *planning* process, not just element location.",
+                          "The proposed design in the PROJECT_PLAN explicitly incorporates fail-closed guarantees, a declared-risk ladder, and a STOP mechanism for the new planner layer."
+                      ]
+}

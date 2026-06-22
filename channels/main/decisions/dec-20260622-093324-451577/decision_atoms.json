@@ -1,0 +1,148 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "statement":  "The planner must be a strictly additive layer, acting as an orchestrator over the existing 5-gate loop, only selecting which typed loop-action runs next, and never bypassing any existing gate.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that the planner\u0027s output is always a valid input to the 5-gate loop, and that no planner action directly manipulates system state without passing through the loop.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "statement":  "Each planned step must go through a Plan-Verify-Execute-Recover cycle, operating within the existing 5-gate loop.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Execution Model",
+                      "test":  "Observe execution traces to confirm that every step includes distinct planning, pre-execution verification, execution via the 5-gate loop, post-execution verification, and a defined recovery path on failure.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "statement":  "The planner must use LLM-based hierarchical task decomposition, producing a typed, mutable task-graph of subgoals with dependencies, preconditions, and recovery paths, realized reactively step-by-step with dynamic replanning.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Planning Model",
+                      "test":  "Inspect the planner\u0027s internal representation and output to confirm it generates a structured, typed task-graph (e.g., JSON schema validation). Verify that the graph can be dynamically updated during execution based on observed state.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "statement":  "Every planned step must carry a machine-checkable postcondition that is positively verified via perception (with vision fallback) before the step is marked done; unverifiable success is treated as failure, and \u0027action executed\u0027 must not be conflated with \u0027effect achieved\u0027.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Safety, Execution Model",
+                      "test":  "For any given task, verify that each step\u0027s postcondition is defined, and that the system explicitly checks for the expected evidence before proceeding. Simulate a scenario where the action executes but the effect is not achieved, and confirm the system correctly flags it as a failure.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "statement":  "Vision must be deeply integrated into the planning phase and state management, beyond mere element location, to include structured screen-understanding for the world-model, expectation-vs-observation mismatch detection, progress/stuck/oscillation detection, and vision-as-judge for postcondition verification.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Vision, Planning Model",
+                      "test":  "Demonstrate scenarios where vision is used to update the planner\u0027s internal world model, trigger replanning due to unexpected screen changes, detect a stuck state, or verify a step\u0027s outcome, rather than just providing coordinates for a click.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "statement":  "A declared-risk ladder must be implemented as part of the plan step schema, classifying risk on the concrete effect at execution time via an independent deterministic policy, defaulting unknown or unclassifiable effects to the highest tier (confirm/stop), with high-risk actions (e.g., sends, system settings, destructive) blocking on synchronous operator confirmation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety, Risk Management",
+                      "test":  "Define a set of actions with varying risk profiles (e.g., read-only, send message, change system setting, delete file). Verify that the risk classification is applied by an independent policy, not the planner\u0027s self-declaration, and that high-risk actions trigger operator confirmation even if the planner attempts to declare them low-risk.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA007",
+                      "statement":  "A comprehensive STOP mechanism must be implemented, including an operator hard-stop checked before every gate and before any recovery/replan (leaving the system in a safe/known state), and a planner self-STOP triggered by conditions such as budget exhaustion, low confidence, repeated verification failures/oscillation, unresolvable ambiguity, unexpected high-risk states, or explicit operator-defined boundaries, handing back to the operator with a diagnostic.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety, Control",
+                      "test":  "Simulate operator hard-stop at various points during execution and verify the system halts immediately and transitions to a safe, known state. Simulate conditions like repeated failures or budget exhaustion and verify the planner self-stops and provides a diagnostic.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA008",
+                      "statement":  "The recovery strategy must be bounded, following a sequence of diagnose → bounded retry → local replan → ask operator → stop, to prevent infinite autonomous correction.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Recovery",
+                      "test":  "Simulate a recoverable failure and verify the system attempts bounded retries and local replanning before escalating to asking the operator or stopping. Verify that infinite loops are prevented.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA009",
+                      "statement":  "The project must follow a Discuss-First process, delivering a document chain (PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract) with a mandatory operator approval gate before any implementation or generation of executable atoms. The planner must output a structured TaskContract for operator review, and a plan-only dry-run preview mode and full structured audit trace (plan, decisions, risk classifications, confirmations, verifications) must be provided.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Process, Project Management",
+                      "test":  "Verify that no implementation work (code commits, task creation) begins before the PROJECT_PLAN and contract are formally approved by the operator. Demonstrate the generation of a TaskContract and an audit trace for a planned task.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA010",
+                      "statement":  "The planner must be constrained to a schema-validated, typed action vocabulary limited to declared capabilities (existing skills + perceive + vision-locate), prohibiting free-form code generation or invented actions.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Safety, Planning Model",
+                      "test":  "Attempt to make the planner generate an action not in the declared vocabulary or free-form code. Verify that it either fails to generate or flags it as an invalid action, rather than attempting to execute it.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA011",
+                      "statement":  "Implement generator–verifier separation, ensuring that the component proposing a step is not the sole judge of its success or safety; an independent verification and risk path must confirm the step before it is accepted and before any high-risk action proceeds.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Safety, Architecture",
+                      "test":  "Design a scenario where the planner proposes a risky or potentially incorrect step. Verify that a distinct, independent component performs the safety and success verification before the step is allowed to proceed.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA012",
+                      "statement":  "Implement a cheap-perception-first escalation strategy, relying on the accessibility/UI tree where available and escalating to vision only on canvas, ambiguity, or detected stuck/progress-stall conditions.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Performance, Vision",
+                      "test":  "Observe perception calls during a task. Verify that accessibility/UI tree data is prioritized, and vision is only invoked when necessary (e.g., on a canvas element, when UI tree is ambiguous, or when progress stalls).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

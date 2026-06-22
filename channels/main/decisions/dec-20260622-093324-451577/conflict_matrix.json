@@ -1,0 +1,52 @@
+{
+    "consensus_atoms":  [
+                            "DA001",
+                            "DA003",
+                            "DA004",
+                            "DA005",
+                            "DA006",
+                            "DA007",
+                            "DA009"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA003",
+                                           "DA009"
+                                       ],
+                          "axis":  "Autonomy vs. Human Control/Approval",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "DA005",
+                                           "DA012"
+                                       ],
+                          "axis":  "Vision Integration Strategy / Performance vs. Richness",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA003",
+                        "severity":  "major",
+                        "why":  "DA003 defines the LLM-based planning model, including hierarchical task decomposition and task-graph elements like dependencies, preconditions, and recovery paths. However, it omits the crucial requirement from DA004 that \u0027Every planned step must carry a machine-checkable postcondition\u0027. This creates a gap where the planning model might not naturally produce the necessary artifacts for the execution model\u0027s safety checks, potentially leading to a system that conflates \u0027action executed\u0027 with \u0027effect achieved\u0027.",
+                        "fix":  "Amend DA003 to explicitly state that the hierarchical task decomposition and resulting subgoals/steps must include machine-checkable postconditions, aligning with DA004. This could involve extending the \u0027typed, mutable task-graph\u0027 schema to include postcondition fields for each executable step.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "DA009",
+                        "severity":  "major",
+                        "why":  "DA009 mandates a \u0027Discuss-First process\u0027 with a \u0027mandatory operator approval gate before any implementation or generation of executable atoms\u0027 and requires a \u0027structured TaskContract for operator review\u0027. This implies a static, pre-approved plan. This directly conflicts with DA003\u0027s requirement for \u0027dynamic replanning\u0027. If the plan changes dynamically, the initially approved TaskContract may become invalid, or every significant replan could require a new operator approval, making the system impractical for reactive operation or potentially bypassing critical safety checks.",
+                        "fix":  "Clarify the interaction between dynamic replanning (DA003) and operator approval (DA009). Define the scope of operator approval (e.g., high-level intent vs. low-level execution details) and establish clear boundaries for autonomous dynamic replanning. A mechanism for re-approval or operator intervention for high-risk dynamic changes must be defined, potentially leveraging DA007\u0027s self-STOP mechanism.",
+                        "cost":  "medium"
+                    },
+                    {
+                        "atom_id":  "DA005",
+                        "severity":  "blocking",
+                        "why":  "DA005 demands \u0027Vision must be deeply integrated into the planning phase and state management\u0027 for comprehensive screen-understanding, mismatch detection, and postcondition verification, implying a pervasive, primary role for vision. This directly conflicts with DA012, which advocates for a \u0027cheap-perception-first escalation strategy, relying on the accessibility/UI tree where available and escalating to vision only on canvas, ambiguity, or detected stuck/progress-stall conditions.\u0027 These represent fundamentally opposing architectural and performance philosophies for perception, making it impossible to implement both as stated without severe inefficiencies or contradictions.",
+                        "fix":  "A clear decision must be made on the primary perception strategy. Either prioritize the deep, pervasive vision integration of DA005 (and reject/rephrase DA012) or prioritize the cheap-perception-first approach of DA012 (and reject/rephrase DA005). This requires re-evaluating the trade-offs between robustness/intelligence and performance/cost.",
+                        "cost":  "high"
+                    }
+                ]
+}

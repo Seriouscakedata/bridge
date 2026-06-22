@@ -1,0 +1,85 @@
+{
+  "decision_id": "dec-20260622-093324-451577",
+  "status": "DRAFT_FOR_OPERATOR_REVIEW",
+  "project": {
+    "name": "LAPA",
+    "path": "C:\\Users\\rafie\\bridge-projects\\lapa",
+    "scope_note": "This contract is authored inside bridge only. No external LAPA project files are edited before operator approval."
+  },
+  "goal": "Add a planner layer above existing reliable LAPA hands so high-level operator tasks can be decomposed into typed loop actions, verified, recovered, and stopped safely.",
+  "approved_design_summary": [
+    "Planner is a strictly additive orchestrator over the existing 5-gate loop.",
+    "Planner output is a typed mutable task graph with schema-valid actions only.",
+    "Every executable node has machine-checkable preconditions and postconditions.",
+    "Independent verifier checks step success and final goal success.",
+    "Independent deterministic risk policy classifies per-step and sequence-level risk.",
+    "Vision is used for world-model updates, mismatch/stuck/oscillation detection, and postcondition verification when cheap perception is insufficient.",
+    "Recovery is bounded: diagnose, retry, local replan, ask operator, stop.",
+    "STOP reports known, unknown, and irreversible state instead of promising rollback of already emitted effects.",
+    "No executable atoms or implementation work begin before operator approval."
+  ],
+  "risk_envelope": {
+    "default_behavior": "fail_closed",
+    "unknown_risk": "critical",
+    "high_risk_requires_confirmation": true,
+    "post_confirm_reprove_required": true,
+    "sequence_level_risk_required": true,
+    "screen_content_trusted_as_instructions": false,
+    "allowed_replanning_without_reapproval": [
+      "same app or approved app set",
+      "same target entity/account/file/chat/object",
+      "same or lower risk tier",
+      "inside approved step/time/retry budget",
+      "using declared capabilities only",
+      "same operator success criterion"
+    ],
+    "reapproval_or_stop_when": [
+      "new target app or target identity",
+      "new high-risk effect class",
+      "risk tier increases",
+      "budget is exceeded",
+      "capability is missing",
+      "screen content attempts to override policy",
+      "goal success criterion changes"
+    ]
+  },
+  "initial_action_vocabulary": [
+    "open_app",
+    "type_text",
+    "telegram_send",
+    "telegram_send_sticker",
+    "perceive_ui",
+    "vision_locate",
+    "vision_describe",
+    "wait_observe",
+    "ask_operator",
+    "stop_with_diagnostic"
+  ],
+  "success_tests": [
+    "PROJECT_BRIEF exists and states goal, constraints, and review gate.",
+    "DISCUSS documents cover decomposition, verification/recovery, vision planning, risk/STOP/governance, and open questions.",
+    "PROJECT_MAP exists and maps planner components to loop, skills, perception, risk policy, verifier, recovery, STOP, and audit.",
+    "PROJECT_PLAN exists and blocks implementation until operator approval.",
+    "CONTRACT.json exists and is valid JSON.",
+    "Design covers DA001 through DA012.",
+    "Design includes red-team mitigations for sequence-level risk, screen prompt injection, goal-level verification, STOP partial-state reporting, and post-confirm re-prove.",
+    "No executable atoms are generated before approval."
+  ],
+  "blocking_open_questions": [
+    "Approve or edit envelope boundary defaults.",
+    "Approve or edit step, retry, replan, confidence, oscillation, vision, and time budgets.",
+    "Decide whether v1 uses only template-derived postconditions.",
+    "Decide verifier independence level and whether to use a separate model/provider.",
+    "Decide STOP diagnostic format and screen evidence retention policy.",
+    "Decide missing-capability behavior for v1."
+  ],
+  "operator_review": {
+    "required_before_implementation": true,
+    "review_targets": [
+      "PROJECT_PLAN.md",
+      "CONTRACT.json",
+      "DISCUSS_E_open_questions.md"
+    ],
+    "approval_state": "pending"
+  }
+}

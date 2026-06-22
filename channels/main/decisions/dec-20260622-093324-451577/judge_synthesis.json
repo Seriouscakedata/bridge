@@ -1,0 +1,227 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA001",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sound foundational principle: a strictly additive orchestrator over the proven 5-gate loop preserves all existing safety invariants while minimizing blast radius. Cross-proposal consensus (A,B), clearly testable (planner output must be valid loop input, no state mutation outside the loop), and low cost relative to a rewrite. No conflicts. Accept as the architectural anchor.",
+                      "total":  0.8575
+                  },
+                  {
+                      "atom_id":  "DA002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Largely redundant with DA004 (postcondition verify) and DA008 (bounded recovery); the Plan-Verify-Execute-Recover framing is generic and adds little beyond them.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "A useful per-step discipline that is fully consistent with the consensus atoms and the additive architecture (DA001). Single-proposal (C) and somewhat generic; the concrete substance is already carried by DA004 and DA008. Accept as the connective framing, but it should be implemented through DA004/DA008 rather than as an independent mechanism.",
+                      "total":  0.755
+                  },
+                  {
+                      "atom_id":  "DA003",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.6,
+                                     "impact":  0.9,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.5,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "High-impact conflict with DA009: dynamic replanning can invalidate the pre-approved TaskContract / Discuss-First gate.",
+                                            "value":  0.07
+                                        },
+                                        {
+                                            "reason":  "Major review gap: omits the DA004 requirement that decomposed steps carry machine-checkable postconditions.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Central planning model with very high impact and strong tri-proposal consensus (A,B,C), but the most complex and costly atom and the lowest on simplicity/risk_reduction because dynamic LLM replanning expands the autonomy surface. Modify required: (1) extend the typed task-graph schema so every executable subgoal carries a DA004 postcondition; (2) bound autonomous replanning against DA009\u0027s approval scope and route high-risk dynamic changes to DA007 self-STOP/re-approval.",
+                      "total":  0.685
+                  },
+                  {
+                      "atom_id":  "DA004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The single most important correctness invariant: positively verifying a machine-checkable postcondition and refusing to conflate \u0027action executed\u0027 with \u0027effect achieved\u0027 is what makes autonomous execution trustworthy. Highly specific and testable (inject execute-but-no-effect, expect failure flag), consensus (A,B), medium cost. Accept; this is the keystone the rest of the system should be built around (see DA003 fix).",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "DA005",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.5,
+                                     "impact":  0.85,
+                                     "simplicity":  0.4,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Blocking conflict with DA012 over perception strategy (deep/pervasive vision vs cheap-perception-first); as literally stated they imply opposing cost/architecture philosophies.",
+                                            "value":  0.15
+                                        }
+                                    ],
+                      "reason":  "The vision ROLES it defines (world-model understanding, expectation-vs-observation mismatch, stuck/oscillation detection, vision-as-judge) are genuinely valuable and back DA004\u0027s verification. But as worded (\u0027deeply integrated\u0027, \u0027pervasive\u0027) it collides with DA012 and is high-cost/low-simplicity. Modify to reconcile rather than reject: keep these as the defined CAPABILITIES/roles of vision, but invoke them via DA012\u0027s escalation policy rather than running vision pervasively. This dissolves the blocking conflict without losing the richness.",
+                      "total":  0.66
+                  },
+                  {
+                      "atom_id":  "DA006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.98,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Excellent fail-safe safety design: risk classified on the concrete effect at execution time by an INDEPENDENT deterministic policy (not planner self-declaration), unknowns defaulting to the highest tier, high-risk actions blocking on synchronous operator confirmation. Highest risk_reduction of all atoms, sharply testable, tri-proposal consensus. High cost and added complexity are justified. Accept.",
+                      "total":  0.828
+                  },
+                  {
+                      "atom_id":  "DA007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Comprehensive control: operator hard-stop checked before every gate and before any recovery/replan with a guaranteed safe/known state, plus enumerated planner self-STOP triggers (budget, low confidence, repeated-failure/oscillation, ambiguity, unexpected high-risk, operator boundaries) handing back with a diagnostic. Consensus, very specific and testable; the many triggers lower simplicity but each is justified. Accept; also serves as the safety valve for the DA003/DA009 replanning conflict.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "DA008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.78,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Clean, bounded escalation ladder (diagnose → bounded retry → local replan → ask operator → stop) that directly prevents infinite autonomous self-correction. Concrete, low-cost, easily testable, and terminates cleanly into DA007\u0027s stop. Single-proposal (A) but uncontested and complementary to DA002/DA007. Accept.",
+                      "total":  0.841
+                  },
+                  {
+                      "atom_id":  "DA009",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "High-impact conflict with DA003: a static pre-approved TaskContract / Discuss-First gate is undermined by dynamic replanning.",
+                                            "value":  0.1
+                                        }
+                                    ],
+                      "reason":  "Strong governance: a Discuss-First document chain with a mandatory approval gate, a structured TaskContract, dry-run preview, and a full audit trace give the operator control and traceability — consensus and highly specific. Modify to resolve the DA003 tension: scope approval to high-level intent/contract and risk envelope, permit autonomous low-level replanning WITHIN that envelope, and require re-approval (or DA007 self-STOP) only when a replan crosses the approved scope or raises risk tier.",
+                      "total":  0.795
+                  },
+                  {
+                      "atom_id":  "DA010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.85,
+                                     "impact":  0.82,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Constraining the planner to a schema-validated, typed action vocabulary (declared skills + perceive + vision-locate) and forbidding free-form code or invented actions is a high-leverage, low-cost safety bound that simplifies verification and complements DA006/DA011. Easily testable (attempt out-of-vocabulary action, expect rejection). Single-proposal (B) but uncontested. Accept; treat as a hard precondition on the DA003 planner.",
+                      "total":  0.864
+                  },
+                  {
+                      "atom_id":  "DA011",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.65,
+                                     "impact":  0.82,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Generator–verifier separation — the proposer is never the sole judge of its own success or safety — is a well-established guard against self-justifying agents and operationalizes DA004/DA006 (verification and risk classified by independent paths). Higher cost and lower simplicity because it requires a genuinely independent verifier, but the risk reduction is worth it. Single-proposal (B), uncontested. Accept.",
+                      "total":  0.7805
+                  },
+                  {
+                      "atom_id":  "DA012",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.78,
+                                     "feasibility":  0.82,
+                                     "impact":  0.7,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Conflict with DA005 over perception strategy (escalation-gated vision vs deep integration).",
+                                            "value":  0.1
+                                        }
+                                    ],
+                      "reason":  "A pragmatic cost/performance strategy — prefer the accessibility/UI tree, escalate to vision only on canvas, ambiguity, or stuck/progress-stall — that is specific and cheap. Modify to reconcile with DA005 rather than treat as mutually exclusive: adopt this as the INVOCATION POLICY (the \u0027when\u0027) for the vision capabilities/roles DA005 defines (the \u0027what\u0027). The escalation triggers must include DA005\u0027s mismatch/stuck/oscillation signals so cost-saving never suppresses safety-critical perception or postcondition verification (DA004).",
+                      "total":  0.758
+                  }
+              ]
+}

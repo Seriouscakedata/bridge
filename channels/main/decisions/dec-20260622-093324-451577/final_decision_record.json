@@ -1,0 +1,255 @@
+{
+    "final_answer":  "APPROVED CONSOLIDATED DESIGN for the LAPA planner layer (C:\\Users\\rafie\\bridge-projects\\lapa), folding in all judge verdicts and the two micro-debate resolutions. The planner is a STRICTLY ADDITIVE ORCHESTRATOR over the proven 5-gate loop (DA001): it selects which typed loop-action runs next and never actuates outside the loop, never bypasses a gate, never self-declares its own risk, and is never the sole judge of its own success. It performs LLM-based hierarchical decomposition into a typed, MUTABLE task-graph with dependencies, preconditions and recovery paths, realized reactively with dynamic replanning (DA003) — but constrained to a schema-validated action vocabulary of declared capabilities only (existing skills + perceive + vision-locate), with NO free-form code or invented actions (DA010). The keystone invariant: every executable subgoal carries a machine-checkable POSTCONDITION that is positively verified via perception (with vision fallback) before the step is marked done; \u0027action executed\u0027 is never conflated with \u0027effect achieved\u0027, and unverifiable success is treated as failure (DA004). An independent generator–verifier separation (DA011) and an independent deterministic RISK POLICY (DA006) operationalize this: risk is classified on the concrete effect at execution time, unknowns default to the highest tier, and high-risk effects (sends, system settings, destructive) block on synchronous operator confirmation regardless of what the planner declares. Control is guaranteed by an operator hard-stop checked before every gate AND before any recovery/replan (leaving a safe/known state), plus an enumerated planner self-STOP — budget exhaustion, low confidence, repeated verification failure/oscillation, unresolvable ambiguity, unexpected high-risk state, operator-defined boundaries — handing back with a diagnostic (DA007). Recovery is a BOUNDED ladder: diagnose → bounded retry → local replan → ask operator → stop, preventing infinite autonomous self-correction (DA008); the generic Plan-Verify-Execute-Recover framing (DA002) is adopted only as connective discipline, realized THROUGH DA004 + DA008 rather than as a separate mechanism. The two conflicts are resolved by REFRAMING, not rejection. (1) Autonomy vs approval (DA003⇄DA009): operator approval is scoped to high-level intent, the TaskContract, and the risk envelope; the planner may replan autonomously WITHIN that envelope, but any replan that crosses the approved scope or raises a risk tier triggers re-approval or DA007 self-STOP. (2) Vision strategy (DA005⇄DA012): DA005 defines the vision ROLES/capabilities (structured screen-understanding for the world-model, expectation-vs-observation mismatch, progress/stuck/oscillation detection, vision-as-judge for postcondition verification) — the \u0027what\u0027; DA012 supplies the cheap-perception-first INVOCATION POLICY — the \u0027when\u0027 (prefer accessibility/UI tree, escalate to vision on canvas, ambiguity, or stuck/progress-stall), with escalation triggers EXPLICITLY including DA005\u0027s mismatch/stuck/oscillation signals so cost-saving never suppresses safety-critical perception or DA004 verification. The entire effort runs Discuss-First (DA009): PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → TaskContract, behind a mandatory operator approval gate, with a plan-only dry-run preview and a full structured audit trace (plan, decisions, risk classifications, confirmations, verifications). Per the task contract, NO executable atoms are generated until the operator approves the PROJECT_PLAN and TaskContract.",
+    "decisions":  [
+                      {
+                          "decision":  "DA001 — Build the planner as a strictly additive orchestration layer over the existing 5-gate loop: it only selects which typed loop-action runs next and never manipulates system state outside the loop or bypasses any gate.",
+                          "rationale":  "Cross-proposal consensus (A,B) and the architectural anchor. Preserves every existing safety invariant of the proven loop, minimizes blast radius versus a rewrite, and makes the whole planner cheaply auditable. Judge total 0.8575, no conflicts.",
+                          "alternatives_considered":  [
+                                                          "Rewrite the loop to be planner-native",
+                                                          "Grant the planner direct actuation privileges that skip gates for speed"
+                                                      ],
+                          "risk":  "Low residual risk; reversibility is low (it is the foundation everything depends on), so the additive boundary must be enforced as a hard contract from day one.",
+                          "test":  "Assert that every planner emission is a valid input to the 5-gate loop and that no planner code path mutates system state without passing through the loop; attempt an out-of-band actuation and confirm it is rejected."
+                      },
+                      {
+                          "decision":  "DA002 — Adopt the Plan-Verify-Execute-Recover per-step discipline as connective framing only, realized THROUGH DA004 (postconditions) and DA008 (bounded recovery), not as an independent mechanism.",
+                          "rationale":  "Useful step-level discipline fully consistent with DA001, but its concrete substance is already carried by DA004 and DA008 (judge applied a 0.05 redundancy penalty; total 0.755). Keeping it as framing avoids duplicate machinery.",
+                          "alternatives_considered":  [
+                                                          "Implement Plan-Verify-Execute-Recover as a standalone subsystem",
+                                                          "Drop the framing entirely"
+                                                      ],
+                          "risk":  "Low; main risk is double-implementing verification/recovery — mitigated by binding it to DA004/DA008.",
+                          "test":  "Execution traces show each step has distinct plan, pre-verify, execute-via-loop, post-verify (DA004) and a defined recovery path (DA008), with no second parallel verify/recover engine."
+                      },
+                      {
+                          "decision":  "DA003 (MODIFIED) — Use LLM-based hierarchical decomposition into a typed, mutable task-graph (subgoals with dependencies, preconditions, recovery paths) realized reactively with dynamic replanning, with three mandatory amendments: (a) every executable subgoal schema field-carries a DA004 machine-checkable postcondition; (b) autonomous replanning is bounded to the DA009 approved envelope; (c) any replan crossing the approved scope or raising a risk tier routes to DA007 self-STOP/re-approval.",
+                          "rationale":  "Highest-impact atom with tri-proposal consensus (A,B,C) and the planning engine of the system, but the costliest and lowest on simplicity/risk_reduction because dynamic LLM replanning expands the autonomy surface. Judge verdict modify (total 0.685) with two penalties (DA009 conflict 0.07, missing-postcondition gap 0.03); the amendments close both.",
+                          "alternatives_considered":  [
+                                                          "Static fully pre-enumerated plan with no autonomous replanning",
+                                                          "Free-form LLM agent loop without a typed graph",
+                                                          "Flat action list instead of a hierarchical graph"
+                                                      ],
+                          "risk":  "Medium-high; uncontrolled replanning could drift outside operator intent — bounded by DA009 envelope, DA007 STOP, DA010 vocabulary, and DA011 verifier.",
+                          "test":  "Validate the planner\u0027s internal representation against the typed task-graph JSON schema; confirm every executable node has a postcondition field; force a replan that exceeds scope/raises risk and confirm it triggers re-approval or self-STOP rather than silently proceeding."
+                      },
+                      {
+                          "decision":  "DA004 — Every planned step must carry a machine-checkable postcondition that is positively verified via perception (with vision fallback) before the step is marked done; unverifiable success is treated as failure and \u0027action executed\u0027 is never conflated with \u0027effect achieved\u0027.",
+                          "rationale":  "The single most important correctness invariant and the keystone the rest of the system is built around (judge accept, total 0.86; highest specificity/risk_reduction among the execution atoms). Consensus (A,B).",
+                          "alternatives_considered":  [
+                                                          "Trust action return codes / \u0027fire-and-forget\u0027 execution",
+                                                          "Verify only at task end rather than per step",
+                                                          "Best-effort verification with proceed-on-timeout"
+                                                      ],
+                          "risk":  "Low; raises per-step cost (extra perception) — mitigated by DA012 cheap-perception-first invocation.",
+                          "test":  "For each step confirm a defined postcondition and an explicit evidence check before proceeding; inject an execute-but-no-effect scenario and confirm the system flags failure and enters recovery rather than advancing."
+                      },
+                      {
+                          "decision":  "DA005 (MODIFIED) — Treat the rich vision roles (structured screen-understanding for the world-model, expectation-vs-observation mismatch detection, progress/stuck/oscillation detection, vision-as-judge for postcondition verification) as the defined CAPABILITIES of vision, but invoke them via DA012\u0027s escalation policy rather than running vision pervasively.",
+                          "rationale":  "The vision roles genuinely back DA004 verification and replanning, but as literally worded (\u0027deeply integrated\u0027, \u0027pervasive\u0027) they collide with DA012 and are high-cost/low-simplicity (judge modify, total 0.66, blocking-conflict penalty 0.15). Reframing as \u0027what\u0027 (DA005) governed by \u0027when\u0027 (DA012) dissolves the conflict without losing richness.",
+                          "alternatives_considered":  [
+                                                          "Pervasive always-on vision as the primary perception channel (rejected on cost/latency)",
+                                                          "Vision used only for coordinate location (rejected — loses planning/verification value)"
+                                                      ],
+                          "risk":  "Medium; risk that cost-gating suppresses a needed vision call — mitigated by making DA005\u0027s mismatch/stuck/oscillation signals first-class escalation triggers in DA012.",
+                          "test":  "Demonstrate vision updating the world model, triggering replanning on unexpected screen change, detecting a stuck state, and judging a postcondition — each reached via the escalation policy, not via continuous polling."
+                      },
+                      {
+                          "decision":  "DA006 — Implement the declared-risk ladder in the plan-step schema, classifying risk on the concrete EFFECT at execution time via an independent deterministic policy, defaulting unknown/unclassifiable effects to the highest tier (confirm/stop), with high-risk actions (sends, system settings, destructive) blocking on synchronous operator confirmation.",
+                          "rationale":  "Best fail-safe in the set: classification is independent of the planner\u0027s self-declaration, unknowns fail safe to the top tier, and dangerous effects require a human. Highest risk_reduction of all atoms (0.98), tri-proposal consensus, sharply testable (judge accept, total 0.828).",
+                          "alternatives_considered":  [
+                                                          "Planner self-declares its own risk tier (rejected — self-justifying agent)",
+                                                          "Classify by action type at plan time rather than concrete effect at execution time (rejected — misses runtime context)",
+                                                          "Async/non-blocking confirmation for high-risk (rejected — defeats fail-closed)"
+                                                      ],
+                          "risk":  "Low; over-classification may cause frequent confirmations — acceptable trade for safety; tune tiers post-pilot.",
+                          "test":  "Run read-only / send-message / change-setting / delete-file actions; confirm classification comes from the independent policy and that a planner attempt to mislabel a high-risk action low still triggers operator confirmation."
+                      },
+                      {
+                          "decision":  "DA007 — Implement a comprehensive STOP: an operator hard-stop checked before every gate and before any recovery/replan (always leaving a safe/known state), plus a planner self-STOP triggered by budget exhaustion, low confidence, repeated verification failure/oscillation, unresolvable ambiguity, unexpected high-risk state, or operator-defined boundaries, handing back with a diagnostic.",
+                          "rationale":  "Comprehensive control that also serves as the safety valve for the DA003/DA009 replanning boundary (judge accept, total 0.81; risk_reduction 0.95). Consensus, specific, testable; many triggers lower simplicity but each is justified.",
+                          "alternatives_considered":  [
+                                                          "Stop checked only between tasks (rejected — too coarse)",
+                                                          "Self-STOP on budget only, no behavioral triggers (rejected — misses oscillation/ambiguity)"
+                                                      ],
+                          "risk":  "Low; complexity of \u0027safe/known state\u0027 for non-atomic GUI actions is the real hazard (see open questions).",
+                          "test":  "Inject operator hard-stop at multiple points (mid-gate, pre-recovery) and confirm immediate halt to a safe state; simulate repeated failure / budget exhaustion and confirm self-STOP with a diagnostic handoff."
+                      },
+                      {
+                          "decision":  "DA008 — Bound the recovery strategy to a fixed escalation ladder: diagnose → bounded retry → local replan → ask operator → stop, preventing infinite autonomous self-correction.",
+                          "rationale":  "Clean, low-cost, easily testable termination that flows cleanly into DA007\u0027s stop (judge accept, total 0.841). Single-proposal (A) but uncontested and complementary to DA002/DA007.",
+                          "alternatives_considered":  [
+                                                          "Unbounded retry-until-success (rejected — infinite loops)",
+                                                          "Immediate escalation to operator on any failure (rejected — negates autonomy)"
+                                                      ],
+                          "risk":  "Low; retry/replan caps must be tuned so the system neither thrashes nor gives up too early.",
+                          "test":  "Simulate a recoverable failure and confirm bounded retries then local replan before escalating; confirm caps are enforced and no infinite loop is possible."
+                      },
+                      {
+                          "decision":  "DA009 (MODIFIED) — Run a Discuss-First document chain (PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract) behind a mandatory operator approval gate before any implementation/atom generation, with a structured TaskContract, plan-only dry-run preview, and full audit trace; SCOPE approval to high-level intent + contract + risk envelope, permit autonomous low-level replanning within that envelope, and require re-approval (or DA007 self-STOP) only when a replan crosses scope or raises a risk tier.",
+                          "rationale":  "Strong governance and traceability with consensus and high specificity (judge modify, total 0.795; DA003-conflict penalty 0.10). The scoping amendment makes Discuss-First compatible with dynamic replanning, resolving the central autonomy-vs-control tension surfaced in both micro-debate rounds.",
+                          "alternatives_considered":  [
+                                                          "Approve every executable atom individually (rejected — impractical bottleneck, negates adaptivity)",
+                                                          "Approve only once up front with unlimited downstream autonomy (rejected — unauditable, unsafe)"
+                                                      ],
+                          "risk":  "Medium; the envelope boundary must be precisely defined or it becomes either too permissive or too chatty (open question).",
+                          "test":  "Confirm no code commit / task creation occurs before PROJECT_PLAN + TaskContract approval; demonstrate the TaskContract, dry-run preview, and audit trace; confirm an in-envelope replan proceeds while an out-of-envelope/risk-raising replan forces re-approval."
+                      },
+                      {
+                          "decision":  "DA010 — Constrain the planner to a schema-validated, typed action vocabulary limited to declared capabilities (existing skills + perceive + vision-locate); prohibit free-form code generation and invented actions.",
+                          "rationale":  "High-leverage, low-cost safety bound that simplifies verification and complements DA006/DA011 (judge accept, total 0.864). Treat as a hard precondition on the DA003 planner. Single-proposal (B), uncontested.",
+                          "alternatives_considered":  [
+                                                          "Allow the planner to emit arbitrary code/shell when no skill fits (rejected — unbounded risk)",
+                                                          "Open-ended natural-language action descriptions (rejected — unverifiable, unmappable)"
+                                                      ],
+                          "risk":  "Low for safety; introduces a capability-coverage gap when a task needs an undeclared skill (open question / handled by DA007 self-STOP).",
+                          "test":  "Prompt the planner toward an out-of-vocabulary or free-form action and confirm it is rejected/flagged invalid rather than executed."
+                      },
+                      {
+                          "decision":  "DA011 — Implement generator–verifier separation so the component proposing a step is never the sole judge of its success or safety; an independent verification and risk path confirms the step before acceptance and before any high-risk action proceeds.",
+                          "rationale":  "Well-established guard against self-justifying agents; operationalizes DA004 (success) and DA006 (risk) via independent paths (judge accept, total 0.7805). Higher cost/lower simplicity because it needs a genuinely independent verifier, but the risk reduction is worth it. Single-proposal (B), uncontested.",
+                          "alternatives_considered":  [
+                                                          "Planner self-verifies its own steps (rejected — self-justification)",
+                                                          "Verification by a second prompt to the same model with no independence guarantees (acceptable only if shown independent — see open questions)"
+                                                      ],
+                          "risk":  "Medium; \u0027independence\u0027 must be real (separate policy/model/rules), and a second LLM verifier introduces its own nondeterminism.",
+                          "test":  "Have the planner propose a risky/incorrect step and confirm a distinct component performs safety and success verification before the step is allowed to proceed."
+                      },
+                      {
+                          "decision":  "DA012 (MODIFIED) — Adopt cheap-perception-first as the INVOCATION POLICY for DA005\u0027s vision roles: prefer the accessibility/UI tree where available and escalate to vision only on canvas, ambiguity, or detected stuck/progress-stall — with escalation triggers extended to include DA005\u0027s expectation-mismatch/stuck/oscillation signals so cost-saving never suppresses safety-critical perception or DA004 verification.",
+                          "rationale":  "Pragmatic, specific, cheap performance strategy (judge modify, total 0.758; DA005-conflict penalty 0.10). Reframed as the \u0027when\u0027 for DA005\u0027s \u0027what\u0027, dissolving the blocking conflict; the trigger extension prevents cost optimization from defeating verification.",
+                          "alternatives_considered":  [
+                                                          "Vision-first for all perception (rejected — cost/latency)",
+                                                          "Accessibility-tree-only with no vision escalation (rejected — fails on canvas/ambiguity)"
+                                                      ],
+                          "risk":  "Medium; mis-tuned escalation thresholds could either over-call vision (cost) or under-call it (missed mismatch) — define thresholds in DISCUSS_vision.",
+                          "test":  "Observe perception calls: accessibility/UI tree is used first; vision fires on canvas, UI ambiguity, progress-stall, AND on DA005 mismatch/oscillation signals; confirm postcondition verification is never skipped for cost reasons."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Pervasive/always-on vision as the primary perception channel (literal reading of DA005).",
+                         "why":  "Blocking conflict with DA012 and high cost/latency. Reframed: vision roles retained as capabilities but invoked via the cheap-perception-first escalation policy."
+                     },
+                     {
+                         "decision":  "A fully static, pre-enumerated plan with no autonomous replanning (one horn of the DA003/DA009 conflict).",
+                         "why":  "Negates the adaptive value of an LLM planner in unpredictable GUI environments. Replaced by autonomous replanning bounded to an approved envelope."
+                     },
+                     {
+                         "decision":  "Per-atom operator approval — requiring human sign-off before every executable action or every replan (other horn of DA003/DA009).",
+                         "why":  "Impractical bottleneck that defeats reactive operation. Replaced by envelope-scoped approval with re-approval only on scope-crossing or risk-tier escalation."
+                     },
+                     {
+                         "decision":  "DA002 implemented as an independent Plan-Verify-Execute-Recover subsystem.",
+                         "why":  "Redundant with DA004 and DA008 (judge redundancy penalty). Kept only as connective framing realized through those atoms."
+                     },
+                     {
+                         "decision":  "Planner self-declaration of risk as authoritative.",
+                         "why":  "A self-justifying agent cannot be trusted to gate its own dangerous effects. DA006 mandates an independent deterministic policy that overrides planner declarations and defaults unknowns to the top tier."
+                     },
+                     {
+                         "decision":  "Planner-emitted free-form code or invented (out-of-vocabulary) actions.",
+                         "why":  "Unbounded, unverifiable risk surface. DA010 restricts the planner to a schema-validated typed vocabulary of declared capabilities."
+                     },
+                     {
+                         "decision":  "The generator (proposer) acting as sole judge of its own step\u0027s success/safety.",
+                         "why":  "Eliminated by DA011 generator–verifier separation; an independent path must confirm success (DA004) and risk (DA006)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Envelope boundary definition: precisely what magnitude/kind of replan \u0027crosses the approved scope\u0027 (new target app, new high-risk effect class, exceeding a step/cost budget) and thus forces DA009 re-approval vs counts as in-envelope autonomy?",
+                           "Concrete self-STOP budgets and thresholds (DA007/DA008): max steps, token/time budget, retry count, oscillation-detection window, and the low-confidence cutoff — need numbers, not just categories.",
+                           "Postcondition authoring (DA004): are postconditions generated by the LLM at decompose time, drawn from a per-skill template library, or operator-specified — and how is \u0027machine-checkable\u0027 enforced/validated so the LLM cannot emit a trivially-true postcondition?",
+                           "Independent verifier and risk policy realization (DA006/DA011): rule-based, a separate model, or hybrid — and how is genuine independence guaranteed (and determinism preserved for the risk policy)?",
+                           "Safe/known-state semantics for hard-stop mid-action (DA007): GUI actions are often non-atomic; define what rollback/quiescence means when a stop lands between a click and its effect.",
+                           "Vision escalation thresholds (DA005/DA012): quantitative definitions of \u0027ambiguity\u0027, \u0027progress-stall\u0027, and \u0027oscillation\u0027 that trigger vision, and the cost/latency budget per task.",
+                           "Capability-coverage gap (DA010): expected behavior when a high-level task requires a capability not yet declared as a skill — self-STOP and request a new skill, or attempt a vision-driven generic interaction within vocabulary?",
+                           "Audit trace and dry-run fidelity (DA009): storage/retention of the audit trace, and how faithfully the plan-only dry-run can predict risk classifications and confirmations without execution-time effect data."
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "0. PROJECT_BRIEF",
+                                    "deliverable":  "Brief capturing goal (autonomous high-level task execution via self-decomposition), existing \u0027reliable hands\u0027 (5-gate loop, open/type/telegram skills, vision-for-canvas), the planning gap, and the six hard constraints (fail-closed, risk ladder, STOP, Discuss-First, operator review, no atoms pre-approval).",
+                                    "gate":  "none (input doc)"
+                                },
+                                {
+                                    "phase":  "1. DISCUSS_* (one per design axis)",
+                                    "deliverable":  "DISCUSS_decomposition (DA003 task-graph schema + DA010 vocabulary), DISCUSS_verification_recovery (DA004 postconditions + DA002 framing + DA008 ladder + DA011 generator–verifier), DISCUSS_vision_in_planning (DA005 roles governed by DA012 invocation policy), DISCUSS_risk_and_control (DA006 ladder + DA007 STOP), DISCUSS_governance (DA009 envelope-scoped approval, dry-run, audit trace). Each records the resolved decisions and open questions above.",
+                                    "gate":  "none (design docs)"
+                                },
+                                {
+                                    "phase":  "2. PROJECT_MAP",
+                                    "deliverable":  "Map planner components onto existing modules: orchestrator boundary over the 5-gate loop (DA001), interfaces to skills/perceive/vision-locate, the independent risk policy and verifier as separate components, the world-model store, and the audit/dry-run layer. Define every interface as additive with no gate bypass.",
+                                    "gate":  "none (design doc)"
+                                },
+                                {
+                                    "phase":  "3. PROJECT_PLAN",
+                                    "deliverable":  "Phased post-approval build sequence with the 12 consolidated decisions: (3a) foundations — typed action vocabulary (DA010), postcondition schema (DA004), independent deterministic risk policy (DA006), generator–verifier scaffold (DA011); (3b) planner core — LLM hierarchical decomposition + typed mutable task-graph with envelope-bounded replanning (DA003); (3c) perception — vision roles (DA005) under cheap-perception-first escalation (DA012); (3d) control — recovery ladder (DA008) + STOP (DA007) + operator hard-stop checkpoints; (3e) governance — TaskContract emission, plan-only dry-run preview, full audit trace (DA009). Includes the tests listed per decision and resolution targets for open questions.",
+                                    "gate":  "none yet (plan doc)"
+                                },
+                                {
+                                    "phase":  "4. TaskContract",
+                                    "deliverable":  "Structured TaskContract (matching the provided schema) encoding the approved intent, risk envelope, success_tests, and constraints, ready for operator review.",
+                                    "gate":  "none yet (contract doc)"
+                                },
+                                {
+                                    "phase":  "5. OPERATOR REVIEW GATE (mandatory, blocking)",
+                                    "deliverable":  "Operator reviews and approves PROJECT_PLAN + TaskContract. No executable atoms, code commits, or task creation may occur before this approval (hard constraint).",
+                                    "gate":  "BLOCKING — implementation cannot start until approved"
+                                },
+                                {
+                                    "phase":  "6+. Post-approval build (gated)",
+                                    "deliverable":  "Execute build phases 3a→3e in order, each landing behind its own per-decision tests and a pilot on low-risk read-only tasks before enabling any high-risk (confirm-tier) effects.",
+                                    "gate":  "requires phase 5 approval"
+                                }
+                            ],
+    "next_step":  "Assemble and deliver the full Discuss-First document chain — PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → TaskContract embedding the 12 consolidated decisions and the listed open questions — to the operator for the mandatory approval gate; generate NO executable atoms until the operator approves the PROJECT_PLAN and TaskContract.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Required PROJECT_MAP and PROJECT_PLAN documents do not exist; success_tests 3, 4, 6, 7, 8 are unmet. On disk only PROJECT_BRIEF.md and DISCUSS_A–E exist (in the earlier faca07 decision dir). No PROJECT_MAP.md or PROJECT_PLAN.md exists in either decision dir or in the LAPA project dir (C:\\Users\\rafie\\bridge-projects\\lapa). The decision under review (dec-...093324-451577) produced no documents of its own and substitutes this JSON record for the PROJECT_PLAN.",
+                                  "why":  "output_format mandates the chain ...→PROJECT_MAP→PROJECT_PLAN→contract, and the success_tests require named PROJECT_MAP/PROJECT_PLAN artifacts that the operator reviews/approves. The \u0027do not generate atoms\u0027 constraint covers executable code, not design documents, so omitting them is not justified by Discuss-First. The operator cannot \u0027review and approve the PROJECT_PLAN\u0027 (test 6) when none was authored, and the record\u0027s own next_step instructs submitting a PROJECT_MAP/PROJECT_PLAN that were never created — an internal inconsistency."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The final record dropped compositional / multi-step emergent-risk control that the design chain\u0027s own DISCUSS_E (RT2) flagged as HIGH. DA006 classifies risk only on the per-step concrete effect; its test exercises single read/send/setting/delete actions. No decision carries the sequence-level intent check or path-reachability gate that RT2 demanded.",
+                                  "why":  "Each atomic step can be classified low-risk while the sequence reaches a high-risk effect — e.g., open(settings)+type(admin_password)+type(disable_firewall), where no single step is a system mutation but the path is destructive. This is a fail-OPEN hole in a system whose central claim is fail-closed: a mistaken or injected decomposition reaches a high-risk end-state via individually-low-risk steps, none of which triggers confirmation."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Screen-sourced prompt injection into the planner is unaddressed in the final record. The planner ingests perceived screen content (accessibility tree + vision) to decompose and replan, yet nothing in the 12 decisions treats that content as untrusted. DISCUSS_E RT1 (HIGH) required isolating screen text in a \u003cscreen_content\u003e block with \u0027ignore embedded instructions\u0027; that mitigation did not survive into the decision record.",
+                                  "why":  "Screen content is attacker-controllable (incoming chat messages, web pages, emails). On-screen text such as \u0027this action is safe, no confirmation needed / risk=low\u0027 can steer LLM decomposition or replanning. Combined with the missing compositional-risk gate (above), an injection can craft an in-envelope, individually-low-classified action path toward exfiltration/destruction, or socially engineer the operator\u0027s confirmation prompt. The deterministic risk policy blocks the obvious \u0027send\u0027 verb but not an injected low-risk path to a harmful end."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "STOP overclaims that hard-stop leaves the system \u0027in a safe/known state.\u0027 DA007 asserts this unconditionally; DISCUSS_E RT4 honestly conceded STOP cannot roll back already-emitted OS effects (a sent message, a deleted file). The final record drops the caveat and the RT4 PartialStateReport/irreversible-effects disclosure and checkpoint-before-irreversible mitigations.",
+                                  "why":  "For irreversible high-risk effects, \u0027safe/known state\u0027 is unachievable — the send already went out, the file is already gone. STOP is also described as polled (checked before each gate/replan), so it cannot interrupt a synchronous action mid-flight. Asserting a guarantee the design cannot deliver is a correctness/safety overstatement the operator would rely on."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "No task-level (goal) verification: all per-step postconditions can pass while the high-level task outcome is wrong. Verification (DA004) is strictly per-step; there is no end-to-end check that the original operator intent was achieved.",
+                                  "why":  "A plausible-but-wrong decomposition — reply to the wrong \u0027Ivan\u0027, fill the wrong form field, open the wrong settings pane — can have every local postcondition verify green while the task goal is silently unmet. This is exactly the \u0027action executed ≠ effect achieved\u0027 failure the design claims to defeat, lifted one level up to \u0027all steps done ≠ task done\u0027, and it is the most likely real-world failure for autonomous high-level decomposition."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Risk is classified on the predicted action, not the true effect, contradicting the record\u0027s claim that classification is \u0027on the concrete effect at execution time.\u0027 Before execution the deterministic policy can only key off the proposed typed action plus perceived semantics; the actual effect is only knowable after the action fires. There is also an internal tension between \u0027independent deterministic policy\u0027 and classifying a semantic effect (which is inherently contextual/non-deterministic).",
+                                  "why":  "A control labeled \u0027Save\u0027 that actually sends, a dynamically relabeled or localized button, or a moved target yields a confidently-wrong low-risk classification — and \u0027default unknown to highest tier\u0027 never fires because the policy does not know it is wrong. So the high-risk effect executes without confirmation: fail-open, not fail-closed. The claim of classifying the concrete effect pre-execution is not literally achievable."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Synchronous operator-confirmation widens the TOCTOU window. High-risk effects block on human confirmation (DA006), inserting seconds of latency between perceive/classify/confirm and execute, after which the approved action fires. The record does not require re-verifying the confirmed payload/target immediately post-confirm and pre-act.",
+                                  "why":  "During the human-time confirm delay the UI can change (focus steal, notification, async reload, contact list reorder), so \u0027send to X\u0027 approved by the operator can dispatch against a different target/state. DISCUSS_E RT6 leans on the 5-gate PROVE re-read, but the confirm pause is precisely when staleness is most likely; without a post-confirm re-prove the operator\u0027s approval is bound to stale evidence."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Generator-verifier \u0027independence\u0027 (DA011/DA004) is only role/prompt separation over a shared sensory channel and likely the same model family; vision-as-judge is the last line of defense yet is itself prone to confident false positives, with no fallback specified.",
+                                  "why":  "If the verifier confirms a postcondition from the same screenshot/UIA snapshot the generator used, correlated perception errors (a spoofed/hallucinated success toast, a misread \u0027sent\u0027) fool both, defeating the independence the design relies on. The record\u0027s own open question flags vision-as-judge reliability and ambiguous verdicts but provides no independent-evidence requirement or false-positive mitigation — a false-positive verification marks a failed or wrong high-risk effect as done."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The load-bearing \u0027approved envelope\u0027 boundary and every self-STOP threshold are undefined, deferred to open questions. The entire autonomy-vs-control resolution (DA003/DA009) and self-STOP (DA007) depend on them: which replans are in-envelope vs. out-of-envelope, and the numeric budget/confidence/oscillation/consecutive-failure limits.",
+                                  "why":  "As written, \u0027bounded autonomous replanning\u0027 and \u0027self-STOP on low confidence/oscillation\u0027 are not implementable or testable, and the safety boundary distinguishing autonomous action from required re-approval has no definition. The central control claim — that the planner may only replan within the approved envelope — is currently unfalsifiable, so an operator approving this design is approving an undefined autonomy boundary."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}
