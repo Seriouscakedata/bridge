@@ -1,4 +1,4 @@
-$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
+﻿$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
 $files = @('lib/jobs.ps1','lib/parallel.ps1','lib/memory.ps1','librarian.ps1','lib/backlog.ps1','tools/deep-audit-agent.ps1')
 Write-Host '=== PARSE + BOM ==='
 foreach($f in $files){

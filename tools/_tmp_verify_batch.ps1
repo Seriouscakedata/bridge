@@ -1,4 +1,4 @@
-$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
+﻿$root = 'C:\Users\rafie\OneDrive\Documents\bridge'
 $files = @('lib\agent-wait.ps1','driver\40-agent-invoke.ps1','tools\test-agent-wait.ps1','lib\backlog.ps1')
 $allOk = $true
 foreach ($f in $files) {

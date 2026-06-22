@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-analyze-decision-shadow.ps1 -- tests the shadow-evidence analyzer against the LIVE log format.
 # Codex review (Atom 3): legacy is task_intent serialized to a JSON STRING (primary_mode/mode/...), and
 # the model/legacy vocabularies only partly overlap. These tests prove the analyzer extracts the legacy

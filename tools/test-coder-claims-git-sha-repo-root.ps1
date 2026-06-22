@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Verifies Test-CoderClaims resolves git SHA claims through the explicit repo root,
 # not through the current process directory or the bridge repo.
 

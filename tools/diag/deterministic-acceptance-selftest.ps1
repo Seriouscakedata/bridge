@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # VERIFY-COVERS: driver/86-loop-completion-checks.ps1
 # Tests Invoke-DeterministicAcceptance (speed program 1a): the driver runs declared checks
 # itself (py_compile for .py, parse for .ps1) instead of burning a planner VERIFY turn.

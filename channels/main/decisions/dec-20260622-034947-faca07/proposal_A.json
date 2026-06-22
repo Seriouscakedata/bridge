@@ -1,0 +1,108 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно не реализовывать код сейчас, а подготовить discuss-first архитектурное предложение для проекта ЛАПА: поверх существующего надежного исполнительного loop добавить слой планировщика, который принимает высокоуровневую цель, сам декомпозирует ее в проверяемые loop-шаги open→perceive→navigate→act, использует vision как источник состояния и диагностики в планировании, и при этом не ослабляет fail-closed, declared-risk ladder и STOP. До ревью оператора нельзя переходить к реализации или генерации исполнительных атомов.",
+    "summary":  "Предлагаю спроектировать Planner Layer как надстройку над существующими «руками», а не переписывать loop: Task Intake → Risk Classifier → Hierarchical Task Graph Planner → Step Executor Adapter → Per-Step Verifier → Recovery/Replanner → Audit/STOP Guard. Документальный результат должен идти строго в порядке PROJECT_BRIEF → DISCUSS_PLANNER → DISCUSS_VISION → DISCUSS_SAFETY → PROJECT_MAP → PROJECT_PLAN → contract. PROJECT_PLAN и contract фиксируют интерфейсы, инварианты безопасности, формат task graph, правила подтверждений, STOP-приоритет, условия replanning и критерии приемки до любой реализации.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Планировщик должен строить и поддерживать иерархический task graph, а не одноразовый плоский список действий.",
+                               "reason":  "Высокоуровневые задачи требуют подцелей, предусловий, критериев завершения, зависимостей, альтернативных маршрутов и восстановления после частичного прогресса.",
+                               "tradeoff":  "Task graph сложнее плоского плана, но дает управляемую верификацию и replanning без потери fail-closed поведения.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "Каждый узел task graph должен иметь intent, preconditions, allowed tools, risk class, expected observations, done criteria и recovery policy.",
+                               "reason":  "Это делает шаги проверяемыми и ограничивает исполнительный слой только разрешенными действиями.",
+                               "tradeoff":  "План станет более многословным, зато контракт безопасности будет машинно проверяемым.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Существующий 5-гейтовый loop должен остаться единственным исполнительным механизмом для действий, а планировщик должен быть orchestration layer поверх него.",
+                               "reason":  "Надежность уже находится в руках/loop; новый слой должен добавлять автономную декомпозицию, не обходя существующие гарантии.",
+                               "tradeoff":  "Планировщик будет ограничен возможностями текущих навыков, но это снижает риск регрессий.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Vision нужно встроить в planning loop как источник state summary, affordance map, stuck diagnosis и plan repair, а не только как locate-элемент.",
+                               "reason":  "Автономное выполнение требует понимать, где агент находится, какие действия доступны, почему ожидание не совпало с экраном, и какой следующий безопасный шаг выбрать.",
+                               "tradeoff":  "Потребуются новые структуры наблюдений и правила доверия к vision, но это закрывает главный пробел между locate и планированием.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Risk classifier должен запускаться на уровне всей задачи и повторно на каждом узле плана перед исполнением.",
+                               "reason":  "Риск может появиться после декомпозиции: отправка сообщения, системная настройка, покупка, удаление или публикация могут быть скрыты внутри общей цели.",
+                               "tradeoff":  "Больше confirm-пауз, но declared-risk ladder остается сохраненным и предсказуемым.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "STOP должен быть глобальным асинхронным инвариантом, который прерывает planner, executor, recovery и pending confirmations.",
+                               "reason":  "Если STOP обрабатывается только в executor, planner может продолжить готовить или перепланировать действия после запрета оператора.",
+                               "tradeoff":  "Нужна единая точка проверки состояния STOP, но это обязательное условие fail-closed.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Восстановление должно быть ограниченным: сначала re-perceive, затем vision diagnosis, затем альтернативный безопасный шаг, затем escalation to operator.",
+                               "reason":  "Автономность не должна превращаться в бесконечные попытки или рискованные догадки при неопределенном UI-состоянии.",
+                               "tradeoff":  "Агент иногда остановится раньше, чем мог бы, но это соответствует fail-closed модели.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "contract должен фиксировать запрет на исполнение незаверенного или непроверенного шага плана.",
+                               "reason":  "Планировщик LLM может ошибиться; контракт должен требовать структурной валидации, проверки риска и соответствия allowlist навыков перед действием.",
+                               "tradeoff":  "Добавляется validation layer, зато LLM остается генератором предложений, а не прямым источником действий.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Документы DISCUSS_* должны явно сравнить варианты: LLM-only decomposition, rule/task-graph planner и hybrid planner.",
+                               "reason":  "Оператору нужно ревью не только выбранного решения, но и причин отказа от альтернатив для high-risk архитектуры.",
+                               "tradeoff":  "Документальная фаза станет длиннее, но снизит вероятность реализации неверного слоя.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Минимальная версия должна ограничиться автономной декомпозицией в пределах существующих навыков open/type/telegram/vision без добавления новых опасных capabilities.",
+                               "reason":  "Так можно проверить planner-layer на реальных задачах без расширения поверхности риска.",
+                               "tradeoff":  "Покрытие задач будет уже, но приемка будет быстрее и безопаснее.",
+                               "confidence":  0.89
+                           }
+                       ],
+    "assumptions":  [
+                        "В проекте ЛАПА уже существует стабильный исполнительный loop с 5 gate-проверками и навыками open/type/telegram/vision.",
+                        "Под «атомами» в ограничении имеется в виду не начинать реализацию или генерацию исполняемых low-level action atoms до утверждения PROJECT_PLAN и contract оператором.",
+                        "Оператор ожидает архитектурные документы и контракт, а не изменения кода в этом шаге.",
+                        "Существующий declared-risk ladder уже имеет категории действий, требующих confirm, и его нужно переиспользовать, а не заменить.",
+                        "Vision уже может возвращать данные, достаточные как минимум для locate/canvas, но для планирования понадобится нормализованный observation/state формат."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "LLM-планировщик может сгенерировать убедительный, но небезопасный или неверифицируемый план.",
+                      "severity":  "high",
+                      "mitigation":  "Использовать structured task graph, schema validation, allowlist tools, per-step risk classification, done criteria и запрет исполнения невалидных узлов."
+                  },
+                  {
+                      "risk":  "Vision может ошибочно интерпретировать UI-состояние и подтолкнуть planner к неверному действию.",
+                      "severity":  "high",
+                      "mitigation":  "Разделить vision observation и decision; требовать corroboration через loop perceive, confidence thresholds, screenshot audit и fallback к оператору при неопределенности."
+                  },
+                  {
+                      "risk":  "Planner может обойти declared-risk ladder, спрятав рискованное действие внутри безобидной подцели.",
+                      "severity":  "high",
+                      "mitigation":  "Классифицировать риск на task-level и node-level, а также перед act; любые send/system/publish/delete/payment-like действия требуют confirm независимо от формулировки цели."
+                  },
+                  {
+                      "risk":  "Recovery/replanning может зациклиться или начать пробовать опасные альтернативы.",
+                      "severity":  "medium",
+                      "mitigation":  "Ввести bounded recovery budget, escalation thresholds, запрещенные действия при stuck-state и обязательный re-perceive перед replanning."
+                  },
+                  {
+                      "risk":  "STOP может быть обработан не во всех слоях новой архитектуры.",
+                      "severity":  "high",
+                      "mitigation":  "Сделать STOP глобальным инвариантом contract: проверка перед planning, before/after perceive, before execution, during waits, before recovery and before confirmations."
+                  },
+                  {
+                      "risk":  "Документы могут стать слишком абстрактными и не дать реализуемого контракта.",
+                      "severity":  "medium",
+                      "mitigation":  "PROJECT_PLAN должен включать конкретные интерфейсы, JSON-схемы plan/node/observation, state machine, acceptance tests и migration steps."
+                  }
+              ],
+    "minimal_version":  "Discuss-first MVP: подготовить PROJECT_BRIEF, DISCUSS_PLANNER, DISCUSS_VISION, DISCUSS_SAFETY, PROJECT_MAP, PROJECT_PLAN и contract. Архитектура MVP: один Planner Controller, structured task graph, per-step verifier, risk gate reuse, STOP guard, bounded recovery. Планировщик работает только поверх существующих навыков open/type/telegram/vision, не добавляет новые capabilities, не исполняет ничего без утвержденного плана и contract.",
+    "advanced_version":  "Расширенная версия после утверждения MVP: persistent task memory, reusable task templates, richer affordance maps from vision, multi-hypothesis planning, simulator/dry-run validator, plan quality scoring, operator policy profiles, regression suite for high-level tasks, structured audit replay and learned recovery patterns while preserving confirm gates and STOP as non-negotiable invariants."
+}

@@ -27,6 +27,7 @@ $null = Initialize-Bridge   # ensure files exist
 $serverStartTime = Get-Date
 $healthMemoryStamp = [datetime]::MinValue
 $healthMemoryCount = 0
+$healthMemoryLastReadTime = [datetime]::MinValue
 $healthConversationStamp = ''
 $healthConversationLastSeq = 0
 $healthConversationErrorCount = 0
@@ -89,6 +90,85 @@ function Get-QueryParamUtf8 {
     return [System.Net.WebUtility]::UrlDecode($kv[1])
   }
   try { return [string]$ctx.Request.QueryString[$Name] } catch { return '' }
+}
+function Get-FastJsonlCount {
+  param(
+    [string]$Path,
+    [string]$CountPath,
+    [int]$CachedCount = 0,
+    [int64]$ExactMaxBytes = 1048576
+  )
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 0 }
+  if (-not [string]::IsNullOrWhiteSpace($CountPath) -and (Test-Path -LiteralPath $CountPath -PathType Leaf)) {
+    try {
+      $rawCount = [string]([System.IO.File]::ReadAllText($CountPath, [System.Text.Encoding]::UTF8)).Trim()
+      $parsedCount = 0
+      if ([int]::TryParse($rawCount, [ref]$parsedCount) -and $parsedCount -ge 0) { return $parsedCount }
+    } catch {}
+  }
+  try {
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ([int64]$item.Length -gt $ExactMaxBytes) { return [Math]::Max(0, $CachedCount) }
+  } catch {
+    return [Math]::Max(0, $CachedCount)
+  }
+  $count = 0
+  $fs = $null
+  $reader = $null
+  try {
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $reader = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
+    while ($null -ne $reader.ReadLine()) { $count++ }
+    return $count
+  } catch {
+    return [Math]::Max(0, $CachedCount)
+  } finally {
+    if ($null -ne $reader) { $reader.Close(); $reader.Dispose() }
+    elseif ($null -ne $fs) { $fs.Dispose() }
+  }
+}
+function Get-FastJsonlTailLines {
+  param([string]$Path, [int]$Tail = 500, [int64]$MaxBytes = 1048576)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+  # 2026-06-22: was Get-Content -Tail. In the /api/health hot-path (runs on every
+  # conversation.jsonl append) that cmdlet opens the file via its default share
+  # mode and adds pipeline overhead; while the driver concurrently appends on
+  # OneDrive it could stall/fail (sharing violation / oplock latency) -> health
+  # timeout -> watchdog_rollback_api_stuck. Read a bounded window from EOF with
+  # FileShare.ReadWrite, so health never full-scans a growing JSONL store.
+  if ($Tail -le 0) { return @() }
+  if ($MaxBytes -lt 4096) { $MaxBytes = 4096 }
+  $fs = $null
+  try {
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $length = [int64]$fs.Length
+    if ($length -le 0) { return @() }
+    $window = [Math]::Min([int64]65536, $length)
+    $text = ''
+    while ($true) {
+      $window = [Math]::Min($window, [Math]::Min($length, $MaxBytes))
+      [void]$fs.Seek($length - $window, [System.IO.SeekOrigin]::Begin)
+      $buffer = New-Object byte[] ([int]$window)
+      $read = $fs.Read($buffer, 0, [int]$window)
+      $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+      $lineCount = ([regex]::Matches($text, "`n")).Count
+      if ($lineCount -gt $Tail -or $window -ge $length -or $window -ge $MaxBytes) { break }
+      $window = [Math]::Min($window * 2, [Math]::Min($length, $MaxBytes))
+    }
+    $raw = @($text -split "`n")
+    while ($raw.Count -gt 0 -and $raw[$raw.Count - 1] -eq '') {
+      if ($raw.Count -eq 1) { $raw = @() } else { $raw = @($raw[0..($raw.Count - 2)]) }
+    }
+    if ($window -lt $length -and $raw.Count -gt 0) {
+      if ($raw.Count -eq 1) { $raw = @() } else { $raw = @($raw[1..($raw.Count - 1)]) }
+    }
+    if ($raw.Count -gt $Tail) { $raw = @($raw[($raw.Count - $Tail)..($raw.Count - 1)]) }
+    return @($raw | ForEach-Object { ([string]$_).TrimEnd("`r") })
+  } catch {
+    return @()
+  } finally {
+    if ($null -ne $fs) { $fs.Dispose() }
+  }
 }
 function Get-ActiveScopeDto {
   param([string]$Slug = $null)
@@ -440,18 +520,13 @@ try {
         $memCount = 0
         $memPath  = Join-Path $root 'memory\memory.jsonl'
         if (Test-Path -LiteralPath $memPath) {
-          $memStamp = (Get-Item -LiteralPath $memPath).LastWriteTimeUtc
-          if ($memStamp -ne $healthMemoryStamp) {
-            $newMemCount = 0
-            $srMem = $null
-            try {
-              $srMem = [System.IO.StreamReader]::new($memPath, [System.Text.Encoding]::UTF8)
-              while ($null -ne $srMem.ReadLine()) { $newMemCount++ }
-              $healthMemoryCount = $newMemCount
-              $healthMemoryStamp = $memStamp
-            } finally {
-              if ($null -ne $srMem) { $srMem.Close(); $srMem.Dispose() }
-            }
+          $memItem = Get-Item -LiteralPath $memPath
+          $memStamp = $memItem.LastWriteTimeUtc
+          if ($memStamp -ne $healthMemoryStamp -and ($now - $healthMemoryLastReadTime).TotalSeconds -ge 60) {
+            $countPath = Join-Path $root 'memory\librarian.count.last'
+            $healthMemoryCount = Get-FastJsonlCount -Path $memPath -CountPath $countPath -CachedCount $healthMemoryCount
+            $healthMemoryStamp = $memStamp
+            $healthMemoryLastReadTime = $now
           }
           $memCount = $healthMemoryCount
         } else {
@@ -475,7 +550,7 @@ try {
             $newErrCount = 0
             $newLastSeq = 0
             $cutoff24 = $now.AddHours(-24)
-            $lines = [System.IO.File]::ReadLines($convPath) | Select-Object -Last 500
+            $lines = Get-FastJsonlTailLines -Path $convPath -Tail 500
             foreach ($ln in $lines) {
               $mSeq = [regex]::Match($ln, '"seq"\s*:\s*(\d+)')
               if ($mSeq.Success) {

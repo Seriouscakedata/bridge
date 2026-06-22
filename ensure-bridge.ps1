@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # ensure-bridge.ps1 -- EXTERNAL reliability anchor. Run by a Task Scheduler repeating trigger
 # (ClaudeCodexBridge-Ensure, every ~5 min, elevated). It heals two failure modes observed 2026-06-03:
 #

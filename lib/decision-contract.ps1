@@ -1,4 +1,4 @@
-# decision-contract.ps1 -- Model Decision Layer (SHADOW mode).
+﻿# decision-contract.ps1 -- Model Decision Layer (SHADOW mode).
 #
 # Consensus (Claude audit + Codex review, 2026-06-03): the model PROPOSES a structured decision;
 # DETERMINISTIC validators (here) CHECK it; the driver APPLIES only what passes. The model's JSON

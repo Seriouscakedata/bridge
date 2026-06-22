@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Tests that run-tests.ps1 treats per-test timeouts as inconclusive, not failures,
 # so the suite exits 0 and does not block DONE-gate.
 $ErrorActionPreference = 'Stop'

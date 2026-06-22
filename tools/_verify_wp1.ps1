@@ -1,4 +1,4 @@
-$path = 'C:\Users\rafie\OneDrive\Documents\bridge\lib\jobs.ps1'
+﻿$path = 'C:\Users\rafie\OneDrive\Documents\bridge\lib\jobs.ps1'
 $errors = $null
 $tokens = $null
 $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)

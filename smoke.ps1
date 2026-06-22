@@ -61,7 +61,17 @@ $usr = 'timur'
 try {
     # auth.json lives in the protected store outside the bridge (Ф0.4); fall back to legacy in-bridge path.
     $privAuth = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bridge-private\auth.json' } else { '' }
-    $authP = if ($privAuth -and (Test-Path $privAuth)) { $privAuth } else { Join-Path $b 'auth.json' }
+    $ownerAuth = ''
+    try {
+        if ($b -match '^([A-Za-z]:\\Users\\[^\\]+)\\') { $ownerAuth = Join-Path $matches[1] '.bridge-private\auth.json' }
+    } catch {}
+    $authP = if ($privAuth -and (Test-Path $privAuth)) {
+        $privAuth
+    } elseif ($ownerAuth -and (Test-Path $ownerAuth)) {
+        $ownerAuth
+    } else {
+        Join-Path $b 'auth.json'
+    }
     $a = Get-Content $authP -Raw -Encoding UTF8 | ConvertFrom-Json
     $pw = [string]$a.password
     $usr = [string]$a.user
@@ -85,25 +95,29 @@ function Probe($url, [int]$TimeoutSec = 12, [int]$Attempts = 2) {
     return 0
 }
 
-# 3. /api/status
+# 3. /api/health -- must stay a fast endpoint; supervisor uses it for hung detection.
+$h = Probe 'http://localhost:8787/api/health' 6 2
+if ($h -ne 200) { $failed += "HTTP /api/health = $h" }
+
+# 4. /api/status
 $s = Probe 'http://localhost:8787/api/status'
 if ($s -ne 200) { $failed += "HTTP /api/status = $s" }
 
-# 4. /api/memory
+# 5. /api/memory
 $m = Probe 'http://localhost:8787/api/memory'
 if ($m -ne 200) { $failed += "HTTP /api/memory = $m" }
 
-# 5. Mini-task: /api/messages (exercises conversation store, read-only)
+# 6. Mini-task: /api/messages (exercises conversation store, read-only)
 $ms = Probe 'http://localhost:8787/api/messages'
 if ($ms -ne 200) { $failed += "HTTP /api/messages = $ms" }
 
-# 6. /api/radar + /api/plan -- the endpoints that crashed the host; a fast 200 proves no OOM hang
+# 7. /api/radar + /api/plan -- the endpoints that crashed the host; a fast 200 proves no OOM hang
 $rd = Probe 'http://localhost:8787/api/radar'
 if ($rd -ne 200) { $failed += "HTTP /api/radar = $rd" }
 $pl = Probe 'http://localhost:8787/api/plan'
 if ($pl -ne 200) { $failed += "HTTP /api/plan = $pl" }
 
-# 7. Mobile UI invariant -- planToggle must be REACHABLE on mobile (NOT buried inside the
+# 8. Mobile UI invariant -- planToggle must be REACHABLE on mobile (NOT buried inside the
 # `⋮`-menu secondary group). Catches the regression where "no plan board on mobile" shipped
 # 2026-05-26 even though the button was in the DOM (commit claimed done; UX was broken).
 $auditScript = Join-Path $b 'tools\ui_audit.ps1'
@@ -112,7 +126,7 @@ if (Test-Path $auditScript) {
     if ($LASTEXITCODE -ne 0) { $failed += ("UI-AUDIT: " + ($auditOut -join '; ')) }
 }
 
-# 8. Pre-flight gate -- verify Get-PreflightBlockers loads and returns valid {Hard,Soft}.
+# 9. Pre-flight gate -- verify Get-PreflightBlockers loads and returns valid {Hard,Soft}.
 # git mid-op markers in Hard always fail smoke; codex.lock / doctor_active are transient
 # (active coder session, doctor working) and tolerated -- not a sign of unhealthy code.
 $pfScript = Join-Path $b 'lib\common.ps1'
@@ -153,7 +167,7 @@ if (Test-Path $pfScript) {
     $failed += "PREFLIGHT: lib\common.ps1 не найден"
 }
 
-# 9. Driver runtime gate -- EXECUTE driver.ps1 -SelfTest in a child process. ParseFile (step 1)
+# 10. Driver runtime gate -- EXECUTE driver.ps1 -SelfTest in a child process. ParseFile (step 1)
 # only proves syntax; this proves the dot-sourced libs + driver top-level code + every function
 # DEFINITION run without a runtime error -- the exact gap that let a PS5.1 `(if...)` expression
 # bomb ship green and restart-loop the bridge (2026-05-26). The child reaches the self-test guard
@@ -171,7 +185,7 @@ if (Test-Path $driverScript) {
     $failed += "DRIVER-SELFTEST: driver.ps1 not found"
 }
 
-# 10. Audit launch guard -- canary for the control-plane audit admission path.
+# 11. Audit launch guard -- canary for the control-plane audit admission path.
 # Prevents repeated due-audit ticks from emitting runaway "Запущен аудит" launches:
 # admission must cap attempts per window and clear stale locks by TTL/PID.
 $auditGuardScript = Join-Path $b 'tools\test-audit-launch-guard.ps1'
@@ -183,7 +197,7 @@ if (Test-Path $auditGuardScript) {
     $failed += "AUDIT-LAUNCH-GUARD: tools\test-audit-launch-guard.ps1 not found"
 }
 
-# 11. Claimability deadlock hardening -- control-plane-only approved sets must be held after canary-gate admission.
+# 12. Claimability deadlock hardening -- control-plane-only approved sets must be held after canary-gate admission.
 $claimabilityDeadlockScript = Join-Path $b 'tools\test-claimability-deadlock.ps1'
 if (Test-Path $claimabilityDeadlockScript) {
     $cdRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $claimabilityDeadlockScript 2>&1
@@ -193,7 +207,7 @@ if (Test-Path $claimabilityDeadlockScript) {
     $failed += "CLAIMABILITY-DEADLOCK: tools\test-claimability-deadlock.ps1 not found"
 }
 
-# 12. Driver loop StrictMode hardening -- blocks 83/85/86 must tolerate leaked StrictMode and use current-turn DONE evidence.
+# 13. Driver loop StrictMode hardening -- blocks 83/85/86 must tolerate leaked StrictMode and use current-turn DONE evidence.
 $driverLoopStrictModeScript = Join-Path $b 'tools\test-driver-loop-strictmode.ps1'
 if (Test-Path $driverLoopStrictModeScript) {
     $dlsRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $driverLoopStrictModeScript 2>&1
@@ -206,7 +220,7 @@ if (Test-Path $driverLoopStrictModeScript) {
     $failed += "DRIVER-LOOP-STRICTMODE: tools\test-driver-loop-strictmode.ps1 not found"
 }
 
-# 13. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
+# 14. Bridge-self canary admission + Feature Verifier BROKEN filing canary.
 $backlogLib = Join-Path $b 'lib\backlog.ps1'
 if (Test-Path $backlogLib) {
     $blArg = $backlogLib -replace "'","''"
@@ -255,7 +269,7 @@ if (Test-Path $backlogLib) {
     $failed += "FEATURE-VERIFIER-CANARY: lib\backlog.ps1 not found"
 }
 
-# 14. Backlog curator autonomous approval contract -- no silent drops on uncertainty,
+# 15. Backlog curator autonomous approval contract -- no silent drops on uncertainty,
 # deterministic approval-risk override, and structured goal-linked rationale.
 $curatorApprovalScript = Join-Path $b 'tools\test-backlog-curator-autonomous-approval.ps1'
 if (Test-Path $curatorApprovalScript) {
@@ -264,6 +278,19 @@ if (Test-Path $curatorApprovalScript) {
     if ($caCode -ne 0) { $failed += ("BACKLOG-CURATOR-APPROVAL (exit=$caCode): " + (($caRaw -join '; ') -replace '\s+',' ').Trim()) }
 } else {
     $failed += "BACKLOG-CURATOR-APPROVAL: tools\test-backlog-curator-autonomous-approval.ps1 not found"
+}
+
+# 16. API health fast-path -- /api/health must not full-scan JSONL stores in the single-threaded server.
+$apiHealthFastpathScript = Join-Path $b 'tools\test-api-health-fastpath.ps1'
+if (Test-Path $apiHealthFastpathScript) {
+    $ahRaw = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $apiHealthFastpathScript 2>&1
+    $ahCode = $LASTEXITCODE
+    $ahText = ($ahRaw | ForEach-Object { [string]$_ }) -join "`n"
+    if ($ahCode -ne 0 -or $ahText -notmatch 'API HEALTH FASTPATH OK') {
+        $failed += ("API-HEALTH-FASTPATH (exit=$ahCode): " + (($ahText -replace '\s+',' ').Trim()))
+    }
+} else {
+    $failed += "API-HEALTH-FASTPATH: tools\test-api-health-fastpath.ps1 not found"
 }
 
 # Result

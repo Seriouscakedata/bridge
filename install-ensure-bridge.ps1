@@ -1,4 +1,4 @@
-# install-ensure-bridge.ps1 -- register the EXTERNAL reliability anchor (ensure-bridge.ps1) as a
+﻿# install-ensure-bridge.ps1 -- register the EXTERNAL reliability anchor (ensure-bridge.ps1) as a
 # repeating scheduled task: every 5 min, elevated. It restarts a dead supervisor/watchdog (the
 # AtLogon ClaudeCodexBridge task can't, because orphaned children keep it "Running") and heals a
 # OneDrive-zeroed git master ref. Safe to re-run. Run this once (elevated) to install.

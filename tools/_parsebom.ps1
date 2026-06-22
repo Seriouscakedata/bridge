@@ -1,4 +1,4 @@
-param([string]$File1, [string]$File2)
+﻿param([string]$File1, [string]$File2)
 $files = @($File1, $File2) | Where-Object { $_ }
 foreach ($f in $files) {
   $errs = $null; $tok = $null

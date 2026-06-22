@@ -1,4 +1,4 @@
-# project-artifact-policy.ps1 -- shared rules for generated project artifacts.
+﻿# project-artifact-policy.ps1 -- shared rules for generated project artifacts.
 
 function Normalize-ProjectArtifactPolicyPath {
   param([string]$Path)

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # VERIFY-COVERS: driver/86-loop-completion-cleanup.ps1
 # Tests Get-DriverOutcomeLedgerBlockDecision (freeze-audit wave1 atom1): persisted 2-strike
 # decision for outcome-ledger blocks. Strike 1 = retry; strike >= 2 (same task) = degrade to

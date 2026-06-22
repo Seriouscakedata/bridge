@@ -1,4 +1,4 @@
-# task-management.ps1 -- read-only execution management snapshot for task claims.
+﻿# task-management.ps1 -- read-only execution management snapshot for task claims.
 #
 # This module does not authorize execution. It combines existing delivery-mode
 # facts with workpack/frontier context and writes an optional shadow JSONL record

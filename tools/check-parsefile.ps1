@@ -1,4 +1,4 @@
-param([string[]]$Files)
+﻿param([string[]]$Files)
 foreach ($f in $Files) {
   $errors = $null; $tokens = $null
   [System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$tokens,[ref]$errors) | Out-Null

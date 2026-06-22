@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-decision-contract.ps1 -- validator tests for the DecisionContract (slimming Atom 1).
 # The validator is the deterministic gate; these prove it accepts a well-formed proposal and rejects
 # malformed ones. Pure unit test, no side effects.

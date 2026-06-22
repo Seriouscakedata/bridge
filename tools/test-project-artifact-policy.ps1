@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-project-artifact-policy.ps1 -- generated artifact policy fixtures.
 
 $ErrorActionPreference = 'Stop'

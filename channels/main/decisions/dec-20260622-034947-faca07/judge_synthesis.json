@@ -1,0 +1,220 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA01",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.55,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Reactive unfolding of steps during execution is not bound to the DA09/DA04 validation pipeline in the test; safety-verification gap on dynamically generated nodes.",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Tri-source consensus and the architectural backbone of the planner — high correctness and impact. But \u0027reactive unfolding\u0027 directly tensions with DA09\u0027s prohibition on executing unverified steps (high-impact conflict). Accept the hierarchical DAG model with the modification that any reactively unfolded node must pass structural validation, skill-compliance, and (where applicable) operator review before execution. Low simplicity due to hierarchical DAG + reactive expansion.",
+                      "total":  0.725
+                  },
+                  {
+                      "atom_id":  "DA02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Cornerstone safety invariant: a stateless, advisory orchestration layer that grants no new privileges and routes every proposed action through the existing 5-gate loop (fail-closed, risk-ladder, STOP). Tri-source consensus, no review flags, and it is precisely what neutralizes the autonomy risk introduced by DA01/DA07. Clean and high-leverage — accept as-is.",
+                      "total":  0.8725
+                  },
+                  {
+                      "atom_id":  "DA03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.6,
+                                     "impact":  0.85,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.65
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Tri-source consensus. Deep Vision integration (state summary, affordance map, pre/post-condition verification, stuck diagnosis) is what makes precondition/postcondition gating and recovery meaningful, so it materially reduces blind-execution risk. Feasibility and simplicity are dragged down by high implementation cost and dependence on vision reliability, but no conflicts or review flags — accept.",
+                      "total":  0.71
+                  },
+                  {
+                      "atom_id":  "DA04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Explicit per-node contracts (intent, preconditions, allowed tools/skills, declared risk class, observable done-criteria, recovery/retry budget) are highly specific and are the enabling substrate for DA05 risk-gating, DA07 recovery, and DA09 validation. Medium cost/reversibility, no review flags — accept.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "DA05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Mandatory declared-risk ladder as a confirm-barrier for high-risk actions (e.g. system_mutation), classified at task level and re-checked per node before execution. Tri-source consensus, very high risk-reduction, medium and feasible cost. Re-classification at each node is the right granularity — accept.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "DA06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.65,
+                                     "impact":  0.9,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Global, asynchronous, preemptive STOP that halts planner, executor, recovery, and pending confirmations with no auto-resume and a partial-state report — a non-negotiable safety invariant with tri-source consensus. Feasibility and simplicity are reduced because correct preemptive async abort across all subsystems is genuinely hard to implement, but correctness and risk-reduction dominate — accept.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "DA07",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.65,
+                                     "impact":  0.8,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Steps produced by reactive subgraph replanning are not explicitly routed through DA09/DA04 validation before execution (medium-impact conflict with DA09).",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Bounded recovery ladder (retry → re-perceive/vision diagnosis → reactive subgraph replanning → escalate/STOP) is consensus and well-structured, with attempt budgets that prevent runaway loops. Modify: any node generated by reactive replanning must re-enter structural validation, skill-compliance, and (if applicable) operator review before execution, closing the medium-impact conflict with DA09. Low simplicity and feasibility from the high-cost multi-stage mechanism.",
+                      "total":  0.7375
+                  },
+                  {
+                      "atom_id":  "DA08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Constraining LLM decomposition to the existing closed skill vocabulary (open/type/telegram/vision) with fail-closed escalation on any out-of-vocabulary request is low-cost, high-reversibility, highly specific, and strongly bounds the capability surface. This is the primary guard against the LLM inventing dangerous actions — accept.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "DA09",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Test covers only initial plan loading and document approval; it does not verify validation/review of dynamically unfolded (DA01) or replanned (DA07) steps.",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Serializable, typed, schema- and skill-validated plans with no execution of unverified steps, plus operator review of PROJECT_PLAN/contract before implementation — the central control/verification gate, very high risk-reduction. Modify: extend the requirement and its test to explicitly cover dynamically generated and replanned steps, resolving the high-impact conflict with DA01 and the medium one with DA07 so \u0027no unverified execution\u0027 holds throughout, not just at load time.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "DA10",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but no conflicts and clear safety value: an autonomy watchdog with a no-progress detector and global limits (steps, time, risk budget) that forces a fail-closed stop with report. Complements STOP (DA06) and recovery budgets (DA07) by bounding total autonomous runtime; medium and feasible cost — accept.",
+                      "total":  0.8075
+                  },
+                  {
+                      "atom_id":  "DA11",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.55,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.45,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Process atom: DISCUSS_* docs must compare and justify the planning-model choice (LLM-only vs rule/task-graph vs hybrid). Low cost, high reversibility, very simple, and it de-risks the architecture decision indirectly by forcing explicit rationale. Impact and direct risk-reduction are modest since it is documentation rather than a runtime control — accept.",
+                      "total":  0.7675
+                  },
+                  {
+                      "atom_id":  "DA12",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.45,
+                                     "impact":  0.6,
+                                     "simplicity":  0.4,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.45
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Framed as optional/\u0027consider\u0027 with a future-implementation test; under-specified scope and unclear feasibility of dry-run simulation for GUI actions.",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "An optional PLANNER-CRITIC / dry-run simulator would add valuable pre-operator safety screening, but it is single-source, explicitly speculative (\u0027рассмотреть\u0027, for future implementation), high-cost, and hard to build credibly for GUI-level actions. Modify: keep as a deferred, scoped enhancement (e.g. static lint of the TaskGraph against schema/skills/risk first; full dry-run later) rather than a committed near-term deliverable. Lowest total — accept only as a future track.",
+                      "total":  0.555
+                  }
+              ]
+}

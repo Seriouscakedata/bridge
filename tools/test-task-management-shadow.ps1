@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # test-task-management-shadow.ps1 -- fixtures for task management claim snapshots.
 
 $ErrorActionPreference = 'Stop'

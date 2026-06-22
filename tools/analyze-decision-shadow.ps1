@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # analyze-decision-shadow.ps1 -- READ-ONLY evidence reader for the DecisionContract shadow logs.
 #
 # The shadow layer (slimming Atom 1/2) logs, per channel, what the model PROPOSED vs what the legacy

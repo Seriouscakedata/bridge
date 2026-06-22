@@ -1,0 +1,244 @@
+{
+    "final_answer":  "Approved direction for Project ЛАПА: add an autonomous PLANNER as a STATELESS, ADVISORY orchestration layer on top of the existing 5-gate loop — it grants no new privileges and every action it proposes still flows through the existing gates (fail-closed, declared-risk ladder, STOP). The planner uses an LLM to decompose a high-level operator task into a hierarchical, typed, serializable Task Graph (DAG) of subgoals, with reactive unfolding during execution. Each node carries an explicit contract (intent, preconditions, allowed skills, declared risk class, observable done-criteria, recovery/retry budget). Decomposition is bounded to the existing CLOSED skill vocabulary (open/type/telegram/vision); any out-of-vocabulary need fails closed and escalates to the operator. Vision is promoted from mere element-locate to a first-class planning signal: state summary, affordance map, pre/post-condition verification, and stuck-diagnosis that drives a bounded recovery ladder (retry → re-perceive/vision diagnosis → reactive subgraph replanning → escalate/STOP). The central invariant — no execution of an unverified step — holds THROUGHOUT execution, not just at load: every node (initial, reactively unfolded, or replanned) must pass structural schema validation and skill-compliance, and the declared-risk ladder re-classifies risk per node, demanding operator confirm for high-risk actions (e.g. system_mutation). This resolves the core autonomy-vs-control tension: the operator pre-approves the plan/contract and risk boundaries up front (Discuss-First), and reactive decomposition is then free ONLY within those pre-approved, automatically-validated boundaries — so agility is preserved without per-step human latency. STOP is global, asynchronous, preemptive, with no auto-resume and a partial-state report, and an autonomy WATCHDOG bounds total runtime via no-progress detection and global step/time/risk-budget limits. Per the Discuss-First mandate, NO executable atoms are generated until the operator reviews and approves the document chain PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract. A PLANNER-CRITIC / dry-run simulator is deferred to a future track.",
+    "decisions":  [
+                      {
+                          "decision":  "DA01 (modified) — Adopt a hierarchical Task Graph (DAG) of subgoals, LLM-decomposed, with reactive unfolding of steps during execution; any reactively unfolded node MUST pass structural schema validation, skill-compliance, and (where its risk class requires) operator confirm before execution.",
+                          "rationale":  "Tri-source consensus and the architectural backbone of the planner (high correctness/impact). The DAG model is what enables autonomous decomposition. The modification closes the high-impact conflict with DA09: \u0027reactive unfolding\u0027 is allowed, but every dynamically created node re-enters the same verification pipeline as a pre-planned node, so the \u0027no unverified execution\u0027 invariant is never bypassed.",
+                          "alternatives_considered":  [
+                                                          "LLM-only flat decomposition without a graph (rejected: no reactive recovery, no per-node contracts)",
+                                                          "Static fully-pre-planned graph with no reactive unfolding (rejected: too brittle for dynamic GUI state)",
+                                                          "Unconstrained reactive unfolding with no re-validation (rejected: violates DA09)"
+                                                      ],
+                          "risk":  "Low reversibility, high implementation cost; reactive expansion increases complexity and the validation surface that must be kept airtight.",
+                          "test":  "Demonstrate LLM generation of a hierarchical Task Graph (DAG) of subgoals from a high-level task and confirm reactive subgoal execution; additionally verify that every reactively unfolded node passes structural validation, skill-compliance, and (where risk requires) operator confirm BEFORE execution."
+                      },
+                      {
+                          "decision":  "DA02 (accept) — The planner is a stateless, advisory orchestration layer over the existing 5-gate loop, granting no new privileges and bypassing no existing safety mechanism (fail-closed, risk-ladder, STOP).",
+                          "rationale":  "Cornerstone safety invariant and the precise neutralizer of the autonomy risk introduced by DA01/DA07. Tri-source consensus, highest total score, no review flags. Because the planner only proposes and never executes directly, the existing hardened \u0027hands\u0027 remain the single enforcement point.",
+                          "alternatives_considered":  [
+                                                          "Stateful planner with its own action authority (rejected: expands privilege surface, can bypass gates)",
+                                                          "Planner that short-circuits the 5-gate loop for \u0027trusted\u0027 steps (rejected: breaks fail-closed guarantee)"
+                                                      ],
+                          "risk":  "Low — primary residual risk is implementation drift where the planner accidentally acquires side-channel authority; mitigated by routing 100% of actions through the loop.",
+                          "test":  "Verify all planner-proposed actions pass through the 5-gate loop and are subjected to all existing safety checks (risk-ladder, STOP), and that the planner holds no persistent authority and no new privileges."
+                      },
+                      {
+                          "decision":  "DA03 (accept) — Integrate Vision deeply into planning: state summary, affordance map, pre/post-condition verification of steps, stuck diagnosis, and as input to recovery/replanning.",
+                          "rationale":  "Tri-source consensus. Deep Vision integration is what makes precondition/postcondition gating and recovery meaningful, materially reducing blind-execution risk. This directly satisfies the operator goal of using vision in PLANNING, not just element-locate.",
+                          "alternatives_considered":  [
+                                                          "Keep vision limited to element-locate (rejected: leaves planning blind, no state-based recovery)",
+                                                          "DOM/accessibility-tree-only state estimation (rejected: insufficient for canvas/GUI surfaces ЛАПА must operate)"
+                                                      ],
+                          "risk":  "Medium reversibility, high cost; feasibility and reliability hinge on vision accuracy — false state reads could mis-gate steps. Mitigated by confidence thresholds feeding the recovery ladder rather than silent proceed.",
+                          "test":  "Demonstrate Vision used to check preconditions before a step, verify postconditions after a step, and supply context for replanning decisions."
+                      },
+                      {
+                          "decision":  "DA04 (accept) — Every Task Graph node carries an explicit contract: intent, preconditions, allowed tools/skills, declared risk class, observable done-criteria, and recovery policy/retry budget.",
+                          "rationale":  "Highly specific and the enabling substrate for DA05 (risk-gating), DA07 (recovery), and DA09 (validation). Without per-node contracts the other safety atoms have nothing to bind to.",
+                          "alternatives_considered":  [
+                                                          "Free-form step descriptions (rejected: not machine-validatable, no done-criteria)",
+                                                          "Contracts only at task level, not per node (rejected: loses per-step risk re-classification and recovery budgeting)"
+                                                      ],
+                          "risk":  "Medium cost/reversibility; risk is contract under-specification leaving ambiguous done-criteria — mitigated by strict schema (DA09).",
+                          "test":  "Verify all generated Task Graph nodes conform to the defined schema and contain all mandatory contract fields."
+                      },
+                      {
+                          "decision":  "DA05 (accept) — The declared-risk ladder is a mandatory confirm-barrier for high-risk actions (e.g. system_mutation), classified at the whole-task level and RE-CHECKED per node before execution.",
+                          "rationale":  "Very high risk-reduction, tri-source consensus, feasible medium cost. Re-classifying at each node is the correct granularity: a task may look low-risk overall yet contain an individual high-risk node that must still trigger operator confirm.",
+                          "alternatives_considered":  [
+                                                          "Single task-level risk classification only (rejected: misses high-risk nodes inside a low-risk task)",
+                                                          "Per-node only without task-level gate (rejected: loses upfront operator framing of overall task risk)"
+                                                      ],
+                          "risk":  "Medium; residual risk is mis-classification of a high-risk node as low-risk — mitigated by fail-closed default (unknown/ambiguous risk → treat as high → confirm).",
+                          "test":  "Verify the system identifies high-risk actions (e.g. system_mutation) and requires operator confirm before execution, both at task level and per node."
+                      },
+                      {
+                          "decision":  "DA06 (accept) — STOP is a global, asynchronous, preemptive invariant that immediately halts the planner, executor, recovery mechanisms, and any pending confirmations, with no auto-resume and a partial-state report.",
+                          "rationale":  "Non-negotiable safety invariant with tri-source consensus. Correctness and risk-reduction dominate even though preemptive async abort across all subsystems is genuinely hard to implement.",
+                          "alternatives_considered":  [
+                                                          "Cooperative STOP checked only at step boundaries (rejected: cannot interrupt a long-running or stuck step)",
+                                                          "STOP with automatic resume (rejected: violates operator-control and fail-closed principles)"
+                                                      ],
+                          "risk":  "Low reversibility, high cost; risk of incomplete preemption leaving an orphaned action mid-flight — mitigated by partial-state reporting and requiring explicit operator restart.",
+                          "test":  "Trigger STOP at planning, execution, recovery, and pending-confirmation points; confirm immediate halt of all processes, no auto-resume, and generation of a partial-state report."
+                      },
+                      {
+                          "decision":  "DA07 (modified) — Implement a bounded recovery ladder (retry current action → re-perceive/vision diagnosis → reactive subgraph replanning with new state → escalate to operator/STOP) with explicit attempt budgets; any node produced by reactive replanning MUST re-enter structural validation, skill-compliance, and (if applicable) operator review before execution.",
+                          "rationale":  "Consensus, well-structured, with attempt budgets that prevent runaway loops. The modification closes the medium-impact conflict with DA09: replanned steps are not a back-door around verification — they are validated exactly like initial steps.",
+                          "alternatives_considered":  [
+                                                          "Unlimited retries (rejected: runaway autonomous loops, conflicts with watchdog intent)",
+                                                          "Replan-and-execute without re-validation (rejected: violates DA09 \u0027no unverified execution\u0027)",
+                                                          "Immediate escalation on any failure with no autonomous recovery (rejected: defeats autonomy goal)"
+                                                      ],
+                          "risk":  "Medium reversibility, high cost; multi-stage mechanism is complex and feasibility-limited. Residual risk: replanning oscillation — bounded by attempt/risk budgets and the watchdog (DA10).",
+                          "test":  "Simulate failures (UI element not found, unexpected state); verify the recovery ladder is followed, attempt budgets are respected, and escalation is correct; AND verify any node generated by reactive replanning re-enters structural validation + skill-compliance + (if applicable) operator review before execution."
+                      },
+                      {
+                          "decision":  "DA08 (accept) — LLM decomposition is constrained to the existing CLOSED skill vocabulary (open/type/telegram/vision); no new dangerous capabilities are added, and any out-of-vocabulary skill request triggers fail-closed escalation to the operator.",
+                          "rationale":  "Low cost, high reversibility, highly specific, and the primary guard against the LLM inventing dangerous actions. Strongly bounds the capability surface, which is the core fear with LLM-driven autonomy.",
+                          "alternatives_considered":  [
+                                                          "Open/extensible skill set the LLM can grow (rejected: unbounded capability surface, unsafe)",
+                                                          "Allow new skills with post-hoc review (rejected: not fail-closed; risk realized before review)"
+                                                      ],
+                          "risk":  "High reversibility, low cost; minimal residual risk — main one is over-restriction blocking legitimate tasks, surfaced cleanly via operator escalation rather than silent failure.",
+                          "test":  "Give the planner a task requiring a non-existent or forbidden skill; confirm the system enters a fail-closed state and escalates the request to the operator."
+                      },
+                      {
+                          "decision":  "DA09 (modified) — Plans are serializable, typed (JSON TaskGraph), pass strict structural schema validation and allowed-skill compliance; execution of any unverified/unvalidated step is forbidden; PROJECT_PLAN and contract are reviewed by the operator BEFORE any implementation; the \u0027no unverified execution\u0027 invariant and its test are extended to explicitly cover dynamically unfolded (DA01) and replanned (DA07) steps.",
+                          "rationale":  "The central control/verification gate with very high risk-reduction. The modification makes the invariant hold throughout execution, not just at load time, resolving the high-impact conflict with DA01 and the medium one with DA07. Operator review at the plan/contract level (plus risk-ladder confirms) is what allows reactive autonomy within validated boundaries without per-step human latency.",
+                          "alternatives_considered":  [
+                                                          "Validate only the initial plan at load time (rejected: leaves dynamically generated steps unverified)",
+                                                          "Operator pre-approval of every individual unfolded step (rejected per micro-debate: cripples agility, negates dynamic planning benefit)",
+                                                          "Trust LLM output without schema validation (rejected: no structural or skill-compliance guarantee)"
+                                                      ],
+                          "risk":  "Medium; residual risk is schema/validator gaps that let a malformed node through — mitigated by fail-closed default on validation failure and reserving operator review for plan/contract and risk-class escalations.",
+                          "test":  "Attempt to load an invalid/non-conforming plan and confirm rejection; confirm no executable atoms are generated before operator approval of PROJECT_PLAN and contract; AND verify that dynamically unfolded (DA01) and replanned (DA07) steps also undergo schema + skill-compliance validation and operator review (where applicable) before execution."
+                      },
+                      {
+                          "decision":  "DA10 (accept) — Implement an autonomy WATCHDOG: a no-progress detector plus global limits (number of steps, wall-clock time, risk budget) that forces a fail-closed stop with a report when limits are exhausted.",
+                          "rationale":  "Single-source (B) but no conflicts and clear safety value. It complements STOP (DA06) and recovery budgets (DA07) by bounding total autonomous runtime, catching silent stalls and budget exhaustion that per-step budgets alone miss.",
+                          "alternatives_considered":  [
+                                                          "Rely solely on per-step retry budgets (rejected: misses global stalls and cumulative runtime/risk overrun)",
+                                                          "No global limits (rejected: unbounded autonomous operation)"
+                                                      ],
+                          "risk":  "High reversibility, medium cost; residual risk is premature trips on legitimately slow tasks — mitigated by tunable limits surfaced as configuration with conservative fail-closed defaults.",
+                          "test":  "Configure a task to exceed the step/time limit or stall without progress; confirm the watchdog activates and triggers a fail-closed stop with a report."
+                      },
+                      {
+                          "decision":  "DA11 (accept) — In the Discuss-First phase, DISCUSS_* documents must explicitly compare and justify the planning-model choice (LLM-only decomposition vs rule/task-graph planner vs hybrid).",
+                          "rationale":  "Low cost, very simple, high reversibility; forces explicit architectural rationale and de-risks the decision indirectly. Directly satisfies the operator\u0027s Discuss-First mandate and the success test requiring documented design discussion.",
+                          "alternatives_considered":  [
+                                                          "Skip the comparison and assert the hybrid choice (rejected: violates Discuss-First, hides rationale from operator)"
+                                                      ],
+                          "risk":  "Minimal; documentation-only, no runtime impact.",
+                          "test":  "Verify DISCUSS_* documents contain a section with comparative analysis and justification of the planner architecture choice (LLM-only vs rule/task-graph vs hybrid)."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "DA12 as a committed near-term deliverable — a full PLANNER-CRITIC / dry-run simulator that validates generated plans for safety and feasibility before presenting them to the operator.",
+                         "why":  "Single-source (B), explicitly speculative (\u0027рассмотреть\u0027, for future implementation), high cost, low simplicity, and hard to build credibly for GUI-level actions (lowest judge total 0.555). Rejected as a near-term commitment; it survives ONLY as a deferred, scoped future track — start with a static lint of the TaskGraph against schema/skills/risk (already covered by DA09), and consider a full dry-run later."
+                     },
+                     {
+                         "decision":  "Unconstrained reactive plan unfolding without per-step re-validation.",
+                         "why":  "Conflicts directly with the DA09 invariant \u0027execution of an unverified step is forbidden.\u0027 Every dynamically generated node must re-enter structural schema validation and skill-compliance before execution; the autonomy benefit is preserved by validating fast and automatically, not by skipping validation."
+                     },
+                     {
+                         "decision":  "Operator pre-approval of every individual reactively unfolded/replanned step.",
+                         "why":  "Per the micro-debate, this would introduce unacceptable latency and negate the core benefit of dynamic LLM planning. Resolved instead by pre-approving the plan/contract and risk boundaries up front, then permitting reactive decomposition freely within those automatically-validated boundaries, with operator confirm reserved for declared-risk-ladder escalations."
+                     },
+                     {
+                         "decision":  "Stateful planner with its own privileges or direct action authority.",
+                         "why":  "Rejected per DA02. Any planner authority that bypasses the 5-gate loop reopens the fail-closed/risk-ladder/STOP guarantees. The planner stays stateless and advisory; the hardened \u0027hands\u0027 remain the sole enforcement point."
+                     },
+                     {
+                         "decision":  "Open / extensible skill vocabulary that the LLM can grow at runtime.",
+                         "why":  "Rejected per DA08. An unbounded capability surface is the principal danger of LLM-driven autonomy; decomposition is locked to the closed open/type/telegram/vision set with fail-closed escalation on any out-of-vocabulary request."
+                     },
+                     {
+                         "decision":  "STOP with automatic resume after the interrupting condition clears.",
+                         "why":  "Rejected per DA06. Auto-resume violates operator control and fail-closed principles; STOP halts everything with a partial-state report and requires an explicit operator restart."
+                     }
+                 ],
+    "open_questions":  [
+                           "Hybrid planner boundary: exactly how much of the plan must be pre-approved/frozen versus how much reactive freedom the LLM is granted within validated boundaries — where is the agility/safety equilibrium set?",
+                           "Operator-confirm granularity for medium-risk nodes: per-task risk class vs per-node confirm — what is the latency/safety trade-off, and which risk classes are auto-proceed vs confirm?",
+                           "Vision reliability gating: what confidence thresholds on state summary / affordance map / postcondition checks should trigger a replan vs an escalate vs a fail-closed stop?",
+                           "Concrete TaskGraph node schema: exact fields, types, and validation rules for the per-node contract (DA04) and the skill-compliance checker.",
+                           "Watchdog defaults (DA10): initial max-step, wall-clock, and risk-budget limits, and how the no-progress detector defines \u0027no progress\u0027 on GUI surfaces.",
+                           "DA12 future track: is a static TaskGraph lint sufficient as the pre-operator safety screen, and is a full GUI-level dry-run simulator feasible enough to schedule later?",
+                           "How are partial-state reports (from STOP and watchdog) structured so the operator can safely resume or roll back?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "0 — Discuss-First (NO atoms / NO code yet)",
+                                    "deliverable":  "PROJECT_BRIEF",
+                                    "detail":  "State the gap (ЛАПА executes given actions but does not self-plan), the goal (autonomous high-level task execution with self-decomposition), and the hard constraints (preserve fail-closed, declared-risk ladder, STOP; closed skill vocabulary)."
+                                },
+                                {
+                                    "phase":  "0 — Discuss-First",
+                                    "deliverable":  "DISCUSS_* documents",
+                                    "detail":  "Per DA11, compare and justify planning models (LLM-only vs rule/task-graph vs hybrid) — recommend hybrid. Document the autonomy-vs-control resolution: pre-approved plan/contract + validated boundaries + automated per-step validation (DA01/DA09 micro-debate outcome). Cover Vision-in-planning (DA03), recovery ladder (DA07), watchdog (DA10), and the deferred PLANNER-CRITIC track (DA12)."
+                                },
+                                {
+                                    "phase":  "0 — Discuss-First",
+                                    "deliverable":  "PROJECT_MAP",
+                                    "detail":  "Map the planner layer onto existing components: 5-gate loop, open/type/telegram skills, vision-for-canvas; show the stateless advisory boundary (DA02) and the single enforcement point."
+                                },
+                                {
+                                    "phase":  "0 — Discuss-First",
+                                    "deliverable":  "PROJECT_PLAN",
+                                    "detail":  "Specify the hybrid planner: hierarchical typed JSON TaskGraph (DA01), per-node contracts (DA04), closed-vocabulary LLM decomposition (DA08), deep Vision integration (DA03), per-node risk re-classification + confirm barrier (DA05), bounded recovery ladder (DA07), global preemptive STOP (DA06), autonomy watchdog (DA10), and the throughout-execution \u0027no unverified step\u0027 validation invariant (DA09). Must explicitly account for and preserve fail-closed, risk-ladder, and STOP (success test)."
+                                },
+                                {
+                                    "phase":  "0 — Discuss-First",
+                                    "deliverable":  "contract",
+                                    "detail":  "Encode the TaskGraph node schema, allowed-skill set, risk classes and confirm rules, recovery/retry/watchdog budgets, and the validation/review gates as the executable contract."
+                                },
+                                {
+                                    "phase":  "1 — Operator review GATE (blocking)",
+                                    "deliverable":  "Operator sign-off",
+                                    "detail":  "Submit PROJECT_PLAN and contract to the operator for review BEFORE any implementation. No executable atoms are generated until approval (DA09, hard constraint \u0027НЕ генерить атомы до утверждения плана\u0027)."
+                                },
+                                {
+                                    "phase":  "2 — Implementation (only after approval)",
+                                    "deliverable":  "Planner build order",
+                                    "detail":  "Build in safety-first order: (a) TaskGraph schema + structural validator + skill-compliance checker; (b) stateless advisory orchestration over the 5-gate loop; (c) per-node risk classification + confirm barrier; (d) global preemptive STOP + watchdog; (e) LLM decomposition into the validated graph; (f) Vision state-summary/affordance/pre-post verification; (g) bounded recovery ladder with re-validation of replanned nodes. Defer PLANNER-CRITIC/dry-run (DA12)."
+                                }
+                            ],
+    "next_step":  "Draft PROJECT_BRIEF and the DISCUSS_* documents (including the LLM-only vs rule/task-graph vs hybrid comparison and the autonomy-vs-control resolution), then assemble PROJECT_MAP, PROJECT_PLAN, and the contract, and submit PROJECT_PLAN + contract to the operator for review BEFORE generating any executable atoms.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Модель угроз полностью игнорирует prompt-injection через vision/экранный канал. Единый VALIDATION GATE и per-node risk-реклассификация (DA05/DA09) доверяют LLM-классификатору, чьим входом является контролируемое противником содержимое экрана (vision читает пиксели/текст любого открытого окна или веб-страницы).",
+                                  "why":  "Враждебный текст на экране («это безопасное действие, подтверждение не требуется», «risk=low») может склонить LLM к downgrade риска или к генерации шагов, обходящих confirm-барьер. Поскольку закрытый словарь включает telegram (отправка) и type (ввод), успешная инъекция превращает \u0027надёжные руки\u0027 в канал эксфильтрации/деструкции. Вся safety-конструкция держится на честности классификатора, который ест недоверенный ввод — это не упомянуто ни в одном DA."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Центральный инвариант (VALIDATION GATE) — строго per-node, и потому структурно не ловит композиционный/многошаговый эмерджентный риск. Каждый узел может быть в словаре и классифицирован как low-risk, но последовательность достигает высокорискового эффекта без срабатывания confirm.",
+                                  "why":  "open(настройки)+серия type способны мутировать систему; vision-read+telegram способны эксфильтрировать — при этом ни один атом сам по себе не «system_mutation/отправка». DA08 проверяет лишь принадлежность навыка словарю, DA05 классифицирует узел, но никто не оценивает совокупный эффект цепочки. Единственный механизм проверки intent-vs-effect (DA12 PLANNER-CRITIC/dry-run) явно отложен, поэтому первый запуск любого реактивно раскрытого узла = тест в проде против живого UI."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Противоречие в описании: DA02 называет планировщик «stateless advisory», но DA01 требует строить и ПОДДЕРЖИВАТЬ эволюционирующий Task Graph с реактивным раскрытием, а DA07/DA10 ведут retry-бюджеты и watchdog-счётчики (шаги/время/бюджет риска). Это по определению stateful.",
+                                  "why":  "Мислейбл «stateless» скрывает, ГДЕ живёт safety-критичное состояние (прогресс, бюджеты, частичный DAG), кто им владеет и как его можно повредить/обнулить (например, сбросить watchdog-счётчик и обойти fail-closed лимиты). Без явной модели состояния гарантии watchdog/STOP не аудируемы."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Преемптивный STOP (DA06) и fail-closed остановка watchdog (DA10) не могут откатить уже эмитированные OS-эффекты. Для GUI-агента STOP/исчерпание бюджета посреди действия оставляет опасное частичное состояние (наполовину введённая деструктивная команда в поле, открытый чувствительный диалог, наполовину применённая системная настройка).",
+                                  "why":  "Заявление «немедленно прерывает... без авто-возобновления» переоценено: можно прекратить эмиссию НОВЫХ действий, но не отменить уже отправленные нажатия/клики. «Отчёт о частичном состоянии» фиксирует факт, но безопасность самого resting-состояния не адресована — fail-closed гарантирует «не делать больше», но не «оставить в безопасном состоянии»."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "TOCTOU между per-node валидацией/risk-классификацией/precondition-vision-проверкой и фактическим исполнением действия. Нет гарантии атомарности: UI может измениться в зазоре между «vision подтвердил low-risk» и «act».",
+                                  "why":  "Узел, заверенный как клик по безопасной кнопке, может исполниться против сдвинувшегося/подменённого элемента (теперь это «Отправить»/«Удалить»). Классификация риска привязана к intent/плану, а не к реальному рантайм-таргету в момент действия. Для динамического GUI это размывает гарантию, что high-risk всегда требует confirm."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Confirm-барьер risk-ladder (DA05) подтверждает ТИП действия, но решение нигде не требует показывать оператору конкретный payload в момент подтверждения (точный получатель + полный текст telegram-сообщения, точное значение изменяемой настройки).",
+                                  "why":  "Контент автономно сочиняется планировщиком/vision. Если оператор подтверждает «отправить telegram» абстрактно, это confused-deputy: один невинно выглядящий confirm санкционирует отправку произвольного, в т.ч. harvested-через-vision, содержимого. Без обязательного предъявления конкретного payload confirm превращается в театр и не выполняет роль контроля над «отправками»."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Vision-верификация пред/постусловий (DA03) — линчпин fail-closed обнаружения провалов, но её пороги уверенности явно НЕ откалиброваны (open question #1), и при этом она используется как safety-критический гейт.",
+                                  "why":  "Ложноположительное постусловие («done», когда не done) — это fail-OPEN: планировщик идёт к следующему шагу с неверным precondition → каскад против неожиданного UI. Это прямо противоречит заявленному сохранению fail-closed гарантий: безопасность опирается на признанно нерешённую задачу калибровки. Принятие high-risk проекта оставляет несущий fail-closed механизм неопределённым."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Success_tests 1–6 требуют, чтобы документы были СОЗДАНЫ и представлены оператору, но решение их ещё не произвело: next_step = «Написать PROJECT_BRIEF», implementation_plan только планирует их создание. При этом final_answer уже утверждает «РЕЖИМ Discuss-First соблюдён... производятся документы».",
+                                  "why":  "На момент решения PROJECT_BRIEF/PROJECT_MAP/PROJECT_PLAN/contract как артефакты не существуют (есть лишь микро-дебаты DA01–DA12 и план их написать). Заявление о соблюдении Discuss-First преждевременно; формально success_tests «Создан документ X» и «PROJECT_PLAN и contract представлены оператору ДО реализации» не продемонстрированы этим решением."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Параллелизм DAG оставлен нерешённым (open question #6), но выбранные дизайны STOP (DA06), confirm-барьеров (DA05) и watchdog (DA10) неявно предполагают последовательное исполнение.",
+                                  "why":  "Если параллельные ветви позже разрешат, преемптивный STOP должен атомарно гасить все ветви, а confirm-барьеры в конкурентных ветвях могут гоняться (оператор подтверждает одну, вторая исходит из устаревшего состояния). Нерешённая связка может потребовать переработки safety-инвариантов, которые сейчас считаются финальными."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Механизм рантайм-реклассификации риска (LLM vs правила) и защита от неоправданного downgrade оставлены open question #4, хотя это несущий компонент VALIDATION GATE, на котором держится разрешение конфликта «автономность vs контроль».",
+                                  "why":  "Решение принимает high-risk проект и объявляет гейт «общей точкой принуждения», но trust-anchor этого гейта не определён. Если реклассификатор — LLM, он наследует проблему инъекции (см. выше); если правила — неясно, покрывают ли они реактивно раскрытые состояния. Принятие при неопределённом несущем элементе — преждевременная фиксация."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}
