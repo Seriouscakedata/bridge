@@ -181,6 +181,10 @@ STATUS: DONE
   $plannerStatus = 'DONE'
   $timeoutHandlerCommand = Get-Command Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -ErrorAction Stop
   Check 'Gate regression timeout diagnostics: handler accepts TimedOutTests parameter' ($timeoutHandlerCommand.Parameters.ContainsKey('TimedOutTests')) $timeoutHandlerCommand.Parameters.Keys
+  $timeoutRecordCommand = Get-Command New-DriverDoneGateRegressionTimeoutInconclusiveRecord -ErrorAction Stop
+  Check 'Gate regression timeout diagnostics: record builder accepts TimedOutTests parameter' ($timeoutRecordCommand.Parameters.ContainsKey('TimedOutTests')) $timeoutRecordCommand.Parameters.Keys
+  $timeoutDirectRecord = New-DriverDoneGateRegressionTimeoutInconclusiveRecord -GateResult $syntheticTimeoutGate -FailReason 'exit=124, timedOut=True' -TimedOutTests @('test-hanging-gate.ps1')
+  Check 'Gate regression timeout diagnostics: record builder names timed-out test' ($timeoutDirectRecord.Message.Contains('timed_out_tests=test-hanging-gate.ps1') -and ((@($timeoutDirectRecord.TimedOutTests) -join ',') -eq 'test-hanging-gate.ps1')) $timeoutDirectRecord
   $driverCheckTokens = $null
   $driverCheckErrors = $null
   $driverChecksAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'driver\86-loop-completion-checks.ps1'), [ref]$driverCheckTokens, [ref]$driverCheckErrors)
