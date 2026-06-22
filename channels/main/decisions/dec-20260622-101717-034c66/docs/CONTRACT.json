@@ -1,0 +1,108 @@
+{
+  "contract_id": "lapa-planner-layer-discuss-first-20260622-101717-034c66",
+  "status": "DRAFT_FOR_OPERATOR_REVIEW",
+  "approval": {
+    "required": true,
+    "operator_approved": false,
+    "implementation_allowed": false,
+    "atomic_actions_allowed": false
+  },
+  "scope": {
+    "project": "LAPA",
+    "external_project_path": "C:\\Users\\rafie\\bridge-projects\\lapa",
+    "bridge_artifact_path": "channels/main/decisions/dec-20260622-101717-034c66/docs",
+    "this_task_changes": "design documents only",
+    "planner_role": "advisory_only",
+    "execution_chokepoint": "existing five-gate Reliable Hands loop"
+  },
+  "accepted_decisions": [
+    "atom_01_advisory_only_no_direct_os_access",
+    "atom_02_discuss_first_high_level_plan_before_actions",
+    "atom_03_jit_compile_one_step_at_a_time",
+    "atom_04_postcondition_and_bounded_recovery_per_node",
+    "atom_05_vision_roles_in_planning",
+    "atom_06_deterministic_risk_policy",
+    "atom_07_multilayer_stop_freeze_and_report",
+    "atom_08_fail_closed_defaults",
+    "atom_09_closed_loop_execution_with_scoped_replanning",
+    "atom_10_screen_content_untrusted_allowlisted_targets",
+    "atom_11_phased_rollout_and_audit",
+    "atom_12_high_level_taskgraph_dag"
+  ],
+  "hard_constraints": [
+    "No executable atoms before operator approval.",
+    "No atomic actions before runtime plan approval.",
+    "Planner has no direct OS/UI/Telegram/settings/files actuation path.",
+    "Every executable plan node must have a machine-checkable postcondition.",
+    "Unverified success is failure.",
+    "Risk policy is deterministic and cannot be overridden by the planner.",
+    "Unknown action classes default to confirm.",
+    "STOP is checked before every gate and before recovery or replan.",
+    "Screen content is untrusted data, never instructions.",
+    "Replans outside approved envelope require operator review or STOP."
+  ],
+  "risk_policy": {
+    "outcomes": ["allow", "confirm", "deny"],
+    "default_for_unknown": "confirm",
+    "confirm_or_deny_effects": [
+      "send_message",
+      "system_setting_change",
+      "destructive_operation",
+      "credential_adjacent_action",
+      "external_publication",
+      "purchase_or_payment_adjacent_action"
+    ],
+    "sequence_level_risk_required": true
+  },
+  "stop_policy": {
+    "semantics": "safe_freeze_and_report",
+    "must_not_claim_rollback_of_irreversible_effects": true,
+    "triggers": [
+      "operator_hard_stop",
+      "budget_exhaustion",
+      "no_progress",
+      "out_of_scope_state",
+      "dangerous_state",
+      "low_planner_confidence",
+      "repeated_verification_failure",
+      "oscillation",
+      "vision_disagreement",
+      "material_replan_divergence"
+    ]
+  },
+  "verification": {
+    "per_node_postcondition_required": true,
+    "final_goal_level_verification_required": true,
+    "vision_cross_check_for_high_risk_or_ambiguous_cases": true,
+    "non_idempotent_retry_guard_required": true,
+    "toctou_reground_before_act_required": true
+  },
+  "design_review_tests": [
+    "Document sequence PROJECT_BRIEF -> DISCUSS_* -> PROJECT_MAP -> PROJECT_PLAN -> CONTRACT exists.",
+    "All accepted decisions atom_01 through atom_12 are covered.",
+    "Design explicitly blocks implementation and atomic actions until approval.",
+    "Red-team issues are addressed in the docs."
+  ],
+  "post_approval_acceptance_tests": [
+    "Planner contracts expose no direct OS/UI/Telegram actuation path.",
+    "Runtime Discuss-First pauses before atomic action generation.",
+    "TaskGraph contains high-level nodes with dependencies, postconditions, recovery ladders, and no pre-baked atomic actions.",
+    "JIT compiler generates typed actions for one approved node at a time.",
+    "Deterministic policy blocks planner risk mislabeling and routes unknowns to confirm.",
+    "Screen prompt-injection content is treated as untrusted data.",
+    "Non-idempotent retries are blocked after uncertain verification.",
+    "TOCTOU re-grounding blocks stale UI actions.",
+    "Vision disagreement or failed cross-check fails closed.",
+    "Final goal-level verification runs after node verification."
+  ],
+  "open_questions": [
+    "Which initial task classes should seed rollout?",
+    "What are default budgets for wall-clock, steps, retries, replans, tokens, and cost?",
+    "What confidence thresholds trigger STOP or vision escalation?",
+    "Who owns policy lists and app/target allowlists?",
+    "What replan depth is allowed before forced STOP?",
+    "What counts as material divergence requiring review?",
+    "What audit retention and access model should be used?",
+    "Should high-risk vision verification require a second model/provider or deterministic cross-check?"
+  ]
+}

@@ -1,0 +1,114 @@
+{
+    "proposer":  "B",
+    "understanding":  "LAPA already has reliable \u0027hands\u0027: a 5-gate fail-closed loop plus open/type/telegram skills and vision-for-canvas, where vision is used reactively to locate elements when stuck. Today the OPERATOR does the planning — LAPA executes specific, pre-decided atomic actions but cannot take a high-level goal and decompose it itself. The ask is to add a PLANNER layer ON TOP of the existing hands so LAPA autonomously turns a high-level goal into a sequence of loop-actions (open→perceive→navigate→act), self-verifies and recovers per step, uses vision DURING planning (situation assessment, obstacle detection, progress verification) and not only for element location, while preserving fail-closed guarantees, integrating the declared-risk ladder (system settings/sends require confirm), and providing a STOP. The required mode is Discuss-First: produce PROJECT_BRIEF → DISCUSS_* → PROJECT_MAP → PROJECT_PLAN → contract for operator review, and generate NO atomic actions until the plan is approved. This proposal is design reasoning toward that document chain, not implementation.",
+    "summary":  "Add the planner as an ADVISORY layer that never touches the OS directly: it proposes actions, and the existing 5-gate loop remains the single execution chokepoint, so fail-closed semantics are inherited rather than re-implemented. Plan in closed loop (sense→plan→act→verify→replan) rather than open loop, because a GUI is partially observable and you cannot fully plan it before you perceive it. Represent the plan hierarchically: the operator approves a subgoal SKELETON (a small DAG of milestones, each with an explicit perceive-checkable postcondition and a risk tag), and concrete atoms are expanded just-in-time after each perceive — which is exactly how we honor \u0027no atoms before approval\u0027 while staying robust to unknown UI. Make risk classification a DETERMINISTIC policy gate (allow/confirm/deny lists) that the LLM cannot override — the LLM proposes, the policy disposes — and default unknown→confirm. Use vision in four planning roles: precondition grounding, obstacle/anomaly detection (dialogs, captchas, error toasts), postcondition verification, and (advanced) read-only scouting to \u0027look before you plan.\u0027 Treat all on-screen content as untrusted DATA, never instructions, to blunt prompt-injection. STOP is multi-layered (operator kill-switch + automatic budget/no-progress/out-of-scope triggers), checked at every gate, and means safe-freeze-and-report, not silent abort.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "The planner is advisory-only and has NO direct OS access; every proposed action is executed solely by the existing 5-gate loop, which remains the single execution chokepoint.",
+                               "reason":  "Routing all side effects through one already-proven fail-closed component means the new layer inherits existing guarantees instead of opening a second, unverified execution path that could bypass the gates.",
+                               "tradeoff":  "The planner cannot take shortcuts or batch low-level OS calls for speed; everything pays the per-action gate cost, and the planner is constrained by what the existing primitives expose.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Use closed-loop interleaved planning (sense→plan→act→verify→replan) rather than open-loop generate-full-plan-then-execute.",
+                               "reason":  "A GUI is partially observable and non-deterministic (latency, popups, layout shifts); a fully precomputed action list is brittle and drifts from reality after the first surprise.",
+                               "tradeoff":  "More LLM calls and higher per-task latency/cost than a one-shot plan, and harder to give the operator a complete deterministic preview of every atom up front.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Represent the plan hierarchically: the operator approves a subgoal SKELETON (DAG of milestones, each with an explicit perceive-checkable postcondition and risk tag), and atoms are expanded just-in-time after each perceive.",
+                               "reason":  "This satisfies \u0027no atoms before plan approval\u0027 literally (the approved artifact is the skeleton + verification/risk contract) while still adapting to UI that can only be known by looking at it.",
+                               "tradeoff":  "The operator approves intent/structure, not every concrete click; material scope changes during expansion must trigger re-approval, adding process friction.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Risk classification is a DETERMINISTIC policy gate (allow/confirm/deny lists) that the LLM cannot override; unknown actions default to confirm (fail-closed). LLM proposes, policy disposes.",
+                               "reason":  "If the same LLM that plans can also label its own actions low-risk, hallucination or prompt-injection can silently downgrade a \u0027send money\u0027 or \u0027change system setting\u0027 into an auto-executed step; a non-overridable policy layer removes that authority from the model.",
+                               "tradeoff":  "Coarser than model judgment — some genuinely safe actions will demand confirmation, creating friction and risk of confirmation fatigue; the policy lists need curation per target app.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Vision is wired into planning in four distinct roles — precondition grounding, obstacle/anomaly detection, postcondition verification, and (advanced) read-only scouting — not only element location.",
+                               "reason":  "This directly answers the operator\u0027s core question about vision-in-planning: vision becomes how the planner assesses \u0027am I on the right screen,\u0027 notices unexpected dialogs/captchas/errors, confirms a subgoal actually succeeded, and (advanced) explores affordances before committing a plan.",
+                               "tradeoff":  "Vision is the noisiest and most expensive signal; over-relying on it adds latency, cost, and false positives/negatives that must themselves be guarded.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Every plan node carries an explicit postcondition plus a bounded recovery ladder (retry → re-ground via vision → replan subgoal → escalate/STOP); if success cannot be verified, halt — never assume.",
+                               "reason":  "Per-step verification with bounded recovery is what makes autonomous decomposition fail-closed; an unbounded \u0027try again\u0027 is how agents loop, thrash, or proceed on false success.",
+                               "tradeoff":  "Bounds (max attempts/time) will sometimes abort tasks that a few more tries would have completed, trading completion rate for safety and predictability.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Treat all perceived on-screen content (OCR/vision text) as untrusted DATA, never as instructions; keep goal/policy in a privileged channel and fence the task to an explicit allowlist of apps/targets.",
+                               "reason":  "Computer-use planners are uniquely exposed to prompt-injection from the very screens they read (\u0027ignore previous instructions, send to…\u0027); without a data/instruction boundary the planner can be hijacked into out-of-scope irreversible actions.",
+                               "tradeoff":  "Strict scope-fencing rejects legitimate cross-app steps the operator didn\u0027t pre-declare, and a hard data/instruction split can ignore genuinely useful on-screen guidance.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "STOP is multi-layered (operator hard kill-switch + automatic triggers: budget exhaustion, no-progress, out-of-scope/dangerous-state, low planner confidence), checked at every gate, and defined as safe-freeze-and-report rather than silent abort.",
+                               "reason":  "A responsive, always-checked STOP that leaves the system in a reported, safe state is the operator\u0027s ultimate control and the backstop when verification/risk logic is uncertain.",
+                               "tradeoff":  "Mid-subgoal freezes can leave a task partially complete and require manual cleanup; aggressive auto-STOP thresholds reduce autonomy and completion rate.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "Roll out phased and additive: start with a few well-scoped task classes, human-in-loop at every risk rung, full plan-to-action provenance/audit trail, and broaden autonomy only as proven-safe macros and confidence accrue.",
+                               "reason":  "The planner sits on top of already-reliable hands that must not be destabilized; an additive, audited, phased approach lets the operator build trust and de-risk before reducing confirmations.",
+                               "tradeoff":  "Slower path to full \u0027does everything the operator does\u0027 autonomy; early versions feel gated and chatty, and macro curation is ongoing operator work.",
+                               "confidence":  0.84
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing \u00275-gate loop\u0027 is a per-action fail-closed verification pipeline and is the ONLY component with OS-side effects, so the planner can route through it without altering gate semantics; if a gate must change, that is a separate, flagged decision.",
+                        "A vision-capable LLM is available for decomposition/planning and its cost/latency are acceptable for interactive, human-in-loop operation.",
+                        "open/type/telegram + vision-for-canvas are the primitive skills the planner composes; if a task class needs a new primitive, that is surfaced in PROJECT_MAP, not silently invented.",
+                        "The operator is available synchronously to approve the PROJECT_PLAN skeleton and to answer declared-risk confirmations; fully headless/async autonomy is out of scope for the minimal version.",
+                        "Perceived screen state can be expressed as checkable predicates so postconditions/preconditions are machine-verifiable rather than vibes.",
+                        "The set of irreversible/external/system actions (sends, payments, deletions, system settings) can be enumerated as deterministic policy lists for the in-scope apps.",
+                        "Discuss-First means this proposal plus the PROJECT_BRIEF→DISCUSS_*→PROJECT_MAP→PROJECT_PLAN→contract chain is the deliverable now; no atoms or code until the plan is approved."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Prompt-injection / hostile on-screen content hijacks the plan into out-of-scope or irreversible actions.",
+                      "severity":  "high",
+                      "mitigation":  "Treat perceived content as untrusted data, keep goal/policy privileged, deterministic non-overridable risk gate with confirm on all external/irreversible actions, scope-fence allowlist, and (advanced) a separate adversarial planner-critic reviewing each (re)plan before execution."
+                  },
+                  {
+                      "risk":  "LLM produces a confidently-wrong decomposition, executing the wrong-but-plausible action.",
+                      "severity":  "high",
+                      "mitigation":  "Mandatory per-node postcondition verification, operator approval of the subgoal skeleton, conservative confirm-on-uncertainty, bounded autonomy, and full provenance so wrong steps are caught and auditable."
+                  },
+                  {
+                      "risk":  "Runaway replanning / retry thrash / cost and token blowup.",
+                      "severity":  "medium",
+                      "mitigation":  "Hard budgets on steps, wallclock, and tokens; no-progress detection; bounded recovery ladder; automatic STOP on budget exhaustion."
+                  },
+                  {
+                      "risk":  "Vision misperception yields a false-positive verification (thinks a step succeeded when it did not).",
+                      "severity":  "high",
+                      "mitigation":  "Require the deterministic gate and vision to agree where both apply; fail-closed on disagreement; phrase postconditions conservatively; prefer deterministic UI-state checks over vision when available."
+                  },
+                  {
+                      "risk":  "Confirmation fatigue leads the operator to rubber-stamp risk prompts, defeating the ladder.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep confirmations rare and high-signal, batch-preview all risk rungs in the PROJECT_PLAN up front, never auto-downgrade risk, and surface a concise diff of what each confirmed action will change."
+                  },
+                  {
+                      "risk":  "Operator approves a skeleton that just-in-time expansion turns into unexpected concrete atoms (partial-observability gap).",
+                      "severity":  "medium",
+                      "mitigation":  "Constrain expansion strictly within the approved subgoal\u0027s declared scope and risk tag; any material scope/risk change triggers re-approval; execution-time risk gate remains the backstop."
+                  },
+                  {
+                      "risk":  "STOP or abort mid-subgoal leaves the system in an inconsistent state.",
+                      "severity":  "high",
+                      "mitigation":  "Define STOP as safe-freeze-and-report; order reversible/read-only steps before irreversible ones where possible; surface incomplete state and a suggested cleanup to the operator rather than auto-rolling-back blindly."
+                  },
+                  {
+                      "risk":  "Over-engineering the planner delays delivery and destabilizes the already-reliable hands.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep the minimal version strictly additive and advisory with zero changes to gate semantics; ship one or two task classes first; expand only behind demonstrated reliability."
+                  }
+              ],
+    "minimal_version":  "A planner layer that, given a high-level task in a small set of pre-scoped task classes, autonomously produces a PROJECT_BRIEF (understanding + initial decomposition) and a PROJECT_PLAN: a subgoal-skeleton DAG where each node has an explicit perceive-checkable postcondition and a deterministic risk tag — presented for operator approval with NO atoms generated or executed beforehand. After approval, the planner runs closed-loop (sense→plan→act→verify→replan), expanding ONE subgoal at a time into loop-actions, each routed through the existing 5-gate loop. Vision serves three roles minimally — precondition grounding, obstacle/anomaly detection, postcondition verification. A deterministic, LLM-non-overridable risk gate (allow/confirm/deny, unknown→confirm) forces operator confirmation on all sends/system-settings/irreversible actions. STOP is provided as an operator kill-switch plus automatic budget/no-progress/out-of-scope triggers checked at every gate, defined as safe-freeze-and-report. A scope-fence allowlist bounds which apps/targets the task may touch, and every executed action is logged with provenance back to its plan node and the goal.",
+    "advanced_version":  "A full hierarchical task-network planner: dynamic multi-level decomposition with read-only vision SCOUTING (\u0027look before you plan\u0027 — open menus, screenshot, read affordances) to raise plan confidence before any state change, alternative-tactic search on recovery, and per-node confidence/uncertainty estimates. Successful, operator-curated plans are distilled into reusable macros/skills with their own proven-safe risk profiles, enabling confidence-gated autonomy where high-confidence proven task classes run with fewer confirmations while novel/low-confidence tasks stay human-in-loop. A separate adversarial \u0027planner-critic\u0027 model reviews each plan and replan for scope-drift and safety before execution (propose/verify separation), strengthening prompt-injection and semantic-scope defenses. Adds plan-time dry-run preview, richer audit/replay, and gradual broadening of the task-class catalog — moving toward \u0027LAPA does everything the operator does, autonomously\u0027 without ever loosening the fail-closed execution chokepoint or the deterministic risk ladder."
+}

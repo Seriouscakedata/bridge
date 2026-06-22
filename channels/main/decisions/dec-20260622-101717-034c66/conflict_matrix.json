@@ -1,0 +1,30 @@
+{
+    "consensus_atoms":  [
+                            "atom_01",
+                            "atom_02",
+                            "atom_03",
+                            "atom_04",
+                            "atom_05",
+                            "atom_06",
+                            "atom_07"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "atom_02",
+                                           "atom_09"
+                                       ],
+                          "axis":  "Planning Strategy / Operator Interface",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "atom_02",
+                        "severity":  "minor",
+                        "why":  "The statement \u0027pauses for operator review before any atomic actions are generated or executed\u0027 could be misinterpreted as requiring a review of a plan composed of atomic actions. This potential misinterpretation creates ambiguity when read alongside `atom_09` (closed-loop interleaved planning, rejecting full plan generation) and `atom_03` (just-in-time compilation of atomic actions from approved plan steps). While the intent is likely for the \u0027PROJECT_PLAN\u0027 in `atom_02` to be high-level, the wording doesn\u0027t explicitly state this, leading to potential confusion about the granularity of the plan being reviewed.",
+                        "fix":  "Clarify the granularity of the \u0027PROJECT_PLAN\u0027 in `atom_02` to explicitly state it\u0027s a high-level plan of steps or sub-goals, not a sequence of atomic actions. For example, \u0027...it produces PROJECT_BRIEF and a high-level PROJECT_PLAN (composed of steps/sub-goals) and pauses for operator review before any atomic actions are generated or executed for those steps.\u0027",
+                        "cost":  "low"
+                    }
+                ]
+}

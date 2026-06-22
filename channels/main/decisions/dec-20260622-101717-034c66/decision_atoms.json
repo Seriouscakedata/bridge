@@ -1,0 +1,148 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "The planner is advisory-only and has NO direct OS access; every proposed action is executed solely by the existing 5-gate loop, which remains the single execution chokepoint.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that the Planner component only interfaces with the Reliable Hands executor via defined contracts, and does not directly access OS/UI.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "The Planner operates in a strict Discuss-First mode: it produces PROJECT_BRIEF and PROJECT_PLAN documents and pauses for operator review before any atomic actions are generated or executed.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Planning Process / Operator Interface",
+                      "test":  "Confirm that the planner generates required documents (PROJECT_BRIEF, PROJECT_PLAN) and strictly pauses for operator approval of the high-level plan before any atomic actions are generated or executed.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Compile approved plan steps just-in-time into atomic actions, one step at a time.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Execution Model",
+                      "test":  "Observe that atomic actions are generated dynamically for each approved plan step, immediately before execution, rather than being pre-generated.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Every plan node carries an explicit postcondition plus a bounded recovery ladder (retry → re-ground via vision → replan subgoal → escalate/STOP); if success cannot be verified, halt — never assume.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety / Plan Structure",
+                      "test":  "Inspect plan schemas to confirm explicit postconditions and bounded recovery paths (retry, re-ground, replan, escalate/STOP) on every node, and verify that the system halts if verification fails and recovery is exhausted.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "Vision is wired into planning in four distinct roles — precondition grounding, obstacle/anomaly detection, postcondition verification, and (advanced) read-only scouting — not only element location.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Vision Integration",
+                      "test":  "Verify that the planner uses vision for precondition grounding, obstacle/anomaly detection, postcondition verification, and (optionally) read-only scouting, beyond just element location, and that a context scan is performed before decomposition.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "Risk classification is a DETERMINISTIC policy gate (allow/confirm/deny lists) that the LLM cannot override; unknown actions default to confirm (fail-closed). LLM proposes, policy disposes.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Risk Management",
+                      "test":  "Confirm that a deterministic policy gate (allow/confirm/deny lists) is applied to all actions, overriding any LLM-proposed risk classification, and that unknown actions default to confirmation.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "STOP is multi-layered (operator hard kill-switch + automatic triggers: budget exhaustion, no-progress, out-of-scope/dangerous-state, low planner confidence), checked at every gate, and defined as safe-freeze-and-report rather than silent abort.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety / Control",
+                      "test":  "Trigger STOP via operator kill-switch and automatic conditions (e.g., budget exhaustion) and verify immediate, safe freeze-and-report behavior at various gates.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Use fail-closed defaults for ambiguity, missing state, failed verification, risk escalation, and vision disagreement.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Safety Principles",
+                      "test":  "Introduce ambiguity, missing state, or failed verification conditions and observe that the system defaults to a safe, stopped, or operator-intervention state rather than proceeding.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Use closed-loop interleaved planning (sense→plan→act→verify→replan) rather than open-loop generate-full-plan-then-execute.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Planning Strategy",
+                      "test":  "Observe that the planner re-evaluates the environment and potentially replans after each action or verification step, rather than executing a pre-generated full plan.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Treat all perceived on-screen content (OCR/vision text) as untrusted DATA, never as instructions; keep goal/policy in a privileged channel and fence the task to an explicit allowlist of apps/targets.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Security / Safety",
+                      "test":  "Attempt to inject instructions via on-screen text (e.g., a webpage) and verify that the planner does not interpret them as commands, and that task execution is confined to an explicit allowlist.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Roll out phased and additive: start with a few well-scoped task classes, human-in-loop at every risk rung, full plan-to-action provenance/audit trail, and broaden autonomy only as proven-safe macros and confidence accrue.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Deployment Strategy",
+                      "test":  "Verify that initial deployments are limited to specific task classes, require human-in-loop for all risk levels, and maintain a full audit trail.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "statement":  "Use an LLM-based task decomposer that outputs a TaskGraph (DAG of loop-action sequences with dependencies).",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Planning Mechanism / Plan Structure",
+                      "test":  "Verify that the planner uses an LLM to decompose high-level goals into a TaskGraph (DAG) of action sequences with dependencies.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}

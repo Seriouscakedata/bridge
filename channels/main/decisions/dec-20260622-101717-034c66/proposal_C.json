@@ -1,0 +1,80 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to design a new \u0027Planner\u0027 layer on top of Lapa\u0027s existing reliable hands (5-gate loop: open→perceive→navigate→act, plus skills and vision-for-canvas). Currently, Lapa executes only pre-defined actions; the operator does all planning. The goal is for Lapa to autonomously decompose high-level tasks into sequences of loop-actions, using vision proactively during planning (not just reactively when stuck), while maintaining fail-closed guarantees, integrating with the declared-risk ladder for sensitive operations, and including a STOP mechanism. The output is a design discussion and plan for operator review before any implementation.",
+    "summary":  "Proposal to add a Planner layer that uses an LLM to decompose a high-level task into a TaskGraph of verified loop-action sequences. The Planner operates in a Discuss-First mode: it generates a PROJECT_BRIEF, then a PROJECT_PLAN with explicit verification and recovery steps, and waits for operator approval before execution. Vision is integrated into planning via a \u0027context scan\u0027 phase that captures the current state of the canvas/environment to inform decomposition. The design preserves the existing 5-gate loop as the execution substrate, adds a planning supervisor that enforces fail-closed semantics, and routes sensitive actions through the declared-risk ladder with mandatory confirmations. A global STOP token allows the operator to halt planning or execution at any time.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use an LLM-based task decomposer that outputs a TaskGraph (DAG of loop-action sequences with dependencies).",
+                               "reason":  "LLMs excel at high-level reasoning and decomposition of natural language goals into steps. A DAG allows parallel branches and explicit dependency management, which is necessary for complex tasks.",
+                               "tradeoff":  "LLM outputs can be non-deterministic and may hallucinate steps. Mitigated by verification passes and operator review. A DAG is more complex to execute than a linear script but enables richer planning.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Integrate vision into planning via a mandatory \u0027context scan\u0027 step that runs before decomposition.",
+                               "reason":  "The requirement states vision must be used during planning, not just for element location. A pre-planning scan captures the current canvas state, open windows, and potential obstacles, which the LLM uses to ground its decomposition.",
+                               "tradeoff":  "Adds latency to planning start. The scan might be incomplete if the environment is dynamic, but it significantly improves plan accuracy.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Every generated plan step must include an explicit verification condition and a recovery path.",
+                               "reason":  "Fail-closed guarantees require that each step\u0027s success is checked before proceeding. If verification fails, the planner must have a predefined recovery (retry, alternative approach, or abort safely).",
+                               "tradeoff":  "Increases plan complexity and generation time. Some verifications may be hard to specify automatically, requiring fallback to operator intervention.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "The Planner operates in a strict Discuss-First mode: it produces PROJECT_BRIEF and PROJECT_PLAN documents and pauses for operator review before any atomic actions are generated or executed.",
+                               "reason":  "The task contract explicitly forbids generating atomic actions before plan approval. This also aligns with the high-risk nature of autonomous operation.",
+                               "tradeoff":  "Reduces autonomy speed but maintains human oversight for safety-critical decisions.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Sensitive actions (system settings changes, sending messages) are routed through the existing declared-risk ladder and require explicit operator confirmation.",
+                               "reason":  "The constraints require integration with the declared-risk ladder. The Planner must tag steps with risk levels, and the execution layer must enforce confirmation dialogs for high-risk actions.",
+                               "tradeoff":  "Adds friction to execution but preserves safety guarantees.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Implement a global STOP mechanism that can be triggered by the operator at any point to halt planning or execution and return to a safe state.",
+                               "reason":  "Explicitly required by constraints. A STOP command must interrupt the Planner\u0027s LLM call or the execution loop and perform a safe-state rollback (close sensitive windows, clear pending actions).",
+                               "tradeoff":  "Requires an interruptible architecture and careful state management, adding implementation complexity.",
+                               "confidence":  1.0
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing 5-gate loop (open→perceive→navigate→act) is stable and can be invoked as atomic units by the Planner.",
+                        "The vision-for-canvas module can be called programmatically to capture a \u0027context snapshot\u0027 and return a structured description.",
+                        "The declared-risk ladder already has defined risk levels and a confirmation UI for the operator.",
+                        "The operator is available to review plans within a reasonable timeframe.",
+                        "Lapa\u0027s execution environment supports an interruptible architecture (async or signal-based STOP).",
+                        "High-level tasks are provided in natural language and are within Lapa\u0027s operational domain (desktop automation, Telegram, browser)."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "LLM hallucinates non-existent UI elements or impossible action sequences.",
+                      "severity":  "high",
+                      "mitigation":  "Grounding via context scan; verification step after each action; operator review of plan before execution; fallback to operator if verification fails repeatedly."
+                  },
+                  {
+                      "risk":  "Context scan captures stale or incomplete state, leading to a plan that fails during execution.",
+                      "severity":  "medium",
+                      "mitigation":  "Re-scan before critical steps; include dynamic verification in the plan; allow the Planner to replan on failure with updated context."
+                  },
+                  {
+                      "risk":  "Operator approval becomes a bottleneck, reducing the perceived autonomy benefit.",
+                      "severity":  "low",
+                      "mitigation":  "Cache approved sub-plans for reuse; allow the operator to set auto-approve policies for low-risk, well-known task types."
+                  },
+                  {
+                      "risk":  "STOP mechanism fails to clean up properly, leaving the system in an inconsistent state.",
+                      "severity":  "high",
+                      "mitigation":  "Implement STOP as a transaction rollback: track state changes, reverse them in reverse order, and default to closing all Lapa-managed windows on STOP."
+                  },
+                  {
+                      "risk":  "The TaskGraph execution engine deadlocks or violates dependencies under concurrency.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a proven DAG scheduler with timeout and deadlock detection; start with sequential execution and add parallelism only after validation."
+                  }
+              ],
+    "minimal_version":  "A single-threaded Planner that takes a high-level task, performs a context scan, uses an LLM to generate a linear sequence of loop-actions with embedded verification steps, presents it as a PROJECT_PLAN for operator approval, and then executes it sequentially with STOP support and risk-ladder confirmations. No parallel branches, no automatic replanning on failure (falls back to operator).",
+    "advanced_version":  "A full TaskGraph Planner with parallel branch execution, automatic replanning on verification failure (using updated context scans), a library of cached and reusable sub-plans, operator-defined risk policies for auto-approval of low-risk actions, and a learning loop that improves decomposition over time based on execution outcomes."
+}

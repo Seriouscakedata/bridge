@@ -1,0 +1,107 @@
+{
+    "proposer":  "A",
+    "understanding":  "Lapa already has reliable low-level execution hands: a 5-gate loop, concrete skills such as open/type/telegram, and vision support for canvas/element recovery. The missing layer is a fail-closed planner that accepts a high-level operator goal, decomposes it into reviewed plan-level loop steps, and only after operator approval allows atomic actions to be generated one step at a time.",
+    "summary":  "Add a planner layer above the existing executor. The planner produces PROJECT_BRIEF, DISCUSS_* design/risk notes, PROJECT_MAP, PROJECT_PLAN, and an executable contract for review. Before approval it may describe intended loop phases and verification criteria, but must not generate atomic UI actions. After approval, each plan step is compiled just-in-time into open/perceive/navigate/act operations, guarded by risk classification, confirmations, vision-based state checks, recovery rules, and STOP conditions.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use a two-layer architecture: Planner above the existing Reliable Hands executor.",
+                               "reason":  "This preserves the proven 5-gate loop and keeps autonomy isolated in a reviewable planning layer.",
+                               "tradeoff":  "The planner cannot directly optimize low-level execution; it must work through executor contracts.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Represent planner output as reviewed documents: PROJECT_BRIEF, DISCUSS_GOAL, DISCUSS_RISK, DISCUSS_VISION, PROJECT_MAP, PROJECT_PLAN, and contract.",
+                               "reason":  "The task explicitly requires Discuss-First mode and operator review before implementation or atomic generation.",
+                               "tradeoff":  "More ceremony up front, but much better auditability for high-risk autonomy.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Before approval, plans may contain loop-level intents only, not atomic UI commands.",
+                               "reason":  "This enforces the constraint that atomic actions are not generated before the plan is approved.",
+                               "tradeoff":  "The operator reviews a higher-level plan rather than exact clicks/keystrokes.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Compile approved plan steps just-in-time into atomic actions, one step at a time.",
+                               "reason":  "Late compilation lets Lapa adapt to current UI state while keeping each action inside the existing 5-gate executor.",
+                               "tradeoff":  "Execution is slower because each step requires fresh perception and validation.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Make verification and recovery first-class fields on every plan step.",
+                               "reason":  "Autonomous decomposition is only safe if each step has explicit preconditions, expected observations, success checks, and fallback behavior.",
+                               "tradeoff":  "Plans become longer and require stricter schema validation.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Integrate vision into planning as a context-discovery and uncertainty-reduction tool, not only as an element locator.",
+                               "reason":  "Vision should help the planner understand current screen/app state, infer obstacles, validate progress, and decide whether replanning is needed.",
+                               "tradeoff":  "Vision introduces interpretation uncertainty and must be confidence-gated.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Attach declared-risk classification to the task, each plan step, and each compiled action.",
+                               "reason":  "System settings, external sends, destructive changes, and sensitive operations must require confirmation regardless of planner confidence.",
+                               "tradeoff":  "Some benign flows may ask for confirmation if risk is ambiguous.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "STOP must exist at planner, executor, and operator levels.",
+                               "reason":  "A high-level autonomous loop needs immediate cancellation, fail-closed halt conditions, and operator override.",
+                               "tradeoff":  "STOP handling adds coordination state across components.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Use fail-closed defaults for ambiguity, missing state, failed verification, risk escalation, and vision disagreement.",
+                               "reason":  "The task is high risk and explicitly requires existing fail-closed guarantees to remain intact.",
+                               "tradeoff":  "The system may stop more often and require operator input.",
+                               "confidence":  0.97
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing 5-gate loop already exposes or can expose precondition, action, observation, verification, and commit/fail gates.",
+                        "The declared-risk ladder already exists or can be wrapped as a callable classifier before execution.",
+                        "The planner can access current task context and request perception snapshots without executing mutating actions.",
+                        "Vision outputs include confidence or can be wrapped with planner-side confidence thresholds.",
+                        "Telegram/send-like skills are considered externally visible actions and require confirmation unless explicitly whitelisted by policy."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Planner hallucinates an invalid decomposition or assumes unavailable UI/app capabilities.",
+                      "severity":  "high",
+                      "mitigation":  "Require PROJECT_MAP grounding, explicit assumptions, per-step preconditions, perception checks, and fail-closed replanning when state does not match."
+                  },
+                  {
+                      "risk":  "Atomic actions are generated before operator approval.",
+                      "severity":  "high",
+                      "mitigation":  "Enforce a hard phase boundary: pre-approval schemas reject selectors, coordinates, keystroke payloads, send bodies, and executable skill calls."
+                  },
+                  {
+                      "risk":  "Vision misreads the screen and causes wrong planning decisions.",
+                      "severity":  "high",
+                      "mitigation":  "Use confidence thresholds, cross-check vision with DOM/API/state where available, and require operator review or STOP on disagreement."
+                  },
+                  {
+                      "risk":  "Risk ladder is bypassed during replanning or recovery.",
+                      "severity":  "high",
+                      "mitigation":  "Classify risk at task intake, plan-step approval, and just-in-time compiled action execution; recovery steps cannot inherit lower risk automatically."
+                  },
+                  {
+                      "risk":  "Planner continues after the operator issues STOP.",
+                      "severity":  "high",
+                      "mitigation":  "Make STOP a shared cancellation token checked before planning, before compilation, before each executor gate, and after every observation."
+                  },
+                  {
+                      "risk":  "Prompt injection from UI, webpages, or Telegram content manipulates the planner.",
+                      "severity":  "high",
+                      "mitigation":  "Treat observed content as untrusted data, separate operator instructions from environmental text, and block instruction-following from screenshots/messages."
+                  },
+                  {
+                      "risk":  "Plans become too complex for reliable operator review.",
+                      "severity":  "medium",
+                      "mitigation":  "Use concise document sections, risk highlights, step summaries, and expandable technical details in the contract."
+                  }
+              ],
+    "minimal_version":  "Implement a schema-first planner that produces the required Discuss-First documents and a reviewed PROJECT_PLAN with loop-level steps only. Add approval gating, risk labels, STOP conditions, vision-planning hooks for perception/context checks, and just-in-time handoff to the existing 5-gate executor after approval.",
+    "advanced_version":  "Add a task-graph planner with dependencies, reversible checkpoints, confidence scoring, vision-informed world-state modeling, automatic replanning after failed verification, audit logs, simulation/dry-run validation, policy-based confirmation routing, and regression tests covering high-level task decomposition, fail-closed stops, risk escalation, and vision-assisted recovery."
+}
